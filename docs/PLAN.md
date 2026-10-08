@@ -97,22 +97,28 @@ been checked to contain no document content.
 **Done when:** CLI tests pass and output is checked for every fixture.
 
 ### P3 — Desktop app (`apps/figstudio`)
-- [ ] theme and layout in the PhotoCraft style: menu bar, left tool rail, document tabs,
-      canvas, right dock (Properties, Layers, Pages), status bar
-- [ ] open via menu, file dialog (rfd), drag and drop, command-line path
-- [ ] canvas: pan (drag / space / middle button), zoom (wheel, pinch, +/-), fit, 100%
-- [ ] re-render on view change in a background thread, keep the previous frame while waiting
-- [ ] click to select a layer (hit test), selection outline, hover outline
-- [ ] Layers tree with expand/collapse, hidden layers greyed, click to select and reveal
-- [ ] Properties: type, id, position, size, rotation, opacity, fills, strokes, effects,
-      text content and font, component name for instances
-- [ ] export selection or page to PNG (1x / 2x / 3x)
-- [ ] CJK-capable UI font (load a system Noto/Hiragino/PingFang font when present)
-- [ ] status bar: zoom, cursor position, render stats (what was skipped)
-- [ ] tool rail has Move/Select and Hand only for now; edit tools slot in later
+- [x] theme and layout in the PhotoCraft style: menu bar, left tool rail, document tabs,
+      canvas, docks, status bar (Pages + Layers on the left, Properties on the right)
+- [x] open via menu, file dialog (rfd), drag and drop, command-line path; several tabs
+- [x] canvas: pan (drag with Hand / Space / middle button, scroll), zoom (Ctrl+wheel,
+      pinch, +/-, Zoom tool, Alt to zoom out), ⇧1 fit, ⇧0 100%, double-click to fit selection
+- [x] re-render in a background thread; the last frame is re-projected until the new one lands
+- [x] click to select (hit test), selection and hover outlines (rotation aware)
+- [x] Layers tree: expand/collapse, hidden layers greyed, components purple, search box,
+      selecting on canvas expands and scrolls the tree to the layer
+- [x] Properties: type, id, X/Y/W/H, rotation, radius, clip, auto layout, opacity, blend,
+      fills with swatches, strokes, effects, text and font, instance main component, overrides
+- [x] export page or selection to PNG at 1x / 2x / 3x (Ctrl+Shift+E = selection @2x)
+- [x] CJK-capable UI font (first installed Noto CJK / Source Han / PingFang / Hiragino)
+- [x] status bar: zoom, cursor position, layers drawn, render time, unsupported features
+- [x] errors shown as toasts (bad file stays non-fatal)
+- [ ] save dialog path checked by hand on a desktop (Xvfb has no portal, so the export
+      menu was checked but the dialog itself was not exercised)
+- [ ] check on a real Wayland session and with a big file
 
-**Done when:** on Linux the app opens every fixture, pan/zoom/select/export work, and an
-Xvfb screenshot of each panel has been reviewed.
+**Checked so far (Xvfb + xdotool, 1400×880):** empty state, structure.fig open, tree expand,
+canvas click selects `social-twitter 1` and fills Properties, Ctrl+wheel 73%→241%,
+`=` zoom, ⇧0 to 100%, bad file toast, File → Export submenus.
 
 ### P4 — Platforms
 - [ ] Linux: release build runs on X11 and Wayland
@@ -126,7 +132,7 @@ requester confirms it runs.
 
 ### P5 — Delivery
 - [ ] README (build, run, CLI usage, known gaps)
-- [ ] `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean
+- [x] `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean (1.99.0)
 - [ ] decide repo location, push, open PR — only after the requester / owner agrees
 
 ### P6 — Editing (later, not started until asked)
@@ -174,3 +180,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   Fixed path blobs that draw after a close (text in noise_and_grain was invisible) and vector
   per-path colours from `styleOverrideTable`. Progressive blur skipped instead of a wrong
   uniform blur. 8 render tests + 5 decode tests pass. Remaining P1 items are effect gaps.
+- 2026-10-08 22:4x — P3 desktop app built (egui 0.36 / glow). Checked in Xvfb with xdotool
+  clicks and screenshots. CLI now prints usage only for usage errors. Image cache no longer
+  caches "missing" across documents. clippy + fmt clean on 1.99.0, 13 tests pass.

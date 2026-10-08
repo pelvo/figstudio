@@ -34,7 +34,9 @@ impl std::str::FromStr for Guid {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (a, b) = s.split_once(':').ok_or_else(|| format!("node id must look like 12:34, got {s}"))?;
+        let (a, b) = s
+            .split_once(':')
+            .ok_or_else(|| format!("node id must look like 12:34, got {s}"))?;
         let parse = |x: &str| x.parse::<u32>().map_err(|_| format!("bad node id {s}"));
         Ok(Guid(parse(a)?, parse(b)?))
     }
@@ -138,7 +140,10 @@ impl Val {
     }
 
     pub fn as_guid(&self) -> Option<Guid> {
-        Some(Guid(self.get("sessionID")?.as_u32()?, self.get("localID")?.as_u32()?))
+        Some(Guid(
+            self.get("sessionID")?.as_u32()?,
+            self.get("localID")?.as_u32()?,
+        ))
     }
 
     /// Shallow merge of `patch` object fields over `self`. `symbolData` is merged one level deeper,
@@ -152,11 +157,11 @@ impl Val {
             if k == "guidPath" {
                 continue;
             }
-            if k == "symbolData" {
-                if let Some(existing @ Val::Obj(_)) = base.get(k) {
-                    out.insert(k.clone(), existing.merged(v));
-                    continue;
-                }
+            if k == "symbolData"
+                && let Some(existing @ Val::Obj(_)) = base.get(k)
+            {
+                out.insert(k.clone(), existing.merged(v));
+                continue;
             }
             out.insert(k.clone(), v.clone());
         }

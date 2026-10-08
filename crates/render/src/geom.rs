@@ -1,7 +1,9 @@
 //! Geometry: transforms, sizes, blob paths and fallback shapes.
 
 use figstudio_fig::Val;
-use vello_cpu::kurbo::{Affine, BezPath, Ellipse, Point, Rect, RoundedRect, RoundedRectRadii, Shape};
+use vello_cpu::kurbo::{
+    Affine, BezPath, Ellipse, Point, Rect, RoundedRect, RoundedRectRadii, Shape,
+};
 use vello_cpu::peniko::Fill;
 
 /// Figma's 2x3 matrix (`m00 m01 m02 / m10 m11 m12`) as a kurbo affine.
@@ -22,7 +24,10 @@ pub fn affine(value: Option<&Val>) -> Affine {
 
 pub fn size(data: &Val) -> (f64, f64) {
     let s = data.get("size");
-    let get = |k: &str| s.and_then(|s| s.num(k)).map_or(0.0, |v| f64::from(v).max(0.0));
+    let get = |k: &str| {
+        s.and_then(|s| s.num(k))
+            .map_or(0.0, |v| f64::from(v).max(0.0))
+    };
     (get("x"), get("y"))
 }
 
@@ -89,7 +94,11 @@ pub struct GeomPath {
 
 impl GeomPath {
     pub fn plain(path: BezPath) -> Self {
-        GeomPath { path, rule: Fill::NonZero, style: 0 }
+        GeomPath {
+            path,
+            rule: Fill::NonZero,
+            style: 0,
+        }
     }
 }
 
@@ -103,7 +112,11 @@ pub fn geometry(data: &Val, key: &str, blobs: &[Vec<u8>]) -> Vec<GeomPath> {
         let Some(index) = item.get("commandsBlob").and_then(Val::as_u32) else {
             continue;
         };
-        let rule = if item.text("windingRule") == Some("ODD") { Fill::EvenOdd } else { Fill::NonZero };
+        let rule = if item.text("windingRule") == Some("ODD") {
+            Fill::EvenOdd
+        } else {
+            Fill::NonZero
+        };
         let style = item.get("styleID").and_then(Val::as_u32).unwrap_or(0);
         if let Some(path) = blobs.get(index as usize).and_then(|b| blob_path(b)) {
             out.push(GeomPath { path, rule, style });
@@ -129,7 +142,10 @@ pub fn corner_radii(data: &Val, w: f64, h: f64) -> RoundedRectRadii {
 
 /// Node types laid out as boxes that can hold children.
 pub fn is_container(kind: &str) -> bool {
-    matches!(kind, "FRAME" | "SYMBOL" | "INSTANCE" | "SECTION" | "COMPONENT_SET")
+    matches!(
+        kind,
+        "FRAME" | "SYMBOL" | "INSTANCE" | "SECTION" | "COMPONENT_SET"
+    )
 }
 
 /// Shape used when a node has no precomputed fill geometry, and as the clip path of frames.
@@ -141,7 +157,9 @@ pub fn base_shape(kind: &str, data: &Val) -> Option<BezPath> {
     let rect = Rect::new(0.0, 0.0, w, h);
     match kind {
         "ELLIPSE" => Some(Ellipse::from_rect(rect).to_path(0.1)),
-        "TEXT" | "VECTOR" | "LINE" | "STAR" | "REGULAR_POLYGON" | "BOOLEAN_OPERATION" | "SLICE" => None,
+        "TEXT" | "VECTOR" | "LINE" | "STAR" | "REGULAR_POLYGON" | "BOOLEAN_OPERATION" | "SLICE" => {
+            None
+        }
         _ => Some(RoundedRect::from_rect(rect, corner_radii(data, w, h)).to_path(0.1)),
     }
 }

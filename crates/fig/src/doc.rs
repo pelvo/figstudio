@@ -42,7 +42,10 @@ pub struct Node {
 impl Node {
     /// Key used by instance overrides: `overrideKey` when present, otherwise the guid.
     pub fn override_key(&self) -> Guid {
-        self.data.get("overrideKey").and_then(Val::as_guid).unwrap_or(self.id)
+        self.data
+            .get("overrideKey")
+            .and_then(Val::as_guid)
+            .unwrap_or(self.id)
     }
 }
 
@@ -67,11 +70,16 @@ pub struct Document {
 impl Document {
     pub fn open(path: impl AsRef<Path>) -> Result<Document, FigError> {
         let path = path.as_ref();
-        let meta = std::fs::metadata(path).map_err(|e| FigError(format!("{}: {e}", path.display())))?;
+        let meta =
+            std::fs::metadata(path).map_err(|e| FigError(format!("{}: {e}", path.display())))?;
         if meta.len() as usize > MAX_FILE_BYTES {
-            return err(format!("{} is larger than {MAX_FILE_BYTES} bytes", path.display()));
+            return err(format!(
+                "{} is larger than {MAX_FILE_BYTES} bytes",
+                path.display()
+            ));
         }
-        let bytes = std::fs::read(path).map_err(|e| FigError(format!("{}: {e}", path.display())))?;
+        let bytes =
+            std::fs::read(path).map_err(|e| FigError(format!("{}: {e}", path.display())))?;
         Document::from_bytes(&bytes)
     }
 
@@ -84,7 +92,9 @@ impl Document {
                 .map_err(|e| FigError(format!("not a readable .fig archive: {e}")))?;
             let mut canvas = None;
             for i in 0..zip.len() {
-                let mut entry = zip.by_index(i).map_err(|e| FigError(format!("bad archive entry: {e}")))?;
+                let mut entry = zip
+                    .by_index(i)
+                    .map_err(|e| FigError(format!("bad archive entry: {e}")))?;
                 let name = entry.name().to_string();
                 let mut data = Vec::new();
                 entry
@@ -96,10 +106,11 @@ impl Document {
                     thumbnail = Some(data);
                 } else if name == "meta.json" {
                     file_name = meta_file_name(&data);
-                } else if let Some(hash) = name.strip_prefix("images/") {
-                    if !hash.is_empty() && !data.is_empty() {
-                        images.insert(hash.to_ascii_lowercase(), data);
-                    }
+                } else if let Some(hash) = name.strip_prefix("images/")
+                    && !hash.is_empty()
+                    && !data.is_empty()
+                {
+                    images.insert(hash.to_ascii_lowercase(), data);
                 }
             }
             match canvas {
@@ -133,12 +144,14 @@ impl Document {
             return err("missing schema or message chunk");
         }
         let schema_bytes = decompress(chunks[0])?;
-        let schema = Schema::decode(&schema_bytes).map_err(|()| FigError("cannot decode the file schema".into()))?;
+        let schema = Schema::decode(&schema_bytes)
+            .map_err(|()| FigError("cannot decode the file schema".into()))?;
         let message_type = schema
             .defs
             .iter()
             .position(|d| d.name == "Message")
-            .ok_or_else(|| FigError("schema has no Message type".into()))? as i32;
+            .ok_or_else(|| FigError("schema has no Message type".into()))?
+            as i32;
         let message_bytes = decompress(chunks[1])?;
         let message = Value::decode(&schema, message_type, &message_bytes)
             .map_err(|()| FigError("cannot decode the document message".into()))?;
@@ -167,8 +180,13 @@ impl Document {
             let parent_index = data.get("parentIndex");
             let node = Node {
                 id,
-                parent: parent_index.and_then(|p| p.get("guid")).and_then(Val::as_guid),
-                position: parent_index.and_then(|p| p.text("position")).unwrap_or("").to_string(),
+                parent: parent_index
+                    .and_then(|p| p.get("guid"))
+                    .and_then(Val::as_guid),
+                position: parent_index
+                    .and_then(|p| p.text("position"))
+                    .unwrap_or("")
+                    .to_string(),
                 kind: data.text("type").unwrap_or("UNKNOWN").to_string(),
                 name: data.text("name").unwrap_or("").to_string(),
                 data,
@@ -191,7 +209,10 @@ impl Document {
         for list in children.values_mut() {
             list.sort_by(|a, b| {
                 let (na, nb) = (&nodes[index[a]], &nodes[index[b]]);
-                na.position.as_bytes().cmp(nb.position.as_bytes()).then(a.cmp(b))
+                na.position
+                    .as_bytes()
+                    .cmp(nb.position.as_bytes())
+                    .then(a.cmp(b))
             });
         }
 
@@ -249,7 +270,10 @@ impl Document {
 
     /// Number of nodes in the subtree below `id`, excluding `id`.
     pub fn descendant_count(&self, id: Guid) -> usize {
-        self.children(id).iter().map(|c| 1 + self.descendant_count(*c)).sum()
+        self.children(id)
+            .iter()
+            .map(|c| 1 + self.descendant_count(*c))
+            .sum()
     }
 }
 
@@ -258,7 +282,11 @@ fn meta_file_name(bytes: &[u8]) -> Option<String> {
     // meta.json is small and flat; avoid a JSON dependency for one string field.
     let start = text.find("\"file_name\"")?;
     let rest = &text[start + "\"file_name\"".len()..];
-    let rest = rest.trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    let rest = rest
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start()
+        .strip_prefix('"')?;
     let mut out = String::new();
     let mut chars = rest.chars();
     while let Some(c) = chars.next() {
@@ -269,7 +297,9 @@ fn meta_file_name(bytes: &[u8]) -> Option<String> {
                 't' => out.push('\t'),
                 'u' => {
                     let code: String = chars.by_ref().take(4).collect();
-                    out.push(char::from_u32(u32::from_str_radix(&code, 16).ok()?).unwrap_or('\u{fffd}'));
+                    out.push(
+                        char::from_u32(u32::from_str_radix(&code, 16).ok()?).unwrap_or('\u{fffd}'),
+                    );
                 }
                 other => out.push(other),
             },
@@ -289,7 +319,10 @@ fn decompress(data: &[u8]) -> Result<Vec<u8>, FigError> {
             .map_err(|e| FigError(format!("bad zstd chunk: {e}")))?;
         return Ok(out);
     }
-    if flate2::read::DeflateDecoder::new(data).read_to_end(&mut out).is_ok() {
+    if flate2::read::DeflateDecoder::new(data)
+        .read_to_end(&mut out)
+        .is_ok()
+    {
         return Ok(out);
     }
     out.clear();

@@ -5,7 +5,9 @@ use figstudio_render::kurbo::{Affine, Point};
 use figstudio_render::{Renderer, Stats, Viewport, content_bounds, geom, hit_test, node_bounds};
 
 fn open(name: &str) -> Document {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures").join(format!("{name}.fig"));
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(format!("{name}.fig"));
     Document::open(path).unwrap()
 }
 
@@ -16,9 +18,19 @@ fn render_page(doc: &Document, origin: Point, w: u16, h: u16) -> (Vec<[u8; 4]>, 
     let frame = r.render(
         doc,
         doc.pages[0],
-        &Viewport { width: w, height: h, transform: Affine::translate((-origin.x, -origin.y)), background: None },
+        &Viewport {
+            width: w,
+            height: h,
+            transform: Affine::translate((-origin.x, -origin.y)),
+            background: None,
+        },
     );
-    let px = frame.pixmap.data().iter().map(|p| [p.r, p.g, p.b, p.a]).collect();
+    let px = frame
+        .pixmap
+        .data()
+        .iter()
+        .map(|p| [p.r, p.g, p.b, p.a])
+        .collect();
     (px, frame.stats)
 }
 
@@ -32,7 +44,15 @@ fn count(px: &[[u8; 4]], pred: impl Fn([u8; 4]) -> bool) -> usize {
 
 #[test]
 fn every_fixture_renders_with_content() {
-    for name in ["broken_images", "corners", "noise_and_grain", "sections", "stacks_wrap", "structure", "vector"] {
+    for name in [
+        "broken_images",
+        "corners",
+        "noise_and_grain",
+        "sections",
+        "stacks_wrap",
+        "structure",
+        "vector",
+    ] {
         let doc = open(name);
         let mut r = Renderer::new();
         r.system_fonts = false;
@@ -62,14 +82,27 @@ fn vector_paths_use_their_style_override_paints() {
 fn stored_glyph_text_is_drawn() {
     let doc = open("noise_and_grain");
     let b = content_bounds(&doc, doc.pages[0]).unwrap();
-    let (w, h) = ((b.width() / 2.0).ceil() as u16, (b.height() / 2.0).ceil() as u16);
+    let (w, h) = (
+        (b.width() / 2.0).ceil() as u16,
+        (b.height() / 2.0).ceil() as u16,
+    );
     let mut r = Renderer::new();
     let frame = r.render(
         &doc,
         doc.pages[0],
-        &Viewport { width: w, height: h, transform: Affine::scale(0.5) * Affine::translate((-b.x0, -b.y0)), background: None },
+        &Viewport {
+            width: w,
+            height: h,
+            transform: Affine::scale(0.5) * Affine::translate((-b.x0, -b.y0)),
+            background: None,
+        },
     );
-    let blue = frame.pixmap.data().iter().filter(|p| p.b as i32 > p.r as i32 + 30).count();
+    let blue = frame
+        .pixmap
+        .data()
+        .iter()
+        .filter(|p| p.b as i32 > p.r as i32 + 30)
+        .count();
     assert!(blue > 5000, "text glyphs missing ({blue} blue px)");
     assert_eq!(frame.stats.text_stored_glyphs, 2);
     assert_eq!(frame.stats.text_missing, 0);
@@ -134,12 +167,24 @@ fn malformed_path_blobs_do_not_panic() {
 #[test]
 fn hidden_layers_are_not_drawn() {
     let mut doc = open("corners");
-    let before = Renderer::new().render_fit(&doc, doc.pages[0], 0.5, 0.0, None).unwrap().stats.nodes;
-    for n in doc.nodes.iter_mut().filter(|n| n.kind == "ROUNDED_RECTANGLE") {
+    let before = Renderer::new()
+        .render_fit(&doc, doc.pages[0], 0.5, 0.0, None)
+        .unwrap()
+        .stats
+        .nodes;
+    for n in doc
+        .nodes
+        .iter_mut()
+        .filter(|n| n.kind == "ROUNDED_RECTANGLE")
+    {
         if let Val::Obj(m) = &mut n.data {
             m.insert("visible".into(), Val::Bool(false));
         }
     }
-    let after = Renderer::new().render_fit(&doc, doc.pages[0], 0.5, 0.0, None).unwrap().stats.nodes;
+    let after = Renderer::new()
+        .render_fit(&doc, doc.pages[0], 0.5, 0.0, None)
+        .unwrap()
+        .stats
+        .nodes;
     assert!(after < before, "{after} >= {before}");
 }

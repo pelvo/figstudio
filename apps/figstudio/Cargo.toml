@@ -1,5 +1,6 @@
 [package]
 name = "figstudio"
+description = "Desktop app for Figma .fig local copies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,3 +10,11 @@ publish = false
 [dependencies]
 figstudio-fig = { workspace = true }
 figstudio-render = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = { workspace = true }
+rfd = { workspace = true }
+fontdb = { workspace = true }
+image = { workspace = true }
+
+[lints]
+workspace = true

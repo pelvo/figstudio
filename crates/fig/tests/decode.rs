@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use figstudio_fig::{Document, Guid};
 
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures").join(format!("{name}.fig"))
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(format!("{name}.fig"))
 }
 
 /// Node counts and format versions, cross-checked against the TypeScript decoder in figma-read-mcp.
@@ -36,12 +38,21 @@ fn builds_the_tree_in_sibling_order() {
     let doc = Document::open(fixture("structure")).unwrap();
     let page = doc.pages[0];
     assert_eq!(doc.node(page).unwrap().name, "Page 1");
-    let top: Vec<&str> = doc.children(page).iter().map(|id| doc.node(*id).unwrap().name.as_str()).collect();
+    let top: Vec<&str> = doc
+        .children(page)
+        .iter()
+        .map(|id| doc.node(*id).unwrap().name.as_str())
+        .collect();
     assert_eq!(top, ["Groups", "Symbols and images"]);
     let text = doc.node(Guid(1, 42)).unwrap();
     assert_eq!(text.kind, "TEXT");
     assert_eq!(text.parent, Some(Guid(1, 37)));
-    assert_eq!(text.data.path(&["textData", "characters"]).and_then(|v| v.as_str()), Some("ABC"));
+    assert_eq!(
+        text.data
+            .path(&["textData", "characters"])
+            .and_then(|v| v.as_str()),
+        Some("ABC")
+    );
     assert_eq!(doc.page_of(Guid(1, 42)), Some(page));
     assert_eq!(doc.descendant_count(Guid(1, 53)), 4);
 }
@@ -51,7 +62,11 @@ fn reads_metadata_images_and_blobs() {
     let doc = Document::open(fixture("structure")).unwrap();
     assert_eq!(doc.file_name.as_deref(), Some("structure"));
     assert_eq!(doc.images.len(), 3);
-    assert!(doc.images.keys().all(|k| k.len() == 40 && k.chars().all(|c| c.is_ascii_hexdigit())));
+    assert!(
+        doc.images
+            .keys()
+            .all(|k| k.len() == 40 && k.chars().all(|c| c.is_ascii_hexdigit()))
+    );
     assert_eq!(doc.blobs.len(), 28);
 }
 
@@ -63,7 +78,10 @@ fn refuses_files_that_are_not_fig() {
     let mut fake = b"fig-kiwi".to_vec();
     fake.extend_from_slice(&20u32.to_le_bytes());
     fake.extend_from_slice(&100u32.to_le_bytes());
-    assert!(Document::from_bytes(&fake).is_err(), "truncated chunk must fail");
+    assert!(
+        Document::from_bytes(&fake).is_err(),
+        "truncated chunk must fail"
+    );
 }
 
 #[test]

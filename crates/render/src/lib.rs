@@ -3,7 +3,7 @@
 //! The same code path serves the desktop app, the headless CLI and the browser build.
 
 pub mod geom;
-mod paint;
+pub mod paint;
 mod text;
 
 use std::borrow::Cow;
@@ -15,7 +15,9 @@ use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape, Stroke};
 use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
 
-use crate::geom::{GeomPath, affine, base_shape, clips_content, geometry, size, transformed_bounds};
+use crate::geom::{
+    GeomPath, affine, base_shape, clips_content, geometry, size, transformed_bounds,
+};
 use crate::paint::ImageCache;
 
 pub use vello_cpu::{color, kurbo};
@@ -46,7 +48,13 @@ pub struct Stats {
 impl fmt::Display for Stats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} nodes, {} instances", self.nodes, self.instances)?;
-        let mut note = |n: usize, what: &str| if n > 0 { write!(f, ", {n} {what}") } else { Ok(()) };
+        let mut note = |n: usize, what: &str| {
+            if n > 0 {
+                write!(f, ", {n} {what}")
+            } else {
+                Ok(())
+            }
+        };
         note(self.text_stored_glyphs, "text (stored outlines)")?;
         note(self.text_system_fonts, "text (system fonts)")?;
         note(self.text_missing, "text not drawn")?;
@@ -86,7 +94,11 @@ pub struct Renderer {
 
 impl Default for Renderer {
     fn default() -> Self {
-        Renderer { images: ImageCache::default(), fonts: text::SystemFonts::default(), system_fonts: true }
+        Renderer {
+            images: ImageCache::default(),
+            fonts: text::SystemFonts::default(),
+            system_fonts: true,
+        }
     }
 }
 
@@ -120,26 +132,36 @@ impl Renderer {
             rc: RenderContext::new_with(w, h, RenderSettings::default()),
             stats: Stats::default(),
             images: &mut self.images,
-            fonts: if self.system_fonts { Some(&mut self.fonts) } else { None },
+            fonts: if self.system_fonts {
+                Some(&mut self.fonts)
+            } else {
+                None
+            },
             patches: Vec::new(),
             symbol_stack: Vec::new(),
         };
         if let Some(bg) = viewport.background {
             ctx.rc.set_paint(bg);
-            ctx.rc.fill_rect(&Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
+            ctx.rc
+                .fill_rect(&Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
         }
         if let Some(node) = doc.node(root) {
             if node.kind == "CANVAS" || node.kind == "DOCUMENT" {
                 ctx.draw_children(node, &node.data, viewport.transform, None);
             } else {
-                let parent = node.parent.map_or(Affine::IDENTITY, |p| absolute_transform(doc, p));
+                let parent = node
+                    .parent
+                    .map_or(Affine::IDENTITY, |p| absolute_transform(doc, p));
                 ctx.draw(node, viewport.transform * parent, None);
             }
         }
         ctx.rc.flush();
         let mut pixmap = Pixmap::new(w, h);
         ctx.rc.render(&mut pixmap, &mut Resources::new());
-        Frame { pixmap, stats: ctx.stats }
+        Frame {
+            pixmap,
+            stats: ctx.stats,
+        }
     }
 
     /// Renders `root` cropped to its content at `scale`, with `padding` pixels around it.
@@ -159,8 +181,19 @@ impl Renderer {
         }
         let width = (bounds.width() * scale + padding * 2.0).ceil().max(1.0) as u16;
         let height = (bounds.height() * scale + padding * 2.0).ceil().max(1.0) as u16;
-        let transform = Affine::translate((padding, padding)) * Affine::scale(scale) * Affine::translate((-bounds.x0, -bounds.y0));
-        Some(self.render(doc, root, &Viewport { width, height, transform, background }))
+        let transform = Affine::translate((padding, padding))
+            * Affine::scale(scale)
+            * Affine::translate((-bounds.x0, -bounds.y0));
+        Some(self.render(
+            doc,
+            root,
+            &Viewport {
+                width,
+                height,
+                transform,
+                background,
+            },
+        ))
     }
 }
 
@@ -190,7 +223,10 @@ pub fn absolute_transform(doc: &Document, id: Guid) -> Affine {
 pub fn node_bounds(doc: &Document, id: Guid) -> Option<Rect> {
     let node = doc.node(id)?;
     let (w, h) = size(&node.data);
-    Some(transformed_bounds(absolute_transform(doc, id), Rect::new(0.0, 0.0, w, h)))
+    Some(transformed_bounds(
+        absolute_transform(doc, id),
+        Rect::new(0.0, 0.0, w, h),
+    ))
 }
 
 fn visible(data: &Val) -> bool {
@@ -229,10 +265,11 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
             let local = tf.inverse() * point;
             let inside = local.x >= 0.0 && local.y >= 0.0 && local.x <= w && local.y <= h;
             let clips = clips_content(&node.kind, &node.data);
-            if node.kind != "INSTANCE" && (inside || !clips) {
-                if let Some(hit) = walk(doc, *id, tf, point) {
-                    return Some(hit);
-                }
+            if node.kind != "INSTANCE"
+                && (inside || !clips)
+                && let Some(hit) = walk(doc, *id, tf, point)
+            {
+                return Some(hit);
             }
             if inside && node.kind != "SECTION" {
                 return Some(*id);
@@ -294,19 +331,25 @@ impl Ctx<'_> {
                         dx: offset.and_then(|o| o.num("x")).unwrap_or(0.0),
                         dy: offset.and_then(|o| o.num("y")).unwrap_or(0.0),
                         std_deviation: radius / 2.0,
-                        color: paint::color(effect.get("color"), 1.0).unwrap_or(AlphaColor::new([0.0, 0.0, 0.0, 0.25])),
+                        color: paint::color(effect.get("color"), 1.0)
+                            .unwrap_or(AlphaColor::new([0.0, 0.0, 0.0, 0.25])),
                         edge_mode: EdgeMode::None,
                     }
                 }
                 // Progressive blur fades in across the layer; a uniform blur looks far worse
                 // than none, so it is skipped (and counted) until it is implemented.
-                Some("FOREGROUND_BLUR" | "LAYER_BLUR") if effect.text("blurOpType") == Some("PROGRESSIVE") => {
+                Some("FOREGROUND_BLUR" | "LAYER_BLUR")
+                    if effect.text("blurOpType") == Some("PROGRESSIVE") =>
+                {
                     self.stats.skipped_effects += 1;
                     continue;
                 }
                 Some("FOREGROUND_BLUR" | "LAYER_BLUR") if layers == 0 => {
                     self.stats.blurs += 1;
-                    FilterPrimitive::GaussianBlur { std_deviation: radius / 2.0, edge_mode: EdgeMode::None }
+                    FilterPrimitive::GaussianBlur {
+                        std_deviation: radius / 2.0,
+                        edge_mode: EdgeMode::None,
+                    }
                 }
                 _ => {
                     self.stats.skipped_effects += 1;
@@ -327,35 +370,52 @@ impl Ctx<'_> {
         // Fills.
         let mut fill_paths = geometry(data, "fillGeometry", &self.doc.blobs);
         if kind == "TEXT" {
-            fill_paths = self.text_paths(data, stale_glyphs).into_iter().map(GeomPath::plain).collect();
-        } else if fill_paths.is_empty() {
-            if let Some(shape) = base_shape(kind, data) {
-                fill_paths.push(GeomPath::plain(shape));
-            }
+            fill_paths = self
+                .text_paths(data, stale_glyphs)
+                .into_iter()
+                .map(GeomPath::plain)
+                .collect();
+        } else if fill_paths.is_empty()
+            && let Some(shape) = base_shape(kind, data)
+        {
+            fill_paths.push(GeomPath::plain(shape));
         }
         self.paint_paths(data, "fillPaints", &fill_paths, world, w, h);
 
         // Strokes: precomputed outline geometry, or stroke the base shape.
-        if data.get("strokePaints").is_some_and(|p| !p.items().is_empty()) {
+        if data
+            .get("strokePaints")
+            .is_some_and(|p| !p.items().is_empty())
+        {
             let outlines = geometry(data, "strokeGeometry", &self.doc.blobs);
             if !outlines.is_empty() {
                 self.paint_paths(data, "strokePaints", &outlines, world, w, h);
-            } else if let (Some(weight), Some(shape)) = (data.num("strokeWeight"), base_shape(kind, data)) {
-                if weight > 0.0 {
-                    let outline = vello_cpu::kurbo::stroke(
-                        shape.path_elements(0.1),
-                        &Stroke::new(f64::from(weight)),
-                        &Default::default(),
-                        0.1,
-                    );
-                    self.paint_paths(data, "strokePaints", &[GeomPath::plain(outline)], world, w, h);
-                }
+            } else if let (Some(weight), Some(shape)) =
+                (data.num("strokeWeight"), base_shape(kind, data))
+                && weight > 0.0
+            {
+                let outline = vello_cpu::kurbo::stroke(
+                    shape.path_elements(0.1),
+                    &Stroke::new(f64::from(weight)),
+                    &Default::default(),
+                    0.1,
+                );
+                self.paint_paths(
+                    data,
+                    "strokePaints",
+                    &[GeomPath::plain(outline)],
+                    world,
+                    w,
+                    h,
+                );
             }
         }
 
         // Children.
         if kind != "TEXT" {
-            let clip = clips_content(kind, data).then(|| base_shape(kind, data)).flatten();
+            let clip = clips_content(kind, data)
+                .then(|| base_shape(kind, data))
+                .flatten();
             if let Some(clip) = &clip {
                 self.rc.set_transform(world);
                 self.rc.push_clip_layer(clip);
@@ -386,11 +446,11 @@ impl Ctx<'_> {
         if text::characters(data).trim().is_empty() {
             return Vec::new();
         }
-        if let Some(paths) = self.fonts.as_mut().and_then(|f| f.layout(data)) {
-            if !paths.is_empty() {
-                self.stats.text_system_fonts += 1;
-                return paths;
-            }
+        if let Some(paths) = self.fonts.as_mut().and_then(|f| f.layout(data))
+            && !paths.is_empty()
+        {
+            self.stats.text_system_fonts += 1;
+            return paths;
         }
         self.stats.text_missing += 1;
         Vec::new()
@@ -398,19 +458,31 @@ impl Ctx<'_> {
 
     /// Paints `paths` with the node's `key` paints. Paths with a vector style id use the paints
     /// from `vectorData.styleOverrideTable` instead, when that entry overrides them.
-    fn paint_paths(&mut self, data: &Val, key: &str, paths: &[GeomPath], world: Affine, w: f64, h: f64) {
+    fn paint_paths(
+        &mut self,
+        data: &Val,
+        key: &str,
+        paths: &[GeomPath],
+        world: Affine,
+        w: f64,
+        h: f64,
+    ) {
         if paths.is_empty() {
             return;
         }
-        let styles = data.path(&["vectorData", "styleOverrideTable"]).map(Val::items).unwrap_or_default();
+        let styles = data
+            .path(&["vectorData", "styleOverrideTable"])
+            .map(Val::items)
+            .unwrap_or_default();
         static NONE: Val = Val::Arr(Vec::new());
         let paints_for = |style: u32| -> &Val {
-            if style != 0 {
-                if let Some(entry) = styles.iter().find(|e| e.get("styleID").and_then(Val::as_u32) == Some(style)) {
-                    if let Some(p) = entry.get(key) {
-                        return p;
-                    }
-                }
+            if style != 0
+                && let Some(entry) = styles
+                    .iter()
+                    .find(|e| e.get("styleID").and_then(Val::as_u32) == Some(style))
+                && let Some(p) = entry.get(key)
+            {
+                return p;
             }
             data.get(key).unwrap_or(&NONE)
         };
@@ -423,7 +495,9 @@ impl Ctx<'_> {
                 end += 1;
             }
             for p in paints.items() {
-                let Some(resolved) = paint::resolve(p, w, h, self.doc, self.images, &mut self.stats) else {
+                let Some(resolved) =
+                    paint::resolve(p, w, h, self.doc, self.images, &mut self.stats)
+                else {
                     continue;
                 };
                 self.rc.set_transform(world);
@@ -449,7 +523,9 @@ impl Ctx<'_> {
     fn draw_children(&mut self, node: &Node, _data: &Val, world: Affine, path: Option<&[Guid]>) {
         let mut mask_layers = 0;
         for id in self.doc.children(node.id) {
-            let Some(child) = self.doc.node(*id) else { continue };
+            let Some(child) = self.doc.node(*id) else {
+                continue;
+            };
             let child_path = path.map(|p| {
                 let mut v = p.to_vec();
                 v.push(child.override_key());
@@ -486,7 +562,10 @@ impl Ctx<'_> {
         let symbol_id = data
             .get("overriddenSymbolID")
             .and_then(Val::as_guid)
-            .or_else(|| data.path(&["symbolData", "symbolID"]).and_then(Val::as_guid));
+            .or_else(|| {
+                data.path(&["symbolData", "symbolID"])
+                    .and_then(Val::as_guid)
+            });
         let Some(symbol) = symbol_id.and_then(|id| self.doc.node(id)) else {
             self.stats.missing_symbols += 1;
             return;
@@ -515,7 +594,12 @@ impl Ctx<'_> {
                 }
                 let mut full = base.clone();
                 full.extend(guids);
-                self.patches.push(Patch { path: full, data: item.clone(), owner_depth, derived });
+                self.patches.push(Patch {
+                    path: full,
+                    data: item.clone(),
+                    owner_depth,
+                    derived,
+                });
             }
         }
         self.symbol_stack.push(symbol.id);

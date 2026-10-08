@@ -14,7 +14,10 @@ pub fn stored_glyphs(data: &Val, blobs: &[Vec<u8>]) -> Vec<BezPath> {
         let Some(index) = glyph.get("commandsBlob").and_then(Val::as_u32) else {
             continue;
         };
-        let Some(mut path) = blobs.get(index as usize).and_then(|b| crate::geom::blob_path(b)) else {
+        let Some(mut path) = blobs
+            .get(index as usize)
+            .and_then(|b| crate::geom::blob_path(b))
+        else {
             continue;
         };
         let size = f64::from(glyph.num("fontSize").unwrap_or(12.0));
@@ -29,7 +32,9 @@ pub fn stored_glyphs(data: &Val, blobs: &[Vec<u8>]) -> Vec<BezPath> {
 }
 
 pub fn characters(data: &Val) -> &str {
-    data.path(&["textData", "characters"]).and_then(Val::as_str).unwrap_or("")
+    data.path(&["textData", "characters"])
+        .and_then(Val::as_str)
+        .unwrap_or("")
 }
 
 #[cfg(feature = "system-fonts")]
@@ -70,10 +75,13 @@ mod system {
         "Noto Color Emoji",
     ];
 
+    /// Font file bytes and the face index inside it.
+    type FaceData = (Arc<Vec<u8>>, u32);
+
     #[derive(Default)]
     pub struct SystemFonts {
         db: Option<Database>,
-        faces: HashMap<ID, Option<(Arc<Vec<u8>>, u32)>>,
+        faces: HashMap<ID, Option<FaceData>>,
         fallbacks: Option<Vec<ID>>,
     }
 
@@ -87,7 +95,8 @@ mod system {
             self.0.line_to((f64::from(x), f64::from(y)));
         }
         fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
-            self.0.quad_to((f64::from(x1), f64::from(y1)), (f64::from(x), f64::from(y)));
+            self.0
+                .quad_to((f64::from(x1), f64::from(y1)), (f64::from(x), f64::from(y)));
         }
         fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
             self.0.curve_to(
@@ -146,14 +155,21 @@ mod system {
             if let Some(cached) = self.faces.get(&id) {
                 return cached.clone();
             }
-            let loaded = self.db().with_face_data(id, |data, index| (Arc::new(data.to_vec()), index));
+            let loaded = self
+                .db()
+                .with_face_data(id, |data, index| (Arc::new(data.to_vec()), index));
             self.faces.insert(id, loaded.clone());
             loaded
         }
 
         fn query(&mut self, family: &str, weight: Weight, style: Style) -> Option<ID> {
             let families = [Family::Name(family)];
-            self.db().query(&Query { families: &families, weight, stretch: Stretch::Normal, style })
+            self.db().query(&Query {
+                families: &families,
+                weight,
+                stretch: Stretch::Normal,
+                style,
+            })
         }
 
         fn fallbacks(&mut self) -> Vec<ID> {
@@ -168,7 +184,10 @@ mod system {
             }
             for generic in [Family::SansSerif, Family::Serif] {
                 let families = [generic];
-                if let Some(id) = self.db().query(&Query { families: &families, ..Query::default() }) {
+                if let Some(id) = self.db().query(&Query {
+                    families: &families,
+                    ..Query::default()
+                }) {
                     list.push(id);
                 }
             }
@@ -178,8 +197,12 @@ mod system {
 
         fn glyph_for(&mut self, faces: &[ID], ch: char) -> Option<(ID, u16, f64)> {
             for &id in faces {
-                let Some((data, index)) = self.face_data(id) else { continue };
-                let Ok(face) = Face::parse(&data, index) else { continue };
+                let Some((data, index)) = self.face_data(id) else {
+                    continue;
+                };
+                let Ok(face) = Face::parse(&data, index) else {
+                    continue;
+                };
                 if let Some(g) = face.glyph_index(ch) {
                     let upem = f64::from(face.units_per_em());
                     let adv = face.glyph_hor_advance(g).map_or(0.0, f64::from) / upem;
@@ -197,9 +220,19 @@ mod system {
                 return Some(Vec::new());
             }
             let font_size = f64::from(data.num("fontSize").unwrap_or(12.0)).max(1.0);
-            let family = data.path(&["fontName", "family"]).and_then(Val::as_str).unwrap_or("Inter");
-            let style_name = data.path(&["fontName", "style"]).and_then(Val::as_str).unwrap_or("Regular");
-            let style = if style_name.to_ascii_lowercase().contains("italic") { Style::Italic } else { Style::Normal };
+            let family = data
+                .path(&["fontName", "family"])
+                .and_then(Val::as_str)
+                .unwrap_or("Inter");
+            let style_name = data
+                .path(&["fontName", "style"])
+                .and_then(Val::as_str)
+                .unwrap_or("Regular");
+            let style = if style_name.to_ascii_lowercase().contains("italic") {
+                Style::Italic
+            } else {
+                Style::Normal
+            };
             let mut faces = Vec::new();
             if let Some(id) = self.query(family, weight_of(style_name), style) {
                 faces.push(id);
@@ -212,16 +245,26 @@ mod system {
                 let upem = f64::from(face.units_per_em());
                 let asc = f64::from(face.ascender()) / upem * font_size;
                 let desc = -f64::from(face.descender()) / upem * font_size;
-                (asc, desc, asc + desc + f64::from(face.line_gap()) / upem * font_size)
+                (
+                    asc,
+                    desc,
+                    asc + desc + f64::from(face.line_gap()) / upem * font_size,
+                )
             };
 
-            let line_height = match (data.path(&["lineHeight", "units"]).and_then(Val::as_str), data.path(&["lineHeight", "value"]).and_then(Val::as_f32)) {
+            let line_height = match (
+                data.path(&["lineHeight", "units"]).and_then(Val::as_str),
+                data.path(&["lineHeight", "value"]).and_then(Val::as_f32),
+            ) {
                 (Some("PIXELS"), Some(v)) if v > 0.0 => f64::from(v),
                 (Some("PERCENT"), Some(v)) if v > 0.0 => f64::from(v) / 100.0 * font_size,
                 (Some("RAW"), Some(v)) if v > 0.0 => f64::from(v) * font_size,
                 _ => natural,
             };
-            let spacing = match (data.path(&["letterSpacing", "units"]).and_then(Val::as_str), data.path(&["letterSpacing", "value"]).and_then(Val::as_f32)) {
+            let spacing = match (
+                data.path(&["letterSpacing", "units"]).and_then(Val::as_str),
+                data.path(&["letterSpacing", "value"]).and_then(Val::as_f32),
+            ) {
                 (Some("PERCENT"), Some(v)) => f64::from(v) / 100.0 * font_size,
                 (_, Some(v)) => f64::from(v),
                 _ => 0.0,
@@ -240,18 +283,27 @@ mod system {
                     last_break = None;
                     continue;
                 }
-                let Some((face, glyph, adv)) = self.glyph_for(&faces, ch) else { continue };
+                let Some((face, glyph, adv)) = self.glyph_for(&faces, ch) else {
+                    continue;
+                };
                 let advance = adv * font_size + spacing;
                 let line = lines.last_mut().unwrap();
                 if wrap && x + advance > w + 0.5 && !line.is_empty() && !ch.is_whitespace() {
                     let cjk = ch > '\u{2e7f}';
-                    let split = if cjk { line.len() } else { last_break.map_or(line.len(), |b| b + 1) };
+                    let split = if cjk {
+                        line.len()
+                    } else {
+                        last_break.map_or(line.len(), |b| b + 1)
+                    };
                     let carried: Vec<Placed> = line.drain(split..).collect();
                     let shift = carried.first().map_or(0.0, |p| p.x);
-                    let mut next: Vec<Placed> = carried.into_iter().map(|mut p| {
-                        p.x -= shift;
-                        p
-                    }).collect();
+                    let mut next: Vec<Placed> = carried
+                        .into_iter()
+                        .map(|mut p| {
+                            p.x -= shift;
+                            p
+                        })
+                        .collect();
                     x = next.last().map_or(0.0, |p| p.x + p.advance);
                     next.retain(|p| !(p.x == 0.0 && p.ch == ' '));
                     lines.push(next);
@@ -261,7 +313,13 @@ mod system {
                 if ch.is_whitespace() {
                     last_break = Some(line.len());
                 }
-                line.push(Placed { face, glyph, x, advance, ch });
+                line.push(Placed {
+                    face,
+                    glyph,
+                    x,
+                    advance,
+                    ch,
+                });
                 x += advance;
             }
 
@@ -284,17 +342,30 @@ mod system {
                     "RIGHT" => w - width,
                     _ => 0.0,
                 };
-                let baseline = top + row as f64 * line_height + (line_height - (ascent + descent)) / 2.0 + ascent;
+                let baseline = top
+                    + row as f64 * line_height
+                    + (line_height - (ascent + descent)) / 2.0
+                    + ascent;
                 for placed in line {
-                    let Some((bytes, index)) = self.face_data(placed.face) else { continue };
-                    let Ok(face) = Face::parse(&bytes, index) else { continue };
+                    let Some((bytes, index)) = self.face_data(placed.face) else {
+                        continue;
+                    };
+                    let Ok(face) = Face::parse(&bytes, index) else {
+                        continue;
+                    };
                     let scale = font_size / f64::from(face.units_per_em());
                     let mut builder = Builder(BezPath::new());
-                    if face.outline_glyph(ttf_parser::GlyphId(placed.glyph), &mut builder).is_none() {
+                    if face
+                        .outline_glyph(ttf_parser::GlyphId(placed.glyph), &mut builder)
+                        .is_none()
+                    {
                         continue;
                     }
                     let mut path = builder.0;
-                    path.apply_affine(Affine::translate((dx + placed.x, baseline)) * Affine::scale_non_uniform(scale, -scale));
+                    path.apply_affine(
+                        Affine::translate((dx + placed.x, baseline))
+                            * Affine::scale_non_uniform(scale, -scale),
+                    );
                     out.push(path);
                 }
             }

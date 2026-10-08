@@ -7,8 +7,8 @@ use figstudio_fig::{Document, Val, hex};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::kurbo::{Affine, Point, Rect};
 use vello_cpu::peniko::{
-    ColorStop, ColorStops, Extend, Gradient, ImageAlphaType, ImageQuality, ImageSampler, LinearGradientPosition,
-    RadialGradientPosition, SweepGradientPosition,
+    ColorStop, ColorStops, Extend, Gradient, ImageAlphaType, ImageQuality, ImageSampler,
+    LinearGradientPosition, RadialGradientPosition, SweepGradientPosition,
 };
 use vello_cpu::{Image, ImageSource, PaintType, PixelMetadata, Pixmap};
 
@@ -27,7 +27,10 @@ impl ImageCache {
         if let Some(cached) = self.decoded.get(hash) {
             return cached.clone();
         }
-        let decoded = doc.images.get(hash).and_then(|bytes| decode_image(bytes));
+        // Keys are content hashes, so entries are shared between documents. A document that
+        // lacks the bytes must not poison the cache for one that has them.
+        let bytes = doc.images.get(hash)?;
+        let decoded = decode_image(bytes);
         self.decoded.insert(hash.to_string(), decoded.clone());
         decoded
     }
@@ -39,18 +42,29 @@ fn decode_image(bytes: &[u8]) -> Option<Arc<Pixmap>> {
         img = img.thumbnail(MAX_IMAGE_SIDE, MAX_IMAGE_SIDE);
     }
     let rgba = img.to_rgba8();
-    let (w, h) = (u16::try_from(rgba.width()).ok()?, u16::try_from(rgba.height()).ok()?);
+    let (w, h) = (
+        u16::try_from(rgba.width()).ok()?,
+        u16::try_from(rgba.height()).ok()?,
+    );
     if w == 0 || h == 0 {
         return None;
     }
-    let meta = PixelMetadata { may_have_transparency: true, alpha_type: ImageAlphaType::Alpha };
+    let meta = PixelMetadata {
+        may_have_transparency: true,
+        alpha_type: ImageAlphaType::Alpha,
+    };
     Some(Arc::new(Pixmap::from_parts(rgba.into_raw(), w, h, meta)))
 }
 
 pub fn color(value: Option<&Val>, opacity: f32) -> Option<AlphaColor<Srgb>> {
     let c = value?;
     let ch = |k: &str, d: f32| c.num(k).unwrap_or(d).clamp(0.0, 1.0);
-    Some(AlphaColor::new([ch("r", 0.0), ch("g", 0.0), ch("b", 0.0), ch("a", 1.0) * opacity.clamp(0.0, 1.0)]))
+    Some(AlphaColor::new([
+        ch("r", 0.0),
+        ch("g", 0.0),
+        ch("b", 0.0),
+        ch("a", 1.0) * opacity.clamp(0.0, 1.0),
+    ]))
 }
 
 /// A paint ready for the render context, plus the transform that positions it in node space.
@@ -90,14 +104,23 @@ pub fn resolve(
         "GRADIENT_LINEAR" | "GRADIENT_RADIAL" | "GRADIENT_ANGULAR" | "GRADIENT_DIAMOND" => {
             let mut stops = ColorStops::default();
             for stop in p.get("stops").map(Val::items).unwrap_or_default() {
-                let Some(c) = color(stop.get("color"), opacity) else { continue };
-                stops.push(ColorStop::from((stop.num("position").unwrap_or(0.0).clamp(0.0, 1.0), c)));
+                let Some(c) = color(stop.get("color"), opacity) else {
+                    continue;
+                };
+                stops.push(ColorStop::from((
+                    stop.num("position").unwrap_or(0.0).clamp(0.0, 1.0),
+                    c,
+                )));
             }
             if stops.is_empty() {
                 return None;
             }
             let kind = match kind {
-                "GRADIENT_LINEAR" => LinearGradientPosition { start: Point::new(0.0, 0.5), end: Point::new(1.0, 0.5) }.into(),
+                "GRADIENT_LINEAR" => LinearGradientPosition {
+                    start: Point::new(0.0, 0.5),
+                    end: Point::new(1.0, 0.5),
+                }
+                .into(),
                 "GRADIENT_ANGULAR" => SweepGradientPosition {
                     center: Point::new(0.5, 0.5),
                     start_angle: 0.0,
@@ -117,8 +140,17 @@ pub fn resolve(
                     .into()
                 }
             };
-            let gradient = Gradient { kind, stops, extend: Extend::Pad, ..Default::default() };
-            Some(ResolvedPaint { paint: PaintType::Gradient(gradient), transform: unit_to_node * paint_inverse, clip: None })
+            let gradient = Gradient {
+                kind,
+                stops,
+                extend: Extend::Pad,
+                ..Default::default()
+            };
+            Some(ResolvedPaint {
+                paint: PaintType::Gradient(gradient),
+                transform: unit_to_node * paint_inverse,
+                clip: None,
+            })
         }
         "IMAGE" => {
             let hash = p.path(&["image", "hash"]).and_then(Val::as_bytes).map(hex);
@@ -138,7 +170,11 @@ pub fn resolve(
             let mut clip = None;
             let transform = match mode {
                 "FILL" | "FIT" => {
-                    let s = if mode == "FILL" { (w / iw).max(h / ih) } else { (w / iw).min(h / ih) };
+                    let s = if mode == "FILL" {
+                        (w / iw).max(h / ih)
+                    } else {
+                        (w / iw).min(h / ih)
+                    };
                     let (x, y) = ((w - iw * s) / 2.0, (h - ih * s) / 2.0);
                     if mode == "FIT" {
                         clip = Some(Rect::new(x, y, x + iw * s, y + ih * s));
@@ -160,7 +196,11 @@ pub fn resolve(
                     alpha: opacity,
                 },
             };
-            Some(ResolvedPaint { paint: PaintType::Image(image), transform, clip })
+            Some(ResolvedPaint {
+                paint: PaintType::Image(image),
+                transform,
+                clip,
+            })
         }
         _ => {
             stats.unsupported_paints += 1;
