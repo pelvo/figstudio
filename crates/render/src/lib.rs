@@ -13,10 +13,9 @@ use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape, Stroke};
-use vello_cpu::peniko::Fill;
 use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
 
-use crate::geom::{affine, base_shape, clips_content, geometry, size, transformed_bounds};
+use crate::geom::{GeomPath, affine, base_shape, clips_content, geometry, size, transformed_bounds};
 use crate::paint::ImageCache;
 
 pub use vello_cpu::{color, kurbo};
@@ -299,6 +298,12 @@ impl Ctx<'_> {
                         edge_mode: EdgeMode::None,
                     }
                 }
+                // Progressive blur fades in across the layer; a uniform blur looks far worse
+                // than none, so it is skipped (and counted) until it is implemented.
+                Some("FOREGROUND_BLUR" | "LAYER_BLUR") if effect.text("blurOpType") == Some("PROGRESSIVE") => {
+                    self.stats.skipped_effects += 1;
+                    continue;
+                }
                 Some("FOREGROUND_BLUR" | "LAYER_BLUR") if layers == 0 => {
                     self.stats.blurs += 1;
                     FilterPrimitive::GaussianBlur { std_deviation: radius / 2.0, edge_mode: EdgeMode::None }
@@ -322,10 +327,10 @@ impl Ctx<'_> {
         // Fills.
         let mut fill_paths = geometry(data, "fillGeometry", &self.doc.blobs);
         if kind == "TEXT" {
-            fill_paths = self.text_paths(data, stale_glyphs).into_iter().map(|p| (p, Fill::NonZero)).collect();
+            fill_paths = self.text_paths(data, stale_glyphs).into_iter().map(GeomPath::plain).collect();
         } else if fill_paths.is_empty() {
             if let Some(shape) = base_shape(kind, data) {
-                fill_paths.push((shape, Fill::NonZero));
+                fill_paths.push(GeomPath::plain(shape));
             }
         }
         self.paint_paths(data, "fillPaints", &fill_paths, world, w, h);
@@ -343,7 +348,7 @@ impl Ctx<'_> {
                         &Default::default(),
                         0.1,
                     );
-                    self.paint_paths(data, "strokePaints", &[(outline, Fill::NonZero)], world, w, h);
+                    self.paint_paths(data, "strokePaints", &[GeomPath::plain(outline)], world, w, h);
                 }
             }
         }
@@ -391,28 +396,52 @@ impl Ctx<'_> {
         Vec::new()
     }
 
-    fn paint_paths(&mut self, data: &Val, key: &str, paths: &[(BezPath, Fill)], world: Affine, w: f64, h: f64) {
+    /// Paints `paths` with the node's `key` paints. Paths with a vector style id use the paints
+    /// from `vectorData.styleOverrideTable` instead, when that entry overrides them.
+    fn paint_paths(&mut self, data: &Val, key: &str, paths: &[GeomPath], world: Affine, w: f64, h: f64) {
         if paths.is_empty() {
             return;
         }
-        for p in data.get(key).map(Val::items).unwrap_or_default() {
-            let Some(resolved) = paint::resolve(p, w, h, self.doc, self.images, &mut self.stats) else {
-                continue;
-            };
-            self.rc.set_transform(world);
-            if let Some(clip) = resolved.clip {
-                self.rc.push_clip_layer(&clip.to_path(0.1));
+        let styles = data.path(&["vectorData", "styleOverrideTable"]).map(Val::items).unwrap_or_default();
+        static NONE: Val = Val::Arr(Vec::new());
+        let paints_for = |style: u32| -> &Val {
+            if style != 0 {
+                if let Some(entry) = styles.iter().find(|e| e.get("styleID").and_then(Val::as_u32) == Some(style)) {
+                    if let Some(p) = entry.get(key) {
+                        return p;
+                    }
+                }
             }
-            self.rc.set_paint(resolved.paint);
-            self.rc.set_paint_transform(resolved.transform);
-            for (path, rule) in paths {
-                self.rc.set_fill_rule(*rule);
-                self.rc.fill_path(path);
+            data.get(key).unwrap_or(&NONE)
+        };
+        // Group consecutive paths that share a paint list, keeping draw order.
+        let mut start = 0;
+        while start < paths.len() {
+            let paints = paints_for(paths[start].style);
+            let mut end = start + 1;
+            while end < paths.len() && std::ptr::eq(paints_for(paths[end].style), paints) {
+                end += 1;
             }
-            self.rc.set_paint_transform(Affine::IDENTITY);
-            if resolved.clip.is_some() {
-                self.rc.pop_layer();
+            for p in paints.items() {
+                let Some(resolved) = paint::resolve(p, w, h, self.doc, self.images, &mut self.stats) else {
+                    continue;
+                };
+                self.rc.set_transform(world);
+                if let Some(clip) = resolved.clip {
+                    self.rc.push_clip_layer(&clip.to_path(0.1));
+                }
+                self.rc.set_paint(resolved.paint);
+                self.rc.set_paint_transform(resolved.transform);
+                for g in &paths[start..end] {
+                    self.rc.set_fill_rule(g.rule);
+                    self.rc.fill_path(&g.path);
+                }
+                self.rc.set_paint_transform(Affine::IDENTITY);
+                if resolved.clip.is_some() {
+                    self.rc.pop_layer();
+                }
             }
+            start = end;
         }
     }
 
@@ -431,11 +460,11 @@ impl Ctx<'_> {
                 let tf = world * affine(child_data.get("transform"));
                 let mut shapes = geometry(&child_data, "fillGeometry", &self.doc.blobs);
                 if shapes.is_empty() {
-                    shapes.extend(base_shape(&child.kind, &child_data).map(|s| (s, Fill::NonZero)));
+                    shapes.extend(base_shape(&child.kind, &child_data).map(GeomPath::plain));
                 }
                 let mut combined = BezPath::new();
-                for (shape, _) in shapes {
-                    combined.extend(shape);
+                for g in shapes {
+                    combined.extend(g.path);
                 }
                 if !combined.elements().is_empty() {
                     self.stats.masks += 1;

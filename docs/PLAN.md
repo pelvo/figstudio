@@ -60,10 +60,18 @@ Rules:
 - [x] instances: expand symbol, apply `symbolOverrides` + `derivedSymbolData`, cycle guard
 - [x] text: stored glyph outlines; system-font layout fallback (wrap, align, line height)
 - [x] drop shadow and layer blur via Vello filters; other effects counted as skipped
-- [ ] **visual check against Figma thumbnails** for all 7 fixtures, fix what is wrong
-- [ ] render tests: pixel probes for clip, instance override, image fill, text, mask
+- [x] **visual check against Figma thumbnails** for all 7 fixtures, fix what is wrong
+      (fixed: path blobs that continue after a close; vector `styleOverrideTable` colours)
+- [x] render tests: every fixture draws, vector style colours, stored-glyph text, instances,
+      clipping, hit test, hidden layers, malformed blobs (8 tests)
+- [ ] progressive blur (Figma `blurOpType: PROGRESSIVE`) — skipped and counted for now
+- [ ] noise / grain / texture effects — skipped and counted
 - [ ] blend modes, inner shadow, background blur (currently skipped)
 - [ ] gradient transforms verified on a file with rotated gradients
+
+Known differences that are **not** bugs: Figma thumbnails show the canvas background
+(black in these fixtures) while we use the page colour; `broken_images.fig` really has
+7-byte placeholder images, so grey placeholders are correct.
 
 **Done when:** every fixture renders without obvious differences from its thumbnail
 (side-by-side sheet reviewed), and `cargo test -p figstudio-render` passes.
@@ -162,3 +170,7 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   `figstudio` (working name). Mac tested by hand by requester. Large private file cannot be
   shared → added P1b (round-trip writer, synthetic stress file, privacy-safe `doctor`) and P6.
   `kiwi-schema` has `Value::encode_bb`, so writing `.fig` back is possible.
+- 2026-10-08 22:3x — P1 visual check. Side-by-side sheet of 7 fixtures vs thumbnails.
+  Fixed path blobs that draw after a close (text in noise_and_grain was invisible) and vector
+  per-path colours from `styleOverrideTable`. Progressive blur skipped instead of a wrong
+  uniform blur. 8 render tests + 5 decode tests pass. Remaining P1 items are effect gaps.

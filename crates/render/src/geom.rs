@@ -33,14 +33,29 @@ pub fn blob_path(bytes: &[u8]) -> Option<BezPath> {
         let raw: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
         Some(f64::from(f32::from_le_bytes(raw)))
     };
+    // Figma continues drawing after a close without a new move; kurbo needs an explicit
+    // move back to the subpath start, and a segment never starts without a current point.
+    let mut start = Point::ZERO;
+    let mut need_move = true;
     let mut i = 0;
     while i < bytes.len() {
         let cmd = bytes[i];
         i += 1;
+        if matches!(cmd, 2..=4) && need_move {
+            path.move_to(start);
+            need_move = false;
+        }
         match cmd {
-            0 => path.close_path(),
+            0 => {
+                if !need_move {
+                    path.close_path();
+                }
+                need_move = true;
+            }
             1 => {
-                path.move_to((read(i)?, read(i + 4)?));
+                start = Point::new(read(i)?, read(i + 4)?);
+                path.move_to(start);
+                need_move = false;
                 i += 8;
             }
             2 => {
@@ -65,8 +80,21 @@ pub fn blob_path(bytes: &[u8]) -> Option<BezPath> {
     Some(path)
 }
 
+/// One precomputed path. `style` points into `vectorData.styleOverrideTable` (0 = node paints).
+pub struct GeomPath {
+    pub path: BezPath,
+    pub rule: Fill,
+    pub style: u32,
+}
+
+impl GeomPath {
+    pub fn plain(path: BezPath) -> Self {
+        GeomPath { path, rule: Fill::NonZero, style: 0 }
+    }
+}
+
 /// Precomputed geometry (`fillGeometry`, `strokeGeometry`) referencing message blobs.
-pub fn geometry(data: &Val, key: &str, blobs: &[Vec<u8>]) -> Vec<(BezPath, Fill)> {
+pub fn geometry(data: &Val, key: &str, blobs: &[Vec<u8>]) -> Vec<GeomPath> {
     let mut out = Vec::new();
     let Some(list) = data.get(key) else {
         return out;
@@ -76,8 +104,9 @@ pub fn geometry(data: &Val, key: &str, blobs: &[Vec<u8>]) -> Vec<(BezPath, Fill)
             continue;
         };
         let rule = if item.text("windingRule") == Some("ODD") { Fill::EvenOdd } else { Fill::NonZero };
+        let style = item.get("styleID").and_then(Val::as_u32).unwrap_or(0);
         if let Some(path) = blobs.get(index as usize).and_then(|b| blob_path(b)) {
-            out.push((path, rule));
+            out.push(GeomPath { path, rule, style });
         }
     }
     out
