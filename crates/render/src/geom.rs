@@ -1,0 +1,139 @@
+//! Geometry: transforms, sizes, blob paths and fallback shapes.
+
+use figview_fig::Val;
+use vello_cpu::kurbo::{Affine, BezPath, Ellipse, Point, Rect, RoundedRect, RoundedRectRadii, Shape};
+use vello_cpu::peniko::Fill;
+
+/// Figma's 2x3 matrix (`m00 m01 m02 / m10 m11 m12`) as a kurbo affine.
+pub fn affine(value: Option<&Val>) -> Affine {
+    let Some(t) = value else {
+        return Affine::IDENTITY;
+    };
+    let m = |k: &str, default: f64| t.num(k).map_or(default, f64::from);
+    Affine::new([
+        m("m00", 1.0),
+        m("m10", 0.0),
+        m("m01", 0.0),
+        m("m11", 1.0),
+        m("m02", 0.0),
+        m("m12", 0.0),
+    ])
+}
+
+pub fn size(data: &Val) -> (f64, f64) {
+    let s = data.get("size");
+    let get = |k: &str| s.and_then(|s| s.num(k)).map_or(0.0, |v| f64::from(v).max(0.0));
+    (get("x"), get("y"))
+}
+
+/// Decodes a Figma path blob: `0` close, `1` move, `2` line, `3` quad, `4` cubic, little-endian f32s.
+pub fn blob_path(bytes: &[u8]) -> Option<BezPath> {
+    let mut path = BezPath::new();
+    let read = |at: usize| -> Option<f64> {
+        let raw: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
+        Some(f64::from(f32::from_le_bytes(raw)))
+    };
+    let mut i = 0;
+    while i < bytes.len() {
+        let cmd = bytes[i];
+        i += 1;
+        match cmd {
+            0 => path.close_path(),
+            1 => {
+                path.move_to((read(i)?, read(i + 4)?));
+                i += 8;
+            }
+            2 => {
+                path.line_to((read(i)?, read(i + 4)?));
+                i += 8;
+            }
+            3 => {
+                path.quad_to((read(i)?, read(i + 4)?), (read(i + 8)?, read(i + 12)?));
+                i += 16;
+            }
+            4 => {
+                path.curve_to(
+                    (read(i)?, read(i + 4)?),
+                    (read(i + 8)?, read(i + 12)?),
+                    (read(i + 16)?, read(i + 20)?),
+                );
+                i += 24;
+            }
+            _ => return None,
+        }
+    }
+    Some(path)
+}
+
+/// Precomputed geometry (`fillGeometry`, `strokeGeometry`) referencing message blobs.
+pub fn geometry(data: &Val, key: &str, blobs: &[Vec<u8>]) -> Vec<(BezPath, Fill)> {
+    let mut out = Vec::new();
+    let Some(list) = data.get(key) else {
+        return out;
+    };
+    for item in list.items() {
+        let Some(index) = item.get("commandsBlob").and_then(Val::as_u32) else {
+            continue;
+        };
+        let rule = if item.text("windingRule") == Some("ODD") { Fill::EvenOdd } else { Fill::NonZero };
+        if let Some(path) = blobs.get(index as usize).and_then(|b| blob_path(b)) {
+            out.push((path, rule));
+        }
+    }
+    out
+}
+
+pub fn corner_radii(data: &Val, w: f64, h: f64) -> RoundedRectRadii {
+    let limit = (w.min(h) / 2.0).max(0.0);
+    let clamp = |v: Option<f32>| v.map_or(0.0, |v| f64::from(v).clamp(0.0, limit));
+    if data.flag("rectangleCornerRadiiIndependent") == Some(true) {
+        RoundedRectRadii::new(
+            clamp(data.num("rectangleTopLeftCornerRadius")),
+            clamp(data.num("rectangleTopRightCornerRadius")),
+            clamp(data.num("rectangleBottomRightCornerRadius")),
+            clamp(data.num("rectangleBottomLeftCornerRadius")),
+        )
+    } else {
+        RoundedRectRadii::from_single_radius(clamp(data.num("cornerRadius")))
+    }
+}
+
+/// Node types laid out as boxes that can hold children.
+pub fn is_container(kind: &str) -> bool {
+    matches!(kind, "FRAME" | "SYMBOL" | "INSTANCE" | "SECTION" | "COMPONENT_SET")
+}
+
+/// Shape used when a node has no precomputed fill geometry, and as the clip path of frames.
+pub fn base_shape(kind: &str, data: &Val) -> Option<BezPath> {
+    let (w, h) = size(data);
+    if w <= 0.0 && h <= 0.0 {
+        return None;
+    }
+    let rect = Rect::new(0.0, 0.0, w, h);
+    match kind {
+        "ELLIPSE" => Some(Ellipse::from_rect(rect).to_path(0.1)),
+        "TEXT" | "VECTOR" | "LINE" | "STAR" | "REGULAR_POLYGON" | "BOOLEAN_OPERATION" | "SLICE" => None,
+        _ => Some(RoundedRect::from_rect(rect, corner_radii(data, w, h)).to_path(0.1)),
+    }
+}
+
+/// Whether a frame-like node clips its children ("Clip content").
+pub fn clips_content(kind: &str, data: &Val) -> bool {
+    is_container(kind)
+        && kind != "SECTION"
+        && data.flag("resizeToFit") != Some(true)
+        && data.flag("frameMaskDisabled") != Some(true)
+}
+
+/// Axis-aligned bounds of `rect` after `transform`.
+pub fn transformed_bounds(transform: Affine, rect: Rect) -> Rect {
+    let corners = [
+        transform * Point::new(rect.x0, rect.y0),
+        transform * Point::new(rect.x1, rect.y0),
+        transform * Point::new(rect.x0, rect.y1),
+        transform * Point::new(rect.x1, rect.y1),
+    ];
+    let mut out = Rect::from_points(corners[0], corners[1]);
+    out = out.union_pt(corners[2]);
+    out.union_pt(corners[3])
+}

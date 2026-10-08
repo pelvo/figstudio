@@ -1,0 +1,17 @@
+[package]
+name = "figview-fig"
+description = "Decoder for Figma .fig local copies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+kiwi-schema = { workspace = true }
+flate2 = { workspace = true }
+ruzstd = { workspace = true }
+zip = { workspace = true }
+
+[lints]
+workspace = true
