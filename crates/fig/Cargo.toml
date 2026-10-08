@@ -1,5 +1,5 @@
 [package]
-name = "figview-fig"
+name = "figstudio-fig"
 description = "Decoder for Figma .fig local copies"
 version.workspace = true
 edition.workspace = true

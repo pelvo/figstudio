@@ -9,7 +9,7 @@ mod text;
 use std::borrow::Cow;
 use std::fmt;
 
-use figview_fig::{Document, Guid, Node, Val};
+use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape, Stroke};

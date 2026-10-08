@@ -113,23 +113,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f4beca3cb2444e3304ac30843cc091f44ed58932353cd492ce740067bfce6b12"
 
 [[package]]
-name = "figview"
+name = "figstudio"
 version = "0.1.0"
 dependencies = [
- "figview-fig",
- "figview-render",
+ "figstudio-fig",
+ "figstudio-render",
 ]
 
 [[package]]
-name = "figview-cli"
+name = "figstudio-cli"
 version = "0.1.0"
 dependencies = [
- "figview-fig",
- "figview-render",
+ "figstudio-fig",
+ "figstudio-render",
 ]
 
 [[package]]
-name = "figview-fig"
+name = "figstudio-fig"
 version = "0.1.0"
 dependencies = [
  "flate2",
@@ -139,10 +139,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "figview-render"
+name = "figstudio-render"
 version = "0.1.0"
 dependencies = [
- "figview-fig",
+ "figstudio-fig",
  "fontdb",
  "image",
  "ttf-parser",

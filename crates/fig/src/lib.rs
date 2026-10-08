@@ -1,4 +1,4 @@
-//! Read-only decoder for Figma `.fig` local copies.
+//! Decoder for Figma `.fig` local copies (encoding back to `.fig` is planned for editing).
 //!
 //! A `.fig` is either a zip archive (`canvas.fig`, `meta.json`, `thumbnail.png`,
 //! `images/<sha1>`) or the raw canvas. The canvas carries its own Kiwi schema, so

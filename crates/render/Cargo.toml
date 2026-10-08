@@ -1,5 +1,5 @@
 [package]
-name = "figview-render"
+name = "figstudio-render"
 description = "Renders decoded Figma .fig documents with Vello CPU"
 version.workspace = true
 edition.workspace = true
@@ -13,7 +13,7 @@ default = ["system-fonts"]
 system-fonts = ["dep:fontdb", "dep:ttf-parser"]
 
 [dependencies]
-figview-fig = { workspace = true }
+figstudio-fig = { workspace = true }
 vello_cpu = { workspace = true }
 image = { workspace = true }
 fontdb = { workspace = true, optional = true }

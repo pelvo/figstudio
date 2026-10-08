@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/*"]
-default-members = ["crates/*", "apps/figview", "apps/figview-cli"]
+default-members = ["crates/*", "apps/figstudio", "apps/figstudio-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,8 +10,8 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 
 [workspace.dependencies]
-figview-fig = { path = "crates/fig" }
-figview-render = { path = "crates/render" }
+figstudio-fig = { path = "crates/fig" }
+figstudio-render = { path = "crates/render" }
 kiwi-schema = "0.2.1"
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 ruzstd = "0.9"

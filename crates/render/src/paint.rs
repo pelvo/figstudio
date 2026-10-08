@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use figview_fig::{Document, Val, hex};
+use figstudio_fig::{Document, Val, hex};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::kurbo::{Affine, Point, Rect};
 use vello_cpu::peniko::{

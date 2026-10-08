@@ -1,6 +1,6 @@
 //! Text: stored glyph outlines first, installed fonts as a fallback.
 
-use figview_fig::Val;
+use figstudio_fig::Val;
 use vello_cpu::kurbo::{Affine, BezPath};
 
 /// Glyph outlines Figma stored with the text (`derivedTextData.glyphs`), in node space.
@@ -51,7 +51,7 @@ mod system {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use figview_fig::Val;
+    use figstudio_fig::Val;
     use fontdb::{Database, Family, ID, Query, Stretch, Style, Weight};
     use ttf_parser::{Face, OutlineBuilder};
     use vello_cpu::kurbo::{Affine, BezPath};

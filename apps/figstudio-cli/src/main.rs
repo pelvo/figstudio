@@ -1,20 +1,20 @@
-//! Headless figview: inspect `.fig` files and render pages or nodes to PNG.
+//! Headless figstudio: inspect `.fig` files and render pages or nodes to PNG.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use figview_fig::{Document, Guid};
-use figview_render::color::{AlphaColor, Srgb};
-use figview_render::{Renderer, page_background};
+use figstudio_fig::{Document, Guid};
+use figstudio_render::color::{AlphaColor, Srgb};
+use figstudio_render::{Renderer, page_background};
 
-const USAGE: &str = "figview-cli — read-only viewer for Figma .fig files
+const USAGE: &str = "figstudio-cli — headless tools for Figma .fig files
 
 USAGE:
-  figview-cli info <file.fig>
-  figview-cli tree <file.fig> [--page <n|name>] [--depth <n>]
-  figview-cli render <file.fig> [-o <out.png>] [--page <n|name>] [--node <id>]
+  figstudio-cli info <file.fig>
+  figstudio-cli tree <file.fig> [--page <n|name>] [--depth <n>]
+  figstudio-cli render <file.fig> [-o <out.png>] [--page <n|name>] [--node <id>]
                      [--scale <x>] [--background page|transparent|#rrggbb] [--no-system-fonts]
-  figview-cli thumbnail <file.fig> -o <out.png>
+  figstudio-cli thumbnail <file.fig> -o <out.png>
 
 Pages are numbered from 1. Node ids look like 12:34 (see `tree`).";
 
@@ -190,7 +190,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(msg) => {
-            eprintln!("figview-cli: {msg}\n\n{USAGE}");
+            eprintln!("figstudio-cli: {msg}\n\n{USAGE}");
             ExitCode::from(2)
         }
     }

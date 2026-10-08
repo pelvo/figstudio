@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use figview_fig::{Document, Guid};
+use figstudio_fig::{Document, Guid};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures").join(format!("{name}.fig"))

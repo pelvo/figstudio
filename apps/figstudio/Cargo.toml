@@ -1,15 +1,11 @@
 [package]
-name = "figview-cli"
+name = "figstudio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
 
-[[bin]]
-name = "figview-cli"
-path = "src/main.rs"
-
 [dependencies]
-figview-fig = { workspace = true }
-figview-render = { workspace = true }
+figstudio-fig = { workspace = true }
+figstudio-render = { workspace = true }

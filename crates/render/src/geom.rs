@@ -1,6 +1,6 @@
 //! Geometry: transforms, sizes, blob paths and fallback shapes.
 
-use figview_fig::Val;
+use figstudio_fig::Val;
 use vello_cpu::kurbo::{Affine, BezPath, Ellipse, Point, Rect, RoundedRect, RoundedRectRadii, Shape};
 use vello_cpu::peniko::Fill;
 
