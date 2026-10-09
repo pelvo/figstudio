@@ -214,6 +214,7 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh`; L3 synth IDs, render-worker unavailable state,
   wrapper/test cleanup, decoded-item and schema limits, and doctor prelude privacy passed the gate.
   Private-file smoke passed info/doctor/render/thumbnail/resave/reopen with the input unchanged.
+  Pony audit follow-up: all 15 non-false-positive findings fixed; see `target/ponyfix/report.md`.
 - 2026-10-09 — CLI validation: unknown commands now fail as usage errors before file access;
   black-box tests check usage/runtime errors and core command outputs. PNG outputs are decoded
   and dimension-checked; doctor missing-file usage and resave confirmation are asserted. CLI,
