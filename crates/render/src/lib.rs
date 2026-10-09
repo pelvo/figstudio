@@ -661,8 +661,9 @@ impl Ctx<'_> {
             if kind == "INSTANCE" {
                 self.draw_instance(data, world, path);
             } else {
-                let child_path = path.map(|p| p.to_vec());
-                self.draw_children(node, data, world, child_path.as_deref());
+                // Override paths contain instance ancestors, not ordinary frame/group ancestors.
+                let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
+                self.draw_children(node, data, world, child_path);
             }
             if clip.is_some() {
                 self.rc.pop_layer();

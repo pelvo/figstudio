@@ -245,3 +245,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   `gui-smoke.sh`; all three scripts run here. Found `figstudio-cli` had no `[lints]`, so the
   workspace lints never applied to it: added them, changed `unsafe_code` forbid → deny with
   one local allow for `getrusage`, checked that unsafe elsewhere fails the build.
+- 2026-10-09 — Correct instance override paths through ordinary frames/groups. Synthetic
+  nested-instance pixel regression fails without the fix; private visual comparison improves
+  state selection and chart layout. Full workspace gate recorded in the local render report.
