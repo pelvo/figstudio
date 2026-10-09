@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use figstudio_fig::{Document, Guid, Val};
 use figstudio_render::kurbo::{Affine, Point};
-use figstudio_render::{Renderer, Stats, Viewport, content_bounds, geom, hit_test, node_bounds};
+use figstudio_render::{
+    Renderer, Stats, Viewport, absolute_transform, content_bounds, geom, hit_test, node_bounds,
+};
 
 fn open(name: &str) -> Document {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -153,6 +155,65 @@ fn hit_test_finds_the_deepest_layer() {
     let hit = hit_test(&doc, doc.pages[0], b.center()).unwrap();
     assert_eq!(hit, text);
     assert_eq!(hit_test(&doc, doc.pages[0], Point::new(-1e6, -1e6)), None);
+}
+
+#[test]
+fn parent_queries_terminate_after_public_mutation_to_a_self_parent() {
+    let mut doc = open("structure");
+    let page = doc.pages[0];
+    let node = doc.children(page)[0];
+    let n = doc.nodes.iter_mut().find(|n| n.id == node).unwrap();
+    n.parent = Some(node);
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    let _frame = renderer.render(
+        &doc,
+        page,
+        &Viewport {
+            width: 4,
+            height: 4,
+            transform: Affine::IDENTITY,
+            background: None,
+        },
+    );
+    let _ = hit_test(&doc, page, Point::new(0.0, 0.0));
+    let tf = absolute_transform(&doc, node);
+    assert!(tf.as_coeffs().iter().all(|v| v.is_finite()));
+}
+
+#[test]
+fn a_twenty_thousand_level_tree_does_not_overflow_render_or_hit_test() {
+    let mut doc = open("structure");
+    let page = doc.pages[0];
+    let mut nodes = doc.nodes.clone();
+    let mut parent = page;
+    let template = nodes.iter().find(|n| n.kind == "FRAME").unwrap().clone();
+    for i in 0..20_000u32 {
+        let id = Guid(98, i + 1);
+        let mut data = template.data.clone();
+        data.set("guid", id.to_val());
+        let mut pi = figstudio_fig::Obj::new();
+        pi.insert("guid", parent.to_val());
+        pi.insert("position", Val::Str(format!("{i:06}")));
+        data.set("parentIndex", Val::Obj(pi));
+        nodes.push(figstudio_fig::Node::from_data(data).unwrap());
+        parent = id;
+    }
+    doc.set_nodes(nodes).unwrap();
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    let frame = renderer.render(
+        &doc,
+        page,
+        &Viewport {
+            width: 4,
+            height: 4,
+            transform: Affine::IDENTITY,
+            background: None,
+        },
+    );
+    assert!(frame.stats.depth_skipped > 0);
+    let _ = hit_test(&doc, page, Point::new(0.5, 0.5));
 }
 
 #[test]

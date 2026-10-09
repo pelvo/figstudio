@@ -132,8 +132,10 @@ as a `Patch` keyed by the full override path (instance path + `guidPath.guids`),
 the component's children with that path. A node's override key is `Node::override_key()`.
 Patches from outer instances are applied last so they win; derived data is applied after
 the overrides of the same instance. A text override without fresh derived glyphs marks the
-stored glyphs stale, and text falls back to installed fonts. `MAX_INSTANCE_DEPTH` and the
-symbol stack stop cycles.
+stored glyphs stale, and text falls back to installed fonts. `MAX_RENDER_WORK` (2,000,000)
+bounds fit preparation plus all drawing work; 12,418 units were measured for the large real page,
+leaving over 160x headroom. Ordinary depth and `MAX_INSTANCE_DEPTH` (24) independently prevent
+stack exhaustion and symbol cycles.
 
 **Culling.** Only nodes whose drawing stays inside their frame are tested: leaves, clipping
 frames and instances, boolean operations. Their frame is grown by `overhang()` (strokes ×4
@@ -228,6 +230,12 @@ drop from a file manager) must be listed as unverified in your report.
 - **Xvfb has no window manager**: focus the window before sending keys or modifier clicks.
 - **Culling tests** must compare against a render that is not culled the same way (see
   `docs/TESTING.md`, "Prove the test").
+- **`Document.nodes` is public, but `doc.index` is not rebuilt by assigning it.** New or
+  changed nodes are then invisible to `node()` and the renderer, with no error. Use
+  `set_nodes`, which validates parent links and rebuilds the index. `to_bytes` reads `nodes`
+  directly, so a test that only writes bytes can skip the index.
+- **`usize::MAX + 1` wraps to 0.** Limits in `read_limited` use saturating arithmetic. A limit
+  of `usize::MAX` once made `take()` read nothing, with no error.
 
 ## 5. Task board
 
@@ -248,6 +256,11 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T11 | CI running `scripts/check.sh` on Linux and macOS | `.github/workflows` | **Ask the owner first** (private-repo minutes). Green on both |
 | T12 | Figma accepts our files | — | A person with Figma opens a `resave` output and a lightly edited file; result recorded in `docs/PLAN.md` |
 | T13 | Editing (P6) | all | **Not started until the requester asks** |
+| T14 | Live GUI check of export, load dedup and the worker-lost toast (Linux `scripts/gui-smoke.sh`, macOS by hand) | `apps/figstudio/src` | Export runs without blocking; a second open of a loading file makes one tab; recorded in `docs/PLAN.md` |
+| T15 | Doctor on a file with a parent cycle or oversized input (report U1 from the audit) | `apps/figstudio-cli/src/doctor.rs` | Doctor reports the cycle as an error and exits 1, with a test |
+| T16 | Derive a shared render-work budget from real-file measurements and bound all traversal work | `crates/render/src/lib.rs` | Shared `MAX_RENDER_WORK` test bounds ordinary, mask, and instance work; page 4 completed without reported truncation. Attempt-count telemetry for the final real-file render remains pending. |
+| T17 | Make the synth command's `set_nodes` error path a test (`apps/figstudio-cli/src/synth.rs`) | `apps/figstudio-cli/` | A test covers a synth that would create a cycle |
+| T18 | Re-check the file-level RSS for a 54 MB input with the new per-item caps (measured sizes only so far) | `crates/fig` | Peak RSS recorded for the largest real file in `docs/PLAN.md` |
 
 Things an agent cannot verify alone (say so in the report): opening our files in Figma,
 running on a real Mac, real Wayland / HiDPI desktops, native file dialogs, private files.

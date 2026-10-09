@@ -17,22 +17,89 @@ use crate::Stats;
 /// Largest image dimension handed to the rasterizer; bigger images are downscaled once.
 const MAX_IMAGE_SIDE: u32 = 8192;
 
+/// Decoded pixels the cache may keep. Past this, the oldest entries are evicted first.
+pub const IMAGE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+pub const IMAGE_CACHE_MAX_ENTRIES: usize = 256;
+
+/// Decoded images by content hash. Bounded by bytes and entry count; `Arc` keeps an image alive
+/// for a caller that still holds it, even after eviction.
 #[derive(Default)]
 pub struct ImageCache {
-    decoded: HashMap<String, Option<Arc<Pixmap>>>,
+    decoded: HashMap<String, Entry>,
+    /// Insertion order, oldest first, used for eviction.
+    order: std::collections::VecDeque<String>,
+    bytes: usize,
+}
+
+struct Entry {
+    source: Vec<u8>,
+    pixmap: Option<Arc<Pixmap>>,
+    bytes: usize,
+}
+
+fn pixel_bytes(p: &Pixmap) -> usize {
+    usize::from(p.width()) * usize::from(p.height()) * 4
 }
 
 impl ImageCache {
     pub fn get(&mut self, doc: &Document, hash: &str) -> Option<Arc<Pixmap>> {
-        if let Some(cached) = self.decoded.get(hash) {
-            return cached.clone();
-        }
-        // Keys are content hashes, so entries are shared between documents. A document that
-        // lacks the bytes must not poison the cache for one that has them.
         let bytes = doc.images.get(hash)?;
-        let decoded = decode_image(bytes);
-        self.decoded.insert(hash.to_string(), decoded.clone());
-        decoded
+        if let Some(entry) = self.decoded.get(hash)
+            && entry.source == *bytes
+        {
+            return entry.pixmap.clone();
+        }
+        if self.decoded.contains_key(hash) {
+            self.remove(hash);
+        }
+        let pixmap = decode_image(bytes);
+        if let Some(image) = &pixmap {
+            let size = pixel_bytes(image);
+            self.insert(hash, bytes.clone(), image.clone(), size);
+        }
+        pixmap
+    }
+
+    fn remove(&mut self, hash: &str) {
+        self.order.retain(|key| key != hash);
+        if let Some(entry) = self.decoded.remove(hash) {
+            self.bytes = self.bytes.saturating_sub(entry.bytes);
+        }
+    }
+
+    fn insert(&mut self, hash: &str, source: Vec<u8>, pixmap: Arc<Pixmap>, size: usize) {
+        // Evict oldest entries until the new one fits. An entry larger than the whole budget is
+        // not kept, so it cannot push out everything else for nothing.
+        if size > IMAGE_CACHE_MAX_BYTES || self.bytes.checked_add(size).is_none() {
+            return;
+        }
+        while self.bytes + size > IMAGE_CACHE_MAX_BYTES
+            || self.decoded.len() >= IMAGE_CACHE_MAX_ENTRIES
+        {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.remove(&oldest);
+        }
+        self.bytes += size;
+        self.order.push_back(hash.to_string());
+        self.decoded.insert(
+            hash.to_string(),
+            Entry {
+                source,
+                pixmap: Some(pixmap),
+                bytes: size,
+            },
+        );
+    }
+
+    /// Bytes of decoded pixels this cache holds.
+    pub fn retained_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    pub fn retained_entries(&self) -> usize {
+        self.decoded.len()
     }
 }
 

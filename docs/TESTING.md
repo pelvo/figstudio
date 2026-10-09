@@ -17,7 +17,7 @@ It must end with `== all checks passed` before you commit. If clippy or rustfmt 
 `check.sh` runs tests in release mode; use `--release` yourself too so the build is shared.
 Run one test with `cargo test --release -p <crate> <name>`.
 
-## 2. What exists today (23 tests)
+## 2. What exists today (50 tests in the gate)
 
 | File | Test | Guards |
 |---|---|---|
@@ -41,6 +41,16 @@ Run one test with `cargo test --release -p <crate> <name>`.
 | | `hidden_layers_are_not_drawn` | `visible: false` |
 | `apps/figstudio-cli/src/doctor.rs` | `scrub_hides_hashes_only`, `numbers_get_separators` | helpers |
 | `apps/figstudio-cli/tests/doctor.rs` | `doctor_output_contains_no_document_content` | no names, text, fonts, hashes, paths in the report |
+| `crates/fig/tests/cycles.rs` | `a_parent_cycle_is_refused_on_load` | parent cycle is an error, not a stack overflow |
+| `crates/fig/tests/limits.rs` | `a_member_that_inflates_past_the_chunk_limit_is_refused` | decompression bomb refused |
+| `crates/fig/tests/save.rs` | `a_failed_rename_leaves_no_temp_file_behind` | failed save removes its temp file |
+| `crates/fig/tests/preserve.rs` | `a_present_but_empty_image_survives_a_save` | empty image kept on save |
+| `crates/fig/tests/integers.rs` | `a_uint_wider_than_32_bits_is_refused_not_wrapped` | out-of-range integer is an error |
+| `crates/render/tests/budget.rs` | `nested_instances_stop_at_the_work_budget_and_the_skip_is_counted`, `wide_symbols_and_masks_share_the_same_attempt_budget` | shared attempt budget includes ordinary and instance work; skipped work counted |
+| `crates/render/tests/image_cache.rs` | `the_cache_stays_under_its_byte_bound_across_many_documents`, `failed_decodes_are_not_retained_and_evicted_arc_remains_valid` | cache bounded by bytes and entries; failed decodes not retained; Arc survives eviction |
+| | `a_document_without_the_bytes_does_not_poison_the_cache_for_one_that_has_them` | missing image does not poison cache |
+| `apps/figstudio/src/worker.rs` (tests) | `worker_admits_only_one_export_and_releases_slot_on_completion`, `export_writes_a_png_of_the_page`, `export_reports_a_failed_write_instead_of_panicking` | admission bounded at worker boundary; PNG decodes with dimensions; completion and error |
+| `apps/figstudio/src/state.rs` (tests) | `a_disconnected_worker_is_not_an_empty_queue`, `a_dead_worker_is_reported_once_not_every_frame`, `opening_a_file_twice_starts_one_load_and_focuses_an_open_tab`, `a_second_open_of_a_pending_file_is_ignored_until_it_finishes`, `byte_backed_drop_uses_open_action_for_pending_and_loaded_tabs` | disconnect is not empty; report once; dedup, focus, retry for file and byte-backed opens |
 | | `word_matching` | the leak matcher itself |
 | | `doctor_errors_do_not_echo_the_path` | error output hides the path |
 

@@ -120,6 +120,6 @@ pub fn synth(mut doc: Document, copies: usize, pages: usize) -> Result<Document,
             }
         }
     }
-    doc.set_nodes(nodes);
+    doc.set_nodes(nodes).map_err(|e| e.to_string())?;
     Ok(doc)
 }

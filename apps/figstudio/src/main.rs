@@ -2,6 +2,7 @@
 
 mod canvas;
 mod panels;
+mod state;
 mod tab;
 mod theme;
 mod worker;
@@ -10,6 +11,7 @@ use std::path::PathBuf;
 
 use canvas::Tool;
 use egui::{Key, KeyboardShortcut, Modifiers, RichText, Sense, vec2};
+use state::{OpenAction, Pending, Poll, classify, open_action};
 use tab::Tab;
 use worker::{Loaded, Workers};
 
@@ -45,7 +47,9 @@ struct App {
     active: usize,
     next_id: u64,
     tool: Tool,
-    loading: Vec<PathBuf>,
+    loading: Pending,
+    /// A background worker is gone; reported once so the toast does not repeat every frame.
+    worker_lost: state::Once,
     toasts: Vec<Toast>,
     layer_filter: String,
     show_left: bool,
@@ -66,7 +70,8 @@ impl App {
             active: 0,
             next_id: 1,
             tool: Tool::Select,
-            loading: Vec::new(),
+            loading: Pending::default(),
+            worker_lost: state::Once::default(),
             toasts: Vec::new(),
             layer_filter: String::new(),
             show_left: true,
@@ -81,12 +86,15 @@ impl App {
     }
 
     fn open(&mut self, path: PathBuf) {
-        if let Some(i) = self.tabs.iter().position(|t| t.path == path) {
-            self.active = i;
-            return;
+        match open_action(
+            &self.tabs.iter().map(|t| &t.path).collect::<Vec<_>>(),
+            &mut self.loading,
+            &path,
+        ) {
+            OpenAction::Focus(i) => self.active = i,
+            OpenAction::Load => self.workers.load(path),
+            OpenAction::Ignore => {}
         }
-        self.loading.push(path.clone());
-        self.workers.load(path);
     }
 
     fn open_dialog(&mut self) {
@@ -97,6 +105,14 @@ impl App {
             for f in files {
                 self.open(f);
             }
+        }
+    }
+
+    /// Tells the user a background worker died. Once only: `poll` runs every frame and a dead
+    /// channel stays dead.
+    fn report_worker_lost(&mut self, ctx: &egui::Context) {
+        if self.worker_lost.first_time() {
+            self.toast(ctx, "A background worker stopped; reopen the file.", true);
         }
     }
 
@@ -147,31 +163,34 @@ impl App {
         else {
             return;
         };
+        // The render and PNG encode run off the UI thread on an immutable snapshot of the
+        // document. The result comes back through `poll`, which reports it once.
         let doc = tab.doc.clone();
-        let mut renderer = figstudio_render::Renderer::new();
-        let result = renderer
-            .render_fit(&doc, root, scale, 0.0, None)
-            .ok_or_else(|| "nothing to export".to_string())
-            .and_then(|frame| frame.pixmap.into_png().map_err(|e| e.to_string()))
-            .and_then(|png| std::fs::write(&path, png).map_err(|e| e.to_string()));
-        match result {
-            Ok(()) => self.toast(ctx, format!("Exported {}", path.display()), false),
-            Err(e) => self.toast(ctx, format!("Export failed: {e}"), true),
+        if let Err(e) = self.workers.export(doc, root, scale, path) {
+            self.toast(ctx, e, true);
         }
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
-        while let Ok(msg) = self.workers.load_rx.try_recv() {
+        loop {
+            let msg = match classify(self.workers.load_rx.try_recv()) {
+                Poll::Msg(msg) => msg,
+                Poll::Empty => break,
+                Poll::Disconnected => {
+                    self.report_worker_lost(ctx);
+                    break;
+                }
+            };
             match msg {
                 Loaded::Ok { path, doc, elapsed } => {
-                    self.loading.retain(|p| p != &path);
+                    self.loading.finish(&path);
                     let id = self.next_id;
                     self.next_id += 1;
                     self.tabs.push(Tab::new(id, path, doc, elapsed));
                     self.active = self.tabs.len() - 1;
                 }
                 Loaded::Err { path, message } => {
-                    self.loading.retain(|p| p != &path);
+                    self.loading.finish(&path);
                     self.toast(
                         ctx,
                         format!("Could not open {}: {message}", path.display()),
@@ -180,9 +199,24 @@ impl App {
                 }
             }
         }
-        while let Ok(done) = self.workers.render_rx.try_recv() {
-            if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == done.tab) {
-                canvas::accept(ctx, tab, done);
+        loop {
+            match classify(self.workers.render_rx.try_recv()) {
+                Poll::Msg(done) => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == done.tab) {
+                        canvas::accept(ctx, tab, done);
+                    }
+                }
+                Poll::Empty => break,
+                Poll::Disconnected => {
+                    self.report_worker_lost(ctx);
+                    break;
+                }
+            }
+        }
+        while let Ok(done) = self.workers.export_rx.try_recv() {
+            match done.result {
+                Ok(()) => self.toast(ctx, format!("Exported {}", done.path.display()), false),
+                Err(e) => self.toast(ctx, format!("Export failed: {e}"), true),
             }
         }
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
@@ -192,10 +226,15 @@ impl App {
                 self.open(path);
             } else {
                 match f.bytes() {
-                    Ok(bytes) => {
-                        self.loading.push(path.clone());
-                        self.workers.load_bytes(path, bytes);
-                    }
+                    Ok(bytes) => match open_action(
+                        &self.tabs.iter().map(|t| &t.path).collect::<Vec<_>>(),
+                        &mut self.loading,
+                        &path,
+                    ) {
+                        OpenAction::Load => self.workers.load_bytes(path, bytes),
+                        OpenAction::Focus(i) => self.active = i,
+                        OpenAction::Ignore => {}
+                    },
                     Err(e) => self.toast(ctx, format!("Could not read dropped file: {e}"), true),
                 }
             }
@@ -315,8 +354,7 @@ impl App {
                     });
                 });
                 if let Some((selection_only, scale)) = export {
-                    let ctx = ui.ctx().clone();
-                    self.export_png(&ctx, selection_only, scale);
+                    self.export_png(ui.ctx(), selection_only, scale);
                 }
                 ui.separator();
                 if ui
@@ -426,7 +464,7 @@ impl App {
                                 });
                             });
                     }
-                    for p in &self.loading {
+                    for p in self.loading.iter() {
                         let name = p
                             .file_name()
                             .map(|n| n.to_string_lossy().to_string())
