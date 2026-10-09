@@ -115,7 +115,7 @@ tiling would fix it); the Layers panel is not virtualised yet (fine at 9 000 row
 ### P2 — Headless CLI (`apps/figstudio-cli`)
 - [x] `info`, `tree --depth`, `render --page/--node/--scale/--background`, `thumbnail`
 - [x] renders all 7 fixtures (3–366 ms each, release build)
-- [ ] CLI tests (exit codes, bad arguments, output files) — task T1
+- [ ] CLI tests (partial: usage/runtime errors and core command output checks; T1 remains open)
 - [ ] `render --all-pages` and JSON output for `info`
 
 **Done when:** CLI tests pass and output is checked for every fixture.
@@ -191,6 +191,10 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-09 — CLI validation: unknown commands now fail as usage errors before file access;
+  black-box tests check usage/runtime errors and core command outputs. PNG outputs are decoded
+  and dimension-checked; doctor missing-file usage and resave confirmation are asserted. CLI,
+  doctor privacy and `scripts/check.sh` pass; T1 remains open.
 - 2026-10-08 21:5x — Rust spike: kiwi-schema decode + tiny-skia render of 7 fixtures.
 - 2026-10-08 22:0x — Requirements fixed (macOS + Linux + headless, wasm optional, Vello,
   PhotoCraft-style UI). Switched renderer to `vello_cpu`.

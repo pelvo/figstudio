@@ -235,7 +235,7 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 
 | # | Task | Where | Done when |
 |---|---|---|---|
-| T1 | CLI tests (exit codes, bad arguments, output files for every command) | `apps/figstudio-cli/tests/cli.rs` | Every command and error path covered; tests fail when a command is broken |
+| T1 | CLI tests (partial: usage/runtime errors and core outputs) | `apps/figstudio-cli/tests/cli.rs` | Still open: every command/error path and every fixture must be covered; tests fail when a command is broken |
 | T2 | README: what it is, build (Linux deps, macOS), run, CLI usage, known gaps | `README.md` | A new user can build and run from it on Linux and macOS |
 | T3 | `corners.fig`: two outline shapes are drawn below the rectangles but are not in the stored thumbnail. Find out whether they are hidden, off-page, or stale-thumbnail | `crates/render` | Explained in `docs/TESTING.md` known differences, or fixed with a test |
 | T4 | Virtualise the Layers panel (draw only visible rows) | `apps/figstudio/src/panels.rs` | 100k-node stress file: Layers expand-all stays under 16 ms per frame (`FIGSTUDIO_PROFILE=1`) |

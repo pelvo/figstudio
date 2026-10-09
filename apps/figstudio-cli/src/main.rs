@@ -42,6 +42,28 @@ struct Args {
     pages: usize,
 }
 
+fn command_error(command: &str, has_output: bool) -> Option<String> {
+    if ![
+        "info",
+        "tree",
+        "render",
+        "thumbnail",
+        "doctor",
+        "resave",
+        "synth",
+    ]
+    .contains(&command)
+    {
+        return Some(format!("unknown command {command}"));
+    }
+    match (command, has_output) {
+        ("thumbnail", false) => Some("thumbnail needs -o <out.png>".into()),
+        ("resave", false) => Some("resave needs -o <out.fig>".into()),
+        ("synth", false) => Some("synth needs -o <out.fig>".into()),
+        _ => None,
+    }
+}
+
 fn parse(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
     let command = raw.next().ok_or("missing command")?;
     if command == "-h" || command == "--help" || command == "help" {
@@ -101,6 +123,7 @@ fn parse(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
             extra => return Err(format!("unexpected argument {extra}")),
         }
     }
+    command_error(&args.command, args.out.is_some()).map_or(Ok(()), Err)?;
     args.file = file.ok_or("missing .fig file")?;
     Ok(args)
 }

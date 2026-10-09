@@ -674,6 +674,7 @@ dependencies = [
  "figstudio-fig",
  "figstudio-render",
  "fontdb",
+ "image",
  "libc",
 ]
 
