@@ -718,6 +718,29 @@ mod schema_tests {
     }
 
     #[test]
+    fn rejects_node_lists_over_the_decoded_item_limit_before_reserving() {
+        let schema = synthetic_schema(Vec::new(), false);
+        let mut msg = ByteBufferMut::new();
+        msg.write_var_uint(1);
+        msg.write_var_uint(1_000_001);
+        for _ in 0..1_000_001 {
+            msg.write_byte(0);
+        }
+        let schema_chunk = compressed(&schema.encode());
+        let message_chunk = compressed(&msg.data());
+        let mut file = b"fig-kiwi".to_vec();
+        file.extend_from_slice(&1u32.to_le_bytes());
+        for chunk in [schema_chunk, message_chunk] {
+            file.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+            file.extend_from_slice(&chunk);
+        }
+        assert!(matches!(
+            Document::from_bytes(&file),
+            Err(error) if error.to_string().contains("too many node records")
+        ));
+    }
+
+    #[test]
     fn validates_blob_shapes_and_roundtrips_uint64_through_the_codec() {
         let valid = synthetic_schema(
             vec![Field {

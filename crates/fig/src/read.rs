@@ -15,7 +15,7 @@ use crate::val::{Obj, Val, intern, intern_schema};
 
 /// Deepest nesting accepted; real documents stay far below this.
 const MAX_DEPTH: u32 = 256;
-const MAX_DECODED_ITEMS: usize = 20_000_000;
+const MAX_DECODED_ITEMS: usize = 100_000_000;
 const MAX_SCHEMA_IDENTIFIERS: usize = 100_000;
 const MAX_SCHEMA_IDENTIFIER_BYTES: usize = 1024;
 
@@ -92,8 +92,18 @@ impl<'s> Reader<'s> {
         }
         let len = self.len(bb)?;
         if field.type_id == TYPE_BYTE {
+            let total = self.decoded_items.get().saturating_add(len);
+            if total > MAX_DECODED_ITEMS {
+                return Err("the document contains too many decoded items".into());
+            }
+            self.decoded_items.set(total);
             return Ok(Val::Bytes(bad(bb.read_bytes(len))?.to_vec()));
         }
+        let total = self.decoded_items.get().saturating_add(len);
+        if total > MAX_DECODED_ITEMS {
+            return Err("the document contains too many decoded items".into());
+        }
+        self.decoded_items.set(total);
         let total = self.decoded_items.get().saturating_add(len);
         if total > MAX_DECODED_ITEMS {
             return Err("the document contains too many decoded items".into());
