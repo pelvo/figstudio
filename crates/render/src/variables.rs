@@ -21,6 +21,7 @@ impl Variables {
             if node.kind != "VARIABLE" {
                 continue;
             }
+            // shortcut: use the first stored mode; add inherited mode selection when needed.
             let Some(value) = node
                 .data
                 .path(&["variableDataValues", "entries"])
@@ -72,7 +73,6 @@ impl Variables {
             return (Cow::Borrowed(data), 0);
         }
         let mut data = data.clone();
-        // shortcut: use the first stored mode; add inherited mode selection when needed.
         // Resolve vector style paints too, because those replace the node's paints.
         let mut style_unresolved = 0;
         if let Some(Val::Arr(styles)) = data

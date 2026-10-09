@@ -252,3 +252,5 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   and omitted derived translations for scaled/resized instances. Synthetic pixel regressions
   proved red/green; visual comparison restores table values and improves radial leaders.
   Reference still differs in some component states and right-panel structure; not claimed exact.
+- 2026-10-09 — Strengthened stale-property-text regression with a stored old glyph so it proves
+  stale outlines are rejected rather than only proving an empty text node remains empty.

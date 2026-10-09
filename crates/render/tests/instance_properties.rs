@@ -141,8 +141,25 @@ fn property_text_uses_fresh_derived_glyphs_and_defaults_follow_parent_definition
     *nodes.iter_mut().find(|n| n.id == id(4)).unwrap() = top;
     doc.set_nodes(nodes).unwrap();
     assert_eq!(pixel(&pixels(&doc), 10, 10), &[0, 0, 255, 255]);
-    // Removing the derived glyphs must not draw the old text's stored outline.
+    // Removing fresh derived glyphs must not draw the component's old stored outline.
     let mut nodes = doc.nodes.clone();
+    let fresh = nodes
+        .iter()
+        .find(|n| n.id == id(4))
+        .unwrap()
+        .data
+        .get("derivedSymbolData")
+        .unwrap()
+        .items()[0]
+        .get("derivedTextData")
+        .unwrap()
+        .clone();
+    nodes
+        .iter_mut()
+        .find(|n| n.id == id(3))
+        .unwrap()
+        .data
+        .set("derivedTextData", fresh);
     nodes
         .iter_mut()
         .find(|n| n.id == id(4))
