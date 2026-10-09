@@ -159,11 +159,13 @@ pub fn run(file: &Path) -> Result<(), String> {
     );
 
     let t = Instant::now();
-    let bytes = std::fs::read(file).map_err(|e| format!("cannot read the file ({})", e.kind()))?;
+    let mut bytes = Vec::new();
+    figstudio_fig::read_limited_file(file, &mut bytes)
+        .map_err(|_| "cannot read the file (unavailable or too large)".to_string())?;
     let read_time = t.elapsed();
     let t = Instant::now();
     let doc = Document::from_bytes(&bytes)
-        .map_err(|e| format!("cannot open the file: {}", scrub(&e.to_string())))?;
+        .map_err(|_| "cannot open the file (invalid or unsupported .fig data)".to_string())?;
     let decode_time = t.elapsed();
     let opened_memory = peak_memory_mb();
     let container = if bytes.starts_with(b"PK") {
@@ -176,12 +178,7 @@ pub fn run(file: &Path) -> Result<(), String> {
 
     let _ = writeln!(w, "file");
     let _ = writeln!(w, "  size          {} bytes ({container})", num(file_len));
-    let _ = writeln!(
-        w,
-        "  format        {} v{}",
-        doc.prelude.trim(),
-        doc.format_version
-    );
+    let _ = writeln!(w, "  format        fig-kiwi v{}", doc.format_version);
     let _ = writeln!(
         w,
         "  thumbnail     {}",

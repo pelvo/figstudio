@@ -123,7 +123,8 @@ tree from `root` (a page or any node). For each node, `Ctx::draw`:
    `styleID` use paints from `vectorData.styleOverrideTable`.
 7. Strokes: `strokeGeometry` blobs; else stroke the base shape with `strokeWeight`.
 8. Children: clip layer if the frame clips; `draw_instance` for INSTANCE, else
-   `draw_children`, which turns `mask` children into clip layers for the siblings above them.
+   `draw_children`, which honors `stackReverseZIndex` and turns `mask` children into clip
+   layers for the siblings above them.
 9. Pop the layers.
 
 Paints are resolved in `paint::resolve()`. SOLID, linear / radial / angular gradients and
@@ -133,10 +134,20 @@ IMAGE (stretch / fill / fit / tile) are drawn; diamond gradients are approximate
 **Instances.** `draw_instance` pushes every `symbolOverrides` entry (and `derivedSymbolData`)
 as a `Patch` keyed by the full override path (instance path + `guidPath.guids`), then draws
 the component's children with that path. A node's override key is `Node::override_key()`.
+Override paths include only instance ancestors and the target key, not intervening ordinary
+frames/groups. Component boolean/text/instance-swap properties are resolved in the owning
+instance scope; parent property definitions supply defaults. Paint-variable aliases resolve
+by GUID or exact asset key/version; unresolved aliases use the stored colour and increment
+`approximated_paints`. First stored variable mode is used (inherited mode selection is open).
+Derived transforms are authoritative; when omitted, uniform instance scale updates translation
+and CENTER/MAX/SCALE constraints adjust it for resized containers without double-scaling stored
+geometry. Property/variable index preparation charges the shared render-work budget.
 Patches from outer instances are applied last so they win; derived data is applied after
 the overrides of the same instance. A text override without fresh derived glyphs marks the
-stored glyphs stale, and text falls back to installed fonts. `MAX_INSTANCE_DEPTH` and the
-symbol stack stop cycles.
+stored glyphs stale, and text falls back to installed fonts. `MAX_RENDER_WORK` (2,000,000)
+bounds fit preparation plus all drawing work; 12,418 units were measured for the large real page,
+leaving over 160x headroom. Ordinary depth and `MAX_INSTANCE_DEPTH` (24) independently prevent
+stack exhaustion and symbol cycles.
 
 **Culling.** Only nodes whose drawing stays inside their frame are tested: leaves, clipping
 frames and instances, boolean operations. Their frame is grown by `overhang()` (strokes ×4
@@ -298,6 +309,12 @@ drop from a file manager) must be listed as unverified in your report.
   JS: `__wbg_init(module_or_path, memory)` means threads are on.
 - **`cp -p` back a file you mutated keeps the old mtime**, and cargo then reuses the mutated
   build. `touch` the file after restoring it.
+- **`Document.nodes` is public, but `doc.index` is not rebuilt by assigning it.** New or
+  changed nodes are then invisible to `node()` and the renderer, with no error. Use
+  `set_nodes`, which validates parent links and rebuilds the index. `to_bytes` reads `nodes`
+  directly, so a test that only writes bytes can skip the index.
+- **`usize::MAX + 1` wraps to 0.** Limits in `read_limited` use saturating arithmetic. A limit
+  of `usize::MAX` once made `take()` read nothing, with no error.
 
 ## 5. Task board
 
@@ -305,7 +322,7 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 
 | # | Task | Where | Done when |
 |---|---|---|---|
-| T1 | CLI tests (exit codes, bad arguments, output files for every command) | `apps/figstudio-cli/tests/cli.rs` | Every command and error path covered; tests fail when a command is broken |
+| T1 | CLI tests (partial: usage/runtime errors and core outputs) | `apps/figstudio-cli/tests/cli.rs` | Still open: every command/error path and every fixture must be covered; tests fail when a command is broken |
 | T2 | README: what it is, build (Linux deps, macOS), run, CLI usage, known gaps | `README.md` | A new user can build and run from it on Linux and macOS |
 | T3 | `corners.fig`: two outline shapes are drawn below the rectangles but are not in the stored thumbnail. Find out whether they are hidden, off-page, or stale-thumbnail | `crates/render` | Explained in `docs/TESTING.md` known differences, or fixed with a test |
 | T4 | Virtualise the Layers panel (draw only visible rows) | `apps/figstudio/src/panels.rs` | 100k-node stress file: Layers expand-all stays under 16 ms per frame (`FIGSTUDIO_PROFILE=1`) |
@@ -320,6 +337,11 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T11 | CI running `scripts/check.sh` on Linux and macOS | `.github/workflows` | **Ask the owner first** (private-repo minutes). Green on both |
 | T12 | Figma accepts our files | — | A person with Figma opens a `resave` output and a lightly edited file; result recorded in `docs/PLAN.md` |
 | T13 | Editing (P6) | all | **Not started until the requester asks** |
+| T14 | Live GUI check of export, load dedup and the worker-lost toast (Linux `scripts/gui-smoke.sh`, macOS by hand) | `apps/figstudio/src` | Export runs without blocking; a second open of a loading file makes one tab; recorded in `docs/PLAN.md` |
+| T15 | Doctor on a file with a parent cycle or oversized input (report U1 from the audit) | `apps/figstudio-cli/src/doctor.rs` | Doctor reports the cycle as an error and exits 1, with a test |
+| T16 | Derive a shared render-work budget from real-file measurements and bound all traversal work | `crates/render/src/lib.rs` | Shared `MAX_RENDER_WORK` test bounds ordinary, mask, and instance work; page 4 completed without reported truncation. Attempt-count telemetry for the final real-file render remains pending. |
+| T17 | Make the synth command's `set_nodes` error path a test (`apps/figstudio-cli/src/synth.rs`) | `apps/figstudio-cli/` | A test covers a synth that would create a cycle |
+| T18 | Re-check the file-level RSS for a 54 MB input with the new per-item caps (measured sizes only so far) | `crates/fig` | Peak RSS recorded for the largest real file in `docs/PLAN.md` |
 
 Things an agent cannot verify alone (say so in the report): opening our files in Figma,
 running on a real Mac, real Wayland / HiDPI desktops, native file dialogs, private files.

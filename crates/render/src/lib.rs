@@ -4,9 +4,12 @@
 
 pub mod geom;
 pub mod images;
+mod instance;
+mod layout;
 pub mod paint;
 mod record;
 mod text;
+mod variables;
 
 use std::borrow::Cow;
 use std::fmt;
@@ -27,6 +30,9 @@ pub use vello_cpu::{color, kurbo};
 
 /// Instances nested deeper than this are not expanded (guards against cycles).
 const MAX_INSTANCE_DEPTH: usize = 24;
+/// Total attempted-work units per render. The real large-file page render used 12,418 work
+/// units, so this cap leaves over 160x headroom before any truncation is possible.
+pub const MAX_RENDER_WORK: usize = 2_000_000;
 /// Largest output side in pixels (Vello CPU uses 16-bit dimensions).
 pub const MAX_SIDE: u32 = 16_384;
 
@@ -48,9 +54,15 @@ pub struct Stats {
     pub blurs: usize,
     pub skipped_effects: usize,
     pub unsupported_paints: usize,
+    pub approximated_blends: usize,
     pub approximated_paints: usize,
     /// Layers skipped because they are outside the viewport or smaller than a pixel.
     pub culled: usize,
+    /// Nodes or instance expansions skipped after exhausting the shared work budget.
+    pub budget_exhausted: usize,
+    pub depth_skipped: usize,
+    pub preparation_skipped: usize,
+    pub attempted_work: usize,
 }
 
 impl fmt::Display for Stats {
@@ -74,8 +86,12 @@ impl fmt::Display for Stats {
         note(self.images_loading, "images loading")?;
         note(self.missing_symbols, "components missing")?;
         note(self.unsupported_paints, "paints skipped")?;
+        note(self.approximated_blends, "blend modes approximated")?;
         note(self.approximated_paints, "paints approximated")?;
-        note(self.culled, "off screen")
+        note(self.culled, "off screen")?;
+        note(self.budget_exhausted, "layers skipped (work budget)")?;
+        note(self.depth_skipped, "layers skipped (depth)")?;
+        note(self.preparation_skipped, "bounds omitted (budget)")
     }
 }
 
@@ -117,7 +133,6 @@ impl Default for Renderer {
 }
 
 struct Patch {
-    path: Vec<Guid>,
     data: Val,
     owner_depth: usize,
     derived: bool,
@@ -131,7 +146,14 @@ struct Ctx<'a> {
     wanted: Vec<ImageRequest>,
     fonts: Option<&'a mut text::SystemFonts>,
     patches: Vec<Patch>,
+    patch_index: std::collections::HashMap<Vec<Guid>, Vec<usize>>,
     symbol_stack: Vec<Guid>,
+    instance_scales: Vec<f64>,
+    properties: instance::Properties,
+    variables: variables::Variables,
+    work_left: usize,
+    depth: usize,
+    exhausted: bool,
     /// Output area in pixels, for culling.
     screen: Rect,
 }
@@ -174,17 +196,32 @@ impl Renderer {
             for want in &frame.wanted {
                 match read(want) {
                     Some(bytes) => {
-                        self.images.insert_encoded(&want.hash, &bytes, want.level);
+                        self.images.insert_encoded(&want.key, &bytes, want.level);
                     }
-                    None => self.images.fail(&want.hash, want.level),
+                    None => self.images.fail(&want.key, want.level),
                 }
             }
         }
         self.render(doc, root, viewport)
     }
 
+    /// Bytes of decoded pixels held by the image cache.
+    pub fn image_cache_bytes(&self) -> usize {
+        self.images.bytes()
+    }
+
     /// Draws `root` (a page or any node) into `viewport`.
     pub fn render(&mut self, doc: &Document, root: Guid, viewport: &Viewport) -> Frame {
+        self.render_budgeted(doc, root, viewport, MAX_RENDER_WORK, 0)
+    }
+    fn render_budgeted(
+        &mut self,
+        doc: &Document,
+        root: Guid,
+        viewport: &Viewport,
+        work: usize,
+        preparation_skipped: usize,
+    ) -> Frame {
         let (w, h) = (viewport.width.max(1), viewport.height.max(1));
         let mut rc = RenderContext::new_with(w, h, RenderSettings::default());
         let full = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
@@ -192,7 +229,15 @@ impl Renderer {
             rc.set_paint(bg);
             rc.fill_rect(&full);
         }
-        let (stats, wanted) = self.walk(doc, root, viewport.transform, full, &mut rc);
+        let (stats, wanted) = self.walk(
+            doc,
+            root,
+            viewport.transform,
+            full,
+            &mut rc,
+            work,
+            preparation_skipped,
+        );
         rc.flush();
         let mut pixmap = Pixmap::new(w, h);
         rc.render(&mut pixmap, &mut Resources::new());
@@ -231,7 +276,15 @@ impl Renderer {
             rec.set_paint(bg.into());
             rec.fill_rect(&full);
         }
-        let (stats, wanted) = self.walk(doc, root, viewport.transform, full, &mut rec);
+        let (stats, wanted) = self.walk(
+            doc,
+            root,
+            viewport.transform,
+            full,
+            &mut rec,
+            MAX_RENDER_WORK,
+            0,
+        );
         let rows: Vec<(u32, u32)> = (0..count)
             .map(|i| (height * i / count, height * (i + 1) / count))
             .collect();
@@ -262,7 +315,9 @@ impl Renderer {
         }
     }
 
-    /// Walks `root` and issues its drawing to `canvas`. `screen` is the output area for culling.
+    /// Walks `root` and issues its drawing to `canvas`. `screen` is the output area for culling;
+    /// `work` the work budget (see [`MAX_RENDER_WORK`]).
+    #[allow(clippy::too_many_arguments)]
     fn walk(
         &mut self,
         doc: &Document,
@@ -270,12 +325,21 @@ impl Renderer {
         transform: Affine,
         screen: Rect,
         canvas: &mut dyn Canvas,
+        work: usize,
+        preparation_skipped: usize,
     ) -> (Stats, Vec<ImageRequest>) {
         self.images.begin_frame();
+        let mut work_left = work;
+        let properties = instance::Properties::new(doc, &mut work_left);
+        let variables = variables::Variables::new(doc, &mut work_left);
+        let preparation_skipped = preparation_skipped + usize::from(work_left == 0);
         let mut ctx = Ctx {
             doc,
             rc: canvas,
-            stats: Stats::default(),
+            stats: Stats {
+                preparation_skipped,
+                ..Stats::default()
+            },
             images: &self.images,
             wanted: Vec::new(),
             fonts: if self.system_fonts {
@@ -284,23 +348,36 @@ impl Renderer {
                 None
             },
             patches: Vec::new(),
+            patch_index: std::collections::HashMap::new(),
             symbol_stack: Vec::new(),
+            instance_scales: Vec::new(),
+            properties,
+            variables,
+            work_left,
+            depth: 0,
+            exhausted: false,
             screen,
         };
         if let Some(node) = doc.node(root) {
             if node.kind == "CANVAS" || node.kind == "DOCUMENT" {
                 ctx.draw_children(node, &node.data, transform, None);
             } else {
-                let parent = node
-                    .parent
-                    .map_or(Affine::IDENTITY, |p| absolute_transform(doc, p));
-                ctx.draw(node, transform * parent, None);
+                let parent = node.parent.map_or(Some(Affine::IDENTITY), |p| {
+                    absolute_transform_with_budget(doc, p, &mut ctx.work_left)
+                });
+                if let Some(parent) = parent {
+                    if ctx.charge_work() {
+                        ctx.draw(node, transform * parent, None);
+                    }
+                } else {
+                    ctx.exhausted = true;
+                    ctx.stats.budget_exhausted += 1;
+                }
             }
         }
+        ctx.stats.attempted_work = work.saturating_sub(ctx.work_left);
         (ctx.stats, ctx.wanted)
     }
-
-    /// Renders `root` cropped to its content at `scale`, with `padding` pixels around it.
     pub fn render_fit(
         &mut self,
         doc: &Document,
@@ -309,8 +386,16 @@ impl Renderer {
         padding: f64,
         background: Option<AlphaColor<Srgb>>,
     ) -> Option<Frame> {
-        let viewport = fit_viewport(doc, root, scale, padding, background)?;
-        Some(self.render(doc, root, &viewport))
+        let (viewport, omitted, prep_work) = fit_viewport(doc, root, scale, padding, background)?;
+        let mut frame = self.render_budgeted(
+            doc,
+            root,
+            &viewport,
+            MAX_RENDER_WORK.saturating_sub(prep_work),
+            omitted,
+        );
+        frame.stats.attempted_work += prep_work;
+        Some(frame)
     }
 
     /// [`Renderer::render_fit`] with every image read at full sharpness
@@ -324,21 +409,23 @@ impl Renderer {
         background: Option<AlphaColor<Srgb>>,
         read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
     ) -> Option<Frame> {
-        let viewport = fit_viewport(doc, root, scale, padding, background)?;
+        let (viewport, _, _) = fit_viewport(doc, root, scale, padding, background)?;
         Some(self.render_complete(doc, root, &viewport, read))
     }
 }
 
-/// The viewport showing `root`'s content at `scale` (shrunk to fit [`MAX_SIDE`]) with `padding`.
+/// The viewport showing `root`'s content at `scale` (shrunk to fit [`MAX_SIDE`]) with `padding`,
+/// with the number of bounds omitted and the work spent finding them (see [`MAX_RENDER_WORK`]).
 fn fit_viewport(
     doc: &Document,
     root: Guid,
     scale: f64,
     padding: f64,
     background: Option<AlphaColor<Srgb>>,
-) -> Option<Viewport> {
+) -> Option<(Viewport, usize, usize)> {
     {
-        let bounds = content_bounds(doc, root)?;
+        let (bounds, omitted, prep_work) = content_bounds_with_budget(doc, root, MAX_RENDER_WORK);
+        let bounds = bounds?;
         let mut scale = scale.max(0.01);
         let longest = bounds.width().max(bounds.height()) * scale + padding * 2.0;
         if longest > f64::from(MAX_SIDE) {
@@ -349,12 +436,16 @@ fn fit_viewport(
         let transform = Affine::translate((padding, padding))
             * Affine::scale(scale)
             * Affine::translate((-bounds.x0, -bounds.y0));
-        Some(Viewport {
-            width,
-            height,
-            transform,
-            background,
-        })
+        Some((
+            Viewport {
+                width,
+                height,
+                transform,
+                background,
+            },
+            omitted,
+            prep_work,
+        ))
     }
 }
 
@@ -367,55 +458,125 @@ pub fn page_background(doc: &Document, page: Guid) -> AlphaColor<Srgb> {
 
 /// Node-to-page transform (product of ancestor transforms; pages contribute nothing).
 pub fn absolute_transform(doc: &Document, id: Guid) -> Affine {
+    let mut remaining = usize::MAX;
+    absolute_transform_with_budget(doc, id, &mut remaining).unwrap_or(Affine::IDENTITY)
+}
+fn absolute_transform_with_budget(
+    doc: &Document,
+    id: Guid,
+    remaining: &mut usize,
+) -> Option<Affine> {
     let mut chain = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     let mut cur = Some(id);
     while let Some(c) = cur {
-        let Some(node) = doc.node(c) else { break };
+        if *remaining == 0 {
+            return None;
+        }
+        *remaining -= 1;
+        if !seen.insert(c) {
+            break;
+        }
+        let Some(node) = doc.node(c) else {
+            break;
+        };
         if node.kind == "CANVAS" || node.kind == "DOCUMENT" {
             break;
         }
         chain.push(affine(node.data.get("transform")));
         cur = node.parent;
     }
-    chain.iter().rev().fold(Affine::IDENTITY, |acc, t| acc * *t)
+    Some(chain.iter().rev().fold(Affine::IDENTITY, |acc, t| acc * *t))
 }
-
-/// Page-space bounding box of a node's frame.
 pub fn node_bounds(doc: &Document, id: Guid) -> Option<Rect> {
+    let mut remaining = usize::MAX;
+    node_bounds_with_budget(doc, id, &mut remaining)
+}
+fn node_bounds_with_budget(doc: &Document, id: Guid, remaining: &mut usize) -> Option<Rect> {
     let node = doc.node(id)?;
     let (w, h) = size(&node.data);
     Some(transformed_bounds(
-        absolute_transform(doc, id),
+        absolute_transform_with_budget(doc, id, remaining)?,
         Rect::new(0.0, 0.0, w, h),
     ))
 }
-
 fn visible(data: &Val) -> bool {
     data.flag("visible") != Some(false)
 }
-
-/// Bounds of what `root` draws: a page's visible children, or the node itself.
 pub fn content_bounds(doc: &Document, root: Guid) -> Option<Rect> {
-    let node = doc.node(root)?;
-    if node.kind != "CANVAS" && node.kind != "DOCUMENT" {
-        return node_bounds(doc, root).map(|b| b.inflate(1.0, 1.0));
-    }
+    content_bounds_with_budget(doc, root, MAX_RENDER_WORK).0
+}
+fn content_bounds_with_budget(
+    doc: &Document,
+    root: Guid,
+    mut remaining: usize,
+) -> (Option<Rect>, usize, usize) {
+    let Some(node) = doc.node(root) else {
+        return (None, 0, 0);
+    };
+    let initial = remaining;
+    let root_parent = if node.kind == "CANVAS" || node.kind == "DOCUMENT" {
+        Affine::IDENTITY
+    } else {
+        node.parent
+            .and_then(|parent| absolute_transform_with_budget(doc, parent, &mut remaining))
+            .unwrap_or(Affine::IDENTITY)
+    };
     let mut out: Option<Rect> = None;
-    for child in doc.children(root) {
-        let Some(c) = doc.node(*child) else { continue };
-        if !visible(&c.data) {
+    let mut omitted = 0;
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = Vec::new();
+    if node.kind == "CANVAS" || node.kind == "DOCUMENT" {
+        stack.extend(doc.children(root).iter().rev().map(|id| (*id, root_parent)));
+    } else {
+        stack.push((root, root_parent));
+    }
+    while let Some((id, parent)) = stack.pop() {
+        if remaining == 0 {
+            omitted += 1 + stack.len();
+            break;
+        }
+        remaining -= 1;
+        if !seen.insert(id) {
             continue;
         }
-        if let Some(b) = node_bounds(doc, *child) {
-            out = Some(out.map_or(b, |o| o.union(b)));
+        let Some(child) = doc.node(id) else { continue };
+        if !visible(&child.data) {
+            continue;
+        }
+        let world = parent * affine(child.data.get("transform"));
+        let (w, h) = size(&child.data);
+        let margin = overhang(&child.kind, &child.data, w, h);
+        let mut bounds =
+            transformed_bounds(world, Rect::new(-margin, -margin, w + margin, h + margin));
+        if clips_content(&child.kind, &child.data) {
+            bounds = bounds.intersect(transformed_bounds(world, Rect::new(0.0, 0.0, w, h)));
+        }
+        out = Some(out.map_or(bounds, |current| current.union(bounds)));
+        if !clips_content(&child.kind, &child.data) {
+            stack.extend(doc.children(id).iter().rev().map(|id| (*id, world)));
         }
     }
-    out.map(|b| b.inflate(1.0, 1.0))
+    (
+        out.map(|b| b.inflate(1.0, 1.0)),
+        omitted,
+        initial - remaining,
+    )
 }
 
 /// Topmost, deepest visible node under `point` (page coordinates). Instances count as one layer.
 pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
-    fn walk(doc: &Document, parent: Guid, parent_tf: Affine, point: Point) -> Option<Guid> {
+    fn walk(
+        doc: &Document,
+        parent: Guid,
+        parent_tf: Affine,
+        point: Point,
+        seen: &mut std::collections::HashSet<Guid>,
+        depth: usize,
+    ) -> Option<Guid> {
+        if depth >= 128 || !seen.insert(parent) {
+            return None;
+        }
         for id in doc.children(parent).iter().rev() {
             let Some(node) = doc.node(*id) else { continue };
             if !visible(&node.data) || node.data.flag("mask") == Some(true) {
@@ -428,7 +589,7 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
             let clips = clips_content(&node.kind, &node.data);
             if node.kind != "INSTANCE"
                 && (inside || !clips)
-                && let Some(hit) = walk(doc, *id, tf, point)
+                && let Some(hit) = walk(doc, *id, tf, point, seen, depth + 1)
             {
                 return Some(hit);
             }
@@ -438,7 +599,14 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
         }
         None
     }
-    walk(doc, page, Affine::IDENTITY, point)
+    walk(
+        doc,
+        page,
+        Affine::IDENTITY,
+        point,
+        &mut std::collections::HashSet::new(),
+        0,
+    )
 }
 
 /// How far (in local units) a node can draw outside its frame: strokes, effects, and text
@@ -518,13 +686,33 @@ impl Ctx<'_> {
         let Some(path) = path else {
             return (Cow::Borrowed(&node.data), false);
         };
-        let mut matches: Vec<&Patch> = self.patches.iter().filter(|p| p.path == path).collect();
-        if matches.is_empty() {
+        let mut matches: Vec<&Patch> = self
+            .patch_index
+            .get(path)
+            .into_iter()
+            .flatten()
+            .filter_map(|index| self.patches.get(*index))
+            .collect();
+        let mut property_patch = self.properties.patch(&node.data);
+        let scale = self.instance_scales.last().copied().unwrap_or(1.0);
+        if scale != 1.0 && !matches.iter().any(|p| p.data.get("transform").is_some()) {
+            let tf = affine(node.data.get("transform")).as_coeffs();
+            let mut transform = node
+                .data
+                .get("transform")
+                .cloned()
+                .unwrap_or(Val::Obj(figstudio_fig::Obj::new()));
+            transform.set("m02", Val::Float(tf[4] * scale));
+            transform.set("m12", Val::Float(tf[5] * scale));
+            property_patch.set("transform", transform);
+        }
+        if matches.is_empty() && property_patch == Val::Obj(figstudio_fig::Obj::new()) {
             return (Cow::Borrowed(&node.data), false);
         }
         matches.sort_by_key(|p| (std::cmp::Reverse(p.owner_depth), p.derived));
-        let mut data = node.data.clone();
-        let (mut text_changed, mut glyphs_fresh) = (false, false);
+        let mut data = node.data.merged(&property_patch);
+        let mut text_changed = data.get("textData") != node.data.get("textData");
+        let mut glyphs_fresh = false;
         for p in matches {
             if p.data.get("textData").is_some() && !p.derived {
                 text_changed = true;
@@ -534,14 +722,44 @@ impl Ctx<'_> {
                 glyphs_fresh = true;
             }
             data = data.merged(&p.data);
+            // An explicit paint override replaces the paints of a style it does not restate.
+            for (style, key) in variables::STYLED_PAINTS {
+                if p.data.get(key).is_some()
+                    && p.data.get(style).is_none()
+                    && let Val::Obj(o) = &mut data
+                {
+                    o.remove(style);
+                }
+            }
         }
         (Cow::Owned(data), text_changed && !glyphs_fresh)
     }
 
     fn draw(&mut self, node: &Node, parent: Affine, path: Option<&[Guid]>) {
-        let (data, stale_glyphs) = self.patched(node, path);
+        self.draw_with_data(node, parent, path, None);
+    }
+
+    fn draw_with_data<'n>(
+        &mut self,
+        node: &'n Node,
+        parent: Affine,
+        path: Option<&[Guid]>,
+        patched: Option<(Cow<'n, Val>, bool)>,
+    ) {
+        if self.depth >= 96 {
+            self.stats.depth_skipped += 1;
+            return;
+        }
+        if !self.charge_work() {
+            return;
+        }
+        self.depth += 1;
+        let (data, stale_glyphs) = patched.unwrap_or_else(|| self.patched(node, path));
+        let (data, unresolved_variables) = self.variables.paints(data.as_ref());
         let data = data.as_ref();
+        self.stats.approximated_paints += unresolved_variables;
         if !visible(data) || data.flag("mask") == Some(true) {
+            self.depth -= 1;
             return;
         }
         let kind = node.kind.as_str();
@@ -549,9 +767,13 @@ impl Ctx<'_> {
         let (w, h) = size(data);
         if self.off_screen(node, kind, data, world, w, h) {
             self.stats.culled += 1;
+            self.depth -= 1;
             return;
         }
         self.stats.nodes += 1;
+        if data.text("blendMode").is_some_and(|mode| mode != "NORMAL") {
+            self.stats.approximated_blends += 1;
+        }
         let mut layers = 0;
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
@@ -605,7 +827,19 @@ impl Ctx<'_> {
         }
 
         // Fills.
-        let mut fill_paths = geometry(data, "fillGeometry", &self.doc.blobs);
+        let mut fill_paths = geometry(
+            data,
+            "fillGeometry",
+            &self.doc.blobs,
+            &mut self.stats.unsupported_paints,
+        );
+        if kind == "VECTOR"
+            && data
+                .get("fillGeometry")
+                .is_none_or(|geometry| geometry.items().is_empty())
+        {
+            self.stats.unsupported_paints += 1;
+        }
         if kind == "TEXT" {
             fill_paths = self
                 .text_paths(data, stale_glyphs)
@@ -624,7 +858,12 @@ impl Ctx<'_> {
             .get("strokePaints")
             .is_some_and(|p| !p.items().is_empty())
         {
-            let outlines = geometry(data, "strokeGeometry", &self.doc.blobs);
+            let outlines = geometry(
+                data,
+                "strokeGeometry",
+                &self.doc.blobs,
+                &mut self.stats.unsupported_paints,
+            );
             if !outlines.is_empty() {
                 self.paint_paths(data, "strokePaints", &outlines, world, w, h);
             } else if let (Some(weight), Some(shape)) =
@@ -660,8 +899,9 @@ impl Ctx<'_> {
             if kind == "INSTANCE" {
                 self.draw_instance(data, world, path);
             } else {
-                let child_path = path.map(|p| p.to_vec());
-                self.draw_children(node, data, world, child_path.as_deref());
+                // Override paths contain instance ancestors, not ordinary frame/group ancestors.
+                let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
+                self.draw_children(node, data, world, child_path);
             }
             if clip.is_some() {
                 self.rc.pop_layer();
@@ -670,6 +910,7 @@ impl Ctx<'_> {
         for _ in 0..layers {
             self.rc.pop_layer();
         }
+        self.depth -= 1;
     }
 
     fn text_paths(&mut self, data: &Val, stale_glyphs: bool) -> Vec<BezPath> {
@@ -761,9 +1002,18 @@ impl Ctx<'_> {
     }
 
     /// Draws children, turning mask layers into clips for the siblings above them.
-    fn draw_children(&mut self, node: &Node, _data: &Val, world: Affine, path: Option<&[Guid]>) {
+    fn draw_children(&mut self, node: &Node, data: &Val, world: Affine, path: Option<&[Guid]>) {
         let mut mask_layers = 0;
-        for id in self.doc.children(node.id) {
+        let children = self.doc.children(node.id);
+        for index in 0..children.len() {
+            let id = &children[if data.flag("stackReverseZIndex") == Some(true) {
+                children.len() - 1 - index
+            } else {
+                index
+            }];
+            if self.exhausted || !self.charge_work() {
+                break;
+            }
             let Some(child) = self.doc.node(*id) else {
                 continue;
             };
@@ -772,10 +1022,21 @@ impl Ctx<'_> {
                 v.push(child.override_key());
                 v
             });
-            let (child_data, _) = self.patched(child, child_path.as_deref());
+            let (mut child_data, stale_glyphs) = self.patched(child, child_path.as_deref());
+            if path.is_some() && size(data) != size(&node.data) {
+                layout::constrain(&child.data, child_data.to_mut(), &node.data, data);
+            }
             if child_data.flag("mask") == Some(true) && visible(&child_data) {
+                if !self.charge_work() {
+                    break;
+                }
                 let tf = world * affine(child_data.get("transform"));
-                let mut shapes = geometry(&child_data, "fillGeometry", &self.doc.blobs);
+                let mut shapes = geometry(
+                    &child_data,
+                    "fillGeometry",
+                    &self.doc.blobs,
+                    &mut self.stats.unsupported_paints,
+                );
                 if shapes.is_empty() {
                     shapes.extend(base_shape(&child.kind, &child_data).map(GeomPath::plain));
                 }
@@ -786,18 +1047,34 @@ impl Ctx<'_> {
                 if !combined.elements().is_empty() {
                     self.stats.masks += 1;
                     self.rc.set_transform(tf);
-                    self.rc.push_clip_layer(&combined);
+                    self.rc.push_clip_path(&combined);
+                    self.rc.set_transform(world);
                     mask_layers += 1;
                 }
                 continue;
             }
-            self.draw(child, world, child_path.as_deref());
+            self.draw_with_data(
+                child,
+                world,
+                child_path.as_deref(),
+                Some((child_data, stale_glyphs)),
+            );
         }
         for _ in 0..mask_layers {
-            self.rc.pop_layer();
+            self.rc.pop_clip();
         }
     }
 
+    fn charge_work(&mut self) -> bool {
+        if self.exhausted || self.work_left == 0 {
+            self.exhausted = true;
+            self.stats.budget_exhausted += 1;
+            false
+        } else {
+            self.work_left -= 1;
+            true
+        }
+    }
     fn draw_instance(&mut self, data: &Val, world: Affine, path: Option<&[Guid]>) {
         self.stats.instances += 1;
         let symbol_id = data
@@ -811,12 +1088,21 @@ impl Ctx<'_> {
             self.stats.missing_symbols += 1;
             return;
         };
-        if self.symbol_stack.contains(&symbol.id) || self.symbol_stack.len() >= MAX_INSTANCE_DEPTH {
+        if self.symbol_stack.contains(&symbol.id) {
+            self.stats.depth_skipped += 1;
+            return;
+        }
+        if self.symbol_stack.len() >= MAX_INSTANCE_DEPTH {
+            self.stats.depth_skipped += 1;
+            return;
+        }
+        if !self.charge_work() {
             return;
         }
         let base: Vec<Guid> = path.map(<[Guid]>::to_vec).unwrap_or_default();
         let owner_depth = self.symbol_stack.len();
         let before = self.patches.len();
+        let mut added_keys = Vec::new();
         let lists = [
             (data.path(&["symbolData", "symbolOverrides"]), false),
             (data.get("derivedSymbolData"), true),
@@ -835,8 +1121,13 @@ impl Ctx<'_> {
                 }
                 let mut full = base.clone();
                 full.extend(guids);
+                let index = self.patches.len();
+                self.patch_index
+                    .entry(full.clone())
+                    .or_default()
+                    .push(index);
+                added_keys.push(full);
                 self.patches.push(Patch {
-                    path: full,
                     data: item.clone(),
                     owner_depth,
                     derived,
@@ -844,8 +1135,26 @@ impl Ctx<'_> {
             }
         }
         self.symbol_stack.push(symbol.id);
+        self.properties.push(symbol, data);
+        let scale = data
+            .path(&["symbolData", "uniformScaleFactor"])
+            .and_then(Val::as_f32)
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .map_or(1.0, f64::from);
+        self.instance_scales.push(scale);
         self.draw_children(symbol, &symbol.data, world, Some(&base));
+        self.instance_scales.pop();
+        self.properties.pop();
         self.symbol_stack.pop();
         self.patches.truncate(before);
+        for key in added_keys {
+            let remove = self.patch_index.get_mut(&key).is_some_and(|indexes| {
+                indexes.pop();
+                indexes.is_empty()
+            });
+            if remove {
+                self.patch_index.remove(&key);
+            }
+        }
     }
 }

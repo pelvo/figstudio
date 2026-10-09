@@ -107,7 +107,7 @@ fn edits_are_written() {
     map.insert("visible", Val::Bool(false));
     let edited = Node::from_data(node.data.clone()).unwrap();
     *node = edited;
-    doc.set_nodes(nodes);
+    doc.set_nodes(nodes).unwrap();
     let again = Document::from_bytes(&doc.to_bytes().unwrap()).unwrap();
     let n = again.node(id).unwrap();
     assert_eq!(n.name, "renamed layer");
@@ -121,7 +121,7 @@ fn unknown_fields_and_wrong_types_are_errors_not_panics() {
     if let Val::Obj(map) = &mut nodes[3].data {
         map.insert("notAFigmaField", Val::Int(1));
     }
-    doc.set_nodes(nodes.clone());
+    doc.set_nodes(nodes.clone()).unwrap();
     let e = doc.to_bytes().unwrap_err();
     assert!(e.to_string().contains("notAFigmaField"), "{e}");
 
@@ -129,7 +129,7 @@ fn unknown_fields_and_wrong_types_are_errors_not_panics() {
         map.remove("notAFigmaField");
         map.insert("opacity", Val::Str("high".into()));
     }
-    doc.set_nodes(nodes);
+    doc.set_nodes(nodes).unwrap();
     let e = doc.to_bytes().unwrap_err();
     assert!(e.to_string().contains("expected a number"), "{e}");
 }

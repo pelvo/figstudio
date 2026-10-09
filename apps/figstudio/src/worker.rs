@@ -174,9 +174,9 @@ impl ImageQueue {
                 let (want, source) = next;
                 match source.read(&want.entry) {
                     Ok(bytes) => {
-                        this.images.insert_encoded(&want.hash, &bytes, want.level);
+                        this.images.insert_encoded(&want.key, &bytes, want.level);
                     }
-                    Err(_) => this.images.fail(&want.hash, want.level),
+                    Err(_) => this.images.fail(&want.key, want.level),
                 }
                 this.pending
                     .lock()
@@ -191,8 +191,15 @@ impl ImageQueue {
     }
 }
 
+/// The outcome of one background export (desktop), reported once by `poll`.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct ExportDone {
+    pub path: PathBuf,
+    pub result: Result<(), String>,
+}
+
 pub struct Workers {
-    render_tx: Sender<RenderJob>,
+    render_tx: Option<Sender<RenderJob>>,
     pub render_rx: Receiver<RenderDone>,
     load_tx: Sender<Loaded>,
     pub load_rx: Receiver<Loaded>,
@@ -200,6 +207,12 @@ pub struct Workers {
     /// Jobs sent and not yet finished or dropped.
     in_flight: Arc<AtomicUsize>,
     queue: Arc<ImageQueue>,
+    #[cfg(not(target_arch = "wasm32"))]
+    export_tx: Sender<ExportDone>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub export_rx: Receiver<ExportDone>,
+    #[cfg(not(target_arch = "wasm32"))]
+    export_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Workers {
@@ -245,7 +258,7 @@ impl Workers {
                         Some(source) => images.push(wanted, source),
                         None => wanted
                             .iter()
-                            .for_each(|w| images.images.fail(&w.hash, w.level)),
+                            .for_each(|w| images.images.fail(&w.key, w.level)),
                     }
                 }
                 let size = [
@@ -279,14 +292,22 @@ impl Workers {
         #[cfg(target_arch = "wasm32")]
         spawn(render_loop);
         let (load_tx, load_rx) = channel();
+        #[cfg(not(target_arch = "wasm32"))]
+        let (export_tx, export_rx) = channel();
         Workers {
-            render_tx,
+            render_tx: Some(render_tx),
             render_rx,
             load_tx,
             load_rx,
             waker,
             in_flight,
             queue,
+            #[cfg(not(target_arch = "wasm32"))]
+            export_tx,
+            #[cfg(not(target_arch = "wasm32"))]
+            export_rx,
+            #[cfg(not(target_arch = "wasm32"))]
+            export_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -294,6 +315,57 @@ impl Workers {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn busy(&self) -> bool {
         self.in_flight.load(Ordering::Relaxed) > 0
+    }
+
+    /// Exports one page or layer in the background, reading every image it needs from
+    /// `source` (lazily opened files). The result arrives on `export_rx`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export(
+        &self,
+        doc: Arc<Document>,
+        root: Guid,
+        scale: f64,
+        path: PathBuf,
+        source: Option<Source>,
+    ) -> Result<(), &'static str> {
+        self.export_busy
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .map_err(|_| "an export is already running")?;
+        let busy = self.export_busy.clone();
+        let tx = self.export_tx.clone();
+        let waker = self.waker.clone();
+        let images = self.images();
+        std::thread::spawn(move || {
+            let _release = ExportRelease(busy);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                export_png_with(images, &doc, source.as_ref(), root, scale, &path)
+            }))
+            .unwrap_or_else(|_| Err("export worker panicked".into()));
+            drop(_release);
+            let _ = tx.send(ExportDone { path, result });
+            waker.wake();
+        });
+        Ok(())
+    }
+
+    /// Sends a render job; fails once the render worker is gone.
+    pub fn render(&mut self, job: RenderJob) -> Result<(), &'static str> {
+        self.in_flight.fetch_add(1, Ordering::Relaxed);
+        if self
+            .render_tx
+            .as_ref()
+            .is_none_or(|tx| tx.send(job).is_err())
+        {
+            self.in_flight.fetch_sub(1, Ordering::Relaxed);
+            self.render_tx = None;
+            return Err("render worker is unavailable");
+        }
+        Ok(())
     }
 
     /// Counts images read so far; when it changes, views showing placeholders render again.
@@ -304,13 +376,6 @@ impl Workers {
     /// The image cache shared by every render (for exports).
     pub fn images(&self) -> Images {
         self.queue.images.clone()
-    }
-
-    pub fn render(&self, job: RenderJob) {
-        self.in_flight.fetch_add(1, Ordering::Relaxed);
-        if self.render_tx.send(job).is_err() {
-            self.in_flight.fetch_sub(1, Ordering::Relaxed);
-        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -368,5 +433,122 @@ impl Workers {
             let _ = tx.send(f());
             count.fetch_sub(1, Ordering::Relaxed);
         });
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct ExportRelease(Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for ExportRelease {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Renders `root` of an immutable snapshot at `scale` and writes it as a PNG to `path`. Runs on a
+/// worker thread, so the UI thread never waits for a large render or encode.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn export_png(
+    doc: &Document,
+    root: Guid,
+    scale: f64,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    export_png_with(Images::default(), doc, None, root, scale, path)
+}
+
+/// [`export_png`] drawing from `images` and reading unread images from `source`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn export_png_with(
+    images: Images,
+    doc: &Document,
+    source: Option<&Source>,
+    root: Guid,
+    scale: f64,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let frame = crate::export_frame(images, doc, source, root, scale)
+        .ok_or_else(|| "nothing to export".to_string())?;
+    let png = frame.pixmap.into_png().map_err(|e| e.to_string())?;
+    std::fs::write(path, png).map_err(|e| e.to_string())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod export_tests {
+    use super::*;
+
+    fn structure() -> Document {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/structure.fig"
+        );
+        Document::open(path).unwrap()
+    }
+
+    #[test]
+    fn export_writes_a_png_of_the_page() {
+        let doc = structure();
+        let dir = std::env::temp_dir().join(format!("figstudio-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("page.png");
+        export_png(&doc, doc.pages[0], 1.0, &out).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap();
+        let expected = Renderer::new()
+            .render_fit(&doc, doc.pages[0], 1.0, 0.0, None)
+            .unwrap();
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (
+                u32::from(expected.pixmap.width()),
+                u32::from(expected.pixmap.height())
+            )
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn worker_admits_only_one_export_and_releases_slot_on_completion() {
+        let ctx = egui::Context::default();
+        let workers = Workers::new(&ctx);
+        let doc = Arc::new(structure());
+        let dir =
+            std::env::temp_dir().join(format!("figstudio-export-admission-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("page.png");
+        workers
+            .export(doc.clone(), doc.pages[0], 0.1, path.clone(), None)
+            .unwrap();
+        assert_eq!(
+            workers.export(doc.clone(), doc.pages[0], 0.1, path.clone(), None),
+            Err("an export is already running")
+        );
+        let done = workers
+            .export_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        assert!(done.result.is_ok());
+        assert!(
+            workers
+                .export(doc.clone(), doc.pages[0], 0.1, path.clone(), None)
+                .is_ok()
+        );
+        let _ = workers
+            .export_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn export_reports_a_failed_write_instead_of_panicking() {
+        let doc = structure();
+        let dir = std::env::temp_dir().join(format!("figstudio-export-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A directory where the file should be: the write must fail and say so.
+        let err = export_png(&doc, doc.pages[0], 1.0, &dir).expect_err("writing onto a directory");
+        assert!(!err.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

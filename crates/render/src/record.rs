@@ -18,6 +18,9 @@ pub(crate) trait Canvas {
     fn set_fill_rule(&mut self, rule: Fill);
     fn fill_path(&mut self, path: &BezPath);
     fn push_clip_layer(&mut self, path: &BezPath);
+    /// A clip without a layer (cheaper); undone by [`Canvas::pop_clip`], nested like layers.
+    fn push_clip_path(&mut self, path: &BezPath);
+    fn pop_clip(&mut self);
     fn push_opacity_layer(&mut self, opacity: f32);
     /// `reach`: how far (in local units) the filter can move or spread what is drawn in it.
     fn push_filter_layer(&mut self, filter: Filter, reach: f64);
@@ -43,6 +46,12 @@ impl Canvas for RenderContext {
     fn push_clip_layer(&mut self, path: &BezPath) {
         RenderContext::push_clip_layer(self, path);
     }
+    fn push_clip_path(&mut self, path: &BezPath) {
+        RenderContext::push_clip_path(self, path);
+    }
+    fn pop_clip(&mut self) {
+        RenderContext::pop_clip(self);
+    }
     fn push_opacity_layer(&mut self, opacity: f32) {
         RenderContext::push_opacity_layer(self, opacity);
     }
@@ -60,6 +69,8 @@ use crate::paint::linear_scale;
 #[cfg(feature = "parallel")]
 enum Layer {
     Clip(BezPath),
+    /// `push_clip_path`: popped with `pop_clip`, not `pop_layer`.
+    ClipPath(BezPath),
     Opacity(f32),
     Filter(Filter),
 }
@@ -75,6 +86,7 @@ enum Cmd {
     /// A layer, the output area its contents can change, and the index of its `Pop`.
     Push(Layer, Rect, usize),
     Pop,
+    PopClip,
 }
 
 /// Commands recorded in output pixel coordinates, with the output area each fill and layer
@@ -174,11 +186,13 @@ impl Recorder {
                     }
                     match layer {
                         Layer::Clip(p) => rc.push_clip_layer(p),
+                        Layer::ClipPath(p) => rc.push_clip_path(p),
                         Layer::Opacity(o) => rc.push_opacity_layer(*o),
                         Layer::Filter(f) => rc.push_filter_layer(f.clone()),
                     }
                 }
                 Cmd::Pop => rc.pop_layer(),
+                Cmd::PopClip => rc.pop_clip(),
             }
             i += 1;
         }
@@ -208,6 +222,13 @@ impl Canvas for Recorder {
         let r = self.reach();
         self.push(Layer::Clip(path.clone()), r);
     }
+    fn push_clip_path(&mut self, path: &BezPath) {
+        let r = self.reach();
+        self.push(Layer::ClipPath(path.clone()), r);
+    }
+    fn pop_clip(&mut self) {
+        self.close(Cmd::PopClip);
+    }
     fn push_opacity_layer(&mut self, opacity: f32) {
         let r = self.reach();
         self.push(Layer::Opacity(opacity), r);
@@ -217,11 +238,19 @@ impl Canvas for Recorder {
         self.push(Layer::Filter(filter), r);
     }
     fn pop_layer(&mut self) {
+        self.close(Cmd::Pop);
+    }
+}
+
+#[cfg(feature = "parallel")]
+impl Recorder {
+    /// Ends the innermost layer or clip with `pop`.
+    fn close(&mut self, pop: Cmd) {
         let Some((at, area, _)) = self.open.pop() else {
             return;
         };
         let end = self.cmds.len();
-        self.cmds.push(Cmd::Pop);
+        self.cmds.push(pop);
         if let Cmd::Push(_, a, e) = &mut self.cmds[at] {
             *a = area;
             *e = end;

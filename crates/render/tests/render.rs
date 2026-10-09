@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use figstudio_fig::{Document, Guid, Val};
 use figstudio_render::kurbo::{Affine, Point};
-use figstudio_render::{Renderer, Stats, Viewport, content_bounds, geom, hit_test, node_bounds};
+use figstudio_render::{
+    Renderer, Stats, Viewport, absolute_transform, content_bounds, geom, hit_test, node_bounds,
+};
 
 fn open(name: &str) -> Document {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -143,6 +145,230 @@ fn frames_clip_their_children() {
     let (px, _) = render_page(&doc, all.origin(), w, h);
     let inside = pixel(&px, w, fb.x0 - all.x0 + 4.0, fb.y0 - all.y0 + 4.0);
     assert!(inside[3] > 0, "frame background missing");
+    let outside = pixel(&px, w, fb.x1 - all.x0 + 3.0, fb.y0 - all.y0 + 4.0);
+    assert_eq!(outside[3], 0, "frame leaked pixels outside its clip");
+}
+
+#[test]
+fn page_fit_includes_visible_children_outside_unclipped_groups() {
+    let mut doc = open("structure");
+    let page = doc.pages[0];
+    let template = doc
+        .nodes
+        .iter()
+        .find(|n| n.kind == "FRAME")
+        .unwrap()
+        .clone();
+    let mut nodes = doc.nodes.clone();
+    let parent_data = |id: Guid, x: f32| {
+        let mut parent = figstudio_fig::Obj::new();
+        parent.insert("guid", id.to_val());
+        parent.insert("position", Val::Str("zzzz".into()));
+        let mut transform = figstudio_fig::Obj::new();
+        transform.insert("m02", Val::Float(f64::from(x)));
+        let mut data = template.data.clone();
+        data.set("transform", Val::Obj(transform));
+        data.set("parentIndex", Val::Obj(parent));
+        data
+    };
+    let group_id = Guid(98, 1);
+    let mut group_data = parent_data(page, 0.0);
+    group_data.set("guid", group_id.to_val());
+    group_data.set("type", Val::Enum("GROUP"));
+    group_data.set(
+        "size",
+        Val::Obj([("x", Val::Float(10.0)), ("y", Val::Float(10.0))].into()),
+    );
+    nodes.push(figstudio_fig::Node::from_data(group_data).unwrap());
+    let child_id = Guid(98, 2);
+    let mut child_data = parent_data(group_id, 1000.0);
+    child_data.set("guid", child_id.to_val());
+    child_data.set("type", Val::Enum("RECTANGLE"));
+    child_data.set(
+        "size",
+        Val::Obj([("x", Val::Float(20.0)), ("y", Val::Float(20.0))].into()),
+    );
+    child_data.set(
+        "fillPaints",
+        Val::Arr(vec![Val::Obj(
+            [
+                ("type", Val::Enum("SOLID")),
+                (
+                    "color",
+                    Val::Obj(
+                        [
+                            ("r", Val::Float(1.0)),
+                            ("g", Val::Float(0.0)),
+                            ("b", Val::Float(0.0)),
+                            ("a", Val::Float(1.0)),
+                        ]
+                        .into(),
+                    ),
+                ),
+            ]
+            .into(),
+        )]),
+    );
+    nodes.push(figstudio_fig::Node::from_data(child_data).unwrap());
+    doc.set_nodes(nodes).unwrap();
+
+    let frame = Renderer::new()
+        .render_fit(&doc, page, 1.0, 0.0, None)
+        .unwrap();
+    assert!(
+        frame.pixmap.width() > 1000,
+        "fit omitted outlying descendant"
+    );
+    let red_near_edge = frame.pixmap.data().iter().enumerate().any(|(i, p)| {
+        i % usize::from(frame.pixmap.width()) > usize::from(frame.pixmap.width()) - 50
+            && p.r > 200
+            && p.g < 50
+            && p.b < 50
+            && p.a > 200
+    });
+    assert!(
+        red_near_edge,
+        "outlying child was not rendered in the export bounds"
+    );
+}
+
+/// A page with a group whose bottom layer is a mask (clipping the sibling above it), and a
+/// layer outside the group; see `masks_clip_siblings_but_do_not_escape_their_parent`.
+fn masked_doc() -> Document {
+    let mut doc = open("structure");
+    let page = doc.pages[0];
+    let template = doc
+        .nodes
+        .iter()
+        .find(|n| n.kind == "FRAME")
+        .unwrap()
+        .clone();
+    let mut nodes = vec![
+        doc.nodes
+            .iter()
+            .find(|node| node.kind == "DOCUMENT")
+            .unwrap()
+            .clone(),
+        doc.node(page).unwrap().clone(),
+    ];
+    let group = Guid(99, 9);
+    let mut group_data = template.data.clone();
+    group_data.set("guid", group.to_val());
+    group_data.set("type", Val::Enum("GROUP"));
+    let mut group_parent = figstudio_fig::Obj::new();
+    group_parent.insert("guid", page.to_val());
+    group_parent.insert("position", Val::Str("zzzz0".into()));
+    group_data.set("parentIndex", Val::Obj(group_parent));
+    let mut group_transform = figstudio_fig::Obj::new();
+    group_transform.insert("m12", Val::Float(500.0));
+    group_data.set("transform", Val::Obj(group_transform));
+    nodes.push(figstudio_fig::Node::from_data(group_data).unwrap());
+    let mut add_rect = |id: Guid, parent_id: Guid, position: &str, mask: bool, x: f64, y: f64| {
+        let mut data = template.data.clone();
+        data.set("guid", id.to_val());
+        data.set("type", Val::Enum("RECTANGLE"));
+        data.set("fillGeometry", Val::Arr(Vec::new()));
+        data.set("strokeGeometry", Val::Arr(Vec::new()));
+        data.set(
+            "size",
+            Val::Obj([("x", Val::Float(20.0)), ("y", Val::Float(20.0))].into()),
+        );
+        let mut parent = figstudio_fig::Obj::new();
+        parent.insert("guid", parent_id.to_val());
+        parent.insert("position", Val::Str(position.into()));
+        data.set("parentIndex", Val::Obj(parent));
+        let mut transform = figstudio_fig::Obj::new();
+        transform.insert("m02", Val::Float(x));
+        transform.insert("m12", Val::Float(y));
+        data.set("transform", Val::Obj(transform));
+        if mask {
+            data.set("mask", Val::Bool(true));
+        }
+        data.set(
+            "fillPaints",
+            Val::Arr(vec![Val::Obj(
+                [
+                    ("type", Val::Enum("SOLID")),
+                    (
+                        "color",
+                        Val::Obj(
+                            [
+                                ("r", Val::Float(1.0)),
+                                ("g", Val::Float(0.0)),
+                                ("b", Val::Float(0.0)),
+                                ("a", Val::Float(1.0)),
+                            ]
+                            .into(),
+                        ),
+                    ),
+                ]
+                .into(),
+            )]),
+        );
+        nodes.push(figstudio_fig::Node::from_data(data).unwrap());
+    };
+    add_rect(Guid(99, 10), group, "0", true, 0.0, 0.0);
+    add_rect(Guid(99, 11), group, "1", false, 10.0, 0.0);
+    add_rect(Guid(99, 12), page, "zzzz1", false, 40.0, 500.0);
+    doc.set_nodes(nodes).unwrap();
+    doc
+}
+
+#[test]
+fn masks_clip_siblings_but_do_not_escape_their_parent() {
+    let doc = masked_doc();
+    let (pixels, stats) = render_page(&doc, Point::new(0.0, 499.0), 64, 32);
+    assert!(stats.masks > 0);
+    assert_eq!(
+        pixel(&pixels, 64, 25.0, 10.0)[3],
+        255,
+        "mask intersection missing"
+    );
+    assert_eq!(
+        pixel(&pixels, 64, 35.0, 10.0)[3],
+        255,
+        "masked sibling intersection missing"
+    );
+    assert_eq!(
+        pixel(&pixels, 64, 45.0, 10.0)[3],
+        255,
+        "unmasked sibling missing"
+    );
+}
+
+#[test]
+fn malformed_vectors_and_unsupported_blends_are_reported() {
+    let mut doc = open("structure");
+    let page = doc.pages[0];
+    let mut nodes = doc.nodes.clone();
+    let frame = nodes.iter_mut().find(|n| n.kind == "FRAME").unwrap();
+    frame.data.set("blendMode", Val::Enum("MULTIPLY"));
+    let mut malformed = frame.clone();
+    malformed.id = Guid(99, 1);
+    malformed.data.set("guid", malformed.id.to_val());
+    malformed.data.set("type", Val::Enum("VECTOR"));
+    malformed.data.set(
+        "fillGeometry",
+        Val::Arr(vec![Val::Obj([("commandsBlob", Val::Int(9999))].into())]),
+    );
+    let mut parent = figstudio_fig::Obj::new();
+    parent.insert("guid", page.to_val());
+    parent.insert("position", Val::Str("zzzzzz".into()));
+    malformed.data.set("parentIndex", Val::Obj(parent));
+    nodes.push(figstudio_fig::Node::from_data(malformed.data).unwrap());
+    doc.set_nodes(nodes).unwrap();
+    let frame = Renderer::new().render(
+        &doc,
+        page,
+        &Viewport {
+            width: 10,
+            height: 10,
+            transform: Affine::IDENTITY,
+            background: None,
+        },
+    );
+    assert!(frame.stats.unsupported_paints > 0);
+    assert!(frame.stats.approximated_blends > 0);
 }
 
 #[test]
@@ -153,6 +379,65 @@ fn hit_test_finds_the_deepest_layer() {
     let hit = hit_test(&doc, doc.pages[0], b.center()).unwrap();
     assert_eq!(hit, text);
     assert_eq!(hit_test(&doc, doc.pages[0], Point::new(-1e6, -1e6)), None);
+}
+
+#[test]
+fn parent_queries_terminate_after_public_mutation_to_a_self_parent() {
+    let mut doc = open("structure");
+    let page = doc.pages[0];
+    let node = doc.children(page)[0];
+    let n = doc.nodes.iter_mut().find(|n| n.id == node).unwrap();
+    n.parent = Some(node);
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    let _frame = renderer.render(
+        &doc,
+        page,
+        &Viewport {
+            width: 4,
+            height: 4,
+            transform: Affine::IDENTITY,
+            background: None,
+        },
+    );
+    let _ = hit_test(&doc, page, Point::new(0.0, 0.0));
+    let tf = absolute_transform(&doc, node);
+    assert!(tf.as_coeffs().iter().all(|v| v.is_finite()));
+}
+
+#[test]
+fn a_twenty_thousand_level_tree_does_not_overflow_render_or_hit_test() {
+    let mut doc = open("structure");
+    let page = doc.pages[0];
+    let mut nodes = doc.nodes.clone();
+    let mut parent = page;
+    let template = nodes.iter().find(|n| n.kind == "FRAME").unwrap().clone();
+    for i in 0..20_000u32 {
+        let id = Guid(98, i + 1);
+        let mut data = template.data.clone();
+        data.set("guid", id.to_val());
+        let mut pi = figstudio_fig::Obj::new();
+        pi.insert("guid", parent.to_val());
+        pi.insert("position", Val::Str(format!("{i:06}")));
+        data.set("parentIndex", Val::Obj(pi));
+        nodes.push(figstudio_fig::Node::from_data(data).unwrap());
+        parent = id;
+    }
+    doc.set_nodes(nodes).unwrap();
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    let frame = renderer.render(
+        &doc,
+        page,
+        &Viewport {
+            width: 4,
+            height: 4,
+            transform: Affine::IDENTITY,
+            background: None,
+        },
+    );
+    assert!(frame.stats.depth_skipped > 0);
+    let _ = hit_test(&doc, page, Point::new(0.5, 0.5));
 }
 
 #[test]
@@ -450,7 +735,7 @@ fn unread_images_are_requested_once_and_shown_as_loading() {
     let mut rounds = 0;
     let failed = loop {
         for want in &wanted {
-            r.images().fail(&want.hash, want.level);
+            r.images().fail(&want.key, want.level);
         }
         let frame = r.render(&lazy, lazy.pages[0], &viewport);
         rounds += 1;
@@ -519,14 +804,14 @@ fn one_image_at_two_sizes_does_not_depend_on_decode_order() {
     }
     let mut nodes = doc.nodes.clone();
     nodes.push(small);
-    doc.set_nodes(nodes);
+    doc.set_nodes(nodes).unwrap();
     let page = doc.pages[0];
     // At 3x the original layer is ~1140 px wide (level 0) and the copy ~285 px (level 1):
     // both use the image itself, not Figma's thumbnail.
     let viewport = fit_viewport(&doc, 3.0);
     let lazy = {
         let mut lazy = Document::open_lazy(fixture_path("structure")).unwrap();
-        lazy.set_nodes(doc.nodes.clone());
+        lazy.set_nodes(doc.nodes.clone()).unwrap();
         lazy
     };
     let mut r = Renderer::new();
@@ -563,4 +848,42 @@ fn one_image_at_two_sizes_does_not_depend_on_decode_order() {
             "after rendering at {warm:?} the frame differs"
         );
     }
+}
+
+/// Masks clip with `push_clip_path` / `pop_clip`; a parallel render records and replays them
+/// per strip and must draw the same as a serial one.
+#[cfg(feature = "parallel")]
+#[test]
+fn masks_render_the_same_in_parallel() {
+    let doc = masked_doc();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+    // Tall enough for several strips, with the masked group in the middle ones.
+    let viewport = Viewport {
+        width: 128,
+        height: 256,
+        transform: Affine::scale(2.0) * Affine::translate((0.0, -460.0)),
+        background: None,
+    };
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let one = r.render(&doc, doc.pages[0], &viewport);
+    let many = pool.install(|| r.render_parallel(&doc, doc.pages[0], &viewport));
+    assert!(one.stats.masks > 0, "the mask is in view");
+    assert_eq!(one.stats, many.stats);
+    let worst = one
+        .pixmap
+        .data_as_u8_slice()
+        .iter()
+        .zip(many.pixmap.data_as_u8_slice())
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0);
+    assert!(worst <= 1, "parallel differs by {worst}");
+    assert!(
+        one.pixmap.data_as_u8_slice().iter().any(|&b| b != 0),
+        "something was drawn"
+    );
 }

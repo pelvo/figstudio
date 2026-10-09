@@ -3,6 +3,7 @@
 //! Decoding directly (instead of through `kiwi_schema::Value`) avoids a second copy of the
 //! whole document and a hash map per object, which dominated memory on large files.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use kiwi_schema::{
@@ -10,10 +11,13 @@ use kiwi_schema::{
     TYPE_STRING, TYPE_UINT, TYPE_UINT64,
 };
 
-use crate::val::{Obj, Val, intern};
+use crate::val::{Obj, Val, intern, intern_schema};
 
 /// Deepest nesting accepted; real documents stay far below this.
 const MAX_DEPTH: u32 = 256;
+const MAX_DECODED_ITEMS: usize = 100_000_000;
+const MAX_SCHEMA_IDENTIFIERS: usize = 100_000;
+const MAX_SCHEMA_IDENTIFIER_BYTES: usize = 1024;
 
 pub(crate) type R<T> = Result<T, String>;
 
@@ -27,10 +31,25 @@ pub(crate) struct Reader<'s> {
     names: Vec<Vec<&'static str>>,
     /// Enum value -> interned name, per definition.
     enums: Vec<HashMap<u32, &'static str>>,
+    decoded_items: Cell<usize>,
 }
 
 impl<'s> Reader<'s> {
-    pub fn new(schema: &'s Schema) -> Self {
+    pub fn new(schema: &'s Schema) -> R<Self> {
+        let identifier_count = schema.defs.iter().map(|d| d.fields.len()).sum::<usize>();
+        if identifier_count > MAX_SCHEMA_IDENTIFIERS
+            || schema.defs.iter().any(|d| {
+                d.name.len() > MAX_SCHEMA_IDENTIFIER_BYTES
+                    || d.fields
+                        .iter()
+                        .any(|f| f.name.len() > MAX_SCHEMA_IDENTIFIER_BYTES)
+            })
+        {
+            return Err("schema has too many or oversized identifiers".into());
+        }
+        intern_schema(schema.defs.iter().flat_map(|d| {
+            std::iter::once(d.name.as_str()).chain(d.fields.iter().map(|f| f.name.as_str()))
+        }))?;
         let names = schema
             .defs
             .iter()
@@ -48,16 +67,18 @@ impl<'s> Reader<'s> {
                 _ => HashMap::new(),
             })
             .collect();
-        Reader {
+        Ok(Reader {
             schema,
             names,
             enums,
-        }
+            decoded_items: Cell::new(0),
+        })
     }
 
     /// Array length, checked against the bytes left so a corrupt length cannot allocate wildly.
     pub fn len(&self, bb: &mut ByteBuffer) -> R<usize> {
-        let len = bad(bb.read_var_uint())? as usize;
+        let len = usize::try_from(bad(bb.read_var_uint())?)
+            .map_err(|_| "the document list is too large".to_string())?;
         let left = bb.data().len().saturating_sub(bb.index());
         if len > left {
             return Err("the document data is truncated (list longer than the data left)".into());
@@ -71,9 +92,24 @@ impl<'s> Reader<'s> {
         }
         let len = self.len(bb)?;
         if field.type_id == TYPE_BYTE {
+            let total = self.decoded_items.get().saturating_add(len);
+            if total > MAX_DECODED_ITEMS {
+                return Err("the document contains too many decoded items".into());
+            }
+            self.decoded_items.set(total);
             return Ok(Val::Bytes(bad(bb.read_bytes(len))?.to_vec()));
         }
-        let mut items = Vec::with_capacity(len);
+        let total = self.decoded_items.get().saturating_add(len);
+        if total > MAX_DECODED_ITEMS {
+            return Err("the document contains too many decoded items".into());
+        }
+        self.decoded_items.set(total);
+        let total = self.decoded_items.get().saturating_add(len);
+        if total > MAX_DECODED_ITEMS {
+            return Err("the document contains too many decoded items".into());
+        }
+        self.decoded_items.set(total);
+        let mut items = Vec::new();
         for _ in 0..len {
             items.push(self.value(bb, field.type_id, depth)?);
         }

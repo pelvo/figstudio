@@ -11,14 +11,6 @@ use figstudio_render::content_bounds;
 /// Session ids at and above this are used for copies; real files use small session ids.
 const FIRST_SESSION: u32 = 3_000_000_000;
 
-fn guid_val(id: Guid) -> Val {
-    id.to_val()
-}
-
-fn set(data: &mut Val, key: &str, value: Val) {
-    data.set(key, value);
-}
-
 fn parent_val(parent: Guid, position: &str) -> Val {
     Val::Obj(Obj::from([
         ("guid", parent.to_val()),
@@ -74,15 +66,10 @@ pub fn synth(mut doc: Document, copies: usize, pages: usize) -> Result<Document,
             // A new page after the original one.
             let id = Guid(FIRST_SESSION - 1, p as u32);
             let mut data = page_node.data.clone();
-            set(&mut data, "guid", guid_val(id));
-            set(
-                &mut data,
-                "name",
-                Val::Str(format!("Stress page {}", p + 1)),
-            );
+            data.set("guid", id.to_val());
+            data.set("name", Val::Str(format!("Stress page {}", p + 1)));
             let parent = page_node.parent.ok_or("page has no parent")?;
-            set(
-                &mut data,
+            data.set(
                 "parentIndex",
                 parent_val(parent, &format!("{}~{p:06}", page_node.position)),
             );
@@ -95,24 +82,26 @@ pub fn synth(mut doc: Document, copies: usize, pages: usize) -> Result<Document,
             }
             let (col, row) = (k % cols, k / cols);
             let (dx, dy) = (col as f64 * (w + gap), row as f64 * (h + gap));
-            let map: HashMap<Guid, Guid> =
-                source.iter().map(|id| (*id, Guid(session, id.1))).collect();
+            let map: HashMap<Guid, Guid> = source
+                .iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    let local = u32::try_from(i + 1).map_err(|_| "too many source nodes")?;
+                    Ok((*id, Guid(session, local)))
+                })
+                .collect::<Result<_, String>>()?;
             session += 1;
             for id in &source {
                 let node = doc.node(*id).ok_or("missing node")?;
                 let mut data = node.data.clone();
-                set(&mut data, "guid", guid_val(map[id]));
+                data.set("guid", map[id].to_val());
                 let parent = node.parent.ok_or("node has no parent")?;
                 let new_parent = if parent == page0 {
                     target
                 } else {
                     map[&parent]
                 };
-                set(
-                    &mut data,
-                    "parentIndex",
-                    parent_val(new_parent, &node.position),
-                );
+                data.set("parentIndex", parent_val(new_parent, &node.position));
                 if parent == page0 {
                     shift(&mut data, dx, dy);
                 }
@@ -120,6 +109,6 @@ pub fn synth(mut doc: Document, copies: usize, pages: usize) -> Result<Document,
             }
         }
     }
-    doc.set_nodes(nodes);
+    doc.set_nodes(nodes).map_err(|e| e.to_string())?;
     Ok(doc)
 }

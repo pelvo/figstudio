@@ -167,7 +167,7 @@ mod tests {
         assert!(needs_cjk(&doc, "設計.fig"), "file name");
         let mut nodes = doc.nodes.clone();
         nodes[3].name = "按鈕".into();
-        doc.set_nodes(nodes);
+        doc.set_nodes(nodes).unwrap();
         assert!(needs_cjk(&doc, "structure.fig"), "layer name");
     }
 }

@@ -140,7 +140,7 @@ tiling would fix it); the Layers panel is not virtualised yet (fine at 9 000 row
 ### P2 — Headless CLI (`apps/figstudio-cli`)
 - [x] `info`, `tree --depth`, `render --page/--node/--scale/--background`, `thumbnail`
 - [x] renders all 7 fixtures (3–366 ms each, release build)
-- [ ] CLI tests (exit codes, bad arguments, output files) — task T1
+- [ ] CLI tests (partial: usage/runtime errors and core command output checks; T1 remains open)
 - [ ] `render --all-pages` and JSON output for `info`
 
 **Done when:** CLI tests pass and output is checked for every fixture.
@@ -220,6 +220,34 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-09 — Rust audit fixes (F1–F11, see `target/rustaudit/report.md`, not tracked).
+  Loader rejects parent cycles (iterative, all nodes), `page_of` and `descendant_count` bounded.
+  Decompression capped per item (512 MiB) and per archive (1 GiB) with `take(limit+1)`. Save
+  uses a unique temp file and removes it on failure. Empty images kept; malformed blobs error.
+  Integer writes checked (u8/i32/u32). Render has a shared 2,000,000-attempt work budget
+  across bounded bounds preparation and traversal; ordinary recursion and hit testing are guarded,
+  and omitted work is reported in `Stats`. This leaves >160x headroom over the measured real-file
+  page render (12,418 work units from a prior measurement; final attempted-work telemetry not
+  collected directly). Image cache is bounded by 256 MiB and 256 successful entries;
+  conflicting bytes under one image key invalidate cache hits. App exports admit one in-flight job
+  and release admission on completion/failure/unwind; byte-backed drops share open deduplication.
+  `scripts/check.sh` passed (fmt, clippy, tests, release build); focused package tests and CLI
+  privacy/output tests passed. The review follow-up is recorded in `target/auditfix/fix2-report.md`.
+  Not done: live GUI check, Pillow thumb sheet, pixel-parity review, and RSS measurement.
+
+- 2026-10-09 — Pony audit L1 privacy/trust: doctor now bounds its input reads and keeps archive
+  paths/schema prelude out of output; Kiwi list lengths and schema interning are bounded, and
+  ID-less node records are rejected rather than dropped. L2: iterative layer/CLI walks, descendant
+  fit bounds, retained source-byte cache accounting, indexed override lookup, unsupported draw
+  telemetry and clip/mask pixel checks. Thumb sheet skipped (Pillow unavailable). Both lanes passed
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh`; L3 synth IDs, render-worker unavailable state,
+  wrapper/test cleanup, decoded-item and schema limits, and doctor prelude privacy passed the gate.
+  Private-file smoke passed info/doctor/render/thumbnail/resave/reopen with the input unchanged.
+  Pony audit follow-up: all 15 non-false-positive findings fixed; see `target/ponyfix/report.md`.
+- 2026-10-09 — CLI validation: unknown commands now fail as usage errors before file access;
+  black-box tests check usage/runtime errors and core command outputs. PNG outputs are decoded
+  and dimension-checked; doctor missing-file usage and resave confirmation are asserted. CLI,
+  doctor privacy and `scripts/check.sh` pass; T1 remains open.
 - 2026-10-08 21:5x — Rust spike: kiwi-schema decode + tiny-skia render of 7 fixtures.
 - 2026-10-08 22:0x — Requirements fixed (macOS + Linux + headless, wasm optional, Vello,
   PhotoCraft-style UI). Switched renderer to `vello_cpu`.
@@ -260,3 +288,23 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   a file has CJK names or text; desktop fallback list gained macOS / Windows fonts
   (PingFang HK, Heiti TC, Hiragino Sans GB, Arial Unicode MS, Microsoft YaHei; not checked
   on a Mac). Checked in headless Chromium: Latin file fetches nothing, CJK file renders.
+- 2026-10-09 — Correct instance override paths through ordinary frames/groups. Synthetic
+  nested-instance pixel regression fails without the fix; private visual comparison improves
+  state selection and chart layout. Full workspace gate recorded in the local render report.
+- 2026-10-09 — Added scoped component properties, exact-version paint-variable alias resolution,
+  and omitted derived translations for scaled/resized instances. Synthetic pixel regressions
+  proved red/green; visual comparison restores table values and improves radial leaders.
+  Reference still differs in some component states and right-panel structure; not claimed exact.
+- 2026-10-09 — Strengthened stale-property-text regression with a stored old glyph so it proves
+  stale outlines are rejected rather than only proving an empty text node remains empty.
+- 2026-10-09 — Honor `stackReverseZIndex` when painting siblings, restoring the second chart
+  formerly covered by a history list. Synthetic overlapping-instance pixel regression proved
+  red/green; private visual comparison confirms chart content. State-colour investigation open.
+- 2026-10-09 20:xx — Merged `fix/c1-rendering` into `web-threads`. Its byte-bounded image cache
+  is replaced by the per-level cache (`render::images`), which now keys entries by document
+  (`Document::instance`) so equal hashes with different bytes never alias; its cache tests
+  are rewritten against it. Work budget kept on both the serial and parallel paths; masks
+  use `push_clip_path`, now recorded and replayed per strip (pixel test against serial).
+  Lazy archive reads keep the decoder's size limits. Desktop exports run in the background
+  and read lazy images. Big file: lazy matches fully read pixel for pixel on every page at
+  fit and 8x; in headless Chromium it opens in 1.5 s, all pages draw, peak 869 MB.

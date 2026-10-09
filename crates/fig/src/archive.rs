@@ -178,10 +178,18 @@ impl Entry {
         match self.method {
             0 => Ok(data),
             8 => {
-                let mut out = Vec::with_capacity(usize::try_from(self.size).unwrap_or(0));
+                // Bounded like the whole-file reader: never more than one chunk's limit, and
+                // never more than the size the directory declares.
+                let limit = crate::doc::MAX_CHUNK_BYTES
+                    .min(usize::try_from(self.size).unwrap_or(usize::MAX));
+                let mut out = Vec::new();
                 flate2::read::DeflateDecoder::new(data.as_slice())
+                    .take(limit as u64 + 1)
                     .read_to_end(&mut out)
                     .map_err(|e| FigError(format!("cannot inflate {}: {e}", self.name)))?;
+                if out.len() > limit {
+                    return err(format!("{} inflates past its declared size", self.name));
+                }
                 Ok(out)
             }
             m => err(format!("{} uses unsupported compression {m}", self.name)),
@@ -191,7 +199,10 @@ impl Entry {
 
 fn read_range(r: &mut (impl Read + Seek), at: u64, len: u64) -> Result<Vec<u8>, FigError> {
     let io = |e: std::io::Error| FigError(format!("cannot read the file: {e}"));
-    let len = usize::try_from(len).map_err(|_| FigError("entry too large".into()))?;
+    let len = usize::try_from(len)
+        .ok()
+        .filter(|&l| l <= crate::doc::MAX_CHUNK_BYTES)
+        .ok_or_else(|| FigError("archive entry too large".into()))?;
     r.seek(SeekFrom::Start(at)).map_err(io)?;
     let mut buf = vec![0; len];
     r.read_exact(&mut buf).map_err(io)?;

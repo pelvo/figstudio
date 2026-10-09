@@ -55,7 +55,7 @@ pub fn fit_rect(tab: &mut Tab, rect: Rect, page_rect: Rect) {
 pub fn show(
     ui: &mut egui::Ui,
     tab: &mut Tab,
-    workers: &Workers,
+    workers: &mut Workers,
     tool: Tool,
     space_held: bool,
 ) -> Option<Pos2> {
@@ -160,22 +160,28 @@ pub fn show(
             f64::from(tab.view.pan.x * ppp),
             f64::from(tab.view.pan.y * ppp),
         )) * Affine::scale(zoom);
-        workers.render(RenderJob {
-            tab: tab.id,
-            generation: tab.generation,
-            doc: tab.doc.clone(),
-            source: tab.source.clone(),
-            root: tab.page,
-            viewport: Viewport {
-                width: px.x.min(f32::from(u16::MAX)) as u16,
-                height: px.y.min(f32::from(u16::MAX)) as u16,
-                transform,
-                background: Some(page_background(&tab.doc, tab.page)),
-            },
-            view: tab.view,
-            size_points: px / ppp,
-        });
-        tab.requested_key = Some(key);
+        if workers
+            .render(RenderJob {
+                tab: tab.id,
+                generation: tab.generation,
+                doc: tab.doc.clone(),
+                source: tab.source.clone(),
+                root: tab.page,
+                viewport: Viewport {
+                    width: px.x.min(f32::from(u16::MAX)) as u16,
+                    height: px.y.min(f32::from(u16::MAX)) as u16,
+                    transform,
+                    background: Some(page_background(&tab.doc, tab.page)),
+                },
+                view: tab.view,
+                size_points: px / ppp,
+            })
+            .is_ok()
+        {
+            tab.requested_key = Some(key);
+        } else {
+            tab.requested_key = None;
+        }
     }
 
     let painter = ui.painter_at(rect);

@@ -63,8 +63,25 @@ pub fn layers(ui: &mut Ui, tab: &mut Tab, filter: &str) {
             ui.spacing_mut().item_spacing.y = 0.0;
             if filter.is_empty() {
                 // Figma lists the topmost layer first, so children are drawn in reverse.
-                for &child in doc.children(tab.page).iter().rev() {
-                    row(ui, tab, &doc, child, 0);
+                let mut stack: Vec<_> = doc
+                    .children(tab.page)
+                    .iter()
+                    .rev()
+                    .map(|id| (*id, 0usize))
+                    .collect();
+                while let Some((id, depth)) = stack.pop() {
+                    if doc.node(id).is_none() {
+                        continue;
+                    }
+                    row(ui, tab, &doc, id, depth);
+                    if tab.expanded.contains(&id) {
+                        stack.extend(
+                            doc.children(id)
+                                .iter()
+                                .rev()
+                                .map(|child| (*child, depth + 1)),
+                        );
+                    }
                 }
             } else {
                 let mut shown = 0;
@@ -85,7 +102,8 @@ fn search(
     filter: &str,
     shown: &mut usize,
 ) {
-    for &child in doc.children(parent).iter().rev() {
+    let mut stack: Vec<Guid> = doc.children(parent).iter().rev().copied().collect();
+    while let Some(child) = stack.pop() {
         let Some(node) = doc.node(child) else {
             continue;
         };
@@ -93,7 +111,7 @@ fn search(
             *shown += 1;
             flat_row(ui, tab, node);
         }
-        search(ui, tab, doc, child, filter, shown);
+        stack.extend(doc.children(child).iter().rev().copied());
     }
 }
 
@@ -180,11 +198,6 @@ fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize) {
     }
     if response.hovered() {
         tab.hover = Some(id);
-    }
-    if expanded {
-        for &child in children.iter().rev() {
-            row(ui, tab, doc, child, depth + 1);
-        }
     }
 }
 

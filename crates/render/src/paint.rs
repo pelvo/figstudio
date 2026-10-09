@@ -10,7 +10,7 @@ use vello_cpu::peniko::{
 use vello_cpu::{Image, ImageSource, PaintType};
 
 use crate::Stats;
-use crate::images::{Decoded, ImageRequest, Images, clamp_level, level_for};
+use crate::images::{Decoded, ImageRequest, Images, cache_key, clamp_level, level_for};
 
 pub fn color(value: Option<&Val>, opacity: f32) -> Option<AlphaColor<Srgb>> {
     let c = value?;
@@ -215,10 +215,11 @@ fn pick_image(
     stats: &mut Stats,
 ) -> Option<(Decoded, (f64, f64))> {
     let hash_of = |key: &str| p.path(&[key, "hash"]).and_then(Val::as_bytes).map(hex);
+    let key = |h: &str| cache_key(doc, h);
     let available = |h: Option<String>| {
         h.filter(|h| {
             (doc.images.contains_key(h) || doc.lazy_images.contains_key(h))
-                && !img.images.has_failed(h)
+                && !img.images.has_failed(&key(h))
         })
     };
     let full = available(hash_of("image"));
@@ -228,7 +229,7 @@ fn pick_image(
         (Some(w), Some(h)) if w >= 1.0 && h >= 1.0 => Some((w as u32, h as u32)),
         _ => full
             .as_deref()
-            .and_then(|f| img.images.nearest(f, 0))
+            .and_then(|f| img.images.nearest(&key(f), 0))
             .map(|d| d.natural),
     };
     let natural = original.map(|(w, h)| (f64::from(w), f64::from(h)));
@@ -249,14 +250,15 @@ fn pick_image(
     };
     let mut loading = false;
     let chosen = target.and_then(|(hash, level)| {
-        if let Some(d) = img.images.get(&hash, level) {
+        if let Some(d) = img.images.get(&key(&hash), level) {
             return Some(d);
         }
         if let Some(d) = fetch(&hash, level, doc, img, &mut loading) {
             return Some(d);
         }
         // Not decoded yet: the nearest copy of the image, else of the thumbnail.
-        let fallback = |h: &Option<String>, l| h.as_deref().and_then(|h| img.images.nearest(h, l));
+        let fallback =
+            |h: &Option<String>, l| h.as_deref().and_then(|h| img.images.nearest(&key(h), l));
         fallback(&full, level).or_else(|| fallback(&thumb, 0))
     });
     if loading {
@@ -277,15 +279,17 @@ fn fetch(
     img: &mut ImageCtx<'_>,
     loading: &mut bool,
 ) -> Option<Decoded> {
+    let key = cache_key(doc, hash);
     if let Some(bytes) = doc.images.get(hash) {
-        img.images.insert_encoded(hash, bytes, level);
-        return img.images.get(hash, level);
+        img.images.insert_encoded(&key, bytes, level);
+        return img.images.get(&key, level);
     }
     let entry = doc.lazy_images.get(hash)?;
     *loading = true;
-    if img.images.begin_request(hash, level) {
+    if img.images.begin_request(&key, level) {
         img.wanted.push(ImageRequest {
             hash: hash.to_string(),
+            key,
             level,
             entry: entry.clone(),
         });
