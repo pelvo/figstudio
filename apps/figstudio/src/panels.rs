@@ -199,11 +199,6 @@ fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize) {
     if response.hovered() {
         tab.hover = Some(id);
     }
-    if expanded {
-        for &child in children.iter().rev() {
-            row(ui, tab, doc, child, depth + 1);
-        }
-    }
 }
 
 fn toggle(tab: &mut Tab, id: Guid) {

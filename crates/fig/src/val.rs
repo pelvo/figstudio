@@ -22,8 +22,8 @@ pub enum Val {
 
 /// Returns a `'static` copy of `s`, shared by every caller. Meant for schema identifiers
 /// (field and enum names), which are a small fixed set; each distinct string is kept once.
-const MAX_INTERNED_SCHEMA_NAMES: usize = 4096;
-const MAX_INTERNED_SCHEMA_BYTES: usize = 1024 * 1024;
+const MAX_INTERNED_SCHEMA_NAMES: usize = 200_000;
+const MAX_INTERNED_SCHEMA_BYTES: usize = 32 * 1024 * 1024;
 
 fn table() -> &'static Mutex<HashSet<&'static str>> {
     static TABLE: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();

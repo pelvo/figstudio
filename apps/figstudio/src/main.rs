@@ -43,6 +43,7 @@ struct Toast {
 
 struct App {
     workers: Workers,
+    render_worker_lost: bool,
     tabs: Vec<Tab>,
     active: usize,
     next_id: u64,
@@ -66,6 +67,7 @@ impl App {
         let workers = Workers::new(&cc.egui_ctx);
         let mut app = App {
             workers,
+            render_worker_lost: false,
             tabs: Vec::new(),
             active: 0,
             next_id: 1,
@@ -208,6 +210,7 @@ impl App {
                 }
                 Poll::Empty => break,
                 Poll::Disconnected => {
+                    self.render_worker_lost = true;
                     self.report_worker_lost(ctx);
                     break;
                 }
@@ -666,14 +669,22 @@ impl App {
                 });
         }
 
-        let workers = &self.workers;
+        let worker_unavailable = self.render_worker_lost;
         let tool = self.tool;
         let mut cursor = None;
         let mut open_clicked = false;
         egui::CentralPanel::no_frame().show(ui, |ui| {
             ui.painter().rect_filled(ui.max_rect(), 0.0, theme::CANVAS);
             match self.tabs.get_mut(self.active) {
-                Some(tab) => cursor = canvas::show(ui, tab, workers, tool, space_held),
+                Some(_tab) if worker_unavailable => {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(
+                            RichText::new("Rendering is unavailable; restart the app.")
+                                .color(theme::WARNING),
+                        );
+                    });
+                }
+                Some(tab) => cursor = canvas::show(ui, tab, &mut self.workers, tool, space_held),
                 None => open_clicked = empty_state(ui),
             }
         });

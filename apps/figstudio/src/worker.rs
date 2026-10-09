@@ -52,7 +52,7 @@ pub struct ExportDone {
 }
 
 pub struct Workers {
-    render_tx: Sender<RenderJob>,
+    render_tx: Option<Sender<RenderJob>>,
     pub render_rx: Receiver<RenderDone>,
     load_tx: Sender<Loaded>,
     pub load_rx: Receiver<Loaded>,
@@ -112,7 +112,7 @@ impl Workers {
         let (load_tx, load_rx) = channel();
         let (export_tx, export_rx) = channel();
         Workers {
-            render_tx,
+            render_tx: Some(render_tx),
             render_rx,
             load_tx,
             load_rx,
@@ -155,8 +155,16 @@ impl Workers {
         Ok(())
     }
 
-    pub fn render(&self, job: RenderJob) {
-        let _ = self.render_tx.send(job);
+    pub fn render(&mut self, job: RenderJob) -> Result<(), &'static str> {
+        if self
+            .render_tx
+            .as_ref()
+            .is_none_or(|tx| tx.send(job).is_err())
+        {
+            self.render_tx = None;
+            return Err("render worker is unavailable");
+        }
+        Ok(())
     }
 
     pub fn load(&self, path: PathBuf) {

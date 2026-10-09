@@ -334,23 +334,3 @@ fn create_temp(path: &std::path::Path) -> Result<(std::path::PathBuf, std::fs::F
         last_err.map_or_else(|| "name clash".into(), |e| e.to_string())
     ))
 }
-
-#[cfg(test)]
-mod tests {
-    /// The decoder reads a uint64 as `as i64` and the writer writes `as u64`. They must be exact
-    /// inverses for every 64-bit pattern, so a value read from a file is written back unchanged.
-    #[test]
-    fn uint64_bit_pattern_round_trips_for_every_edge_value() {
-        for bits in [
-            0u64,
-            1,
-            u64::from(u32::MAX),
-            1 << 63,
-            u64::MAX - 1,
-            u64::MAX,
-        ] {
-            let stored = bits as i64;
-            assert_eq!(stored as u64, bits, "bit pattern changed for {bits:#x}");
-        }
-    }
-}

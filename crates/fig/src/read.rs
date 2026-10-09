@@ -3,6 +3,7 @@
 //! Decoding directly (instead of through `kiwi_schema::Value`) avoids a second copy of the
 //! whole document and a hash map per object, which dominated memory on large files.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use kiwi_schema::{
@@ -14,8 +15,9 @@ use crate::val::{Obj, Val, intern, intern_schema};
 
 /// Deepest nesting accepted; real documents stay far below this.
 const MAX_DEPTH: u32 = 256;
-const MAX_SCHEMA_IDENTIFIERS: usize = 4096;
-const MAX_SCHEMA_IDENTIFIER_BYTES: usize = 256;
+const MAX_DECODED_ITEMS: usize = 20_000_000;
+const MAX_SCHEMA_IDENTIFIERS: usize = 100_000;
+const MAX_SCHEMA_IDENTIFIER_BYTES: usize = 1024;
 
 pub(crate) type R<T> = Result<T, String>;
 
@@ -29,6 +31,7 @@ pub(crate) struct Reader<'s> {
     names: Vec<Vec<&'static str>>,
     /// Enum value -> interned name, per definition.
     enums: Vec<HashMap<u32, &'static str>>,
+    decoded_items: Cell<usize>,
 }
 
 impl<'s> Reader<'s> {
@@ -68,6 +71,7 @@ impl<'s> Reader<'s> {
             schema,
             names,
             enums,
+            decoded_items: Cell::new(0),
         })
     }
 
@@ -90,7 +94,12 @@ impl<'s> Reader<'s> {
         if field.type_id == TYPE_BYTE {
             return Ok(Val::Bytes(bad(bb.read_bytes(len))?.to_vec()));
         }
-        let mut items = Vec::with_capacity(len);
+        let total = self.decoded_items.get().saturating_add(len);
+        if total > MAX_DECODED_ITEMS {
+            return Err("the document contains too many decoded items".into());
+        }
+        self.decoded_items.set(total);
+        let mut items = Vec::new();
         for _ in 0..len {
             items.push(self.value(bb, field.type_id, depth)?);
         }

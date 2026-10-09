@@ -113,11 +113,10 @@ mod tests {
     }
 
     #[test]
-    fn byte_backed_drop_uses_open_action_for_pending_and_loaded_tabs() {
+    fn opening_a_file_twice_starts_one_load_and_focuses_an_open_tab() {
         let mut loading = Pending::default();
         let path = PathBuf::from("/virtual/drop.fig");
-        let first = open_action(&[], &mut loading, &path);
-        assert_eq!(first, OpenAction::Load);
+        assert_eq!(open_action(&[], &mut loading, &path), OpenAction::Load);
         assert_eq!(open_action(&[], &mut loading, &path), OpenAction::Ignore);
         loading.finish(&path);
         assert_eq!(
@@ -130,22 +129,14 @@ mod tests {
             open_action(&[&path], &mut loading, &path),
             OpenAction::Focus(0)
         );
-    }
 
-    #[test]
-    fn opening_a_file_twice_starts_one_load_and_focuses_an_open_tab() {
-        let mut pending = Pending::default();
         let a = PathBuf::from("/x/a.fig");
         let b = PathBuf::from("/x/b.fig");
-        assert_eq!(open_action(&[], &mut pending, &a), OpenAction::Load);
+        assert_eq!(open_action(&[], &mut loading, &a), OpenAction::Load);
+        assert_eq!(open_action(&[], &mut loading, &a), OpenAction::Ignore);
+        loading.finish(&a);
         assert_eq!(
-            open_action(&[], &mut pending, &a),
-            OpenAction::Ignore,
-            "still loading"
-        );
-        pending.finish(&a);
-        assert_eq!(
-            open_action(&[&a, &b], &mut pending, &b),
+            open_action(&[&a, &b], &mut loading, &b),
             OpenAction::Focus(1)
         );
     }

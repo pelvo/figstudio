@@ -850,6 +850,7 @@ impl Ctx<'_> {
         let base: Vec<Guid> = path.map(<[Guid]>::to_vec).unwrap_or_default();
         let owner_depth = self.symbol_stack.len();
         let before = self.patches.len();
+        let mut added_keys = Vec::new();
         let lists = [
             (data.path(&["symbolData", "symbolOverrides"]), false),
             (data.get("derivedSymbolData"), true),
@@ -873,6 +874,7 @@ impl Ctx<'_> {
                     .entry(full.clone())
                     .or_default()
                     .push(index);
+                added_keys.push(full);
                 self.patches.push(Patch {
                     data: item.clone(),
                     owner_depth,
@@ -884,9 +886,14 @@ impl Ctx<'_> {
         self.draw_children(symbol, &symbol.data, world, Some(&base));
         self.symbol_stack.pop();
         self.patches.truncate(before);
-        self.patch_index.retain(|_, indexes| {
-            indexes.retain(|index| *index < before);
-            !indexes.is_empty()
-        });
+        for key in added_keys {
+            let remove = self.patch_index.get_mut(&key).is_some_and(|indexes| {
+                indexes.pop();
+                indexes.is_empty()
+            });
+            if remove {
+                self.patch_index.remove(&key);
+            }
+        }
     }
 }

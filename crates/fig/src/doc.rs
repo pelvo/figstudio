@@ -42,6 +42,7 @@ pub const MAX_CHUNK_BYTES: usize = 512 * 1024 * 1024;
 
 /// Largest total decompressed size of all archive members together, duplicates included.
 pub const MAX_ARCHIVE_INFLATED_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_DECODED_NODES: usize = 1_000_000;
 
 /// Byte limits used while reading a file. The public API uses the `MAX_*` constants above;
 /// the limits are a parameter so boundary behaviour can be tested with small numbers.
@@ -247,6 +248,9 @@ impl Document {
         if !prelude.starts_with("fig-") {
             return err("not a .fig file (missing fig- header)");
         }
+        if prelude != "fig-kiwi" && prelude != "fig-jam" {
+            return err("unsupported .fig format header");
+        }
         let format_version = u32::from_le_bytes(canvas[8..12].try_into().unwrap());
         let mut chunks = Vec::new();
         let mut at = 12;
@@ -301,6 +305,9 @@ impl Document {
                     saw_nodes = true;
                     // Nodes are decoded one at a time so only one tree exists in memory.
                     let len = reader.len(&mut bb).map_err(decode_err)?;
+                    if len > MAX_DECODED_NODES.saturating_sub(nodes.len()) {
+                        return Err(decode_err("too many node records".into()));
+                    }
                     nodes.reserve(len);
                     index.reserve(len);
                     for _ in 0..len {

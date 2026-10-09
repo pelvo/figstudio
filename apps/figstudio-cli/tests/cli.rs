@@ -244,6 +244,15 @@ fn resave_and_synth_outputs_reopen_with_expected_content() {
         "--pages",
         "2",
     ]));
+    let output = Document::open(&synthesized).unwrap();
+    let copies: Vec<_> = output
+        .nodes
+        .iter()
+        .filter(|node| node.id.0 == 3_000_000_000)
+        .collect();
+    let local_ids: std::collections::HashSet<_> = copies.iter().map(|node| node.id.1).collect();
+    assert_eq!(copies.len(), 23);
+    assert_eq!(local_ids.len(), copies.len(), "copied local ids collided");
     let info = assert_success(cli(&["info", synthesized.to_str().unwrap()]));
     assert!(info.contains("nodes:    96"), "{info}");
     assert!(info.contains("1. Page 1"), "{info}");

@@ -137,10 +137,17 @@ fn doctor_errors_do_not_echo_the_path() {
     archive[member_at + member.len()] ^= 1; // Invalid CRC makes the reader report this name.
     std::fs::write(&named_member, archive).unwrap();
 
+    let unexpected_prelude = dir.join("secret-unexpected-prelude.fig");
+    let mut bytes = std::fs::read(&bad).unwrap();
+    bytes[..4].copy_from_slice(b"PK\x03\x04");
+    bytes.extend_from_slice(b"secret-format-private");
+    std::fs::write(&unexpected_prelude, bytes).unwrap();
+
     for path in [
         bad.clone(),
         dir.join("missing-secret-file.fig"),
         named_member,
+        unexpected_prelude,
     ] {
         let out = Command::new(exe).arg("doctor").arg(&path).output().unwrap();
         assert!(!out.status.success());
@@ -151,5 +158,6 @@ fn doctor_errors_do_not_echo_the_path() {
         );
         assert!(!all.contains("secret"), "{all}");
         assert!(!all.contains("private-member-name"), "{all}");
+        assert!(!all.contains("secret-format-private"), "{all}");
     }
 }

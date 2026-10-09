@@ -211,7 +211,9 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   ID-less node records are rejected rather than dropped. L2: iterative layer/CLI walks, descendant
   fit bounds, retained source-byte cache accounting, indexed override lookup, unsupported draw
   telemetry and clip/mask pixel checks. Thumb sheet skipped (Pillow unavailable). Both lanes passed
-  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh`; private smoke, L3 and quality review remain.
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh`; L3 synth IDs, render-worker unavailable state,
+  wrapper/test cleanup, decoded-item and schema limits, and doctor prelude privacy passed the gate.
+  Private-file smoke passed info/doctor/render/thumbnail/resave/reopen with the input unchanged.
 - 2026-10-09 — CLI validation: unknown commands now fail as usage errors before file access;
   black-box tests check usage/runtime errors and core command outputs. PNG outputs are decoded
   and dimension-checked; doctor missing-file usage and resave confirmation are asserted. CLI,
