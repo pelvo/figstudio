@@ -589,7 +589,17 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
         if depth >= 128 || !seen.insert(parent) {
             return None;
         }
-        for id in doc.children(parent).iter().rev() {
+        // Topmost painted child first: the reverse of drawing order (see `draw_children`).
+        let reverse = doc
+            .node(parent)
+            .is_some_and(|p| p.data.flag("stackReverseZIndex") == Some(true));
+        let children = doc.children(parent);
+        for index in 0..children.len() {
+            let id = &children[if reverse {
+                index
+            } else {
+                children.len() - 1 - index
+            }];
             let Some(node) = doc.node(*id) else { continue };
             if !visible(&node.data) || node.data.flag("mask") == Some(true) {
                 continue;
