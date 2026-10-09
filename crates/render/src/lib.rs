@@ -523,6 +523,15 @@ impl Ctx<'_> {
                 glyphs_fresh = true;
             }
             data = data.merged(&p.data);
+            // An explicit paint override replaces the paints of a style it does not restate.
+            for (style, key) in variables::STYLED_PAINTS {
+                if p.data.get(key).is_some()
+                    && p.data.get(style).is_none()
+                    && let Val::Obj(o) = &mut data
+                {
+                    o.remove(style);
+                }
+            }
         }
         (Cow::Owned(data), text_changed && !glyphs_fresh)
     }

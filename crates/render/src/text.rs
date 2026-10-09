@@ -10,7 +10,14 @@ pub fn stored_glyphs(data: &Val, blobs: &[Vec<u8>]) -> Vec<BezPath> {
     let Some(glyphs) = data.path(&["derivedTextData", "glyphs"]) else {
         return out;
     };
-    for glyph in glyphs.items() {
+    // Truncated text stores every line's glyphs plus the ellipsis glyph; the visible run ends
+    // at `truncationStartIndex`, a glyph index just past that ellipsis.
+    let glyphs = glyphs.items();
+    let visible = data
+        .path(&["derivedTextData", "truncationStartIndex"])
+        .and_then(Val::as_u32)
+        .map_or(glyphs.len(), |i| glyphs.len().min(i as usize));
+    for glyph in &glyphs[..visible] {
         let Some(index) = glyph.get("commandsBlob").and_then(Val::as_u32) else {
             continue;
         };
