@@ -254,3 +254,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   Reference still differs in some component states and right-panel structure; not claimed exact.
 - 2026-10-09 — Strengthened stale-property-text regression with a stored old glyph so it proves
   stale outlines are rejected rather than only proving an empty text node remains empty.
+- 2026-10-09 — Honor `stackReverseZIndex` when painting siblings, restoring the second chart
+  formerly covered by a history list. Synthetic overlapping-instance pixel regression proved
+  red/green; private visual comparison confirms chart content. State-colour investigation open.

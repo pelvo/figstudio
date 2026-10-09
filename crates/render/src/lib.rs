@@ -791,7 +791,13 @@ impl Ctx<'_> {
     /// Draws children, turning mask layers into clips for the siblings above them.
     fn draw_children(&mut self, node: &Node, data: &Val, world: Affine, path: Option<&[Guid]>) {
         let mut mask_layers = 0;
-        for id in self.doc.children(node.id) {
+        let children = self.doc.children(node.id);
+        for index in 0..children.len() {
+            let id = &children[if data.flag("stackReverseZIndex") == Some(true) {
+                children.len() - 1 - index
+            } else {
+                index
+            }];
             if self.exhausted || !self.charge_work() {
                 break;
             }

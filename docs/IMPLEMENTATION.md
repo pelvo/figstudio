@@ -120,7 +120,8 @@ tree from `root` (a page or any node). For each node, `Ctx::draw`:
    `styleID` use paints from `vectorData.styleOverrideTable`.
 7. Strokes: `strokeGeometry` blobs; else stroke the base shape with `strokeWeight`.
 8. Children: clip layer if the frame clips; `draw_instance` for INSTANCE, else
-   `draw_children`, which turns `mask` children into clip layers for the siblings above them.
+   `draw_children`, which honors `stackReverseZIndex` and turns `mask` children into clip
+   layers for the siblings above them.
 9. Pop the layers.
 
 Paints are resolved in `paint::resolve()`. SOLID, linear / radial / angular gradients and
