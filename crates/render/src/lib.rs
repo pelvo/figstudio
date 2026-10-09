@@ -3,8 +3,11 @@
 //! The same code path serves the desktop app, the headless CLI and the browser build.
 
 pub mod geom;
+mod instance;
+mod layout;
 pub mod paint;
 mod text;
+mod variables;
 
 use std::borrow::Cow;
 use std::fmt;
@@ -133,6 +136,9 @@ struct Ctx<'a> {
     patches: Vec<Patch>,
     patch_index: std::collections::HashMap<Vec<Guid>, Vec<usize>>,
     symbol_stack: Vec<Guid>,
+    instance_scales: Vec<f64>,
+    properties: instance::Properties,
+    variables: variables::Variables,
     work_left: usize,
     depth: usize,
     exhausted: bool,
@@ -159,6 +165,10 @@ impl Renderer {
         preparation_skipped: usize,
     ) -> Frame {
         let (w, h) = (viewport.width.max(1), viewport.height.max(1));
+        let mut work_left = work;
+        let properties = instance::Properties::new(doc, &mut work_left);
+        let variables = variables::Variables::new(doc, &mut work_left);
+        let preparation_skipped = preparation_skipped + usize::from(work_left == 0);
         let mut ctx = Ctx {
             doc,
             rc: RenderContext::new_with(w, h, RenderSettings::default()),
@@ -175,7 +185,10 @@ impl Renderer {
             patches: Vec::new(),
             patch_index: std::collections::HashMap::new(),
             symbol_stack: Vec::new(),
-            work_left: work,
+            instance_scales: Vec::new(),
+            properties,
+            variables,
+            work_left,
             depth: 0,
             exhausted: false,
             screen: Rect::new(0.0, 0.0, f64::from(w), f64::from(h)),
@@ -481,12 +494,26 @@ impl Ctx<'_> {
             .flatten()
             .filter_map(|index| self.patches.get(*index))
             .collect();
-        if matches.is_empty() {
+        let mut property_patch = self.properties.patch(&node.data);
+        let scale = self.instance_scales.last().copied().unwrap_or(1.0);
+        if scale != 1.0 && !matches.iter().any(|p| p.data.get("transform").is_some()) {
+            let tf = affine(node.data.get("transform")).as_coeffs();
+            let mut transform = node
+                .data
+                .get("transform")
+                .cloned()
+                .unwrap_or(Val::Obj(figstudio_fig::Obj::new()));
+            transform.set("m02", Val::Float(tf[4] * scale));
+            transform.set("m12", Val::Float(tf[5] * scale));
+            property_patch.set("transform", transform);
+        }
+        if matches.is_empty() && property_patch == Val::Obj(figstudio_fig::Obj::new()) {
             return (Cow::Borrowed(&node.data), false);
         }
         matches.sort_by_key(|p| (std::cmp::Reverse(p.owner_depth), p.derived));
-        let mut data = node.data.clone();
-        let (mut text_changed, mut glyphs_fresh) = (false, false);
+        let mut data = node.data.merged(&property_patch);
+        let mut text_changed = data.get("textData") != node.data.get("textData");
+        let mut glyphs_fresh = false;
         for p in matches {
             if p.data.get("textData").is_some() && !p.derived {
                 text_changed = true;
@@ -520,7 +547,9 @@ impl Ctx<'_> {
         }
         self.depth += 1;
         let (data, stale_glyphs) = patched.unwrap_or_else(|| self.patched(node, path));
+        let (data, unresolved_variables) = self.variables.paints(data.as_ref());
         let data = data.as_ref();
+        self.stats.approximated_paints += unresolved_variables;
         if !visible(data) || data.flag("mask") == Some(true) {
             self.depth -= 1;
             return;
@@ -760,7 +789,7 @@ impl Ctx<'_> {
     }
 
     /// Draws children, turning mask layers into clips for the siblings above them.
-    fn draw_children(&mut self, node: &Node, _data: &Val, world: Affine, path: Option<&[Guid]>) {
+    fn draw_children(&mut self, node: &Node, data: &Val, world: Affine, path: Option<&[Guid]>) {
         let mut mask_layers = 0;
         for id in self.doc.children(node.id) {
             if self.exhausted || !self.charge_work() {
@@ -774,7 +803,10 @@ impl Ctx<'_> {
                 v.push(child.override_key());
                 v
             });
-            let (child_data, stale_glyphs) = self.patched(child, child_path.as_deref());
+            let (mut child_data, stale_glyphs) = self.patched(child, child_path.as_deref());
+            if path.is_some() && size(data) != size(&node.data) {
+                layout::constrain(&child.data, child_data.to_mut(), &node.data, data);
+            }
             if child_data.flag("mask") == Some(true) && visible(&child_data) {
                 if !self.charge_work() {
                     break;
@@ -884,7 +916,16 @@ impl Ctx<'_> {
             }
         }
         self.symbol_stack.push(symbol.id);
+        self.properties.push(symbol, data);
+        let scale = data
+            .path(&["symbolData", "uniformScaleFactor"])
+            .and_then(Val::as_f32)
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .map_or(1.0, f64::from);
+        self.instance_scales.push(scale);
         self.draw_children(symbol, &symbol.data, world, Some(&base));
+        self.instance_scales.pop();
+        self.properties.pop();
         self.symbol_stack.pop();
         self.patches.truncate(before);
         for key in added_keys {

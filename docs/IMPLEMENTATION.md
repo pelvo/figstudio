@@ -130,6 +130,14 @@ IMAGE (stretch / fill / fit / tile) are drawn; diamond gradients are approximate
 **Instances.** `draw_instance` pushes every `symbolOverrides` entry (and `derivedSymbolData`)
 as a `Patch` keyed by the full override path (instance path + `guidPath.guids`), then draws
 the component's children with that path. A node's override key is `Node::override_key()`.
+Override paths include only instance ancestors and the target key, not intervening ordinary
+frames/groups. Component boolean/text/instance-swap properties are resolved in the owning
+instance scope; parent property definitions supply defaults. Paint-variable aliases resolve
+by GUID or exact asset key/version; unresolved aliases use the stored colour and increment
+`approximated_paints`. First stored variable mode is used (inherited mode selection is open).
+Derived transforms are authoritative; when omitted, uniform instance scale updates translation
+and CENTER/MAX/SCALE constraints adjust it for resized containers without double-scaling stored
+geometry. Property/variable index preparation charges the shared render-work budget.
 Patches from outer instances are applied last so they win; derived data is applied after
 the overrides of the same instance. A text override without fresh derived glyphs marks the
 stored glyphs stale, and text falls back to installed fonts. `MAX_RENDER_WORK` (2,000,000)

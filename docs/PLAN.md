@@ -248,3 +248,7 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-09 — Correct instance override paths through ordinary frames/groups. Synthetic
   nested-instance pixel regression fails without the fix; private visual comparison improves
   state selection and chart layout. Full workspace gate recorded in the local render report.
+- 2026-10-09 — Added scoped component properties, exact-version paint-variable alias resolution,
+  and omitted derived translations for scaled/resized instances. Synthetic pixel regressions
+  proved red/green; visual comparison restores table values and improves radial leaders.
+  Reference still differs in some component states and right-panel structure; not claimed exact.
