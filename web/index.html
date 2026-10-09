@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>figstudio</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #1e1e1e; }
+    #figstudio { position: absolute; inset: 0; width: 100%; height: 100%; outline: none; }
+    #status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+              color: #b0b0b0; font: 14px system-ui, sans-serif; text-align: center; padding: 2em;
+              white-space: pre-line; pointer-events: none; }
+    #status.error { color: #f0a0a0; }
+  </style>
+</head>
+<body>
+  <canvas id="figstudio"></canvas>
+  <div id="status">Loading figstudio…</div>
+  <script type="module">
+    const status = document.getElementById('status');
+    const fail = (msg) => { status.textContent = msg; status.classList.add('error'); };
+    try {
+      if (!self.crossOriginIsolated) {
+        throw new Error('This page is not cross-origin isolated, so threads (SharedArrayBuffer) are ' +
+          'unavailable. The server must send Cross-Origin-Opener-Policy: same-origin and ' +
+          'Cross-Origin-Embedder-Policy: require-corp.');
+      }
+      const { default: init, initThreadPool, start } = await import('./figstudio.js');
+      await init();
+      // Rendering and file decoding run on this pool. ?threads=N overrides the size
+      // (1 renders on a single thread; useful for comparing speeds).
+      const asked = Number(new URLSearchParams(location.search).get('threads'));
+      const threads = Math.max(1, asked || navigator.hardwareConcurrency || 4);
+      await initThreadPool(threads);
+      self.figstudioThreads = threads;
+      status.remove();
+      await start(document.getElementById('figstudio'));
+    } catch (e) {
+      console.error(e);
+      fail(`figstudio could not start:\n${e && e.message ? e.message : e}`);
+    }
+  </script>
+</body>
+</html>

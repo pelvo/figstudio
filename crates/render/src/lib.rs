@@ -4,6 +4,7 @@
 
 pub mod geom;
 pub mod paint;
+mod record;
 mod text;
 
 use std::borrow::Cow;
@@ -19,6 +20,7 @@ use crate::geom::{
     GeomPath, affine, base_shape, clips_content, geometry, size, transformed_bounds,
 };
 use crate::paint::ImageCache;
+use crate::record::Canvas;
 
 pub use vello_cpu::{color, kurbo};
 
@@ -114,7 +116,7 @@ struct Patch {
 
 struct Ctx<'a> {
     doc: &'a Document,
-    rc: RenderContext,
+    rc: &'a mut dyn Canvas,
     stats: Stats,
     images: &'a mut ImageCache,
     fonts: Option<&'a mut text::SystemFonts>,
@@ -132,9 +134,86 @@ impl Renderer {
     /// Draws `root` (a page or any node) into `viewport`.
     pub fn render(&mut self, doc: &Document, root: Guid, viewport: &Viewport) -> Frame {
         let (w, h) = (viewport.width.max(1), viewport.height.max(1));
+        let mut rc = RenderContext::new_with(w, h, RenderSettings::default());
+        let full = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+        if let Some(bg) = viewport.background {
+            rc.set_paint(bg);
+            rc.fill_rect(&full);
+        }
+        let stats = self.walk(doc, root, viewport.transform, full, &mut rc);
+        rc.flush();
+        let mut pixmap = Pixmap::new(w, h);
+        rc.render(&mut pixmap, &mut Resources::new());
+        Frame { pixmap, stats }
+    }
+
+    /// Like [`Renderer::render`], with rasterizing split across the current Rayon thread pool.
+    ///
+    /// The document is walked once into a recording; each horizontal strip of the output then
+    /// replays the commands that can reach it (blurs and shadows included) on its own thread.
+    /// Same `Stats` as `render`; pixels may differ by rounding (a channel by 1 or 2) because
+    /// each strip has its own origin. Uses `render` when the pool has one thread or the output
+    /// is too short to split.
+    #[cfg(feature = "parallel")]
+    pub fn render_parallel(&mut self, doc: &Document, root: Guid, viewport: &Viewport) -> Frame {
+        use rayon::prelude::*;
+
+        /// Shorter strips cost more in per-strip setup than they save.
+        const MIN_ROWS: u32 = 32;
+        let (w, h) = (viewport.width.max(1), viewport.height.max(1));
+        let height = u32::from(h);
+        let threads = rayon::current_num_threads();
+        // More strips than threads evens out content that is not spread evenly.
+        let wanted = u32::try_from(threads.saturating_mul(2)).unwrap_or(u32::MAX);
+        let count = wanted.min(height / MIN_ROWS);
+        if threads < 2 || count < 2 {
+            return self.render(doc, root, viewport);
+        }
+        let full = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+        let mut rec = record::Recorder::new();
+        if let Some(bg) = viewport.background {
+            rec.set_paint(bg.into());
+            rec.fill_rect(&full);
+        }
+        let stats = self.walk(doc, root, viewport.transform, full, &mut rec);
+        let rows: Vec<(u32, u32)> = (0..count)
+            .map(|i| (height * i / count, height * (i + 1) / count))
+            .collect();
+        let parts: Vec<Pixmap> = rows
+            .par_iter()
+            .map(|&(y0, y1)| {
+                // At most the output height, which is a u16.
+                let sh = u16::try_from(y1 - y0).unwrap_or(u16::MAX);
+                let mut rc = RenderContext::new_with(w, sh, RenderSettings::default());
+                rec.replay(&mut rc, f64::from(y0), f64::from(y1));
+                rc.flush();
+                let mut part = Pixmap::new(w, sh);
+                rc.render(&mut part, &mut Resources::new());
+                part
+            })
+            .collect();
+        let mut pixmap = Pixmap::new(w, h);
+        let stride = usize::from(w) * 4;
+        let out = pixmap.data_as_u8_slice_mut();
+        for (part, &(y0, _)) in parts.iter().zip(&rows) {
+            let src = part.data_as_u8_slice();
+            out[y0 as usize * stride..][..src.len()].copy_from_slice(src);
+        }
+        Frame { pixmap, stats }
+    }
+
+    /// Walks `root` and issues its drawing to `canvas`. `screen` is the output area for culling.
+    fn walk(
+        &mut self,
+        doc: &Document,
+        root: Guid,
+        transform: Affine,
+        screen: Rect,
+        canvas: &mut dyn Canvas,
+    ) -> Stats {
         let mut ctx = Ctx {
             doc,
-            rc: RenderContext::new_with(w, h, RenderSettings::default()),
+            rc: canvas,
             stats: Stats::default(),
             images: &mut self.images,
             fonts: if self.system_fonts {
@@ -144,30 +223,19 @@ impl Renderer {
             },
             patches: Vec::new(),
             symbol_stack: Vec::new(),
-            screen: Rect::new(0.0, 0.0, f64::from(w), f64::from(h)),
+            screen,
         };
-        if let Some(bg) = viewport.background {
-            ctx.rc.set_paint(bg);
-            ctx.rc
-                .fill_rect(&Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
-        }
         if let Some(node) = doc.node(root) {
             if node.kind == "CANVAS" || node.kind == "DOCUMENT" {
-                ctx.draw_children(node, &node.data, viewport.transform, None);
+                ctx.draw_children(node, &node.data, transform, None);
             } else {
                 let parent = node
                     .parent
                     .map_or(Affine::IDENTITY, |p| absolute_transform(doc, p));
-                ctx.draw(node, viewport.transform * parent, None);
+                ctx.draw(node, transform * parent, None);
             }
         }
-        ctx.rc.flush();
-        let mut pixmap = Pixmap::new(w, h);
-        ctx.rc.render(&mut pixmap, &mut Resources::new());
-        Frame {
-            pixmap,
-            stats: ctx.stats,
-        }
+        ctx.stats
     }
 
     /// Renders `root` cropped to its content at `scale`, with `padding` pixels around it.
@@ -297,24 +365,35 @@ fn overhang(kind: &str, data: &Val, w: f64, h: f64) -> f64 {
         // Outside strokes plus miter joins (Figma's miter limit is 4).
         m += f64::from(data.num("strokeWeight").unwrap_or(1.0).max(0.0)) * 4.0;
     }
-    for e in data.get("effects").map(Val::items).unwrap_or_default() {
-        if e.flag("visible") == Some(false) {
-            continue;
-        }
-        let r = f64::from(e.num("radius").unwrap_or(0.0).abs());
-        let spread = f64::from(e.num("spread").unwrap_or(0.0).abs());
-        let (dx, dy) = e.get("offset").map_or((0.0, 0.0), |o| {
-            (
-                f64::from(o.num("x").unwrap_or(0.0)),
-                f64::from(o.num("y").unwrap_or(0.0)),
-            )
-        });
-        m += r * 3.0 + spread + dx.abs() + dy.abs();
-    }
+    m += effects_reach(data.get("effects"));
     if kind == "TEXT" {
         m += w.max(h) + f64::from(data.num("fontSize").unwrap_or(12.0)) * 4.0;
     }
     m
+}
+
+/// How far (in local units) a node's visible effects can draw outside it.
+fn effects_reach(effects: Option<&Val>) -> f64 {
+    effects
+        .map(Val::items)
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| e.flag("visible") != Some(false))
+        .map(effect_reach)
+        .sum()
+}
+
+/// How far (in local units) one effect moves or spreads what it applies to.
+fn effect_reach(e: &Val) -> f64 {
+    let r = f64::from(e.num("radius").unwrap_or(0.0).abs());
+    let spread = f64::from(e.num("spread").unwrap_or(0.0).abs());
+    let (dx, dy) = e.get("offset").map_or((0.0, 0.0), |o| {
+        (
+            f64::from(o.num("x").unwrap_or(0.0)),
+            f64::from(o.num("y").unwrap_or(0.0)),
+        )
+    });
+    r * 3.0 + spread + dx.abs() + dy.abs()
 }
 
 impl Ctx<'_> {
@@ -427,7 +506,8 @@ impl Ctx<'_> {
                 }
             };
             self.rc.set_transform(world);
-            self.rc.push_filter_layer(Filter::from_primitive(primitive));
+            self.rc
+                .push_filter_layer(Filter::from_primitive(primitive), effect_reach(effect));
             layers += 1;
         }
         let opacity = data.num("opacity").unwrap_or(1.0).clamp(0.0, 1.0);

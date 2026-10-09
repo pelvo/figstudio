@@ -1,6 +1,6 @@
 [package]
 name = "figstudio"
-description = "Desktop app for Figma .fig local copies"
+description = "Desktop and browser app for Figma .fig local copies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,12 +9,27 @@ publish = false
 
 [dependencies]
 figstudio-fig = { workspace = true }
+egui = { workspace = true }
+image = { workspace = true }
+web-time = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 figstudio-render = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "glow", "wayland", "x11"] }
-egui = { workspace = true }
 rfd = { workspace = true }
 fontdb = { workspace = true }
-image = { workspace = true }
+
+# Browser build: see scripts/web-build.sh (nightly, shared memory, Web Worker threads).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+figstudio-render = { path = "../../crates/render", default-features = false, features = ["parallel"] }
+eframe = { workspace = true, features = ["default_fonts", "glow"] }
+rfd = { workspace = true }
+rayon = { workspace = true }
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4"
+wasm-bindgen-rayon = { version = "1.3", features = ["no-bundler"] }
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Document", "Element", "HtmlAnchorElement", "HtmlCanvasElement", "Url", "Window"] }
 
 [lints]
 workspace = true

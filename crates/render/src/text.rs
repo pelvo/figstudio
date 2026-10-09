@@ -40,9 +40,12 @@ pub fn characters(data: &Val) -> &str {
 #[cfg(feature = "system-fonts")]
 pub use system::SystemFonts;
 
+/// Stand-in without the `system-fonts` feature (browser build): never finds a font.
 #[cfg(not(feature = "system-fonts"))]
 #[derive(Default)]
-pub struct SystemFonts;
+pub struct SystemFonts {
+    _none: (),
+}
 
 #[cfg(not(feature = "system-fonts"))]
 impl SystemFonts {

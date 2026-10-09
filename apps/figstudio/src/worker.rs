@@ -1,12 +1,20 @@
 //! Background threads: file loading and canvas rendering, so the UI never blocks.
+//!
+//! Desktop: OS threads; the render thread waits on its channel and wakes the UI when done.
+//!
+//! Browser: the threads are Web Workers in the Rayon pool (`wasm-bindgen-rayon`). The UI
+//! thread must never wait on a lock (browsers forbid blocking the main thread), so here no
+//! worker touches the egui context or waits on a channel the UI sends to: the render loop polls
+//! for jobs, and the UI repaints while [`Workers::busy`] says something is in flight.
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::{Duration, Instant};
 
 use figstudio_fig::{Document, Guid};
 use figstudio_render::{Renderer, Stats, Viewport};
+use web_time::{Duration, Instant};
 
 use crate::tab::View;
 
@@ -45,115 +53,207 @@ pub enum Loaded {
     },
 }
 
+/// Wakes the UI from a worker. Only on desktop; the browser UI polls instead (see module docs).
+#[derive(Clone)]
+struct Waker {
+    #[cfg(not(target_arch = "wasm32"))]
+    ctx: egui::Context,
+}
+
+impl Waker {
+    fn new(_ctx: &egui::Context) -> Self {
+        Waker {
+            #[cfg(not(target_arch = "wasm32"))]
+            ctx: _ctx.clone(),
+        }
+    }
+
+    fn wake(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.ctx.request_repaint();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn(f: impl FnOnce() + Send + 'static) {
+    std::thread::spawn(f);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn spawn(f: impl FnOnce() + Send + 'static) {
+    rayon::spawn(f);
+}
+
+/// Waits for the next job. Desktop blocks on the channel; the browser polls (module docs).
+fn next_job(jobs: &Receiver<RenderJob>) -> Option<RenderJob> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        jobs.recv().ok()
+    }
+    #[cfg(target_arch = "wasm32")]
+    loop {
+        match jobs.try_recv() {
+            Ok(job) => return Some(job),
+            // The loop holds a pool thread, so run queued pool work (file decoding, exports)
+            // while idle; with a one-thread pool nothing else would.
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if rayon::yield_now() != Some(rayon::Yield::Executed) {
+                    std::thread::sleep(Duration::from_millis(4));
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
+        }
+    }
+}
+
+fn draw(renderer: &mut Renderer, job: &RenderJob) -> figstudio_render::Frame {
+    #[cfg(target_arch = "wasm32")]
+    {
+        renderer.render_parallel(&job.doc, job.root, &job.viewport)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        renderer.render(&job.doc, job.root, &job.viewport)
+    }
+}
+
 pub struct Workers {
     render_tx: Sender<RenderJob>,
     pub render_rx: Receiver<RenderDone>,
     load_tx: Sender<Loaded>,
     pub load_rx: Receiver<Loaded>,
-    ctx: egui::Context,
+    waker: Waker,
+    /// Jobs sent and not yet finished or dropped.
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl Workers {
     pub fn new(ctx: &egui::Context) -> Self {
         let (render_tx, jobs) = channel::<RenderJob>();
         let (done_tx, render_rx) = channel();
-        let repaint = ctx.clone();
+        let waker = Waker::new(ctx);
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let repaint = waker.clone();
+        let count = in_flight.clone();
+        let render_loop = move || {
+            let mut renderer = Renderer::new();
+            let mut queue: Vec<RenderJob> = Vec::new();
+            loop {
+                if queue.is_empty() {
+                    match next_job(&jobs) {
+                        Some(job) => queue.push(job),
+                        None => break,
+                    }
+                }
+                // Only the newest request per tab matters; drop older ones still queued.
+                while let Ok(newer) = jobs.try_recv() {
+                    let before = queue.len();
+                    queue.retain(|j| j.tab != newer.tab);
+                    count.fetch_sub(before - queue.len(), Ordering::Relaxed);
+                    queue.push(newer);
+                }
+                let job = queue.remove(0);
+                let start = Instant::now();
+                let frame = draw(&mut renderer, &job);
+                let size = [
+                    usize::from(frame.pixmap.width()),
+                    usize::from(frame.pixmap.height()),
+                ];
+                let done = RenderDone {
+                    tab: job.tab,
+                    generation: job.generation,
+                    root: job.root,
+                    view: job.view,
+                    size_points: job.size_points,
+                    size,
+                    rgba_premultiplied: frame.pixmap.data_as_u8_slice().to_vec(),
+                    stats: frame.stats,
+                    elapsed: start.elapsed(),
+                };
+                let sent = done_tx.send(done);
+                count.fetch_sub(1, Ordering::Relaxed);
+                if sent.is_err() {
+                    break;
+                }
+                repaint.wake();
+            }
+        };
+        #[cfg(not(target_arch = "wasm32"))]
         std::thread::Builder::new()
             .name("figstudio-render".into())
-            .spawn(move || {
-                let mut renderer = Renderer::new();
-                let mut queue: Vec<RenderJob> = Vec::new();
-                loop {
-                    if queue.is_empty() {
-                        match jobs.recv() {
-                            Ok(job) => queue.push(job),
-                            Err(_) => break,
-                        }
-                    }
-                    // Only the newest request per tab matters; drop older ones still queued.
-                    while let Ok(newer) = jobs.try_recv() {
-                        queue.retain(|j| j.tab != newer.tab);
-                        queue.push(newer);
-                    }
-                    let job = queue.remove(0);
-                    let start = Instant::now();
-                    let frame = renderer.render(&job.doc, job.root, &job.viewport);
-                    let size = [
-                        usize::from(frame.pixmap.width()),
-                        usize::from(frame.pixmap.height()),
-                    ];
-                    let done = RenderDone {
-                        tab: job.tab,
-                        generation: job.generation,
-                        root: job.root,
-                        view: job.view,
-                        size_points: job.size_points,
-                        size,
-                        rgba_premultiplied: frame.pixmap.data_as_u8_slice().to_vec(),
-                        stats: frame.stats,
-                        elapsed: start.elapsed(),
-                    };
-                    if done_tx.send(done).is_err() {
-                        break;
-                    }
-                    repaint.request_repaint();
-                }
-            })
+            .spawn(render_loop)
             .expect("spawn render thread");
+        #[cfg(target_arch = "wasm32")]
+        spawn(render_loop);
         let (load_tx, load_rx) = channel();
         Workers {
             render_tx,
             render_rx,
             load_tx,
             load_rx,
-            ctx: ctx.clone(),
+            waker,
+            in_flight,
         }
     }
 
+    /// Something was sent to a worker and has not come back yet.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn busy(&self) -> bool {
+        self.in_flight.load(Ordering::Relaxed) > 0
+    }
+
     pub fn render(&self, job: RenderJob) {
-        let _ = self.render_tx.send(job);
+        self.in_flight.fetch_add(1, Ordering::Relaxed);
+        if self.render_tx.send(job).is_err() {
+            self.in_flight.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 
     pub fn load(&self, path: PathBuf) {
-        let tx = self.load_tx.clone();
-        let ctx = self.ctx.clone();
-        std::thread::spawn(move || {
-            let start = Instant::now();
-            let msg = match Document::open(&path) {
-                Ok(doc) => Loaded::Ok {
-                    path,
-                    doc: Arc::new(doc),
-                    elapsed: start.elapsed(),
-                },
-                Err(e) => Loaded::Err {
-                    path,
-                    message: e.to_string(),
-                },
-            };
-            let _ = tx.send(msg);
-            ctx.request_repaint();
-        });
+        self.decode(path.clone(), move || Document::open(&path));
     }
 
     /// Decodes dropped bytes (used when the platform gives contents rather than a path).
     pub fn load_bytes(&self, name: PathBuf, bytes: Vec<u8>) {
+        self.decode(name, move || Document::from_bytes(&bytes));
+    }
+
+    fn decode(
+        &self,
+        path: PathBuf,
+        read: impl FnOnce() -> Result<Document, figstudio_fig::FigError> + Send + 'static,
+    ) {
         let tx = self.load_tx.clone();
-        let ctx = self.ctx.clone();
-        std::thread::spawn(move || {
+        let waker = self.waker.clone();
+        let count = self.in_flight.clone();
+        count.fetch_add(1, Ordering::Relaxed);
+        spawn(move || {
             let start = Instant::now();
-            let msg = match Document::from_bytes(&bytes) {
+            let msg = match read() {
                 Ok(doc) => Loaded::Ok {
-                    path: name,
+                    path,
                     doc: Arc::new(doc),
                     elapsed: start.elapsed(),
                 },
                 Err(e) => Loaded::Err {
-                    path: name,
+                    path,
                     message: e.to_string(),
                 },
             };
             let _ = tx.send(msg);
-            ctx.request_repaint();
+            count.fetch_sub(1, Ordering::Relaxed);
+            waker.wake();
+        });
+    }
+
+    /// Runs `f` on a worker and sends its result to `tx` (browser export).
+    #[cfg(target_arch = "wasm32")]
+    pub fn run<T: Send + 'static>(&self, tx: Sender<T>, f: impl FnOnce() -> T + Send + 'static) {
+        let count = self.in_flight.clone();
+        count.fetch_add(1, Ordering::Relaxed);
+        spawn(move || {
+            let _ = tx.send(f());
+            count.fetch_sub(1, Ordering::Relaxed);
         });
     }
 }

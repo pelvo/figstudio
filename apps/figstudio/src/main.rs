@@ -1,9 +1,11 @@
-//! figstudio — desktop app for Figma `.fig` local copies.
+//! figstudio — desktop and browser app for Figma `.fig` local copies.
 
 mod canvas;
 mod panels;
 mod tab;
 mod theme;
+#[cfg(target_arch = "wasm32")]
+mod web;
 mod worker;
 
 use std::path::PathBuf;
@@ -15,6 +17,7 @@ use worker::{Loaded, Workers};
 
 const APP_NAME: &str = "figstudio";
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     let options = eframe::NativeOptions {
@@ -32,6 +35,10 @@ fn main() -> eframe::Result {
         Box::new(move |cc| Ok(Box::new(App::new(cc, files)))),
     )
 }
+
+/// The browser starts the app from JavaScript (`web::start`) once the thread pool is up.
+#[cfg(target_arch = "wasm32")]
+fn main() {}
 
 struct Toast {
     text: String,
@@ -53,6 +60,8 @@ struct App {
     cursor: Option<egui::Pos2>,
     /// `FIGSTUDIO_PROFILE=1` prints per-frame UI time and render times to stderr.
     profile: bool,
+    #[cfg(target_arch = "wasm32")]
+    web: web::Inbox,
 }
 
 impl App {
@@ -73,6 +82,8 @@ impl App {
             show_right: true,
             cursor: None,
             profile: std::env::var_os("FIGSTUDIO_PROFILE").is_some(),
+            #[cfg(target_arch = "wasm32")]
+            web: web::Inbox::new(),
         };
         for f in files {
             app.open(f);
@@ -89,7 +100,13 @@ impl App {
         self.workers.load(path);
     }
 
-    fn open_dialog(&mut self) {
+    #[cfg(target_arch = "wasm32")]
+    fn open_dialog(&mut self, ctx: &egui::Context) {
+        self.web.pick_files(ctx);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_dialog(&mut self, _ctx: &egui::Context) {
         if let Some(files) = rfd::FileDialog::new()
             .add_filter("Figma file", &["fig"])
             .pick_files()
@@ -140,6 +157,32 @@ impl App {
             .filter(|n| !n.is_empty())
             .unwrap_or("export")
             .replace(['/', '\\'], "_");
+        #[cfg(target_arch = "wasm32")]
+        {
+            let doc = tab.doc.clone();
+            let file = format!("{name}.png");
+            self.workers.run(self.web.exports_tx.clone(), move || {
+                let png = figstudio_render::Renderer::new()
+                    .render_fit(&doc, root, scale, 0.0, None)
+                    .ok_or_else(|| "nothing to export".to_string())
+                    .and_then(|frame| frame.pixmap.into_png().map_err(|e| e.to_string()));
+                (file, png)
+            });
+            self.toast(ctx, "Exporting…", false);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.save_png(ctx, tab.doc.clone(), root, &name, scale);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save_png(
+        &mut self,
+        ctx: &egui::Context,
+        doc: std::sync::Arc<figstudio_fig::Document>,
+        root: figstudio_fig::Guid,
+        name: &str,
+        scale: f64,
+    ) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("PNG image", &["png"])
             .set_file_name(format!("{name}.png"))
@@ -147,7 +190,6 @@ impl App {
         else {
             return;
         };
-        let doc = tab.doc.clone();
         let mut renderer = figstudio_render::Renderer::new();
         let result = renderer
             .render_fit(&doc, root, scale, 0.0, None)
@@ -185,9 +227,18 @@ impl App {
                 canvas::accept(ctx, tab, done);
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        self.poll_web(ctx);
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for f in dropped {
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.web.read_dropped(ctx, f);
+                continue;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             let path = f.path().to_path_buf();
+            #[cfg(not(target_arch = "wasm32"))]
             if path.is_absolute() && path.exists() {
                 self.open(path);
             } else {
@@ -204,10 +255,29 @@ impl App {
         self.toasts.retain(|t| t.until > now);
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn poll_web(&mut self, ctx: &egui::Context) {
+        while let Ok(picked) = self.web.files.try_recv() {
+            match picked {
+                Ok((path, bytes)) => {
+                    self.loading.push(path.clone());
+                    self.workers.load_bytes(path, bytes);
+                }
+                Err(e) => self.toast(ctx, e, true),
+            }
+        }
+        while let Ok((name, png)) = self.web.exports.try_recv() {
+            match png.and_then(|png| web::download(&name, "image/png", &png)) {
+                Ok(()) => self.toast(ctx, format!("Exported {name}"), false),
+                Err(e) => self.toast(ctx, format!("Export failed: {e}"), true),
+            }
+        }
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let cmd = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
         if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::O))) {
-            self.open_dialog();
+            self.open_dialog(ctx);
         }
         if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::W))) {
             self.close(self.active);
@@ -277,7 +347,8 @@ impl App {
                     .clicked()
                 {
                     ui.close();
-                    self.open_dialog();
+                    let ctx = ui.ctx().clone();
+                    self.open_dialog(&ctx);
                 }
                 let has_tab = !self.tabs.is_empty();
                 let mut export = None;
@@ -523,7 +594,7 @@ fn shifted_digit(i: &egui::InputState, digit: Key, shifted: Option<Key>) -> bool
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         self.frame_ui(ui);
         if self.profile {
             let tab = self.tabs.get(self.active);
@@ -641,7 +712,7 @@ impl App {
         });
         self.cursor = cursor;
         if open_clicked {
-            self.open_dialog();
+            self.open_dialog(&ctx);
         }
         if hovering_files {
             let rect = ctx.content_rect();
@@ -663,6 +734,11 @@ impl App {
         }
         if !self.toasts.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        // Browser workers cannot wake the UI (see worker.rs), so poll while they work.
+        #[cfg(target_arch = "wasm32")]
+        if self.workers.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
 }

@@ -1,6 +1,6 @@
 //! Dark "pro" theme: neutral greys and a blue accent, laid out like PhotoCraft / Photoshop.
 
-use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Stroke, Visuals};
+use egui::{Color32, CornerRadius, Stroke, Visuals};
 
 pub const CHROME: Color32 = Color32::from_rgb(50, 50, 50);
 pub const DOCK: Color32 = Color32::from_rgb(38, 38, 38);
@@ -52,8 +52,15 @@ pub fn apply(ctx: &egui::Context) {
     });
 }
 
+/// Browser build: egui's built-in fonts only (no installed fonts to read; CJK shows as boxes).
+#[cfg(target_arch = "wasm32")]
+pub fn install_fonts(_ctx: &egui::Context) {}
+
 /// Adds an installed CJK-capable font as a fallback so Chinese / Japanese layer names render.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn install_fonts(ctx: &egui::Context) {
+    use egui::{FontData, FontDefinitions, FontFamily};
+
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
     let wanted = [

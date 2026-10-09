@@ -6,15 +6,16 @@ do. Read `AGENTS.md` first. Testing is in `docs/TESTING.md`; status is in `docs/
 ## 1. Map of the code
 
 ```
-crates/fig/src/          no UI, no rendering; meant to build for wasm (unchecked, T9)
+crates/fig/src/          no UI, no rendering; builds for wasm (browser app)
   lib.rs                 public exports
   doc.rs                 container (zip / raw), chunks, decompress, Document, Node, reindex
   read.rs                Kiwi bytes -> Val, driven by the schema stored in the file
   val.rs                 Val, Obj (field list), Guid, intern()
   write.rs               Val -> Kiwi bytes, canvas chunks, zip; Document::to_bytes / save
-crates/render/src/       Document -> pixels with vello_cpu; meant for wasm without fonts (T9)
+crates/render/src/       Document -> pixels with vello_cpu; builds for wasm without fonts
   lib.rs                 Renderer, Stats, Viewport, the draw walk, culling, instances, masks,
-                         bounds / hit test helpers
+                         bounds / hit test helpers; render_parallel (feature parallel)
+  record.rs              Canvas trait (where drawing goes); Recorder for parallel strips
   geom.rs                transforms, sizes, path blobs, base shapes, clipping rules
   paint.rs               solid / gradient / image paints, image cache
   text.rs                stored glyph outlines; installed-font layout (feature system-fonts)
@@ -22,14 +23,16 @@ apps/figstudio-cli/src/
   main.rs                argument parsing and commands
   doctor.rs              privacy-safe structure report
   synth.rs               stress-file generator
-apps/figstudio/src/      egui 0.36 desktop app
+apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   main.rs                App: menus, shortcuts, panel layout, message polling, export
   canvas.rs              canvas input, render requests, frame re-projection, outlines
   tab.rs                 per-document state (Tab) and the page<->screen mapping (View)
   panels.rs              Pages, Layers tree, Properties
-  worker.rs              background threads: file loading, rendering
-  theme.rs               colours, spacing, CJK font fallback
-scripts/                 check.sh, thumb-sheet.py, gui-smoke.sh
+  worker.rs              background threads: file loading, rendering (OS threads or Web Workers)
+  web.rs                 browser only: start(), file picker, dropped files, downloads
+  theme.rs               colours, spacing, CJK font fallback (desktop)
+web/                     index.html (boot: init, thread pool, start), _headers (COOP/COEP)
+scripts/                 check.sh, thumb-sheet.py, gui-smoke.sh, web-build.sh, web-serve.py
 tests/fixtures/          7 sample .fig files (MIT, fig2sketch)
 ```
 
@@ -144,6 +147,16 @@ outside a node's frame, extend `overhang()`**, or culling will cut it off at the
 **Stats.** Every approximation or skip increments a `Stats` field. The CLI prints them and
 the app shows them in the status bar. Add a field when you add a new kind of gap.
 
+**Parallel strips (`render_parallel`, feature `parallel`).** The walk draws through the
+`record::Canvas` trait. `render` passes a `RenderContext`; `render_parallel` passes a
+`Recorder`, which stores the commands with the output area each fill and layer can change
+(filter layers grow it by the effect's reach, `effect_reach()`). Then each horizontal strip
+gets its own `RenderContext` on a Rayon thread and replays only the commands that reach its
+rows. So the document is walked once (stats are exact) and only rasterizing is split. Vello
+CPU's own `multithreading` feature cannot be used in the browser: it builds its own Rayon pool
+with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
+`push_filter_layer` its reach**, or strips will cut it off at their edges.
+
 ### The desktop app (`apps/figstudio`)
 
 - The UI thread never decodes or renders. `worker.rs` loads files on short-lived threads and
@@ -158,6 +171,26 @@ the app shows them in the status bar. Add a field when you add a new kind of gap
 - Keyboard shortcuts are in `App::shortcuts`. Shift+digit uses `shifted_digit` because the
   logical key depends on the keyboard layout (Shift+1 is `!` on US layouts).
 - `FIGSTUDIO_PROFILE=1` prints per-frame UI time, render time, drawn and culled counts.
+
+### The browser app (`apps/figstudio` on wasm32)
+
+Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared memory) into
+`web/dist`, then serve it with COOP/COEP headers (`scripts/web-build.sh --serve` locally;
+`web/_headers` on Cloudflare). `web/index.html` loads the module, starts the Rayon pool
+(`initThreadPool`, one Web Worker per thread; `?threads=N` overrides) and then calls
+`start(canvas)`. Differences from the desktop:
+
+- **The UI thread must never wait on a lock**; browsers forbid blocking the main thread
+  (`Atomics.wait` throws). So no worker touches the egui context, and no worker blocks on a
+  channel the UI sends to: the render loop polls (running queued pool work while idle), and
+  the UI repaints every 16 ms while `Workers::busy()`.
+- Work runs on the Rayon pool (`rayon::spawn`), not `std::thread` (unsupported on wasm).
+  The render loop uses `render_parallel`.
+- Files arrive as bytes (picker via `rfd::AsyncFileDialog`, drops via `bytes_async`) through
+  `web::Inbox`; exports render on a worker and download through a `Blob` (copied out of the
+  shared memory first, since a Blob cannot view a `SharedArrayBuffer`).
+- No installed fonts: text without stored glyph outlines is not drawn (counted), and the UI
+  has egui's built-in fonts only, so CJK layer names show as boxes.
 
 ### The CLI (`apps/figstudio-cli`)
 
@@ -228,6 +261,12 @@ drop from a file manager) must be listed as unverified in your report.
 - **Xvfb has no window manager**: focus the window before sending keys or modifier clicks.
 - **Culling tests** must compare against a render that is not culled the same way (see
   `docs/TESTING.md`, "Prove the test").
+- **wasm threads need explicit linker flags** on current rustc (`--shared-memory`,
+  `--import-memory`, TLS exports; see `scripts/web-build.sh`). Without them the build
+  succeeds but the memory is not shared and `initThreadPool` cannot work. Check the generated
+  JS: `__wbg_init(module_or_path, memory)` means threads are on.
+- **`cp -p` back a file you mutated keeps the old mtime**, and cargo then reuses the mutated
+  build. `touch` the file after restoring it.
 
 ## 5. Task board
 
@@ -243,7 +282,9 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T6 | Inner shadow, background blur, blend modes | `crates/render/src/lib.rs` | Each drawn and tested, or still counted; thumb sheet reviewed |
 | T7 | Progressive blur, noise / grain / texture | `crates/render/src/lib.rs` | `noise_and_grain.fig` matches its thumbnail more closely; skipped count drops |
 | T8 | Rotated / skewed gradient check | `crates/render/src/paint.rs` | A fixture with rotated gradients compared with its thumbnail (needs a real Figma file) |
-| T9 | wasm build of `figstudio-fig` and `figstudio-render` (`--no-default-features` for render) | `crates/*` | `cargo check --target wasm32-unknown-unknown` passes for both |
+| T9 | ~~wasm build~~ done: browser app with threads (`scripts/web-build.sh`) | — | — |
+| T14 | Browser: CJK UI font (fetch a subset at start), text without stored outlines | `apps/figstudio/src/web.rs`, `theme.rs` | Chinese layer names readable in the browser |
+| T15 | Faster walk for `render_parallel`: it is single-threaded and is most of the time at fit zoom (`patched()` clones node data) | `crates/render/src/lib.rs` | Stress page at fit: render time falls with more threads |
 | T10 | `render --all-pages`, `info --json` | CLI | Covered by T1-style tests |
 | T11 | CI running `scripts/check.sh` on Linux and macOS | `.github/workflows` | **Ask the owner first** (private-repo minutes). Green on both |
 | T12 | Figma accepts our files | — | A person with Figma opens a `resave` output and a lightly edited file; result recorded in `docs/PLAN.md` |

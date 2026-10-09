@@ -148,8 +148,10 @@ canvas click selects `social-twitter 1` and fills Properties, Ctrl+wheel 73%→2
 - [ ] Linux: release build runs on X11 and Wayland
 - [ ] macOS: `cargo check --target aarch64-apple-darwin` here; build steps in README;
       requester builds and launches on a Mac by hand when free
-- [ ] wasm (optional): `cargo check -p figstudio-fig -p figstudio-render --target wasm32-unknown-unknown`,
-      then an eframe web shell that opens a dropped `.fig` file
+- [x] wasm (optional): browser app with threads (Web Workers + shared memory,
+      `scripts/web-build.sh`); opens dropped `.fig` files; checked in headless Chromium
+      (crossOriginIsolated, N workers, renders fixtures and a stress file). Not checked:
+      Firefox / Safari, the file picker dialog, export download in a real browser
 
 **Done when:** Linux and wasm checks pass here; macOS item is ticked only after the
 requester confirms it runs.
@@ -217,3 +219,8 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   `gui-smoke.sh`; all three scripts run here. Found `figstudio-cli` had no `[lints]`, so the
   workspace lints never applied to it: added them, changed `unsafe_code` forbid → deny with
   one local allow for `getrusage`, checked that unsafe elsewhere fails the build.
+- 2026-10-09 13:xx — Browser build with threads ("method A"): `wasm-bindgen-rayon` pool,
+  render loop and decoding on Web Workers, UI thread never blocks. Renderer records the walk
+  once and replays it per strip on the pool (`render_parallel`, exact stats; pixels within 1).
+  Vello's own multithreading cannot run in wasm (it spawns std threads). 100% zoom 15 → 6 ms
+  in Chromium; fit zoom unchanged (walk-bound, T15).

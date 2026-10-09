@@ -39,13 +39,20 @@ Run one test with `cargo test --release -p <crate> <name>`.
 | | `culling_never_changes_what_is_visible` | window render equals the same area of a full render |
 | | `malformed_path_blobs_do_not_panic` | close-then-line, truncated and unknown commands |
 | | `hidden_layers_are_not_drawn` | `visible: false` |
+| | `parallel_strips_match_a_single_render` (feature `parallel`) | strips on 4 threads: same `Stats`, pixels within 1 per channel, every fixture at 1× and 2.5× |
+| | `parallel_strips_keep_shadows_that_cross_strip_edges` (feature `parallel`) | large drop shadows drawn into the strip below their layer |
 | `apps/figstudio-cli/src/doctor.rs` | `scrub_hides_hashes_only`, `numbers_get_separators` | helpers |
 | `apps/figstudio-cli/tests/doctor.rs` | `doctor_output_contains_no_document_content` | no names, text, fonts, hashes, paths in the report |
 | | `word_matching` | the leak matcher itself |
 | | `doctor_errors_do_not_echo_the_path` | error output hides the path |
 
-Not covered by automated tests: the desktop app (use `scripts/gui-smoke.sh`), CLI commands
-other than `doctor` (task T1), Figma opening our files (needs a person with Figma).
+Not covered by automated tests: the desktop app (use `scripts/gui-smoke.sh`), the browser
+app (see "Browser" below), CLI commands other than `doctor` (task T1), Figma opening our
+files (needs a person with Figma).
+
+The `parallel` tests run with `cargo test -p figstudio-render --features parallel`;
+`scripts/check.sh` runs them. Proven: ignoring a filter's reach in `Recorder` makes the shadow
+test fail (a channel off by 60).
 
 ## 3. Fixtures
 
@@ -170,6 +177,19 @@ file has about 103 000 nodes. Baseline on the development machine (release build
 
 Numbers depend on the machine: compare before and after on the **same** machine. A
 regression over 20% needs a reason in the commit message. Do not commit stress files.
+
+### Browser
+
+`scripts/web-build.sh --serve` serves `web/dist` on http://127.0.0.1:8765 with the headers
+threads need. In a browser: the console shows no errors, `crossOriginIsolated` is true, drop
+a fixture on the page, and the status bar shows layers drawn and the render time. Compare
+`?threads=1` with the default. Headless Chromium works (`--use-angle=swiftshader`); drop a file
+by dispatching `dragenter`/`dragover`/`drop` with a `DataTransfer` on the canvas.
+
+Measured on the development machine (32 threads, headless Chromium, 1400×880 window,
+4500-node `synth --copies 400` of structure.fig): 100% zoom 15 ms on 1 thread, 6–7 ms on 8+;
+fit zoom 70–90 ms whatever the thread count, because the single-threaded document walk
+dominates there (task T15).
 
 ## 9. Privacy
 

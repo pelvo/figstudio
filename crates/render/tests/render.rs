@@ -229,3 +229,128 @@ fn hidden_layers_are_not_drawn() {
         .nodes;
     assert!(after < before, "{after} >= {before}");
 }
+
+/// Strips drawn on several threads must give the same pixels and the same counts as one pass.
+#[cfg(feature = "parallel")]
+#[test]
+fn parallel_strips_match_a_single_render() {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+    for name in [
+        "broken_images",
+        "corners",
+        "noise_and_grain",
+        "sections",
+        "stacks_wrap",
+        "structure",
+        "vector",
+    ] {
+        let doc = open(name);
+        let b = content_bounds(&doc, doc.pages[0]).unwrap();
+        for scale in [1.0, 2.5] {
+            let viewport = Viewport {
+                width: (b.width() * scale).ceil() as u16,
+                height: (b.height() * scale).ceil() as u16,
+                transform: Affine::scale(scale) * Affine::translate((-b.x0, -b.y0)),
+                background: Some(figstudio_render::color::AlphaColor::new([
+                    1.0, 1.0, 1.0, 1.0,
+                ])),
+            };
+            let mut r = Renderer::new();
+            r.system_fonts = false;
+            let one = r.render(&doc, doc.pages[0], &viewport);
+            let many = pool.install(|| r.render_parallel(&doc, doc.pages[0], &viewport));
+            assert_eq!(one.stats, many.stats, "{name} at {scale}x: stats differ");
+            // Moving the origin by whole pixels changes f32 rounding, so allow 1 per channel.
+            // A missing strip, a seam or a shadow cut at a strip edge is far more than that.
+            let worst = one
+                .pixmap
+                .data()
+                .iter()
+                .zip(many.pixmap.data())
+                .flat_map(|(a, b)| {
+                    [
+                        a.r.abs_diff(b.r),
+                        a.g.abs_diff(b.g),
+                        a.b.abs_diff(b.b),
+                        a.a.abs_diff(b.a),
+                    ]
+                })
+                .max()
+                .unwrap_or(0);
+            assert!(
+                worst <= 1,
+                "{name} at {scale}x: a channel differs by {worst}"
+            );
+        }
+    }
+}
+
+/// Big shadows that cross strip edges: drawn by the strip below from content in the strip above.
+#[cfg(feature = "parallel")]
+#[test]
+fn parallel_strips_keep_shadows_that_cross_strip_edges() {
+    let shadow_doc = open("structure");
+    let mut effect = shadow_doc
+        .nodes
+        .iter()
+        .find_map(|n| {
+            n.data
+                .get("effects")
+                .and_then(|e| e.items().first().cloned())
+        })
+        .expect("structure has a drop shadow");
+    if let Val::Obj(m) = &mut effect {
+        m.insert("radius", Val::Float(24.0));
+        let mut offset = m.get("offset").cloned().expect("shadow offset");
+        if let Val::Obj(o) = &mut offset {
+            o.insert("y", Val::Float(40.0));
+        }
+        m.insert("offset", offset);
+    }
+    let mut doc = open("corners");
+    let mut shadowed = 0;
+    for n in doc
+        .nodes
+        .iter_mut()
+        .filter(|n| n.kind == "ROUNDED_RECTANGLE")
+    {
+        if let Val::Obj(m) = &mut n.data {
+            m.insert("effects", Val::Arr(vec![effect.clone()]));
+            shadowed += 1;
+        }
+    }
+    assert!(shadowed > 0);
+    let b = content_bounds(&doc, doc.pages[0])
+        .unwrap()
+        .inflate(0.0, 80.0);
+    let viewport = Viewport {
+        width: (b.width() * 2.0).ceil() as u16,
+        height: (b.height() * 2.0).ceil() as u16,
+        transform: Affine::scale(2.0) * Affine::translate((-b.x0, -b.y0)),
+        background: None,
+    };
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let one = r.render(&doc, doc.pages[0], &viewport);
+    assert_eq!(one.stats.shadows, shadowed);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(8)
+        .build()
+        .unwrap();
+    let many = pool.install(|| r.render_parallel(&doc, doc.pages[0], &viewport));
+    assert_eq!(one.stats, many.stats);
+    // Blur rounding depends on the origin: allow 2. A shadow cut at a strip edge is off by
+    // tens (60 when the recorder ignores the filter's reach).
+    let worst = one
+        .pixmap
+        .data()
+        .iter()
+        .zip(many.pixmap.data())
+        .map(|(a, b)| a.a.abs_diff(b.a).max(a.r.abs_diff(b.r)))
+        .max()
+        .unwrap_or(0);
+    assert!(worst <= 2, "a channel differs by {worst}");
+}
