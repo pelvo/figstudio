@@ -13,5 +13,11 @@ flate2 = { workspace = true }
 ruzstd = { workspace = true }
 zip = { workspace = true }
 
+
+[dev-dependencies]
+flate2 = { workspace = true }
+ruzstd = { workspace = true }
+zip = { workspace = true }
+
 [lints]
 workspace = true

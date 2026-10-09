@@ -1,23 +1,143 @@
 //! Owned, schema-independent copy of a decoded Kiwi value.
 //!
-//! `kiwi_schema::Value` borrows field names from its `Schema`, which makes it
-//! awkward to keep around in an app. `Val` owns everything.
+//! Objects are small vectors of `(field name, value)` pairs. Field and enum names come from
+//! the file schema and are interned once per process, so a document with millions of fields
+//! does not allocate a string per field.
 
-use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::fmt;
+use std::sync::{Mutex, OnceLock};
 
-use kiwi_schema::Value;
-
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Val {
     Bool(bool),
     Int(i64),
     Float(f64),
     Str(String),
-    Enum(String),
+    Enum(&'static str),
     Bytes(Vec<u8>),
     Arr(Vec<Val>),
-    Obj(BTreeMap<String, Val>),
+    Obj(Obj),
+}
+
+/// Returns a `'static` copy of `s`, shared by every caller. Meant for schema identifiers
+/// (field and enum names), which are a small fixed set; each distinct string is kept once.
+pub fn intern(s: &str) -> &'static str {
+    static TABLE: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let mut table = TABLE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(&found) = table.get(s) {
+        return found;
+    }
+    let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
+    table.insert(leaked);
+    leaked
+}
+
+/// Object fields in decode order. Lookups are linear; objects have a handful of fields.
+#[derive(Clone, Debug, Default)]
+pub struct Obj(Vec<(&'static str, Val)>);
+
+impl Obj {
+    pub fn new() -> Obj {
+        Obj(Vec::new())
+    }
+
+    pub fn with_capacity(n: usize) -> Obj {
+        Obj(Vec::with_capacity(n))
+    }
+
+    pub fn get(&self, key: &str) -> Option<&Val> {
+        self.0.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
+    }
+
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Val> {
+        self.0.iter_mut().find(|(k, _)| *k == key).map(|(_, v)| v)
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// Sets `key`, replacing an existing value in place. Returns the old value.
+    pub fn insert(&mut self, key: &str, value: Val) -> Option<Val> {
+        if let Some(slot) = self.get_mut(key) {
+            return Some(std::mem::replace(slot, value));
+        }
+        self.0.push((intern(key), value));
+        None
+    }
+
+    /// Adds a field known not to be present yet (used by the decoder).
+    pub(crate) fn push(&mut self, key: &'static str, value: Val) {
+        self.0.push((key, value));
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<Val> {
+        let i = self.0.iter().position(|(k, _)| *k == key)?;
+        Some(self.0.remove(i).1)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&'static str, &Val)> {
+        self.0.iter().map(|(k, v)| (*k, v))
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.0.iter().map(|(k, _)| *k)
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &Val> {
+        self.0.iter().map(|(_, v)| v)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn shrink_to_fit(&mut self) {
+        self.0.shrink_to_fit();
+    }
+}
+
+/// Field order does not matter for equality.
+impl PartialEq for Obj {
+    fn eq(&self, other: &Obj) -> bool {
+        self.len() == other.len() && self.iter().all(|(k, v)| other.get(k) == Some(v))
+    }
+}
+
+impl<const N: usize> From<[(&str, Val); N]> for Obj {
+    fn from(fields: [(&str, Val); N]) -> Obj {
+        let mut o = Obj::with_capacity(N);
+        for (k, v) in fields {
+            o.insert(k, v);
+        }
+        o
+    }
+}
+
+/// Structural equality. Floats compare by value, and NaN equals NaN with the same bits, so a
+/// document always equals an unchanged copy of itself (Figma stores NaN in some fields).
+impl PartialEq for Val {
+    fn eq(&self, other: &Val) -> bool {
+        match (self, other) {
+            (Val::Bool(a), Val::Bool(b)) => a == b,
+            (Val::Int(a), Val::Int(b)) => a == b,
+            (Val::Float(a), Val::Float(b)) => a == b || a.to_bits() == b.to_bits(),
+            (Val::Str(a), Val::Str(b)) => a == b,
+            (Val::Enum(a), Val::Enum(b)) => a == b,
+            (Val::Bytes(a), Val::Bytes(b)) => a == b,
+            (Val::Arr(a), Val::Arr(b)) => a == b,
+            (Val::Obj(a), Val::Obj(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 /// Node identifier: `sessionID:localID`.
@@ -42,38 +162,34 @@ impl std::str::FromStr for Guid {
     }
 }
 
+impl Guid {
+    pub fn to_val(self) -> Val {
+        Val::Obj(Obj::from([
+            ("sessionID", Val::Int(i64::from(self.0))),
+            ("localID", Val::Int(i64::from(self.1))),
+        ]))
+    }
+}
+
 impl Val {
-    pub fn from_kiwi(value: &Value) -> Val {
-        match value {
-            Value::Bool(b) => Val::Bool(*b),
-            Value::Byte(b) => Val::Int(i64::from(*b)),
-            Value::Int(i) => Val::Int(i64::from(*i)),
-            Value::UInt(u) => Val::Int(i64::from(*u)),
-            Value::Float(f) => Val::Float(f64::from(*f)),
-            Value::String(s) => Val::Str(s.clone()),
-            Value::Int64(i) => Val::Int(*i),
-            Value::UInt64(u) => Val::Int(*u as i64),
-            Value::Array(items) => {
-                if !items.is_empty() && items.iter().all(|i| matches!(i, Value::Byte(_))) {
-                    Val::Bytes(items.iter().map(Value::as_byte).collect())
-                } else {
-                    Val::Arr(items.iter().map(Val::from_kiwi).collect())
-                }
-            }
-            Value::Enum(_, name) => Val::Enum((*name).to_string()),
-            Value::Object(_, fields) => Val::Obj(
-                fields
-                    .iter()
-                    .map(|(k, v)| ((*k).to_string(), Val::from_kiwi(v)))
-                    .collect(),
-            ),
+    pub fn get(&self, key: &str) -> Option<&Val> {
+        match self {
+            Val::Obj(o) => o.get(key),
+            _ => None,
         }
     }
 
-    pub fn get(&self, key: &str) -> Option<&Val> {
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Val> {
         match self {
-            Val::Obj(map) => map.get(key),
+            Val::Obj(o) => o.get_mut(key),
             _ => None,
+        }
+    }
+
+    /// Sets a field on an object; does nothing for other values.
+    pub fn set(&mut self, key: &str, value: Val) {
+        if let Val::Obj(o) = self {
+            o.insert(key, value);
         }
     }
 
@@ -106,7 +222,8 @@ impl Val {
     /// Strings and enum names.
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            Val::Str(s) | Val::Enum(s) => Some(s),
+            Val::Str(s) => Some(s),
+            Val::Enum(s) => Some(s),
             _ => None,
         }
     }
@@ -153,17 +270,17 @@ impl Val {
             return self.clone();
         };
         let mut out = base.clone();
-        for (k, v) in over {
+        for (k, v) in over.iter() {
             if k == "guidPath" {
                 continue;
             }
             if k == "symbolData"
                 && let Some(existing @ Val::Obj(_)) = base.get(k)
             {
-                out.insert(k.clone(), existing.merged(v));
+                out.insert(k, existing.merged(v));
                 continue;
             }
-            out.insert(k.clone(), v.clone());
+            out.insert(k, v.clone());
         }
         Val::Obj(out)
     }

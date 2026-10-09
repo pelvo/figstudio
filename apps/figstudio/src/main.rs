@@ -51,6 +51,8 @@ struct App {
     show_left: bool,
     show_right: bool,
     cursor: Option<egui::Pos2>,
+    /// `FIGSTUDIO_PROFILE=1` prints per-frame UI time and render times to stderr.
+    profile: bool,
 }
 
 impl App {
@@ -70,6 +72,7 @@ impl App {
             show_left: true,
             show_right: true,
             cursor: None,
+            profile: std::env::var_os("FIGSTUDIO_PROFILE").is_some(),
         };
         for f in files {
             app.open(f);
@@ -520,6 +523,23 @@ fn shifted_digit(i: &egui::InputState, digit: Key, shifted: Option<Key>) -> bool
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let started = std::time::Instant::now();
+        self.frame_ui(ui);
+        if self.profile {
+            let tab = self.tabs.get(self.active);
+            eprintln!(
+                "profile ui {:.1} ms; last render {:.1} ms, {} drawn, {} culled",
+                started.elapsed().as_secs_f64() * 1000.0,
+                tab.map_or(0.0, |t| t.render_time.as_secs_f64() * 1000.0),
+                tab.map_or(0, |t| t.stats.nodes),
+                tab.map_or(0, |t| t.stats.culled),
+            );
+        }
+    }
+}
+
+impl App {
+    fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
         self.shortcuts(&ctx);

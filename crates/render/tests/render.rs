@@ -156,6 +156,47 @@ fn hit_test_finds_the_deepest_layer() {
 }
 
 #[test]
+fn culling_never_changes_what_is_visible() {
+    let mut culled_somewhere = false;
+    for name in [
+        "broken_images",
+        "corners",
+        "noise_and_grain",
+        "sections",
+        "stacks_wrap",
+        "structure",
+        "vector",
+    ] {
+        let doc = open(name);
+        let b = content_bounds(&doc, doc.pages[0]).unwrap();
+        let (w, h) = (b.width().ceil() as u16, b.height().ceil() as u16);
+        let (full, _) = render_page(&doc, b.origin(), w, h);
+        // A window in the middle, half the size each way, at a whole-pixel offset.
+        let (ox, oy, cw, ch) = (w / 4, h / 4, (w / 2).max(1), (h / 2).max(1));
+        let origin = Point::new(b.x0 + f64::from(ox), b.y0 + f64::from(oy));
+        let (crop, stats) = render_page(&doc, origin, cw, ch);
+        culled_somewhere |= stats.culled > 0;
+        let mut differ = 0;
+        for y in 0..ch as usize {
+            for x in 0..cw as usize {
+                let a = crop[y * cw as usize + x];
+                let f = full[(y + oy as usize) * w as usize + x + ox as usize];
+                if a.iter().zip(f).any(|(p, q)| p.abs_diff(q) > 8) {
+                    differ += 1;
+                }
+            }
+        }
+        // Blurs and shadows cut at the window edge may differ slightly; nothing else should.
+        let limit = (cw as usize * ch as usize) / 100;
+        assert!(
+            differ <= limit,
+            "{name}: {differ} pixels differ in the window (limit {limit})"
+        );
+    }
+    assert!(culled_somewhere, "no fixture exercised culling");
+}
+
+#[test]
 fn malformed_path_blobs_do_not_panic() {
     // close then line without a move; truncated coordinates; unknown command
     assert!(geom::blob_path(&[0, 2, 0, 0, 128, 63, 0, 0, 128, 63]).is_some());
@@ -178,7 +219,7 @@ fn hidden_layers_are_not_drawn() {
         .filter(|n| n.kind == "ROUNDED_RECTANGLE")
     {
         if let Val::Obj(m) = &mut n.data {
-            m.insert("visible".into(), Val::Bool(false));
+            m.insert("visible", Val::Bool(false));
         }
     }
     let after = Renderer::new()

@@ -1,12 +1,13 @@
 //! Reading `.fig` files: container, Kiwi schema, node tree, blobs and images.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::io::{Cursor, Read};
 use std::path::Path;
 
-use kiwi_schema::{Schema, Value};
+use kiwi_schema::{ByteBuffer, DefKind, Schema};
 
+use crate::read::Reader;
 use crate::val::{Guid, Val};
 
 #[derive(Debug)]
@@ -40,6 +41,25 @@ pub struct Node {
 }
 
 impl Node {
+    /// Builds a node from its decoded fields; `None` when it has no `guid`.
+    pub fn from_data(data: Val) -> Option<Node> {
+        let id = data.get("guid").and_then(Val::as_guid)?;
+        let parent_index = data.get("parentIndex");
+        Some(Node {
+            id,
+            parent: parent_index
+                .and_then(|p| p.get("guid"))
+                .and_then(Val::as_guid),
+            position: parent_index
+                .and_then(|p| p.text("position"))
+                .unwrap_or("")
+                .to_string(),
+            kind: data.text("type").unwrap_or("UNKNOWN").to_string(),
+            name: data.text("name").unwrap_or("").to_string(),
+            data,
+        })
+    }
+
     /// Key used by instance overrides: `overrideKey` when present, otherwise the guid.
     pub fn override_key(&self) -> Guid {
         self.data
@@ -65,6 +85,33 @@ pub struct Document {
     /// Embedded images keyed by lowercase hex SHA-1, as named inside the archive.
     pub images: HashMap<String, Vec<u8>>,
     pub thumbnail: Option<Vec<u8>>,
+    /// What is needed to write the file back (see `write.rs`).
+    pub(crate) source: Source,
+}
+
+/// Compression used by a canvas chunk, reused when writing the chunk back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Codec {
+    Deflate,
+    Zlib,
+    Zstd,
+}
+
+/// Parts of the original file that are not part of the node tree.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Source {
+    /// Decompressed Kiwi schema, written back unchanged.
+    pub schema: Vec<u8>,
+    pub codecs: Vec<Codec>,
+    /// Chunks after the message, kept byte for byte.
+    pub extra_chunks: Vec<Vec<u8>>,
+    /// Top-level message fields other than `nodeChanges` and `blobs`.
+    pub message_extra: BTreeMap<String, Val>,
+    /// Whether the message had a `blobs` field (kept even when empty).
+    pub had_blobs: bool,
+    /// `None` for a bare `fig-kiwi` file; otherwise archive entries other than
+    /// `canvas.fig`, `thumbnail.png` and `images/*`, in their original order.
+    pub archive_entries: Option<Vec<(String, Vec<u8>)>>,
 }
 
 impl Document {
@@ -87,7 +134,9 @@ impl Document {
         let mut file_name = None;
         let mut images = HashMap::new();
         let mut thumbnail = None;
+        let mut archive_entries = None;
         let canvas = if bytes.starts_with(b"PK") {
+            let mut entries = Vec::new();
             let mut zip = zip::ZipArchive::new(Cursor::new(bytes))
                 .map_err(|e| FigError(format!("not a readable .fig archive: {e}")))?;
             let mut canvas = None;
@@ -104,15 +153,18 @@ impl Document {
                     canvas = Some(data);
                 } else if name == "thumbnail.png" {
                     thumbnail = Some(data);
-                } else if name == "meta.json" {
-                    file_name = meta_file_name(&data);
-                } else if let Some(hash) = name.strip_prefix("images/")
-                    && !hash.is_empty()
-                    && !data.is_empty()
-                {
-                    images.insert(hash.to_ascii_lowercase(), data);
+                } else if let Some(hash) = name.strip_prefix("images/") {
+                    if !hash.is_empty() && !data.is_empty() {
+                        images.insert(hash.to_ascii_lowercase(), data);
+                    }
+                } else if !name.ends_with('/') {
+                    if name == "meta.json" {
+                        file_name = meta_file_name(&data);
+                    }
+                    entries.push((name, data));
                 }
             }
+            archive_entries = Some(entries);
             match canvas {
                 Some(c) => c,
                 None => return err("archive has no canvas.fig"),
@@ -143,65 +195,138 @@ impl Document {
         if chunks.len() < 2 {
             return err("missing schema or message chunk");
         }
-        let schema_bytes = decompress(chunks[0])?;
+        let (schema_bytes, schema_codec) = decompress(chunks[0])?;
         let schema = Schema::decode(&schema_bytes)
             .map_err(|()| FigError("cannot decode the file schema".into()))?;
-        let message_type = schema
+        let message_def = schema
             .defs
             .iter()
-            .position(|d| d.name == "Message")
-            .ok_or_else(|| FigError("schema has no Message type".into()))?
-            as i32;
-        let message_bytes = decompress(chunks[1])?;
-        let message = Value::decode(&schema, message_type, &message_bytes)
-            .map_err(|()| FigError("cannot decode the document message".into()))?;
+            .position(|d| d.name == "Message" && d.kind == DefKind::Message)
+            .ok_or_else(|| FigError("schema has no Message type".into()))?;
+        let (message_bytes, message_codec) = decompress(chunks[1])?;
+        let reader = Reader::new(&schema);
+        let def = &schema.defs[message_def];
+        let mut bb = ByteBuffer::new(&message_bytes);
+        let decode_err = |e: String| FigError(format!("cannot decode the document: {e}"));
 
-        let blobs = match message.get("blobs") {
-            Some(Value::Array(items)) => items
-                .iter()
-                .map(|b| match b.get("bytes") {
-                    Some(Value::Array(bytes)) => bytes.iter().map(Value::as_byte).collect(),
-                    _ => Vec::new(),
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-        let Some(Value::Array(changes)) = message.get("nodeChanges") else {
-            return err("document has no nodes");
-        };
-
-        let mut nodes = Vec::with_capacity(changes.len());
-        let mut index = HashMap::with_capacity(changes.len());
-        for change in changes {
-            let data = Val::from_kiwi(change);
-            let Some(id) = data.get("guid").and_then(Val::as_guid) else {
-                continue;
+        let mut message_extra = BTreeMap::new();
+        let mut had_blobs = false;
+        let mut blobs = Vec::new();
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut index = HashMap::new();
+        let mut saw_nodes = false;
+        loop {
+            let tag = bb
+                .read_var_uint()
+                .map_err(|()| decode_err("truncated".into()))?;
+            if tag == 0 {
+                break;
+            }
+            let Some(&fi) = def.field_value_to_index.get(&tag) else {
+                return Err(decode_err(format!("Message has no field {tag}")));
             };
-            let parent_index = data.get("parentIndex");
-            let node = Node {
-                id,
-                parent: parent_index
-                    .and_then(|p| p.get("guid"))
-                    .and_then(Val::as_guid),
-                position: parent_index
-                    .and_then(|p| p.text("position"))
-                    .unwrap_or("")
-                    .to_string(),
-                kind: data.text("type").unwrap_or("UNKNOWN").to_string(),
-                name: data.text("name").unwrap_or("").to_string(),
-                data,
-            };
-            if let Some(&existing) = index.get(&id) {
-                // Later changes win, as Figma applies them in order.
-                nodes[existing] = node;
-            } else {
-                index.insert(id, nodes.len());
-                nodes.push(node);
+            let field = &def.fields[fi];
+            match field.name.as_str() {
+                "nodeChanges" if field.is_array => {
+                    saw_nodes = true;
+                    // Nodes are decoded one at a time so only one tree exists in memory.
+                    let len = reader.len(&mut bb).map_err(decode_err)?;
+                    nodes.reserve(len);
+                    index.reserve(len);
+                    for _ in 0..len {
+                        let data = reader
+                            .value(&mut bb, field.type_id, 1)
+                            .map_err(decode_err)?;
+                        let Some(node) = Node::from_data(data) else {
+                            continue;
+                        };
+                        if let Some(&existing) = index.get(&node.id) {
+                            // Later changes win, as Figma applies them in order.
+                            nodes[existing] = node;
+                        } else {
+                            index.insert(node.id, nodes.len());
+                            nodes.push(node);
+                        }
+                    }
+                }
+                "blobs" if field.is_array => {
+                    had_blobs = true;
+                    let list = reader.field(&mut bb, field, 1).map_err(decode_err)?;
+                    blobs = match list {
+                        Val::Arr(items) => items
+                            .into_iter()
+                            .map(|b| match b {
+                                Val::Obj(mut o) => match o.remove("bytes") {
+                                    Some(Val::Bytes(bytes)) => bytes,
+                                    _ => Vec::new(),
+                                },
+                                _ => Vec::new(),
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                }
+                name => {
+                    let v = reader.field(&mut bb, field, 1).map_err(decode_err)?;
+                    message_extra.insert(name.to_string(), v);
+                }
             }
         }
+        drop(message_bytes);
+        if !saw_nodes {
+            return err("document has no nodes");
+        }
+        nodes.shrink_to_fit();
 
+        let mut doc = Document {
+            prelude,
+            format_version,
+            file_name,
+            nodes,
+            index,
+            children: HashMap::new(),
+            root: None,
+            pages: Vec::new(),
+            internal_pages: Vec::new(),
+            blobs,
+            images,
+            thumbnail,
+            source: Source {
+                schema: schema_bytes,
+                codecs: vec![schema_codec, message_codec],
+                extra_chunks: chunks[2..].iter().map(|c| c.to_vec()).collect(),
+                message_extra,
+                had_blobs,
+                archive_entries,
+            },
+        };
+        doc.reindex();
+        Ok(doc)
+    }
+
+    /// Replaces the node list (keeping order) and rebuilds the lookup tables.
+    /// Later nodes with an id that already appeared replace the earlier one.
+    pub fn set_nodes(&mut self, nodes: Vec<Node>) {
+        let mut out: Vec<Node> = Vec::with_capacity(nodes.len());
+        let mut index = HashMap::with_capacity(nodes.len());
+        for node in nodes {
+            if let Some(&existing) = index.get(&node.id) {
+                out[existing] = node;
+            } else {
+                index.insert(node.id, out.len());
+                out.push(node);
+            }
+        }
+        self.nodes = out;
+        self.index = index;
+        self.reindex();
+    }
+
+    /// Rebuilds children lists, root and pages from `nodes` and `index`.
+    fn reindex(&mut self) {
+        let (nodes, index) = (&self.nodes, &self.index);
         let mut children: HashMap<Guid, Vec<Guid>> = HashMap::new();
-        for node in &nodes {
+        for node in nodes {
             if let Some(parent) = node.parent {
                 children.entry(parent).or_default().push(node.id);
             }
@@ -232,21 +357,10 @@ impl Document {
                 }
             }
         }
-
-        Ok(Document {
-            prelude,
-            format_version,
-            file_name,
-            nodes,
-            index,
-            children,
-            root,
-            pages,
-            internal_pages,
-            blobs,
-            images,
-            thumbnail,
-        })
+        self.children = children;
+        self.root = root;
+        self.pages = pages;
+        self.internal_pages = internal_pages;
     }
 
     pub fn node(&self, id: Guid) -> Option<&Node> {
@@ -309,7 +423,7 @@ fn meta_file_name(bytes: &[u8]) -> Option<String> {
     None
 }
 
-fn decompress(data: &[u8]) -> Result<Vec<u8>, FigError> {
+fn decompress(data: &[u8]) -> Result<(Vec<u8>, Codec), FigError> {
     let mut out = Vec::new();
     if data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
         let mut decoder = ruzstd::decoding::StreamingDecoder::new(data)
@@ -317,17 +431,17 @@ fn decompress(data: &[u8]) -> Result<Vec<u8>, FigError> {
         decoder
             .read_to_end(&mut out)
             .map_err(|e| FigError(format!("bad zstd chunk: {e}")))?;
-        return Ok(out);
+        return Ok((out, Codec::Zstd));
     }
     if flate2::read::DeflateDecoder::new(data)
         .read_to_end(&mut out)
         .is_ok()
     {
-        return Ok(out);
+        return Ok((out, Codec::Deflate));
     }
     out.clear();
     flate2::read::ZlibDecoder::new(data)
         .read_to_end(&mut out)
         .map_err(|e| FigError(format!("cannot decompress chunk: {e}")))?;
-    Ok(out)
+    Ok((out, Codec::Zlib))
 }

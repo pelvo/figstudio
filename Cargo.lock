@@ -673,6 +673,8 @@ version = "0.1.0"
 dependencies = [
  "figstudio-fig",
  "figstudio-render",
+ "fontdb",
+ "libc",
 ]
 
 [[package]]

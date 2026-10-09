@@ -77,16 +77,37 @@ Known differences that are **not** bugs: Figma thumbnails show the canvas backgr
 (side-by-side sheet reviewed), and `cargo test -p figstudio-render` passes.
 
 ### P1b — Large files (requester's file cannot be shared)
-- [ ] round-trip writer (needed for P6 anyway): `Document` keeps schema + raw message,
-      `Val` -> Kiwi encode, decode(encode(x)) == x on all fixtures
-- [ ] synthetic stress file: duplicate fixture nodes ×N and encode a 100k+ node `.fig`
-- [ ] measure decode time, peak memory, render time on the stress file; fix hot spots
-- [ ] `figstudio-cli doctor <file>`: prints only structure (node type counts, feature usage,
-      unsupported features, timings, memory) — no names, text or images — so the requester
-      can run it on the private file and paste the output
+- [x] round-trip writer (needed for P6 anyway): `Document` keeps schema, codecs, extra
+      chunks, other message fields and archive entries; `Val` is encoded straight from the
+      schema. All 7 fixtures encode to **byte-identical** Kiwi messages (Figma writes
+      `nodeChanges` and `blobs` last; we do the same)
+- [x] synthetic stress files: `figstudio-cli synth` copies the first page ×N (new ids,
+      grid layout, optional extra pages). 103k / 115k / 76k node files built and checked
+- [x] measure and fix hot spots:
+      - decoder now reads Kiwi straight into `Val` (no `kiwi_schema::Value` tree, no hash
+        map per object); field and enum names interned; objects are small vectors
+      - viewport culling for leaves, clipping frames/instances and boolean ops, with a
+        generous overhang for strokes, effects and text; sub-quarter-pixel leaves skipped
+      - `FIGSTUDIO_PROFILE=1` prints UI and render times per frame
+- [x] `figstudio-cli doctor <file>`: counts, Figma type/field names, unsupported features,
+      timings, memory, write-back check. Never prints names, text, fonts, image hashes,
+      colours or paths; errors scrubbed; panic hook hides payloads. Tested on all fixtures
+      against every layer name, text, font, image hash and path (and the test was checked
+      to fail when a name is printed)
 
-**Done when:** the stress file opens and renders in reasonable time, and `doctor` output has
-been checked to contain no document content.
+**Numbers on the 103k-node stress file** (this machine, release build):
+
+| | before | after |
+|---|---|---|
+| decode | 1.98 s | 0.30 s |
+| memory after open | 2.8 GB | 470 MB |
+| render whole page (fit) | ~0.6 s | 0.40–0.45 s |
+| render 1400×880 at 100% | whole page | 6–11 ms (9 000 layers culled) |
+| encode back | — | 0.75 s, identical |
+| GUI frame (9 000 rows in Layers) | — | ~11 ms median, 19 ms max |
+
+Still open: fit-to-page of a huge page takes ~0.4 s per frame (a level-of-detail cache or
+tiling would fix it); the Layers panel is not virtualised yet (fine at 9 000 rows).
 
 ### P2 — Headless CLI (`apps/figstudio-cli`)
 - [x] `info`, `tree --depth`, `render --page/--node/--scale/--background`, `thumbnail`
@@ -183,3 +204,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-08 22:4x — P3 desktop app built (egui 0.36 / glow). Checked in Xvfb with xdotool
   clicks and screenshots. CLI now prints usage only for usage errors. Image cache no longer
   caches "missing" across documents. clippy + fmt clean on 1.99.0, 13 tests pass.
+- 2026-10-09 09:xx — P1b. Writer with byte-identical round trip on all fixtures; direct
+  Kiwi→Val decoder (memory 2.8 GB → 470 MB, decode 2.0 s → 0.3 s on 103k nodes); culling;
+  `synth`, `resave`, `doctor` commands; doctor privacy test. 23 tests, clippy/fmt clean.

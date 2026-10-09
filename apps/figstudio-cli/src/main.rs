@@ -1,5 +1,8 @@
 //! Headless figstudio: inspect `.fig` files and render pages or nodes to PNG.
 
+mod doctor;
+mod synth;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -15,6 +18,13 @@ USAGE:
   figstudio-cli render <file.fig> [-o <out.png>] [--page <n|name>] [--node <id>]
                      [--scale <x>] [--background page|transparent|#rrggbb] [--no-system-fonts]
   figstudio-cli thumbnail <file.fig> -o <out.png>
+  figstudio-cli doctor <file.fig>
+      Structure report safe to share: counts, features, timings and memory only.
+      No layer names, text, images or file paths are printed.
+  figstudio-cli resave <file.fig> -o <out.fig>
+      Read and write the file back unchanged (tests the .fig writer).
+  figstudio-cli synth <file.fig> -o <out.fig> [--copies <n>] [--pages <n>]
+      Stress-test file: the first page's layers copied n times on each of n pages.
 
 Pages are numbered from 1. Node ids look like 12:34 (see `tree`).";
 
@@ -28,6 +38,8 @@ struct Args {
     depth: usize,
     background: String,
     system_fonts: bool,
+    copies: usize,
+    pages: usize,
 }
 
 fn parse(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -45,6 +57,8 @@ fn parse(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         depth: 3,
         background: "page".into(),
         system_fonts: true,
+        copies: 100,
+        pages: 1,
     };
     let mut file = None;
     while let Some(a) = raw.next() {
@@ -67,6 +81,20 @@ fn parse(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                     .map_err(|_| "--depth must be a number")?
             }
             "--background" => args.background = value("--background")?,
+            "--copies" | "--pages" => {
+                let name = a.clone();
+                let n: usize = value(&name)?
+                    .parse()
+                    .map_err(|_| format!("{name} must be a whole number"))?;
+                if !(1..=1_000_000).contains(&n) {
+                    return Err(format!("{name} must be between 1 and 1000000"));
+                }
+                if name == "--copies" {
+                    args.copies = n
+                } else {
+                    args.pages = n
+                }
+            }
             "--no-system-fonts" => args.system_fonts = false,
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             path if file.is_none() => file = Some(PathBuf::from(path)),
@@ -144,6 +172,10 @@ fn print_tree(doc: &Document, id: Guid, indent: usize, depth: usize) {
 }
 
 fn run(args: Args) -> Result<(), String> {
+    if args.command == "doctor" {
+        // Opens the file itself, to time it and to keep the path out of any error.
+        return doctor::run(&args.file);
+    }
     let doc = Document::open(&args.file).map_err(|e| e.to_string())?;
     match args.command.as_str() {
         "info" => {
@@ -223,6 +255,46 @@ fn run(args: Args) -> Result<(), String> {
                 .ok_or("this file has no stored thumbnail")?;
             std::fs::write(&out, thumb).map_err(|e| format!("{}: {e}", out.display()))?;
             println!("{}", out.display());
+        }
+        "resave" => {
+            let out = args.out.ok_or("resave needs -o <out.fig>")?;
+            doc.save(&out).map_err(|e| e.to_string())?;
+            let again = Document::open(&out)
+                .map_err(|e| format!("written file does not read back: {e}"))?;
+            let same = again.nodes.len() == doc.nodes.len()
+                && again
+                    .nodes
+                    .iter()
+                    .zip(&doc.nodes)
+                    .all(|(a, b)| a.id == b.id && a.data == b.data);
+            println!(
+                "{} ({} nodes, {})",
+                out.display(),
+                again.nodes.len(),
+                if same {
+                    "reads back identical"
+                } else {
+                    "DIFFERS after reading back"
+                }
+            );
+            if !same {
+                return Err("round trip changed the document".into());
+            }
+        }
+        "synth" => {
+            let out = args.out.ok_or("synth needs -o <out.fig>")?;
+            let start = std::time::Instant::now();
+            let big = synth::synth(doc, args.copies, args.pages)?;
+            big.save(&out).map_err(|e| e.to_string())?;
+            let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+            println!(
+                "{} {} nodes, {} pages, {:.1} MB, {:.1} s",
+                out.display(),
+                big.nodes.len(),
+                big.pages.len(),
+                size as f64 / 1e6,
+                start.elapsed().as_secs_f64()
+            );
         }
         other => return Err(format!("unknown command {other}")),
     }

@@ -43,6 +43,8 @@ pub struct Stats {
     pub skipped_effects: usize,
     pub unsupported_paints: usize,
     pub approximated_paints: usize,
+    /// Layers skipped because they are outside the viewport or smaller than a pixel.
+    pub culled: usize,
 }
 
 impl fmt::Display for Stats {
@@ -65,7 +67,8 @@ impl fmt::Display for Stats {
         note(self.missing_images, "images missing")?;
         note(self.missing_symbols, "components missing")?;
         note(self.unsupported_paints, "paints skipped")?;
-        note(self.approximated_paints, "paints approximated")
+        note(self.approximated_paints, "paints approximated")?;
+        note(self.culled, "off screen")
     }
 }
 
@@ -117,6 +120,8 @@ struct Ctx<'a> {
     fonts: Option<&'a mut text::SystemFonts>,
     patches: Vec<Patch>,
     symbol_stack: Vec<Guid>,
+    /// Output area in pixels, for culling.
+    screen: Rect,
 }
 
 impl Renderer {
@@ -139,6 +144,7 @@ impl Renderer {
             },
             patches: Vec::new(),
             symbol_stack: Vec::new(),
+            screen: Rect::new(0.0, 0.0, f64::from(w), f64::from(h)),
         };
         if let Some(bg) = viewport.background {
             ctx.rc.set_paint(bg);
@@ -280,7 +286,67 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
     walk(doc, page, Affine::IDENTITY, point)
 }
 
+/// How far (in local units) a node can draw outside its frame: strokes, effects, and text
+/// that overflows its box. Deliberately generous; culling must never hide something visible.
+fn overhang(kind: &str, data: &Val, w: f64, h: f64) -> f64 {
+    let mut m = 1.0;
+    if data
+        .get("strokePaints")
+        .is_some_and(|p| !p.items().is_empty())
+    {
+        // Outside strokes plus miter joins (Figma's miter limit is 4).
+        m += f64::from(data.num("strokeWeight").unwrap_or(1.0).max(0.0)) * 4.0;
+    }
+    for e in data.get("effects").map(Val::items).unwrap_or_default() {
+        if e.flag("visible") == Some(false) {
+            continue;
+        }
+        let r = f64::from(e.num("radius").unwrap_or(0.0).abs());
+        let spread = f64::from(e.num("spread").unwrap_or(0.0).abs());
+        let (dx, dy) = e.get("offset").map_or((0.0, 0.0), |o| {
+            (
+                f64::from(o.num("x").unwrap_or(0.0)),
+                f64::from(o.num("y").unwrap_or(0.0)),
+            )
+        });
+        m += r * 3.0 + spread + dx.abs() + dy.abs();
+    }
+    if kind == "TEXT" {
+        m += w.max(h) + f64::from(data.num("fontSize").unwrap_or(12.0)) * 4.0;
+    }
+    m
+}
+
 impl Ctx<'_> {
+    /// True when the node certainly draws nothing inside the output. Only nodes whose content
+    /// stays within their frame are tested: leaves, clipping frames and instances, and boolean
+    /// operations. Other containers are walked so their children decide for themselves.
+    fn off_screen(
+        &self,
+        node: &Node,
+        kind: &str,
+        data: &Val,
+        world: Affine,
+        w: f64,
+        h: f64,
+    ) -> bool {
+        let leaf = kind != "INSTANCE" && self.doc.children(node.id).is_empty();
+        let bounded = leaf || kind == "BOOLEAN_OPERATION" || clips_content(kind, data);
+        if !bounded {
+            return false;
+        }
+        let m = overhang(kind, data, w, h);
+        let b = transformed_bounds(world, Rect::new(-m, -m, w + m, h + m));
+        if !b.overlaps(self.screen) {
+            return true;
+        }
+        // A leaf smaller than a quarter pixel each way contributes nothing visible.
+        leaf && kind != "TEXT" && {
+            let tiny = transformed_bounds(world, Rect::new(0.0, 0.0, w, h));
+            tiny.width() < 0.25 && tiny.height() < 0.25 && m <= 1.0
+        }
+    }
+
     /// Node data with instance overrides applied, plus whether stored text glyphs are stale.
     fn patched<'n>(&self, node: &'n Node, path: Option<&[Guid]>) -> (Cow<'n, Val>, bool) {
         let Some(path) = path else {
@@ -312,10 +378,14 @@ impl Ctx<'_> {
         if !visible(data) || data.flag("mask") == Some(true) {
             return;
         }
-        self.stats.nodes += 1;
         let kind = node.kind.as_str();
         let world = parent * affine(data.get("transform"));
         let (w, h) = size(data);
+        if self.off_screen(node, kind, data, world, w, h) {
+            self.stats.culled += 1;
+            return;
+        }
+        self.stats.nodes += 1;
         let mut layers = 0;
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
