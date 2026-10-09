@@ -6,6 +6,9 @@ come later, so the design must not block it. (`figstudio` is a working name.)
 This file is the progress tracker. Tick a box only after its **Done when** check has
 actually passed, and add a line to the progress log at the bottom.
 
+Working on it? Start with `AGENTS.md`, then `docs/IMPLEMENTATION.md` (architecture, recipes,
+task board) and `docs/TESTING.md` (tests, checks, how to prove a test).
+
 ## Requirements (from the requester, 2026-10-08)
 
 | Requirement | Priority | How |
@@ -112,7 +115,7 @@ tiling would fix it); the Layers panel is not virtualised yet (fine at 9 000 row
 ### P2 — Headless CLI (`apps/figstudio-cli`)
 - [x] `info`, `tree --depth`, `render --page/--node/--scale/--background`, `thumbnail`
 - [x] renders all 7 fixtures (3–366 ms each, release build)
-- [ ] CLI tests (exit codes, bad arguments, output files)
+- [ ] CLI tests (exit codes, bad arguments, output files) — task T1
 - [ ] `render --all-pages` and JSON output for `info`
 
 **Done when:** CLI tests pass and output is checked for every fixture.
@@ -152,9 +155,11 @@ canvas click selects `social-twitter 1` and fills Properties, Ctrl+wheel 73%→2
 requester confirms it runs.
 
 ### P5 — Delivery
-- [ ] README (build, run, CLI usage, known gaps)
+- [ ] README (build, run, CLI usage, known gaps) — task T2
+- [x] agent guide: `AGENTS.md`, `docs/IMPLEMENTATION.md`, `docs/TESTING.md`; scripts
+      `check.sh`, `thumb-sheet.py`, `gui-smoke.sh` (all three run here)
 - [x] `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean (1.99.0)
-- [ ] decide repo location, push, open PR — only after the requester / owner agrees
+- [x] repo location: private `pelvo/figstudio` (requester asked, 2026-10-09); `main` pushed
 
 ### P6 — Editing (later, not started until asked)
 - [ ] command/undo model over `Document`
@@ -173,8 +178,7 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Open questions
 
-1. Repo location: new repo or a crate inside `figma-read-mcp`? Creating a GitHub repo
-   needs the owner's approval. Until then the work stays local.
+1. ~~Repo location~~ — decided: private `pelvo/figstudio`.
 2. Final name (`figstudio` is a working name; avoid "view" since editing may come).
 
 ## Risks
@@ -207,3 +211,9 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-09 09:xx — P1b. Writer with byte-identical round trip on all fixtures; direct
   Kiwi→Val decoder (memory 2.8 GB → 470 MB, decode 2.0 s → 0.3 s on 103k nodes); culling;
   `synth`, `resave`, `doctor` commands; doctor privacy test. 23 tests, clippy/fmt clean.
+- 2026-10-09 09:2x — Pushed to private `pelvo/figstudio` (42d40d9). Requester asked for a test
+  and implementation guide other agents can follow: added `AGENTS.md` (+ `CLAUDE.md`),
+  `docs/IMPLEMENTATION.md`, `docs/TESTING.md` and `scripts/check.sh`, `thumb-sheet.py`,
+  `gui-smoke.sh`; all three scripts run here. Found `figstudio-cli` had no `[lints]`, so the
+  workspace lints never applied to it: added them, changed `unsafe_code` forbid → deny with
+  one local allow for `getrusage`, checked that unsafe elsewhere fails the build.

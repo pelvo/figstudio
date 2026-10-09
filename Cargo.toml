@@ -26,7 +26,9 @@ rfd = "0.17"
 libc = "0.2"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# deny, not forbid: the one FFI call (getrusage in `doctor`) is allowed locally with a
+# SAFETY comment. Any other unsafe code fails the build.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

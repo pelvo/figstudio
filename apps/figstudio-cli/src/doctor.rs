@@ -62,6 +62,8 @@ fn secs(d: Duration) -> String {
 }
 
 /// Peak resident memory of this process, if the platform reports it.
+/// The only unsafe code in the workspace: a plain libc call with no safe std equivalent.
+#[allow(unsafe_code)]
 fn peak_memory_mb() -> Option<f64> {
     #[cfg(unix)]
     {
