@@ -56,6 +56,15 @@ pub enum Picked {
 
 type Exported = (String, Result<Vec<u8>, String>);
 
+/// The CJK font (`fonts/cjk.otf`, made by `scripts/web-font.sh`), fetched on first need.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FontState {
+    NotNeeded,
+    Loading,
+    Loaded,
+    Failed,
+}
+
 /// What workers ask the main thread for.
 enum FileRequest {
     /// An archive entry of an open file, and where to send its bytes.
@@ -112,6 +121,25 @@ async fn read_entry(file: &web_sys::File, entry: &Entry) -> Result<Vec<u8>, Stri
     let start = entry.data_start(&header).map_err(|e| e.0)?;
     let data = read_range(file, start, entry.compressed_size).await?;
     entry.decode(data).map_err(|e| e.0)
+}
+
+/// GETs `url` (same origin) and returns the body.
+async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let js = |e: JsValue| format!("{e:?}");
+    let window = web_sys::window().ok_or("no window")?;
+    let response: web_sys::Response =
+        wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url))
+            .await
+            .map_err(js)?
+            .dyn_into()
+            .map_err(js)?;
+    if !response.ok() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    let buffer = wasm_bindgen_futures::JsFuture::from(response.array_buffer().map_err(js)?)
+        .await
+        .map_err(js)?;
+    Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
 /// Opens a big archive without reading its images.
@@ -217,6 +245,9 @@ pub struct Inbox {
     pub exports: Receiver<Exported>,
     ranges_tx: Sender<FileRequest>,
     ranges: Receiver<FileRequest>,
+    fonts_tx: Sender<Result<Vec<u8>, String>>,
+    pub fonts: Receiver<Result<Vec<u8>, String>>,
+    pub font_state: FontState,
 }
 
 impl Inbox {
@@ -224,6 +255,7 @@ impl Inbox {
         let (files_tx, files) = channel();
         let (exports_tx, exports) = channel();
         let (ranges_tx, ranges) = channel();
+        let (fonts_tx, fonts) = channel();
         Inbox {
             files_tx,
             files,
@@ -231,7 +263,24 @@ impl Inbox {
             exports,
             ranges_tx,
             ranges,
+            fonts_tx,
+            fonts,
+            font_state: FontState::NotNeeded,
         }
+    }
+
+    /// Fetches the CJK font once; it arrives in `fonts`.
+    pub fn load_cjk_font(&mut self, ctx: &egui::Context) {
+        if self.font_state != FontState::NotNeeded {
+            return;
+        }
+        self.font_state = FontState::Loading;
+        let tx = self.fonts_tx.clone();
+        let ctx = ctx.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = tx.send(fetch_bytes("fonts/cjk.otf").await);
+            ctx.request_repaint();
+        });
     }
 
     /// Shows the browser's file picker; chosen files arrive in `files`.

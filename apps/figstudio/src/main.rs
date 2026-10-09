@@ -233,8 +233,15 @@ impl App {
                     doc,
                     source,
                     elapsed,
+                    needs_cjk,
                 } => {
                     self.loading.retain(|p| p != &path);
+                    #[cfg(target_arch = "wasm32")]
+                    if needs_cjk {
+                        self.web.load_cjk_font(ctx);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let _ = needs_cjk;
                     let id = self.next_id;
                     self.next_id += 1;
                     self.tabs.push(Tab::new(id, path, doc, source, elapsed));
@@ -293,6 +300,18 @@ impl App {
     #[cfg(target_arch = "wasm32")]
     fn poll_web(&mut self, ctx: &egui::Context) {
         self.web.serve_ranges(ctx);
+        if let Ok(font) = self.web.fonts.try_recv() {
+            match font {
+                Ok(bytes) => {
+                    theme::add_cjk_font(ctx, bytes);
+                    self.web.font_state = web::FontState::Loaded;
+                }
+                Err(e) => {
+                    self.web.font_state = web::FontState::Failed;
+                    self.toast(ctx, format!("Could not load the CJK font: {e}"), true);
+                }
+            }
+        }
         while let Ok(picked) = self.web.files.try_recv() {
             match picked {
                 web::Picked::Bytes(path, bytes) => {
@@ -572,7 +591,8 @@ impl App {
             concat!(
                 r#"{{"tabs":{},"loading":{},"page":{},"pages":{},"zoom":{},"drawn":{},"#,
                 r#""culled":{},"images_loading":{},"images_missing":{},"render_ms":{:.1},"#,
-                r#""image_cache_bytes":{},"images_arrived":{},"busy":{},"errors":{}}}"#
+                r#""image_cache_bytes":{},"images_arrived":{},"busy":{},"errors":{},"#,
+                r#""cjk_font":"{:?}"}}"#
             ),
             self.tabs.len(),
             self.loading.len(),
@@ -588,6 +608,7 @@ impl App {
             self.workers.images_arrived(),
             self.workers.busy(),
             self.toasts.iter().filter(|t| t.error).count(),
+            self.web.font_state,
         )
     }
 

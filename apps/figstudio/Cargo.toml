@@ -30,7 +30,7 @@ wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-rayon = { version = "1.3", features = ["no-bundler"] }
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Document", "Element", "File", "HtmlAnchorElement", "HtmlCanvasElement", "Url", "Window"] }
+web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Document", "Element", "File", "HtmlAnchorElement", "HtmlCanvasElement", "Response", "Url", "Window"] }
 
 [lints]
 workspace = true

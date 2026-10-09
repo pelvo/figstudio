@@ -41,7 +41,9 @@ mkdir -p "$OUT"
 wasm-bindgen --target web --no-typescript --out-dir "$OUT" \
   target/wasm32-unknown-unknown/release/figstudio.wasm
 cp web/index.html web/_headers "$OUT"/
-ls -l "$OUT" | awk 'NR>1 {printf "%10d  %s\n", $5, $9}'
+# CJK font, fetched by the app only when a file has CJK names (see scripts/web-font.sh).
+scripts/web-font.sh "$OUT/fonts"
+ls -l "$OUT" "$OUT/fonts" 2>/dev/null | awk 'NF>5 {printf "%10d  %s\n", $5, $9}'
 
 if [ "${1:-}" = "--serve" ]; then
   exec python3 scripts/web-serve.py "$OUT" 8765

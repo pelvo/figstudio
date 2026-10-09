@@ -30,7 +30,7 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   panels.rs              Pages, Layers tree, Properties
   worker.rs              background threads: file loading, rendering (OS threads or Web Workers)
   web.rs                 browser only: start(), file picker, dropped files, downloads
-  theme.rs               colours, spacing, CJK font fallback (desktop)
+  theme.rs               colours, spacing, CJK font fallback (desktop) / detection (web)
 web/                     index.html (boot: init, thread pool, start), _headers (COOP/COEP)
 scripts/                 check.sh, thumb-sheet.py, gui-smoke.sh, web-build.sh, web-serve.py
 tests/fixtures/          7 sample .fig files (MIT, fig2sketch)
@@ -194,8 +194,15 @@ Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared mem
 - **JavaScript objects stay on the main thread.** A worker that needs bytes of a lazily
   opened file sends a request (`web::WebSource`) and polls for the answer; the main thread
   reads the slice asynchronously in `Inbox::serve_ranges`, called every frame.
-- No installed fonts: text without stored glyph outlines is not drawn (counted), and the UI
-  has egui's built-in fonts only, so CJK layer names show as boxes.
+- No installed fonts: text without stored glyph outlines is not drawn (counted). egui's
+  built-in fonts are Latin only, so when a file's name, page or layer names or text contain
+  CJK (`theme::needs_cjk`, checked on the worker that opens it) the app fetches
+  `fonts/cjk.otf` once and adds it as the last fallback (`theme::add_cjk_font`).
+  `scripts/web-font.sh` (called by `web-build.sh`) makes that file: Noto Sans CJK HK
+  Regular cut down to ~5 MB with `pyftsubset` (Latin, punctuation, kana, bopomofo,
+  full-width, the main ideograph block; no Hangul). Without Noto CJK or fontTools the
+  build skips it and CJK shows as boxes. The desktop app uses an installed CJK font
+  (`theme::install_fonts`).
 
 ### Big files and images
 
@@ -307,7 +314,7 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T7 | Progressive blur, noise / grain / texture | `crates/render/src/lib.rs` | `noise_and_grain.fig` matches its thumbnail more closely; skipped count drops |
 | T8 | Rotated / skewed gradient check | `crates/render/src/paint.rs` | A fixture with rotated gradients compared with its thumbnail (needs a real Figma file) |
 | T9 | ~~wasm build~~ done: browser app with threads (`scripts/web-build.sh`) | — | — |
-| T14 | Browser: CJK UI font (fetch a subset at start), text without stored outlines | `apps/figstudio/src/web.rs`, `theme.rs` | Chinese layer names readable in the browser |
+| T14 | Browser: ~~CJK UI font~~ (done: fetched on demand), text without stored outlines | `apps/figstudio/src/web.rs`, `theme.rs` | Chinese layer names readable in the browser |
 | T15 | Faster walk for `render_parallel`: it is single-threaded and is most of the time at fit zoom (`patched()` clones node data) | `crates/render/src/lib.rs` | Stress page at fit: render time falls with more threads |
 | T10 | `render --all-pages`, `info --json` | CLI | Covered by T1-style tests |
 | T11 | CI running `scripts/check.sh` on Linux and macOS | `.github/workflows` | **Ask the owner first** (private-repo minutes). Green on both |

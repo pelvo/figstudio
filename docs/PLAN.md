@@ -255,3 +255,8 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   reading + per-level image cache + images read on demand (see P1b). Opens in 1.4 s at
   537 MB Wasm memory, all pages render, peak 906 MB; lazy matches whole pixel for pixel.
   Found and fixed: frames depended on the decode order of shared images.
+- 2026-10-09 14:5x — Requester's browser showed CJK page and layer names as boxes. The
+  browser app now fetches a 5 MB Noto Sans CJK HK subset (`scripts/web-font.sh`) only when
+  a file has CJK names or text; desktop fallback list gained macOS / Windows fonts
+  (PingFang HK, Heiti TC, Hiragino Sans GB, Arial Unicode MS, Microsoft YaHei; not checked
+  on a Mac). Checked in headless Chromium: Latin file fetches nothing, CJK file renders.
