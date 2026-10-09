@@ -676,6 +676,7 @@ dependencies = [
  "fontdb",
  "image",
  "libc",
+ "zip",
 ]
 
 [[package]]

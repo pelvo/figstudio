@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use figstudio_fig::{Document, Val};
+use std::io::Write as _;
 
 const FIXTURES: [&str; 7] = [
     "broken_images",
@@ -27,6 +28,14 @@ fn secrets(doc: &Document, path: &std::path::Path) -> Vec<String> {
     out.extend(path.file_stem().map(|s| s.to_string_lossy().to_string()));
     out.extend(doc.file_name.clone());
     out.extend(doc.images.keys().cloned());
+    if let Ok(file) = std::fs::File::open(path)
+        && let Ok(mut zip) = zip::ZipArchive::new(file)
+    {
+        out.extend(
+            (0..zip.len())
+                .filter_map(|i| zip.by_index(i).ok().map(|entry| entry.name().to_owned())),
+        );
+    }
     for n in &doc.nodes {
         out.push(n.name.clone());
         if let Some(t) = n
@@ -109,7 +118,30 @@ fn doctor_errors_do_not_echo_the_path() {
     std::fs::create_dir_all(&dir).unwrap();
     let bad = dir.join("secret-client-project.fig");
     std::fs::write(&bad, b"PK\x03\x04 definitely not a zip").unwrap();
-    for path in [bad.clone(), dir.join("missing-secret-file.fig")] {
+    let named_member = dir.join("secret-member-project.fig");
+    let file = std::fs::File::create(&named_member).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    zip.start_file(
+        "private-member-name.txt",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    zip.write_all(b"not a canvas").unwrap();
+    zip.finish().unwrap();
+    let mut archive = std::fs::read(&named_member).unwrap();
+    let member = b"private-member-name.txt";
+    let member_at = archive
+        .windows(member.len())
+        .position(|w| w == member)
+        .unwrap();
+    archive[member_at + member.len()] ^= 1; // Invalid CRC makes the reader report this name.
+    std::fs::write(&named_member, archive).unwrap();
+
+    for path in [
+        bad.clone(),
+        dir.join("missing-secret-file.fig"),
+        named_member,
+    ] {
         let out = Command::new(exe).arg("doctor").arg(&path).output().unwrap();
         assert!(!out.status.success());
         let all = format!(
@@ -118,5 +150,6 @@ fn doctor_errors_do_not_echo_the_path() {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(!all.contains("secret"), "{all}");
+        assert!(!all.contains("private-member-name"), "{all}");
     }
 }

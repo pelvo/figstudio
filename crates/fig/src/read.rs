@@ -10,10 +10,12 @@ use kiwi_schema::{
     TYPE_STRING, TYPE_UINT, TYPE_UINT64,
 };
 
-use crate::val::{Obj, Val, intern};
+use crate::val::{Obj, Val, intern, intern_schema};
 
 /// Deepest nesting accepted; real documents stay far below this.
 const MAX_DEPTH: u32 = 256;
+const MAX_SCHEMA_IDENTIFIERS: usize = 4096;
+const MAX_SCHEMA_IDENTIFIER_BYTES: usize = 256;
 
 pub(crate) type R<T> = Result<T, String>;
 
@@ -30,7 +32,21 @@ pub(crate) struct Reader<'s> {
 }
 
 impl<'s> Reader<'s> {
-    pub fn new(schema: &'s Schema) -> Self {
+    pub fn new(schema: &'s Schema) -> R<Self> {
+        let identifier_count = schema.defs.iter().map(|d| d.fields.len()).sum::<usize>();
+        if identifier_count > MAX_SCHEMA_IDENTIFIERS
+            || schema.defs.iter().any(|d| {
+                d.name.len() > MAX_SCHEMA_IDENTIFIER_BYTES
+                    || d.fields
+                        .iter()
+                        .any(|f| f.name.len() > MAX_SCHEMA_IDENTIFIER_BYTES)
+            })
+        {
+            return Err("schema has too many or oversized identifiers".into());
+        }
+        intern_schema(schema.defs.iter().flat_map(|d| {
+            std::iter::once(d.name.as_str()).chain(d.fields.iter().map(|f| f.name.as_str()))
+        }))?;
         let names = schema
             .defs
             .iter()
@@ -48,16 +64,17 @@ impl<'s> Reader<'s> {
                 _ => HashMap::new(),
             })
             .collect();
-        Reader {
+        Ok(Reader {
             schema,
             names,
             enums,
-        }
+        })
     }
 
     /// Array length, checked against the bytes left so a corrupt length cannot allocate wildly.
     pub fn len(&self, bb: &mut ByteBuffer) -> R<usize> {
-        let len = bad(bb.read_var_uint())? as usize;
+        let len = usize::try_from(bad(bb.read_var_uint())?)
+            .map_err(|_| "the document list is too large".to_string())?;
         let left = bb.data().len().saturating_sub(bb.index());
         if len > left {
             return Err("the document data is truncated (list longer than the data left)".into());

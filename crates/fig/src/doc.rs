@@ -27,6 +27,12 @@ fn err<T>(msg: impl Into<String>) -> Result<T, FigError> {
     Err(FigError(msg.into()))
 }
 
+/// Reads one file using the decoder's input cap without exposing its path in the error.
+pub fn read_limited_file(path: &Path, out: &mut Vec<u8>) -> Result<(), FigError> {
+    let file = std::fs::File::open(path).map_err(|e| FigError(format!("cannot read file: {e}")))?;
+    read_limited(file, MAX_FILE_BYTES, out, "file").map_err(FigError::from)
+}
+
 /// Largest file accepted. Decoding keeps the whole file in memory several times over.
 pub const MAX_FILE_BYTES: usize = 1024 * 1024 * 1024;
 
@@ -169,11 +175,8 @@ pub(crate) struct Source {
 
 impl Document {
     pub fn open(path: impl AsRef<Path>) -> Result<Document, FigError> {
-        let path = path.as_ref();
-        let file =
-            std::fs::File::open(path).map_err(|e| FigError(format!("{}: {e}", path.display())))?;
         let mut bytes = Vec::new();
-        read_limited(file, MAX_FILE_BYTES, &mut bytes, "file").map_err(FigError::from)?;
+        read_limited_file(path.as_ref(), &mut bytes)?;
         Document::from_bytes(&bytes)
     }
 
@@ -271,10 +274,10 @@ impl Document {
             validate_blobs_field(&schema, field)?;
         }
         let (message_bytes, message_codec) = decompress(chunks[1], limits.chunk)?;
-        let reader = Reader::new(&schema);
+        let decode_err = |e: String| FigError(format!("cannot decode the document: {e}"));
+        let reader = Reader::new(&schema).map_err(decode_err)?;
         let def = &schema.defs[message_def];
         let mut bb = ByteBuffer::new(&message_bytes);
-        let decode_err = |e: String| FigError(format!("cannot decode the document: {e}"));
 
         let mut message_extra = BTreeMap::new();
         let mut had_blobs = false;
@@ -305,7 +308,7 @@ impl Document {
                             .value(&mut bb, field.type_id, 1)
                             .map_err(decode_err)?;
                         let Some(node) = Node::from_data(data) else {
-                            continue;
+                            return Err(decode_err("node record has no valid guid".into()));
                         };
                         if let Some(&existing) = index.get(&node.id) {
                             // Later changes win, as Figma applies them in order.
@@ -619,12 +622,19 @@ fn synthetic_schema(blob_fields: Vec<kiwi_schema::Field>, has_blobs: bool) -> Sc
 
 #[cfg(test)]
 fn synthetic_file(schema: &Schema, blob_mode: u8) -> Vec<u8> {
+    synthetic_file_with_node(schema, blob_mode, true)
+}
+
+#[cfg(test)]
+fn synthetic_file_with_node(schema: &Schema, blob_mode: u8, include_guid: bool) -> Vec<u8> {
     let mut msg = ByteBufferMut::new();
     msg.write_var_uint(1);
     msg.write_var_uint(1);
-    msg.write_var_uint(1);
-    msg.write_var_uint(7);
-    msg.write_var_uint(9);
+    if include_guid {
+        msg.write_var_uint(1);
+        msg.write_var_uint(7);
+        msg.write_var_uint(9);
+    }
     msg.write_var_uint(2);
     msg.write_var_uint64(u64::MAX);
     if schema
@@ -675,6 +685,33 @@ fn synthetic_file(schema: &Schema, blob_mode: u8) -> Vec<u8> {
 mod schema_tests {
     use super::*;
     use kiwi_schema::{Def, DefKind, Field, TYPE_BYTE, TYPE_UINT64};
+
+    #[test]
+    fn rejects_oversized_schemas_before_interning_identifiers() {
+        let schema = Schema::new(vec![Def::new(
+            "Message".into(),
+            DefKind::Message,
+            (0..4097)
+                .map(|i| Field {
+                    name: format!("oversized-schema-field-{i}"),
+                    type_id: kiwi_schema::TYPE_STRING,
+                    is_array: false,
+                    value: i,
+                })
+                .collect(),
+        )]);
+        let bytes = synthetic_file_with_node(&schema, 1, true);
+        assert!(Document::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_node_records_without_ids_instead_of_dropping_them() {
+        let schema = synthetic_schema(Vec::new(), false);
+        let result = Document::from_bytes(&synthetic_file_with_node(&schema, 1, false));
+        assert!(
+            matches!(result, Err(e) if e.to_string().contains("node record has no valid guid"))
+        );
+    }
 
     #[test]
     fn validates_blob_shapes_and_roundtrips_uint64_through_the_codec() {
