@@ -13,6 +13,7 @@ mod variables;
 
 use std::borrow::Cow;
 use std::fmt;
+use std::sync::Arc;
 
 use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
@@ -120,6 +121,9 @@ pub struct Renderer {
     fonts: text::SystemFonts,
     /// Lay out text with installed fonts when the file has no stored glyph outlines.
     pub system_fonts: bool,
+    /// Property and style indexes of the last document drawn, by [`Document::instance`]:
+    /// built once per document, not per frame (they scan every node of every page).
+    indexes: Option<(u64, Arc<instance::Definitions>, Arc<variables::Variables>)>,
 }
 
 impl Default for Renderer {
@@ -128,6 +132,7 @@ impl Default for Renderer {
             images: Images::default(),
             fonts: text::SystemFonts::default(),
             system_fonts: true,
+            indexes: None,
         }
     }
 }
@@ -150,7 +155,7 @@ struct Ctx<'a> {
     symbol_stack: Vec<Guid>,
     instance_scales: Vec<f64>,
     properties: instance::Properties,
-    variables: variables::Variables,
+    variables: Arc<variables::Variables>,
     work_left: usize,
     depth: usize,
     exhausted: bool,
@@ -329,10 +334,17 @@ impl Renderer {
         preparation_skipped: usize,
     ) -> (Stats, Vec<ImageRequest>) {
         self.images.begin_frame();
-        let mut work_left = work;
-        let properties = instance::Properties::new(doc, &mut work_left);
-        let variables = variables::Variables::new(doc, &mut work_left);
-        let preparation_skipped = preparation_skipped + usize::from(work_left == 0);
+        // Bounded by MAX_DECODED_NODES, so not charged to the per-frame work budget.
+        let (definitions, variables) = match &self.indexes {
+            Some((instance, d, v)) if *instance == doc.instance => (d.clone(), v.clone()),
+            _ => {
+                let d = Arc::new(instance::definitions(doc));
+                let v = Arc::new(variables::Variables::new(doc));
+                self.indexes = Some((doc.instance, d.clone(), v.clone()));
+                (d, v)
+            }
+        };
+        let work_left = work;
         let mut ctx = Ctx {
             doc,
             rc: canvas,
@@ -351,7 +363,7 @@ impl Renderer {
             patch_index: std::collections::HashMap::new(),
             symbol_stack: Vec::new(),
             instance_scales: Vec::new(),
-            properties,
+            properties: instance::Properties::new(definitions),
             variables,
             work_left,
             depth: 0,
@@ -1005,8 +1017,9 @@ impl Ctx<'_> {
     fn draw_children(&mut self, node: &Node, data: &Val, world: Affine, path: Option<&[Guid]>) {
         let mut mask_layers = 0;
         let children = self.doc.children(node.id);
+        let reverse = data.flag("stackReverseZIndex") == Some(true);
         for index in 0..children.len() {
-            let id = &children[if data.flag("stackReverseZIndex") == Some(true) {
+            let id = &children[if reverse {
                 children.len() - 1 - index
             } else {
                 index

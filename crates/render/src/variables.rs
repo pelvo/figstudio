@@ -1,5 +1,4 @@
-//! Resolve paint styles and paint-variable aliases once per render, without a per-paint
-//! document scan.
+//! Resolve paint styles and paint-variable aliases from an index built once per document.
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -13,6 +12,35 @@ pub(crate) struct Variables {
     /// `fillPaints`, for fill and stroke styles alike.
     styles: HashMap<Guid, Val>,
     styles_by_asset: HashMap<(String, String), Val>,
+    /// Some value in the document mentions a style reference or a paint variable; when none
+    /// does, [`Variables::paints`] has nothing to resolve or count and returns at once.
+    used: bool,
+}
+
+/// Fields whose presence anywhere (nodes or instance overrides) needs [`Variables::paints`].
+const PAINT_REFERENCES: [&str; 4] = [
+    "colorVar",
+    "styleOverrideTable",
+    "styleIdForFill",
+    "styleIdForStrokeFill",
+];
+
+/// True when `value` or anything nested in it has one of [`PAINT_REFERENCES`].
+fn mentions_paint_reference(value: &Val) -> bool {
+    let mut stack = vec![value];
+    while let Some(v) = stack.pop() {
+        match v {
+            Val::Obj(o) => {
+                if o.keys().any(|k| PAINT_REFERENCES.contains(&k)) {
+                    return true;
+                }
+                stack.extend(o.values());
+            }
+            Val::Arr(items) => stack.extend(items),
+            _ => {}
+        }
+    }
+    false
 }
 
 /// A node's style reference and the paint list that the style replaces.
@@ -22,13 +50,10 @@ pub(crate) const STYLED_PAINTS: [(&str, &str); 2] = [
 ];
 
 impl Variables {
-    pub fn new(doc: &Document, remaining: &mut usize) -> Self {
+    pub fn new(doc: &Document) -> Self {
         let mut out = Self::default();
         for node in &doc.nodes {
-            if *remaining == 0 {
-                break;
-            }
-            *remaining -= 1;
+            out.used = out.used || mentions_paint_reference(&node.data);
             if node.data.get("styleType").is_some()
                 && let Some(paints) = node.data.get("fillPaints")
             {
@@ -92,6 +117,9 @@ impl Variables {
     }
 
     pub fn paints<'a>(&self, data: &'a Val) -> (Cow<'a, Val>, usize) {
+        if !self.used {
+            return (Cow::Borrowed(data), 0);
+        }
         // An attached style is the source of truth; the node's own paints are a cache that
         // can be stale after the style changed.
         let styled: Vec<(&str, &Val)> = STYLED_PAINTS

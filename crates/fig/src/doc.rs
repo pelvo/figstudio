@@ -131,10 +131,17 @@ impl Node {
     }
 }
 
+/// A process-unique [`Document::instance`].
+fn next_instance() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct Document {
     /// Unique per opened document in this process. Caches shared between documents (decoded
     /// images) key on it, so two files using the same image hash for different bytes never
-    /// share an entry.
+    /// share an entry. [`Document::set_nodes`] assigns a new one, so per-document indexes
+    /// (the renderer's style and property tables) are rebuilt after an edit.
     pub instance: u64,
     pub prelude: String,
     pub format_version: u32,
@@ -436,9 +443,8 @@ impl Document {
         nodes.shrink_to_fit();
         check_parent_links(&nodes, &index)?;
 
-        static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let mut doc = Document {
-            instance: NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            instance: next_instance(),
             prelude,
             format_version,
             file_name: parts.file_name,
@@ -483,6 +489,7 @@ impl Document {
         check_parent_links(&out, &index)?;
         self.nodes = out;
         self.index = index;
+        self.instance = next_instance();
         self.reindex();
         Ok(())
     }
