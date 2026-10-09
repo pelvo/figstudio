@@ -112,6 +112,31 @@ Known differences that are **not** bugs: Figma thumbnails show the canvas backgr
 Still open: fit-to-page of a huge page takes ~0.4 s per frame (a level-of-detail cache or
 tiling would fix it); the Layers panel is not virtualised yet (fine at 9 000 rows).
 
+- [x] **Image-heavy files bigger than the Wasm memory** (requester's 1.7 GB file, 194k
+      layers, 1 893 images = 1.5 GB of the file). Before: the browser read the whole file
+      into the 4 GiB Wasm memory, kept every image's bytes and decoded them at full size,
+      so it ran out of memory (desktop needed 4.7 GB to open and grew to 8 GB rendering).
+      Now:
+      - `fig::archive` reads the zip piece by piece (end record, central directory, zip64,
+        stored and deflated entries); `Document::open_lazy` / `from_lazy` read only the
+        canvas, `meta.json` and the thumbnail, and list images in `lazy_images`. A lazily
+        opened document cannot be saved (the writer refuses).
+      - `render::images`: decoded images are cached per (image, level), level n being the
+        image shrunk 2ⁿ times, at the level the view needs; Figma's `imageThumbnail`
+        (≤ 512 px) is drawn when the image is ≤ 256 px on screen. 1 GiB budget, least
+        recently drawn dropped first. The choice depends only on the paint and the view,
+        so a frame never depends on what was decoded earlier (before, page 7 of the file
+        rendered differently on the second render).
+      - Frames list unread images in `Frame::wanted`; the app reads them on workers (four
+        at a time) and renders again as they arrive; `render_complete` reads them inline
+        (exports). The browser keeps the `File` on the main thread and reads slices with
+        `Blob.slice().arrayBuffer()`; files over 256 MB open this way, smaller ones as before.
+      Result on the requester's file (numbers only): browser opens in 1.4 s at 537 MB of
+      Wasm memory; all 9 pages render with no missing images (each settles in ≤ 1.1 s,
+      e.g. 532 images read for one page); zooming to 260% peaks at 906 MB. Desktop opens in
+      0.7 s at 672 MB. Lazy and whole renders of every page match pixel for pixel at fit and
+      8× zoom. CLI commands other than the app still use `Document::open` (1 GiB cap).
+
 ### P2 — Headless CLI (`apps/figstudio-cli`)
 - [x] `info`, `tree --depth`, `render --page/--node/--scale/--background`, `thumbnail`
 - [x] renders all 7 fixtures (3–366 ms each, release build)
@@ -188,7 +213,9 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - Figma's text layout cannot be matched exactly; files saved without stored glyph outlines
   fall back to installed fonts, so line breaks may differ.
 - `vello_cpu` 0.3 is young; filter support is limited to blur and drop shadow.
-- Very large files: decoding keeps the whole message in memory; P1b measures this.
+- Very large files: decoding keeps the whole node tree in memory (670 MB for 194k layers);
+  images are read lazily (P1b). A file whose node tree alone exceeds the Wasm memory would
+  still fail in the browser.
 - Writing `.fig` that Figma accepts is unverified until someone opens a saved file in Figma.
 
 ## Progress log
@@ -224,3 +251,7 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   once and replays it per strip on the pool (`render_parallel`, exact stats; pixels within 1).
   Vello's own multithreading cannot run in wasm (it spawns std threads). 100% zoom 15 → 6 ms
   in Chromium; fit zoom unchanged (walk-bound, T15).
+- 2026-10-09 14:xx — Requester's 1.7 GB file ran out of memory in the browser. Lazy archive
+  reading + per-level image cache + images read on demand (see P1b). Opens in 1.4 s at
+  537 MB Wasm memory, all pages render, peak 906 MB; lazy matches whole pixel for pixel.
+  Found and fixed: frames depended on the decode order of shared images.

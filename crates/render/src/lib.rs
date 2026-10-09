@@ -3,6 +3,7 @@
 //! The same code path serves the desktop app, the headless CLI and the browser build.
 
 pub mod geom;
+pub mod images;
 pub mod paint;
 mod record;
 mod text;
@@ -19,7 +20,7 @@ use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
 use crate::geom::{
     GeomPath, affine, base_shape, clips_content, geometry, size, transformed_bounds,
 };
-use crate::paint::ImageCache;
+use crate::images::{ImageRequest, Images};
 use crate::record::Canvas;
 
 pub use vello_cpu::{color, kurbo};
@@ -38,6 +39,9 @@ pub struct Stats {
     pub text_system_fonts: usize,
     pub text_missing: usize,
     pub missing_images: usize,
+    /// Image paints drawn with a placeholder or a blurrier copy while the image is read
+    /// (lazily opened documents; see [`Frame::wanted`]).
+    pub images_loading: usize,
     pub missing_symbols: usize,
     pub masks: usize,
     pub shadows: usize,
@@ -67,6 +71,7 @@ impl fmt::Display for Stats {
         note(self.blurs, "blurs")?;
         note(self.skipped_effects, "effects skipped")?;
         note(self.missing_images, "images missing")?;
+        note(self.images_loading, "images loading")?;
         note(self.missing_symbols, "components missing")?;
         note(self.unsupported_paints, "paints skipped")?;
         note(self.approximated_paints, "paints approximated")?;
@@ -87,11 +92,15 @@ pub struct Viewport {
 pub struct Frame {
     pub pixmap: Pixmap,
     pub stats: Stats,
+    /// Images of a lazily opened document this frame needs and nobody has asked for yet.
+    /// Read each entry and pass the bytes to [`Images::insert_encoded`] (or call
+    /// [`Images::fail`]), then render again. See [`Renderer::render_complete`].
+    pub wanted: Vec<ImageRequest>,
 }
 
 /// Holds caches (decoded images, system fonts) between renders of the same document.
 pub struct Renderer {
-    images: ImageCache,
+    images: Images,
     fonts: text::SystemFonts,
     /// Lay out text with installed fonts when the file has no stored glyph outlines.
     pub system_fonts: bool,
@@ -100,7 +109,7 @@ pub struct Renderer {
 impl Default for Renderer {
     fn default() -> Self {
         Renderer {
-            images: ImageCache::default(),
+            images: Images::default(),
             fonts: text::SystemFonts::default(),
             system_fonts: true,
         }
@@ -118,7 +127,8 @@ struct Ctx<'a> {
     doc: &'a Document,
     rc: &'a mut dyn Canvas,
     stats: Stats,
-    images: &'a mut ImageCache,
+    images: &'a Images,
+    wanted: Vec<ImageRequest>,
     fonts: Option<&'a mut text::SystemFonts>,
     patches: Vec<Patch>,
     symbol_stack: Vec<Guid>,
@@ -131,6 +141,48 @@ impl Renderer {
         Self::default()
     }
 
+    /// A renderer drawing from (and adding to) `images`, which other renderers and threads
+    /// may share.
+    pub fn with_images(images: Images) -> Self {
+        Renderer {
+            images,
+            ..Self::default()
+        }
+    }
+
+    /// The image cache (a shared handle).
+    pub fn images(&self) -> Images {
+        self.images.clone()
+    }
+
+    /// Renders until every image is drawn at the resolution the view needs, reading the
+    /// images a lazily opened document is missing with `read` (`None`: unreadable). For
+    /// exports and the CLI; the app renders progressively instead.
+    pub fn render_complete(
+        &mut self,
+        doc: &Document,
+        root: Guid,
+        viewport: &Viewport,
+        mut read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> Frame {
+        // Thumbnail first, then the image, then perhaps a finer level: a few rounds at most.
+        for _ in 0..6 {
+            let frame = self.render(doc, root, viewport);
+            if frame.wanted.is_empty() && self.images.in_flight() == 0 {
+                return frame;
+            }
+            for want in &frame.wanted {
+                match read(want) {
+                    Some(bytes) => {
+                        self.images.insert_encoded(&want.hash, &bytes, want.level);
+                    }
+                    None => self.images.fail(&want.hash, want.level),
+                }
+            }
+        }
+        self.render(doc, root, viewport)
+    }
+
     /// Draws `root` (a page or any node) into `viewport`.
     pub fn render(&mut self, doc: &Document, root: Guid, viewport: &Viewport) -> Frame {
         let (w, h) = (viewport.width.max(1), viewport.height.max(1));
@@ -140,11 +192,15 @@ impl Renderer {
             rc.set_paint(bg);
             rc.fill_rect(&full);
         }
-        let stats = self.walk(doc, root, viewport.transform, full, &mut rc);
+        let (stats, wanted) = self.walk(doc, root, viewport.transform, full, &mut rc);
         rc.flush();
         let mut pixmap = Pixmap::new(w, h);
         rc.render(&mut pixmap, &mut Resources::new());
-        Frame { pixmap, stats }
+        Frame {
+            pixmap,
+            stats,
+            wanted,
+        }
     }
 
     /// Like [`Renderer::render`], with rasterizing split across the current Rayon thread pool.
@@ -175,7 +231,7 @@ impl Renderer {
             rec.set_paint(bg.into());
             rec.fill_rect(&full);
         }
-        let stats = self.walk(doc, root, viewport.transform, full, &mut rec);
+        let (stats, wanted) = self.walk(doc, root, viewport.transform, full, &mut rec);
         let rows: Vec<(u32, u32)> = (0..count)
             .map(|i| (height * i / count, height * (i + 1) / count))
             .collect();
@@ -199,7 +255,11 @@ impl Renderer {
             let src = part.data_as_u8_slice();
             out[y0 as usize * stride..][..src.len()].copy_from_slice(src);
         }
-        Frame { pixmap, stats }
+        Frame {
+            pixmap,
+            stats,
+            wanted,
+        }
     }
 
     /// Walks `root` and issues its drawing to `canvas`. `screen` is the output area for culling.
@@ -210,12 +270,14 @@ impl Renderer {
         transform: Affine,
         screen: Rect,
         canvas: &mut dyn Canvas,
-    ) -> Stats {
+    ) -> (Stats, Vec<ImageRequest>) {
+        self.images.begin_frame();
         let mut ctx = Ctx {
             doc,
             rc: canvas,
             stats: Stats::default(),
-            images: &mut self.images,
+            images: &self.images,
+            wanted: Vec::new(),
             fonts: if self.system_fonts {
                 Some(&mut self.fonts)
             } else {
@@ -235,7 +297,7 @@ impl Renderer {
                 ctx.draw(node, transform * parent, None);
             }
         }
-        ctx.stats
+        (ctx.stats, ctx.wanted)
     }
 
     /// Renders `root` cropped to its content at `scale`, with `padding` pixels around it.
@@ -247,6 +309,35 @@ impl Renderer {
         padding: f64,
         background: Option<AlphaColor<Srgb>>,
     ) -> Option<Frame> {
+        let viewport = fit_viewport(doc, root, scale, padding, background)?;
+        Some(self.render(doc, root, &viewport))
+    }
+
+    /// [`Renderer::render_fit`] with every image read at full sharpness
+    /// ([`Renderer::render_complete`]).
+    pub fn render_fit_complete(
+        &mut self,
+        doc: &Document,
+        root: Guid,
+        scale: f64,
+        padding: f64,
+        background: Option<AlphaColor<Srgb>>,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> Option<Frame> {
+        let viewport = fit_viewport(doc, root, scale, padding, background)?;
+        Some(self.render_complete(doc, root, &viewport, read))
+    }
+}
+
+/// The viewport showing `root`'s content at `scale` (shrunk to fit [`MAX_SIDE`]) with `padding`.
+fn fit_viewport(
+    doc: &Document,
+    root: Guid,
+    scale: f64,
+    padding: f64,
+    background: Option<AlphaColor<Srgb>>,
+) -> Option<Viewport> {
+    {
         let bounds = content_bounds(doc, root)?;
         let mut scale = scale.max(0.01);
         let longest = bounds.width().max(bounds.height()) * scale + padding * 2.0;
@@ -258,16 +349,12 @@ impl Renderer {
         let transform = Affine::translate((padding, padding))
             * Affine::scale(scale)
             * Affine::translate((-bounds.x0, -bounds.y0));
-        Some(self.render(
-            doc,
-            root,
-            &Viewport {
-                width,
-                height,
-                transform,
-                background,
-            },
-        ))
+        Some(Viewport {
+            width,
+            height,
+            transform,
+            background,
+        })
     }
 }
 
@@ -645,8 +732,12 @@ impl Ctx<'_> {
                 end += 1;
             }
             for p in paints.items() {
-                let Some(resolved) =
-                    paint::resolve(p, w, h, self.doc, self.images, &mut self.stats)
+                let mut img = paint::ImageCtx {
+                    images: self.images,
+                    wanted: &mut self.wanted,
+                    screen: paint::linear_scale(world),
+                };
+                let Some(resolved) = paint::resolve(p, w, h, self.doc, &mut img, &mut self.stats)
                 else {
                     continue;
                 };

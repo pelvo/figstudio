@@ -186,6 +186,15 @@ a fixture on the page, and the status bar shows layers drawn and the render time
 `?threads=1` with the default. Headless Chromium works (`--use-angle=swiftshader`); drop a file
 by dispatching `dragenter`/`dragover`/`drop` with a `DataTransfer` on the canvas.
 
+Open big files the way a user drops them, without the page holding the bytes: serve the
+file next to `web/dist` (a symlink in a copy of the directory), then in the page
+`fetch()` it, `blob()` it (Chromium keeps big bodies on disk), wrap it in a `File` and
+dispatch the drop events. Playwright's `wait_for_function` and `wait_for_selector` hang on
+this page (cross-origin isolated); poll `page.evaluate` instead. `window.figstudioStatus`
+holds numbers only (tabs, page, drawn, culled, images loading / missing / read, image cache
+and Wasm memory bytes, errors); `figstudioPage(n)` switches page. Never screenshot a
+private file.
+
 Measured on the development machine (32 threads, headless Chromium, 1400×880 window,
 4500-node `synth --copies 400` of structure.fig): 100% zoom 15 ms on 1 thread, 6–7 ms on 8+;
 fit zoom 70–90 ms whatever the thread count, because the single-threaded document walk

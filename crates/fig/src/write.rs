@@ -242,6 +242,11 @@ impl Document {
     /// A complete `.fig` file. Archives keep their other entries; images are written from
     /// `images`, so removing an entry there drops it from the file.
     pub fn to_bytes(&self) -> Result<Vec<u8>, FigError> {
+        if self.source.lazy {
+            return Err(FigError(
+                "opened without its images (open_lazy), so it cannot be written".into(),
+            ));
+        }
         let canvas = self.encode_canvas()?;
         let Some(entries) = &self.source.archive_entries else {
             return Ok(canvas);

@@ -4,6 +4,7 @@
 //! `images/<sha1>`) or the raw canvas. The canvas carries its own Kiwi schema, so
 //! files from any Figma version decode without generated types.
 
+pub mod archive;
 mod doc;
 mod read;
 mod val;

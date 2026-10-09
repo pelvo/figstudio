@@ -186,11 +186,35 @@ Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared mem
   the UI repaints every 16 ms while `Workers::busy()`.
 - Work runs on the Rayon pool (`rayon::spawn`), not `std::thread` (unsupported on wasm).
   The render loop uses `render_parallel`.
-- Files arrive as bytes (picker via `rfd::AsyncFileDialog`, drops via `bytes_async`) through
-  `web::Inbox`; exports render on a worker and download through a `Blob` (copied out of the
-  shared memory first, since a Blob cannot view a `SharedArrayBuffer`).
+- Files arrive as browser `File`s (picker via `rfd::AsyncFileDialog` with
+  `file-handle-inner`, drops via `DroppedFile::web_file`) through `web::Inbox`. Files up to
+  256 MB are read whole; bigger archives open lazily (below). Exports render on a worker
+  and download through a `Blob` (copied out of the shared memory first, since a Blob cannot
+  view a `SharedArrayBuffer`).
+- **JavaScript objects stay on the main thread.** A worker that needs bytes of a lazily
+  opened file sends a request (`web::WebSource`) and polls for the answer; the main thread
+  reads the slice asynchronously in `Inbox::serve_ranges`, called every frame.
 - No installed fonts: text without stored glyph outlines is not drawn (counted), and the UI
   has egui's built-in fonts only, so CJK layer names show as boxes.
+
+### Big files and images
+
+- `Document::open` reads the whole file (capped at `MAX_FILE_BYTES`, 1 GiB). The app opens
+  archives over 256 MB with `Document::open_lazy` (desktop) / `Document::from_lazy`
+  (browser): only the canvas, `meta.json` and the thumbnail are read; images stay in
+  `doc.lazy_images` as archive entries (`fig::archive`). Such a document cannot be saved.
+- Images are decoded per (image, level) in `render::images::Images`, a cache shared by all
+  renders (`Renderer::with_images`). Level n is the image shrunk 2ⁿ times; the level comes
+  from the paint's on-screen scale. Figma's `imageThumbnail` is used up to 256 px on screen.
+  **Draw only the copy for the paint's own level** (fall back to the nearest copy only while
+  that one is being read), or frames depend on decode order
+  (`one_image_at_two_sizes_does_not_depend_on_decode_order`).
+- A frame of a lazy document lists what it is missing in `Frame::wanted`. Every request
+  must be answered with `Images::insert_encoded` or `Images::fail`, or it stays in flight
+  and is never asked for again. `Renderer::render_complete` loops until nothing is wanted.
+  The app's `worker::ImageQueue` reads requests (newest first, four at a time) and
+  `canvas.rs` renders again when `Workers::images_arrived` changes while the shown frame
+  has `images_loading > 0`.
 
 ### The CLI (`apps/figstudio-cli`)
 

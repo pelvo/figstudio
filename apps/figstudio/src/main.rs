@@ -2,6 +2,7 @@
 
 mod canvas;
 mod panels;
+mod source;
 mod tab;
 mod theme;
 #[cfg(target_arch = "wasm32")]
@@ -33,6 +34,24 @@ fn main() -> eframe::Result {
         APP_NAME,
         options,
         Box::new(move |cc| Ok(Box::new(App::new(cc, files)))),
+    )
+}
+
+/// Renders `root` for export, reading every image it needs at full sharpness.
+fn export_frame(
+    images: figstudio_render::images::Images,
+    doc: &figstudio_fig::Document,
+    source: Option<&source::Source>,
+    root: figstudio_fig::Guid,
+    scale: f64,
+) -> Option<figstudio_render::Frame> {
+    figstudio_render::Renderer::with_images(images).render_fit_complete(
+        doc,
+        root,
+        scale,
+        0.0,
+        None,
+        |want| source.and_then(|s| s.read(&want.entry).ok()),
     )
 }
 
@@ -91,13 +110,18 @@ impl App {
         app
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code, unused_variables))]
     fn open(&mut self, path: PathBuf) {
         if let Some(i) = self.tabs.iter().position(|t| t.path == path) {
             self.active = i;
-            return;
+        } else {
+            // The browser opens files through `web::Inbox` (no paths there).
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.loading.push(path.clone());
+                self.workers.load(path);
+            }
         }
-        self.loading.push(path.clone());
-        self.workers.load(path);
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -157,13 +181,13 @@ impl App {
             .filter(|n| !n.is_empty())
             .unwrap_or("export")
             .replace(['/', '\\'], "_");
+        let (doc, source) = (tab.doc.clone(), tab.source.clone());
         #[cfg(target_arch = "wasm32")]
         {
-            let doc = tab.doc.clone();
             let file = format!("{name}.png");
+            let images = self.workers.images();
             self.workers.run(self.web.exports_tx.clone(), move || {
-                let png = figstudio_render::Renderer::new()
-                    .render_fit(&doc, root, scale, 0.0, None)
+                let png = export_frame(images, &doc, source.as_ref(), root, scale)
                     .ok_or_else(|| "nothing to export".to_string())
                     .and_then(|frame| frame.pixmap.into_png().map_err(|e| e.to_string()));
                 (file, png)
@@ -171,7 +195,7 @@ impl App {
             self.toast(ctx, "Exporting…", false);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        self.save_png(ctx, tab.doc.clone(), root, &name, scale);
+        self.save_png(ctx, doc, source, root, &name, scale);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -179,6 +203,7 @@ impl App {
         &mut self,
         ctx: &egui::Context,
         doc: std::sync::Arc<figstudio_fig::Document>,
+        source: Option<source::Source>,
         root: figstudio_fig::Guid,
         name: &str,
         scale: f64,
@@ -190,9 +215,7 @@ impl App {
         else {
             return;
         };
-        let mut renderer = figstudio_render::Renderer::new();
-        let result = renderer
-            .render_fit(&doc, root, scale, 0.0, None)
+        let result = export_frame(self.workers.images(), &doc, source.as_ref(), root, scale)
             .ok_or_else(|| "nothing to export".to_string())
             .and_then(|frame| frame.pixmap.into_png().map_err(|e| e.to_string()))
             .and_then(|png| std::fs::write(&path, png).map_err(|e| e.to_string()));
@@ -205,11 +228,16 @@ impl App {
     fn poll(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.workers.load_rx.try_recv() {
             match msg {
-                Loaded::Ok { path, doc, elapsed } => {
+                Loaded::Ok {
+                    path,
+                    doc,
+                    source,
+                    elapsed,
+                } => {
                     self.loading.retain(|p| p != &path);
                     let id = self.next_id;
                     self.next_id += 1;
-                    self.tabs.push(Tab::new(id, path, doc, elapsed));
+                    self.tabs.push(Tab::new(id, path, doc, source, elapsed));
                     self.active = self.tabs.len() - 1;
                 }
                 Loaded::Err { path, message } => {
@@ -229,6 +257,13 @@ impl App {
         }
         #[cfg(target_arch = "wasm32")]
         self.poll_web(ctx);
+        #[cfg(target_arch = "wasm32")]
+        if let Some(n) = web::take_page_request()
+            && let Some(tab) = self.tab()
+            && let Some(&page) = tab.doc.pages.get(n)
+        {
+            tab.set_page(page);
+        }
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for f in dropped {
             #[cfg(target_arch = "wasm32")]
@@ -257,13 +292,26 @@ impl App {
 
     #[cfg(target_arch = "wasm32")]
     fn poll_web(&mut self, ctx: &egui::Context) {
+        self.web.serve_ranges(ctx);
         while let Ok(picked) = self.web.files.try_recv() {
             match picked {
-                Ok((path, bytes)) => {
+                web::Picked::Bytes(path, bytes) => {
                     self.loading.push(path.clone());
                     self.workers.load_bytes(path, bytes);
                 }
-                Err(e) => self.toast(ctx, e, true),
+                web::Picked::Lazy {
+                    name,
+                    file,
+                    entries,
+                    eager,
+                } => {
+                    self.loading.push(name.clone());
+                    let source = self.web.source(file);
+                    self.workers.decode(name, move || {
+                        Ok((web::decode_lazy(entries, eager)?, Some(source)))
+                    });
+                }
+                web::Picked::Failed(e) => self.toast(ctx, e, true),
             }
         }
         while let Ok((name, png)) = self.web.exports.try_recv() {
@@ -513,6 +561,36 @@ impl App {
         }
     }
 
+    /// Numbers only (no names or content), for automated browser checks: see
+    /// `window.figstudioStatus` in `web.rs`.
+    #[cfg(target_arch = "wasm32")]
+    fn status_json(&self) -> String {
+        let tab = self.tabs.get(self.active);
+        let s = tab.map(|t| &t.stats);
+        let page = tab.and_then(|t| t.doc.pages.iter().position(|p| *p == t.page));
+        format!(
+            concat!(
+                r#"{{"tabs":{},"loading":{},"page":{},"pages":{},"zoom":{},"drawn":{},"#,
+                r#""culled":{},"images_loading":{},"images_missing":{},"render_ms":{:.1},"#,
+                r#""image_cache_bytes":{},"images_arrived":{},"busy":{},"errors":{}}}"#
+            ),
+            self.tabs.len(),
+            self.loading.len(),
+            page.map_or(-1, |p| p as i64),
+            tab.map_or(0, |t| t.doc.pages.len()),
+            tab.map_or(0.0, |t| t.view.zoom),
+            s.map_or(0, |s| s.nodes),
+            s.map_or(0, |s| s.culled),
+            s.map_or(0, |s| s.images_loading),
+            s.map_or(0, |s| s.missing_images),
+            tab.map_or(0.0, |t| t.render_time.as_secs_f64() * 1000.0),
+            self.workers.images().bytes(),
+            self.workers.images_arrived(),
+            self.workers.busy(),
+            self.toasts.iter().filter(|t| t.error).count(),
+        )
+    }
+
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let Some(tab) = self.tabs.get(self.active) else {
@@ -526,6 +604,10 @@ impl App {
                 ui.separator();
             }
             ui.label(RichText::new(format!("{} layers drawn · {:.0} ms", tab.stats.nodes, tab.render_time.as_secs_f64() * 1000.0)).color(theme::TEXT_DIM));
+            if tab.stats.images_loading > 0 {
+                ui.separator();
+                ui.label(RichText::new(format!("loading {} images…", tab.stats.images_loading)).color(theme::TEXT_DIM));
+            }
             let notes = tab.stats.to_string();
             let gaps: Vec<&str> = notes.split(", ").filter(|s| s.contains("skipped") || s.contains("missing") || s.contains("approximated")).collect();
             if !gaps.is_empty() {
@@ -596,6 +678,8 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let started = web_time::Instant::now();
         self.frame_ui(ui);
+        #[cfg(target_arch = "wasm32")]
+        web::publish_status(&self.status_json());
         if self.profile {
             let tab = self.tabs.get(self.active);
             eprintln!(

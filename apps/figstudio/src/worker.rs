@@ -1,4 +1,5 @@
-//! Background threads: file loading and canvas rendering, so the UI never blocks.
+//! Background threads: file loading, canvas rendering and image reading, so the UI never
+//! blocks.
 //!
 //! Desktop: OS threads; the render thread waits on its channel and wakes the UI when done.
 //!
@@ -6,22 +7,34 @@
 //! thread must never wait on a lock (browsers forbid blocking the main thread), so here no
 //! worker touches the egui context or waits on a channel the UI sends to: the render loop polls
 //! for jobs, and the UI repaints while [`Workers::busy`] says something is in flight.
+//!
+//! Big files open lazily (`source.rs`): a frame lists the images it still needs, the render
+//! loop hands each to an image reader (a few at a time), and when one arrives the UI renders
+//! the view again ([`Workers::images_arrived`]).
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use figstudio_fig::{Document, Guid};
+use figstudio_render::images::{ImageRequest, Images};
 use figstudio_render::{Renderer, Stats, Viewport};
 use web_time::{Duration, Instant};
 
+use crate::source::Source;
 use crate::tab::View;
+
+/// Image reads running at once (each holds the compressed bytes and the decoded copy).
+const READERS: usize = 4;
 
 pub struct RenderJob {
     pub tab: u64,
     pub generation: u64,
     pub doc: Arc<Document>,
+    /// Where unread images come from (lazily opened documents).
+    pub source: Option<Source>,
     pub root: Guid,
     pub viewport: Viewport,
     /// Echoed back so the frame can be placed correctly after the view has moved on.
@@ -45,6 +58,7 @@ pub enum Loaded {
     Ok {
         path: PathBuf,
         doc: Arc<Document>,
+        source: Option<Source>,
         elapsed: Duration,
     },
     Err {
@@ -117,6 +131,64 @@ fn draw(renderer: &mut Renderer, job: &RenderJob) -> figstudio_render::Frame {
     }
 }
 
+/// Images waiting to be read, newest request first, with at most [`READERS`] reading.
+struct ImageQueue {
+    pending: Mutex<(VecDeque<(ImageRequest, Source)>, usize)>,
+    images: Images,
+    arrived: AtomicU64,
+    waker: Waker,
+    in_flight: Arc<AtomicUsize>,
+}
+
+impl ImageQueue {
+    fn push(self: &Arc<Self>, wanted: Vec<ImageRequest>, source: &Source) {
+        {
+            let mut q = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            // What the latest frame wants goes first: it is what is on screen now.
+            for want in wanted.into_iter().rev() {
+                self.in_flight.fetch_add(1, Ordering::Relaxed);
+                q.0.push_front((want, source.clone()));
+            }
+        }
+        self.pump();
+    }
+
+    /// Starts readers up to the limit.
+    fn pump(self: &Arc<Self>) {
+        loop {
+            let next = {
+                let mut q = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+                if q.1 >= READERS {
+                    return;
+                }
+                let Some(next) = q.0.pop_front() else {
+                    return;
+                };
+                q.1 += 1;
+                next
+            };
+            let this = self.clone();
+            spawn(move || {
+                let (want, source) = next;
+                match source.read(&want.entry) {
+                    Ok(bytes) => {
+                        this.images.insert_encoded(&want.hash, &bytes, want.level);
+                    }
+                    Err(_) => this.images.fail(&want.hash, want.level),
+                }
+                this.pending
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .1 -= 1;
+                this.arrived.fetch_add(1, Ordering::Relaxed);
+                this.in_flight.fetch_sub(1, Ordering::Relaxed);
+                this.waker.wake();
+                this.pump();
+            });
+        }
+    }
+}
+
 pub struct Workers {
     render_tx: Sender<RenderJob>,
     pub render_rx: Receiver<RenderDone>,
@@ -125,6 +197,7 @@ pub struct Workers {
     waker: Waker,
     /// Jobs sent and not yet finished or dropped.
     in_flight: Arc<AtomicUsize>,
+    queue: Arc<ImageQueue>,
 }
 
 impl Workers {
@@ -133,10 +206,18 @@ impl Workers {
         let (done_tx, render_rx) = channel();
         let waker = Waker::new(ctx);
         let in_flight = Arc::new(AtomicUsize::new(0));
+        let queue = Arc::new(ImageQueue {
+            pending: Mutex::new((VecDeque::new(), 0)),
+            images: Images::default(),
+            arrived: AtomicU64::new(0),
+            waker: waker.clone(),
+            in_flight: in_flight.clone(),
+        });
         let repaint = waker.clone();
         let count = in_flight.clone();
+        let images = queue.clone();
         let render_loop = move || {
-            let mut renderer = Renderer::new();
+            let mut renderer = Renderer::with_images(images.images.clone());
             let mut queue: Vec<RenderJob> = Vec::new();
             loop {
                 if queue.is_empty() {
@@ -154,7 +235,17 @@ impl Workers {
                 }
                 let job = queue.remove(0);
                 let start = Instant::now();
-                let frame = draw(&mut renderer, &job);
+                let mut frame = draw(&mut renderer, &job);
+                let elapsed = start.elapsed();
+                let wanted = std::mem::take(&mut frame.wanted);
+                if !wanted.is_empty() {
+                    match &job.source {
+                        Some(source) => images.push(wanted, source),
+                        None => wanted
+                            .iter()
+                            .for_each(|w| images.images.fail(&w.hash, w.level)),
+                    }
+                }
                 let size = [
                     usize::from(frame.pixmap.width()),
                     usize::from(frame.pixmap.height()),
@@ -168,7 +259,7 @@ impl Workers {
                     size,
                     rgba_premultiplied: frame.pixmap.data_as_u8_slice().to_vec(),
                     stats: frame.stats,
-                    elapsed: start.elapsed(),
+                    elapsed,
                 };
                 let sent = done_tx.send(done);
                 count.fetch_sub(1, Ordering::Relaxed);
@@ -193,6 +284,7 @@ impl Workers {
             load_rx,
             waker,
             in_flight,
+            queue,
         }
     }
 
@@ -202,6 +294,16 @@ impl Workers {
         self.in_flight.load(Ordering::Relaxed) > 0
     }
 
+    /// Counts images read so far; when it changes, views showing placeholders render again.
+    pub fn images_arrived(&self) -> u64 {
+        self.queue.arrived.load(Ordering::Relaxed)
+    }
+
+    /// The image cache shared by every render (for exports).
+    pub fn images(&self) -> Images {
+        self.queue.images.clone()
+    }
+
     pub fn render(&self, job: RenderJob) {
         self.in_flight.fetch_add(1, Ordering::Relaxed);
         if self.render_tx.send(job).is_err() {
@@ -209,19 +311,23 @@ impl Workers {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load(&self, path: PathBuf) {
-        self.decode(path.clone(), move || Document::open(&path));
+        self.decode(path.clone(), move || crate::source::open_path(&path));
     }
 
     /// Decodes dropped bytes (used when the platform gives contents rather than a path).
     pub fn load_bytes(&self, name: PathBuf, bytes: Vec<u8>) {
-        self.decode(name, move || Document::from_bytes(&bytes));
+        self.decode(name, move || Ok((Document::from_bytes(&bytes)?, None)));
     }
 
-    fn decode(
+    /// Opens a document on a worker; `read` returns it and where its unread images are.
+    pub fn decode(
         &self,
         path: PathBuf,
-        read: impl FnOnce() -> Result<Document, figstudio_fig::FigError> + Send + 'static,
+        read: impl FnOnce() -> Result<(Document, Option<Source>), figstudio_fig::FigError>
+        + Send
+        + 'static,
     ) {
         let tx = self.load_tx.clone();
         let waker = self.waker.clone();
@@ -230,9 +336,10 @@ impl Workers {
         spawn(move || {
             let start = Instant::now();
             let msg = match read() {
-                Ok(doc) => Loaded::Ok {
+                Ok((doc, source)) => Loaded::Ok {
                     path,
                     doc: Arc::new(doc),
+                    source,
                     elapsed: start.elapsed(),
                 },
                 Err(e) => Loaded::Err {

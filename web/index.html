@@ -25,7 +25,8 @@
           'unavailable. The server must send Cross-Origin-Opener-Policy: same-origin and ' +
           'Cross-Origin-Embedder-Policy: require-corp.');
       }
-      const { default: init, initThreadPool, start } = await import('./figstudio.js');
+      const { default: init, initThreadPool, start, figstudioPage } = await import('./figstudio.js');
+      self.figstudioPage = figstudioPage;
       await init();
       // Rendering and file decoding run on this pool. ?threads=N overrides the size
       // (1 renders on a single thread; useful for comparing speeds).

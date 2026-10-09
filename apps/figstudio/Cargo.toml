@@ -23,13 +23,14 @@ fontdb = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 figstudio-render = { path = "../../crates/render", default-features = false, features = ["parallel"] }
 eframe = { workspace = true, features = ["default_fonts", "glow"] }
-rfd = { workspace = true }
+# file-handle-inner: the picked `File`, so big files are read in slices, not whole.
+rfd = { workspace = true, features = ["file-handle-inner"] }
 rayon = { workspace = true }
 wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-rayon = { version = "1.3", features = ["no-bundler"] }
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Document", "Element", "HtmlAnchorElement", "HtmlCanvasElement", "Url", "Window"] }
+web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Document", "Element", "File", "HtmlAnchorElement", "HtmlCanvasElement", "Url", "Window"] }
 
 [lints]
 workspace = true

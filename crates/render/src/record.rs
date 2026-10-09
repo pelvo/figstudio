@@ -54,12 +54,8 @@ impl Canvas for RenderContext {
     }
 }
 
-/// The largest length scale of a transform's linear part.
 #[cfg(feature = "parallel")]
-fn linear_scale(t: Affine) -> f64 {
-    let [a, b, c, d, _, _] = t.as_coeffs();
-    a.hypot(b).max(c.hypot(d))
-}
+use crate::paint::linear_scale;
 
 #[cfg(feature = "parallel")]
 enum Layer {

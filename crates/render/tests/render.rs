@@ -354,3 +354,213 @@ fn parallel_strips_keep_shadows_that_cross_strip_edges() {
         .unwrap_or(0);
     assert!(worst <= 2, "a channel differs by {worst}");
 }
+
+fn fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(format!("{name}.fig"))
+}
+
+fn fit_viewport(doc: &Document, scale: f64) -> Viewport {
+    let b = content_bounds(doc, doc.pages[0]).unwrap();
+    Viewport {
+        width: (b.width() * scale).ceil() as u16,
+        height: (b.height() * scale).ceil() as u16,
+        transform: Affine::scale(scale) * Affine::translate((-b.x0, -b.y0)),
+        background: Some(figstudio_render::color::AlphaColor::new([
+            1.0, 1.0, 1.0, 1.0,
+        ])),
+    }
+}
+
+/// A lazily opened document, with its images read on request, ends up drawn exactly like the
+/// same document read whole: same levels, same thumbnails, same pixels.
+#[test]
+fn lazy_documents_render_like_whole_ones() {
+    for name in ["structure", "broken_images"] {
+        let whole = open(name);
+        let lazy = Document::open_lazy(fixture_path(name)).unwrap();
+        assert!(lazy.images.is_empty() && !lazy.lazy_images.is_empty());
+        for scale in [0.05, 0.3, 1.0, 2.5] {
+            let viewport = fit_viewport(&whole, scale);
+            let mut a = Renderer::new();
+            a.system_fonts = false;
+            let one = a.render(&whole, whole.pages[0], &viewport);
+            assert!(
+                one.wanted.is_empty(),
+                "a whole document never asks for images"
+            );
+            // Images decoded by earlier frames (other zooms) do not change this one.
+            let mut warm = Renderer::new();
+            warm.system_fonts = false;
+            for other in [0.05, 0.3, 1.0, 2.5] {
+                warm.render(&whole, whole.pages[0], &fit_viewport(&whole, other));
+            }
+            let again = warm.render(&whole, whole.pages[0], &viewport);
+            assert!(
+                one.pixmap.data() == again.pixmap.data(),
+                "{name} {scale}x: depends on what was decoded before"
+            );
+            let mut b = Renderer::new();
+            b.system_fonts = false;
+            let mut file = std::fs::File::open(fixture_path(name)).unwrap();
+            let mut reads = 0;
+            let done = b.render_complete(&lazy, lazy.pages[0], &viewport, |want| {
+                reads += 1;
+                figstudio_fig::archive::read_entry(&mut file, &want.entry).ok()
+            });
+            assert!(
+                done.wanted.is_empty(),
+                "{name} {scale}x: still wants images"
+            );
+            assert_eq!(done.stats.images_loading, 0, "{name} {scale}x");
+            assert_eq!(one.stats, done.stats, "{name} {scale}x: stats differ");
+            assert!(
+                one.pixmap.data() == done.pixmap.data(),
+                "{name} {scale}x: pixels differ"
+            );
+            if name == "structure" {
+                assert!(reads > 0, "{name} {scale}x: nothing was read");
+            }
+        }
+    }
+}
+
+/// Until requested images arrive the frame shows placeholders, counts them as loading and
+/// asks for each image once.
+#[test]
+fn unread_images_are_requested_once_and_shown_as_loading() {
+    let lazy = Document::open_lazy(fixture_path("structure")).unwrap();
+    let viewport = fit_viewport(&lazy, 1.0);
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let first = r.render(&lazy, lazy.pages[0], &viewport);
+    assert!(!first.wanted.is_empty());
+    assert!(first.stats.images_loading > 0);
+    assert_eq!(first.stats.missing_images, 0, "loading is not missing");
+    let again = r.render(&lazy, lazy.pages[0], &viewport);
+    assert!(
+        again.wanted.is_empty(),
+        "requests are not repeated while in flight"
+    );
+    assert_eq!(again.stats.images_loading, first.stats.images_loading);
+    // Unreadable images become missing ones (a failed thumbnail falls back to the image,
+    // which is requested next).
+    let mut wanted = first.wanted;
+    let mut rounds = 0;
+    let failed = loop {
+        for want in &wanted {
+            r.images().fail(&want.hash, want.level);
+        }
+        let frame = r.render(&lazy, lazy.pages[0], &viewport);
+        rounds += 1;
+        if frame.wanted.is_empty() || rounds > 4 {
+            break frame;
+        }
+        wanted = frame.wanted;
+    };
+    assert_eq!(failed.stats.images_loading, 0);
+    assert!(failed.stats.missing_images > 0);
+}
+
+/// At a small zoom only Figma's thumbnails are read, and the image cache holds little.
+#[test]
+fn small_zoom_reads_thumbnails_not_full_images() {
+    let lazy = Document::open_lazy(fixture_path("structure")).unwrap();
+    let thumbs: Vec<String> = lazy
+        .nodes
+        .iter()
+        .flat_map(|n| n.data.get("fillPaints").map(Val::items).unwrap_or_default())
+        .filter_map(|p| p.path(&["imageThumbnail", "hash"]).and_then(Val::as_bytes))
+        .map(figstudio_fig::hex)
+        .collect();
+    let viewport = fit_viewport(&lazy, 0.05);
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let frame = r.render(&lazy, lazy.pages[0], &viewport);
+    if thumbs.is_empty() {
+        // Without thumbnails the full image is read, at a coarse level.
+        assert!(
+            frame.wanted.iter().all(|w| w.level > 0),
+            "{:?}",
+            frame.wanted
+        );
+    } else {
+        assert!(
+            frame.wanted.iter().all(|w| thumbs.contains(&w.hash)),
+            "full images read at 5%"
+        );
+    }
+}
+
+/// The same image drawn at two sizes in one frame: each paint uses the copy decoded for its own
+/// size, so the frame does not depend on which one was decoded first.
+#[test]
+fn one_image_at_two_sizes_does_not_depend_on_decode_order() {
+    let mut doc = open("structure");
+    let big = doc
+        .nodes
+        .iter()
+        .find(|n| n.id == Guid(1, 34))
+        .expect("image layer")
+        .clone();
+    // A copy a quarter of the size (same paint, same 1024×512 image), next to the original.
+    let mut small = big.clone();
+    small.id = Guid(900, 1);
+    if let Val::Obj(m) = &mut small.data {
+        let mut g = figstudio_fig::Obj::default();
+        g.insert("sessionID", Val::Int(900));
+        g.insert("localID", Val::Int(1));
+        m.insert("guid", Val::Obj(g));
+        if let Some(Val::Obj(size)) = m.get_mut("size") {
+            size.insert("x", Val::Float(95.25));
+            size.insert("y", Val::Float(47.75));
+        }
+    }
+    let mut nodes = doc.nodes.clone();
+    nodes.push(small);
+    doc.set_nodes(nodes);
+    let page = doc.pages[0];
+    // At 3x the original layer is ~1140 px wide (level 0) and the copy ~285 px (level 1):
+    // both use the image itself, not Figma's thumbnail.
+    let viewport = fit_viewport(&doc, 3.0);
+    let lazy = {
+        let mut lazy = Document::open_lazy(fixture_path("structure")).unwrap();
+        lazy.set_nodes(doc.nodes.clone());
+        lazy
+    };
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let image = figstudio_fig::hex(
+        big.data.get("fillPaints").unwrap().items()[0]
+            .path(&["image", "hash"])
+            .and_then(Val::as_bytes)
+            .unwrap(),
+    );
+    let mut levels: Vec<u8> = r
+        .render(&lazy, page, &viewport)
+        .wanted
+        .into_iter()
+        .filter(|w| w.hash == image)
+        .map(|w| w.level)
+        .collect();
+    levels.sort();
+    assert_eq!(levels, vec![0, 1], "setup: one image at two levels");
+
+    let render = |warm: &[f64]| {
+        let mut r = Renderer::new();
+        r.system_fonts = false;
+        for &s in warm {
+            r.render(&doc, page, &fit_viewport(&doc, s));
+        }
+        r.render(&doc, page, &viewport)
+    };
+    let cold = render(&[]);
+    for warm in [&[6.0][..], &[1.0], &[6.0, 1.0]] {
+        let frame = render(warm);
+        assert!(
+            cold.pixmap.data() == frame.pixmap.data(),
+            "after rendering at {warm:?} the frame differs"
+        );
+    }
+}

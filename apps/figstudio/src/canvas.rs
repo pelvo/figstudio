@@ -137,8 +137,14 @@ pub fn show(
     // Rendering: request a frame when the view changed, show the newest one we have.
     let ppp = ui.pixels_per_point();
     let px = (rect.size() * ppp).round();
+    // While the shown frame waits for images, each image that arrives renders the view again.
+    let images = if tab.stats.images_loading > 0 {
+        workers.images_arrived()
+    } else {
+        0
+    };
     let key = format!(
-        "{}|{}|{:.4}|{:.2}|{:.2}|{}x{}|{ppp}",
+        "{}|{}|{:.4}|{:.2}|{:.2}|{}x{}|{ppp}|{images}",
         tab.page,
         tab.doc.nodes.len(),
         tab.view.zoom,
@@ -158,6 +164,7 @@ pub fn show(
             tab: tab.id,
             generation: tab.generation,
             doc: tab.doc.clone(),
+            source: tab.source.clone(),
             root: tab.page,
             viewport: Viewport {
                 width: px.x.min(f32::from(u16::MAX)) as u16,

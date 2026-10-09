@@ -7,6 +7,7 @@ use std::path::Path;
 
 use kiwi_schema::{ByteBuffer, DefKind, Schema};
 
+use crate::archive::{self, Entry};
 use crate::read::Reader;
 use crate::val::{Guid, Val};
 
@@ -25,7 +26,8 @@ fn err<T>(msg: impl Into<String>) -> Result<T, FigError> {
     Err(FigError(msg.into()))
 }
 
-/// Largest file accepted. Decoding keeps the whole file in memory several times over.
+/// Largest file [`Document::open`] reads into memory (it keeps the file several times over).
+/// Bigger archives open with [`Document::open_lazy`].
 pub const MAX_FILE_BYTES: usize = 1024 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
@@ -84,6 +86,10 @@ pub struct Document {
     pub blobs: Vec<Vec<u8>>,
     /// Embedded images keyed by lowercase hex SHA-1, as named inside the archive.
     pub images: HashMap<String, Vec<u8>>,
+    /// Images not read yet, by hash: their archive entries (documents opened with
+    /// [`Document::open_lazy`] / [`Document::from_lazy`]; empty otherwise). The caller reads
+    /// an entry when the image is needed ([`archive::read_entry`] or its own byte ranges).
+    pub lazy_images: HashMap<String, Entry>,
     pub thumbnail: Option<Vec<u8>>,
     /// What is needed to write the file back (see `write.rs`).
     pub(crate) source: Source,
@@ -112,6 +118,19 @@ pub(crate) struct Source {
     /// `None` for a bare `fig-kiwi` file; otherwise archive entries other than
     /// `canvas.fig`, `thumbnail.png` and `images/*`, in their original order.
     pub archive_entries: Option<Vec<(String, Vec<u8>)>>,
+    /// Opened lazily: images and other entries were not read, so the file cannot be written.
+    pub lazy: bool,
+}
+
+/// What an archive holds besides the canvas.
+#[derive(Default)]
+struct Parts {
+    file_name: Option<String>,
+    images: HashMap<String, Vec<u8>>,
+    lazy_images: HashMap<String, Entry>,
+    thumbnail: Option<Vec<u8>>,
+    archive_entries: Option<Vec<(String, Vec<u8>)>>,
+    lazy: bool,
 }
 
 impl Document {
@@ -128,6 +147,58 @@ impl Document {
         let bytes =
             std::fs::read(path).map_err(|e| FigError(format!("{}: {e}", path.display())))?;
         Document::from_bytes(&bytes)
+    }
+
+    /// Opens an archive without reading its images: they are listed in
+    /// [`Document::lazy_images`] and read when needed. Only the central directory, the canvas,
+    /// `meta.json` and the thumbnail are read, so files of any size open in little memory.
+    /// A bare canvas file (not an archive) is read whole.
+    pub fn open_lazy(path: impl AsRef<Path>) -> Result<Document, FigError> {
+        let path = path.as_ref();
+        let io = |e: std::io::Error| FigError(format!("{}: {e}", path.display()));
+        let mut file = std::fs::File::open(path).map_err(io)?;
+        let len = file.metadata().map_err(io)?.len();
+        let mut magic = [0u8; 2];
+        file.read_exact(&mut magic).map_err(io)?;
+        if &magic != b"PK" {
+            return Document::open(path);
+        }
+        let entries = archive::read_entries(&mut file, len)?;
+        let mut eager = HashMap::new();
+        for e in entries
+            .iter()
+            .filter(|e| archive::EAGER_ENTRIES.contains(&e.name.as_str()))
+        {
+            eager.insert(e.name.clone(), archive::read_entry(&mut file, e)?);
+        }
+        Document::from_lazy(entries, eager)
+    }
+
+    /// Builds a document from an archive's entry list ([`archive::entries`]) and the contents
+    /// of its [`archive::EAGER_ENTRIES`] (`canvas.fig` is required). Images stay unread, in
+    /// [`Document::lazy_images`]; other entries are dropped, so the result cannot be saved.
+    pub fn from_lazy(
+        entries: Vec<Entry>,
+        mut eager: HashMap<String, Vec<u8>>,
+    ) -> Result<Document, FigError> {
+        let Some(canvas) = eager.remove("canvas.fig") else {
+            return err("archive has no canvas.fig");
+        };
+        let mut parts = Parts {
+            file_name: eager.get("meta.json").and_then(|m| meta_file_name(m)),
+            thumbnail: eager.remove("thumbnail.png"),
+            lazy: true,
+            ..Parts::default()
+        };
+        for e in entries {
+            if let Some(hash) = e.name.strip_prefix("images/")
+                && !hash.is_empty()
+                && e.size > 0
+            {
+                parts.lazy_images.insert(hash.to_ascii_lowercase(), e);
+            }
+        }
+        Document::from_canvas(canvas, parts)
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Document, FigError> {
@@ -172,7 +243,19 @@ impl Document {
         } else {
             bytes.to_vec()
         };
+        Document::from_canvas(
+            canvas,
+            Parts {
+                file_name,
+                images,
+                thumbnail,
+                archive_entries,
+                ..Parts::default()
+            },
+        )
+    }
 
+    fn from_canvas(canvas: Vec<u8>, parts: Parts) -> Result<Document, FigError> {
         if canvas.len() < 12 {
             return err("file too short to be a .fig");
         }
@@ -281,7 +364,7 @@ impl Document {
         let mut doc = Document {
             prelude,
             format_version,
-            file_name,
+            file_name: parts.file_name,
             nodes,
             index,
             children: HashMap::new(),
@@ -289,15 +372,17 @@ impl Document {
             pages: Vec::new(),
             internal_pages: Vec::new(),
             blobs,
-            images,
-            thumbnail,
+            images: parts.images,
+            lazy_images: parts.lazy_images,
+            thumbnail: parts.thumbnail,
             source: Source {
                 schema: schema_bytes,
                 codecs: vec![schema_codec, message_codec],
                 extra_chunks: chunks[2..].iter().map(|c| c.to_vec()).collect(),
                 message_extra,
                 had_blobs,
-                archive_entries,
+                archive_entries: parts.archive_entries,
+                lazy: parts.lazy,
             },
         };
         doc.reindex();
