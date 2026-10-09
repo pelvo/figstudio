@@ -17,7 +17,7 @@ use crate::Stats;
 /// Largest image dimension handed to the rasterizer; bigger images are downscaled once.
 const MAX_IMAGE_SIDE: u32 = 8192;
 
-/// Decoded pixels the cache may keep. Past this, the oldest entries are evicted first.
+/// Retained decoded pixels and source bytes the cache may keep. Past this, oldest entries evict.
 pub const IMAGE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
 pub const IMAGE_CACHE_MAX_ENTRIES: usize = 256;
 
@@ -33,7 +33,7 @@ pub struct ImageCache {
 
 struct Entry {
     source: Vec<u8>,
-    pixmap: Option<Arc<Pixmap>>,
+    pixmap: Arc<Pixmap>,
     bytes: usize,
 }
 
@@ -47,14 +47,14 @@ impl ImageCache {
         if let Some(entry) = self.decoded.get(hash)
             && entry.source == *bytes
         {
-            return entry.pixmap.clone();
+            return Some(entry.pixmap.clone());
         }
         if self.decoded.contains_key(hash) {
             self.remove(hash);
         }
         let pixmap = decode_image(bytes);
         if let Some(image) = &pixmap {
-            let size = pixel_bytes(image);
+            let size = pixel_bytes(image).saturating_add(bytes.len());
             self.insert(hash, bytes.clone(), image.clone(), size);
         }
         pixmap
@@ -87,13 +87,13 @@ impl ImageCache {
             hash.to_string(),
             Entry {
                 source,
-                pixmap: Some(pixmap),
+                pixmap,
                 bytes: size,
             },
         );
     }
 
-    /// Bytes of decoded pixels this cache holds.
+    /// Decoded pixels plus retained source bytes held by this cache.
     pub fn retained_bytes(&self) -> usize {
         self.bytes
     }

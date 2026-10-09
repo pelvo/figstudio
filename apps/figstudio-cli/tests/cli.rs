@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use figstudio_fig::{Document, Val};
+
 static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -143,6 +145,37 @@ fn info_and_tree_report_document_structure() {
     let tree = assert_success(cli(&["tree", FIXTURE, "--depth", "1"]));
     assert!(tree.contains("CANVAS \"Page 1\""), "{tree}");
     assert!(tree.contains("… "), "{tree}");
+}
+
+#[test]
+fn tree_walk_is_bounded_by_requested_depth_on_deep_documents() {
+    let dir = TempDir::new();
+    let deep = dir.file("deep.fig");
+    let mut doc = Document::open(FIXTURE).unwrap();
+    let page = doc.pages[0];
+    let template = doc
+        .nodes
+        .iter()
+        .find(|node| node.kind == "FRAME")
+        .unwrap()
+        .clone();
+    let mut nodes = doc.nodes.clone();
+    let mut parent = page;
+    for i in 0..20_000u32 {
+        let id = figstudio_fig::Guid(99, i + 1);
+        let mut data = template.data.clone();
+        data.set("guid", id.to_val());
+        let mut parent_index = figstudio_fig::Obj::new();
+        parent_index.insert("guid", parent.to_val());
+        parent_index.insert("position", Val::Str(format!("{i:06}")));
+        data.set("parentIndex", Val::Obj(parent_index));
+        nodes.push(figstudio_fig::Node::from_data(data).unwrap());
+        parent = id;
+    }
+    doc.set_nodes(nodes).unwrap();
+    doc.save(&deep).unwrap();
+    let tree = assert_success(cli(&["tree", deep.to_str().unwrap(), "--depth", "1"]));
+    assert!(tree.lines().count() < 100);
 }
 
 #[test]

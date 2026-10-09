@@ -27,8 +27,6 @@ const MAX_INSTANCE_DEPTH: usize = 24;
 /// Total attempted-work units per render. The real large-file page render used 12,418 work
 /// units, so this cap leaves over 160x headroom before any truncation is possible.
 pub const MAX_RENDER_WORK: usize = 2_000_000;
-/// Compatibility name for the previous instance-only limit.
-pub const MAX_RENDER_INSTANCES: usize = MAX_RENDER_WORK;
 /// Largest output side in pixels (Vello CPU uses 16-bit dimensions).
 pub const MAX_SIDE: u32 = 16_384;
 
@@ -47,6 +45,7 @@ pub struct Stats {
     pub blurs: usize,
     pub skipped_effects: usize,
     pub unsupported_paints: usize,
+    pub approximated_blends: usize,
     pub approximated_paints: usize,
     /// Layers skipped because they are outside the viewport or smaller than a pixel.
     pub culled: usize,
@@ -77,6 +76,7 @@ impl fmt::Display for Stats {
         note(self.missing_images, "images missing")?;
         note(self.missing_symbols, "components missing")?;
         note(self.unsupported_paints, "paints skipped")?;
+        note(self.approximated_blends, "blend modes approximated")?;
         note(self.approximated_paints, "paints approximated")?;
         note(self.culled, "off screen")?;
         note(self.budget_exhausted, "layers skipped (work budget)")?;
@@ -119,7 +119,6 @@ impl Default for Renderer {
 }
 
 struct Patch {
-    path: Vec<Guid>,
     data: Val,
     owner_depth: usize,
     derived: bool,
@@ -132,6 +131,7 @@ struct Ctx<'a> {
     images: &'a mut ImageCache,
     fonts: Option<&'a mut text::SystemFonts>,
     patches: Vec<Patch>,
+    patch_index: std::collections::HashMap<Vec<Guid>, Vec<usize>>,
     symbol_stack: Vec<Guid>,
     work_left: usize,
     depth: usize,
@@ -173,6 +173,7 @@ impl Renderer {
                 None
             },
             patches: Vec::new(),
+            patch_index: std::collections::HashMap::new(),
             symbol_stack: Vec::new(),
             work_left: work,
             depth: 0,
@@ -313,34 +314,46 @@ fn content_bounds_with_budget(
         return (None, 0, 0);
     };
     let initial = remaining;
-    if node.kind != "CANVAS" && node.kind != "DOCUMENT" {
-        let bounds = node_bounds_with_budget(doc, root, &mut remaining);
-        return (
-            bounds.map(|b| b.inflate(1.0, 1.0)),
-            usize::from(bounds.is_none()),
-            initial - remaining,
-        );
-    }
+    let root_parent = if node.kind == "CANVAS" || node.kind == "DOCUMENT" {
+        Affine::IDENTITY
+    } else {
+        node.parent
+            .and_then(|parent| absolute_transform_with_budget(doc, parent, &mut remaining))
+            .unwrap_or(Affine::IDENTITY)
+    };
     let mut out: Option<Rect> = None;
-    let children = doc.children(root);
     let mut omitted = 0;
-    for (i, child) in children.iter().enumerate() {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = Vec::new();
+    if node.kind == "CANVAS" || node.kind == "DOCUMENT" {
+        stack.extend(doc.children(root).iter().rev().map(|id| (*id, root_parent)));
+    } else {
+        stack.push((root, root_parent));
+    }
+    while let Some((id, parent)) = stack.pop() {
         if remaining == 0 {
-            omitted += children.len() - i;
+            omitted += 1 + stack.len();
             break;
         }
         remaining -= 1;
-        let Some(c) = doc.node(*child) else {
-            continue;
-        };
-        if !visible(&c.data) {
+        if !seen.insert(id) {
             continue;
         }
-        if let Some(b) = node_bounds_with_budget(doc, *child, &mut remaining) {
-            out = Some(out.map_or(b, |o| o.union(b)));
-        } else {
-            omitted += children.len() - i;
-            break;
+        let Some(child) = doc.node(id) else { continue };
+        if !visible(&child.data) {
+            continue;
+        }
+        let world = parent * affine(child.data.get("transform"));
+        let (w, h) = size(&child.data);
+        let margin = overhang(&child.kind, &child.data, w, h);
+        let mut bounds =
+            transformed_bounds(world, Rect::new(-margin, -margin, w + margin, h + margin));
+        if clips_content(&child.kind, &child.data) {
+            bounds = bounds.intersect(transformed_bounds(world, Rect::new(0.0, 0.0, w, h)));
+        }
+        out = Some(out.map_or(bounds, |current| current.union(bounds)));
+        if !clips_content(&child.kind, &child.data) {
+            stack.extend(doc.children(id).iter().rev().map(|id| (*id, world)));
         }
     }
     (
@@ -461,7 +474,13 @@ impl Ctx<'_> {
         let Some(path) = path else {
             return (Cow::Borrowed(&node.data), false);
         };
-        let mut matches: Vec<&Patch> = self.patches.iter().filter(|p| p.path == path).collect();
+        let mut matches: Vec<&Patch> = self
+            .patch_index
+            .get(path)
+            .into_iter()
+            .flatten()
+            .filter_map(|index| self.patches.get(*index))
+            .collect();
         if matches.is_empty() {
             return (Cow::Borrowed(&node.data), false);
         }
@@ -482,6 +501,16 @@ impl Ctx<'_> {
     }
 
     fn draw(&mut self, node: &Node, parent: Affine, path: Option<&[Guid]>) {
+        self.draw_with_data(node, parent, path, None);
+    }
+
+    fn draw_with_data<'n>(
+        &mut self,
+        node: &'n Node,
+        parent: Affine,
+        path: Option<&[Guid]>,
+        patched: Option<(Cow<'n, Val>, bool)>,
+    ) {
         if self.depth >= 96 {
             self.stats.depth_skipped += 1;
             return;
@@ -490,7 +519,7 @@ impl Ctx<'_> {
             return;
         }
         self.depth += 1;
-        let (data, stale_glyphs) = self.patched(node, path);
+        let (data, stale_glyphs) = patched.unwrap_or_else(|| self.patched(node, path));
         let data = data.as_ref();
         if !visible(data) || data.flag("mask") == Some(true) {
             self.depth -= 1;
@@ -505,6 +534,9 @@ impl Ctx<'_> {
             return;
         }
         self.stats.nodes += 1;
+        if data.text("blendMode").is_some_and(|mode| mode != "NORMAL") {
+            self.stats.approximated_blends += 1;
+        }
         let mut layers = 0;
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
@@ -557,7 +589,19 @@ impl Ctx<'_> {
         }
 
         // Fills.
-        let mut fill_paths = geometry(data, "fillGeometry", &self.doc.blobs);
+        let mut fill_paths = geometry(
+            data,
+            "fillGeometry",
+            &self.doc.blobs,
+            &mut self.stats.unsupported_paints,
+        );
+        if kind == "VECTOR"
+            && data
+                .get("fillGeometry")
+                .is_none_or(|geometry| geometry.items().is_empty())
+        {
+            self.stats.unsupported_paints += 1;
+        }
         if kind == "TEXT" {
             fill_paths = self
                 .text_paths(data, stale_glyphs)
@@ -576,7 +620,12 @@ impl Ctx<'_> {
             .get("strokePaints")
             .is_some_and(|p| !p.items().is_empty())
         {
-            let outlines = geometry(data, "strokeGeometry", &self.doc.blobs);
+            let outlines = geometry(
+                data,
+                "strokeGeometry",
+                &self.doc.blobs,
+                &mut self.stats.unsupported_paints,
+            );
             if !outlines.is_empty() {
                 self.paint_paths(data, "strokePaints", &outlines, world, w, h);
             } else if let (Some(weight), Some(shape)) =
@@ -724,13 +773,18 @@ impl Ctx<'_> {
                 v.push(child.override_key());
                 v
             });
-            let (child_data, _) = self.patched(child, child_path.as_deref());
+            let (child_data, stale_glyphs) = self.patched(child, child_path.as_deref());
             if child_data.flag("mask") == Some(true) && visible(&child_data) {
                 if !self.charge_work() {
                     break;
                 }
                 let tf = world * affine(child_data.get("transform"));
-                let mut shapes = geometry(&child_data, "fillGeometry", &self.doc.blobs);
+                let mut shapes = geometry(
+                    &child_data,
+                    "fillGeometry",
+                    &self.doc.blobs,
+                    &mut self.stats.unsupported_paints,
+                );
                 if shapes.is_empty() {
                     shapes.extend(base_shape(&child.kind, &child_data).map(GeomPath::plain));
                 }
@@ -741,15 +795,21 @@ impl Ctx<'_> {
                 if !combined.elements().is_empty() {
                     self.stats.masks += 1;
                     self.rc.set_transform(tf);
-                    self.rc.push_clip_layer(&combined);
+                    self.rc.push_clip_path(&combined);
+                    self.rc.set_transform(world);
                     mask_layers += 1;
                 }
                 continue;
             }
-            self.draw(child, world, child_path.as_deref());
+            self.draw_with_data(
+                child,
+                world,
+                child_path.as_deref(),
+                Some((child_data, stale_glyphs)),
+            );
         }
         for _ in 0..mask_layers {
-            self.rc.pop_layer();
+            self.rc.pop_clip();
         }
     }
 
@@ -808,8 +868,12 @@ impl Ctx<'_> {
                 }
                 let mut full = base.clone();
                 full.extend(guids);
+                let index = self.patches.len();
+                self.patch_index
+                    .entry(full.clone())
+                    .or_default()
+                    .push(index);
                 self.patches.push(Patch {
-                    path: full,
                     data: item.clone(),
                     owner_depth,
                     derived,
@@ -820,5 +884,9 @@ impl Ctx<'_> {
         self.draw_children(symbol, &symbol.data, world, Some(&base));
         self.symbol_stack.pop();
         self.patches.truncate(before);
+        self.patch_index.retain(|_, indexes| {
+            indexes.retain(|index| *index < before);
+            !indexes.is_empty()
+        });
     }
 }

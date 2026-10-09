@@ -208,9 +208,10 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 - 2026-10-09 — Pony audit L1 privacy/trust: doctor now bounds its input reads and keeps archive
   paths/schema prelude out of output; Kiwi list lengths and schema interning are bounded, and
-  ID-less node records are rejected rather than dropped. Red/green doctor leak and malformed
-  schema/node regressions; `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed. L2/L3 and
-  private/visual checks remain.
+  ID-less node records are rejected rather than dropped. L2: iterative layer/CLI walks, descendant
+  fit bounds, retained source-byte cache accounting, indexed override lookup, unsupported draw
+  telemetry and clip/mask pixel checks. Thumb sheet skipped (Pillow unavailable). Both lanes passed
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh`; private smoke, L3 and quality review remain.
 - 2026-10-09 — CLI validation: unknown commands now fail as usage errors before file access;
   black-box tests check usage/runtime errors and core command outputs. PNG outputs are decoded
   and dimension-checked; doctor missing-file usage and resave confirmation are asserted. CLI,

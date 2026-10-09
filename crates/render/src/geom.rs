@@ -103,13 +103,19 @@ impl GeomPath {
 }
 
 /// Precomputed geometry (`fillGeometry`, `strokeGeometry`) referencing message blobs.
-pub fn geometry(data: &Val, key: &str, blobs: &[Vec<u8>]) -> Vec<GeomPath> {
+pub fn geometry(
+    data: &Val,
+    key: &str,
+    blobs: &[Vec<u8>],
+    unsupported: &mut usize,
+) -> Vec<GeomPath> {
     let mut out = Vec::new();
     let Some(list) = data.get(key) else {
         return out;
     };
     for item in list.items() {
         let Some(index) = item.get("commandsBlob").and_then(Val::as_u32) else {
+            *unsupported += 1;
             continue;
         };
         let rule = if item.text("windingRule") == Some("ODD") {
@@ -120,6 +126,8 @@ pub fn geometry(data: &Val, key: &str, blobs: &[Vec<u8>]) -> Vec<GeomPath> {
         let style = item.get("styleID").and_then(Val::as_u32).unwrap_or(0);
         if let Some(path) = blobs.get(index as usize).and_then(|b| blob_path(b)) {
             out.push(GeomPath { path, rule, style });
+        } else {
+            *unsupported += 1;
         }
     }
     out

@@ -89,6 +89,10 @@ fn failed_decodes_are_not_retained_and_evicted_arc_remains_valid() {
         assert!(cache.get(&doc, &hash).is_some());
     }
     assert_eq!(cache.retained_entries(), IMAGE_CACHE_MAX_ENTRIES);
+    let encoded = png(16, 7);
+    doc.images.insert("source-bytes".into(), encoded.clone());
+    assert!(cache.get(&doc, "source-bytes").is_some());
+    assert!(cache.retained_bytes() >= 16 * 16 * 4 + encoded.len());
     let valid = png(2, 1);
     doc.images.insert("held".into(), valid.clone());
     let held = cache.get(&doc, "held").unwrap();

@@ -169,28 +169,34 @@ fn parse_background(
 }
 
 fn print_tree(doc: &Document, id: Guid, indent: usize, depth: usize) {
-    let Some(node) = doc.node(id) else { return };
-    let hidden = if node.data.flag("visible") == Some(false) {
-        " (hidden)"
-    } else {
-        ""
-    };
-    println!(
-        "{}{} {} {:?}{hidden}",
-        "  ".repeat(indent),
-        node.id,
-        node.kind,
-        node.name
-    );
-    if indent >= depth {
-        let n = doc.descendant_count(id);
-        if n > 0 {
-            println!("{}… {n} more", "  ".repeat(indent + 1));
+    let mut stack = vec![(id, indent)];
+    while let Some((id, indent)) = stack.pop() {
+        let Some(node) = doc.node(id) else { continue };
+        let hidden = if node.data.flag("visible") == Some(false) {
+            " (hidden)"
+        } else {
+            ""
+        };
+        println!(
+            "{}{} {} {:?}{hidden}",
+            "  ".repeat(indent),
+            node.id,
+            node.kind,
+            node.name
+        );
+        if indent >= depth {
+            let n = doc.descendant_count(id);
+            if n > 0 {
+                println!("{}… {n} more", "  ".repeat(indent + 1));
+            }
+            continue;
         }
-        return;
-    }
-    for child in doc.children(id) {
-        print_tree(doc, *child, indent + 1, depth);
+        stack.extend(
+            doc.children(id)
+                .iter()
+                .rev()
+                .map(|child| (*child, indent + 1)),
+        );
     }
 }
 
