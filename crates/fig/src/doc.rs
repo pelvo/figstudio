@@ -248,9 +248,6 @@ impl Document {
         if !prelude.starts_with("fig-") {
             return err("not a .fig file (missing fig- header)");
         }
-        if prelude != "fig-kiwi" && prelude != "fig-jam" {
-            return err("unsupported .fig format header");
-        }
         let format_version = u32::from_le_bytes(canvas[8..12].try_into().unwrap());
         let mut chunks = Vec::new();
         let mut at = 12;
