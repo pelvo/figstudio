@@ -8,6 +8,7 @@ mod instance;
 mod layout;
 pub mod paint;
 mod record;
+mod stroke;
 mod text;
 mod variables;
 
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
-use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape, Stroke};
+use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape};
 use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
 
 use crate::geom::{
@@ -669,7 +670,7 @@ fn overhang(kind: &str, data: &Val, w: f64, h: f64) -> f64 {
         .is_some_and(|p| !p.items().is_empty())
     {
         // Outside strokes plus miter joins (Figma's miter limit is 4).
-        m += f64::from(data.num("strokeWeight").unwrap_or(1.0).max(0.0)) * 4.0;
+        m += stroke::max_weight(data) * 4.0;
     }
     m += effects_reach(data.get("effects"));
     if kind == "TEXT" {
@@ -787,7 +788,20 @@ impl Ctx<'_> {
         let mut data = node.data.merged(&property_patch);
         let mut text_changed = data.get("textData") != node.data.get("textData");
         let mut glyphs_fresh = false;
+        let mut stroke_stale = false;
         for p in matches {
+            // Stored stroke outlines no longer match an overridden stroke unless a derived
+            // patch stores new ones.
+            if !p.derived
+                && stroke::STROKE_SHAPE
+                    .iter()
+                    .any(|k| p.data.get(k).is_some_and(|v| data.get(k) != Some(v)))
+            {
+                stroke_stale = true;
+            }
+            if p.data.get("strokeGeometry").is_some() {
+                stroke_stale = false;
+            }
             if p.data.get("textData").is_some() && !p.derived {
                 text_changed = true;
                 glyphs_fresh = false;
@@ -805,6 +819,14 @@ impl Ctx<'_> {
                     o.remove(style);
                 }
             }
+        }
+        // shortcut: vector-like nodes have no base shape to redraw from, so they keep the old
+        // outline (about 25 nodes in the private file); restroke the vector network if one shows.
+        if stroke_stale
+            && base_shape(&node.kind, &data).is_some()
+            && let Val::Obj(o) = &mut data
+        {
+            o.remove("strokeGeometry");
         }
         instance::inherit_swapped(self.doc, &node.data, &mut data);
         (Cow::Owned(data), text_changed && !glyphs_fresh)
@@ -933,16 +955,28 @@ impl Ctx<'_> {
             .get("strokePaints")
             .is_some_and(|p| !p.items().is_empty())
         {
+            let outlines = geometry(
+                data,
+                "strokeGeometry",
+                &self.doc.blobs,
+                &mut self.stats.unsupported_paints,
+            );
+            // Per-side borders are built already aligned, so they skip the clip below.
+            let ring = (outlines.is_empty() && is_box_shape(kind))
+                .then(|| stroke::sides(kind, data))
+                .flatten();
             // Figma stores inside and outside strokes as centred strokes of twice the weight
             // and clips them to the fill shape (inside) or to everything but it (outside).
             let align = data.text("strokeAlign").filter(|a| *a != "CENTER");
             let aligned = match align {
-                Some(a) if is_box_shape(kind) => align_clip(&fill_paths, a == "OUTSIDE"),
+                Some(a) if ring.is_none() && is_box_shape(kind) => {
+                    align_clip(&fill_paths, a == "OUTSIDE")
+                }
                 _ => None,
             };
             // shortcut: vector-like shapes may be open paths, so their inside/outside strokes
             // are drawn from stored geometry unclipped; clip closed ones when a case needs it.
-            if align.is_some() && aligned.is_none() && kind != "TEXT" {
+            if align.is_some() && aligned.is_none() && ring.is_none() && kind != "TEXT" {
                 self.stats.approximated_strokes += 1;
             }
             if let Some((clip, rule)) = &aligned {
@@ -950,25 +984,17 @@ impl Ctx<'_> {
                 self.rc.set_fill_rule(*rule);
                 self.rc.push_clip_layer(clip);
             }
-            let outlines = geometry(
-                data,
-                "strokeGeometry",
-                &self.doc.blobs,
-                &mut self.stats.unsupported_paints,
-            );
             if !outlines.is_empty() {
                 self.paint_paths(data, "strokePaints", &outlines, world, w, h);
+            } else if let Some(ring) = ring {
+                self.paint_paths(data, "strokePaints", &[ring], world, w, h);
             } else if let (Some(weight), Some(shape)) =
                 (data.num("strokeWeight"), base_shape(kind, data))
                 && weight > 0.0
             {
                 let width = f64::from(weight) * if aligned.is_some() { 2.0 } else { 1.0 };
-                let outline = vello_cpu::kurbo::stroke(
-                    shape.path_elements(0.1),
-                    &Stroke::new(width),
-                    &Default::default(),
-                    0.1,
-                );
+                let (outline, approximated) = stroke::outline(data, &shape, width);
+                self.stats.approximated_strokes += usize::from(approximated);
                 self.paint_paths(
                     data,
                     "strokePaints",

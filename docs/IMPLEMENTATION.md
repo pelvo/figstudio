@@ -121,7 +121,10 @@ tree from `root` (a page or any node). For each node, `Ctx::draw`:
 5. Opacity layer if `opacity < 1`.
 6. Fills: `fillGeometry` blobs; else text outlines for TEXT; else a base shape. Paths with a
    `styleID` use paints from `vectorData.styleOverrideTable`.
-7. Strokes: `strokeGeometry` blobs; else stroke the base shape with `strokeWeight`.
+7. Strokes: `strokeGeometry` blobs; else per-side borders (`borderStrokeWeightsIndependent`)
+   as an aligned ring; else stroke the base shape (`stroke.rs`: `strokeJoin`, `strokeCap`,
+   `dashPattern`, miter limit 4). An instance override that changes a stroke field drops the
+   stored `strokeGeometry` unless a derived patch supplies new geometry.
 8. Children: clip layer if the frame clips; `draw_instance` for INSTANCE, else
    `draw_children`, which honors `stackReverseZIndex` and turns `mask` children into clip
    layers for the siblings above them.
