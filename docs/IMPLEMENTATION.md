@@ -146,7 +146,8 @@ by GUID or exact asset key/version; unresolved aliases use the stored colour and
 `approximated_paints`. First stored variable mode is used (inherited mode selection is open).
 Derived transforms are authoritative; when omitted, uniform instance scale updates translation
 and CENTER/MAX/SCALE constraints adjust it for resized containers without double-scaling stored
-geometry. Property/variable index preparation charges the shared render-work budget.
+geometry. Constraints skip in-flow children of an auto-layout parent (only `stackPositioning`
+ABSOLUTE ones follow them): auto layout keeps those at the padding. Property/variable index preparation charges the shared render-work budget.
 Patches from outer instances are applied last so they win; derived data is applied after
 the overrides of the same instance. A text override without fresh derived glyphs marks the
 stored glyphs stale, and text falls back to installed fonts. `MAX_RENDER_WORK` (2,000,000)

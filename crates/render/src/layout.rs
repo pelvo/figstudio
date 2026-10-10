@@ -7,6 +7,11 @@ pub(crate) fn constrain(base: &Val, data: &mut Val, old_parent: &Val, parent: &V
     if data.get("transform") != base.get("transform") {
         return;
     }
+    // Auto layout, not constraints, places in-flow children; it keeps them at the padding.
+    let stack = matches!(parent.text("stackMode"), Some("HORIZONTAL" | "VERTICAL"));
+    if stack && data.text("stackPositioning") != Some("ABSOLUTE") {
+        return;
+    }
     let old = size(old_parent);
     let new = size(parent);
     let before = size(base);
