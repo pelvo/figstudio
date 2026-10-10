@@ -46,15 +46,17 @@ struct Segment {
 
 struct Region {
     packed: u32,
-    loops: Vec<Vec<usize>>,
-    /// `None` when the loops do not form closed, connected outlines.
+    /// `None` when the loops do not form closed, connected outlines (or paths were not built).
     path: Option<BezPath>,
 }
 
 struct Network {
     vertices: Vec<(Point, u32)>,
     segments: Vec<Segment>,
+    /// Filled only when paths are built; empty otherwise.
     regions: Vec<Region>,
+    /// Whether each segment lies on some region loop.
+    covered: Vec<bool>,
 }
 
 fn blob<'a>(data: &Val, blobs: &'a [Vec<u8>]) -> Option<&'a [u8]> {
@@ -62,7 +64,8 @@ fn blob<'a>(data: &Val, blobs: &'a [Vec<u8>]) -> Option<&'a [u8]> {
     Some(blobs.get(usize::try_from(index).ok()?)?.as_slice())
 }
 
-fn parse(bytes: &[u8]) -> Option<Network> {
+/// Decodes and validates the blob. Region paths are only built when `build` is set.
+fn parse(bytes: &[u8], build: bool) -> Option<Network> {
     let mut r = Reader(bytes);
     let (vertices, segments, regions) = (r.count()?, r.count()?, r.count()?);
     let vertex_bytes = r.take(vertices.checked_mul(12)?)?;
@@ -74,6 +77,7 @@ fn parse(bytes: &[u8]) -> Option<Network> {
         vertices: Vec::new(),
         segments: Vec::new(),
         regions: Vec::new(),
+        covered: Vec::new(),
     };
     let mut v = Reader(vertex_bytes);
     for _ in 0..vertices {
@@ -97,34 +101,36 @@ fn parse(bytes: &[u8]) -> Option<Network> {
             style,
         });
     }
+    net.covered = vec![false; net.segments.len()];
+    let mut edges = Vec::new();
     for _ in 0..regions {
         let packed = r.word()?;
         let count = r.count()?;
         if count.checked_mul(4)? > r.0.len() {
             return None;
         }
-        let mut loops = Vec::new();
-        let mut path = Some(BezPath::new());
+        let mut path = build.then(BezPath::new);
         for _ in 0..count {
             let count = r.count()?;
             let mut indices = Reader(r.take(count.checked_mul(4)?)?);
-            let mut edges = Vec::new();
+            edges.clear();
             for _ in 0..count {
                 let index = indices.count()?;
-                net.segments.get(index)?;
-                edges.push(index);
+                *net.covered.get_mut(index)? = true;
+                if build {
+                    edges.push(index);
+                }
             }
-            path = path.and_then(|mut all| {
-                all.extend(loop_path(&net, &edges)?);
-                Some(all)
-            });
-            loops.push(edges);
+            if build {
+                path = path.and_then(|mut all| {
+                    all.extend(loop_path(&net, &edges)?);
+                    Some(all)
+                });
+            }
         }
-        net.regions.push(Region {
-            packed,
-            loops,
-            path,
-        });
+        if build {
+            net.regions.push(Region { packed, path });
+        }
     }
     r.0.is_empty().then_some(net)
 }
@@ -165,44 +171,40 @@ fn directed_loop(net: &Network, edges: &[usize], reverse: bool) -> Option<BezPat
 }
 
 pub(crate) fn closed(data: &Val, blobs: &[Vec<u8>]) -> bool {
-    let Some(net) = blob(data, blobs).and_then(parse) else {
+    let Some(net) = blob(data, blobs).and_then(|b| parse(b, false)) else {
         return false;
     };
-    let mut used = vec![false; net.segments.len()];
-    for region in &net.regions {
-        for edges in &region.loops {
-            for &index in edges {
-                let Some(slot) = used.get_mut(index) else {
-                    return false;
-                };
-                *slot = true;
-            }
-        }
-    }
-    !used.is_empty() && used.iter().all(|&s| s)
+    !net.covered.is_empty() && net.covered.iter().all(|&s| s)
 }
 
-pub(crate) fn fills(
-    data: &Val,
-    blobs: &[Vec<u8>],
-    unsupported: &mut usize,
-) -> Option<Vec<GeomPath>> {
-    let net = parse(blob(data, blobs)?)?;
-    let normalized = data
-        .path(&["vectorData", "normalizedSize"])
-        .unwrap_or(data.get("size")?);
-    let (w, h) = size(data);
-    if !w.is_finite() || !h.is_finite() {
-        return None;
+/// Whether `paints` holds a paint that would be drawn.
+fn visible(paints: Option<&Val>) -> bool {
+    paints.is_some_and(|p| {
+        p.items()
+            .iter()
+            .any(|p| p.flag("visible") != Some(false) && p.num("opacity").unwrap_or(1.0) > 0.0)
+    })
+}
+
+/// Whether the node, or a region style it carries, has a fill that could be drawn.
+fn has_visible_fill(data: &Val) -> bool {
+    visible(data.get("fillPaints"))
+        || data
+            .path(&["vectorData", "styleOverrideTable"])
+            .is_some_and(|t| t.items().iter().any(|e| visible(e.get("fillPaints"))))
+}
+
+/// Rebuilds a vector's fill paths from its network. This is the single owner of the
+/// unsupported-paint count for a missing fill: nothing is counted without a potentially visible
+/// fill, and a fill that yields no path is counted once.
+pub(crate) fn fills(data: &Val, blobs: &[Vec<u8>], unsupported: &mut usize) -> Vec<GeomPath> {
+    if !has_visible_fill(data) {
+        return Vec::new();
     }
-    let (nw, nh) = (
-        f64::from(normalized.num("x")?),
-        f64::from(normalized.num("y")?),
-    );
-    if !nw.is_finite() || !nh.is_finite() || nw <= 0.0 || nh <= 0.0 {
-        return None;
-    }
-    let scale = vello_cpu::kurbo::Affine::scale_non_uniform(w / nw, h / nh);
+    let Some((net, scale)) = decode(data, blobs) else {
+        *unsupported += 1;
+        return Vec::new();
+    };
     let styles = data
         .path(&["vectorData", "styleOverrideTable"])
         .map(Val::items)
@@ -241,6 +243,36 @@ pub(crate) fn fills(
         }
     }
     // shortcut: vertex corner radii and segment-scoped styles are not reconstructed; count them.
-    *unsupported += skipped;
-    Some(paths)
+    *unsupported += if paths.is_empty() {
+        skipped.max(1)
+    } else {
+        skipped
+    };
+    paths
+}
+
+/// The decoded network with its path-building transform, or `None` when it cannot be used.
+fn decode(data: &Val, blobs: &[Vec<u8>]) -> Option<(Network, vello_cpu::kurbo::Affine)> {
+    let net = parse(blob(data, blobs)?, true)?;
+    let normalized = data
+        .path(&["vectorData", "normalizedSize"])
+        .unwrap_or(data.get("size")?);
+    let (w, h) = size(data);
+    let (nw, nh) = (
+        f64::from(normalized.num("x")?),
+        f64::from(normalized.num("y")?),
+    );
+    if !w.is_finite()
+        || !h.is_finite()
+        || !nw.is_finite()
+        || !nh.is_finite()
+        || nw <= 0.0
+        || nh <= 0.0
+    {
+        return None;
+    }
+    Some((
+        net,
+        vello_cpu::kurbo::Affine::scale_non_uniform(w / nw, h / nh),
+    ))
 }

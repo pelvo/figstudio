@@ -933,12 +933,9 @@ impl Ctx<'_> {
             &mut self.stats.unsupported_paints,
         );
         if kind == "VECTOR" && fill_paths.is_empty() {
-            // No stored geometry: rebuild the fill from the editable vector network.
-            fill_paths = network::fills(data, &self.doc.blobs, &mut self.stats.unsupported_paints)
-                .unwrap_or_default();
-            if fill_paths.is_empty() && has_visible_fill(data) {
-                self.stats.unsupported_paints += 1;
-            }
+            // No stored geometry: rebuild the fill from the editable vector network. `fills`
+            // owns the count of any visible fill it cannot fully draw.
+            fill_paths = network::fills(data, &self.doc.blobs, &mut self.stats.unsupported_paints);
         }
         if kind == "TEXT" {
             fill_paths = self
@@ -1012,10 +1009,15 @@ impl Ctx<'_> {
             // Figma stores inside and outside strokes as centred strokes of twice the weight
             // and clips them to the fill shape (inside) or to everything but it (outside).
             let align = data.text("strokeAlign").filter(|a| *a != "CENTER");
-            let closed =
-                is_box_shape(kind) || (kind == "VECTOR" && closed_network(data, &self.doc.blobs));
             let aligned = match align {
-                Some(a) if ring.is_none() && closed => align_clip(fill_paths, a == "OUTSIDE"),
+                // The network is only scanned when an inside/outside stroke needs it.
+                Some(a)
+                    if ring.is_none()
+                        && (is_box_shape(kind)
+                            || (kind == "VECTOR" && closed_network(data, &self.doc.blobs))) =>
+                {
+                    align_clip(fill_paths, a == "OUTSIDE")
+                }
                 _ => None,
             };
             // shortcut: open vectors and other vector-like kinds draw stored inside/outside
@@ -1302,13 +1304,4 @@ impl Ctx<'_> {
             }
         }
     }
-}
-
-/// Whether the node's own fill list has a paint that would be drawn.
-fn has_visible_fill(data: &Val) -> bool {
-    data.get("fillPaints").is_some_and(|paints| {
-        paints.items().iter().any(|paint| {
-            paint.flag("visible") != Some(false) && paint.num("opacity").unwrap_or(1.0) > 0.0
-        })
-    })
 }
