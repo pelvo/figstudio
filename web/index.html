@@ -31,7 +31,9 @@
       // Rendering and file decoding run on this pool. ?threads=N overrides the size
       // (1 renders on a single thread; useful for comparing speeds).
       const asked = Number(new URLSearchParams(location.search).get('threads'));
-      const threads = Math.max(1, asked || navigator.hardwareConcurrency || 4);
+      // Capped: each worker has its own stack in shared memory.
+      const cores = navigator.hardwareConcurrency || 4;
+      const threads = Math.max(1, Math.min(Math.trunc(asked) || cores, 2 * cores));
       await initThreadPool(threads);
       self.figstudioThreads = threads;
       status.remove();
