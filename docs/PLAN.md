@@ -332,3 +332,8 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   follow constraints. Test in `auto_layout.rs`. Not verified: live compare in Figma. A full
   re-run of auto layout for instances without derived transforms was tried and dropped: it
   moved stored positions that already follow property defaults (see the report).
+- 2026-10-11 — A20: every visible drop shadow is drawn behind the node in list order, and
+  inner shadows are drawn over the fills clipped to the shape (no longer counted as skipped).
+  Positive spread is applied; a negative spread or a non-normal shadow blend mode is drawn
+  without it and counted (`shadow blends/spreads approximated`). Tests in `shadows.rs`. Not
+  verified: live compare in Figma; spread on rounded shapes uses a stroked outline.

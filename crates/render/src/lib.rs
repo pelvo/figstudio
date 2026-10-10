@@ -2,6 +2,7 @@
 //!
 //! The same code path serves the desktop app, the headless CLI and the browser build.
 
+mod effects;
 pub mod geom;
 pub mod images;
 mod instance;
@@ -23,6 +24,7 @@ use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape};
 use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
 
+use crate::effects::casts_shadow;
 use crate::geom::{
     GeomPath, affine, base_shape, clips_content, closed_network, geometry, is_container, size,
     transformed_bounds,
@@ -58,6 +60,9 @@ pub struct Stats {
     pub missing_symbols: usize,
     pub masks: usize,
     pub shadows: usize,
+    pub inner_shadows: usize,
+    /// Shadows drawn with a blend mode or a negative spread that is not applied.
+    pub approximated_effects: usize,
     pub blurs: usize,
     pub skipped_effects: usize,
     pub unsupported_paints: usize,
@@ -90,6 +95,11 @@ impl fmt::Display for Stats {
         note(self.text_truncation_ignored, "text truncation ignored")?;
         note(self.masks, "masks")?;
         note(self.shadows, "drop shadows")?;
+        note(self.inner_shadows, "inner shadows")?;
+        note(
+            self.approximated_effects,
+            "shadow blends/spreads approximated",
+        )?;
         note(self.blurs, "blurs")?;
         note(self.skipped_effects, "effects skipped")?;
         note(self.missing_images, "images missing")?;
@@ -873,6 +883,31 @@ impl Ctx<'_> {
         if data.text("blendMode").is_some_and(|mode| mode != "NORMAL") {
             self.stats.approximated_blends += 1;
         }
+        // The shape the node's fills and its shadows follow.
+        let mut fill_paths = geometry(
+            data,
+            "fillGeometry",
+            &self.doc.blobs,
+            &mut self.stats.unsupported_paints,
+        );
+        if kind == "VECTOR" && fill_paths.is_empty() {
+            // No stored geometry: rebuild the fill from the editable vector network. `fills`
+            // owns the count of any visible fill it cannot fully draw.
+            fill_paths = network::fills(data, &self.doc.blobs, &mut self.stats.unsupported_paints);
+        }
+        if kind == "TEXT" {
+            fill_paths = self
+                .text_paths(data, stale_glyphs)
+                .into_iter()
+                .map(GeomPath::plain)
+                .collect();
+        } else if fill_paths.is_empty()
+            && let Some(shape) = base_shape(kind, data)
+        {
+            fill_paths.push(GeomPath::plain(shape));
+        }
+        let casts = casts_shadow(data, &fill_paths);
+        let mut shadows = Vec::new();
         let mut layers = 0;
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
@@ -881,6 +916,10 @@ impl Ctx<'_> {
             }
             let radius = effect.num("radius").unwrap_or(0.0).max(0.0);
             let primitive = match effect.text("type") {
+                Some("DROP_SHADOW" | "INNER_SHADOW") if casts => {
+                    shadows.push(effect);
+                    continue;
+                }
                 Some("DROP_SHADOW") if layers == 0 => {
                     self.stats.shadows += 1;
                     let offset = effect.get("offset");
@@ -926,29 +965,16 @@ impl Ctx<'_> {
         }
 
         // Fills.
-        let mut fill_paths = geometry(
-            data,
-            "fillGeometry",
-            &self.doc.blobs,
-            &mut self.stats.unsupported_paints,
-        );
-        if kind == "VECTOR" && fill_paths.is_empty() {
-            // No stored geometry: rebuild the fill from the editable vector network. `fills`
-            // owns the count of any visible fill it cannot fully draw.
-            fill_paths = network::fills(data, &self.doc.blobs, &mut self.stats.unsupported_paints);
-        }
-        if kind == "TEXT" {
-            fill_paths = self
-                .text_paths(data, stale_glyphs)
-                .into_iter()
-                .map(GeomPath::plain)
-                .collect();
-        } else if fill_paths.is_empty()
-            && let Some(shape) = base_shape(kind, data)
-        {
-            fill_paths.push(GeomPath::plain(shape));
+        let (behind, above): (Vec<_>, Vec<_>) = shadows
+            .into_iter()
+            .partition(|e| e.text("type") == Some("DROP_SHADOW"));
+        for effect in behind {
+            self.draw_drop_shadow(effect, &fill_paths, world);
         }
         self.paint_paths(data, "fillPaints", &fill_paths, world, w, h);
+        for effect in above {
+            self.draw_inner_shadow(effect, &fill_paths, world);
+        }
 
         // A frame that clips its content draws its stroke above its children; others below.
         let clips = kind != "TEXT" && clips_content(kind, data);
