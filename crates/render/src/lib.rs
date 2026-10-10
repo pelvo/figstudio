@@ -6,6 +6,7 @@ pub mod geom;
 pub mod images;
 mod instance;
 mod layout;
+mod network;
 pub mod paint;
 mod record;
 mod stroke;
@@ -931,16 +932,13 @@ impl Ctx<'_> {
             &self.doc.blobs,
             &mut self.stats.unsupported_paints,
         );
-        if kind == "VECTOR"
-            && fill_paths.is_empty()
-            && data.get("fillPaints").is_some_and(|paints| {
-                paints.items().iter().any(|paint| {
-                    paint.flag("visible") != Some(false)
-                        && paint.num("opacity").unwrap_or(1.0) > 0.0
-                })
-            })
-        {
-            self.stats.unsupported_paints += 1;
+        if kind == "VECTOR" && fill_paths.is_empty() {
+            // No stored geometry: rebuild the fill from the editable vector network.
+            fill_paths = network::fills(data, &self.doc.blobs, &mut self.stats.unsupported_paints)
+                .unwrap_or_default();
+            if fill_paths.is_empty() && has_visible_fill(data) {
+                self.stats.unsupported_paints += 1;
+            }
         }
         if kind == "TEXT" {
             fill_paths = self
@@ -1304,4 +1302,13 @@ impl Ctx<'_> {
             }
         }
     }
+}
+
+/// Whether the node's own fill list has a paint that would be drawn.
+fn has_visible_fill(data: &Val) -> bool {
+    data.get("fillPaints").is_some_and(|paints| {
+        paints.items().iter().any(|paint| {
+            paint.flag("visible") != Some(false) && paint.num("opacity").unwrap_or(1.0) > 0.0
+        })
+    })
 }
