@@ -22,7 +22,7 @@ use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape, Stroke};
 use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
 
 use crate::geom::{
-    GeomPath, affine, base_shape, clips_content, geometry, size, transformed_bounds,
+    GeomPath, affine, base_shape, clips_content, geometry, is_container, size, transformed_bounds,
 };
 use crate::images::{ImageRequest, Images};
 use crate::record::Canvas;
@@ -60,6 +60,8 @@ pub struct Stats {
     pub unsupported_paints: usize,
     pub approximated_blends: usize,
     pub approximated_paints: usize,
+    /// Inside or outside strokes drawn without clipping to their shape (vector-like nodes).
+    pub approximated_strokes: usize,
     /// Layers skipped because they are outside the viewport or smaller than a pixel.
     pub culled: usize,
     /// Nodes or instance expansions skipped after exhausting the shared work budget.
@@ -93,6 +95,7 @@ impl fmt::Display for Stats {
         note(self.unsupported_paints, "paints skipped")?;
         note(self.approximated_blends, "blend modes approximated")?;
         note(self.approximated_paints, "paints approximated")?;
+        note(self.approximated_strokes, "stroke alignments approximated")?;
         note(self.culled, "off screen")?;
         note(self.budget_exhausted, "layers skipped (work budget)")?;
         note(self.depth_skipped, "layers skipped (depth)")?;
@@ -687,6 +690,29 @@ fn effects_reach(effects: Option<&Val>) -> f64 {
 }
 
 /// How far (in local units) one effect moves or spreads what it applies to.
+/// Clip for an inside (`outside == false`) or outside stroke: the fill shape, or a large
+/// rectangle minus it. `None` when the node has no fill shape to align to.
+fn align_clip(fill: &[GeomPath], outside: bool) -> Option<(BezPath, vello_cpu::peniko::Fill)> {
+    use vello_cpu::peniko::Fill;
+    let first = fill.first()?;
+    let mut clip = BezPath::new();
+    for g in fill {
+        clip.extend(g.path.iter());
+    }
+    if !outside {
+        return Some((clip, first.rule));
+    }
+    // Far enough for any stroke: reach is bounded by the stroke weight, not the shape.
+    let outer = clip.bounding_box().inflate(1.0e6, 1.0e6);
+    clip.extend(outer.path_elements(0.1));
+    Some((clip, Fill::EvenOdd))
+}
+
+/// Closed box-like shapes whose fill path is the stroke-alignment boundary.
+fn is_box_shape(kind: &str) -> bool {
+    is_container(kind) || matches!(kind, "RECTANGLE" | "ROUNDED_RECTANGLE" | "ELLIPSE")
+}
+
 fn effect_reach(e: &Val) -> f64 {
     let r = f64::from(e.num("radius").unwrap_or(0.0).abs());
     let spread = f64::from(e.num("spread").unwrap_or(0.0).abs());
@@ -780,6 +806,7 @@ impl Ctx<'_> {
                 }
             }
         }
+        instance::inherit_swapped(self.doc, &node.data, &mut data);
         (Cow::Owned(data), text_changed && !glyphs_fresh)
     }
 
@@ -906,6 +933,23 @@ impl Ctx<'_> {
             .get("strokePaints")
             .is_some_and(|p| !p.items().is_empty())
         {
+            // Figma stores inside and outside strokes as centred strokes of twice the weight
+            // and clips them to the fill shape (inside) or to everything but it (outside).
+            let align = data.text("strokeAlign").filter(|a| *a != "CENTER");
+            let aligned = match align {
+                Some(a) if is_box_shape(kind) => align_clip(&fill_paths, a == "OUTSIDE"),
+                _ => None,
+            };
+            // shortcut: vector-like shapes may be open paths, so their inside/outside strokes
+            // are drawn from stored geometry unclipped; clip closed ones when a case needs it.
+            if align.is_some() && aligned.is_none() && kind != "TEXT" {
+                self.stats.approximated_strokes += 1;
+            }
+            if let Some((clip, rule)) = &aligned {
+                self.rc.set_transform(world);
+                self.rc.set_fill_rule(*rule);
+                self.rc.push_clip_layer(clip);
+            }
             let outlines = geometry(
                 data,
                 "strokeGeometry",
@@ -918,9 +962,10 @@ impl Ctx<'_> {
                 (data.num("strokeWeight"), base_shape(kind, data))
                 && weight > 0.0
             {
+                let width = f64::from(weight) * if aligned.is_some() { 2.0 } else { 1.0 };
                 let outline = vello_cpu::kurbo::stroke(
                     shape.path_elements(0.1),
-                    &Stroke::new(f64::from(weight)),
+                    &Stroke::new(width),
                     &Default::default(),
                     0.1,
                 );
@@ -932,6 +977,9 @@ impl Ctx<'_> {
                     w,
                     h,
                 );
+            }
+            if aligned.is_some() {
+                self.rc.pop_layer();
             }
         }
 

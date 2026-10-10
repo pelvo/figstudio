@@ -293,7 +293,9 @@ impl Val {
     }
 
     /// Shallow merge of `patch` object fields over `self`. `symbolData` is merged one level deeper,
-    /// so an instance-swap override does not drop the nested instance's own overrides.
+    /// so an instance-swap override does not drop the nested instance's own overrides, and
+    /// `componentPropAssignments` merge by `defID`, so an override that sets one property
+    /// keeps the instance's other assignments.
     pub fn merged(&self, patch: &Val) -> Val {
         let (Val::Obj(base), Val::Obj(over)) = (self, patch) else {
             return self.clone();
@@ -307,6 +309,19 @@ impl Val {
                 && let Some(existing @ Val::Obj(_)) = base.get(k)
             {
                 out.insert(k, existing.merged(v));
+                continue;
+            }
+            if k == "componentPropAssignments"
+                && let Some(Val::Arr(existing)) = base.get(k)
+            {
+                let def = |a: &Val| a.get("defID").cloned();
+                let mut list: Vec<Val> = existing
+                    .iter()
+                    .filter(|a| v.items().iter().all(|b| def(b) != def(a)))
+                    .cloned()
+                    .collect();
+                list.extend(v.items().iter().cloned());
+                out.insert(k, Val::Arr(list));
                 continue;
             }
             out.insert(k, v.clone());
