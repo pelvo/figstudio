@@ -71,6 +71,8 @@ pub struct Stats {
     pub approximated_paints: usize,
     /// Inside or outside strokes drawn without clipping to their shape (vector-like nodes).
     pub approximated_strokes: usize,
+    /// Inherited stored geometry or other ink lengths not recomputed for a uniform instance scale.
+    pub approximated_instance_ink: usize,
     /// Layers skipped because they are outside the viewport or smaller than a pixel.
     pub culled: usize,
     /// Nodes or instance expansions skipped after exhausting the shared work budget.
@@ -107,6 +109,7 @@ impl fmt::Display for Stats {
         note(self.approximated_blends, "blend modes approximated")?;
         note(self.approximated_paints, "paints approximated")?;
         note(self.approximated_strokes, "stroke alignments approximated")?;
+        note(self.approximated_instance_ink, "instance ink approximated")?;
         note(self.culled, "off screen")?;
         note(self.budget_exhausted, "layers skipped (work budget)")?;
         note(self.depth_skipped, "layers skipped (depth)")?;
@@ -766,10 +769,15 @@ impl Ctx<'_> {
         }
     }
 
-    /// Node data with instance overrides applied, plus whether stored text glyphs are stale.
-    fn patched<'n>(&self, node: &'n Node, path: Option<&[Guid]>) -> (Cow<'n, Val>, bool) {
+    /// Patched node data, plus whether glyphs are stale or inherited ink remains approximate.
+    fn patched<'n>(
+        &self,
+        node: &'n Node,
+        path: Option<&[Guid]>,
+        parent: Option<(&Val, &Val)>,
+    ) -> (Cow<'n, Val>, bool, bool) {
         let Some(path) = path else {
-            return (Cow::Borrowed(&node.data), false);
+            return (Cow::Borrowed(&node.data), false, false);
         };
         let mut matches: Vec<&Patch> = self
             .patch_index
@@ -778,6 +786,7 @@ impl Ctx<'_> {
             .flatten()
             .filter_map(|index| self.patches.get(*index))
             .collect();
+        matches.sort_by_key(|p| (std::cmp::Reverse(p.owner_depth), p.derived));
         let property_patch = self.properties.patch(&node.data);
         // A value comes from the outermost level that states it, already in that level's
         // scaled space; every uniformly scaled instance outside that level still scales it.
@@ -792,19 +801,22 @@ impl Ctx<'_> {
             scales[..level.min(scales.len())].iter().product()
         };
         let (move_by, grow_by) = (outer_scale("transform"), outer_scale("size"));
+        let transform_stated = matches.iter().any(|p| p.data.get("transform").is_some());
+        let glyph_scale = outer_scale("derivedTextData");
+        let stroke_scales = layout::STROKE_LENGTHS.map(&outer_scale);
         if matches.is_empty()
             && property_patch == Val::Obj(figstudio_fig::Obj::new())
             && move_by == 1.0
             && grow_by == 1.0
+            && parent.is_none()
         {
-            return (Cow::Borrowed(&node.data), false);
+            return (Cow::Borrowed(&node.data), false, false);
         }
-        matches.sort_by_key(|p| (std::cmp::Reverse(p.owner_depth), p.derived));
         let mut data = node.data.merged(&property_patch);
         let mut text_changed = data.get("textData") != node.data.get("textData");
         let mut glyphs_fresh = false;
         let mut stroke_stale = false;
-        for p in matches {
+        for p in &matches {
             // Stored stroke outlines no longer match an overridden stroke unless a derived
             // patch stores new ones.
             if !p.derived
@@ -843,9 +855,15 @@ impl Ctx<'_> {
         {
             o.remove("strokeGeometry");
         }
+        if !transform_stated && let Some((old, new)) = parent {
+            layout::constrain(&node.data, &mut data, old, new, (move_by, grow_by));
+        }
         layout::scale_inherited(&mut data, move_by, grow_by);
+        layout::scale_ink(&mut data, glyph_scale, stroke_scales);
         instance::inherit_swapped(self.doc, &node.data, &mut data);
-        (Cow::Owned(data), text_changed && !glyphs_fresh)
+        let stale_glyphs = text_changed && !glyphs_fresh;
+        let approximate_ink = layout::approximate_ink(&data, &node.kind, stale_glyphs, outer_scale);
+        (Cow::Owned(data), stale_glyphs, approximate_ink)
     }
 
     fn draw(&mut self, node: &Node, parent: Affine, path: Option<&[Guid]>) {
@@ -857,7 +875,7 @@ impl Ctx<'_> {
         node: &'n Node,
         parent: Affine,
         path: Option<&[Guid]>,
-        patched: Option<(Cow<'n, Val>, bool)>,
+        patched: Option<(Cow<'n, Val>, bool, bool)>,
     ) {
         if self.depth >= 96 {
             self.stats.depth_skipped += 1;
@@ -867,7 +885,8 @@ impl Ctx<'_> {
             return;
         }
         self.depth += 1;
-        let (data, stale_glyphs) = patched.unwrap_or_else(|| self.patched(node, path));
+        let (data, stale_glyphs, approximate_ink) =
+            patched.unwrap_or_else(|| self.patched(node, path, None));
         let (data, unresolved_variables) = self.variables.paints(data.as_ref());
         let data = data.as_ref();
         self.stats.approximated_paints += unresolved_variables;
@@ -884,6 +903,7 @@ impl Ctx<'_> {
             return;
         }
         self.stats.nodes += 1;
+        self.stats.approximated_instance_ink += usize::from(approximate_ink);
         if data.text("blendMode").is_some_and(|mode| mode != "NORMAL") {
             self.stats.approximated_blends += 1;
         }
@@ -1209,10 +1229,10 @@ impl Ctx<'_> {
                 v.push(child.override_key());
                 v
             });
-            let (mut child_data, stale_glyphs) = self.patched(child, child_path.as_deref());
-            if path.is_some() && size(data) != size(&node.data) {
-                layout::constrain(&child.data, child_data.to_mut(), &node.data, data);
-            }
+            let constraint_parent =
+                (path.is_some() && size(data) != size(&node.data)).then_some((&node.data, data));
+            let (child_data, stale_glyphs, approximate_ink) =
+                self.patched(child, child_path.as_deref(), constraint_parent);
             if child_data.flag("mask") == Some(true) && visible(&child_data) {
                 if !self.charge_work() {
                     break;
@@ -1233,6 +1253,7 @@ impl Ctx<'_> {
                 }
                 if !combined.elements().is_empty() {
                     self.stats.masks += 1;
+                    self.stats.approximated_instance_ink += usize::from(approximate_ink);
                     self.rc.set_transform(tf);
                     self.rc.push_clip_path(&combined);
                     self.rc.set_transform(world);
@@ -1244,7 +1265,7 @@ impl Ctx<'_> {
                 child,
                 world,
                 child_path.as_deref(),
-                Some((child_data, stale_glyphs)),
+                Some((child_data, stale_glyphs, approximate_ink)),
             );
         }
         for _ in 0..mask_layers {
