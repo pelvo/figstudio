@@ -3,6 +3,29 @@ use figstudio_fig::Val;
 
 use crate::geom::{affine, size};
 
+/// Scales offsets and sizes that a uniformly scaled instance inherits without restating them in
+/// its derived data: `move_by` for the translation, `grow_by` for the size.
+pub(crate) fn scale_inherited(data: &mut Val, move_by: f64, grow_by: f64) {
+    if move_by != 1.0 {
+        let tf = affine(data.get("transform")).as_coeffs();
+        let mut transform = data
+            .get("transform")
+            .cloned()
+            .unwrap_or(Val::Obj(figstudio_fig::Obj::new()));
+        transform.set("m02", Val::Float(tf[4] * move_by));
+        transform.set("m12", Val::Float(tf[5] * move_by));
+        data.set("transform", transform);
+    }
+    if grow_by != 1.0
+        && let Some(mut grown) = data.get("size").cloned()
+    {
+        let (w, h) = size(data);
+        grown.set("x", Val::Float(w * grow_by));
+        grown.set("y", Val::Float(h * grow_by));
+        data.set("size", grown);
+    }
+}
+
 pub(crate) fn constrain(base: &Val, data: &mut Val, old_parent: &Val, parent: &Val) {
     if data.get("transform") != base.get("transform") {
         return;

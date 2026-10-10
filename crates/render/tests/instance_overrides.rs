@@ -131,3 +131,49 @@ fn resized_frames_move_centered_children_without_replacing_rotations_or_fresh_tr
     doc.set_nodes(nodes).unwrap();
     assert_eq!(pixel(&pixels(&doc), 55, 55), &[0, 255, 0, 255]);
 }
+
+#[test]
+fn uniform_scale_applies_to_values_stated_by_nested_instances_but_not_by_itself() {
+    let mut inner_rect = node(5, 4, "RECTANGLE");
+    inner_rect.data.set("fillPaints", paint(0.0, 1.0, 0.0));
+    let mut outer_rect = node(6, 4, "RECTANGLE");
+    outer_rect.data.set("fillPaints", paint(1.0, 0.0, 0.0));
+    let at = |x: f64, y: f64| obj(&[("m02", Val::Float(x)), ("m12", Val::Float(y))]);
+    let mut nested = instance(3, 2, 4, vec![]);
+    // The nested instance restates its child's place and size in its own, unscaled space.
+    nested.data.set(
+        "derivedSymbolData",
+        Val::Arr(vec![patch(
+            &[5],
+            &[("transform", at(5.0, 5.0)), ("size", size(10.0, 10.0))],
+        )]),
+    );
+    let mut top = instance(7, 1, 2, vec![]);
+    top.data
+        .get_mut("symbolData")
+        .unwrap()
+        .set("uniformScaleFactor", Val::Float(2.0));
+    // The scaled instance itself states the other child already in scaled space.
+    top.data.set(
+        "derivedSymbolData",
+        Val::Arr(vec![patch(
+            &[3, 6],
+            &[("transform", at(50.0, 50.0)), ("size", size(10.0, 10.0))],
+        )]),
+    );
+    let doc = document(vec![
+        node(1, 0, "CANVAS"),
+        node(2, 0, "SYMBOL"),
+        nested,
+        node(4, 0, "SYMBOL"),
+        inner_rect,
+        outer_rect,
+        top,
+    ]);
+    let px = pixels(&doc);
+    assert_eq!(pixel(&px, 11, 11), &[0, 255, 0, 255]);
+    assert_eq!(pixel(&px, 28, 28), &[0, 255, 0, 255]);
+    assert_eq!(pixel(&px, 32, 32), &[0, 0, 0, 0]);
+    assert_eq!(pixel(&px, 55, 55), &[255, 0, 0, 255]);
+    assert_eq!(pixel(&px, 62, 62), &[0, 0, 0, 0]);
+}

@@ -778,20 +778,25 @@ impl Ctx<'_> {
             .flatten()
             .filter_map(|index| self.patches.get(*index))
             .collect();
-        let mut property_patch = self.properties.patch(&node.data);
-        let scale = self.instance_scales.last().copied().unwrap_or(1.0);
-        if scale != 1.0 && !matches.iter().any(|p| p.data.get("transform").is_some()) {
-            let tf = affine(node.data.get("transform")).as_coeffs();
-            let mut transform = node
-                .data
-                .get("transform")
-                .cloned()
-                .unwrap_or(Val::Obj(figstudio_fig::Obj::new()));
-            transform.set("m02", Val::Float(tf[4] * scale));
-            transform.set("m12", Val::Float(tf[5] * scale));
-            property_patch.set("transform", transform);
-        }
-        if matches.is_empty() && property_patch == Val::Obj(figstudio_fig::Obj::new()) {
+        let property_patch = self.properties.patch(&node.data);
+        // A value comes from the outermost level that states it, already in that level's
+        // scaled space; every uniformly scaled instance outside that level still scales it.
+        let scales = &self.instance_scales;
+        let outer_scale = |field: &str| -> f64 {
+            let level = matches
+                .iter()
+                .filter(|p| p.data.get(field).is_some())
+                .map(|p| p.owner_depth)
+                .min()
+                .unwrap_or(scales.len());
+            scales[..level.min(scales.len())].iter().product()
+        };
+        let (move_by, grow_by) = (outer_scale("transform"), outer_scale("size"));
+        if matches.is_empty()
+            && property_patch == Val::Obj(figstudio_fig::Obj::new())
+            && move_by == 1.0
+            && grow_by == 1.0
+        {
             return (Cow::Borrowed(&node.data), false);
         }
         matches.sort_by_key(|p| (std::cmp::Reverse(p.owner_depth), p.derived));
@@ -838,6 +843,7 @@ impl Ctx<'_> {
         {
             o.remove("strokeGeometry");
         }
+        layout::scale_inherited(&mut data, move_by, grow_by);
         instance::inherit_swapped(self.doc, &node.data, &mut data);
         (Cow::Owned(data), text_changed && !glyphs_fresh)
     }
