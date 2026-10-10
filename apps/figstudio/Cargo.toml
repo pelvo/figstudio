@@ -10,8 +10,11 @@ publish = false
 [dependencies]
 figstudio-fig = { workspace = true }
 egui = { workspace = true }
-image = { workspace = true }
 web-time = { workspace = true }
+
+[dev-dependencies]
+# Only the export test decodes PNGs.
+image = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 figstudio-render = { workspace = true }

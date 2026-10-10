@@ -1,33 +1,37 @@
 //! Component properties are scoped to the instance that owns their references.
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use figstudio_fig::{Document, Guid, Node, Obj, Val};
 
-#[derive(Default)]
+/// Property definitions by id across the whole document; built once per document.
+pub(crate) type Definitions = HashMap<Guid, Val>;
+
+/// Every `componentPropDefs` entry in `doc`, by id.
+pub(crate) fn definitions(doc: &Document) -> Definitions {
+    let mut definitions = HashMap::new();
+    for node in &doc.nodes {
+        for def in node
+            .data
+            .get("componentPropDefs")
+            .map(Val::items)
+            .unwrap_or_default()
+        {
+            if let Some(id) = def.get("id").and_then(Val::as_guid) {
+                definitions.insert(id, def.clone());
+            }
+        }
+    }
+    definitions
+}
+
 pub(crate) struct Properties {
-    definitions: HashMap<Guid, Val>,
+    definitions: Arc<Definitions>,
     scopes: Vec<HashMap<Guid, Val>>,
 }
 
 impl Properties {
-    pub fn new(doc: &Document, remaining: &mut usize) -> Self {
-        let mut definitions = HashMap::new();
-        for node in &doc.nodes {
-            if *remaining == 0 {
-                break;
-            }
-            *remaining -= 1;
-            for def in node
-                .data
-                .get("componentPropDefs")
-                .map(Val::items)
-                .unwrap_or_default()
-            {
-                if let Some(id) = def.get("id").and_then(Val::as_guid) {
-                    definitions.insert(id, def.clone());
-                }
-            }
-        }
+    pub fn new(definitions: Arc<Definitions>) -> Self {
         Self {
             definitions,
             scopes: Vec::new(),

@@ -316,5 +316,20 @@ impl Val {
 }
 
 pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(2 * bytes.len());
+    for &b in bytes {
+        out.push(DIGITS[usize::from(b >> 4)] as char);
+        out.push(DIGITS[usize::from(b & 0xf)] as char);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hex_is_lowercase_two_digits_per_byte() {
+        assert_eq!(super::hex(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
+        assert_eq!(super::hex(&[]), "");
+    }
 }

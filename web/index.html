@@ -10,7 +10,7 @@
     #status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
               color: #b0b0b0; font: 14px system-ui, sans-serif; text-align: center; padding: 2em;
               white-space: pre-line; pointer-events: none; }
-    #status.error { color: #f0a0a0; }
+    #status.error { color: #f0a0a0; background: rgba(30, 30, 30, 0.85); }
   </style>
 </head>
 <body>
@@ -25,16 +25,27 @@
           'unavailable. The server must send Cross-Origin-Opener-Policy: same-origin and ' +
           'Cross-Origin-Embedder-Policy: require-corp.');
       }
-      const { default: init, initThreadPool, start, figstudioPage } = await import('./figstudio.js');
+      const { default: init, initThreadPool, start, figstudioPage, figstudioFatal } =
+        await import('./figstudio.js');
       self.figstudioPage = figstudioPage;
+      self.figstudioFatal = figstudioFatal;
       await init();
       // Rendering and file decoding run on this pool. ?threads=N overrides the size
       // (1 renders on a single thread; useful for comparing speeds).
       const asked = Number(new URLSearchParams(location.search).get('threads'));
-      const threads = Math.max(1, asked || navigator.hardwareConcurrency || 4);
+      // Capped: each worker has its own stack in shared memory.
+      const cores = navigator.hardwareConcurrency || 4;
+      const threads = Math.max(1, Math.min(Math.trunc(asked) || cores, 2 * cores));
       await initThreadPool(threads);
       self.figstudioThreads = threads;
-      status.remove();
+      status.textContent = '';
+      // A panic (any thread) stops the app without a word; say so.
+      const watch = setInterval(() => {
+        if (figstudioFatal()) {
+          clearInterval(watch);
+          fail('figstudio hit an internal error and stopped. Reload the page.');
+        }
+      }, 500);
       await start(document.getElementById('figstudio'));
     } catch (e) {
       console.error(e);

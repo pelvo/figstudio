@@ -117,7 +117,6 @@ impl App {
         app
     }
 
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code, unused_variables))]
     fn open(&mut self, path: PathBuf) {
         match open_action(
             &self.tabs.iter().map(|t| &t.path).collect::<Vec<_>>(),
@@ -174,7 +173,11 @@ impl App {
 
     fn close(&mut self, i: usize) {
         if i < self.tabs.len() {
-            self.tabs.remove(i);
+            let closed = self.tabs.remove(i);
+            let instance = closed.doc.instance;
+            if !self.tabs.iter().any(|t| t.doc.instance == instance) {
+                self.workers.images().forget_document(instance);
+            }
             if self.active >= self.tabs.len() {
                 self.active = self.tabs.len().saturating_sub(1);
             } else if self.active > i {
@@ -204,13 +207,18 @@ impl App {
         {
             let file = format!("{name}.png");
             let images = self.workers.images();
-            self.workers.run(self.web.exports_tx.clone(), move || {
-                let png = export_frame(images, &doc, source.as_ref(), root, scale)
-                    .ok_or_else(|| "nothing to export".to_string())
-                    .and_then(|frame| frame.pixmap.into_png().map_err(|e| e.to_string()));
-                (file, png)
-            });
-            self.toast(ctx, "Exporting…", false);
+            let started = self
+                .workers
+                .run_export(self.web.exports_tx.clone(), move || {
+                    let png = export_frame(images, &doc, source.as_ref(), root, scale)
+                        .ok_or_else(|| "nothing to export".to_string())
+                        .and_then(|frame| frame.pixmap.into_png().map_err(|e| e.to_string()));
+                    (file, png)
+                });
+            match started {
+                Ok(()) => self.toast(ctx, "Exporting…", false),
+                Err(e) => self.toast(ctx, e, true),
+            }
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.save_png(ctx, doc, source, root, &name, scale);
@@ -299,7 +307,7 @@ impl App {
         while let Ok(done) = self.workers.export_rx.try_recv() {
             match done.result {
                 Ok(()) => self.toast(ctx, format!("Exported {}", done.path.display()), false),
-                Err(e) => self.toast(ctx, format!("Export failed: {e}"), true),
+                Err(e) => self.toast(ctx, e, true),
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -370,8 +378,9 @@ impl App {
                     entries,
                     eager,
                 } => {
+                    // Made first: on a duplicate open, dropping it releases the `File`.
+                    let source = self.web.source(file);
                     if self.loading.begin(&name) {
-                        let source = self.web.source(file);
                         self.workers.decode(name, move || {
                             Ok((web::decode_lazy(entries, eager)?, Some(source)))
                         });
@@ -383,7 +392,7 @@ impl App {
         while let Ok((name, png)) = self.web.exports.try_recv() {
             match png.and_then(|png| web::download(&name, "image/png", &png)) {
                 Ok(()) => self.toast(ctx, format!("Exported {name}"), false),
-                Err(e) => self.toast(ctx, format!("Export failed: {e}"), true),
+                Err(e) => self.toast(ctx, e, true),
             }
         }
     }

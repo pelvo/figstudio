@@ -8,6 +8,7 @@
 //!
 //! Supported: stored and deflated entries, zip64. Not supported: encryption, split archives.
 
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 
 use crate::doc::FigError;
@@ -170,7 +171,9 @@ impl Entry {
         }
         let name = u64::from(u16_at(local_header, 26).unwrap_or(0));
         let extra = u64::from(u16_at(local_header, 28).unwrap_or(0));
-        Ok(self.header_offset + LOCAL_HEADER_LEN + name + extra)
+        self.header_offset
+            .checked_add(LOCAL_HEADER_LEN + name + extra)
+            .ok_or_else(|| FigError(format!("bad local header offset for {}", self.name)))
     }
 
     /// Decompresses the entry's data (`compressed_size` bytes from [`Entry::data_start`]).
@@ -197,14 +200,23 @@ impl Entry {
     }
 }
 
+/// Checks a byte range before reading it: at most `max` bytes, and `at + len` does not
+/// overflow. Returns `(at, end)`. Every range reader (desktop and browser) goes through this.
+pub fn checked_range(at: u64, len: u64, max: usize) -> Result<(u64, u64), FigError> {
+    if !usize::try_from(len).is_ok_and(|l| l <= max) {
+        return err("archive entry too large");
+    }
+    let end = at
+        .checked_add(len)
+        .ok_or_else(|| FigError("archive range out of bounds".into()))?;
+    Ok((at, end))
+}
+
 fn read_range(r: &mut (impl Read + Seek), at: u64, len: u64) -> Result<Vec<u8>, FigError> {
     let io = |e: std::io::Error| FigError(format!("cannot read the file: {e}"));
-    let len = usize::try_from(len)
-        .ok()
-        .filter(|&l| l <= crate::doc::MAX_CHUNK_BYTES)
-        .ok_or_else(|| FigError("archive entry too large".into()))?;
+    let (at, end) = checked_range(at, len, crate::doc::MAX_CHUNK_BYTES)?;
     r.seek(SeekFrom::Start(at)).map_err(io)?;
-    let mut buf = vec![0; len];
+    let mut buf = vec![0; (end - at) as usize];
     r.read_exact(&mut buf).map_err(io)?;
     Ok(buf)
 }
@@ -217,9 +229,29 @@ pub fn read_entries(r: &mut (impl Read + Seek), len: u64) -> Result<Vec<Entry>, 
     entries(&read_range(r, offset, size)?)
 }
 
-/// Reads and decompresses one entry of a seekable archive.
-pub fn read_entry(r: &mut (impl Read + Seek), entry: &Entry) -> Result<Vec<u8>, FigError> {
+/// Reads one entry of a seekable archive as stored (still compressed).
+pub fn read_raw(r: &mut (impl Read + Seek), entry: &Entry) -> Result<Vec<u8>, FigError> {
     let header = read_range(r, entry.header_offset, LOCAL_HEADER_LEN)?;
     let start = entry.data_start(&header)?;
-    entry.decode(read_range(r, start, entry.compressed_size)?)
+    read_range(r, start, entry.compressed_size)
+}
+
+/// Reads and decompresses one entry of a seekable archive.
+pub fn read_entry(r: &mut (impl Read + Seek), entry: &Entry) -> Result<Vec<u8>, FigError> {
+    entry.decode(read_raw(r, entry)?)
+}
+
+/// Decompresses entries read raw ([`read_raw`]), by name; names not in `entries` are
+/// dropped. The browser reads raw bytes on its main thread and inflates them on a worker.
+pub fn decode_raw(
+    entries: &[Entry],
+    raw: HashMap<String, Vec<u8>>,
+) -> Result<HashMap<String, Vec<u8>>, FigError> {
+    let mut out = HashMap::new();
+    for (name, bytes) in raw {
+        if let Some(entry) = entries.iter().find(|e| e.name == name) {
+            out.insert(name, entry.decode(bytes)?);
+        }
+    }
+    Ok(out)
 }

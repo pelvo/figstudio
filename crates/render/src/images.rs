@@ -19,6 +19,7 @@
 //! images drawn in the current frame are never dropped.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use figstudio_fig::archive::Entry;
@@ -62,6 +63,17 @@ pub struct Decoded {
     pub finest: bool,
 }
 
+impl std::fmt::Debug for Decoded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Decoded")
+            .field("size", &(self.pixmap.width(), self.pixmap.height()))
+            .field("natural", &self.natural)
+            .field("level", &self.level)
+            .field("finest", &self.finest)
+            .finish()
+    }
+}
+
 impl Decoded {
     fn bytes(&self) -> usize {
         self.pixmap.data_as_u8_slice().len()
@@ -85,7 +97,22 @@ struct Inner {
 
 /// Shared handle to the cache; clones refer to the same images.
 #[derive(Clone)]
-pub struct Images(Arc<Mutex<Inner>>);
+pub struct Images(Arc<Shared>);
+
+struct Shared {
+    inner: Mutex<Inner>,
+    /// `Inner::bytes`, copied after each change so [`Images::bytes`] needs no lock: the
+    /// browser UI thread reads it every frame and must never wait on a lock.
+    bytes: AtomicUsize,
+}
+
+impl std::fmt::Debug for Images {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Images")
+            .field("bytes", &self.bytes())
+            .finish_non_exhaustive()
+    }
+}
 
 impl Default for Images {
     fn default() -> Self {
@@ -96,18 +123,21 @@ impl Default for Images {
 impl Images {
     /// A cache holding at most `budget` bytes of pixels (more only while one frame needs it).
     pub fn new(budget: usize) -> Self {
-        Images(Arc::new(Mutex::new(Inner {
-            slots: HashMap::new(),
-            failed: HashSet::new(),
-            in_flight: HashSet::new(),
-            bytes: 0,
-            budget,
-            frame: 0,
-        })))
+        Images(Arc::new(Shared {
+            inner: Mutex::new(Inner {
+                slots: HashMap::new(),
+                failed: HashSet::new(),
+                in_flight: HashSet::new(),
+                bytes: 0,
+                budget,
+                frame: 0,
+            }),
+            bytes: AtomicUsize::new(0),
+        }))
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Starts a frame: images drawn from now on are kept over older ones.
@@ -160,6 +190,7 @@ impl Images {
         match decoded {
             Some(image) => {
                 inner.insert(hash, level, image);
+                self.0.bytes.store(inner.bytes, Ordering::Relaxed);
                 true
             }
             None => {
@@ -176,9 +207,27 @@ impl Images {
         inner.failed.insert(hash.to_string());
     }
 
-    /// Bytes of pixels held.
+    /// Drops every image of document `instance` (see [`cache_key`]), e.g. when its last tab
+    /// closes. A read still in flight may store one image afterwards; LRU evicts it.
+    pub fn forget_document(&self, instance: u64) {
+        let prefix = format!("{instance:x}/");
+        let mut inner = self.lock();
+        let mut freed = 0;
+        inner.slots.retain(|key, levels| {
+            let keep = !key.starts_with(&prefix);
+            if !keep {
+                freed += levels.values().map(|s| s.image.bytes()).sum::<usize>();
+            }
+            keep
+        });
+        inner.failed.retain(|key| !key.starts_with(&prefix));
+        inner.bytes -= freed;
+        self.0.bytes.store(inner.bytes, Ordering::Relaxed);
+    }
+
+    /// Bytes of pixels held. Takes no lock.
     pub fn bytes(&self) -> usize {
-        self.lock().bytes
+        self.0.bytes.load(Ordering::Relaxed)
     }
 
     /// Requests handed out and not answered yet.
@@ -347,6 +396,32 @@ mod tests {
         images.insert_encoded("e", &bytes, 0);
         assert_eq!(images.bytes(), 4 * 64 * 64 * 4);
         assert_eq!(images.in_flight(), 0);
+    }
+
+    #[test]
+    fn forget_document_drops_only_that_documents_images() {
+        let images = Images::default();
+        let bytes = png(8, 8);
+        images.insert_encoded("a1/h", &bytes, 0);
+        images.insert_encoded("a1/h", &bytes, 2);
+        images.fail("a1/bad", 0);
+        images.insert_encoded("a/h", &bytes, 0);
+        images.forget_document(0xa1);
+        assert_eq!(images.bytes(), 8 * 8 * 4, "only document a is left");
+        assert!(images.get("a1/h", 0).is_none() && !images.has_failed("a1/bad"));
+        assert!(images.get("a/h", 0).is_some());
+    }
+
+    #[test]
+    fn bytes_does_not_wait_for_the_lock() {
+        let images = Images::default();
+        images.insert_encoded("a", &png(8, 8), 0);
+        let _held = images.lock();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let other = images.clone();
+        std::thread::spawn(move || tx.send(other.bytes()));
+        let got = rx.recv_timeout(std::time::Duration::from_secs(2));
+        assert_eq!(got, Ok(8 * 8 * 4), "bytes() blocked on the cache lock");
     }
 
     #[test]

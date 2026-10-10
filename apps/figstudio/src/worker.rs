@@ -90,6 +90,25 @@ impl Waker {
     }
 }
 
+static PANICKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Chains a panic hook that records any panic, on any thread. The browser build aborts on
+/// panic, so a worker that panics just stops: its results, counters and locks never come
+/// back, and only this flag tells the UI.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn install_panic_flag() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        PANICKED.store(true, Ordering::Release);
+        previous(info);
+    }));
+}
+
+/// A panic happened since [`install_panic_flag`].
+pub fn panicked() -> bool {
+    PANICKED.load(Ordering::Acquire)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn spawn(f: impl FnOnce() + Send + 'static) {
     std::thread::spawn(f);
@@ -107,17 +126,24 @@ fn next_job(jobs: &Receiver<RenderJob>) -> Option<RenderJob> {
         jobs.recv().ok()
     }
     #[cfg(target_arch = "wasm32")]
-    loop {
-        match jobs.try_recv() {
-            Ok(job) => return Some(job),
-            // The loop holds a pool thread, so run queued pool work (file decoding, exports)
-            // while idle; with a one-thread pool nothing else would.
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                if rayon::yield_now() != Some(rayon::Yield::Executed) {
-                    std::thread::sleep(Duration::from_millis(4));
+    {
+        // Doubles from 4 ms to 32 ms over empty polls: ~30 idle wakeups a second, not 250.
+        let mut nap = 4;
+        loop {
+            match jobs.try_recv() {
+                Ok(job) => return Some(job),
+                // The loop holds a pool thread, so run queued pool work (file decoding,
+                // exports) while idle; with a one-thread pool nothing else would.
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if rayon::yield_now() == Some(rayon::Yield::Executed) {
+                        nap = 4;
+                    } else {
+                        std::thread::sleep(Duration::from_millis(nap));
+                        nap = (nap * 2).min(32);
+                    }
                 }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
         }
     }
 }
@@ -211,7 +237,7 @@ pub struct Workers {
     export_tx: Sender<ExportDone>,
     #[cfg(not(target_arch = "wasm32"))]
     pub export_rx: Receiver<ExportDone>,
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Set while an export runs (desktop and browser).
     export_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -306,15 +332,15 @@ impl Workers {
             export_tx,
             #[cfg(not(target_arch = "wasm32"))]
             export_rx,
-            #[cfg(not(target_arch = "wasm32"))]
             export_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
-    /// Something was sent to a worker and has not come back yet.
+    /// Something was sent to a worker and has not come back yet. False after a panic: a
+    /// trapped browser worker never reports back, so waiting for it would poll forever.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn busy(&self) -> bool {
-        self.in_flight.load(Ordering::Relaxed) > 0
+        !panicked() && self.in_flight.load(Ordering::Relaxed) > 0
     }
 
     /// Exports one page or layer in the background, reading every image it needs from
@@ -328,20 +354,17 @@ impl Workers {
         path: PathBuf,
         source: Option<Source>,
     ) -> Result<(), &'static str> {
-        self.export_busy
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .map_err(|_| "an export is already running")?;
-        let busy = self.export_busy.clone();
+        let release = self.begin_export()?;
         let tx = self.export_tx.clone();
         let waker = self.waker.clone();
         let images = self.images();
         std::thread::spawn(move || {
-            let _release = ExportRelease(busy);
+            let _release = release;
+            // Kept despite M-PANIC-IS-STOP: without it a panicking export sends no ExportDone,
+            // so the user sees nothing (the desktop has no panic flag). This is the guideline's
+            // per-task exception: the export only reads an immutable `Arc<Document>`, and the
+            // image cache recovers from a poisoned lock, so no half-changed state leaks out. The
+            // browser build aborts on panic instead (see `install_panic_flag`).
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 export_png_with(images, &doc, source.as_ref(), root, scale, &path)
             }))
@@ -424,22 +447,43 @@ impl Workers {
         });
     }
 
-    /// Runs `f` on a worker and sends its result to `tx` (browser export).
+    /// Takes the one export slot (desktop and browser alike: an export can hold a 1 GiB
+    /// frame); it is free again when the returned value is dropped.
+    fn begin_export(&self) -> Result<ExportRelease, &'static str> {
+        self.export_busy
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .map_err(|_| "an export is already running")?;
+        Ok(ExportRelease(self.export_busy.clone()))
+    }
+
+    /// Runs export `f` on a worker and sends its result to `tx` (browser); refused while
+    /// another export runs.
     #[cfg(target_arch = "wasm32")]
-    pub fn run<T: Send + 'static>(&self, tx: Sender<T>, f: impl FnOnce() -> T + Send + 'static) {
+    pub fn run_export<T: Send + 'static>(
+        &self,
+        tx: Sender<T>,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<(), &'static str> {
+        let release = self.begin_export()?;
         let count = self.in_flight.clone();
         count.fetch_add(1, Ordering::Relaxed);
         spawn(move || {
-            let _ = tx.send(f());
+            let result = f();
+            drop(release);
+            let _ = tx.send(result);
             count.fetch_sub(1, Ordering::Relaxed);
         });
+        Ok(())
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 struct ExportRelease(Arc<std::sync::atomic::AtomicBool>);
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Drop for ExportRelease {
     fn drop(&mut self) {
         self.0.store(false, std::sync::atomic::Ordering::Release);
@@ -506,6 +550,27 @@ mod export_tests {
             )
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_worker_panic_is_flagged_and_stops_busy() {
+        let ctx = egui::Context::default();
+        let workers = Workers::new(&ctx);
+        workers.in_flight.fetch_add(1, Ordering::Relaxed);
+        assert!(workers.busy());
+        install_panic_flag();
+        assert!(std::thread::spawn(|| panic!("probe")).join().is_err());
+        assert!(panicked(), "the panic was not recorded");
+        assert!(!workers.busy(), "still busy after a worker panic");
+    }
+
+    #[test]
+    fn export_slot_is_shared_and_released_on_drop() {
+        let workers = Workers::new(&egui::Context::default());
+        let slot = workers.begin_export().unwrap();
+        assert!(workers.begin_export().is_err(), "second export admitted");
+        drop(slot);
+        assert!(workers.begin_export().is_ok());
     }
 
     #[test]

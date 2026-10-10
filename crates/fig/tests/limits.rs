@@ -28,9 +28,7 @@ fn a_member_that_inflates_past_the_chunk_limit_is_refused() {
         "the bomb itself stays small: {}",
         bytes.len()
     );
-    let err = Document::from_bytes(&bytes)
-        .err()
-        .expect("bomb must be refused");
+    let err = Document::from_bytes(&bytes).expect_err("bomb must be refused");
     assert!(err.to_string().contains("limit"), "{err}");
 }
 

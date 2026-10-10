@@ -7,7 +7,8 @@
 //!
 //! JavaScript objects stay on the main thread. Workers ask for byte ranges through
 //! [`WebSource`] (a file id and a channel); the main thread reads them with
-//! `Blob.slice().arrayBuffer()` and answers through a channel the worker polls.
+//! `Blob.slice().arrayBuffer()` and answers through a channel the worker polls. The main
+//! thread only copies bytes; workers inflate them.
 //!
 //! Page setup is in `web/index.html`; build with `scripts/web-build.sh`.
 
@@ -32,7 +33,11 @@ pub use wasm_bindgen_rayon::init_thread_pool;
 /// decoding run on it.
 #[wasm_bindgen]
 pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
-    eframe::WebRunner::new()
+    let runner = eframe::WebRunner::new();
+    // After eframe's hook (installed by `new`). eframe stops drawing after any panic, so the
+    // page shows the error itself (`figstudioFatal`, polled by index.html).
+    crate::worker::install_panic_flag();
+    runner
         .start(
             canvas,
             eframe::WebOptions::default(),
@@ -44,7 +49,8 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
 /// A file the user opened: small ones as bytes, big ones still in the browser.
 pub enum Picked {
     Bytes(PathBuf, Vec<u8>),
-    /// Opened lazily: the parts read up front, and an id for reading the rest.
+    /// Opened lazily: the parts read up front (still compressed), and an id for reading the
+    /// rest.
     Lazy {
         name: PathBuf,
         file: u32,
@@ -100,11 +106,23 @@ fn drop_file(id: u32) {
     FILES.with(|f| f.borrow_mut().1.remove(&id));
 }
 
-/// Reads `len` bytes at `at` (main thread; async, so the UI keeps running).
+/// Reads `len` bytes at `at`, at most an archive chunk (main thread; async, so the UI keeps
+/// running).
 async fn read_range(file: &web_sys::File, at: u64, len: u64) -> Result<Vec<u8>, String> {
+    read_range_max(file, at, len, figstudio_fig::MAX_CHUNK_BYTES).await
+}
+
+/// [`read_range`] with its own size cap; bounds are checked like the desktop reader's.
+async fn read_range_max(
+    file: &web_sys::File,
+    at: u64,
+    len: u64,
+    max: usize,
+) -> Result<Vec<u8>, String> {
     let js = |e: JsValue| format!("{e:?}");
+    let (at, end) = archive::checked_range(at, len, max).map_err(|e| e.0)?;
     let blob = file
-        .slice_with_f64_and_f64(at as f64, (at + len) as f64)
+        .slice_with_f64_and_f64(at as f64, end as f64)
         .map_err(js)?;
     let buffer = wasm_bindgen_futures::JsFuture::from(blob.array_buffer())
         .await
@@ -116,11 +134,12 @@ async fn read_range(file: &web_sys::File, at: u64, len: u64) -> Result<Vec<u8>, 
     Ok(bytes)
 }
 
-async fn read_entry(file: &web_sys::File, entry: &Entry) -> Result<Vec<u8>, String> {
+/// An entry's bytes as stored (still compressed): inflating can take long, so workers do it
+/// with [`Entry::decode`], never the main thread.
+async fn read_raw(file: &web_sys::File, entry: &Entry) -> Result<Vec<u8>, String> {
     let header = read_range(file, entry.header_offset, archive::LOCAL_HEADER_LEN).await?;
     let start = entry.data_start(&header).map_err(|e| e.0)?;
-    let data = read_range(file, start, entry.compressed_size).await?;
-    entry.decode(data).map_err(|e| e.0)
+    read_range(file, start, entry.compressed_size).await
 }
 
 /// GETs `url` (same origin) and returns the body.
@@ -168,7 +187,7 @@ async fn open_lazy(file: web_sys::File) -> Picked {
         .iter()
         .filter(|e| archive::EAGER_ENTRIES.contains(&e.name.as_str()))
     {
-        match read_entry(&file, e).await {
+        match read_raw(&file, e).await {
             Ok(bytes) => {
                 eager.insert(e.name.clone(), bytes);
             }
@@ -193,7 +212,8 @@ async fn open_file(file: web_sys::File) -> Picked {
             return open_lazy(file).await;
         }
     }
-    match read_range(&file, 0, file.size() as u64).await {
+    // Same limit as `Document::open` on the desktop.
+    match read_range_max(&file, 0, file.size() as u64, figstudio_fig::MAX_FILE_BYTES).await {
         Ok(bytes) => Picked::Bytes(name, bytes),
         Err(e) => Picked::Failed(format!("Could not read {}: {e}", name.display())),
     }
@@ -204,6 +224,14 @@ async fn open_file(file: web_sys::File) -> Picked {
 pub struct WebSource {
     file: u32,
     requests: Sender<FileRequest>,
+}
+
+impl std::fmt::Debug for WebSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebSource")
+            .field("file", &self.file)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Drop for WebSource {
@@ -223,12 +251,17 @@ impl ImageSource for WebSource {
             })
             .map_err(|_| "app closed".to_string())?;
         // Workers may wait; they poll rather than block so a one-thread pool keeps running.
+        // The nap doubles from 2 ms to 16 ms so a slow read does not spin.
+        let mut nap = 2;
         loop {
             match answer.try_recv() {
-                Ok(result) => return result,
+                Ok(result) => return result.and_then(|raw| entry.decode(raw).map_err(|e| e.0)),
                 Err(TryRecvError::Empty) => {
-                    if rayon::yield_now() != Some(rayon::Yield::Executed) {
-                        std::thread::sleep(web_time::Duration::from_millis(2));
+                    if rayon::yield_now() == Some(rayon::Yield::Executed) {
+                        nap = 2;
+                    } else {
+                        std::thread::sleep(web_time::Duration::from_millis(nap));
+                        nap = (nap * 2).min(16);
                     }
                 }
                 Err(TryRecvError::Disconnected) => return Err("read cancelled".into()),
@@ -248,6 +281,12 @@ pub struct Inbox {
     fonts_tx: Sender<Result<Vec<u8>, String>>,
     pub fonts: Receiver<Result<Vec<u8>, String>>,
     pub font_state: FontState,
+}
+
+impl std::fmt::Debug for Inbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Inbox").finish_non_exhaustive()
+    }
 }
 
 impl Inbox {
@@ -337,7 +376,7 @@ impl Inbox {
             let ctx = ctx.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let result = match file(id) {
-                    Some(f) => read_entry(&f, &entry).await,
+                    Some(f) => read_raw(&f, &entry).await,
                     None => Err("file closed".into()),
                 };
                 let _ = reply.send(result);
@@ -347,12 +386,21 @@ impl Inbox {
     }
 }
 
-/// Opens a lazily picked file on a worker (decoding the canvas takes a while).
+/// Opens a lazily picked file on a worker: inflates the eager entries (read raw by
+/// `open_lazy`), then decodes the canvas; both take a while.
 pub fn decode_lazy(
     entries: Vec<Entry>,
-    eager: HashMap<String, Vec<u8>>,
+    raw: HashMap<String, Vec<u8>>,
 ) -> Result<Document, FigError> {
+    let eager = archive::decode_raw(&entries, raw)?;
     Document::from_lazy(entries, eager)
+}
+
+/// `figstudioFatal()` from JavaScript: a panic happened on some thread. The app is stopped
+/// and only a reload helps.
+#[wasm_bindgen(js_name = figstudioFatal)]
+pub fn fatal() -> bool {
+    crate::worker::panicked()
 }
 
 static PAGE_REQUEST: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);

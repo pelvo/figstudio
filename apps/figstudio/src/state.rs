@@ -56,7 +56,10 @@ impl Pending {
     }
 
     /// How many loads are in flight (the browser's status report).
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "only the browser status report counts loads")
+    )]
     pub fn len(&self) -> usize {
         self.0.len()
     }

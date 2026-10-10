@@ -13,6 +13,7 @@ mod variables;
 
 use std::borrow::Cow;
 use std::fmt;
+use std::sync::Arc;
 
 use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
@@ -44,6 +45,9 @@ pub struct Stats {
     pub text_stored_glyphs: usize,
     pub text_system_fonts: usize,
     pub text_missing: usize,
+    /// Truncated text (`textTruncation`) without usable stored glyphs: the fallback layout
+    /// draws every line instead of ending with an ellipsis.
+    pub text_truncation_ignored: usize,
     pub missing_images: usize,
     /// Image paints drawn with a placeholder or a blurrier copy while the image is read
     /// (lazily opened documents; see [`Frame::wanted`]).
@@ -78,6 +82,7 @@ impl fmt::Display for Stats {
         note(self.text_stored_glyphs, "text (stored outlines)")?;
         note(self.text_system_fonts, "text (system fonts)")?;
         note(self.text_missing, "text not drawn")?;
+        note(self.text_truncation_ignored, "text truncation ignored")?;
         note(self.masks, "masks")?;
         note(self.shadows, "drop shadows")?;
         note(self.blurs, "blurs")?;
@@ -120,6 +125,28 @@ pub struct Renderer {
     fonts: text::SystemFonts,
     /// Lay out text with installed fonts when the file has no stored glyph outlines.
     pub system_fonts: bool,
+    /// Property and style indexes of the last document drawn, by [`Document::instance`]:
+    /// built once per document, not per frame (they scan every node of every page).
+    indexes: Option<(u64, Arc<instance::Definitions>, Arc<variables::Variables>)>,
+}
+
+impl fmt::Debug for Renderer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Renderer")
+            .field("images", &self.images)
+            .field("system_fonts", &self.system_fonts)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for Frame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Frame")
+            .field("size", &(self.pixmap.width(), self.pixmap.height()))
+            .field("stats", &self.stats)
+            .field("wanted", &self.wanted.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for Renderer {
@@ -128,6 +155,7 @@ impl Default for Renderer {
             images: Images::default(),
             fonts: text::SystemFonts::default(),
             system_fonts: true,
+            indexes: None,
         }
     }
 }
@@ -150,7 +178,7 @@ struct Ctx<'a> {
     symbol_stack: Vec<Guid>,
     instance_scales: Vec<f64>,
     properties: instance::Properties,
-    variables: variables::Variables,
+    variables: Arc<variables::Variables>,
     work_left: usize,
     depth: usize,
     exhausted: bool,
@@ -317,7 +345,10 @@ impl Renderer {
 
     /// Walks `root` and issues its drawing to `canvas`. `screen` is the output area for culling;
     /// `work` the work budget (see [`MAX_RENDER_WORK`]).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one private entry point shared by every render mode"
+    )]
     fn walk(
         &mut self,
         doc: &Document,
@@ -329,10 +360,17 @@ impl Renderer {
         preparation_skipped: usize,
     ) -> (Stats, Vec<ImageRequest>) {
         self.images.begin_frame();
-        let mut work_left = work;
-        let properties = instance::Properties::new(doc, &mut work_left);
-        let variables = variables::Variables::new(doc, &mut work_left);
-        let preparation_skipped = preparation_skipped + usize::from(work_left == 0);
+        // Bounded by MAX_DECODED_NODES, so not charged to the per-frame work budget.
+        let (definitions, variables) = match &self.indexes {
+            Some((instance, d, v)) if *instance == doc.instance => (d.clone(), v.clone()),
+            _ => {
+                let d = Arc::new(instance::definitions(doc));
+                let v = Arc::new(variables::Variables::new(doc));
+                self.indexes = Some((doc.instance, d.clone(), v.clone()));
+                (d, v)
+            }
+        };
+        let work_left = work;
         let mut ctx = Ctx {
             doc,
             rc: canvas,
@@ -351,7 +389,7 @@ impl Renderer {
             patch_index: std::collections::HashMap::new(),
             symbol_stack: Vec::new(),
             instance_scales: Vec::new(),
-            properties,
+            properties: instance::Properties::new(definitions),
             variables,
             work_left,
             depth: 0,
@@ -577,7 +615,17 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
         if depth >= 128 || !seen.insert(parent) {
             return None;
         }
-        for id in doc.children(parent).iter().rev() {
+        // Topmost painted child first: the reverse of drawing order (see `draw_children`).
+        let reverse = doc
+            .node(parent)
+            .is_some_and(|p| p.data.flag("stackReverseZIndex") == Some(true));
+        let children = doc.children(parent);
+        for index in 0..children.len() {
+            let id = &children[if reverse {
+                index
+            } else {
+                children.len() - 1 - index
+            }];
             let Some(node) = doc.node(*id) else { continue };
             if !visible(&node.data) || node.data.flag("mask") == Some(true) {
                 continue;
@@ -924,6 +972,9 @@ impl Ctx<'_> {
         if text::characters(data).trim().is_empty() {
             return Vec::new();
         }
+        if data.text("textTruncation") == Some("ENDING") {
+            self.stats.text_truncation_ignored += 1;
+        }
         if let Some(paths) = self.fonts.as_mut().and_then(|f| f.layout(data))
             && !paths.is_empty()
         {
@@ -1005,8 +1056,9 @@ impl Ctx<'_> {
     fn draw_children(&mut self, node: &Node, data: &Val, world: Affine, path: Option<&[Guid]>) {
         let mut mask_layers = 0;
         let children = self.doc.children(node.id);
+        let reverse = data.flag("stackReverseZIndex") == Some(true);
         for index in 0..children.len() {
-            let id = &children[if data.flag("stackReverseZIndex") == Some(true) {
+            let id = &children[if reverse {
                 children.len() - 1 - index
             } else {
                 index

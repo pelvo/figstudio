@@ -300,7 +300,10 @@ impl Document {
             .map_err(|e| FigError(format!("{}: {e}", tmp.display())));
         // Closed before the rename (Windows cannot rename an open file). On wasm `File` has no
         // `Drop`, which clippy flags there.
-        #[cfg_attr(target_arch = "wasm32", allow(clippy::drop_non_drop))]
+        #[cfg_attr(
+            target_arch = "wasm32",
+            expect(clippy::drop_non_drop, reason = "wasm File has no Drop")
+        )]
         drop(file);
         let result = written.and_then(|()| {
             std::fs::rename(&tmp, path).map_err(|e| FigError(format!("{}: {e}", path.display())))

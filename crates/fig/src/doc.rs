@@ -131,10 +131,17 @@ impl Node {
     }
 }
 
+/// A process-unique [`Document::instance`].
+fn next_instance() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct Document {
     /// Unique per opened document in this process. Caches shared between documents (decoded
     /// images) key on it, so two files using the same image hash for different bytes never
-    /// share an entry.
+    /// share an entry. [`Document::set_nodes`] assigns a new one, so per-document indexes
+    /// (the renderer's style and property tables) are rebuilt after an edit.
     pub instance: u64,
     pub prelude: String,
     pub format_version: u32,
@@ -195,6 +202,20 @@ struct Parts {
     thumbnail: Option<Vec<u8>>,
     archive_entries: Option<Vec<(String, Vec<u8>)>>,
     lazy: bool,
+}
+
+/// Counts only: names, text, image hashes and paths stay private (see `doctor`).
+impl fmt::Debug for Document {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Document")
+            .field("format_version", &self.format_version)
+            .field("nodes", &self.nodes.len())
+            .field("pages", &self.pages.len())
+            .field("blobs", &self.blobs.len())
+            .field("images", &self.images.len())
+            .field("lazy_images", &self.lazy_images.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Document {
@@ -436,9 +457,8 @@ impl Document {
         nodes.shrink_to_fit();
         check_parent_links(&nodes, &index)?;
 
-        static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let mut doc = Document {
-            instance: NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            instance: next_instance(),
             prelude,
             format_version,
             file_name: parts.file_name,
@@ -483,6 +503,7 @@ impl Document {
         check_parent_links(&out, &index)?;
         self.nodes = out;
         self.index = index;
+        self.instance = next_instance();
         self.reindex();
         Ok(())
     }
@@ -1108,9 +1129,7 @@ mod limit_tests {
             chunk: size - 1,
             archive: usize::MAX,
         };
-        let err = Document::from_bytes_with(&bytes, under)
-            .err()
-            .expect("over limit");
+        let err = Document::from_bytes_with(&bytes, under).expect_err("over limit");
         assert!(err.to_string().contains("limit"), "{err}");
     }
 

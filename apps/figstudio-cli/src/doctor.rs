@@ -63,12 +63,16 @@ fn secs(d: Duration) -> String {
 
 /// Peak resident memory of this process, if the platform reports it.
 /// The only unsafe code in the workspace: a plain libc call with no safe std equivalent.
-#[allow(unsafe_code)]
+#[cfg_attr(
+    unix,
+    expect(unsafe_code, reason = "getrusage has no safe std equivalent")
+)]
 fn peak_memory_mb() -> Option<f64> {
     #[cfg(unix)]
     {
-        // SAFETY: getrusage only writes into the struct we pass.
+        // SAFETY: rusage is plain integers and timevals, for which all-zero bytes are valid.
         let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        // SAFETY: `usage` is a valid, exclusive rusage; getrusage only writes into it.
         if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
             return None;
         }

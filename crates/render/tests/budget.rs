@@ -1,6 +1,7 @@
 //! A render has one work budget for everything it expands. Nested instances must stop at the
 //! budget, and the work that was skipped must be visible in `Stats`, never silently dropped.
 
+mod common;
 use std::path::PathBuf;
 
 use figstudio_fig::{Document, Guid, Node, Obj, Val};
@@ -143,4 +144,86 @@ fn wide_symbols_and_masks_share_the_same_attempt_budget() {
     );
     assert!(frame.stats.attempted_work <= MAX_RENDER_WORK);
     assert!(frame.stats.budget_exhausted > 0 || frame.stats.attempted_work < MAX_RENDER_WORK);
+}
+
+/// Page 1 with one rectangle, page 2 with `others` rectangles.
+fn two_pages(others: u32) -> Document {
+    let mut rect = common::node(3, 1, "RECTANGLE");
+    rect.data.set("fillPaints", common::paint(0.0, 0.0, 1.0));
+    let mut nodes = vec![
+        common::node(1, 0, "CANVAS"),
+        rect,
+        common::node(2, 0, "CANVAS"),
+    ];
+    nodes.extend((10..10 + others).map(|n| common::node(n, 2, "RECTANGLE")));
+    common::document(nodes)
+}
+
+#[test]
+fn layers_on_other_pages_do_not_spend_the_frame_budget() {
+    // 1,000,000 layers on page 2 used to exhaust the budget before page 1 drew anything.
+    let px = common::pixels(&two_pages(1_000_000));
+    assert_eq!(common::pixel(&px, 10, 10), &[0, 0, 255, 255]);
+}
+
+#[test]
+fn frame_work_is_the_same_on_every_frame_and_independent_of_other_pages() {
+    let viewport = Viewport {
+        width: 80,
+        height: 80,
+        transform: Default::default(),
+        background: None,
+    };
+    let work = |doc: &Document| {
+        let mut r = Renderer::new();
+        r.system_fonts = false;
+        let first = r.render(doc, common::id(1), &viewport).stats;
+        let second = r.render(doc, common::id(1), &viewport).stats;
+        assert_eq!(first, second, "a cached frame must report the same work");
+        first.attempted_work
+    };
+    assert_eq!(work(&two_pages(10)), work(&two_pages(5000)));
+}
+
+#[test]
+fn an_edited_document_is_not_drawn_from_a_stale_style_index() {
+    let style = |r: f64, g: f64, b: f64| {
+        let mut s = common::node(7, 0, "RECTANGLE");
+        s.data.set("styleType", Val::Str("FILL".into()));
+        s.data.set("fillPaints", common::paint(r, g, b));
+        s
+    };
+    let mut rect = common::node(3, 1, "RECTANGLE");
+    rect.data.set("fillPaints", common::paint(0.5, 0.5, 0.5));
+    rect.data.set(
+        "styleIdForFill",
+        common::obj(&[("guid", common::id(7).to_val())]),
+    );
+    let mut doc = common::document(vec![
+        common::node(1, 0, "CANVAS"),
+        rect,
+        style(0.0, 1.0, 0.0),
+    ]);
+    let viewport = Viewport {
+        width: 80,
+        height: 80,
+        transform: Default::default(),
+        background: None,
+    };
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let draw = |r: &mut Renderer, doc: &Document| {
+        let frame = r.render(doc, common::id(1), &viewport);
+        common::pixel(frame.pixmap.data_as_u8_slice(), 10, 10).to_vec()
+    };
+    assert_eq!(draw(&mut r, &doc), [0, 255, 0, 255]);
+    let mut nodes = doc.nodes.clone();
+    nodes.pop();
+    nodes.push(style(1.0, 0.0, 0.0));
+    doc.set_nodes(nodes).unwrap();
+    assert_eq!(
+        draw(&mut r, &doc),
+        [255, 0, 0, 255],
+        "style index rebuilt after the edit"
+    );
 }
