@@ -5,15 +5,16 @@
 #   scripts/web-build.sh --serve    then serve web/dist on http://127.0.0.1:8765 with the
 #                                   cross-origin isolation headers threads need
 #
-# Needs: a nightly toolchain with rust-src and the wasm32-unknown-unknown target
-#   rustup toolchain install nightly --component rust-src --target wasm32-unknown-unknown
+# Needs: the pinned nightly toolchain with rust-src and the wasm32-unknown-unknown target
+#   rustup toolchain install nightly-2026-10-09 --component rust-src --target wasm32-unknown-unknown
 # and wasm-bindgen-cli at the same version as the wasm-bindgen crate in Cargo.lock:
 #   cargo install --locked wasm-bindgen-cli --version <version>
-# Override the toolchain with FIGSTUDIO_WEB_TOOLCHAIN (default: nightly).
+# Override the toolchain with FIGSTUDIO_WEB_TOOLCHAIN (default: the pinned nightly; -Z
+# build-std and the shared-memory link flags can break between nightlies).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TC="${FIGSTUDIO_WEB_TOOLCHAIN:-nightly}"
+TC="${FIGSTUDIO_WEB_TOOLCHAIN:-nightly-2026-10-09}"
 OUT=web/dist
 
 want=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/"/,"",$3); print $3; exit}' Cargo.lock)
