@@ -812,17 +812,24 @@ impl App {
                 .default_size(250.0)
                 .size_range(180.0..=520.0)
                 .show(ui, |ui| {
-                    ui.label(
-                        RichText::new("PAGES")
-                            .color(theme::TEXT_DIM)
-                            .small()
-                            .strong(),
-                    );
-                    egui::ScrollArea::vertical()
-                        .id_salt("pages")
-                        .max_height(120.0)
-                        .show(ui, |ui| panels::pages(ui, tab));
-                    ui.separator();
+                    // Drag the line under the page list to split Pages and Layers; egui keeps the height.
+                    egui::Panel::top("pages")
+                        .frame(egui::Frame::new())
+                        .resizable(true)
+                        .default_size(150.0)
+                        .size_range(60.0..=(ui.available_height() - 120.0).max(60.0))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("PAGES")
+                                    .color(theme::TEXT_DIM)
+                                    .small()
+                                    .strong(),
+                            );
+                            egui::ScrollArea::vertical()
+                                .id_salt("pages")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| panels::pages(ui, tab));
+                        });
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new("LAYERS")
