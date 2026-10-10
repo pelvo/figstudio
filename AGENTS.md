@@ -56,6 +56,11 @@ the file dialog). macOS needs only Xcode command line tools.
 ## Commits and branches
 
 - Small commits with a body that says what changed and how it was checked.
+- PR titles use Conventional Commits: `type(scope): summary`, for example
+  `fix(render): draw inner shadows and every drop shadow`. Types: `feat`, `fix`, `perf`,
+  `refactor`, `test`, `docs`, `chore`. Scope is the crate or app (`fig`, `render`, `cli`,
+  `app`, `web`) or several joined with commas. Summary is lower case, imperative, no full
+  stop, under 72 characters.
 - `main` is the integration branch. Work on a branch and open a PR unless told otherwise.
 - Do not commit `target/`, generated PNGs, stress files (`synth` output) or private `.fig`
   files. Only the 7 fixtures in `tests/fixtures` (MIT, from fig2sketch) belong in the repo.
