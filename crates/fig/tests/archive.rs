@@ -124,3 +124,22 @@ fn open_lazy_matches_open_but_reads_no_images() {
         );
     }
 }
+
+#[test]
+fn hostile_offsets_and_sizes_are_refused() {
+    let entry = archive::Entry {
+        name: "x".into(),
+        method: 0,
+        compressed_size: 1,
+        size: 1,
+        header_offset: u64::MAX - 10,
+    };
+    let mut header = vec![0u8; archive::LOCAL_HEADER_LEN as usize];
+    header[..4].copy_from_slice(&0x0403_4b50u32.to_le_bytes());
+    header[26] = 200;
+    assert!(entry.data_start(&header).is_err(), "offset wrapped");
+    let max = figstudio_fig::MAX_CHUNK_BYTES;
+    assert_eq!(archive::checked_range(5, 7, max).unwrap(), (5, 12));
+    assert!(archive::checked_range(0, max as u64 + 1, max).is_err());
+    assert!(archive::checked_range(u64::MAX - 3, 4, max).is_err());
+}

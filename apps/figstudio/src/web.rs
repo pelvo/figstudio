@@ -100,11 +100,23 @@ fn drop_file(id: u32) {
     FILES.with(|f| f.borrow_mut().1.remove(&id));
 }
 
-/// Reads `len` bytes at `at` (main thread; async, so the UI keeps running).
+/// Reads `len` bytes at `at`, at most an archive chunk (main thread; async, so the UI keeps
+/// running).
 async fn read_range(file: &web_sys::File, at: u64, len: u64) -> Result<Vec<u8>, String> {
+    read_range_max(file, at, len, figstudio_fig::MAX_CHUNK_BYTES).await
+}
+
+/// [`read_range`] with its own size cap; bounds are checked like the desktop reader's.
+async fn read_range_max(
+    file: &web_sys::File,
+    at: u64,
+    len: u64,
+    max: usize,
+) -> Result<Vec<u8>, String> {
     let js = |e: JsValue| format!("{e:?}");
+    let (at, end) = archive::checked_range(at, len, max).map_err(|e| e.0)?;
     let blob = file
-        .slice_with_f64_and_f64(at as f64, (at + len) as f64)
+        .slice_with_f64_and_f64(at as f64, end as f64)
         .map_err(js)?;
     let buffer = wasm_bindgen_futures::JsFuture::from(blob.array_buffer())
         .await
@@ -193,7 +205,8 @@ async fn open_file(file: web_sys::File) -> Picked {
             return open_lazy(file).await;
         }
     }
-    match read_range(&file, 0, file.size() as u64).await {
+    // Same limit as `Document::open` on the desktop.
+    match read_range_max(&file, 0, file.size() as u64, figstudio_fig::MAX_FILE_BYTES).await {
         Ok(bytes) => Picked::Bytes(name, bytes),
         Err(e) => Picked::Failed(format!("Could not read {}: {e}", name.display())),
     }
