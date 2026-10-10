@@ -124,7 +124,9 @@ tree from `root` (a page or any node). For each node, `Ctx::draw`:
 7. Strokes: `strokeGeometry` blobs; else per-side borders (`borderStrokeWeightsIndependent`)
    as an aligned ring; else stroke the base shape (`stroke.rs`: `strokeJoin`, `strokeCap`,
    `dashPattern`, miter limit 4). An instance override that changes a stroke field drops the
-   stored `strokeGeometry` unless a derived patch supplies new geometry.
+   stored `strokeGeometry` unless a derived patch supplies new geometry. A frame that clips
+   its content draws its strokes after its children instead (step 8), so cells that fill a
+   table cannot hide its border; a non-clipping frame keeps them below its children.
 8. Children: clip layer if the frame clips; `draw_instance` for INSTANCE, else
    `draw_children`, which honors `stackReverseZIndex` and turns `mask` children into clip
    layers for the siblings above them.

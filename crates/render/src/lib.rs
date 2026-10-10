@@ -951,7 +951,48 @@ impl Ctx<'_> {
         }
         self.paint_paths(data, "fillPaints", &fill_paths, world, w, h);
 
-        // Strokes: precomputed outline geometry, or stroke the base shape.
+        // A frame that clips its content draws its stroke above its children; others below.
+        let clips = kind != "TEXT" && clips_content(kind, data);
+        if !clips {
+            self.draw_strokes(kind, data, &fill_paths, world, (w, h));
+        }
+
+        // Children.
+        if kind != "TEXT" {
+            let clip = clips.then(|| base_shape(kind, data)).flatten();
+            if let Some(clip) = &clip {
+                self.rc.set_transform(world);
+                self.rc.push_clip_layer(clip);
+            }
+            if kind == "INSTANCE" {
+                self.draw_instance(data, world, path);
+            } else {
+                // Override paths contain instance ancestors, not ordinary frame/group ancestors.
+                let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
+                self.draw_children(node, data, world, child_path);
+            }
+            if clip.is_some() {
+                self.rc.pop_layer();
+            }
+            if clips {
+                self.draw_strokes(kind, data, &fill_paths, world, (w, h));
+            }
+        }
+        for _ in 0..layers {
+            self.rc.pop_layer();
+        }
+        self.depth -= 1;
+    }
+
+    /// Strokes: precomputed outline geometry, or stroke the base shape.
+    fn draw_strokes(
+        &mut self,
+        kind: &str,
+        data: &Val,
+        fill_paths: &[GeomPath],
+        world: Affine,
+        (w, h): (f64, f64),
+    ) {
         if data
             .get("strokePaints")
             .is_some_and(|p| !p.items().is_empty())
@@ -972,7 +1013,7 @@ impl Ctx<'_> {
             let closed =
                 is_box_shape(kind) || (kind == "VECTOR" && closed_network(data, &self.doc.blobs));
             let aligned = match align {
-                Some(a) if ring.is_none() && closed => align_clip(&fill_paths, a == "OUTSIDE"),
+                Some(a) if ring.is_none() && closed => align_clip(fill_paths, a == "OUTSIDE"),
                 _ => None,
             };
             // shortcut: open vectors and other vector-like kinds draw stored inside/outside
@@ -1009,31 +1050,6 @@ impl Ctx<'_> {
                 self.rc.pop_layer();
             }
         }
-
-        // Children.
-        if kind != "TEXT" {
-            let clip = clips_content(kind, data)
-                .then(|| base_shape(kind, data))
-                .flatten();
-            if let Some(clip) = &clip {
-                self.rc.set_transform(world);
-                self.rc.push_clip_layer(clip);
-            }
-            if kind == "INSTANCE" {
-                self.draw_instance(data, world, path);
-            } else {
-                // Override paths contain instance ancestors, not ordinary frame/group ancestors.
-                let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
-                self.draw_children(node, data, world, child_path);
-            }
-            if clip.is_some() {
-                self.rc.pop_layer();
-            }
-        }
-        for _ in 0..layers {
-            self.rc.pop_layer();
-        }
-        self.depth -= 1;
     }
 
     fn text_paths(&mut self, data: &Val, stale_glyphs: bool) -> Vec<BezPath> {
