@@ -67,6 +67,7 @@ Rules:
       (fixed: path blobs that continue after a close; vector `styleOverrideTable` colours)
 - [x] render tests: every fixture draws, vector style colours, stored-glyph text, instances,
       clipping, hit test, hidden layers, malformed blobs (8 tests)
+- [x] missing VECTOR fills counted only when a visible fill paint has no path (A19)
 - [ ] progressive blur (Figma `blurOpType: PROGRESSIVE`) — skipped and counted for now
 - [ ] noise / grain / texture effects — skipped and counted
 - [ ] blend modes, inner shadow, background blur (currently skipped)
@@ -219,6 +220,10 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - Writing `.fig` that Figma accepts is unverified until someone opens a saved file in Figma.
 
 ## Progress log
+
+- 2026-10-11 — A19: exclude stroke-only vectors and hidden/zero-opacity fills from the
+  missing-fill counter. Synthetic counter regression observed red/green; workspace and
+  wasm gates passed. Figma comparison not verified.
 
 - 2026-10-09 — Rust audit fixes (F1–F11, see `target/rustaudit/report.md`, not tracked).
   Loader rejects parent cycles (iterative, all nodes), `page_of` and `descendant_count` bounded.

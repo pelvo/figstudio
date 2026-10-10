@@ -932,9 +932,13 @@ impl Ctx<'_> {
             &mut self.stats.unsupported_paints,
         );
         if kind == "VECTOR"
-            && data
-                .get("fillGeometry")
-                .is_none_or(|geometry| geometry.items().is_empty())
+            && fill_paths.is_empty()
+            && data.get("fillPaints").is_some_and(|paints| {
+                paints.items().iter().any(|paint| {
+                    paint.flag("visible") != Some(false)
+                        && paint.num("opacity").unwrap_or(1.0) > 0.0
+                })
+            })
         {
             self.stats.unsupported_paints += 1;
         }
