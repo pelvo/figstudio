@@ -29,8 +29,15 @@ picking up work. Read the three documents below before changing code.
 8. **Privacy.** `figstudio-cli doctor` output is pasted publicly by users with private
    files. It must never print names, text, fonts, image hashes, colours or paths. Do not add
    such output; `apps/figstudio-cli/tests/doctor.rs` checks this.
-9. **No new `unsafe`.** The workspace denies it; the one FFI call is in `doctor.rs`.
-10. **Update `docs/PLAN.md`** when you finish something: tick the box only after its check
+9. **No PII or private-file content in the repo.** Before every commit and push, remove it
+   from code, tests, comments, docs and commit messages. That covers anything taken from a
+   user's private `.fig`: layer, page, frame and component names, text content, node ids,
+   colours, image hashes, file paths and screenshots, plus people's names, chat names and
+   local paths. Describe a bug in neutral terms ("a table frame on a print-layout page").
+   Test with public fixtures or documents built in the test, never a private file. Notes
+   that need real names (such as a local gap list) stay untracked and git-ignored.
+10. **No new `unsafe`.** The workspace denies it; the one FFI call is in `doctor.rs`.
+11. **Update `docs/PLAN.md`** when you finish something: tick the box only after its check
     really passed, and add one line to the progress log. Report what you did **not** verify.
 
 ## Quick start
@@ -54,3 +61,8 @@ the file dialog). macOS needs only Xcode command line tools.
   files. Only the 7 fixtures in `tests/fixtures` (MIT, from fig2sketch) belong in the repo.
 - Do not put people's names, chat names, phone numbers or local paths in commits, issues or
   docs. Say "the requester" or "a user".
+- **PII check before every commit and push** (ground rule 9). Run
+  `git diff --cached` and `git log -p origin/main..HEAD` and look for names, Japanese or
+  other UI text from a private file, node ids (`12345:67890`), paths and screenshots, in
+  the code, the tests, the comments and the commit messages. If one slipped into an
+  unpushed commit, rewrite that commit before pushing; a pushed one needs the owner.
