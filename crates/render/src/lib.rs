@@ -23,7 +23,8 @@ use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape};
 use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
 
 use crate::geom::{
-    GeomPath, affine, base_shape, clips_content, geometry, is_container, size, transformed_bounds,
+    GeomPath, affine, base_shape, clips_content, closed_network, geometry, is_container, size,
+    transformed_bounds,
 };
 use crate::images::{ImageRequest, Images};
 use crate::record::Canvas;
@@ -968,14 +969,14 @@ impl Ctx<'_> {
             // Figma stores inside and outside strokes as centred strokes of twice the weight
             // and clips them to the fill shape (inside) or to everything but it (outside).
             let align = data.text("strokeAlign").filter(|a| *a != "CENTER");
+            let closed =
+                is_box_shape(kind) || (kind == "VECTOR" && closed_network(data, &self.doc.blobs));
             let aligned = match align {
-                Some(a) if ring.is_none() && is_box_shape(kind) => {
-                    align_clip(&fill_paths, a == "OUTSIDE")
-                }
+                Some(a) if ring.is_none() && closed => align_clip(&fill_paths, a == "OUTSIDE"),
                 _ => None,
             };
-            // shortcut: vector-like shapes may be open paths, so their inside/outside strokes
-            // are drawn from stored geometry unclipped; clip closed ones when a case needs it.
+            // shortcut: open vectors and other vector-like kinds draw stored inside/outside
+            // strokes unclipped (counted); clip them too when a case needs it.
             if align.is_some() && aligned.is_none() && ring.is_none() && kind != "TEXT" {
                 self.stats.approximated_strokes += 1;
             }

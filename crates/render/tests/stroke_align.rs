@@ -97,3 +97,85 @@ fn center_strokes_straddle_the_edge() {
     assert!(red(&px, 19, 40) && red(&px, 20, 40));
     assert!(!red(&px, 18, 40) && !red(&px, 21, 40));
 }
+
+/// Vector network blob (header, vertices, segments, regions) for a closed square, or for the
+/// same four segments with no region loop (an open path).
+fn square_network(closed: bool) -> Vec<u8> {
+    let mut b = Vec::new();
+    let u = |b: &mut Vec<u8>, v: u32| b.extend(v.to_le_bytes());
+    let (regions, corners) = (
+        u32::from(closed),
+        [(0.0f32, 0.0f32), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)],
+    );
+    for v in [4, 4, regions] {
+        u(&mut b, v);
+    }
+    for (x, y) in corners {
+        u(&mut b, 0);
+        b.extend(x.to_le_bytes());
+        b.extend(y.to_le_bytes());
+    }
+    for s in 0..4u32 {
+        u(&mut b, 0);
+        u(&mut b, s);
+        b.extend([0u8; 8]);
+        u(&mut b, (s + 1) % 4);
+        b.extend([0u8; 8]);
+    }
+    if closed {
+        for v in [0, 1, 4, 0, 1, 2, 3] {
+            u(&mut b, v);
+        }
+    }
+    b
+}
+
+/// The stored-geometry frame turned into a VECTOR with a vector network.
+fn stored_vector(align: &str, closed: bool) -> Document {
+    let mut doc = stored(align);
+    let blob = doc.blobs.len() as i64;
+    doc.blobs.push(square_network(closed));
+    let mut nodes = doc.nodes.clone();
+    let vector = nodes.iter_mut().find(|n| n.id == id(2)).unwrap();
+    vector.kind = "VECTOR".into();
+    vector.data.set("type", Val::Str("VECTOR".into()));
+    vector.data.set("size", size(40.0, 40.0));
+    vector
+        .data
+        .set("vectorData", obj(&[("vectorNetworkBlob", Val::Int(blob))]));
+    doc.set_nodes(nodes).unwrap();
+    doc
+}
+
+#[test]
+fn closed_vector_inside_and_outside_strokes_are_clipped_to_the_weight() {
+    let inside = pixels(&stored_vector("INSIDE", true));
+    let outside = pixels(&stored_vector("OUTSIDE", true));
+
+    assert!(
+        red(&inside, 20, 40) && red(&inside, 21, 40),
+        "inside band drawn"
+    );
+    assert!(
+        !red(&inside, 18, 40) && !red(&inside, 19, 40),
+        "inside stroke of a closed vector stays within its fill"
+    );
+    assert!(
+        red(&outside, 18, 40) && red(&outside, 19, 40),
+        "outside band drawn"
+    );
+    assert!(
+        !red(&outside, 20, 40) && !red(&outside, 21, 40),
+        "outside stroke of a closed vector stays outside its fill"
+    );
+}
+
+#[test]
+fn open_vector_strokes_are_left_unclipped() {
+    let px = pixels(&stored_vector("INSIDE", false));
+
+    assert!(
+        red(&px, 18, 40) && red(&px, 21, 40),
+        "an open path has no inside, so the stored band is drawn whole"
+    );
+}

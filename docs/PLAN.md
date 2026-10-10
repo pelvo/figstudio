@@ -313,3 +313,7 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   Pixel tests in `stroke_style.rs`. The two reported dialogs already matched Figma's border
   weight and radius after the strokeAlign checkpoint; this change does not alter their pixels.
   Not verified: dashed strokes and caps against Figma on a real file.
+- 2026-10-11 — A7: closed VECTOR nodes clip stored inside/outside stroke geometry to the fill,
+  as boxes already did (`geom::closed_network` reads the vector network). The tooth-chart A–E
+  labels on a private file no longer render bold; test in `stroke_align.rs`. Not verified:
+  live compare in Figma; open vectors still draw these strokes unclipped (counted).

@@ -85,6 +85,47 @@ pub fn blob_path(bytes: &[u8]) -> Option<BezPath> {
     Some(path)
 }
 
+/// Whether a vector's network (`vectorData.vectorNetworkBlob`) is closed: every segment lies on
+/// a region loop, so its fill outline is the boundary inside/outside strokes align to.
+/// Blob layout: `u32` vertex, segment and region counts; 12-byte vertices; 28-byte segments;
+/// per region a style, a loop count and each loop's segment count and indices.
+pub fn closed_network(data: &Val, blobs: &[Vec<u8>]) -> bool {
+    let Some(blob) = data
+        .path(&["vectorData", "vectorNetworkBlob"])
+        .and_then(Val::as_u32)
+        .and_then(|i| blobs.get(usize::try_from(i).ok()?))
+    else {
+        return false;
+    };
+    network_is_closed(blob).unwrap_or(false)
+}
+
+fn network_is_closed(blob: &[u8]) -> Option<bool> {
+    let read = |at: usize| -> Option<usize> {
+        let raw: [u8; 4] = blob.get(at..at.checked_add(4)?)?.try_into().ok()?;
+        usize::try_from(u32::from_le_bytes(raw)).ok()
+    };
+    let (vertices, segments, regions) = (read(0)?, read(4)?, read(8)?);
+    let mut at = vertices
+        .checked_mul(12)?
+        .checked_add(segments.checked_mul(28)?)?
+        .checked_add(12)?;
+    let mut on_loop = vec![false; segments];
+    for _ in 0..regions {
+        let loops = read(at.checked_add(4)?)?;
+        at = at.checked_add(8)?;
+        for _ in 0..loops {
+            let count = read(at)?;
+            at = at.checked_add(4)?;
+            for _ in 0..count {
+                *on_loop.get_mut(read(at)?)? = true;
+                at = at.checked_add(4)?;
+            }
+        }
+    }
+    Some(segments > 0 && at == blob.len() && on_loop.iter().all(|&s| s))
+}
+
 /// One precomputed path. `style` points into `vectorData.styleOverrideTable` (0 = node paints).
 pub struct GeomPath {
     pub path: BezPath,
