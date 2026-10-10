@@ -61,7 +61,8 @@ pub struct Stats {
     pub masks: usize,
     pub shadows: usize,
     pub inner_shadows: usize,
-    /// Shadows drawn with a blend mode or a negative spread that is not applied.
+    /// Drawn shadows with approximate geometry, paint alpha, spread, blend or blur.
+    /// Each effect is counted once even when it has several limitations.
     pub approximated_effects: usize,
     pub blurs: usize,
     pub skipped_effects: usize,
@@ -96,10 +97,7 @@ impl fmt::Display for Stats {
         note(self.masks, "masks")?;
         note(self.shadows, "drop shadows")?;
         note(self.inner_shadows, "inner shadows")?;
-        note(
-            self.approximated_effects,
-            "shadow blends/spreads approximated",
-        )?;
+        note(self.approximated_effects, "shadow effects approximated")?;
         note(self.blurs, "blurs")?;
         note(self.skipped_effects, "effects skipped")?;
         note(self.missing_images, "images missing")?;
@@ -909,28 +907,38 @@ impl Ctx<'_> {
         let casts = casts_shadow(data, &fill_paths);
         let mut shadows = Vec::new();
         let mut layers = 0;
+        let mut shadow_layers = 0;
+        let silhouette = casts
+            && effects::approximate_silhouette(
+                data,
+                !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
+            );
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
             if effect.flag("visible") == Some(false) {
                 continue;
             }
+            if !self.admit_effect(effect, &mut shadow_layers) {
+                continue;
+            }
             let radius = effect.num("radius").unwrap_or(0.0).max(0.0);
             let primitive = match effect.text("type") {
                 Some("DROP_SHADOW" | "INNER_SHADOW") if casts => {
+                    self.stats.approximated_effects += usize::from(effects::is_approximate(
+                        effect,
+                        &fill_paths,
+                        world,
+                        silhouette,
+                        false,
+                    ));
                     shadows.push(effect);
                     continue;
                 }
                 Some("DROP_SHADOW") if layers == 0 => {
                     self.stats.shadows += 1;
-                    let offset = effect.get("offset");
-                    FilterPrimitive::DropShadow {
-                        dx: offset.and_then(|o| o.num("x")).unwrap_or(0.0),
-                        dy: offset.and_then(|o| o.num("y")).unwrap_or(0.0),
-                        std_deviation: radius / 2.0,
-                        color: paint::color(effect.get("color"), 1.0)
-                            .unwrap_or(AlphaColor::new([0.0, 0.0, 0.0, 0.25])),
-                        edge_mode: EdgeMode::None,
-                    }
+                    self.stats.approximated_effects +=
+                        usize::from(effects::is_approximate(effect, &[], world, false, true));
+                    self.fallback_shadow(effect)
                 }
                 // Progressive blur fades in across the layer; a uniform blur looks far worse
                 // than none, so it is skipped (and counted) until it is implemented.
