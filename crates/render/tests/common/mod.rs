@@ -1,4 +1,7 @@
-#![allow(dead_code)] // Each integration suite uses a different subset of these document builders.
+#![allow(
+    dead_code,
+    reason = "each integration suite uses a different subset of these builders"
+)]
 use std::path::PathBuf;
 
 use figstudio_fig::{Document, Guid, Node, Obj, Val};

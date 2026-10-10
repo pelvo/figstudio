@@ -126,17 +126,24 @@ fn next_job(jobs: &Receiver<RenderJob>) -> Option<RenderJob> {
         jobs.recv().ok()
     }
     #[cfg(target_arch = "wasm32")]
-    loop {
-        match jobs.try_recv() {
-            Ok(job) => return Some(job),
-            // The loop holds a pool thread, so run queued pool work (file decoding, exports)
-            // while idle; with a one-thread pool nothing else would.
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                if rayon::yield_now() != Some(rayon::Yield::Executed) {
-                    std::thread::sleep(Duration::from_millis(4));
+    {
+        // Doubles from 4 ms to 32 ms over empty polls: ~30 idle wakeups a second, not 250.
+        let mut nap = 4;
+        loop {
+            match jobs.try_recv() {
+                Ok(job) => return Some(job),
+                // The loop holds a pool thread, so run queued pool work (file decoding,
+                // exports) while idle; with a one-thread pool nothing else would.
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if rayon::yield_now() == Some(rayon::Yield::Executed) {
+                        nap = 4;
+                    } else {
+                        std::thread::sleep(Duration::from_millis(nap));
+                        nap = (nap * 2).min(32);
+                    }
                 }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
         }
     }
 }
@@ -353,6 +360,11 @@ impl Workers {
         let images = self.images();
         std::thread::spawn(move || {
             let _release = release;
+            // Kept despite M-PANIC-IS-STOP: without it a panicking export sends no ExportDone,
+            // so the user sees nothing (the desktop has no panic flag). This is the guideline's
+            // per-task exception: the export only reads an immutable `Arc<Document>`, and the
+            // image cache recovers from a poisoned lock, so no half-changed state leaks out. The
+            // browser build aborts on panic instead (see `install_panic_flag`).
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 export_png_with(images, &doc, source.as_ref(), root, scale, &path)
             }))

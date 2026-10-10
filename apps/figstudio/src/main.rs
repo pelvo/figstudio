@@ -117,7 +117,6 @@ impl App {
         app
     }
 
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code, unused_variables))]
     fn open(&mut self, path: PathBuf) {
         match open_action(
             &self.tabs.iter().map(|t| &t.path).collect::<Vec<_>>(),

@@ -204,6 +204,20 @@ struct Parts {
     lazy: bool,
 }
 
+/// Counts only: names, text, image hashes and paths stay private (see `doctor`).
+impl fmt::Debug for Document {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Document")
+            .field("format_version", &self.format_version)
+            .field("nodes", &self.nodes.len())
+            .field("pages", &self.pages.len())
+            .field("blobs", &self.blobs.len())
+            .field("images", &self.images.len())
+            .field("lazy_images", &self.lazy_images.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Document {
     pub fn open(path: impl AsRef<Path>) -> Result<Document, FigError> {
         let mut bytes = Vec::new();
@@ -1115,9 +1129,7 @@ mod limit_tests {
             chunk: size - 1,
             archive: usize::MAX,
         };
-        let err = Document::from_bytes_with(&bytes, under)
-            .err()
-            .expect("over limit");
+        let err = Document::from_bytes_with(&bytes, under).expect_err("over limit");
         assert!(err.to_string().contains("limit"), "{err}");
     }
 

@@ -82,7 +82,10 @@ pub fn needs_cjk(doc: &figstudio_fig::Document, file_name: &str) -> bool {
 }
 
 /// Adds `bytes` (a CJK font) as the last fallback of every family.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(dead_code, reason = "only the browser fetches a CJK font")
+)]
 pub fn add_cjk_font(ctx: &egui::Context, bytes: Vec<u8>) {
     use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
     let families = [egui::FontFamily::Proportional, egui::FontFamily::Monospace]

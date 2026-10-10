@@ -63,6 +63,17 @@ pub struct Decoded {
     pub finest: bool,
 }
 
+impl std::fmt::Debug for Decoded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Decoded")
+            .field("size", &(self.pixmap.width(), self.pixmap.height()))
+            .field("natural", &self.natural)
+            .field("level", &self.level)
+            .field("finest", &self.finest)
+            .finish()
+    }
+}
+
 impl Decoded {
     fn bytes(&self) -> usize {
         self.pixmap.data_as_u8_slice().len()
@@ -93,6 +104,14 @@ struct Shared {
     /// `Inner::bytes`, copied after each change so [`Images::bytes`] needs no lock: the
     /// browser UI thread reads it every frame and must never wait on a lock.
     bytes: AtomicUsize,
+}
+
+impl std::fmt::Debug for Images {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Images")
+            .field("bytes", &self.bytes())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for Images {

@@ -130,6 +130,25 @@ pub struct Renderer {
     indexes: Option<(u64, Arc<instance::Definitions>, Arc<variables::Variables>)>,
 }
 
+impl fmt::Debug for Renderer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Renderer")
+            .field("images", &self.images)
+            .field("system_fonts", &self.system_fonts)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for Frame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Frame")
+            .field("size", &(self.pixmap.width(), self.pixmap.height()))
+            .field("stats", &self.stats)
+            .field("wanted", &self.wanted.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for Renderer {
     fn default() -> Self {
         Renderer {
@@ -326,7 +345,10 @@ impl Renderer {
 
     /// Walks `root` and issues its drawing to `canvas`. `screen` is the output area for culling;
     /// `work` the work budget (see [`MAX_RENDER_WORK`]).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one private entry point shared by every render mode"
+    )]
     fn walk(
         &mut self,
         doc: &Document,

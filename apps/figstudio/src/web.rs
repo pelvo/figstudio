@@ -226,6 +226,14 @@ pub struct WebSource {
     requests: Sender<FileRequest>,
 }
 
+impl std::fmt::Debug for WebSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebSource")
+            .field("file", &self.file)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Drop for WebSource {
     fn drop(&mut self) {
         let _ = self.requests.send(FileRequest::Close(self.file));
@@ -243,12 +251,17 @@ impl ImageSource for WebSource {
             })
             .map_err(|_| "app closed".to_string())?;
         // Workers may wait; they poll rather than block so a one-thread pool keeps running.
+        // The nap doubles from 2 ms to 16 ms so a slow read does not spin.
+        let mut nap = 2;
         loop {
             match answer.try_recv() {
                 Ok(result) => return result.and_then(|raw| entry.decode(raw).map_err(|e| e.0)),
                 Err(TryRecvError::Empty) => {
-                    if rayon::yield_now() != Some(rayon::Yield::Executed) {
-                        std::thread::sleep(web_time::Duration::from_millis(2));
+                    if rayon::yield_now() == Some(rayon::Yield::Executed) {
+                        nap = 2;
+                    } else {
+                        std::thread::sleep(web_time::Duration::from_millis(nap));
+                        nap = (nap * 2).min(16);
                     }
                 }
                 Err(TryRecvError::Disconnected) => return Err("read cancelled".into()),
@@ -268,6 +281,12 @@ pub struct Inbox {
     fonts_tx: Sender<Result<Vec<u8>, String>>,
     pub fonts: Receiver<Result<Vec<u8>, String>>,
     pub font_state: FontState,
+}
+
+impl std::fmt::Debug for Inbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Inbox").finish_non_exhaustive()
+    }
 }
 
 impl Inbox {
