@@ -204,13 +204,18 @@ impl App {
         {
             let file = format!("{name}.png");
             let images = self.workers.images();
-            self.workers.run(self.web.exports_tx.clone(), move || {
-                let png = export_frame(images, &doc, source.as_ref(), root, scale)
-                    .ok_or_else(|| "nothing to export".to_string())
-                    .and_then(|frame| frame.pixmap.into_png().map_err(|e| e.to_string()));
-                (file, png)
-            });
-            self.toast(ctx, "Exporting…", false);
+            let started = self
+                .workers
+                .run_export(self.web.exports_tx.clone(), move || {
+                    let png = export_frame(images, &doc, source.as_ref(), root, scale)
+                        .ok_or_else(|| "nothing to export".to_string())
+                        .and_then(|frame| frame.pixmap.into_png().map_err(|e| e.to_string()));
+                    (file, png)
+                });
+            match started {
+                Ok(()) => self.toast(ctx, "Exporting…", false),
+                Err(e) => self.toast(ctx, e, true),
+            }
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.save_png(ctx, doc, source, root, &name, scale);
@@ -299,7 +304,7 @@ impl App {
         while let Ok(done) = self.workers.export_rx.try_recv() {
             match done.result {
                 Ok(()) => self.toast(ctx, format!("Exported {}", done.path.display()), false),
-                Err(e) => self.toast(ctx, format!("Export failed: {e}"), true),
+                Err(e) => self.toast(ctx, e, true),
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -383,7 +388,7 @@ impl App {
         while let Ok((name, png)) = self.web.exports.try_recv() {
             match png.and_then(|png| web::download(&name, "image/png", &png)) {
                 Ok(()) => self.toast(ctx, format!("Exported {name}"), false),
-                Err(e) => self.toast(ctx, format!("Export failed: {e}"), true),
+                Err(e) => self.toast(ctx, e, true),
             }
         }
     }

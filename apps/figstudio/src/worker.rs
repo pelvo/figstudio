@@ -211,7 +211,7 @@ pub struct Workers {
     export_tx: Sender<ExportDone>,
     #[cfg(not(target_arch = "wasm32"))]
     pub export_rx: Receiver<ExportDone>,
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Set while an export runs (desktop and browser).
     export_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -306,7 +306,6 @@ impl Workers {
             export_tx,
             #[cfg(not(target_arch = "wasm32"))]
             export_rx,
-            #[cfg(not(target_arch = "wasm32"))]
             export_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -328,20 +327,12 @@ impl Workers {
         path: PathBuf,
         source: Option<Source>,
     ) -> Result<(), &'static str> {
-        self.export_busy
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .map_err(|_| "an export is already running")?;
-        let busy = self.export_busy.clone();
+        let release = self.begin_export()?;
         let tx = self.export_tx.clone();
         let waker = self.waker.clone();
         let images = self.images();
         std::thread::spawn(move || {
-            let _release = ExportRelease(busy);
+            let _release = release;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 export_png_with(images, &doc, source.as_ref(), root, scale, &path)
             }))
@@ -424,22 +415,43 @@ impl Workers {
         });
     }
 
-    /// Runs `f` on a worker and sends its result to `tx` (browser export).
+    /// Takes the one export slot (desktop and browser alike: an export can hold a 1 GiB
+    /// frame); it is free again when the returned value is dropped.
+    fn begin_export(&self) -> Result<ExportRelease, &'static str> {
+        self.export_busy
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .map_err(|_| "an export is already running")?;
+        Ok(ExportRelease(self.export_busy.clone()))
+    }
+
+    /// Runs export `f` on a worker and sends its result to `tx` (browser); refused while
+    /// another export runs.
     #[cfg(target_arch = "wasm32")]
-    pub fn run<T: Send + 'static>(&self, tx: Sender<T>, f: impl FnOnce() -> T + Send + 'static) {
+    pub fn run_export<T: Send + 'static>(
+        &self,
+        tx: Sender<T>,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<(), &'static str> {
+        let release = self.begin_export()?;
         let count = self.in_flight.clone();
         count.fetch_add(1, Ordering::Relaxed);
         spawn(move || {
-            let _ = tx.send(f());
+            let result = f();
+            drop(release);
+            let _ = tx.send(result);
             count.fetch_sub(1, Ordering::Relaxed);
         });
+        Ok(())
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 struct ExportRelease(Arc<std::sync::atomic::AtomicBool>);
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Drop for ExportRelease {
     fn drop(&mut self) {
         self.0.store(false, std::sync::atomic::Ordering::Release);
@@ -506,6 +518,15 @@ mod export_tests {
             )
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_slot_is_shared_and_released_on_drop() {
+        let workers = Workers::new(&egui::Context::default());
+        let slot = workers.begin_export().unwrap();
+        assert!(workers.begin_export().is_err(), "second export admitted");
+        drop(slot);
+        assert!(workers.begin_export().is_ok());
     }
 
     #[test]
