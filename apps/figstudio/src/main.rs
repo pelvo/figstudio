@@ -375,8 +375,9 @@ impl App {
                     entries,
                     eager,
                 } => {
+                    // Made first: on a duplicate open, dropping it releases the `File`.
+                    let source = self.web.source(file);
                     if self.loading.begin(&name) {
-                        let source = self.web.source(file);
                         self.workers.decode(name, move || {
                             Ok((web::decode_lazy(entries, eager)?, Some(source)))
                         });
