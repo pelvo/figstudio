@@ -90,6 +90,25 @@ impl Waker {
     }
 }
 
+static PANICKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Chains a panic hook that records any panic, on any thread. The browser build aborts on
+/// panic, so a worker that panics just stops: its results, counters and locks never come
+/// back, and only this flag tells the UI.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn install_panic_flag() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        PANICKED.store(true, Ordering::Release);
+        previous(info);
+    }));
+}
+
+/// A panic happened since [`install_panic_flag`].
+pub fn panicked() -> bool {
+    PANICKED.load(Ordering::Acquire)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn spawn(f: impl FnOnce() + Send + 'static) {
     std::thread::spawn(f);
@@ -310,10 +329,11 @@ impl Workers {
         }
     }
 
-    /// Something was sent to a worker and has not come back yet.
+    /// Something was sent to a worker and has not come back yet. False after a panic: a
+    /// trapped browser worker never reports back, so waiting for it would poll forever.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn busy(&self) -> bool {
-        self.in_flight.load(Ordering::Relaxed) > 0
+        !panicked() && self.in_flight.load(Ordering::Relaxed) > 0
     }
 
     /// Exports one page or layer in the background, reading every image it needs from
@@ -518,6 +538,18 @@ mod export_tests {
             )
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_worker_panic_is_flagged_and_stops_busy() {
+        let ctx = egui::Context::default();
+        let workers = Workers::new(&ctx);
+        workers.in_flight.fetch_add(1, Ordering::Relaxed);
+        assert!(workers.busy());
+        install_panic_flag();
+        assert!(std::thread::spawn(|| panic!("probe")).join().is_err());
+        assert!(panicked(), "the panic was not recorded");
+        assert!(!workers.busy(), "still busy after a worker panic");
     }
 
     #[test]

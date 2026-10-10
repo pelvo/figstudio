@@ -33,7 +33,11 @@ pub use wasm_bindgen_rayon::init_thread_pool;
 /// decoding run on it.
 #[wasm_bindgen]
 pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
-    eframe::WebRunner::new()
+    let runner = eframe::WebRunner::new();
+    // After eframe's hook (installed by `new`). eframe stops drawing after any panic, so the
+    // page shows the error itself (`figstudioFatal`, polled by index.html).
+    crate::worker::install_panic_flag();
+    runner
         .start(
             canvas,
             eframe::WebOptions::default(),
@@ -371,6 +375,13 @@ pub fn decode_lazy(
 ) -> Result<Document, FigError> {
     let eager = archive::decode_raw(&entries, raw)?;
     Document::from_lazy(entries, eager)
+}
+
+/// `figstudioFatal()` from JavaScript: a panic happened on some thread. The app is stopped
+/// and only a reload helps.
+#[wasm_bindgen(js_name = figstudioFatal)]
+pub fn fatal() -> bool {
+    crate::worker::panicked()
 }
 
 static PAGE_REQUEST: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
