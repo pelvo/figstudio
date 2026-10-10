@@ -7,7 +7,8 @@
 //!
 //! JavaScript objects stay on the main thread. Workers ask for byte ranges through
 //! [`WebSource`] (a file id and a channel); the main thread reads them with
-//! `Blob.slice().arrayBuffer()` and answers through a channel the worker polls.
+//! `Blob.slice().arrayBuffer()` and answers through a channel the worker polls. The main
+//! thread only copies bytes; workers inflate them.
 //!
 //! Page setup is in `web/index.html`; build with `scripts/web-build.sh`.
 
@@ -44,7 +45,8 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
 /// A file the user opened: small ones as bytes, big ones still in the browser.
 pub enum Picked {
     Bytes(PathBuf, Vec<u8>),
-    /// Opened lazily: the parts read up front, and an id for reading the rest.
+    /// Opened lazily: the parts read up front (still compressed), and an id for reading the
+    /// rest.
     Lazy {
         name: PathBuf,
         file: u32,
@@ -128,11 +130,12 @@ async fn read_range_max(
     Ok(bytes)
 }
 
-async fn read_entry(file: &web_sys::File, entry: &Entry) -> Result<Vec<u8>, String> {
+/// An entry's bytes as stored (still compressed): inflating can take long, so workers do it
+/// with [`Entry::decode`], never the main thread.
+async fn read_raw(file: &web_sys::File, entry: &Entry) -> Result<Vec<u8>, String> {
     let header = read_range(file, entry.header_offset, archive::LOCAL_HEADER_LEN).await?;
     let start = entry.data_start(&header).map_err(|e| e.0)?;
-    let data = read_range(file, start, entry.compressed_size).await?;
-    entry.decode(data).map_err(|e| e.0)
+    read_range(file, start, entry.compressed_size).await
 }
 
 /// GETs `url` (same origin) and returns the body.
@@ -180,7 +183,7 @@ async fn open_lazy(file: web_sys::File) -> Picked {
         .iter()
         .filter(|e| archive::EAGER_ENTRIES.contains(&e.name.as_str()))
     {
-        match read_entry(&file, e).await {
+        match read_raw(&file, e).await {
             Ok(bytes) => {
                 eager.insert(e.name.clone(), bytes);
             }
@@ -238,7 +241,7 @@ impl ImageSource for WebSource {
         // Workers may wait; they poll rather than block so a one-thread pool keeps running.
         loop {
             match answer.try_recv() {
-                Ok(result) => return result,
+                Ok(result) => return result.and_then(|raw| entry.decode(raw).map_err(|e| e.0)),
                 Err(TryRecvError::Empty) => {
                     if rayon::yield_now() != Some(rayon::Yield::Executed) {
                         std::thread::sleep(web_time::Duration::from_millis(2));
@@ -350,7 +353,7 @@ impl Inbox {
             let ctx = ctx.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let result = match file(id) {
-                    Some(f) => read_entry(&f, &entry).await,
+                    Some(f) => read_raw(&f, &entry).await,
                     None => Err("file closed".into()),
                 };
                 let _ = reply.send(result);
@@ -360,11 +363,13 @@ impl Inbox {
     }
 }
 
-/// Opens a lazily picked file on a worker (decoding the canvas takes a while).
+/// Opens a lazily picked file on a worker: inflates the eager entries (read raw by
+/// `open_lazy`), then decodes the canvas; both take a while.
 pub fn decode_lazy(
     entries: Vec<Entry>,
-    eager: HashMap<String, Vec<u8>>,
+    raw: HashMap<String, Vec<u8>>,
 ) -> Result<Document, FigError> {
+    let eager = archive::decode_raw(&entries, raw)?;
     Document::from_lazy(entries, eager)
 }
 

@@ -79,6 +79,19 @@ fn reads_deflated_zip64_and_commented_archives() {
     assert_eq!(got, zip_crate_entries(&bytes));
     assert_eq!(got[0].1, 8, "first entry is deflated");
     assert_eq!(got[0].4, vec![7u8; 5000]);
+    // Read raw (browser main thread), inflate later (worker): same bytes, and the raw read
+    // did not inflate.
+    let mut r = Cursor::new(&bytes);
+    let entries = archive::read_entries(&mut r, bytes.len() as u64).unwrap();
+    let raw: std::collections::HashMap<_, _> = entries
+        .iter()
+        .map(|e| (e.name.clone(), archive::read_raw(&mut r, e).unwrap()))
+        .collect();
+    assert!(raw["images/aa"].len() < 5000, "raw read inflated");
+    let decoded = archive::decode_raw(&entries, raw).unwrap();
+    for e in &entries {
+        assert_eq!(decoded[&e.name], archive::read_entry(&mut r, e).unwrap());
+    }
 }
 
 #[test]

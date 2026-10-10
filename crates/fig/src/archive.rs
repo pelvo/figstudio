@@ -8,6 +8,7 @@
 //!
 //! Supported: stored and deflated entries, zip64. Not supported: encryption, split archives.
 
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 
 use crate::doc::FigError;
@@ -228,9 +229,29 @@ pub fn read_entries(r: &mut (impl Read + Seek), len: u64) -> Result<Vec<Entry>, 
     entries(&read_range(r, offset, size)?)
 }
 
-/// Reads and decompresses one entry of a seekable archive.
-pub fn read_entry(r: &mut (impl Read + Seek), entry: &Entry) -> Result<Vec<u8>, FigError> {
+/// Reads one entry of a seekable archive as stored (still compressed).
+pub fn read_raw(r: &mut (impl Read + Seek), entry: &Entry) -> Result<Vec<u8>, FigError> {
     let header = read_range(r, entry.header_offset, LOCAL_HEADER_LEN)?;
     let start = entry.data_start(&header)?;
-    entry.decode(read_range(r, start, entry.compressed_size)?)
+    read_range(r, start, entry.compressed_size)
+}
+
+/// Reads and decompresses one entry of a seekable archive.
+pub fn read_entry(r: &mut (impl Read + Seek), entry: &Entry) -> Result<Vec<u8>, FigError> {
+    entry.decode(read_raw(r, entry)?)
+}
+
+/// Decompresses entries read raw ([`read_raw`]), by name; names not in `entries` are
+/// dropped. The browser reads raw bytes on its main thread and inflates them on a worker.
+pub fn decode_raw(
+    entries: &[Entry],
+    raw: HashMap<String, Vec<u8>>,
+) -> Result<HashMap<String, Vec<u8>>, FigError> {
+    let mut out = HashMap::new();
+    for (name, bytes) in raw {
+        if let Some(entry) = entries.iter().find(|e| e.name == name) {
+            out.insert(name, entry.decode(bytes)?);
+        }
+    }
+    Ok(out)
 }
