@@ -35,10 +35,13 @@ impl Encoder<'_> {
                 Val::Bool(b) => bb.write_bool(*b),
                 other => return fail(format!("{at}: expected a bool, found {}", kind(other))),
             },
-            TYPE_BYTE => bb.write_byte(int(v)? as u8),
-            TYPE_INT => bb.write_var_int(int(v)? as i32),
-            TYPE_UINT => bb.write_var_uint(int(v)? as u32),
+            // Narrowing is checked: an out-of-range value is an error, never a wrapped value.
+            TYPE_BYTE => bb.write_byte(narrow::<u8>(int(v)?, at, "byte")?),
+            TYPE_INT => bb.write_var_int(narrow::<i32>(int(v)?, at, "int")?),
+            TYPE_UINT => bb.write_var_uint(narrow::<u32>(int(v)?, at, "uint")?),
             TYPE_INT64 => bb.write_var_int64(int(v)?),
+            // Intentional: the decoder stores a uint64 as its 64 bits in an i64, so the same bit
+            // pattern is written back. Every i64 has exactly one u64 with those bits.
             TYPE_UINT64 => bb.write_var_uint64(int(v)? as u64),
             TYPE_FLOAT => match v {
                 Val::Float(f) => bb.write_var_float(*f as f32),
@@ -121,6 +124,11 @@ impl Encoder<'_> {
         }
         Ok(())
     }
+}
+
+/// Converts `v` to `T`, or fails with the field's path and the value.
+fn narrow<T: TryFrom<i64>>(v: i64, at: &str, what: &str) -> Result<T, FigError> {
+    T::try_from(v).or_else(|_| fail(format!("{at}: {v} does not fit a {what}")))
 }
 
 fn len32(n: usize, at: &str) -> Result<u32, FigError> {
@@ -242,6 +250,11 @@ impl Document {
     /// A complete `.fig` file. Archives keep their other entries; images are written from
     /// `images`, so removing an entry there drops it from the file.
     pub fn to_bytes(&self) -> Result<Vec<u8>, FigError> {
+        if self.source.lazy {
+            return Err(FigError(
+                "opened without its images (open_lazy), so it cannot be written".into(),
+            ));
+        }
         let canvas = self.encode_canvas()?;
         let Some(entries) = &self.source.archive_entries else {
             return Ok(canvas);
@@ -275,14 +288,57 @@ impl Document {
     }
 
     /// Writes the file next to `path` first and then renames it over `path`, so a failed save
-    /// never leaves a half-written file.
+    /// never leaves a half-written file. The temp name is unique and created with `create_new`,
+    /// so an existing file or symlink is never written through. It is removed on every failure;
+    /// the destination is not touched until the rename.
     pub fn save(&self, path: impl AsRef<std::path::Path>) -> Result<(), FigError> {
         let path = path.as_ref();
         let bytes = self.to_bytes()?;
-        let mut tmp = path.as_os_str().to_owned();
-        tmp.push(".saving");
-        let tmp = std::path::PathBuf::from(tmp);
-        std::fs::write(&tmp, bytes).map_err(|e| FigError(format!("{}: {e}", tmp.display())))?;
-        std::fs::rename(&tmp, path).map_err(|e| FigError(format!("{}: {e}", path.display())))
+        let (tmp, mut file) = create_temp(path)?;
+        let written = std::io::Write::write_all(&mut file, &bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|e| FigError(format!("{}: {e}", tmp.display())));
+        // Closed before the rename (Windows cannot rename an open file). On wasm `File` has no
+        // `Drop`, which clippy flags there.
+        #[cfg_attr(target_arch = "wasm32", allow(clippy::drop_non_drop))]
+        drop(file);
+        let result = written.and_then(|()| {
+            std::fs::rename(&tmp, path).map_err(|e| FigError(format!("{}: {e}", path.display())))
+        });
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result
     }
+}
+
+/// Creates a new, uniquely named file in the same directory as `path` (so the final rename stays
+/// on one filesystem). `create_new` makes it fail rather than reuse an existing name.
+fn create_temp(path: &std::path::Path) -> Result<(std::path::PathBuf, std::fs::File), FigError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let base = path
+        .file_name()
+        .map_or_else(|| "figstudio".into(), |n| n.to_os_string());
+    let mut last_err = None;
+    for _ in 0..16 {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut name = base.clone();
+        name.push(format!(".{}.{n}.saving", std::process::id()));
+        let tmp = path.with_file_name(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(file) => return Ok((tmp, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(e),
+            Err(e) => return fail(format!("{}: {e}", tmp.display())),
+        }
+    }
+    fail(format!(
+        "{}: cannot create a temporary file: {}",
+        path.display(),
+        last_err.map_or_else(|| "name clash".into(), |e| e.to_string())
+    ))
 }

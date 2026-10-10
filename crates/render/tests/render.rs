@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use figstudio_fig::{Document, Guid, Val};
 use figstudio_render::kurbo::{Affine, Point};
-use figstudio_render::{Renderer, Stats, Viewport, content_bounds, geom, hit_test, node_bounds};
+use figstudio_render::{
+    Renderer, Stats, Viewport, absolute_transform, content_bounds, geom, hit_test, node_bounds,
+};
 
 fn open(name: &str) -> Document {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -143,6 +145,230 @@ fn frames_clip_their_children() {
     let (px, _) = render_page(&doc, all.origin(), w, h);
     let inside = pixel(&px, w, fb.x0 - all.x0 + 4.0, fb.y0 - all.y0 + 4.0);
     assert!(inside[3] > 0, "frame background missing");
+    let outside = pixel(&px, w, fb.x1 - all.x0 + 3.0, fb.y0 - all.y0 + 4.0);
+    assert_eq!(outside[3], 0, "frame leaked pixels outside its clip");
+}
+
+#[test]
+fn page_fit_includes_visible_children_outside_unclipped_groups() {
+    let mut doc = open("structure");
+    let page = doc.pages[0];
+    let template = doc
+        .nodes
+        .iter()
+        .find(|n| n.kind == "FRAME")
+        .unwrap()
+        .clone();
+    let mut nodes = doc.nodes.clone();
+    let parent_data = |id: Guid, x: f32| {
+        let mut parent = figstudio_fig::Obj::new();
+        parent.insert("guid", id.to_val());
+        parent.insert("position", Val::Str("zzzz".into()));
+        let mut transform = figstudio_fig::Obj::new();
+        transform.insert("m02", Val::Float(f64::from(x)));
+        let mut data = template.data.clone();
+        data.set("transform", Val::Obj(transform));
+        data.set("parentIndex", Val::Obj(parent));
+        data
+    };
+    let group_id = Guid(98, 1);
+    let mut group_data = parent_data(page, 0.0);
+    group_data.set("guid", group_id.to_val());
+    group_data.set("type", Val::Enum("GROUP"));
+    group_data.set(
+        "size",
+        Val::Obj([("x", Val::Float(10.0)), ("y", Val::Float(10.0))].into()),
+    );
+    nodes.push(figstudio_fig::Node::from_data(group_data).unwrap());
+    let child_id = Guid(98, 2);
+    let mut child_data = parent_data(group_id, 1000.0);
+    child_data.set("guid", child_id.to_val());
+    child_data.set("type", Val::Enum("RECTANGLE"));
+    child_data.set(
+        "size",
+        Val::Obj([("x", Val::Float(20.0)), ("y", Val::Float(20.0))].into()),
+    );
+    child_data.set(
+        "fillPaints",
+        Val::Arr(vec![Val::Obj(
+            [
+                ("type", Val::Enum("SOLID")),
+                (
+                    "color",
+                    Val::Obj(
+                        [
+                            ("r", Val::Float(1.0)),
+                            ("g", Val::Float(0.0)),
+                            ("b", Val::Float(0.0)),
+                            ("a", Val::Float(1.0)),
+                        ]
+                        .into(),
+                    ),
+                ),
+            ]
+            .into(),
+        )]),
+    );
+    nodes.push(figstudio_fig::Node::from_data(child_data).unwrap());
+    doc.set_nodes(nodes).unwrap();
+
+    let frame = Renderer::new()
+        .render_fit(&doc, page, 1.0, 0.0, None)
+        .unwrap();
+    assert!(
+        frame.pixmap.width() > 1000,
+        "fit omitted outlying descendant"
+    );
+    let red_near_edge = frame.pixmap.data().iter().enumerate().any(|(i, p)| {
+        i % usize::from(frame.pixmap.width()) > usize::from(frame.pixmap.width()) - 50
+            && p.r > 200
+            && p.g < 50
+            && p.b < 50
+            && p.a > 200
+    });
+    assert!(
+        red_near_edge,
+        "outlying child was not rendered in the export bounds"
+    );
+}
+
+/// A page with a group whose bottom layer is a mask (clipping the sibling above it), and a
+/// layer outside the group; see `masks_clip_siblings_but_do_not_escape_their_parent`.
+fn masked_doc() -> Document {
+    let mut doc = open("structure");
+    let page = doc.pages[0];
+    let template = doc
+        .nodes
+        .iter()
+        .find(|n| n.kind == "FRAME")
+        .unwrap()
+        .clone();
+    let mut nodes = vec![
+        doc.nodes
+            .iter()
+            .find(|node| node.kind == "DOCUMENT")
+            .unwrap()
+            .clone(),
+        doc.node(page).unwrap().clone(),
+    ];
+    let group = Guid(99, 9);
+    let mut group_data = template.data.clone();
+    group_data.set("guid", group.to_val());
+    group_data.set("type", Val::Enum("GROUP"));
+    let mut group_parent = figstudio_fig::Obj::new();
+    group_parent.insert("guid", page.to_val());
+    group_parent.insert("position", Val::Str("zzzz0".into()));
+    group_data.set("parentIndex", Val::Obj(group_parent));
+    let mut group_transform = figstudio_fig::Obj::new();
+    group_transform.insert("m12", Val::Float(500.0));
+    group_data.set("transform", Val::Obj(group_transform));
+    nodes.push(figstudio_fig::Node::from_data(group_data).unwrap());
+    let mut add_rect = |id: Guid, parent_id: Guid, position: &str, mask: bool, x: f64, y: f64| {
+        let mut data = template.data.clone();
+        data.set("guid", id.to_val());
+        data.set("type", Val::Enum("RECTANGLE"));
+        data.set("fillGeometry", Val::Arr(Vec::new()));
+        data.set("strokeGeometry", Val::Arr(Vec::new()));
+        data.set(
+            "size",
+            Val::Obj([("x", Val::Float(20.0)), ("y", Val::Float(20.0))].into()),
+        );
+        let mut parent = figstudio_fig::Obj::new();
+        parent.insert("guid", parent_id.to_val());
+        parent.insert("position", Val::Str(position.into()));
+        data.set("parentIndex", Val::Obj(parent));
+        let mut transform = figstudio_fig::Obj::new();
+        transform.insert("m02", Val::Float(x));
+        transform.insert("m12", Val::Float(y));
+        data.set("transform", Val::Obj(transform));
+        if mask {
+            data.set("mask", Val::Bool(true));
+        }
+        data.set(
+            "fillPaints",
+            Val::Arr(vec![Val::Obj(
+                [
+                    ("type", Val::Enum("SOLID")),
+                    (
+                        "color",
+                        Val::Obj(
+                            [
+                                ("r", Val::Float(1.0)),
+                                ("g", Val::Float(0.0)),
+                                ("b", Val::Float(0.0)),
+                                ("a", Val::Float(1.0)),
+                            ]
+                            .into(),
+                        ),
+                    ),
+                ]
+                .into(),
+            )]),
+        );
+        nodes.push(figstudio_fig::Node::from_data(data).unwrap());
+    };
+    add_rect(Guid(99, 10), group, "0", true, 0.0, 0.0);
+    add_rect(Guid(99, 11), group, "1", false, 10.0, 0.0);
+    add_rect(Guid(99, 12), page, "zzzz1", false, 40.0, 500.0);
+    doc.set_nodes(nodes).unwrap();
+    doc
+}
+
+#[test]
+fn masks_clip_siblings_but_do_not_escape_their_parent() {
+    let doc = masked_doc();
+    let (pixels, stats) = render_page(&doc, Point::new(0.0, 499.0), 64, 32);
+    assert!(stats.masks > 0);
+    assert_eq!(
+        pixel(&pixels, 64, 25.0, 10.0)[3],
+        255,
+        "mask intersection missing"
+    );
+    assert_eq!(
+        pixel(&pixels, 64, 35.0, 10.0)[3],
+        255,
+        "masked sibling intersection missing"
+    );
+    assert_eq!(
+        pixel(&pixels, 64, 45.0, 10.0)[3],
+        255,
+        "unmasked sibling missing"
+    );
+}
+
+#[test]
+fn malformed_vectors_and_unsupported_blends_are_reported() {
+    let mut doc = open("structure");
+    let page = doc.pages[0];
+    let mut nodes = doc.nodes.clone();
+    let frame = nodes.iter_mut().find(|n| n.kind == "FRAME").unwrap();
+    frame.data.set("blendMode", Val::Enum("MULTIPLY"));
+    let mut malformed = frame.clone();
+    malformed.id = Guid(99, 1);
+    malformed.data.set("guid", malformed.id.to_val());
+    malformed.data.set("type", Val::Enum("VECTOR"));
+    malformed.data.set(
+        "fillGeometry",
+        Val::Arr(vec![Val::Obj([("commandsBlob", Val::Int(9999))].into())]),
+    );
+    let mut parent = figstudio_fig::Obj::new();
+    parent.insert("guid", page.to_val());
+    parent.insert("position", Val::Str("zzzzzz".into()));
+    malformed.data.set("parentIndex", Val::Obj(parent));
+    nodes.push(figstudio_fig::Node::from_data(malformed.data).unwrap());
+    doc.set_nodes(nodes).unwrap();
+    let frame = Renderer::new().render(
+        &doc,
+        page,
+        &Viewport {
+            width: 10,
+            height: 10,
+            transform: Affine::IDENTITY,
+            background: None,
+        },
+    );
+    assert!(frame.stats.unsupported_paints > 0);
+    assert!(frame.stats.approximated_blends > 0);
 }
 
 #[test]
@@ -153,6 +379,65 @@ fn hit_test_finds_the_deepest_layer() {
     let hit = hit_test(&doc, doc.pages[0], b.center()).unwrap();
     assert_eq!(hit, text);
     assert_eq!(hit_test(&doc, doc.pages[0], Point::new(-1e6, -1e6)), None);
+}
+
+#[test]
+fn parent_queries_terminate_after_public_mutation_to_a_self_parent() {
+    let mut doc = open("structure");
+    let page = doc.pages[0];
+    let node = doc.children(page)[0];
+    let n = doc.nodes.iter_mut().find(|n| n.id == node).unwrap();
+    n.parent = Some(node);
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    let _frame = renderer.render(
+        &doc,
+        page,
+        &Viewport {
+            width: 4,
+            height: 4,
+            transform: Affine::IDENTITY,
+            background: None,
+        },
+    );
+    let _ = hit_test(&doc, page, Point::new(0.0, 0.0));
+    let tf = absolute_transform(&doc, node);
+    assert!(tf.as_coeffs().iter().all(|v| v.is_finite()));
+}
+
+#[test]
+fn a_twenty_thousand_level_tree_does_not_overflow_render_or_hit_test() {
+    let mut doc = open("structure");
+    let page = doc.pages[0];
+    let mut nodes = doc.nodes.clone();
+    let mut parent = page;
+    let template = nodes.iter().find(|n| n.kind == "FRAME").unwrap().clone();
+    for i in 0..20_000u32 {
+        let id = Guid(98, i + 1);
+        let mut data = template.data.clone();
+        data.set("guid", id.to_val());
+        let mut pi = figstudio_fig::Obj::new();
+        pi.insert("guid", parent.to_val());
+        pi.insert("position", Val::Str(format!("{i:06}")));
+        data.set("parentIndex", Val::Obj(pi));
+        nodes.push(figstudio_fig::Node::from_data(data).unwrap());
+        parent = id;
+    }
+    doc.set_nodes(nodes).unwrap();
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    let frame = renderer.render(
+        &doc,
+        page,
+        &Viewport {
+            width: 4,
+            height: 4,
+            transform: Affine::IDENTITY,
+            background: None,
+        },
+    );
+    assert!(frame.stats.depth_skipped > 0);
+    let _ = hit_test(&doc, page, Point::new(0.5, 0.5));
 }
 
 #[test]
@@ -228,4 +513,377 @@ fn hidden_layers_are_not_drawn() {
         .stats
         .nodes;
     assert!(after < before, "{after} >= {before}");
+}
+
+/// Strips drawn on several threads must give the same pixels and the same counts as one pass.
+#[cfg(feature = "parallel")]
+#[test]
+fn parallel_strips_match_a_single_render() {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+    for name in [
+        "broken_images",
+        "corners",
+        "noise_and_grain",
+        "sections",
+        "stacks_wrap",
+        "structure",
+        "vector",
+    ] {
+        let doc = open(name);
+        let b = content_bounds(&doc, doc.pages[0]).unwrap();
+        for scale in [1.0, 2.5] {
+            let viewport = Viewport {
+                width: (b.width() * scale).ceil() as u16,
+                height: (b.height() * scale).ceil() as u16,
+                transform: Affine::scale(scale) * Affine::translate((-b.x0, -b.y0)),
+                background: Some(figstudio_render::color::AlphaColor::new([
+                    1.0, 1.0, 1.0, 1.0,
+                ])),
+            };
+            let mut r = Renderer::new();
+            r.system_fonts = false;
+            let one = r.render(&doc, doc.pages[0], &viewport);
+            let many = pool.install(|| r.render_parallel(&doc, doc.pages[0], &viewport));
+            assert_eq!(one.stats, many.stats, "{name} at {scale}x: stats differ");
+            // Moving the origin by whole pixels changes f32 rounding, so allow 1 per channel.
+            // A missing strip, a seam or a shadow cut at a strip edge is far more than that.
+            let worst = one
+                .pixmap
+                .data()
+                .iter()
+                .zip(many.pixmap.data())
+                .flat_map(|(a, b)| {
+                    [
+                        a.r.abs_diff(b.r),
+                        a.g.abs_diff(b.g),
+                        a.b.abs_diff(b.b),
+                        a.a.abs_diff(b.a),
+                    ]
+                })
+                .max()
+                .unwrap_or(0);
+            assert!(
+                worst <= 1,
+                "{name} at {scale}x: a channel differs by {worst}"
+            );
+        }
+    }
+}
+
+/// Big shadows that cross strip edges: drawn by the strip below from content in the strip above.
+#[cfg(feature = "parallel")]
+#[test]
+fn parallel_strips_keep_shadows_that_cross_strip_edges() {
+    let shadow_doc = open("structure");
+    let mut effect = shadow_doc
+        .nodes
+        .iter()
+        .find_map(|n| {
+            n.data
+                .get("effects")
+                .and_then(|e| e.items().first().cloned())
+        })
+        .expect("structure has a drop shadow");
+    if let Val::Obj(m) = &mut effect {
+        m.insert("radius", Val::Float(24.0));
+        let mut offset = m.get("offset").cloned().expect("shadow offset");
+        if let Val::Obj(o) = &mut offset {
+            o.insert("y", Val::Float(40.0));
+        }
+        m.insert("offset", offset);
+    }
+    let mut doc = open("corners");
+    let mut shadowed = 0;
+    for n in doc
+        .nodes
+        .iter_mut()
+        .filter(|n| n.kind == "ROUNDED_RECTANGLE")
+    {
+        if let Val::Obj(m) = &mut n.data {
+            m.insert("effects", Val::Arr(vec![effect.clone()]));
+            shadowed += 1;
+        }
+    }
+    assert!(shadowed > 0);
+    let b = content_bounds(&doc, doc.pages[0])
+        .unwrap()
+        .inflate(0.0, 80.0);
+    let viewport = Viewport {
+        width: (b.width() * 2.0).ceil() as u16,
+        height: (b.height() * 2.0).ceil() as u16,
+        transform: Affine::scale(2.0) * Affine::translate((-b.x0, -b.y0)),
+        background: None,
+    };
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let one = r.render(&doc, doc.pages[0], &viewport);
+    assert_eq!(one.stats.shadows, shadowed);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(8)
+        .build()
+        .unwrap();
+    let many = pool.install(|| r.render_parallel(&doc, doc.pages[0], &viewport));
+    assert_eq!(one.stats, many.stats);
+    // Blur rounding depends on the origin: allow 2. A shadow cut at a strip edge is off by
+    // tens (60 when the recorder ignores the filter's reach).
+    let worst = one
+        .pixmap
+        .data()
+        .iter()
+        .zip(many.pixmap.data())
+        .map(|(a, b)| a.a.abs_diff(b.a).max(a.r.abs_diff(b.r)))
+        .max()
+        .unwrap_or(0);
+    assert!(worst <= 2, "a channel differs by {worst}");
+}
+
+fn fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(format!("{name}.fig"))
+}
+
+fn fit_viewport(doc: &Document, scale: f64) -> Viewport {
+    let b = content_bounds(doc, doc.pages[0]).unwrap();
+    Viewport {
+        width: (b.width() * scale).ceil() as u16,
+        height: (b.height() * scale).ceil() as u16,
+        transform: Affine::scale(scale) * Affine::translate((-b.x0, -b.y0)),
+        background: Some(figstudio_render::color::AlphaColor::new([
+            1.0, 1.0, 1.0, 1.0,
+        ])),
+    }
+}
+
+/// A lazily opened document, with its images read on request, ends up drawn exactly like the
+/// same document read whole: same levels, same thumbnails, same pixels.
+#[test]
+fn lazy_documents_render_like_whole_ones() {
+    for name in ["structure", "broken_images"] {
+        let whole = open(name);
+        let lazy = Document::open_lazy(fixture_path(name)).unwrap();
+        assert!(lazy.images.is_empty() && !lazy.lazy_images.is_empty());
+        for scale in [0.05, 0.3, 1.0, 2.5] {
+            let viewport = fit_viewport(&whole, scale);
+            let mut a = Renderer::new();
+            a.system_fonts = false;
+            let one = a.render(&whole, whole.pages[0], &viewport);
+            assert!(
+                one.wanted.is_empty(),
+                "a whole document never asks for images"
+            );
+            // Images decoded by earlier frames (other zooms) do not change this one.
+            let mut warm = Renderer::new();
+            warm.system_fonts = false;
+            for other in [0.05, 0.3, 1.0, 2.5] {
+                warm.render(&whole, whole.pages[0], &fit_viewport(&whole, other));
+            }
+            let again = warm.render(&whole, whole.pages[0], &viewport);
+            assert!(
+                one.pixmap.data() == again.pixmap.data(),
+                "{name} {scale}x: depends on what was decoded before"
+            );
+            let mut b = Renderer::new();
+            b.system_fonts = false;
+            let mut file = std::fs::File::open(fixture_path(name)).unwrap();
+            let mut reads = 0;
+            let done = b.render_complete(&lazy, lazy.pages[0], &viewport, |want| {
+                reads += 1;
+                figstudio_fig::archive::read_entry(&mut file, &want.entry).ok()
+            });
+            assert!(
+                done.wanted.is_empty(),
+                "{name} {scale}x: still wants images"
+            );
+            assert_eq!(done.stats.images_loading, 0, "{name} {scale}x");
+            assert_eq!(one.stats, done.stats, "{name} {scale}x: stats differ");
+            assert!(
+                one.pixmap.data() == done.pixmap.data(),
+                "{name} {scale}x: pixels differ"
+            );
+            if name == "structure" {
+                assert!(reads > 0, "{name} {scale}x: nothing was read");
+            }
+        }
+    }
+}
+
+/// Until requested images arrive the frame shows placeholders, counts them as loading and
+/// asks for each image once.
+#[test]
+fn unread_images_are_requested_once_and_shown_as_loading() {
+    let lazy = Document::open_lazy(fixture_path("structure")).unwrap();
+    let viewport = fit_viewport(&lazy, 1.0);
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let first = r.render(&lazy, lazy.pages[0], &viewport);
+    assert!(!first.wanted.is_empty());
+    assert!(first.stats.images_loading > 0);
+    assert_eq!(first.stats.missing_images, 0, "loading is not missing");
+    let again = r.render(&lazy, lazy.pages[0], &viewport);
+    assert!(
+        again.wanted.is_empty(),
+        "requests are not repeated while in flight"
+    );
+    assert_eq!(again.stats.images_loading, first.stats.images_loading);
+    // Unreadable images become missing ones (a failed thumbnail falls back to the image,
+    // which is requested next).
+    let mut wanted = first.wanted;
+    let mut rounds = 0;
+    let failed = loop {
+        for want in &wanted {
+            r.images().fail(&want.key, want.level);
+        }
+        let frame = r.render(&lazy, lazy.pages[0], &viewport);
+        rounds += 1;
+        if frame.wanted.is_empty() || rounds > 4 {
+            break frame;
+        }
+        wanted = frame.wanted;
+    };
+    assert_eq!(failed.stats.images_loading, 0);
+    assert!(failed.stats.missing_images > 0);
+}
+
+/// At a small zoom only Figma's thumbnails are read, and the image cache holds little.
+#[test]
+fn small_zoom_reads_thumbnails_not_full_images() {
+    let lazy = Document::open_lazy(fixture_path("structure")).unwrap();
+    let thumbs: Vec<String> = lazy
+        .nodes
+        .iter()
+        .flat_map(|n| n.data.get("fillPaints").map(Val::items).unwrap_or_default())
+        .filter_map(|p| p.path(&["imageThumbnail", "hash"]).and_then(Val::as_bytes))
+        .map(figstudio_fig::hex)
+        .collect();
+    let viewport = fit_viewport(&lazy, 0.05);
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let frame = r.render(&lazy, lazy.pages[0], &viewport);
+    if thumbs.is_empty() {
+        // Without thumbnails the full image is read, at a coarse level.
+        assert!(
+            frame.wanted.iter().all(|w| w.level > 0),
+            "{:?}",
+            frame.wanted
+        );
+    } else {
+        assert!(
+            frame.wanted.iter().all(|w| thumbs.contains(&w.hash)),
+            "full images read at 5%"
+        );
+    }
+}
+
+/// The same image drawn at two sizes in one frame: each paint uses the copy decoded for its own
+/// size, so the frame does not depend on which one was decoded first.
+#[test]
+fn one_image_at_two_sizes_does_not_depend_on_decode_order() {
+    let mut doc = open("structure");
+    let big = doc
+        .nodes
+        .iter()
+        .find(|n| n.id == Guid(1, 34))
+        .expect("image layer")
+        .clone();
+    // A copy a quarter of the size (same paint, same 1024×512 image), next to the original.
+    let mut small = big.clone();
+    small.id = Guid(900, 1);
+    if let Val::Obj(m) = &mut small.data {
+        let mut g = figstudio_fig::Obj::default();
+        g.insert("sessionID", Val::Int(900));
+        g.insert("localID", Val::Int(1));
+        m.insert("guid", Val::Obj(g));
+        if let Some(Val::Obj(size)) = m.get_mut("size") {
+            size.insert("x", Val::Float(95.25));
+            size.insert("y", Val::Float(47.75));
+        }
+    }
+    let mut nodes = doc.nodes.clone();
+    nodes.push(small);
+    doc.set_nodes(nodes).unwrap();
+    let page = doc.pages[0];
+    // At 3x the original layer is ~1140 px wide (level 0) and the copy ~285 px (level 1):
+    // both use the image itself, not Figma's thumbnail.
+    let viewport = fit_viewport(&doc, 3.0);
+    let lazy = {
+        let mut lazy = Document::open_lazy(fixture_path("structure")).unwrap();
+        lazy.set_nodes(doc.nodes.clone()).unwrap();
+        lazy
+    };
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let image = figstudio_fig::hex(
+        big.data.get("fillPaints").unwrap().items()[0]
+            .path(&["image", "hash"])
+            .and_then(Val::as_bytes)
+            .unwrap(),
+    );
+    let mut levels: Vec<u8> = r
+        .render(&lazy, page, &viewport)
+        .wanted
+        .into_iter()
+        .filter(|w| w.hash == image)
+        .map(|w| w.level)
+        .collect();
+    levels.sort();
+    assert_eq!(levels, vec![0, 1], "setup: one image at two levels");
+
+    let render = |warm: &[f64]| {
+        let mut r = Renderer::new();
+        r.system_fonts = false;
+        for &s in warm {
+            r.render(&doc, page, &fit_viewport(&doc, s));
+        }
+        r.render(&doc, page, &viewport)
+    };
+    let cold = render(&[]);
+    for warm in [&[6.0][..], &[1.0], &[6.0, 1.0]] {
+        let frame = render(warm);
+        assert!(
+            cold.pixmap.data() == frame.pixmap.data(),
+            "after rendering at {warm:?} the frame differs"
+        );
+    }
+}
+
+/// Masks clip with `push_clip_path` / `pop_clip`; a parallel render records and replays them
+/// per strip and must draw the same as a serial one.
+#[cfg(feature = "parallel")]
+#[test]
+fn masks_render_the_same_in_parallel() {
+    let doc = masked_doc();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+    // Tall enough for several strips, with the masked group in the middle ones.
+    let viewport = Viewport {
+        width: 128,
+        height: 256,
+        transform: Affine::scale(2.0) * Affine::translate((0.0, -460.0)),
+        background: None,
+    };
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let one = r.render(&doc, doc.pages[0], &viewport);
+    let many = pool.install(|| r.render_parallel(&doc, doc.pages[0], &viewport));
+    assert!(one.stats.masks > 0, "the mask is in view");
+    assert_eq!(one.stats, many.stats);
+    let worst = one
+        .pixmap
+        .data_as_u8_slice()
+        .iter()
+        .zip(many.pixmap.data_as_u8_slice())
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0);
+    assert!(worst <= 1, "parallel differs by {worst}");
+    assert!(
+        one.pixmap.data_as_u8_slice().iter().any(|&b| b != 0),
+        "something was drawn"
+    );
 }

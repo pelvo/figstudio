@@ -17,7 +17,7 @@ It must end with `== all checks passed` before you commit. If clippy or rustfmt 
 `check.sh` runs tests in release mode; use `--release` yourself too so the build is shared.
 Run one test with `cargo test --release -p <crate> <name>`.
 
-## 2. What exists today (23 tests)
+## 2. What exists today (50 tests in the gate)
 
 | File | Test | Guards |
 |---|---|---|
@@ -39,13 +39,30 @@ Run one test with `cargo test --release -p <crate> <name>`.
 | | `culling_never_changes_what_is_visible` | window render equals the same area of a full render |
 | | `malformed_path_blobs_do_not_panic` | close-then-line, truncated and unknown commands |
 | | `hidden_layers_are_not_drawn` | `visible: false` |
+| | `parallel_strips_match_a_single_render` (feature `parallel`) | strips on 4 threads: same `Stats`, pixels within 1 per channel, every fixture at 1× and 2.5× |
+| | `parallel_strips_keep_shadows_that_cross_strip_edges` (feature `parallel`) | large drop shadows drawn into the strip below their layer |
 | `apps/figstudio-cli/src/doctor.rs` | `scrub_hides_hashes_only`, `numbers_get_separators` | helpers |
 | `apps/figstudio-cli/tests/doctor.rs` | `doctor_output_contains_no_document_content` | no names, text, fonts, hashes, paths in the report |
+| `crates/fig/tests/cycles.rs` | `a_parent_cycle_is_refused_on_load` | parent cycle is an error, not a stack overflow |
+| `crates/fig/tests/limits.rs` | `a_member_that_inflates_past_the_chunk_limit_is_refused` | decompression bomb refused |
+| `crates/fig/tests/save.rs` | `a_failed_rename_leaves_no_temp_file_behind` | failed save removes its temp file |
+| `crates/fig/tests/preserve.rs` | `a_present_but_empty_image_survives_a_save` | empty image kept on save |
+| `crates/fig/tests/integers.rs` | `a_uint_wider_than_32_bits_is_refused_not_wrapped` | out-of-range integer is an error |
+| `crates/render/tests/budget.rs` | `nested_instances_stop_at_the_work_budget_and_the_skip_is_counted`, `wide_symbols_and_masks_share_the_same_attempt_budget` | shared attempt budget includes ordinary and instance work; skipped work counted |
+| `crates/render/tests/image_cache.rs` | `the_cache_stays_under_its_byte_bound_across_many_documents`, `failed_decodes_are_not_retained_and_evicted_arc_remains_valid` | cache bounded by bytes and entries; failed decodes not retained; Arc survives eviction |
+| | `a_document_without_the_bytes_does_not_poison_the_cache_for_one_that_has_them` | missing image does not poison cache |
+| `apps/figstudio/src/worker.rs` (tests) | `worker_admits_only_one_export_and_releases_slot_on_completion`, `export_writes_a_png_of_the_page`, `export_reports_a_failed_write_instead_of_panicking` | admission bounded at worker boundary; PNG decodes with dimensions; completion and error |
+| `apps/figstudio/src/state.rs` (tests) | `a_disconnected_worker_is_not_an_empty_queue`, `a_dead_worker_is_reported_once_not_every_frame`, `opening_a_file_twice_starts_one_load_and_focuses_an_open_tab`, `a_second_open_of_a_pending_file_is_ignored_until_it_finishes`, `byte_backed_drop_uses_open_action_for_pending_and_loaded_tabs` | disconnect is not empty; report once; dedup, focus, retry for file and byte-backed opens |
 | | `word_matching` | the leak matcher itself |
 | | `doctor_errors_do_not_echo_the_path` | error output hides the path |
 
-Not covered by automated tests: the desktop app (use `scripts/gui-smoke.sh`), CLI commands
-other than `doctor` (task T1), Figma opening our files (needs a person with Figma).
+Not covered by automated tests: the desktop app (use `scripts/gui-smoke.sh`), the browser
+app (see "Browser" below), CLI commands other than `doctor` (task T1), Figma opening our
+files (needs a person with Figma).
+
+The `parallel` tests run with `cargo test -p figstudio-render --features parallel`;
+`scripts/check.sh` runs them. Proven: ignoring a filter's reach in `Recorder` makes the shadow
+test fail (a channel off by 60).
 
 ## 3. Fixtures
 
@@ -170,6 +187,28 @@ file has about 103 000 nodes. Baseline on the development machine (release build
 
 Numbers depend on the machine: compare before and after on the **same** machine. A
 regression over 20% needs a reason in the commit message. Do not commit stress files.
+
+### Browser
+
+`scripts/web-build.sh --serve` serves `web/dist` on http://127.0.0.1:8765 with the headers
+threads need. In a browser: the console shows no errors, `crossOriginIsolated` is true, drop
+a fixture on the page, and the status bar shows layers drawn and the render time. Compare
+`?threads=1` with the default. Headless Chromium works (`--use-angle=swiftshader`); drop a file
+by dispatching `dragenter`/`dragover`/`drop` with a `DataTransfer` on the canvas.
+
+Open big files the way a user drops them, without the page holding the bytes: serve the
+file next to `web/dist` (a symlink in a copy of the directory), then in the page
+`fetch()` it, `blob()` it (Chromium keeps big bodies on disk), wrap it in a `File` and
+dispatch the drop events. Playwright's `wait_for_function` and `wait_for_selector` hang on
+this page (cross-origin isolated); poll `page.evaluate` instead. `window.figstudioStatus`
+holds numbers only (tabs, page, drawn, culled, images loading / missing / read, image cache
+and Wasm memory bytes, errors); `figstudioPage(n)` switches page. Never screenshot a
+private file.
+
+Measured on the development machine (32 threads, headless Chromium, 1400×880 window,
+4500-node `synth --copies 400` of structure.fig): 100% zoom 15 ms on 1 thread, 6–7 ms on 8+;
+fit zoom 70–90 ms whatever the thread count, because the single-threaded document walk
+dominates there (task T15).
 
 ## 9. Privacy
 

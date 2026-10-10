@@ -49,6 +49,8 @@ pub struct Tab {
     pub id: u64,
     pub path: PathBuf,
     pub doc: Arc<Document>,
+    /// Where the document's unread images are (big files open lazily).
+    pub source: Option<crate::source::Source>,
     pub page: Guid,
     pub view: View,
     pub fit_pending: bool,
@@ -68,7 +70,13 @@ pub struct Tab {
 }
 
 impl Tab {
-    pub fn new(id: u64, path: PathBuf, doc: Arc<Document>, load_time: Duration) -> Self {
+    pub fn new(
+        id: u64,
+        path: PathBuf,
+        doc: Arc<Document>,
+        source: Option<crate::source::Source>,
+        load_time: Duration,
+    ) -> Self {
         let page = doc
             .pages
             .first()
@@ -79,6 +87,7 @@ impl Tab {
             id,
             path,
             doc,
+            source,
             page,
             view: View {
                 zoom: 1.0,

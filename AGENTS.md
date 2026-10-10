@@ -40,6 +40,7 @@ scripts/check.sh                                        # the gate (first run co
 cargo run --release -p figstudio-cli -- info tests/fixtures/structure.fig
 cargo run --release -p figstudio-cli -- render tests/fixtures/structure.fig -o /tmp/s.png --scale 2
 cargo run --release -p figstudio -- tests/fixtures/structure.fig   # desktop app
+scripts/web-build.sh --serve                            # browser app (nightly) on :8765
 ```
 
 Linux needs the usual eframe/rfd system libraries (X11 or Wayland, OpenGL, GTK/portal for

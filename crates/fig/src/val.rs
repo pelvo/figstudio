@@ -22,18 +22,47 @@ pub enum Val {
 
 /// Returns a `'static` copy of `s`, shared by every caller. Meant for schema identifiers
 /// (field and enum names), which are a small fixed set; each distinct string is kept once.
-pub fn intern(s: &str) -> &'static str {
+const MAX_INTERNED_SCHEMA_NAMES: usize = 200_000;
+const MAX_INTERNED_SCHEMA_BYTES: usize = 32 * 1024 * 1024;
+
+fn table() -> &'static Mutex<HashSet<&'static str>> {
     static TABLE: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let mut table = TABLE
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    TABLE.get_or_init(Default::default)
+}
+
+pub fn intern(s: &str) -> &'static str {
+    let mut table = table().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(&found) = table.get(s) {
         return found;
     }
     let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
     table.insert(leaked);
     leaked
+}
+
+/// Preflights and interns a schema's identifiers atomically within a fixed process-wide budget.
+pub(crate) fn intern_schema<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<(), String> {
+    let mut table = table().lock().unwrap_or_else(|e| e.into_inner());
+    let unique = names.into_iter().collect::<HashSet<_>>();
+    let additions = unique
+        .iter()
+        .filter(|name| !table.contains(**name))
+        .copied()
+        .collect::<Vec<_>>();
+    let count = table.len().saturating_add(additions.len());
+    let bytes = table
+        .iter()
+        .map(|name| name.len())
+        .sum::<usize>()
+        .saturating_add(additions.iter().map(|name| name.len()).sum::<usize>());
+    if count > MAX_INTERNED_SCHEMA_NAMES || bytes > MAX_INTERNED_SCHEMA_BYTES {
+        return Err("schema identifier budget exhausted".into());
+    }
+    for name in additions {
+        let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+        table.insert(leaked);
+    }
+    Ok(())
 }
 
 /// Object fields in decode order. Lookups are linear; objects have a handful of fields.

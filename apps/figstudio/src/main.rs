@@ -1,20 +1,26 @@
-//! figstudio — desktop app for Figma `.fig` local copies.
+//! figstudio — desktop and browser app for Figma `.fig` local copies.
 
 mod canvas;
 mod panels;
+mod source;
+mod state;
 mod tab;
 mod theme;
+#[cfg(target_arch = "wasm32")]
+mod web;
 mod worker;
 
 use std::path::PathBuf;
 
 use canvas::Tool;
 use egui::{Key, KeyboardShortcut, Modifiers, RichText, Sense, vec2};
+use state::{OpenAction, Pending, Poll, classify, open_action};
 use tab::Tab;
 use worker::{Loaded, Workers};
 
 const APP_NAME: &str = "figstudio";
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     let options = eframe::NativeOptions {
@@ -33,6 +39,28 @@ fn main() -> eframe::Result {
     )
 }
 
+/// Renders `root` for export, reading every image it needs at full sharpness.
+fn export_frame(
+    images: figstudio_render::images::Images,
+    doc: &figstudio_fig::Document,
+    source: Option<&source::Source>,
+    root: figstudio_fig::Guid,
+    scale: f64,
+) -> Option<figstudio_render::Frame> {
+    figstudio_render::Renderer::with_images(images).render_fit_complete(
+        doc,
+        root,
+        scale,
+        0.0,
+        None,
+        |want| source.and_then(|s| s.read(&want.entry).ok()),
+    )
+}
+
+/// The browser starts the app from JavaScript (`web::start`) once the thread pool is up.
+#[cfg(target_arch = "wasm32")]
+fn main() {}
+
 struct Toast {
     text: String,
     error: bool,
@@ -41,11 +69,14 @@ struct Toast {
 
 struct App {
     workers: Workers,
+    render_worker_lost: bool,
     tabs: Vec<Tab>,
     active: usize,
     next_id: u64,
     tool: Tool,
-    loading: Vec<PathBuf>,
+    loading: Pending,
+    /// A background worker is gone; reported once so the toast does not repeat every frame.
+    worker_lost: state::Once,
     toasts: Vec<Toast>,
     layer_filter: String,
     show_left: bool,
@@ -53,6 +84,8 @@ struct App {
     cursor: Option<egui::Pos2>,
     /// `FIGSTUDIO_PROFILE=1` prints per-frame UI time and render times to stderr.
     profile: bool,
+    #[cfg(target_arch = "wasm32")]
+    web: web::Inbox,
 }
 
 impl App {
@@ -62,17 +95,21 @@ impl App {
         let workers = Workers::new(&cc.egui_ctx);
         let mut app = App {
             workers,
+            render_worker_lost: false,
             tabs: Vec::new(),
             active: 0,
             next_id: 1,
             tool: Tool::Select,
-            loading: Vec::new(),
+            loading: Pending::default(),
+            worker_lost: state::Once::default(),
             toasts: Vec::new(),
             layer_filter: String::new(),
             show_left: true,
             show_right: true,
             cursor: None,
             profile: std::env::var_os("FIGSTUDIO_PROFILE").is_some(),
+            #[cfg(target_arch = "wasm32")]
+            web: web::Inbox::new(),
         };
         for f in files {
             app.open(f);
@@ -80,16 +117,30 @@ impl App {
         app
     }
 
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code, unused_variables))]
     fn open(&mut self, path: PathBuf) {
-        if let Some(i) = self.tabs.iter().position(|t| t.path == path) {
-            self.active = i;
-            return;
+        match open_action(
+            &self.tabs.iter().map(|t| &t.path).collect::<Vec<_>>(),
+            &mut self.loading,
+            &path,
+        ) {
+            OpenAction::Focus(i) => self.active = i,
+            // The browser opens files through `web::Inbox` (no paths there).
+            #[cfg(not(target_arch = "wasm32"))]
+            OpenAction::Load => self.workers.load(path),
+            #[cfg(target_arch = "wasm32")]
+            OpenAction::Load => self.loading.finish(&path),
+            OpenAction::Ignore => {}
         }
-        self.loading.push(path.clone());
-        self.workers.load(path);
     }
 
-    fn open_dialog(&mut self) {
+    #[cfg(target_arch = "wasm32")]
+    fn open_dialog(&mut self, ctx: &egui::Context) {
+        self.web.pick_files(ctx);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_dialog(&mut self, _ctx: &egui::Context) {
         if let Some(files) = rfd::FileDialog::new()
             .add_filter("Figma file", &["fig"])
             .pick_files()
@@ -97,6 +148,14 @@ impl App {
             for f in files {
                 self.open(f);
             }
+        }
+    }
+
+    /// Tells the user a background worker died. Once only: `poll` runs every frame and a dead
+    /// channel stays dead.
+    fn report_worker_lost(&mut self, ctx: &egui::Context) {
+        if self.worker_lost.first_time() {
+            self.toast(ctx, "A background worker stopped; reopen the file.", true);
         }
     }
 
@@ -140,6 +199,33 @@ impl App {
             .filter(|n| !n.is_empty())
             .unwrap_or("export")
             .replace(['/', '\\'], "_");
+        let (doc, source) = (tab.doc.clone(), tab.source.clone());
+        #[cfg(target_arch = "wasm32")]
+        {
+            let file = format!("{name}.png");
+            let images = self.workers.images();
+            self.workers.run(self.web.exports_tx.clone(), move || {
+                let png = export_frame(images, &doc, source.as_ref(), root, scale)
+                    .ok_or_else(|| "nothing to export".to_string())
+                    .and_then(|frame| frame.pixmap.into_png().map_err(|e| e.to_string()));
+                (file, png)
+            });
+            self.toast(ctx, "Exporting…", false);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.save_png(ctx, doc, source, root, &name, scale);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save_png(
+        &mut self,
+        ctx: &egui::Context,
+        doc: std::sync::Arc<figstudio_fig::Document>,
+        source: Option<source::Source>,
+        root: figstudio_fig::Guid,
+        name: &str,
+        scale: f64,
+    ) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("PNG image", &["png"])
             .set_file_name(format!("{name}.png"))
@@ -147,31 +233,45 @@ impl App {
         else {
             return;
         };
-        let doc = tab.doc.clone();
-        let mut renderer = figstudio_render::Renderer::new();
-        let result = renderer
-            .render_fit(&doc, root, scale, 0.0, None)
-            .ok_or_else(|| "nothing to export".to_string())
-            .and_then(|frame| frame.pixmap.into_png().map_err(|e| e.to_string()))
-            .and_then(|png| std::fs::write(&path, png).map_err(|e| e.to_string()));
-        match result {
-            Ok(()) => self.toast(ctx, format!("Exported {}", path.display()), false),
-            Err(e) => self.toast(ctx, format!("Export failed: {e}"), true),
+        // The render and PNG encode run off the UI thread on an immutable snapshot of the
+        // document. The result comes back through `poll`, which reports it once.
+        if let Err(e) = self.workers.export(doc, root, scale, path, source) {
+            self.toast(ctx, e, true);
         }
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
-        while let Ok(msg) = self.workers.load_rx.try_recv() {
+        loop {
+            let msg = match classify(self.workers.load_rx.try_recv()) {
+                Poll::Msg(msg) => msg,
+                Poll::Empty => break,
+                Poll::Disconnected => {
+                    self.report_worker_lost(ctx);
+                    break;
+                }
+            };
             match msg {
-                Loaded::Ok { path, doc, elapsed } => {
-                    self.loading.retain(|p| p != &path);
+                Loaded::Ok {
+                    path,
+                    doc,
+                    source,
+                    elapsed,
+                    needs_cjk,
+                } => {
+                    self.loading.finish(&path);
+                    #[cfg(target_arch = "wasm32")]
+                    if needs_cjk {
+                        self.web.load_cjk_font(ctx);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let _ = needs_cjk;
                     let id = self.next_id;
                     self.next_id += 1;
-                    self.tabs.push(Tab::new(id, path, doc, elapsed));
+                    self.tabs.push(Tab::new(id, path, doc, source, elapsed));
                     self.active = self.tabs.len() - 1;
                 }
                 Loaded::Err { path, message } => {
-                    self.loading.retain(|p| p != &path);
+                    self.loading.finish(&path);
                     self.toast(
                         ctx,
                         format!("Could not open {}: {message}", path.display()),
@@ -180,22 +280,60 @@ impl App {
                 }
             }
         }
-        while let Ok(done) = self.workers.render_rx.try_recv() {
-            if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == done.tab) {
-                canvas::accept(ctx, tab, done);
+        loop {
+            match classify(self.workers.render_rx.try_recv()) {
+                Poll::Msg(done) => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == done.tab) {
+                        canvas::accept(ctx, tab, done);
+                    }
+                }
+                Poll::Empty => break,
+                Poll::Disconnected => {
+                    self.render_worker_lost = true;
+                    self.report_worker_lost(ctx);
+                    break;
+                }
             }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        while let Ok(done) = self.workers.export_rx.try_recv() {
+            match done.result {
+                Ok(()) => self.toast(ctx, format!("Exported {}", done.path.display()), false),
+                Err(e) => self.toast(ctx, format!("Export failed: {e}"), true),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        self.poll_web(ctx);
+        #[cfg(target_arch = "wasm32")]
+        if let Some(n) = web::take_page_request()
+            && let Some(tab) = self.tab()
+            && let Some(&page) = tab.doc.pages.get(n)
+        {
+            tab.set_page(page);
         }
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for f in dropped {
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.web.read_dropped(ctx, f);
+                continue;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             let path = f.path().to_path_buf();
+            #[cfg(not(target_arch = "wasm32"))]
             if path.is_absolute() && path.exists() {
                 self.open(path);
             } else {
                 match f.bytes() {
-                    Ok(bytes) => {
-                        self.loading.push(path.clone());
-                        self.workers.load_bytes(path, bytes);
-                    }
+                    Ok(bytes) => match open_action(
+                        &self.tabs.iter().map(|t| &t.path).collect::<Vec<_>>(),
+                        &mut self.loading,
+                        &path,
+                    ) {
+                        OpenAction::Load => self.workers.load_bytes(path, bytes),
+                        OpenAction::Focus(i) => self.active = i,
+                        OpenAction::Ignore => {}
+                    },
                     Err(e) => self.toast(ctx, format!("Could not read dropped file: {e}"), true),
                 }
             }
@@ -204,10 +342,56 @@ impl App {
         self.toasts.retain(|t| t.until > now);
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn poll_web(&mut self, ctx: &egui::Context) {
+        self.web.serve_ranges(ctx);
+        if let Ok(font) = self.web.fonts.try_recv() {
+            match font {
+                Ok(bytes) => {
+                    theme::add_cjk_font(ctx, bytes);
+                    self.web.font_state = web::FontState::Loaded;
+                }
+                Err(e) => {
+                    self.web.font_state = web::FontState::Failed;
+                    self.toast(ctx, format!("Could not load the CJK font: {e}"), true);
+                }
+            }
+        }
+        while let Ok(picked) = self.web.files.try_recv() {
+            match picked {
+                web::Picked::Bytes(path, bytes) => {
+                    if self.loading.begin(&path) {
+                        self.workers.load_bytes(path, bytes);
+                    }
+                }
+                web::Picked::Lazy {
+                    name,
+                    file,
+                    entries,
+                    eager,
+                } => {
+                    if self.loading.begin(&name) {
+                        let source = self.web.source(file);
+                        self.workers.decode(name, move || {
+                            Ok((web::decode_lazy(entries, eager)?, Some(source)))
+                        });
+                    }
+                }
+                web::Picked::Failed(e) => self.toast(ctx, e, true),
+            }
+        }
+        while let Ok((name, png)) = self.web.exports.try_recv() {
+            match png.and_then(|png| web::download(&name, "image/png", &png)) {
+                Ok(()) => self.toast(ctx, format!("Exported {name}"), false),
+                Err(e) => self.toast(ctx, format!("Export failed: {e}"), true),
+            }
+        }
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let cmd = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
         if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::O))) {
-            self.open_dialog();
+            self.open_dialog(ctx);
         }
         if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::W))) {
             self.close(self.active);
@@ -277,7 +461,8 @@ impl App {
                     .clicked()
                 {
                     ui.close();
-                    self.open_dialog();
+                    let ctx = ui.ctx().clone();
+                    self.open_dialog(&ctx);
                 }
                 let has_tab = !self.tabs.is_empty();
                 let mut export = None;
@@ -315,8 +500,7 @@ impl App {
                     });
                 });
                 if let Some((selection_only, scale)) = export {
-                    let ctx = ui.ctx().clone();
-                    self.export_png(&ctx, selection_only, scale);
+                    self.export_png(ui.ctx(), selection_only, scale);
                 }
                 ui.separator();
                 if ui
@@ -426,7 +610,7 @@ impl App {
                                 });
                             });
                     }
-                    for p in &self.loading {
+                    for p in self.loading.iter() {
                         let name = p
                             .file_name()
                             .map(|n| n.to_string_lossy().to_string())
@@ -442,6 +626,38 @@ impl App {
         }
     }
 
+    /// Numbers only (no names or content), for automated browser checks: see
+    /// `window.figstudioStatus` in `web.rs`.
+    #[cfg(target_arch = "wasm32")]
+    fn status_json(&self) -> String {
+        let tab = self.tabs.get(self.active);
+        let s = tab.map(|t| &t.stats);
+        let page = tab.and_then(|t| t.doc.pages.iter().position(|p| *p == t.page));
+        format!(
+            concat!(
+                r#"{{"tabs":{},"loading":{},"page":{},"pages":{},"zoom":{},"drawn":{},"#,
+                r#""culled":{},"images_loading":{},"images_missing":{},"render_ms":{:.1},"#,
+                r#""image_cache_bytes":{},"images_arrived":{},"busy":{},"errors":{},"#,
+                r#""cjk_font":"{:?}"}}"#
+            ),
+            self.tabs.len(),
+            self.loading.len(),
+            page.map_or(-1, |p| p as i64),
+            tab.map_or(0, |t| t.doc.pages.len()),
+            tab.map_or(0.0, |t| t.view.zoom),
+            s.map_or(0, |s| s.nodes),
+            s.map_or(0, |s| s.culled),
+            s.map_or(0, |s| s.images_loading),
+            s.map_or(0, |s| s.missing_images),
+            tab.map_or(0.0, |t| t.render_time.as_secs_f64() * 1000.0),
+            self.workers.images().bytes(),
+            self.workers.images_arrived(),
+            self.workers.busy(),
+            self.toasts.iter().filter(|t| t.error).count(),
+            self.web.font_state,
+        )
+    }
+
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let Some(tab) = self.tabs.get(self.active) else {
@@ -455,6 +671,10 @@ impl App {
                 ui.separator();
             }
             ui.label(RichText::new(format!("{} layers drawn · {:.0} ms", tab.stats.nodes, tab.render_time.as_secs_f64() * 1000.0)).color(theme::TEXT_DIM));
+            if tab.stats.images_loading > 0 {
+                ui.separator();
+                ui.label(RichText::new(format!("loading {} images…", tab.stats.images_loading)).color(theme::TEXT_DIM));
+            }
             let notes = tab.stats.to_string();
             let gaps: Vec<&str> = notes.split(", ").filter(|s| s.contains("skipped") || s.contains("missing") || s.contains("approximated")).collect();
             if !gaps.is_empty() {
@@ -523,8 +743,10 @@ fn shifted_digit(i: &egui::InputState, digit: Key, shifted: Option<Key>) -> bool
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         self.frame_ui(ui);
+        #[cfg(target_arch = "wasm32")]
+        web::publish_status(&self.status_json());
         if self.profile {
             let tab = self.tabs.get(self.active);
             eprintln!(
@@ -628,20 +850,28 @@ impl App {
                 });
         }
 
-        let workers = &self.workers;
+        let worker_unavailable = self.render_worker_lost;
         let tool = self.tool;
         let mut cursor = None;
         let mut open_clicked = false;
         egui::CentralPanel::no_frame().show(ui, |ui| {
             ui.painter().rect_filled(ui.max_rect(), 0.0, theme::CANVAS);
             match self.tabs.get_mut(self.active) {
-                Some(tab) => cursor = canvas::show(ui, tab, workers, tool, space_held),
+                Some(_tab) if worker_unavailable => {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(
+                            RichText::new("Rendering is unavailable; restart the app.")
+                                .color(theme::WARNING),
+                        );
+                    });
+                }
+                Some(tab) => cursor = canvas::show(ui, tab, &mut self.workers, tool, space_held),
                 None => open_clicked = empty_state(ui),
             }
         });
         self.cursor = cursor;
         if open_clicked {
-            self.open_dialog();
+            self.open_dialog(&ctx);
         }
         if hovering_files {
             let rect = ctx.content_rect();
@@ -663,6 +893,11 @@ impl App {
         }
         if !self.toasts.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        // Browser workers cannot wake the UI (see worker.rs), so poll while they work.
+        #[cfg(target_arch = "wasm32")]
+        if self.workers.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
 }

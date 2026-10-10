@@ -4,10 +4,14 @@
 //! `images/<sha1>`) or the raw canvas. The canvas carries its own Kiwi schema, so
 //! files from any Figma version decode without generated types.
 
+pub mod archive;
 mod doc;
 mod read;
 mod val;
 mod write;
 
-pub use doc::{Codec, Document, FigError, MAX_FILE_BYTES, Node};
+pub use doc::{
+    Codec, Document, FigError, MAX_ARCHIVE_INFLATED_BYTES, MAX_CHUNK_BYTES, MAX_FILE_BYTES, Node,
+    read_limited_file,
+};
 pub use val::{Guid, Obj, Val, hex, intern};

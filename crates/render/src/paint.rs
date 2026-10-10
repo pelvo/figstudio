@@ -1,60 +1,16 @@
 //! Figma paints (solid, gradients, images) to Vello paints.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use figstudio_fig::{Document, Val, hex};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::kurbo::{Affine, Point, Rect};
 use vello_cpu::peniko::{
-    ColorStop, ColorStops, Extend, Gradient, ImageAlphaType, ImageQuality, ImageSampler,
-    LinearGradientPosition, RadialGradientPosition, SweepGradientPosition,
+    ColorStop, ColorStops, Extend, Gradient, ImageQuality, ImageSampler, LinearGradientPosition,
+    RadialGradientPosition, SweepGradientPosition,
 };
-use vello_cpu::{Image, ImageSource, PaintType, PixelMetadata, Pixmap};
+use vello_cpu::{Image, ImageSource, PaintType};
 
 use crate::Stats;
-
-/// Largest image dimension handed to the rasterizer; bigger images are downscaled once.
-const MAX_IMAGE_SIDE: u32 = 8192;
-
-#[derive(Default)]
-pub struct ImageCache {
-    decoded: HashMap<String, Option<Arc<Pixmap>>>,
-}
-
-impl ImageCache {
-    pub fn get(&mut self, doc: &Document, hash: &str) -> Option<Arc<Pixmap>> {
-        if let Some(cached) = self.decoded.get(hash) {
-            return cached.clone();
-        }
-        // Keys are content hashes, so entries are shared between documents. A document that
-        // lacks the bytes must not poison the cache for one that has them.
-        let bytes = doc.images.get(hash)?;
-        let decoded = decode_image(bytes);
-        self.decoded.insert(hash.to_string(), decoded.clone());
-        decoded
-    }
-}
-
-fn decode_image(bytes: &[u8]) -> Option<Arc<Pixmap>> {
-    let mut img = image::load_from_memory(bytes).ok()?;
-    if img.width() > MAX_IMAGE_SIDE || img.height() > MAX_IMAGE_SIDE {
-        img = img.thumbnail(MAX_IMAGE_SIDE, MAX_IMAGE_SIDE);
-    }
-    let rgba = img.to_rgba8();
-    let (w, h) = (
-        u16::try_from(rgba.width()).ok()?,
-        u16::try_from(rgba.height()).ok()?,
-    );
-    if w == 0 || h == 0 {
-        return None;
-    }
-    let meta = PixelMetadata {
-        may_have_transparency: true,
-        alpha_type: ImageAlphaType::Alpha,
-    };
-    Some(Arc::new(Pixmap::from_parts(rgba.into_raw(), w, h, meta)))
-}
+use crate::images::{Decoded, ImageRequest, Images, cache_key, clamp_level, level_for};
 
 pub fn color(value: Option<&Val>, opacity: f32) -> Option<AlphaColor<Srgb>> {
     let c = value?;
@@ -75,13 +31,21 @@ pub struct ResolvedPaint {
     pub clip: Option<Rect>,
 }
 
+/// Where image paints come from, and where requests for unread images go.
+pub(crate) struct ImageCtx<'a> {
+    pub images: &'a Images,
+    pub wanted: &'a mut Vec<ImageRequest>,
+    /// Output pixels per node unit (the largest scale of the node's transform).
+    pub screen: f64,
+}
+
 /// Resolves one Figma paint for a node of size `w × h`. Returns `None` for hidden or empty paints.
-pub fn resolve(
+pub(crate) fn resolve(
     p: &Val,
     w: f64,
     h: f64,
     doc: &Document,
-    images: &mut ImageCache,
+    img: &mut ImageCtx<'_>,
     stats: &mut Stats,
 ) -> Option<ResolvedPaint> {
     if p.flag("visible") == Some(false) {
@@ -153,10 +117,7 @@ pub fn resolve(
             })
         }
         "IMAGE" => {
-            let hash = p.path(&["image", "hash"]).and_then(Val::as_bytes).map(hex);
-            let pixmap = hash.as_deref().and_then(|h| images.get(doc, h));
-            let Some(pixmap) = pixmap else {
-                stats.missing_images += 1;
+            let Some((decoded, natural)) = pick_image(p, w, h, doc, img, stats) else {
                 // Neutral placeholder so the layer stays visible.
                 return Some(ResolvedPaint {
                     paint: PaintType::Solid(AlphaColor::new([0.82, 0.83, 0.86, opacity])),
@@ -164,29 +125,13 @@ pub fn resolve(
                     clip: None,
                 });
             };
-            let (iw, ih) = (f64::from(pixmap.width()), f64::from(pixmap.height()));
-            let mode = p.text("imageScaleMode").unwrap_or("STRETCH");
-            let mut extend = Extend::Pad;
-            let mut clip = None;
-            let transform = match mode {
-                "FILL" | "FIT" => {
-                    let s = if mode == "FILL" {
-                        (w / iw).max(h / ih)
-                    } else {
-                        (w / iw).min(h / ih)
-                    };
-                    let (x, y) = ((w - iw * s) / 2.0, (h - ih * s) / 2.0);
-                    if mode == "FIT" {
-                        clip = Some(Rect::new(x, y, x + iw * s, y + ih * s));
-                    }
-                    Affine::translate((x, y)) * Affine::scale(s)
-                }
-                "TILE" => {
-                    extend = Extend::Repeat;
-                    Affine::scale(f64::from(p.num("scale").unwrap_or(1.0)).max(1e-3))
-                }
-                _ => unit_to_node * paint_inverse * Affine::scale_non_uniform(1.0 / iw, 1.0 / ih),
-            };
+            let (layout, extend, clip) = image_layout(p, w, h, natural);
+            // The decoded copy may be smaller than the original (a level or the thumbnail).
+            let pixmap = decoded.pixmap;
+            let fit = Affine::scale_non_uniform(
+                natural.0 / f64::from(pixmap.width()),
+                natural.1 / f64::from(pixmap.height()),
+            );
             let image = Image {
                 image: ImageSource::Pixmap(pixmap),
                 sampler: ImageSampler {
@@ -198,7 +143,7 @@ pub fn resolve(
             };
             Some(ResolvedPaint {
                 paint: PaintType::Image(image),
-                transform,
+                transform: layout * fit,
                 clip,
             })
         }
@@ -207,4 +152,147 @@ pub fn resolve(
             None
         }
     }
+}
+
+/// Placement of an image of `natural` size (pixels) in a `w × h` node: the transform from
+/// image pixels to node space, the edge mode and the clip.
+fn image_layout(p: &Val, w: f64, h: f64, natural: (f64, f64)) -> (Affine, Extend, Option<Rect>) {
+    let (iw, ih) = (natural.0.max(1e-6), natural.1.max(1e-6));
+    match p.text("imageScaleMode").unwrap_or("STRETCH") {
+        mode @ ("FILL" | "FIT") => {
+            let s = if mode == "FILL" {
+                (w / iw).max(h / ih)
+            } else {
+                (w / iw).min(h / ih)
+            };
+            let (x, y) = ((w - iw * s) / 2.0, (h - ih * s) / 2.0);
+            let clip = (mode == "FIT").then(|| Rect::new(x, y, x + iw * s, y + ih * s));
+            (
+                Affine::translate((x, y)) * Affine::scale(s),
+                Extend::Pad,
+                clip,
+            )
+        }
+        "TILE" => (
+            Affine::scale(f64::from(p.num("scale").unwrap_or(1.0)).max(1e-3)),
+            Extend::Repeat,
+            None,
+        ),
+        _ => {
+            let unit_to_node = Affine::scale_non_uniform(w.max(1e-6), h.max(1e-6));
+            let paint_inverse = crate::geom::affine(p.get("transform")).inverse();
+            (
+                unit_to_node * paint_inverse * Affine::scale_non_uniform(1.0 / iw, 1.0 / ih),
+                Extend::Pad,
+                None,
+            )
+        }
+    }
+}
+
+/// The largest length scale of a transform's linear part.
+pub(crate) fn linear_scale(t: Affine) -> f64 {
+    let [a, b, c, d, _, _] = t.as_coeffs();
+    a.hypot(b).max(c.hypot(d))
+}
+
+/// Long side, in output pixels, up to which a paint's Figma thumbnail is drawn instead of the
+/// image. Figma's thumbnails are at most 512 px; one under 256 px only exists for an image
+/// that is no bigger, so this never draws anything blurrier than the image itself would be.
+const THUMBNAIL_UP_TO: f64 = 256.0;
+
+/// Chooses what to draw for an image paint: the Figma thumbnail when the image is drawn small,
+/// otherwise the image decoded at the level the view needs. The choice depends only on the
+/// paint and the view, so a frame looks the same whatever was decoded before. Anything not
+/// decoded yet is requested; meanwhile the nearest cached copy (or a placeholder) is drawn.
+/// Returns the image and the original's size, or `None` for a placeholder.
+fn pick_image(
+    p: &Val,
+    w: f64,
+    h: f64,
+    doc: &Document,
+    img: &mut ImageCtx<'_>,
+    stats: &mut Stats,
+) -> Option<(Decoded, (f64, f64))> {
+    let hash_of = |key: &str| p.path(&[key, "hash"]).and_then(Val::as_bytes).map(hex);
+    let key = |h: &str| cache_key(doc, h);
+    let available = |h: Option<String>| {
+        h.filter(|h| {
+            (doc.images.contains_key(h) || doc.lazy_images.contains_key(h))
+                && !img.images.has_failed(&key(h))
+        })
+    };
+    let full = available(hash_of("image"));
+    let thumb = available(hash_of("imageThumbnail")).filter(|t| Some(t) != full.as_ref());
+    // Size of the original: stored on the paint by Figma, else learnt from a decoded copy.
+    let original = match (p.num("originalImageWidth"), p.num("originalImageHeight")) {
+        (Some(w), Some(h)) if w >= 1.0 && h >= 1.0 => Some((w as u32, h as u32)),
+        _ => full
+            .as_deref()
+            .and_then(|f| img.images.nearest(&key(f), 0))
+            .map(|d| d.natural),
+    };
+    let natural = original.map(|(w, h)| (f64::from(w), f64::from(h)));
+    // Output pixels per image pixel, and the image's long side on screen.
+    let scale = natural.map(|n| img.screen * linear_scale(image_layout(p, w, h, n).0));
+    let long_px = natural.zip(scale).map(|(n, s)| n.0.max(n.1) * s);
+
+    // What should be drawn: (hash, level).
+    let target = match (&full, &thumb) {
+        (_, Some(t)) if full.is_none() || long_px.is_some_and(|px| px <= THUMBNAIL_UP_TO) => {
+            Some((t.clone(), 0))
+        }
+        (Some(f), _) => {
+            let level = scale.map_or(0, level_for);
+            Some((f.clone(), original.map_or(level, |o| clamp_level(o, level))))
+        }
+        _ => None,
+    };
+    let mut loading = false;
+    let chosen = target.and_then(|(hash, level)| {
+        if let Some(d) = img.images.get(&key(&hash), level) {
+            return Some(d);
+        }
+        if let Some(d) = fetch(&hash, level, doc, img, &mut loading) {
+            return Some(d);
+        }
+        // Not decoded yet: the nearest copy of the image, else of the thumbnail.
+        let fallback =
+            |h: &Option<String>, l| h.as_deref().and_then(|h| img.images.nearest(&key(h), l));
+        fallback(&full, level).or_else(|| fallback(&thumb, 0))
+    });
+    if loading {
+        stats.images_loading += 1;
+    } else if chosen.is_none() {
+        stats.missing_images += 1;
+    }
+    let chosen = chosen?;
+    let natural = natural.unwrap_or((f64::from(chosen.natural.0), f64::from(chosen.natural.1)));
+    Some((chosen, natural))
+}
+
+/// Decodes an image whose bytes are in the document, or asks for an unread one.
+fn fetch(
+    hash: &str,
+    level: u8,
+    doc: &Document,
+    img: &mut ImageCtx<'_>,
+    loading: &mut bool,
+) -> Option<Decoded> {
+    let key = cache_key(doc, hash);
+    if let Some(bytes) = doc.images.get(hash) {
+        img.images.insert_encoded(&key, bytes, level);
+        return img.images.get(&key, level);
+    }
+    let entry = doc.lazy_images.get(hash)?;
+    *loading = true;
+    if img.images.begin_request(&key, level) {
+        img.wanted.push(ImageRequest {
+            hash: hash.to_string(),
+            key,
+            level,
+            entry: entry.clone(),
+        });
+    }
+    None
 }

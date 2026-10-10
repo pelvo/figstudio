@@ -1,0 +1,7 @@
+# Cloudflare static assets: Wasm threads need a cross-origin isolated page
+# (SharedArrayBuffer). Everything is served from this origin, so require-corp is safe.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+  X-Content-Type-Options: nosniff
