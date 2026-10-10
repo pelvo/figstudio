@@ -174,7 +174,11 @@ impl App {
 
     fn close(&mut self, i: usize) {
         if i < self.tabs.len() {
-            self.tabs.remove(i);
+            let closed = self.tabs.remove(i);
+            let instance = closed.doc.instance;
+            if !self.tabs.iter().any(|t| t.doc.instance == instance) {
+                self.workers.images().forget_document(instance);
+            }
             if self.active >= self.tabs.len() {
                 self.active = self.tabs.len().saturating_sub(1);
             } else if self.active > i {

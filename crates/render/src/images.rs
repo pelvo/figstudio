@@ -188,6 +188,24 @@ impl Images {
         inner.failed.insert(hash.to_string());
     }
 
+    /// Drops every image of document `instance` (see [`cache_key`]), e.g. when its last tab
+    /// closes. A read still in flight may store one image afterwards; LRU evicts it.
+    pub fn forget_document(&self, instance: u64) {
+        let prefix = format!("{instance:x}/");
+        let mut inner = self.lock();
+        let mut freed = 0;
+        inner.slots.retain(|key, levels| {
+            let keep = !key.starts_with(&prefix);
+            if !keep {
+                freed += levels.values().map(|s| s.image.bytes()).sum::<usize>();
+            }
+            keep
+        });
+        inner.failed.retain(|key| !key.starts_with(&prefix));
+        inner.bytes -= freed;
+        self.0.bytes.store(inner.bytes, Ordering::Relaxed);
+    }
+
     /// Bytes of pixels held. Takes no lock.
     pub fn bytes(&self) -> usize {
         self.0.bytes.load(Ordering::Relaxed)
@@ -359,6 +377,20 @@ mod tests {
         images.insert_encoded("e", &bytes, 0);
         assert_eq!(images.bytes(), 4 * 64 * 64 * 4);
         assert_eq!(images.in_flight(), 0);
+    }
+
+    #[test]
+    fn forget_document_drops_only_that_documents_images() {
+        let images = Images::default();
+        let bytes = png(8, 8);
+        images.insert_encoded("a1/h", &bytes, 0);
+        images.insert_encoded("a1/h", &bytes, 2);
+        images.fail("a1/bad", 0);
+        images.insert_encoded("a/h", &bytes, 0);
+        images.forget_document(0xa1);
+        assert_eq!(images.bytes(), 8 * 8 * 4, "only document a is left");
+        assert!(images.get("a1/h", 0).is_none() && !images.has_failed("a1/bad"));
+        assert!(images.get("a/h", 0).is_some());
     }
 
     #[test]
