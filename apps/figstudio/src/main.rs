@@ -79,6 +79,8 @@ struct App {
     worker_lost: state::Once,
     toasts: Vec<Toast>,
     layer_filter: String,
+    /// Share of the left dock's height given to the page list (the rest is layers).
+    pages_share: f32,
     show_left: bool,
     show_right: bool,
     cursor: Option<egui::Pos2>,
@@ -104,6 +106,7 @@ impl App {
             worker_lost: state::Once::default(),
             toasts: Vec::new(),
             layer_filter: String::new(),
+            pages_share: 0.55,
             show_left: true,
             show_right: true,
             cursor: None,
@@ -734,6 +737,37 @@ fn empty_state(ui: &mut egui::Ui) -> bool {
 
 /// Shift+digit. The logical key depends on the keyboard layout (Shift+1 is `!` on US layouts),
 /// so match the physical key too.
+/// Space kept for each side of the Pages/Layers split, in points.
+const MIN_PAGES: f32 = 60.0;
+const MIN_LAYERS: f32 = 120.0;
+
+/// Height of the page list for `share` of `avail`, keeping both sides usable.
+fn split_height(avail: f32, share: f32) -> f32 {
+    let max = (avail - MIN_LAYERS).max(MIN_PAGES);
+    (avail * share).clamp(MIN_PAGES, max)
+}
+
+/// The draggable line between Pages and Layers. Dragging moves the split.
+fn split_handle(ui: &mut egui::Ui, share: &mut f32) {
+    let total = ui.max_rect().height().max(1.0);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), Sense::drag());
+    let response = response.on_hover_cursor(egui::CursorIcon::ResizeVertical);
+    if response.dragged() {
+        *share = (*share + response.drag_delta().y / total).clamp(0.05, 0.95);
+    }
+    let color = if response.hovered() || response.dragged() {
+        theme::ACCENT
+    } else {
+        theme::SEPARATOR
+    };
+    ui.painter().hline(
+        rect.x_range(),
+        rect.center().y,
+        egui::Stroke::new(1.0, color),
+    );
+}
+
 fn shifted_digit(i: &egui::InputState, digit: Key, shifted: Option<Key>) -> bool {
     i.events.iter().any(|e| match e {
         egui::Event::Key {
@@ -805,6 +839,7 @@ impl App {
             .stroke(egui::Stroke::new(1.0, theme::SEPARATOR));
         if has_tab && self.show_left {
             let filter = &mut self.layer_filter;
+            let pages_share = &mut self.pages_share;
             let tab = &mut self.tabs[self.active];
             egui::Panel::left("layers")
                 .frame(dock)
@@ -812,24 +847,19 @@ impl App {
                 .default_size(250.0)
                 .size_range(180.0..=520.0)
                 .show(ui, |ui| {
-                    // Drag the line under the page list to split Pages and Layers; egui keeps the height.
-                    egui::Panel::top("pages")
-                        .frame(egui::Frame::new())
-                        .resizable(true)
-                        .default_size(150.0)
-                        .size_range(60.0..=(ui.available_height() - 120.0).max(60.0))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new("PAGES")
-                                    .color(theme::TEXT_DIM)
-                                    .small()
-                                    .strong(),
-                            );
-                            egui::ScrollArea::vertical()
-                                .id_salt("pages")
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| panels::pages(ui, tab));
-                        });
+                    let pages_height = split_height(ui.available_height(), *pages_share);
+                    ui.label(
+                        RichText::new("PAGES")
+                            .color(theme::TEXT_DIM)
+                            .small()
+                            .strong(),
+                    );
+                    egui::ScrollArea::vertical()
+                        .id_salt("pages")
+                        .auto_shrink([false, false])
+                        .max_height(pages_height)
+                        .show(ui, |ui| panels::pages(ui, tab));
+                    split_handle(ui, pages_share);
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new("LAYERS")
@@ -915,5 +945,24 @@ impl App {
         if self.workers.busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MIN_LAYERS, MIN_PAGES, split_height};
+
+    #[test]
+    fn pages_get_more_room_than_layers_by_default() {
+        let pages = split_height(800.0, 0.55);
+        assert!(pages > 800.0 - pages, "pages {pages}");
+    }
+
+    #[test]
+    fn the_split_keeps_both_lists_usable() {
+        assert_eq!(split_height(800.0, 0.0), MIN_PAGES);
+        assert_eq!(split_height(800.0, 1.0), 800.0 - MIN_LAYERS);
+        // Too short for both: pages keep their minimum.
+        assert_eq!(split_height(100.0, 0.5), MIN_PAGES);
     }
 }
