@@ -887,3 +887,27 @@ fn masks_render_the_same_in_parallel() {
         "something was drawn"
     );
 }
+
+#[test]
+fn truncated_text_without_stored_glyphs_is_counted() {
+    // structure.fig's text has no stored glyphs, like an instance text override.
+    let mut doc = open("structure");
+    let stats = |doc: &Document| {
+        let mut r = Renderer::new();
+        r.system_fonts = false;
+        r.render(doc, doc.pages[0], &fit_viewport(doc, 0.5)).stats
+    };
+    let text = doc.nodes.iter_mut().find(|n| n.kind == "TEXT").unwrap();
+    assert!(text.data.path(&["derivedTextData", "glyphs"]).is_none());
+    assert_eq!(stats(&doc).text_truncation_ignored, 0);
+    let text = doc.nodes.iter_mut().find(|n| n.kind == "TEXT").unwrap();
+    text.data
+        .set("textTruncation", figstudio_fig::Val::Enum("ENDING"));
+    // The node is drawn once per instance of its component; every fallback draw is counted.
+    let s = stats(&doc);
+    assert!(s.text_truncation_ignored > 0);
+    assert_eq!(
+        s.text_truncation_ignored,
+        s.text_missing + s.text_system_fonts
+    );
+}

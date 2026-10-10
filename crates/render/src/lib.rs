@@ -45,6 +45,9 @@ pub struct Stats {
     pub text_stored_glyphs: usize,
     pub text_system_fonts: usize,
     pub text_missing: usize,
+    /// Truncated text (`textTruncation`) without usable stored glyphs: the fallback layout
+    /// draws every line instead of ending with an ellipsis.
+    pub text_truncation_ignored: usize,
     pub missing_images: usize,
     /// Image paints drawn with a placeholder or a blurrier copy while the image is read
     /// (lazily opened documents; see [`Frame::wanted`]).
@@ -79,6 +82,7 @@ impl fmt::Display for Stats {
         note(self.text_stored_glyphs, "text (stored outlines)")?;
         note(self.text_system_fonts, "text (system fonts)")?;
         note(self.text_missing, "text not drawn")?;
+        note(self.text_truncation_ignored, "text truncation ignored")?;
         note(self.masks, "masks")?;
         note(self.shadows, "drop shadows")?;
         note(self.blurs, "blurs")?;
@@ -945,6 +949,9 @@ impl Ctx<'_> {
         }
         if text::characters(data).trim().is_empty() {
             return Vec::new();
+        }
+        if data.text("textTruncation") == Some("ENDING") {
+            self.stats.text_truncation_ignored += 1;
         }
         if let Some(paths) = self.fonts.as_mut().and_then(|f| f.layout(data))
             && !paths.is_empty()
