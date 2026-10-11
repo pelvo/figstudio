@@ -1,5 +1,6 @@
 //! Review regressions: instance paths by tree position, scaled crops, effective references.
 use figstudio_fig::{Document, Guid, Node, Obj, Val};
+use figstudio_mcp::tools::rendering::Rendering;
 use figstudio_mcp::tools::{metadata::metadata, screenshot::screenshot, variables::variable_defs};
 use rmcp::model::CallToolResult;
 use std::path::PathBuf;
@@ -174,7 +175,7 @@ fn a_scaled_instance_child_is_cropped_where_it_renders_and_alone() {
             ],
         ),
     ]);
-    let shot = screenshot(&doc, "I9:10;9:3", Some(1.0), false);
+    let shot = screenshot(&doc, "I9:10;9:3", Some(1.0), &Rendering::default());
     assert!(text(&shot).starts_with("80x80 px"), "{}", text(&shot));
     let value = serde_json::to_value(&shot).unwrap();
     let data = value["content"][0]["data"].as_str().unwrap();
@@ -203,7 +204,7 @@ fn a_scaled_instance_child_is_cropped_where_it_renders_and_alone() {
     let mut doc = doc;
     doc.set_nodes(nodes).unwrap();
     assert_eq!(
-        screenshot(&doc, "I9:10;9:3", Some(1.0), false).is_error,
+        screenshot(&doc, "I9:10;9:3", Some(1.0), &Rendering::default()).is_error,
         Some(true)
     );
 }

@@ -10,7 +10,7 @@ mod walk;
 use crate::{
     FigstudioServer,
     node_id::{NodeId, parse_node_id},
-    tools::tool_error,
+    tools::{rendering::Rendering, tool_error},
 };
 pub use assets::Assets;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -63,8 +63,8 @@ pub struct Options {
     pub max_nodes: Option<usize>,
     /// Where rendered assets go.
     pub assets: Assets,
-    /// Whether asset renders may use installed fonts.
-    pub system_fonts: bool,
+    /// How assets are rendered: fonts, lazily opened images.
+    pub rendering: Rendering,
 }
 
 #[tool_router(router = design_router, vis = "pub(crate)")]
@@ -77,9 +77,16 @@ impl FigstudioServer {
         Parameters(input): Parameters<DesignInput>,
     ) -> CallToolResult {
         let key = input.file_key.as_deref();
-        let (document, file_key) = match (self.files().open(key).await, self.files().key(key)) {
-            (Ok(document), Ok(file_key)) => (document, file_key),
-            (Err(error), _) | (_, Err(error)) => return tool_error(error),
+        let rendering = self.files().rendering(key, !self.no_system_fonts());
+        let (document, file_key, rendering) = match (
+            self.files().open(key).await,
+            self.files().key(key),
+            rendering,
+        ) {
+            (Ok(document), Ok(file_key), Ok(rendering)) => (document, file_key, rendering),
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+                return tool_error(error);
+            }
         };
         let options = Options {
             file_key,
@@ -87,7 +94,7 @@ impl FigstudioServer {
             languages: input.client_languages,
             max_nodes: input.max_nodes,
             assets: self.assets().clone(),
-            system_fonts: !self.no_system_fonts(),
+            rendering,
         };
         match tokio::task::spawn_blocking(move || {
             design_context(&document, &input.node_id, &options)

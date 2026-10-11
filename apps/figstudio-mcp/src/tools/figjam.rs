@@ -4,6 +4,7 @@ use crate::{
     tools::{
         assets::Payload,
         metadata::{figjam::Extras, run},
+        rendering::Rendering,
         screenshot::render_node,
         tool_error,
     },
@@ -51,7 +52,13 @@ impl FigstudioServer {
             Ok(document) => document,
             Err(error) => return tool_error(error),
         };
-        let system_fonts = !self.no_system_fonts();
+        let rendering = match self
+            .files()
+            .rendering(input.file_key.as_deref(), !self.no_system_fonts())
+        {
+            Ok(rendering) => rendering,
+            Err(error) => return tool_error(error),
+        };
         match tokio::task::spawn_blocking(move || {
             figjam(
                 &document,
@@ -59,7 +66,7 @@ impl FigstudioServer {
                 input.depth,
                 input.include_images.unwrap_or(false),
                 input.image_scale,
-                system_fonts,
+                &rendering,
             )
         })
         .await
@@ -77,7 +84,7 @@ pub fn figjam(
     depth: Option<u32>,
     include_images: bool,
     image_scale: Option<f64>,
-    system_fonts: bool,
+    rendering: &Rendering,
 ) -> CallToolResult {
     figjam_within(
         doc,
@@ -85,7 +92,7 @@ pub fn figjam(
         depth,
         include_images,
         image_scale,
-        system_fonts,
+        rendering,
         crate::tools::assets::MAX_PAYLOAD_BYTES,
     )
 }
@@ -97,7 +104,7 @@ pub fn figjam_within(
     depth: Option<u32>,
     include_images: bool,
     image_scale: Option<f64>,
-    system_fonts: bool,
+    rendering: &Rendering,
     max_payload: usize,
 ) -> CallToolResult {
     let scale = image_scale.unwrap_or(DEFAULT_IMAGE_SCALE);
@@ -114,7 +121,7 @@ pub fn figjam_within(
     if include_images {
         let mut payload = Payload::new(max_payload);
         for id in extras.pictured.iter().take(MAX_IMAGES) {
-            content.extend(picture(doc, id, scale, system_fonts, &mut payload));
+            content.extend(picture(doc, id, scale, rendering, &mut payload));
         }
         let skipped = extras.pictured.len().saturating_sub(MAX_IMAGES);
         if skipped > 0 {
@@ -132,13 +139,13 @@ fn picture(
     doc: &Document,
     id: &str,
     scale: f64,
-    system_fonts: bool,
+    rendering: &Rendering,
     payload: &mut Payload,
 ) -> Vec<ContentBlock> {
     if payload.is_full() {
         return vec![ContentBlock::text(Payload::omitted(id))];
     }
-    let shot = match render_node(doc, id, Some(scale), system_fonts) {
+    let shot = match render_node(doc, id, Some(scale), rendering) {
         Ok(shot) => shot,
         Err(message) => return vec![ContentBlock::text(format!("{id}: no image: {message}"))],
     };

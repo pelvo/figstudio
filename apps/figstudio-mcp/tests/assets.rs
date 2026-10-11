@@ -2,6 +2,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use figstudio_fig::{Document, Guid, Node, Obj, Val, hex};
 use figstudio_mcp::tools::assets::{AssetFormat, download, download_within};
+use figstudio_mcp::tools::rendering::Rendering;
 use rmcp::model::CallToolResult;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -44,7 +45,14 @@ fn ids(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| (*s).to_owned()).collect()
 }
 fn run(doc: &Document, nodes: &[&str], format: AssetFormat, scale: Option<f64>) -> CallToolResult {
-    download(doc, &ids(nodes), format, scale, false, false)
+    download(
+        doc,
+        &ids(nodes),
+        format,
+        scale,
+        false,
+        &Rendering::default(),
+    )
 }
 
 #[test]
@@ -143,7 +151,7 @@ fn originals_are_the_stored_bytes_and_report_their_type() {
         AssetFormat::Png,
         None,
         true,
-        false,
+        &Rendering::default(),
     );
     assert_ne!(result.is_error, Some(true), "{:?}", texts(&result));
     let got = blobs(&result);
@@ -172,7 +180,7 @@ fn originals_report_missing_images_and_nodes_without_fills() {
         AssetFormat::Png,
         None,
         true,
-        false,
+        &Rendering::default(),
     );
     assert_eq!(blobs(&result).len(), 1);
     assert!(
@@ -186,7 +194,7 @@ fn originals_report_missing_images_and_nodes_without_fills() {
         AssetFormat::Png,
         None,
         true,
-        false,
+        &Rendering::default(),
     );
     assert_eq!(none.is_error, Some(true));
     assert!(
@@ -199,7 +207,14 @@ fn originals_report_missing_images_and_nodes_without_fills() {
 #[test]
 fn originals_are_found_inside_frames() {
     let doc = fixture("structure");
-    let all = download(&doc, &ids(&["0:1"]), AssetFormat::Png, None, true, false);
+    let all = download(
+        &doc,
+        &ids(&["0:1"]),
+        AssetFormat::Png,
+        None,
+        true,
+        &Rendering::default(),
+    );
     // Every stored image the page's layers draw, each once.
     let hashes: std::collections::HashSet<_> = blobs(&all).into_iter().map(|b| b.0).collect();
     assert_eq!(hashes.len(), blobs(&all).len());
@@ -264,7 +279,14 @@ fn originals_are_capped_per_call_and_found_through_instances() {
     nodes.push(instance);
     doc.set_nodes(nodes).unwrap();
 
-    let capped = download(&doc, &ids(&["9:1"]), AssetFormat::Png, None, true, false);
+    let capped = download(
+        &doc,
+        &ids(&["9:1"]),
+        AssetFormat::Png,
+        None,
+        true,
+        &Rendering::default(),
+    );
     assert_eq!(blobs(&capped).len(), 20);
     assert!(
         texts(&capped).iter().any(|l| l.contains("1 omitted")),
@@ -279,7 +301,14 @@ fn originals_are_capped_per_call_and_found_through_instances() {
     );
 
     for id in ["9:52", "I9:52;9:51"] {
-        let got = download(&doc, &ids(&[id]), AssetFormat::Png, None, true, false);
+        let got = download(
+            &doc,
+            &ids(&[id]),
+            AssetFormat::Png,
+            None,
+            true,
+            &Rendering::default(),
+        );
         assert_eq!(
             blobs(&got)[0].0,
             b"instance-bytes",
@@ -300,7 +329,14 @@ fn store(doc: &mut Document, n: u8) -> [u8; 20] {
     hash
 }
 fn orig(doc: &Document, nodes: &[&str]) -> CallToolResult {
-    download(doc, &ids(nodes), AssetFormat::Png, None, true, false)
+    download(
+        doc,
+        &ids(nodes),
+        AssetFormat::Png,
+        None,
+        true,
+        &Rendering::default(),
+    )
 }
 
 #[test]
@@ -316,7 +352,7 @@ fn payload_budget_is_shared_by_every_rendered_node() {
             AssetFormat::Png,
             None,
             false,
-            false,
+            &Rendering::default(),
             max,
         )
     };
@@ -348,7 +384,15 @@ fn payload_budget_covers_original_bytes() {
     }
     plain(&mut doc, nodes);
     // Every stored image is 2 bytes; room for two.
-    let result = download_within(&doc, &ids(&["9:1"]), AssetFormat::Png, None, true, false, 4);
+    let result = download_within(
+        &doc,
+        &ids(&["9:1"]),
+        AssetFormat::Png,
+        None,
+        true,
+        &Rendering::default(),
+        4,
+    );
     assert_eq!(blobs(&result).len(), 2, "{:?}", texts(&result));
     assert!(texts(&result).iter().any(|l| l.contains("1 omitted")));
 }

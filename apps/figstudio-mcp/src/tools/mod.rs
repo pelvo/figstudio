@@ -11,6 +11,8 @@ pub mod design_system;
 pub mod figjam;
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
+/// Render settings and lazy image reads shared by the rendering tools.
+pub mod rendering;
 /// PNG renders of nodes.
 pub mod screenshot;
 /// Used variable and style definitions.

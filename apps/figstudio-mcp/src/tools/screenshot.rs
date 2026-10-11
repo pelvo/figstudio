@@ -2,7 +2,7 @@
 use crate::{
     FigstudioServer,
     node_id::{NodeId, parse_node_id},
-    tools::tool_error,
+    tools::{rendering::Rendering, tool_error},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use figstudio_fig::{
@@ -52,9 +52,15 @@ impl FigstudioServer {
             Ok(document) => document,
             Err(error) => return tool_error(error),
         };
-        let system_fonts = !self.no_system_fonts();
+        let rendering = match self
+            .files()
+            .rendering(input.file_key.as_deref(), !self.no_system_fonts())
+        {
+            Ok(rendering) => rendering,
+            Err(error) => return tool_error(error),
+        };
         match tokio::task::spawn_blocking(move || {
-            screenshot(&document, &input.node_id, input.scale, system_fonts)
+            screenshot(&document, &input.node_id, input.scale, &rendering)
         })
         .await
         {
@@ -73,9 +79,9 @@ pub fn screenshot(
     doc: &Document,
     node_id: &str,
     scale: Option<f64>,
-    system_fonts: bool,
+    rendering: &Rendering,
 ) -> CallToolResult {
-    let shot = match render_node(doc, node_id, scale, system_fonts) {
+    let shot = match render_node(doc, node_id, scale, rendering) {
         Ok(shot) => shot,
         Err(message) => return failure(message),
     };
@@ -119,7 +125,7 @@ pub(crate) fn render_node(
     doc: &Document,
     node_id: &str,
     scale: Option<f64>,
-    system_fonts: bool,
+    rendering: &Rendering,
 ) -> Result<Shot, String> {
     let scale = scale.unwrap_or(1.0);
     if !SCALE_RANGE.contains(&scale) {
@@ -128,7 +134,7 @@ pub(crate) fn render_node(
     let id = match parse_node_id(node_id) {
         Ok(NodeId::Node(id)) => id,
         Ok(NodeId::InstancePath(path)) => {
-            return instance_child(doc, &path, scale, system_fonts);
+            return instance_child(doc, &path, scale, rendering);
         }
         Err(error) => return Err(error.to_string()),
     };
@@ -157,7 +163,7 @@ pub(crate) fn render_node(
         node_bounds(doc, id).unwrap_or(content)
     };
     let background = is_page.then(|| page_background(doc, page));
-    render(doc, Root::Node(id), bounds, scale, background, system_fonts)
+    render(doc, Root::Node(id), bounds, scale, background, rendering)
 }
 
 /// What a screenshot draws: a document node, or one node inside an instance on its own.
@@ -172,7 +178,7 @@ fn instance_child(
     doc: &Document,
     path: &InstancePath,
     scale: f64,
-    system_fonts: bool,
+    rendering: &Rendering,
 ) -> Result<Shot, String> {
     if let Err(error) = resolve_path(doc, path) {
         return Err(format!("{path}: {error}"));
@@ -183,7 +189,7 @@ fn instance_child(
     if bounds.width() <= 0.0 && bounds.height() <= 0.0 {
         return Err(format!("node {path} has zero size, nothing to render"));
     }
-    render(doc, Root::Path(path), bounds, scale, None, system_fonts)
+    render(doc, Root::Path(path), bounds, scale, None, rendering)
 }
 
 /// Renders a layer (not a page) cropped to its own box on a transparent background, as
@@ -192,14 +198,14 @@ pub(crate) fn layer_shot(
     doc: &Document,
     root: Root<'_>,
     scale: f64,
-    system_fonts: bool,
+    rendering: &Rendering,
 ) -> Result<Shot, String> {
     let bounds = match root {
         Root::Node(id) => node_bounds(doc, id),
         Root::Path(path) => Renderer::new().path_bounds(doc, path),
     }
     .ok_or("hidden or nothing visible")?;
-    render(doc, root, bounds, scale, None, system_fonts)
+    render(doc, root, bounds, scale, None, rendering)
 }
 
 /// Renders `root` into `bounds` (page units) at `scale`, capped at [`MAX_SIDE_PX`].
@@ -209,7 +215,7 @@ fn render(
     bounds: Rect,
     scale: f64,
     background: Option<figstudio_render::color::AlphaColor<figstudio_render::color::Srgb>>,
-    system_fonts: bool,
+    rendering: &Rendering,
 ) -> Result<Shot, String> {
     let longest = bounds.width().max(bounds.height()) * scale;
     if !longest.is_finite() || longest <= 0.0 {
@@ -232,12 +238,7 @@ fn render(
         transform: Affine::scale(scale) * Affine::translate((-bounds.x0, -bounds.y0)),
         background,
     };
-    let mut renderer = Renderer::new();
-    renderer.system_fonts = system_fonts;
-    let frame = match root {
-        Root::Node(id) => renderer.render(doc, id, &viewport),
-        Root::Path(path) => renderer.render_path(doc, path, &viewport),
-    };
+    let frame = rendering.draw(doc, root, &viewport);
     Ok(Shot { frame, scale })
 }
 

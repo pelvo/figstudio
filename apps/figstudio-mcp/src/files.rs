@@ -1,23 +1,34 @@
-use crate::error::McpError;
-use figstudio_fig::Document;
+use crate::{error::McpError, tools::rendering::Rendering};
+use figstudio_fig::{Document, LAZY_ABOVE};
+use figstudio_render::images::Images;
 use serde::Serialize;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::OnceCell;
+
+/// Decoded-image bytes each registered file may keep between calls.
+const IMAGE_CACHE_BYTES: usize = 256 * 1024 * 1024;
 
 struct FileEntry {
     key: String,
     path: PathBuf,
     document: Arc<OnceCell<Arc<Document>>>,
+    /// Where this file's renders read lazy images, and their shared cache.
+    rendering: Rendering,
 }
 
-/// Shared registry. Documents are opened on demand, once per registered file.
+/// Shared registry. Documents are opened on demand, once per registered file: eagerly, or
+/// lazily (images read when a render or `download_assets` needs them) above a size.
 #[derive(Clone)]
-pub struct FileRegistry(Arc<Vec<FileEntry>>);
+pub struct FileRegistry {
+    files: Arc<Vec<FileEntry>>,
+    lazy_above: u64,
+}
 
 impl std::fmt::Debug for FileRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileRegistry")
-            .field("files", &self.0.len())
+            .field("files", &self.files.len())
+            .field("lazy_above", &self.lazy_above)
             .finish()
     }
 }
@@ -35,40 +46,52 @@ pub struct FileInfo {
 
 impl FileRegistry {
     /// Register paths without opening them.
+    /// Files bigger than [`LAZY_ABOVE`] open lazily.
     pub fn new(paths: Vec<PathBuf>) -> Self {
-        Self(Arc::new(
-            paths
-                .into_iter()
-                .map(|path| FileEntry {
-                    key: path
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
-                    path,
-                    document: Arc::new(OnceCell::new()),
-                })
-                .collect(),
-        ))
+        Self {
+            files: Arc::new(
+                paths
+                    .into_iter()
+                    .map(|path| FileEntry {
+                        key: path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                        rendering: Rendering::new(path.clone(), Images::new(IMAGE_CACHE_BYTES)),
+                        path,
+                        document: Arc::new(OnceCell::new()),
+                    })
+                    .collect(),
+            ),
+            lazy_above: LAZY_ABOVE,
+        }
+    }
+
+    /// Open files bigger than `bytes` lazily instead (`0`: every archive, for tests).
+    /// Applies to documents not opened yet.
+    pub fn with_lazy_above(mut self, bytes: u64) -> Self {
+        self.lazy_above = bytes;
+        self
     }
 
     /// Return registered file stems.
     pub fn keys(&self) -> Vec<String> {
-        self.0.iter().map(|file| file.key.clone()).collect()
+        self.files.iter().map(|file| file.key.clone()).collect()
     }
 
     fn resolve(&self, key: Option<&str>) -> Result<&FileEntry, McpError> {
         match key {
-            None if self.0.len() == 1 => Ok(&self.0[0]),
+            None if self.files.len() == 1 => Ok(&self.files[0]),
             Some(key) => {
                 // Full paths disambiguate files with the same stem.
-                if let Some(file) = self.0.iter().find(|file| {
+                if let Some(file) = self.files.iter().find(|file| {
                     file.path.as_os_str() == key
                         || std::path::absolute(&file.path).is_ok_and(|path| path.as_os_str() == key)
                 }) {
                     return Ok(file);
                 }
-                let mut matches = self.0.iter().filter(|file| file.key == key);
+                let mut matches = self.files.iter().filter(|file| file.key == key);
                 let file = matches.next().ok_or_else(McpError::file_key)?;
                 if matches.next().is_some() {
                     return Err(McpError::file_key());
@@ -92,16 +115,28 @@ impl FileRegistry {
         Ok(self.resolve(key)?.path.clone())
     }
 
+    /// How to render the file `key` selects: its path for lazily opened images and its
+    /// shared image cache, with `system_fonts`.
+    ///
+    /// # Errors
+    /// Returns an error for a missing or ambiguous file key.
+    pub fn rendering(&self, key: Option<&str>, system_fonts: bool) -> Result<Rendering, McpError> {
+        let mut rendering = self.resolve(key)?.rendering.clone();
+        rendering.system_fonts = system_fonts;
+        Ok(rendering)
+    }
+
     /// Open once per file; failures remain retryable even after cancellation.
     pub async fn open(&self, key: Option<&str>) -> Result<Arc<Document>, McpError> {
         let file = self.resolve(key)?;
         let cached = file.document.clone();
         let path = file.path.clone();
+        let lazy_above = self.lazy_above;
         // The initializer outlives a cancelled request and caches its completed decode.
         tokio::spawn(async move {
             cached
                 .get_or_try_init(|| async move {
-                    tokio::task::spawn_blocking(move || Document::open(path))
+                    tokio::task::spawn_blocking(move || Document::open_auto_above(path, lazy_above))
                         .await
                         .map_err(McpError::load_task)?
                         .map(Arc::new)
@@ -116,8 +151,8 @@ impl FileRegistry {
 
     /// List cached page counts without waiting for pending loads.
     pub async fn list(&self) -> Vec<FileInfo> {
-        let mut files = Vec::with_capacity(self.0.len());
-        for file in self.0.iter() {
+        let mut files = Vec::with_capacity(self.files.len());
+        for file in self.files.iter() {
             files.push(FileInfo {
                 key: file.key.clone(),
                 path: file.path.clone(),
@@ -135,7 +170,7 @@ mod tests {
     #[tokio::test]
     async fn list_does_not_wait_for_a_pending_load() {
         let files = FileRegistry::new(vec![PathBuf::from("structure.fig")]);
-        let cell = files.0[0].document.clone();
+        let cell = files.files[0].document.clone();
         let mut pending =
             Box::pin(cell.get_or_try_init(std::future::pending::<Result<Arc<Document>, McpError>>));
         assert!(futures_util::poll!(&mut pending).is_pending());
@@ -150,7 +185,7 @@ mod tests {
         let fixture =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/structure.fig");
         let files = FileRegistry::new(vec![fixture]);
-        let cell = files.0[0].document.clone();
+        let cell = files.files[0].document.clone();
         let mut blocked =
             Box::pin(cell.get_or_try_init(std::future::pending::<Result<Arc<Document>, McpError>>));
         assert!(futures_util::poll!(&mut blocked).is_pending());

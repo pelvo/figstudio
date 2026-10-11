@@ -1,5 +1,6 @@
 //! Instance expansion and instance paths in get_metadata, get_screenshot and get_variable_defs.
 use figstudio_fig::{Document, Guid, Node, Obj, Val};
+use figstudio_mcp::tools::rendering::Rendering;
 use figstudio_mcp::tools::{metadata::metadata, screenshot::screenshot, variables::variable_defs};
 use rmcp::model::CallToolResult;
 use std::path::PathBuf;
@@ -155,7 +156,7 @@ fn a_missing_component_is_counted_not_expanded() {
 #[test]
 fn screenshots_render_an_instance_child_cropped_to_its_box() {
     let doc = document();
-    let shot = screenshot(&doc, "I1:38;1:35", Some(1.0), false);
+    let shot = screenshot(&doc, "I1:38;1:35", Some(1.0), &Rendering::default());
     assert_ne!(shot.is_error, Some(true), "{}", text(&shot));
     assert_eq!(
         json(&shot)["content"][1]["text"]
@@ -166,19 +167,19 @@ fn screenshots_render_an_instance_child_cropped_to_its_box() {
         Some("45x45 px, scale 1")
     );
     // The child has no override, so it looks exactly like the component's own child.
-    let original = screenshot(&doc, "1:35", Some(1.0), false);
+    let original = screenshot(&doc, "1:35", Some(1.0), &Rendering::default());
     assert_eq!(
         json(&shot)["content"][0]["data"],
         json(&original)["content"][0]["data"]
     );
     // An offset child: the crop must follow its transform inside the instance.
-    let offset = screenshot(&doc, "I1:45;1:42", Some(1.0), false);
-    let label = screenshot(&doc, "1:42", Some(1.0), false);
+    let offset = screenshot(&doc, "I1:45;1:42", Some(1.0), &Rendering::default());
+    let label = screenshot(&doc, "1:42", Some(1.0), &Rendering::default());
     assert_eq!(
         json(&offset)["content"][0]["data"],
         json(&label)["content"][0]["data"]
     );
-    let missing = screenshot(&doc, "I1:38;9:9", None, false);
+    let missing = screenshot(&doc, "I1:38;9:9", None, &Rendering::default());
     assert_eq!(missing.is_error, Some(true));
 }
 

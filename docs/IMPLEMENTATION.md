@@ -282,10 +282,13 @@ Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared mem
 
 ### Big files and images
 
-- `Document::open` reads the whole file (capped at `MAX_FILE_BYTES`, 1 GiB). The app opens
-  archives over 256 MB with `Document::open_lazy` (desktop) / `Document::from_lazy`
-  (browser): only the canvas, `meta.json` and the thumbnail are read; images stay in
-  `doc.lazy_images` as archive entries (`fig::archive`). Such a document cannot be saved.
+- `Document::open` reads the whole file (capped at `MAX_FILE_BYTES`, 1 GiB).
+  `Document::open_auto` (`crates/fig/src/open.rs`) opens archives over `LAZY_ABOVE` (256 MiB)
+  with `Document::open_lazy`; the desktop app and the MCP server use it, the browser uses
+  `Document::from_lazy`. A lazy open reads only the canvas, `meta.json` and the thumbnail;
+  images stay in `doc.lazy_images` as archive entries (`fig::archive`). Such a document
+  cannot be saved. The MCP server renders through `tools::rendering::Rendering`
+  (`render_complete` / `render_path_complete`, images read from the registered path).
 - Images are decoded per (image, level) in `render::images::Images`, a cache shared by all
   renders (`Renderer::with_images`). Level n is the image shrunk 2ⁿ times; the level comes
   from the paint's on-screen scale. Figma's `imageThumbnail` is used up to 256 px on screen.

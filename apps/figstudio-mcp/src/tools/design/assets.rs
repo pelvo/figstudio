@@ -87,7 +87,7 @@ pub(super) fn render(w: &mut Writer<'_>, target: &Target, name: String) -> bool 
         Target::Node(id) => Root::Node(*id),
         Target::Path(path) => Root::Path(path),
     };
-    let Ok(shot) = layer_shot(w.doc, root, ASSET_SCALE, w.options.system_fonts) else {
+    let Ok(shot) = layer_shot(w.doc, root, ASSET_SCALE, &w.options.rendering) else {
         w.out.notes.add("assets not rendered (empty or hidden)");
         return false;
     };

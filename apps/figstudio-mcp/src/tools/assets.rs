@@ -2,6 +2,7 @@
 use crate::{
     FigstudioServer,
     tools::{
+        rendering::Rendering,
         screenshot::{SCALE_RANGE, render_node},
         tool_error,
     },
@@ -16,7 +17,7 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 
 mod originals;
 
@@ -65,7 +66,13 @@ impl FigstudioServer {
             Ok(document) => document,
             Err(error) => return tool_error(error),
         };
-        let system_fonts = !self.no_system_fonts();
+        let rendering = match self
+            .files()
+            .rendering(input.file_key.as_deref(), !self.no_system_fonts())
+        {
+            Ok(rendering) => rendering,
+            Err(error) => return tool_error(error),
+        };
         match tokio::task::spawn_blocking(move || {
             download(
                 &document,
@@ -73,7 +80,7 @@ impl FigstudioServer {
                 input.format.unwrap_or_default(),
                 input.scale,
                 input.original.unwrap_or(false),
-                system_fonts,
+                &rendering,
             )
         })
         .await
@@ -96,7 +103,7 @@ pub fn download(
     format: AssetFormat,
     scale: Option<f64>,
     original: bool,
-    system_fonts: bool,
+    rendering: &Rendering,
 ) -> CallToolResult {
     download_within(
         doc,
@@ -104,7 +111,7 @@ pub fn download(
         format,
         scale,
         original,
-        system_fonts,
+        rendering,
         MAX_PAYLOAD_BYTES,
     )
 }
@@ -116,7 +123,7 @@ pub fn download_within(
     format: AssetFormat,
     scale: Option<f64>,
     original: bool,
-    system_fonts: bool,
+    rendering: &Rendering,
     max_payload: usize,
 ) -> CallToolResult {
     if node_ids.is_empty() || node_ids.len() > MAX_NODES {
@@ -130,9 +137,9 @@ pub fn download_within(
     let mut budget = Budget::new(max_payload);
     for id in node_ids {
         let outcome = if original {
-            original_images(doc, id, &mut budget)
+            original_images(doc, id, rendering, &mut budget)
         } else {
-            rendered(doc, id, format, scale, system_fonts, &mut budget.payload)
+            rendered(doc, id, format, scale, rendering, &mut budget.payload)
         };
         match outcome {
             Ok(items) => content.extend(items),
@@ -162,6 +169,11 @@ impl Payload {
     /// Whether anything more fits at all.
     pub(crate) fn is_full(&self) -> bool {
         self.0 == 0
+    }
+
+    /// Whether `bytes` more would fit.
+    pub(crate) fn fits(&self, bytes: usize) -> bool {
+        bytes <= self.0
     }
 
     /// Reserves `bytes`; `false` (and nothing taken) when they do not fit.
@@ -207,13 +219,13 @@ fn rendered(
     id: &str,
     format: AssetFormat,
     scale: Option<f64>,
-    system_fonts: bool,
+    rendering: &Rendering,
     payload: &mut Payload,
 ) -> Result<Vec<ContentBlock>, String> {
     if payload.is_full() {
         return Err(Payload::omitted(id));
     }
-    let shot = render_node(doc, id, scale, system_fonts)?;
+    let shot = render_node(doc, id, scale, rendering)?;
     let mut text = format!("{id}: {}", shot.describe());
     let pixmap = shot.frame.pixmap;
     let (bytes, mime) = match format {
@@ -262,9 +274,11 @@ fn jpeg(pixels: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
 
 /// The original files behind the image fills of `id` that this call has not sent yet, as
 /// image or blob items. Fails when the node has no image fills or none has stored bytes.
+/// Images of a lazily opened document are read from the file only once they fit the budget.
 fn original_images(
     doc: &Document,
     id: &str,
+    rendering: &Rendering,
     budget: &mut Budget,
 ) -> Result<Vec<ContentBlock>, String> {
     let hashes = originals::image_hashes(doc, id)?;
@@ -278,7 +292,23 @@ fn original_images(
             repeated += 1;
             continue;
         }
-        let Some(bytes) = doc.images.get(hash) else {
+        let bytes = if let Some(bytes) = doc.images.get(hash) {
+            Cow::Borrowed(bytes.as_slice())
+        } else if let Some(entry) = doc.lazy_images.get(hash) {
+            // The directory's size, checked before reading so a huge image is never loaded.
+            let size = usize::try_from(entry.size).unwrap_or(usize::MAX);
+            if budget.originals == 0 || !budget.payload.fits(size) {
+                omitted += 1;
+                continue;
+            }
+            match rendering.read(entry) {
+                Some(bytes) => Cow::Owned(bytes),
+                None => {
+                    missing += 1;
+                    continue;
+                }
+            }
+        } else {
             missing += 1;
             continue;
         };
@@ -288,8 +318,8 @@ fn original_images(
         }
         budget.originals -= 1;
         budget.sent.insert(hash.clone());
-        let data = STANDARD.encode(bytes);
-        let mime = image::guess_format(bytes).ok().map(|f| f.to_mime_type());
+        let data = STANDARD.encode(&bytes);
+        let mime = image::guess_format(&bytes).ok().map(|f| f.to_mime_type());
         content.push(match mime {
             Some(mime) => ContentBlock::image(data, mime),
             None => ContentBlock::resource(

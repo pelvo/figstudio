@@ -365,8 +365,19 @@ the instances inside it, each hash once, at most 20 per call, as `image` items (
 `image::guess_format`) or blob resources (`application/octet-stream`) when the format is
 unknown. Hashes with no stored bytes are counted in the text. A failing node is reported in
 its text line; the call is an error only when every node fails. Each behaviour has a test
-proven by a mutation. Not verified: lazily opened documents (`lazy_images` bytes are not
-read; the MCP registry opens eager), huge originals (no per-image size cap), SVG/PDF (absent).
+proven by a mutation. Not verified: SVG/PDF (absent).
+
+L7 lazy documents (PR #5 review). `FileRegistry` opens with `Document::open_auto_above`
+(eager up to `figstudio_fig::LAZY_ABOVE`, 256 MiB; `with_lazy_above(0)` forces lazy in
+tests). Every render (`get_screenshot`, `download_assets`, `get_design_context` assets,
+`get_figjam` pictures) goes through `tools::rendering::Rendering::draw`, which calls
+`render_complete` / `render_path_complete` and reads wanted images from the registered path
+with `archive::read_entry`; one `Images` cache (256 MiB) per registered file is shared by
+all calls. `original=true` on a lazy document checks the entry's stored size against the
+remaining payload budget before reading it, so an oversized original is omitted unread.
+Tests (`tests/lazy.rs`, each seen failing under a mutation): screenshots and originals of a
+forced-lazy open are byte-identical to an eager one, an image inside an instance path
+(built in-test) matches, and an over-budget original is omitted without a read.
 
 **L8: `get_figjam`.** The L2 XML with FigJam extras: sticky text and colour, connector
 endpoints, and per-node screenshots (L3) at small scale. **Done:** a built FigJam-kind document

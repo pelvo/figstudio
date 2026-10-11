@@ -1,5 +1,6 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use figstudio_fig::{Document, Guid, Node, Obj, Val};
+use figstudio_mcp::tools::rendering::Rendering;
 use figstudio_mcp::{FigstudioServer, tools::screenshot::screenshot};
 use rmcp::{
     ServiceExt,
@@ -48,7 +49,7 @@ fn doc() -> Document {
     Document::open(fixture()).unwrap()
 }
 fn shot(doc: &Document, id: &str, scale: Option<f64>) -> CallToolResult {
-    screenshot(doc, id, scale, false)
+    screenshot(doc, id, scale, &Rendering::default())
 }
 fn frame(id: Guid, width: f64, height: f64, visible: bool) -> Node {
     child(id, Guid(0, 1), "FRAME", width, height, visible)

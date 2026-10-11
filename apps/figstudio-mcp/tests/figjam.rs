@@ -1,5 +1,6 @@
 //! `get_figjam` on a board built in the test (no public FigJam fixture exists).
 use figstudio_fig::{Document, Guid, Node, Obj, Val};
+use figstudio_mcp::tools::rendering::Rendering;
 use figstudio_mcp::tools::{
     figjam::{figjam, figjam_within},
     metadata::metadata,
@@ -140,7 +141,7 @@ fn images(result: &CallToolResult) -> usize {
         .count()
 }
 fn call(doc: &Document, id: &str, images: bool, scale: Option<f64>) -> CallToolResult {
-    figjam(doc, Some(id), None, images, scale, false)
+    figjam(doc, Some(id), None, images, scale, &Rendering::default())
 }
 
 #[test]
@@ -230,10 +231,27 @@ fn more_than_twenty_images_are_cut_with_a_note() {
 #[test]
 fn bad_ids_list_the_pages_and_no_id_lists_pages() {
     let doc = board();
-    let bad = figjam(&doc, Some("9:999"), None, false, None, false);
+    let bad = figjam(
+        &doc,
+        Some("9:999"),
+        None,
+        false,
+        None,
+        &Rendering::default(),
+    );
     assert_eq!(bad.is_error, Some(true));
     assert!(text(&bad).contains("Available pages"));
-    assert!(text(&figjam(&doc, None, None, false, None, false)).starts_with("<pages"));
+    assert!(
+        text(&figjam(
+            &doc,
+            None,
+            None,
+            false,
+            None,
+            &Rendering::default()
+        ))
+        .starts_with("<pages")
+    );
 }
 
 /// One parsed element: name, attributes, text.
@@ -371,7 +389,15 @@ fn image_payload_budget_leaves_out_pictures_with_a_note() {
         .len();
     // Base64 is 4/3 of the PNG; allow one picture's worth of raw bytes.
     let raw = first / 4 * 3;
-    let tight = figjam_within(&doc, Some("9:1"), None, true, None, false, raw);
+    let tight = figjam_within(
+        &doc,
+        Some("9:1"),
+        None,
+        true,
+        None,
+        &Rendering::default(),
+        raw,
+    );
     assert!(images(&tight) < 7, "{}", images(&tight));
     assert!(images(&tight) >= 1);
     let value = serde_json::to_value(&tight).unwrap();

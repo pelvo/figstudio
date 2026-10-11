@@ -456,3 +456,9 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   TESTING.md section 12; IMPLEMENTATION.md map and tasks M1–M6; MCP-PLAN status. Tool list checked
   against the release binary over stdio (13 tools, 1 prompt); docs only, foreground
   `scripts/check.sh`: all checks passed. Not verified: client configs against a live client.
+- 2026-10-12 — MCP lazy documents (PR #5 review lane 4): `FileRegistry` opens via `open_auto_above`
+  (`with_lazy_above` for tests); all MCP renders use `render_complete`/`render_path_complete` with a
+  per-file shared `Images` cache and on-demand `archive::read_entry`; `download_assets original=true`
+  reads lazy originals after a size check against the budget. `tests/lazy.rs` proven by mutations;
+  CLI render of 7 fixtures at 0.25 and 1 byte-identical to 407102c; foreground `scripts/check.sh`:
+  all checks passed. Not verified: a real >256 MiB file, the wasm UI (`web.rs` unchanged).

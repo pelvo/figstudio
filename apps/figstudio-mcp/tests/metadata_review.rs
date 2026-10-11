@@ -1,5 +1,6 @@
 use figstudio_fig::{Document, Guid, Node, Obj, Val};
 use figstudio_mcp::tools::metadata::metadata;
+use figstudio_mcp::tools::rendering::Rendering;
 use quick_xml::{Reader, events::Event};
 use std::{collections::HashMap, path::PathBuf};
 
@@ -190,7 +191,7 @@ fn figjam_output_shares_the_byte_budget() {
         nodes.push(node(index, Guid(9, 1), "STICKY", &"s".repeat(180)));
     }
     doc.set_nodes(nodes).unwrap();
-    let result = figjam(&doc, Some("9:1"), None, false, None, false);
+    let result = figjam(&doc, Some("9:1"), None, false, None, &Rendering::default());
     let out = serde_json::to_value(result).unwrap()["content"][0]["text"]
         .as_str()
         .unwrap()

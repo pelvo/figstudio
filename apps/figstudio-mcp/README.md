@@ -210,8 +210,9 @@ Things that are approximated or not checked. Where a tool knows, its reply says 
   children are dropped, mirrored layers and grid stacks are approximated (all counted), and
   fields that differ between a component root and an instance only through
   `derivedSymbolData` take the instance's own value.
-- **Original image bytes** come from eagerly opened documents only; there is no size cap
-  per image.
+- **Big files** (over 256 MiB) open lazily: images are read from the file when a render or
+  `original=true` needs them. An original bigger than what is left of the 32 MB reply
+  budget is omitted without being read.
 - **FigJam:** connector geometry beyond loose-end coordinates, table row/column structure,
   merged cells and sticky text style are not reported.
 - **Code Connect and design system** cover this file only. No remote libraries.

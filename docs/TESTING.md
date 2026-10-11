@@ -256,7 +256,8 @@ FigJam and most design-context mappings; the fixtures have no variables or FigJa
   pipe against the same handler the transports use.
 
 **Tool tests** (one file or pair per tool: `metadata*.rs`, `screenshot.rs`, `variables*.rs`,
-`instances*.rs`, `design*.rs`, `assets.rs`, `figjam.rs`, `codeconnect*.rs`). They check output
+`instances*.rs`, `design*.rs`, `assets.rs`, `figjam.rs`, `codeconnect*.rs`, `lazy.rs` for
+forced-lazy opens matching eager ones). They check output
 shape, every nodeId form, errors as `isError` results, caps at their exact boundary, and
 unchanged fixture bytes. `*_review.rs` files hold regressions from the cross-family reviews;
 each failed on the code it reviewed. Code Connect tests write sidecars into a temp directory
