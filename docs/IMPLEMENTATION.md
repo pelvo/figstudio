@@ -53,6 +53,12 @@ Do not add a dependency without a reason you can state in the commit message.
 
 ## 2. Data flow
 
+### Tokens (`crates/fig/src/tokens.rs`)
+
+`Tokens::new(&Document)` indexes variable collections, per-mode values and stored style
+payloads by field name. GUID/asset lookups and bounded alias resolution are shared with
+rendering; the renderer deliberately keeps the first stored mode. No fonts or new dependencies.
+
 ### Reading a file (`crates/fig`)
 
 ```

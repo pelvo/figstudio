@@ -7,6 +7,7 @@
 pub mod archive;
 mod doc;
 mod read;
+pub mod tokens;
 mod val;
 mod write;
 
