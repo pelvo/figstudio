@@ -68,7 +68,7 @@ pub(super) fn collect<'d>(doc: &'d Document, root: &Target, limit: usize) -> Opt
                     level,
                     target: Target::Node(id),
                     kind: &node.kind,
-                    data: Cow::Borrowed(&node.data),
+                    data: with_component(doc, &node.kind, Cow::Borrowed(&node.data)),
                 });
                 if node.kind == "INSTANCE" {
                     let left = limit - layers.items.len();
@@ -95,8 +95,38 @@ impl<'d> Layers<'d> {
                 level: base + node.level,
                 target: Target::Path(node.path),
                 kind,
-                data: Cow::Owned(node.data),
+                data: with_component(doc, kind, Cow::Owned(node.data)),
             });
         }
     }
+}
+
+/// Fields of a component root that say what it is, not how it looks; an instance keeps its own.
+const IDENTITY: [&str; 9] = [
+    "guid",
+    "parentIndex",
+    "type",
+    "name",
+    "visible",
+    "transform",
+    "componentPropDefs",
+    "isSymbolPublishable",
+    "sharedSymbolVersion",
+];
+
+/// An instance's (already override-resolved) data over its component root's data: the
+/// component supplies the fills, radii, layout and other fields the instance does not store.
+/// `symbol_id` follows swaps, so a swapped instance takes them from the component it shows.
+fn with_component<'d>(doc: &Document, kind: &str, data: Cow<'d, Val>) -> Cow<'d, Val> {
+    let component = (kind == "INSTANCE")
+        .then(|| resolve::symbol_id(&data).and_then(|id| doc.node(id)))
+        .flatten();
+    let Some(Val::Obj(fields)) = component.map(|c| &c.data) else {
+        return data;
+    };
+    let mut base = fields.clone();
+    for key in IDENTITY {
+        base.remove(key);
+    }
+    Cow::Owned(Val::Obj(base).merged(&data))
 }

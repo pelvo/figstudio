@@ -14,15 +14,16 @@ pub(super) fn decorate(
         border(out, data, tokens, notes);
         radius(out, data);
     }
-    effects(out, kind == "TEXT", data, notes);
-    common(out, data, notes);
-}
-
-/// Opacity, blend mode and masks, which apply to every layer including assets.
-pub(super) fn common(out: &mut Classes, data: &Val, notes: &mut Notes) {
+    effects(out, kind == "TEXT", data, tokens, notes);
     if let Some(opacity) = data.num("opacity").filter(|o| *o < 1.0) {
         out.push(format!("opacity-[{}]", num(f64::from(opacity))));
     }
+    common(out, data, notes);
+}
+
+/// Blend mode and masks: what a rendered asset cannot carry, because they depend on the
+/// layers behind it. Opacity and effects are already baked into the asset's picture.
+pub(super) fn common(out: &mut Classes, data: &Val, notes: &mut Notes) {
     if let Some(mode) = data
         .text("blendMode")
         .filter(|m| !matches!(*m, "NORMAL" | "PASS_THROUGH"))
@@ -114,9 +115,19 @@ fn radius(out: &mut Classes, data: &Val) {
     }
 }
 
-fn effects(out: &mut Classes, text: bool, data: &Val, notes: &mut Notes) {
+fn effects(out: &mut Classes, text: bool, data: &Val, tokens: &Tokens, notes: &mut Notes) {
     let mut shadows = Vec::new();
-    for effect in data.get("effects").map(Val::items).unwrap_or_default() {
+    // An attached effect style is the source of truth; the node's copy can be stale.
+    let styled = data
+        .get("styleIdForEffect")
+        .or_else(|| data.get("inheritEffectStyleID"))
+        .and_then(|r| tokens.style(r))
+        .and_then(|s| s.effects.as_ref());
+    for effect in styled
+        .or_else(|| data.get("effects"))
+        .map(Val::items)
+        .unwrap_or_default()
+    {
         if effect.flag("visible") == Some(false) {
             continue;
         }

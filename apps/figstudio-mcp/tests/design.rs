@@ -191,7 +191,7 @@ fn fills_gradients_and_bound_variables() {
     let doc = doc_with(vec![a, b, c, variable]);
     assert!(code(&doc, "9:1").contains("bg-[#0000FF80]"));
     let out = code(&doc, "9:2");
-    assert!(out.contains("[background:linear-gradient(90deg,#FF0000 0%,#00FF00 100%),linear-gradient(#FF0000,#FF0000)]"), "{out}");
+    assert!(out.contains("[background:linear-gradient(90deg,#FF0000_0%,#00FF00_100%),linear-gradient(#FF0000,#FF0000)]"), "{out}");
     let out = code(&doc, "9:3");
     assert!(
         out.contains("bg-[var(--brand-primary-500,#000000)]"),

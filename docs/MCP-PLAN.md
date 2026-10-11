@@ -319,6 +319,23 @@ Not verified: live MCP clients, private or large files (time and size of real pa
 closely the generated code matches the design visually, image fills behind children
 (counted, dropped), mirrored layers (counted), grid stacks (placed absolutely, counted).
 
+L6 review fixes (cross-family review of `247c8de`): the 100 000-byte code cap now holds
+exactly. Each element is measured after escaping, together with the closing tags it leaves
+pending. An element that does not fit is cut out, and its asset is not rendered. Inline
+images are limited to `MAX_INLINE_BYTES` (4 MB of base64) per reply; assets past that are
+counted as `inline size cap`. An instance root merges its component root's data under its
+own resolved data (identity fields excluded), so the component's fills, radii and layout
+show. Tailwind arbitrary values carry no spaces (`_`). Line height follows the renderer:
+RAW is a unitless multiplier (`leading-[1.5]`), PERCENT `%`, PIXELS px, and zero or less is
+skipped. Tracking drops only a numeric zero. Assets keep only blend mode and masks (opacity
+and effects are in the PNG). Effect styles resolve through `styleIdForEffect` and
+`inheritEffectStyleID`. Gradient stops read `stopsVar` (ColorStopVar with `colorVar`) before
+`stops`. Weight comes only from `fontName.style` through `fig::tokens::font_weight`; NodeChange
+has no `fontWeight`. Each fix has a test in `tests/design_review.rs` that failed on `247c8de`,
+and each was proven again by a mutation.
+Not verified: a component root's fields that differ between component and instance only
+through `derivedSymbolData` (the instance's own data wins).
+
 **L7: `download_assets`.** `nodeIds` (up to 20), `format` png|jpg, `scale` 0.01–4, and
 `original=true` for image-fill source bytes by hash. **Done:** tests decode each format and
 compare the original bytes to `Document.images`.

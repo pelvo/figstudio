@@ -1,4 +1,8 @@
 //! Rendered PNG assets: stable names, files kept inside the assets directory, or inline images.
+use super::jsx::Writer;
+use super::walk::Target;
+use super::{MAX_ASSETS, MAX_INLINE_BYTES};
+use crate::tools::screenshot::{Root, layer_png};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -65,4 +69,66 @@ pub(super) fn write(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<Pat
         let _ = std::fs::remove_file(&temp);
     }
     result.map(|()| dir.join(name))
+}
+
+/// One rendered asset.
+#[derive(Debug)]
+pub(super) struct Asset {
+    pub(super) name: String,
+    pub(super) node: String,
+    /// What the code's `src` holds: the written path, or the name for inline images.
+    pub(super) reference: String,
+    pub(super) inline: Option<Vec<u8>>,
+}
+
+/// Asset render scale: sharp on high-density screens.
+const ASSET_SCALE: f64 = 2.0;
+
+/// Renders `target` to the PNG asset `name`; `false` (counted) when it could not be
+/// rendered or stored, or would exceed the asset caps.
+pub(super) fn render(w: &mut Writer<'_>, target: &Target, name: String) -> bool {
+    if w.out.assets.len() >= MAX_ASSETS {
+        w.out.notes.add("assets not rendered (asset cap)");
+        return false;
+    }
+    let root = match target {
+        Target::Node(id) => Root::Node(*id),
+        Target::Path(path) => Root::Path(path),
+    };
+    let Ok(png) = layer_png(w.doc, root, ASSET_SCALE, w.options.system_fonts) else {
+        w.out.notes.add("assets not rendered (empty or hidden)");
+        return false;
+    };
+    if !crate::tools::screenshot::approximations(&png.stats).is_empty() {
+        w.out
+            .notes
+            .add("assets with render approximations (see get_screenshot)");
+    }
+    let (reference, inline) = match &w.options.assets {
+        Assets::Inline => {
+            let encoded = png.bytes.len().div_ceil(3) * 4;
+            if w.inline_bytes + encoded > MAX_INLINE_BYTES {
+                w.out.notes.add("assets not rendered (inline size cap)");
+                return false;
+            }
+            w.inline_bytes += encoded;
+            (name.clone(), Some(png.bytes))
+        }
+        Assets::Dir(dir) => match write(dir, &name, &png.bytes) {
+            Ok(path) => (path.display().to_string(), None),
+            Err(_) => {
+                w.out
+                    .notes
+                    .add("assets not written (assets directory error)");
+                return false;
+            }
+        },
+    };
+    w.out.assets.push(Asset {
+        name,
+        node: target.id(),
+        reference,
+        inline,
+    });
+    true
 }

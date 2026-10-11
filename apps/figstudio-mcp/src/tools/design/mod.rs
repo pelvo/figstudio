@@ -31,6 +31,8 @@ pub const MAX_NODES: (usize, usize) = (1_000, 5_000);
 pub const MAX_CODE_BYTES: usize = 100_000;
 /// Rendered assets per call; further vectors and images stay placeholders.
 pub const MAX_ASSETS: usize = 30;
+/// Base64 bytes of inline images per reply; further assets stay placeholders.
+pub const MAX_INLINE_BYTES: usize = 4_000_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -67,7 +69,7 @@ pub struct Options {
 #[tool_router(router = design_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Get React + Tailwind reference code for a local node (data-node-id and data-name on every element), then instructions for the agent and the rendered assets. Auto-layout becomes flex, other children absolute; fills, gradients, strokes, radii, shadows, blurs, opacity, blend modes, typography and style runs are carried over; bound colour variables become var(--name,fallback). Vectors, boolean operations and image-filled leaves become <img> PNG assets rendered locally (written to the server's assets directory, or inline images). Instances show their resolved content with overrides; nodeId may be an instance path (I1:2;3:4). Large trees are cut (maxNodes, size cap) with a note: use get_metadata for the outline, then call this on children."
+        description = "Get React + Tailwind reference code for a local node (data-node-id and data-name on every element), then instructions for the agent and the rendered assets. Auto-layout becomes flex, other children absolute; fills, gradients, strokes, radii, shadows, blurs, opacity, blend modes, typography and style runs are carried over; bound colour variables become var(--name,fallback). Vectors, boolean operations and image-filled leaves become <img> PNG assets rendered locally (written to the server's assets directory, or inline images). Instances show their resolved content with overrides; nodeId may be an instance path (I1:2;3:4). Large trees are cut (maxNodes, 100 kB code cap, 30 assets, 4 MB of inline images) with a note: use get_metadata for the outline, then call this on children."
     )]
     async fn get_design_context(
         &self,

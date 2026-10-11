@@ -21,12 +21,9 @@ pub(super) fn classes(out: &mut Classes, data: &Val, tokens: &Tokens, notes: &mu
         ));
     }
     let style = field("fontName").and_then(|f| f.text("style"));
-    let weight = field("fontWeight")
-        .and_then(Val::as_f32)
-        .map(|w| num(f64::from(w)))
-        .or_else(|| style.map(|s| font_weight(s).to_string()));
-    if let Some(weight) = weight {
-        out.push(format!("font-[{weight}]"));
+    // NodeChange has no numeric weight (only FontMetaData does); the style name carries it.
+    if let Some(style) = style {
+        out.push(format!("font-[{}]", font_weight(style)));
     }
     if style.is_some_and(|s| s.to_ascii_lowercase().contains("italic")) {
         out.push("italic");
@@ -37,7 +34,8 @@ pub(super) fn classes(out: &mut Classes, data: &Val, tokens: &Tokens, notes: &mu
     if let Some(leading) = measure(field("lineHeight"), true) {
         out.push(format!("leading-[{leading}]"));
     }
-    if let Some(tracking) = measure(field("letterSpacing"), false).filter(|t| !t.starts_with('0')) {
+    let spacing = field("letterSpacing").filter(|v| v.num("value").is_some_and(|n| n != 0.0));
+    if let Some(tracking) = measure(spacing, false) {
         out.push(format!("tracking-[{tracking}]"));
     }
     match field("textCase").and_then(Val::as_str) {
@@ -71,17 +69,24 @@ pub(super) fn classes(out: &mut Classes, data: &Val, tokens: &Tokens, notes: &mu
     }
 }
 
-/// A Figma `Number` {value, units}: PIXELS and RAW are px (RAW zero line height is auto and
-/// skipped), PERCENT is a percentage of the font size (`em` for letter spacing).
+/// A Figma `Number` {value, units} as the renderer reads it. Line height: PIXELS is px,
+/// PERCENT a percentage of the font size, RAW a unitless font-size multiplier (zero or less
+/// is the font's natural height and skipped). Letter spacing: PERCENT is `em`/100, otherwise px.
 fn measure(value: Option<&Val>, line_height: bool) -> Option<String> {
     let v = value?;
     let n = f64::from(v.num("value")?);
-    match v.text("units").unwrap_or("RAW") {
-        "PERCENT" if line_height => Some(format!("{}%", num(n))),
-        "PERCENT" => Some(format!("{}em", num(n / 100.0))),
-        "RAW" if line_height && n == 0.0 => None,
-        _ => Some(px(n)),
+    let units = v.text("units").unwrap_or("RAW");
+    if line_height {
+        return (n > 0.0).then(|| match units {
+            "PIXELS" => px(n),
+            "PERCENT" => format!("{}%", num(n)),
+            _ => num(n),
+        });
     }
+    Some(match units {
+        "PERCENT" => format!("{}em", num(n / 100.0)),
+        _ => px(n),
+    })
 }
 
 /// Text split into runs of the same `styleID`. `characterStyleIDs` holds one id per UTF-16

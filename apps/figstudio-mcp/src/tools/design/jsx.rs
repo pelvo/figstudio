@@ -1,9 +1,6 @@
 //! Writes the collected layers as nested JSX elements.
-use super::walk::{Item, Layers, Target};
-use super::{
-    Assets, Classes, MAX_ASSETS, MAX_CODE_BYTES, Notes, Options, assets, layout, paint, style, text,
-};
-use crate::tools::screenshot::{Root, layer_png};
+use super::walk::{Item, Layers};
+use super::{Assets, Classes, MAX_CODE_BYTES, Notes, Options, assets, layout, paint, style, text};
 use figstudio_fig::{Document, Val, tokens::Tokens};
 use html_escape::encode_double_quoted_attribute as attr;
 
@@ -15,34 +12,26 @@ const PICTURE_KINDS: [&str; 5] = [
     "REGULAR_POLYGON",
     "LINE",
 ];
-/// Asset render scale: sharp on high-density screens.
-const ASSET_SCALE: f64 = 2.0;
-
-/// One rendered asset.
-#[derive(Debug)]
-pub(super) struct Asset {
-    pub(super) name: String,
-    pub(super) node: String,
-    /// What the code's `src` holds: the written path, or the name for inline images.
-    pub(super) reference: String,
-    pub(super) inline: Option<Vec<u8>>,
-}
 
 /// The written code and what was left out.
 #[derive(Debug, Default)]
 pub(super) struct Output {
     pub(super) code: String,
-    pub(super) assets: Vec<Asset>,
+    pub(super) assets: Vec<assets::Asset>,
     pub(super) notes: Notes,
     /// The size cap cut the code.
     pub(super) truncated: bool,
 }
 
-struct Writer<'a> {
-    doc: &'a Document,
-    options: &'a Options,
+pub(super) struct Writer<'a> {
+    pub(super) doc: &'a Document,
+    pub(super) options: &'a Options,
     tokens: Tokens,
-    out: Output,
+    pub(super) out: Output,
+    /// Code length the element being written must stay within (cap minus pending closings).
+    limit: usize,
+    /// Base64 bytes of the inline images so far.
+    pub(super) inline_bytes: usize,
 }
 
 pub(super) fn write(doc: &Document, layers: &Layers<'_>, options: &Options) -> Output {
@@ -51,9 +40,13 @@ pub(super) fn write(doc: &Document, layers: &Layers<'_>, options: &Options) -> O
         options,
         tokens: Tokens::new(doc),
         out: Output::default(),
+        limit: MAX_CODE_BYTES,
+        inline_bytes: 0,
     };
     // Open elements: (level, index into items, closing tag).
     let mut open: Vec<(usize, usize, &str)> = Vec::new();
+    // Bytes of the closing tags of `open`, reserved so the cap holds once they are written.
+    let mut closing = 0;
     let mut skip_below: Option<usize> = None;
     let items = &layers.items;
     for (index, item) in items.iter().enumerate() {
@@ -62,20 +55,30 @@ pub(super) fn write(doc: &Document, layers: &Layers<'_>, options: &Options) -> O
         }
         skip_below = None;
         while let Some((_, _, tag)) = open.pop_if(|(level, _, _)| *level >= item.level) {
+            closing -= close_len(open.len(), tag);
             w.close(open.len(), tag);
         }
         if index > 0 && item.data.flag("visible") == Some(false) {
             skip_below = Some(item.level);
             continue;
         }
-        if w.out.code.len() > MAX_CODE_BYTES {
+        let parent = open.last().map(|(_, i, _)| &*items[*i].data);
+        let children = items.get(index + 1).is_some_and(|n| n.level > item.level);
+        let before = w.out.code.len();
+        w.limit = MAX_CODE_BYTES.saturating_sub(closing);
+        let tag = w.element(item, parent, children, open.len());
+        let close = tag.map_or(0, |tag| close_len(open.len(), tag));
+        // The element (escaping included) and every closing tag it leaves pending must fit.
+        if w.out.code.len() + close > w.limit {
+            w.out.code.truncate(before);
             w.out.truncated = true;
             break;
         }
-        let parent = open.last().map(|(_, i, _)| &*items[*i].data);
-        let children = items.get(index + 1).is_some_and(|n| n.level > item.level);
-        match w.element(item, parent, children, open.len()) {
-            Some(tag) => open.push((item.level, index, tag)),
+        match tag {
+            Some(tag) => {
+                closing += close;
+                open.push((item.level, index, tag));
+            }
             None => skip_below = Some(item.level),
         }
     }
@@ -93,6 +96,7 @@ impl Writer<'_> {
     }
 
     fn close(&mut self, depth: usize, tag: &str) {
+        debug_assert_eq!(close_len(depth, tag), 2 * depth + tag.len() + 4);
         self.line(depth, &format!("</{tag}>"));
     }
 
@@ -221,63 +225,29 @@ impl Writer<'_> {
         );
         style::common(&mut classes, &item.data, &mut self.out.notes);
         let classes = attr(&classes.join()).into_owned();
-        let src = self.asset(&item.target);
-        match src {
-            Some(src) => {
-                let alt = attr(item.data.text("name").unwrap_or("")).into_owned();
-                self.line(
-                    depth,
-                    &format!(
-                        "<img {head} alt=\"{alt}\" src=\"{}\" className=\"{classes}\" />",
-                        attr(&src)
-                    ),
-                );
-            }
-            None => self.line(depth, &format!("<div {head} className=\"{classes}\" />")),
+        let name = assets::name(&self.options.file_key, &item.target.id());
+        let src = match &self.options.assets {
+            Assets::Inline => name.clone(),
+            Assets::Dir(dir) => dir.join(&name).display().to_string(),
+        };
+        let alt = attr(item.data.text("name").unwrap_or("")).into_owned();
+        let img = format!(
+            "<img {head} alt=\"{alt}\" src=\"{}\" className=\"{classes}\" />",
+            attr(&src)
+        );
+        // Render only what the size cap lets into the code; the caller cuts an oversized line.
+        let fits = self.out.code.len() + 2 * depth + img.len() < self.limit;
+        if !fits || assets::render(self, &item.target, name) {
+            self.line(depth, &img);
+        } else {
+            self.line(depth, &format!("<div {head} className=\"{classes}\" />"));
         }
     }
+}
 
-    /// Renders `target` to a PNG asset and returns its `src`; `None` (counted) when it could
-    /// not be rendered or stored.
-    fn asset(&mut self, target: &Target) -> Option<String> {
-        if self.out.assets.len() >= MAX_ASSETS {
-            self.out.notes.add("assets not rendered (asset cap)");
-            return None;
-        }
-        let root = match target {
-            Target::Node(id) => Root::Node(*id),
-            Target::Path(path) => Root::Path(path),
-        };
-        let Ok(png) = layer_png(self.doc, root, ASSET_SCALE, self.options.system_fonts) else {
-            self.out.notes.add("assets not rendered (empty or hidden)");
-            return None;
-        };
-        if !crate::tools::screenshot::approximations(&png.stats).is_empty() {
-            self.out
-                .notes
-                .add("assets with render approximations (see get_screenshot)");
-        }
-        let name = assets::name(&self.options.file_key, &target.id());
-        let (reference, inline) = match &self.options.assets {
-            Assets::Inline => (name.clone(), Some(png.bytes)),
-            Assets::Dir(dir) => match assets::write(dir, &name, &png.bytes) {
-                Ok(path) => (path.display().to_string(), None),
-                Err(_) => {
-                    self.out
-                        .notes
-                        .add("assets not written (assets directory error)");
-                    return None;
-                }
-            },
-        };
-        self.out.assets.push(Asset {
-            name,
-            node: target.id(),
-            reference: reference.clone(),
-            inline,
-        });
-        Some(reference)
-    }
+/// Bytes [`Writer::close`] writes: indent, `</tag>` and the newline.
+fn close_len(depth: usize, tag: &str) -> usize {
+    2 * depth + tag.len() + 4
 }
 
 fn layout_size(data: &Val) -> (f64, f64) {

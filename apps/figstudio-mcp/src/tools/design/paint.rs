@@ -77,8 +77,11 @@ pub(super) fn layer(
     if !kind.starts_with("GRADIENT") {
         return None;
     }
+    // Bound stops live in `stopsVar` (ColorStopVar); `stops` (ColorStop) is the plain copy.
     let stops: Vec<String> = paint
-        .get("stops")
+        .get("stopsVar")
+        .filter(|v| !v.items().is_empty())
+        .or_else(|| paint.get("stops"))
         .map(Val::items)
         .unwrap_or_default()
         .iter()
@@ -141,7 +144,7 @@ pub(super) fn layer(
 pub(super) fn background(layers: &[String]) -> Option<String> {
     match layers {
         [] => None,
-        [one] if !one.contains("gradient(") => Some(format!("bg-[{one}]")),
+        [one] if !one.contains("gradient(") => Some(format!("bg-[{}]", arbitrary(one))),
         _ => {
             let css: Vec<String> = layers
                 .iter()
@@ -154,7 +157,13 @@ pub(super) fn background(layers: &[String]) -> Option<String> {
                     }
                 })
                 .collect();
-            Some(format!("[background:{}]", css.join(",")))
+            Some(format!("[background:{}]", arbitrary(&css.join(","))))
         }
     }
+}
+
+/// A CSS value inside a Tailwind arbitrary class: Tailwind splits classes on whitespace and
+/// reads `_` as a space, so spaces become underscores.
+pub(super) fn arbitrary(css: &str) -> String {
+    css.split_whitespace().collect::<Vec<_>>().join("_")
 }
