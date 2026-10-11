@@ -21,6 +21,7 @@ use std::path::PathBuf;
 pub struct FigstudioServer {
     files: FileRegistry,
     no_system_fonts: bool,
+    assets: tools::design::Assets,
     tool_router: ToolRouter<Self>,
 }
 
@@ -30,11 +31,24 @@ impl FigstudioServer {
         Self {
             files: FileRegistry::new(paths),
             no_system_fonts,
+            assets: tools::design::Assets::default(),
             tool_router: Self::tool_router()
                 + Self::metadata_router()
                 + Self::screenshot_router()
-                + Self::variables_router(),
+                + Self::variables_router()
+                + Self::design_router(),
         }
+    }
+
+    /// Use `assets` for the PNG assets of `get_design_context`.
+    pub fn with_assets(mut self, assets: tools::design::Assets) -> Self {
+        self.assets = assets;
+        self
+    }
+
+    /// Where `get_design_context` puts its assets.
+    pub fn assets(&self) -> &tools::design::Assets {
+        &self.assets
     }
 
     /// Return the registry shared by all sessions.

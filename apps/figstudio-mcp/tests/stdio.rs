@@ -104,14 +104,17 @@ async fn stdio_sigterm_shuts_down_cleanly() {
 async fn stdio_discovers_and_calls_tools() {
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"));
-        command.arg("--no-system-fonts").arg(fixture());
+        command
+            .args(["--no-system-fonts", "--assets", "inline"])
+            .arg(fixture());
         let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
         let info = client.peer_info().unwrap();
         assert_eq!(info.server_info.as_ref().unwrap().name, "figstudio-mcp");
         assert!(info.instructions.as_ref().unwrap().contains("Offline"));
         let tools = client.list_all_tools().await.unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
         for name in [
+            "get_design_context",
             "whoami",
             "list_files",
             "get_metadata",
@@ -143,6 +146,23 @@ async fn stdio_discovers_and_calls_tools() {
         assert_eq!(files[0]["key"], "structure");
         assert_eq!(files[0]["path"], fixture().to_str().unwrap());
         assert!(files[0]["pages"].is_null());
+        let design = client
+            .call_tool(
+                CallToolRequestParams::new("get_design_context")
+                    .with_arguments(json!({"nodeId": "1:25"}).as_object().unwrap().clone()),
+            )
+            .await
+            .unwrap();
+        assert_ne!(design.is_error, Some(true));
+        let design = serde_json::to_value(&design).unwrap();
+        let content = design["content"].as_array().unwrap();
+        assert!(
+            content[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains(r#"src="structure_1-26.png""#)
+        );
+        assert_eq!(content.iter().filter(|c| c["type"] == "image").count(), 8);
         client.cancel().await.unwrap();
     })
     .await

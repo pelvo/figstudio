@@ -1,4 +1,6 @@
 //! Offline discovery and read-only document tools.
+/// React + Tailwind design context with rendered assets.
+pub mod design;
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
 /// PNG renders of nodes.

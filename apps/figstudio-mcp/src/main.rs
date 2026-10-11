@@ -1,5 +1,5 @@
 use clap::Parser;
-use figstudio_mcp::{FigstudioServer, serve_http};
+use figstudio_mcp::{FigstudioServer, serve_http, tools::design::Assets};
 use rmcp::ServiceExt;
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -12,6 +12,12 @@ struct Args {
     /// Disable installed fonts for subsequent rendering tools.
     #[arg(long)]
     no_system_fonts: bool,
+    /// Directory for get_design_context's PNG assets (default ./figma-assets).
+    #[arg(long, value_name = "DIR", conflicts_with = "assets")]
+    assets_dir: Option<PathBuf>,
+    /// `inline`: return assets as image content instead of writing files.
+    #[arg(long, value_parser = ["inline"])]
+    assets: Option<String>,
     #[arg(required = true, value_name = "FILE.fig")]
     files: Vec<PathBuf>,
 }
@@ -28,7 +34,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let server = FigstudioServer::new(args.files, args.no_system_fonts);
+    let assets = match (args.assets, args.assets_dir) {
+        (Some(_), _) => Assets::Inline,
+        (None, Some(dir)) => Assets::dir(dir),
+        (None, None) => Assets::default(),
+    };
+    let server = FigstudioServer::new(args.files, args.no_system_fonts).with_assets(assets);
     if let Some(addr) = args.http {
         if !addr.ip().is_loopback() {
             eprintln!("warning: non-loopback bind; rmcp rejects non-loopback Host headers");
@@ -94,6 +105,22 @@ mod tests {
         assert_eq!(args.http.unwrap().port(), 4567);
         assert_eq!(args.files, vec![PathBuf::from("example.fig")]);
         assert!(Args::try_parse_from(["figstudio-mcp"]).is_err());
+        let args = Args::try_parse_from(["figstudio-mcp", "--assets-dir", "out", "a.fig"]).unwrap();
+        assert_eq!(args.assets_dir, Some(PathBuf::from("out")));
+        let args = Args::try_parse_from(["figstudio-mcp", "--assets", "inline", "a.fig"]).unwrap();
+        assert_eq!(args.assets.as_deref(), Some("inline"));
+        assert!(Args::try_parse_from(["figstudio-mcp", "--assets", "other", "a.fig"]).is_err());
+        assert!(
+            Args::try_parse_from([
+                "figstudio-mcp",
+                "--assets",
+                "inline",
+                "--assets-dir",
+                "d",
+                "a.fig"
+            ])
+            .is_err()
+        );
         assert!(Args::try_parse_from(["figstudio-mcp", "--http=invalid", "example.fig"]).is_err());
         assert!(
             Args::try_parse_from(["figstudio-mcp", "example.fig"])

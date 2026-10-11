@@ -79,6 +79,11 @@ impl FileRegistry {
         }
     }
 
+    /// The registered stem of the file `key` selects.
+    pub fn key(&self, key: Option<&str>) -> Result<String, McpError> {
+        self.resolve(key).map(|file| file.key.clone())
+    }
+
     /// Open once per file; failures remain retryable even after cancellation.
     pub async fn open(&self, key: Option<&str>) -> Result<Arc<Document>, McpError> {
         let file = self.resolve(key)?;

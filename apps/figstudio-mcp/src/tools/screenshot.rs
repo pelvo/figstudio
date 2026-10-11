@@ -116,7 +116,7 @@ pub fn screenshot(
 
 /// What a screenshot draws: a document node, or one node inside an instance on its own.
 #[derive(Clone, Copy)]
-enum Root<'p> {
+pub(crate) enum Root<'p> {
     Node(Guid),
     Path(&'p InstancePath),
 }
@@ -140,7 +140,7 @@ fn instance_child(
     render(doc, Root::Path(path), bounds, scale, None, system_fonts)
 }
 
-/// Renders `root` into `bounds` (page units) at `scale`, capped at [`MAX_SIDE_PX`].
+/// Renders `root` into `bounds` and replies with the PNG and a size and approximations line.
 fn render(
     doc: &Document,
     root: Root<'_>,
@@ -149,9 +149,66 @@ fn render(
     background: Option<figstudio_render::color::AlphaColor<figstudio_render::color::Srgb>>,
     system_fonts: bool,
 ) -> CallToolResult {
+    let png = match render_png(doc, root, bounds, scale, background, system_fonts) {
+        Ok(png) => png,
+        Err(error) => return failure(error),
+    };
+    let mut text = format!(
+        "{}x{} px, scale {}",
+        png.width,
+        png.height,
+        significant(png.scale)
+    );
+    let notes = approximations(&png.stats);
+    if !notes.is_empty() {
+        text.push_str("\napproximations: ");
+        text.push_str(&notes.join(", "));
+    }
+    CallToolResult::success(vec![
+        ContentBlock::image(STANDARD.encode(png.bytes), "image/png"),
+        ContentBlock::text(text),
+    ])
+}
+
+/// An encoded render and what it drew inexactly.
+#[derive(Debug)]
+pub(crate) struct Png {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+    /// The scale used, after the [`MAX_SIDE_PX`] cap.
+    pub(crate) scale: f64,
+    pub(crate) stats: Stats,
+}
+
+/// Renders a layer (not a page) cropped to its own box on a transparent background, as
+/// `get_screenshot` does.
+pub(crate) fn layer_png(
+    doc: &Document,
+    root: Root<'_>,
+    scale: f64,
+    system_fonts: bool,
+) -> Result<Png, String> {
+    let bounds = match root {
+        Root::Node(id) => node_bounds(doc, id),
+        Root::Path(path) => Renderer::new().path_bounds(doc, path),
+    }
+    .ok_or("hidden or nothing visible")?;
+    render_png(doc, root, bounds, scale, None, system_fonts)
+}
+
+/// Renders `root` into `bounds` (page units) at `scale`, capped at [`MAX_SIDE_PX`].
+fn render_png(
+    doc: &Document,
+    root: Root<'_>,
+    bounds: Rect,
+    scale: f64,
+    background: Option<figstudio_render::color::AlphaColor<figstudio_render::color::Srgb>>,
+    system_fonts: bool,
+) -> Result<Png, String> {
     let longest = bounds.width().max(bounds.height()) * scale;
     if !longest.is_finite() || longest <= 0.0 {
-        return failure("the node has no finite size to render");
+        return Err("the node has no finite size to render".into());
     }
     // Cap the longest side by lowering the scale (no floor: a huge node needs a tiny scale);
     // the epsilon keeps `ceil` from rounding the side up to 4097.
@@ -176,20 +233,17 @@ fn render(
         Root::Node(id) => renderer.render(doc, id, &viewport),
         Root::Path(path) => renderer.render_path(doc, path, &viewport),
     };
-    let png = match frame.pixmap.into_png() {
-        Ok(png) => png,
-        Err(error) => return failure(format!("PNG encoding failed: {error}")),
-    };
-    let mut text = format!("{width}x{height} px, scale {}", significant(scale));
-    let notes = approximations(&frame.stats);
-    if !notes.is_empty() {
-        text.push_str("\napproximations: ");
-        text.push_str(&notes.join(", "));
-    }
-    CallToolResult::success(vec![
-        ContentBlock::image(STANDARD.encode(png), "image/png"),
-        ContentBlock::text(text),
-    ])
+    let bytes = frame
+        .pixmap
+        .into_png()
+        .map_err(|error| format!("PNG encoding failed: {error}"))?;
+    Ok(Png {
+        bytes,
+        width,
+        height,
+        scale,
+        stats: frame.stats,
+    })
 }
 
 /// `value` rounded to four significant figures, so a tiny capped scale is not shown as 0.
@@ -202,7 +256,7 @@ fn significant(value: f64) -> f64 {
 /// The non-zero `Stats` counters that mean something was drawn inexactly or not at all,
 /// labelled as in `Stats`' own display. `culled` counts layers left out because they fall
 /// outside the node's box or are smaller than a pixel.
-fn approximations(stats: &Stats) -> Vec<String> {
+pub(crate) fn approximations(stats: &Stats) -> Vec<String> {
     [
         (stats.text_missing, "text not drawn"),
         (stats.text_truncation_ignored, "text truncation ignored"),

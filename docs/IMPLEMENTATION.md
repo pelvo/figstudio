@@ -38,6 +38,13 @@ apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
   tools/screenshot.rs    get_screenshot; an instance path uses Renderer::render_path and
                          path_bounds (render/src/focus.rs: only that node, laid out as drawn)
   tools/variables.rs     get_variable_defs; walks resolved instance content
+  tools/design/          get_design_context: mod.rs (tool, output sections, Notes), walk.rs
+                         (layers incl. resolved instances), jsx.rs (elements, picture assets),
+                         layout.rs (position, size, stack → flex), paint.rs (colours,
+                         gradients, var()), style.rs (border, radius, effects, blend),
+                         text.rs (typography, runs, html-escape), assets.rs (stable names,
+                         writes kept inside --assets-dir); PNGs come from
+                         screenshot::layer_png, the get_screenshot render path
                          New tools belong in tools/<name>.rs with a typed input struct.
                          Use #[tool_router(router = <name>_router, vis = "pub(crate)")]
                          on an impl FigstudioServer, declare the module here, and combine

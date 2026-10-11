@@ -1,5 +1,5 @@
 //! Used style and variable definitions for a local subtree.
-mod format;
+pub(crate) mod format;
 use crate::{
     FigstudioServer,
     node_id::{NodeId, parse_node_id},

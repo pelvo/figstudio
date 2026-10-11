@@ -294,6 +294,31 @@ Variables appear as `var(--name,fallback)` when bound. `clientFrameworks` and
 **Done:** snapshot-style string tests on built documents for each mapping, a fixture smoke
 test, and an output size cap with a truncation note pointing to `get_metadata`.
 
+L6 done. `apps/figstudio-mcp/src/tools/design/` (each file under 300 lines). Layers come from
+the document or `fig::resolve::walk_path`/`walk_instance` (overrides applied, hidden layers
+left out, `maxNodes` default 1000, at most 5000); code is cut at a layer boundary past
+100 000 bytes, with a TRUNCATED note pointing to `get_metadata`. The reply is three parts:
+the code, then "Instructions for the agent" (echoing `clientFrameworks`/`clientLanguages`),
+asset list and an `approximations:` line, then inline images when `--assets inline` is set.
+Mapping: stack fields as in the L0 findings (NaN counter spacing is unset; SPACE_BETWEEN
+drops the gap), `stackPositioning=ABSOLUTE` and non-stack children `absolute left/top`,
+rotation `rotate-[..deg]`, hug sizing and text auto-resize drop `w`/`h`, grow/STRETCH become
+`grow`/`self-stretch`; paints from the attached style when one resolves, top paint last in
+CSS order, gradient direction from the paint transform; `colorVar` becomes
+`var(--css-name,#hex)` (paint opacity <1 keeps only the hex); strokes `border-[..]` (only
+INSIDE is exact), independent radii per corner, drop/inner shadows `shadow-[..]`, text
+shadows `[text-shadow:..]`, blurs `blur`/`backdrop-blur` (radius/2), opacity, CSS blend
+modes; text `<p>` with family, weight (numeric or `fig::tokens::font_weight`), size,
+`Number` line height/tracking, case, decoration, alignment and solid colour; runs from
+`characterStyleIDs` (UTF-16 units) and `styleOverrideTable` as `<span>`. Vector kinds and
+image-filled leaves render through `screenshot::layer_png` at scale 2 (max 30 per call) as
+`<img>`; files are named `<fileKey>_<id>.png` with only `[A-Za-z0-9_-]`, written to a
+`create_new` temp file and renamed inside the directory. Escaping uses `html-escape` (new
+crate). Every mapping was proven by a mutation that made its test fail.
+Not verified: live MCP clients, private or large files (time and size of real pages), how
+closely the generated code matches the design visually, image fills behind children
+(counted, dropped), mirrored layers (counted), grid stacks (placed absolutely, counted).
+
 **L7: `download_assets`.** `nodeIds` (up to 20), `format` png|jpg, `scale` 0.01–4, and
 `original=true` for image-fill source bytes by hash. **Done:** tests decode each format and
 compare the original bytes to `Document.images`.

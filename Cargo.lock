@@ -991,6 +991,7 @@ dependencies = [
  "figstudio-fig",
  "figstudio-render",
  "futures-util",
+ "html-escape",
  "image",
  "quick-xml",
  "reqwest",
@@ -1412,6 +1413,12 @@ name = "hermit-abi"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
+
+[[package]]
+name = "html-escape"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9356095b4b41197bba32173600e1582792cda618f65d12f68e2e77d273413c5"
 
 [[package]]
 name = "http"
