@@ -358,3 +358,7 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   inherited ink approximations are counted in status. Synthetic red/green and ownership
   mutation tests, workspace/wasm gates, PII scan and local render comparisons passed.
   Not verified: live Figma comparison, fallback font or stored-outline recomputation.
+- 2026-10-11 — MCP L1: add the offline rmcp server, stdio and Streamable HTTP,
+  lazy local-file registry, node-ID parser, whoami/list_files; nine failing-first tests,
+  workspace gate and clean-stdout release smoke passed. Not verified: live client setup,
+  OS-signal shutdown or independent review; no renderer or decoder changes.

@@ -109,7 +109,7 @@ style payloads; animation or keyframe fields (for `get_motion_context`); FigJam 
 `target/mcp-research/schema-facts.md`. **Done:** every name has a fixture node id that has it,
 or is marked "absent from all fixtures".
 
-**L1: skeleton and both transports.** The package; an rmcp `ServerHandler` using the
+**L1: skeleton and both transports.** [x] Complete. The package; an rmcp `ServerHandler` using the
 `#[tool_router]` macros; `figstudio-mcp [--http [ADDR]] FILE.fig...` (clap; stdio by default);
 Streamable HTTP through rmcp's `StreamableHttpService` on axum; error mapping (`McpError` for
 protocol faults, `isError: true` results for tool faults, never a panic; a canonical error
@@ -119,6 +119,20 @@ spawning the binary or using rmcp's client over a duplex pipe, and (b) Streamabl
 starting the server on port 0 and using rmcp's streamable-http client or plain POSTs:
 initialize → tools/list → tools/call whoami → unknown tool, for protocol versions 2025-03-26
 and 2025-06-18 plus the latest.
+
+L1 verified: nine tests pass with failing-first mutation proofs, the workspace gate
+ends with `all checks passed`, and a release-binary initialize smoke test produces
+exactly one JSON-RPC stdout line with empty stderr. The registry lazily caches public
+fixture documents; `list_files` reports page counts only after opening. CLI accepts
+`--no-system-fonts`; put a bare `--http` after the files or before `--` to avoid clap's
+optional-address ambiguity. `rmcp` 3.5.1 negotiates an initialize request for latest down
+to 2025-11-25 (with a session); actual 2026-07-28 requests use stateless per-request
+metadata and method/name headers. HTTP tests exercise both behaviors, older sessions,
+unknown tools, and the unchanged localhost Host allowlist. Duplicate dependency review:
+only SDK-required syn 2/3 versions plus host/target copies of identical versions.
+Not verified: a live Claude/Cursor client, OS-signal shutdown, or an independent reviewer.
+No renderer/decoder changes; wasm and visual checks were not needed. Instance-path
+resolution and tools beyond `whoami` / `list_files` remain for later lanes.
 
 **L2: `get_metadata`.** The page list when there is no node; an XML subtree with
 `id name type x y width height`, plus `hidden="true"` and `rotation` when non-zero; text

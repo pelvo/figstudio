@@ -23,6 +23,13 @@ apps/figstudio-cli/src/
   main.rs                argument parsing and commands
   doctor.rs              privacy-safe structure report
   synth.rs               stress-file generator
+apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
+  main.rs                clap options, stdio / Streamable HTTP, Ctrl-C shutdown
+  lib.rs                 rmcp handler, capabilities, /mcp HTTP service
+  files.rs               lazy shared local document registry and fileKey resolution
+  node_id.rs             node IDs, Figma URLs, unresolved instance paths
+  error.rs               canonical error type; tools/mod.rs maps tool failures
+  tools/mod.rs           whoami and list_files; later lanes add separate tool modules
 apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   main.rs                App: menus, shortcuts, panel layout, message polling, export
   canvas.rs              canvas input, render requests, frame re-projection, outlines
