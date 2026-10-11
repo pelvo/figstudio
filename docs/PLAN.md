@@ -194,6 +194,28 @@ requester confirms it runs.
 - [ ] move/resize, rename, show/hide, reorder layers, edit text, edit fills
 - [ ] save `.fig` (re-encode message, keep other archive entries), verify Figma opens it
 
+### P7 — Offline MCP server (`apps/figstudio-mcp`, plan in `docs/MCP-PLAN.md`)
+- [x] L0 schema facts (auto-layout, text runs, tokens, FigJam; none of the fixtures has variables, FigJam or motion data)
+- [x] L1 skeleton: rmcp server, stdio and Streamable HTTP, node ids, file registry, `whoami`, `list_files`
+- [x] L2 `get_metadata`
+- [x] L3 `get_screenshot`
+- [x] L4 public token model (`fig::tokens`) and `get_variable_defs`
+- [x] L5 public instance resolver (`fig::resolve`) and instance paths `I…;…`
+- [x] L6 `get_design_context` (React + Tailwind, assets)
+- [x] L7 `download_assets` (PNG/JPG, original image bytes)
+- [x] L8 `get_figjam`
+- [x] L9 Code Connect (local sidecar) and design-system search (`get_context_for_code_connect`,
+      `get_code_connect_map`, `add_code_connect_map`, `search_design_system`, `get_libraries`)
+- [x] L10 `create_design_system_rules` prompt
+- [x] L11 merged into L1 (Streamable HTTP)
+- [x] L12 docs: `apps/figstudio-mcp/README.md`, `docs/TESTING.md` section 12, code map and task board
+- [ ] Open (task board M1–M6): `get_motion_context`, SVG export, ancestor masks on instance-child
+      screenshots, nested-instance override visibility in `original=true`, live-client check,
+      real FigJam and motion files
+
+**Done when:** every lane's gate passed (it did, L0–L12). The open boxes need a real motion
+file, a real FigJam file or a person with the clients.
+
 ## Verification commands
 
 ```
@@ -220,10 +242,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - Writing `.fig` that Figma accepts is unverified until someone opens a saved file in Figma.
 
 ## Progress log
-
-- 2026-10-11: MCP L10 adds create_design_system_rules prompt with capped local inventory; SDK protocol mutation proofs and full gate passed. Not verified: live rule-file generation or official text parity.
-
-- 2026-10-11: MCP L9 adds offline Code Connect sidecars and local design-system discovery; mutation-proven tests and full gate passed. Not verified: live parity, Windows, cross-process/concurrent filesystem writers.
 
 - 2026-10-11: MCP L4: public read-only token/style model and `get_variable_defs` with all
   stored modes, bounded aliases, legacy/current refs and text-run bindings. Foreground
@@ -404,11 +422,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   28 fixture renders byte-identical before/after, thumb sheet viewed, new tests proven by
   mutations, scripts/check.sh passed. Not verified: private/large files, screenshot box of
   scaled or resized instances, live clients.
-- 2026-10-11 — MCP L9/L10 second-pass review: real component-set fields and variants,
-  normalized/capped properties, bounded permission-preserving sidecars, requested map keys,
-  snippet imports and bounded prompt names; failing-first regressions and mutation proofs;
-  foreground `scripts/check.sh`: all checks passed.
-  Not verified: live clients, official-server parity, private files, Windows or concurrent writers.
 - 2026-10-11 — MCP L5 review: instance paths resolve by tree position (metadata depth
   counts tree levels), instance-child screenshots draw only that node with the renderer's
   scaled layout (Renderer::render_path / path_bounds), variable defs ignore override and
@@ -431,3 +444,15 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   cell, widget), optional small screenshots (max 20, scale <= 0.5) and an approximations
   comment for kinds the renderer does not draw. 5 tests on an in-test board, mutation-proven;
   check.sh passed. Not verified: real FigJam files, connector geometry, table structure.
+- 2026-10-11: MCP L9 adds offline Code Connect sidecars and local design-system discovery; mutation-proven tests and full gate passed. Not verified: live parity, Windows, cross-process/concurrent filesystem writers.
+- 2026-10-11: MCP L10 adds create_design_system_rules prompt with capped local inventory; SDK protocol mutation proofs and full gate passed. Not verified: live rule-file generation or official text parity.
+- 2026-10-11 — MCP L9/L10 second-pass review: real component-set fields and variants,
+  normalized/capped properties, bounded permission-preserving sidecars, requested map keys,
+  snippet imports and bounded prompt names; failing-first regressions and mutation proofs;
+  foreground `scripts/check.sh`: all checks passed.
+  Not verified: live clients, official-server parity, private files, Windows or concurrent writers.
+- 2026-10-11 — MCP L12: `apps/figstudio-mcp/README.md` (flags, transports, client setup for Claude Code,
+  Cursor/VS Code and Codex, tool table, node ids, not-replicated list, privacy, writes, limits);
+  TESTING.md section 12; IMPLEMENTATION.md map and tasks M1–M6; MCP-PLAN status. Tool list checked
+  against the release binary over stdio (13 tools, 1 prompt); docs only, foreground
+  `scripts/check.sh`: all checks passed. Not verified: client configs against a live client.

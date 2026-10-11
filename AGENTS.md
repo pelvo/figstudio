@@ -9,6 +9,8 @@ picking up work. Read the three documents below before changing code.
 | `docs/PLAN.md` | Requirements, phases, **what is done and what is open**, progress log |
 | `docs/IMPLEMENTATION.md` | Architecture, data flow, how to add a feature, gotchas, task board |
 | `docs/TESTING.md` | Every test and check, how to write new ones, how to prove a test works |
+| `apps/figstudio-mcp/README.md` | The offline MCP server: install, client setup, tools, limits |
+| `docs/MCP-PLAN.md` | MCP server plan, lane notes, what shipped and what is open |
 | `docs/APPROXIMATIONS.md` | What each status-bar "approximated"/"skipped" counter is made of, and the plan to clear it |
 
 ## Ground rules

@@ -8,6 +8,22 @@ Branch `feat/mcp`, cut from `fix/known-gaps` at `f87989d`. Research notes (untra
 `target/mcp-research/figma-mcp-tools.md` (the official tools) and
 `target/mcp-research/codebase-recon.md` (what figstudio already has).
 
+## Status (2026-10-11)
+
+Lanes L0–L12 are done and merged on `feat/mcp`; every gate ended with `all checks passed`.
+Shipped: the `figstudio-mcp` binary (stdio and Streamable HTTP), 13 tools (`whoami`,
+`list_files`, `get_metadata`, `get_screenshot`, `get_variable_defs`, `get_design_context`,
+`download_assets`, `get_figjam`, `get_context_for_code_connect`, `get_code_connect_map`,
+`add_code_connect_map`, `search_design_system`, `get_libraries`) and the
+`create_design_system_rules` prompt. The user doc is `apps/figstudio-mcp/README.md`.
+Note: the plan below mentions an `open_file` tool; it was not built (files are given on the
+command line).
+
+Open follow-ups (task board M1–M6 in `docs/IMPLEMENTATION.md`): `get_motion_context`
+(needs a real motion file), SVG export, ancestor masks and clips on instance-child
+screenshots, nested-instance override visibility in `download_assets original=true`,
+a check with live clients, and real FigJam and motion files.
+
 ## 1. Official tools and what we can do offline
 
 "Selection" does not exist offline. Every tool takes `nodeId` (`123:456`, `123-456`, or a
@@ -64,7 +80,7 @@ L2/L4 are frozen; see the open questions):
    the new binary's arguments). Rendering and decoding stay in the existing crates. Code
    follows `ms-rust-guidelines` (AGENTS.md rule 13).
 4. **Files.** `figstudio-mcp [--no-system-fonts] FILE.fig...`. Files open lazily on first
-   use and are cached. An `open_file` tool loads more files. The `.fig` is never written, apart
+   use and are cached. (No `open_file` tool was built; files come from the command line.) The `.fig` is never written, apart
    from the L9 sidecar `FILE.fig.codeconnect.json`.
 5. **Data model goes into the `fig` crate.** Read-only token and style models
    (`fig::tokens`) and the instance resolver (`fig::resolve`, chosen in L5) become
@@ -413,7 +429,7 @@ Not verified: live client rule-file generation, official-server text parity or p
 
 **L11:** merged into L1 (Streamable HTTP is required).
 
-**L12: docs.** README client setup (Claude Code `claude mcp add`, Cursor, Codex), the
+**L12: docs.** [x] Complete. README client setup (Claude Code `claude mcp add`, Cursor, Codex), the
 not-replicable list, `docs/PLAN.md` phase and log, `docs/IMPLEMENTATION.md` map and task
 board, `docs/TESTING.md` protocol tests.
 
