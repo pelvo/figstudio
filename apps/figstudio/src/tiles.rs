@@ -114,6 +114,13 @@ impl Range {
         }
     }
 
+    /// Whether `key` is at one of this range's positions (any document or page).
+    pub fn contains(&self, key: &Key) -> bool {
+        key.level == self.level
+            && (self.x0..self.x1).contains(&key.x)
+            && (self.y0..self.y1).contains(&key.y)
+    }
+
     /// Every tile, nearest the range's centre first.
     pub fn by_distance(&self, doc: u64, page: Guid) -> Vec<Key> {
         let (cx, cy) = (

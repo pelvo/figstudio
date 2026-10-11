@@ -1,10 +1,15 @@
-//! The tile cache: least-recently-used tiles within a budget, never dropping tiles on screen
-//! while others can go. Pure; see `tiles.rs` for the grid.
+//! The tile cache: least-recently-used tiles within a budget. Tiles of the planned level on
+//! screen are dropped last; fallback tiles on screen give way to them, those already covered
+//! by planned tiles first. Pure; see `tiles.rs` for the grid.
 
 use figstudio_fig::Guid;
 use figstudio_render::kurbo::Rect;
 
-use crate::tiles::Key;
+use crate::tiles::{Key, Range};
+
+/// A fallback tile covering more planned tiles than this is never counted as redundant (the
+/// check would be slow, and such a coarse tile is rarely fully covered).
+const MAX_COVER_CHECK: usize = 64;
 
 /// A cached tile: its texture (or anything, in tests) and how fresh it is.
 #[derive(Debug)]
@@ -33,6 +38,8 @@ pub struct Cache<T> {
     budget: usize,
     clock: u64,
     frame: u64,
+    /// What the last frame planned (see [`Cache::begin_frame`]); at most half the budget.
+    plan: Option<(u64, Guid, Range)>,
 }
 
 impl<T> Cache<T> {
@@ -42,6 +49,7 @@ impl<T> Cache<T> {
             budget: budget.max(1),
             clock: 0,
             frame: 0,
+            plan: None,
         }
     }
 
@@ -58,12 +66,15 @@ impl<T> Cache<T> {
         self.tiles.get(key)
     }
 
-    /// Starts drawing a frame: tiles touched from now on are on screen until the next call.
-    pub fn begin_frame(&mut self) {
+    /// Starts drawing a frame whose planned tiles are `plan` (from `tiles::plan`, so at most
+    /// half the budget): tiles touched from now on are on screen until the next call.
+    pub fn begin_frame(&mut self, doc: u64, page: Guid, plan: Range) {
         self.frame += 1;
+        self.plan = Some((doc, page, plan));
     }
 
-    /// Marks a tile as drawn this frame: evicted last, and not at all while on screen.
+    /// Marks a tile as drawn this frame: a fallback on screen is evicted after tiles that are
+    /// not, but before planned tiles.
     pub fn touch(&mut self, key: &Key) {
         self.clock += 1;
         if let Some(e) = self.tiles.get_mut(key) {
@@ -93,20 +104,40 @@ impl<T> Cache<T> {
             },
         );
         while self.tiles.len() > self.budget {
-            // Tiles on screen go last; only when they alone pass the budget is one dropped.
-            let frame = self.frame;
-            let victim = |on_screen: bool| {
-                self.tiles
-                    .iter()
-                    .filter(|(_, e)| on_screen || e.frame != frame)
-                    .min_by_key(|(_, e)| e.used)
-                    .map(|(k, _)| *k)
-            };
-            let Some(oldest) = victim(false).or_else(|| victim(true)) else {
+            let Some(victim) = self
+                .tiles
+                .iter()
+                .min_by_key(|(k, e)| (self.keep_rank(k, e), e.used))
+                .map(|(k, _)| *k)
+            else {
                 break;
             };
-            self.tiles.remove(&oldest);
+            self.tiles.remove(&victim);
         }
+    }
+
+    /// Eviction order, lowest first: neither planned nor on screen; a fallback on screen
+    /// already covered by cached planned tiles; another fallback on screen; a planned tile
+    /// (of the planned range, drawn yet or not: the plan fits in the budget).
+    fn keep_rank(&self, key: &Key, entry: &Entry<T>) -> u8 {
+        let Some((doc, page, plan)) = self.plan else {
+            return 0;
+        };
+        if key.doc == doc && key.page == page && plan.contains(key) {
+            3
+        } else if entry.frame != self.frame {
+            0
+        } else if self.covered(key, plan.level) {
+            1
+        } else {
+            2
+        }
+    }
+
+    /// Whether every tile of `level` under `key` is cached.
+    fn covered(&self, key: &Key, level: i32) -> bool {
+        let under = Range::covering(level, key.page_rect()).by_distance(key.doc, key.page);
+        under.len() <= MAX_COVER_CHECK && under.iter().all(|k| self.tiles.contains_key(k))
     }
 
     /// Drops every tile `keep` refuses (a closed document).
@@ -129,3 +160,7 @@ impl<T> Cache<T> {
         keys
     }
 }
+
+#[cfg(test)]
+#[path = "tile_cache_tests.rs"]
+mod tests;

@@ -177,29 +177,14 @@ struct ImageQueue {
     arrived: AtomicU64,
     waker: Waker,
     in_flight: Arc<AtomicUsize>,
-    /// Documents whose last tab closed (`Document::instance`): nothing is stored for them.
-    closed: Mutex<std::collections::HashSet<u64>>,
 }
 
 impl ImageQueue {
-    /// Whether an image cache key (`images::cache_key`) belongs to a closed document.
-    fn is_closed_key(&self, key: &str) -> bool {
-        key.split_once('/')
-            .and_then(|(hex, _)| u64::from_str_radix(hex, 16).ok())
-            .is_some_and(|instance| self.is_closed(instance))
-    }
-
-    fn is_closed(&self, instance: u64) -> bool {
-        let closed = self.closed.lock().unwrap_or_else(PoisonError::into_inner);
-        closed.contains(&instance)
-    }
-
-    /// Stops reading and storing images of `instance` and drops those already stored.
+    /// Stops reading and storing images of `instance` and drops those already stored. The
+    /// image cache refuses anything for it from now on (`Images::close_document`), so a read
+    /// or render still running cannot store it back.
     fn close(&self, instance: u64) {
-        self.closed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(instance);
+        self.images.close_document(instance);
         let prefix = format!("{instance:x}/");
         let mut q = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         let before = q.0.len();
@@ -212,8 +197,6 @@ impl ImageQueue {
         });
         self.in_flight
             .fetch_sub(before - q.0.len(), Ordering::Relaxed);
-        drop(q);
-        self.images.forget_document(instance);
     }
 
     fn push(self: &Arc<Self>, wanted: Vec<ImageRequest>, source: &Source) {
@@ -245,12 +228,8 @@ impl ImageQueue {
             let this = self.clone();
             spawn(move || {
                 let (want, source) = next;
-                let read = source.read(&want.entry);
-                // Checked after the read: a document closed meanwhile gets nothing back.
-                match read {
-                    _ if this.is_closed_key(&want.key) => {
-                        this.images.abandon(&want.key, want.level);
-                    }
+                // A document closed meanwhile gets nothing stored (checked under the cache lock).
+                match source.read(&want.entry) {
                     Ok(bytes) => {
                         this.images.insert_encoded(&want.key, &bytes, want.level);
                     }
@@ -305,7 +284,6 @@ impl Workers {
             arrived: AtomicU64::new(0),
             waker: waker.clone(),
             in_flight: in_flight.clone(),
-            closed: Mutex::new(std::collections::HashSet::new()),
         });
         let repaint = waker.clone();
         let count = in_flight.clone();
@@ -339,13 +317,8 @@ impl Workers {
                 let mut frame = draw(&mut renderer, job, &key);
                 let elapsed = start.elapsed();
                 let wanted = std::mem::take(&mut frame.wanted);
-                if images.is_closed(job.doc.instance) {
-                    // Closed while drawing: drop what this render decoded or asked for.
-                    wanted
-                        .iter()
-                        .for_each(|w| images.images.abandon(&w.key, w.level));
-                    images.images.forget_document(job.doc.instance);
-                } else if !wanted.is_empty() {
+                // A document closed while drawing stores and requests nothing (`Images`).
+                if !wanted.is_empty() {
                     match &job.source {
                         Some(source) => images.push(wanted, source),
                         None => wanted

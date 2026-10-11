@@ -500,3 +500,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   tiles protected), evicted tiles re-requested (worker skips only unacknowledged tiles), 2-px
   tile gutters (seam 37/255 → ≤3/255 in a CPU model of the GPU's sampling), tab close cancels its
   batch and closed documents store no images. Tests seen failing first. Not verified: GPU seams.
+- 2026-10-12 — T20 P2 fix 2: planned tiles evict drawn fallback tiles (covered ones first), so a
+  cache full of fallback settles instead of re-rendering; closed documents are tombstoned in the
+  image cache and checked under its lock after decode. Tests seen failing first.

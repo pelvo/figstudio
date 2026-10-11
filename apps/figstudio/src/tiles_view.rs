@@ -83,7 +83,7 @@ impl Tiles {
             self.cache.budget(),
         );
         let level = range.level;
-        self.cache.begin_frame();
+        self.cache.begin_frame(doc, page, range);
         let uv = tiles::uv();
         let mut stats: Option<Stats> = None;
         let mut elapsed = Duration::ZERO;

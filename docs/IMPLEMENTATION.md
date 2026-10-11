@@ -248,11 +248,14 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   and position; tiles drawn while images loaded are drawn again when more images arrive.
   Each tile is rendered with a 2-pixel gutter of its neighbours (only the inner 512 px are
   drawn), so linear filtering leaves no seam. The resident cache holds 256 MiB of tile
-  textures, gutters included (128 MiB in the browser); tiles on screen are evicted last, and
+  textures, gutters included (128 MiB in the browser); tiles of the planned range are evicted
+  last, fallback tiles on screen before them (those already covered by planned tiles first), and
   a view that would need more than half the cache uses a coarser level. Tiles on their way
   from the worker are outside that budget (at most one batch per tab). The worker skips
   tiles it sent that the UI has not acknowledged yet (`tile_queue.rs`); closing a tab drops
-  its queued tiles, and closing a document stops its image reads from storing anything.
+  its queued tiles, and closing a document marks it closed in the image cache
+  (`Images::close_document`), which then refuses any image, failure or request for it under
+  its lock, so a read or decode finishing late cannot store it back.
   The status bar shows, per field, the largest count of any one sharp tile on screen
   (`Stats::max_with`): a lower bound for the view, not a sum.
 - `Tab` holds the document (`Arc<Document>`), page, view, selection, hover, expanded tree
