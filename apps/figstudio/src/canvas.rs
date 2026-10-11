@@ -143,22 +143,27 @@ pub fn show(
     } else {
         0
     };
+    // The pan is not in the key: a frame with a margin covers short pans (overscan.rs).
     let key = format!(
-        "{}|{}|{:.4}|{:.2}|{:.2}|{}x{}|{ppp}|{images}",
+        "{}|{}|{:.4}|{}x{}|{ppp}|{images}",
         tab.page,
         tab.doc.nodes.len(),
         tab.view.zoom,
-        tab.view.pan.x,
-        tab.view.pan.y,
         px.x,
         px.y
     );
-    if tab.requested_key.as_deref() != Some(&key) && px.x >= 1.0 && px.y >= 1.0 {
+    let covered = tab
+        .requested_key
+        .as_ref()
+        .is_some_and(|(k, frame)| *k == key && crate::overscan::covers(frame, tab.view, px / ppp));
+    if !covered && px.x >= 1.0 && px.y >= 1.0 {
         tab.generation += 1;
-        let zoom = f64::from(tab.view.zoom * ppp);
+        let max_side = ui.ctx().input(|i| i.max_texture_side);
+        let frame = crate::overscan::frame_for(tab.view, px, ppp, max_side);
+        let zoom = f64::from(frame.view.zoom * ppp);
         let transform = Affine::translate((
-            f64::from(tab.view.pan.x * ppp),
-            f64::from(tab.view.pan.y * ppp),
+            f64::from(frame.view.pan.x * ppp),
+            f64::from(frame.view.pan.y * ppp),
         )) * Affine::scale(zoom);
         if workers
             .render(RenderJob {
@@ -168,17 +173,18 @@ pub fn show(
                 source: tab.source.clone(),
                 root: tab.page,
                 viewport: Viewport {
-                    width: px.x.min(f32::from(u16::MAX)) as u16,
-                    height: px.y.min(f32::from(u16::MAX)) as u16,
+                    width: frame.px[0],
+                    height: frame.px[1],
                     transform,
                     background: Some(page_background(&tab.doc, tab.page)),
                 },
-                view: tab.view,
-                size_points: px / ppp,
+                // The frame's own corner view, so the re-projection below places the margin.
+                view: frame.view,
+                size_points: frame.size_points,
             })
             .is_ok()
         {
-            tab.requested_key = Some(key);
+            tab.requested_key = Some((key, frame));
         } else {
             tab.requested_key = None;
         }

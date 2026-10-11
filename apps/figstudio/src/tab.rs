@@ -60,7 +60,8 @@ pub struct Tab {
     pub reveal: Option<Guid>,
     pub shown: Option<Shown>,
     pub generation: u64,
-    pub requested_key: Option<String>,
+    /// The last requested render: its key (all but the pan) and its frame with margin.
+    pub requested_key: Option<(String, crate::overscan::Frame)>,
     pub shown_generation: u64,
     pub stats: Stats,
     pub render_time: Duration,

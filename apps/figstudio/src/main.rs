@@ -3,6 +3,7 @@
 mod canvas;
 mod gpu;
 mod labels;
+mod overscan;
 mod panels;
 mod source;
 mod state;
