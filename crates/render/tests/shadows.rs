@@ -812,11 +812,179 @@ fn instance_override_that_enlarges_a_child_is_guarded() {
         stats.approximated_effects, 1,
         "uncertain bounds: whole target"
     );
+}
+
+#[test]
+fn border_weight_override_cannot_enlarge_a_layer_past_the_guard() {
+    // Per-side border weights were missing from the list of ink-changing override keys.
+    let fields = [
+        ("borderBottomWeight", Val::Float(8400.0)),
+        ("borderStrokeWeightsIndependent", Val::Bool(true)),
+    ];
+    let doc = instance_with_override(&fields);
+    let stats = render_sized(&doc, 4200, 2000);
+    assert_eq!(stats.approximated_effects, 1);
+}
+
+#[test]
+fn any_instance_uses_the_whole_target_as_its_bound() {
+    // On a target under the cap everything fits; over it, an instance is refused whatever its
+    // overrides are (a paint-only override included: no list of keys to keep in sync).
     let same = instance_with_override(&[("fillPaints", paint(0.0, 1.0, 0.0))]);
-    let stats = render_sized(&same, 4200, 2000);
+    assert_eq!(render_sized(&same, 4200, 2000).approximated_effects, 1);
+    assert_eq!(render_sized(&same, 80, 80).approximated_effects, 0);
+}
+
+#[test]
+fn symbol_swap_cannot_enlarge_a_layer_past_the_guard() {
+    // A plain frame (no clip) holds an instance of a tiny symbol; an override on the outer
+    // instance swaps the inner one for a symbol with a huge child. Bounds read from the
+    // stored (tiny) symbol would admit the layer.
+    let mut tiny = node(4, 0, "SYMBOL");
+    tiny.data.set("size", size(10.0, 10.0));
+    let mut big = node(6, 0, "SYMBOL");
+    big.data.set("size", size(10.0, 10.0));
+    let mut huge = node(7, 6, "RECTANGLE");
+    huge.data.set("size", size(4200.0, 2000.0));
+    huge.data.set("fillPaints", paint(1.0, 1.0, 1.0));
+    let mut holder = node(2, 0, "SYMBOL");
+    holder.data.set("size", size(10.0, 10.0));
+    holder.data.set("frameMaskDisabled", Val::Bool(true));
+    let swap = patch(&[3], &[("overriddenSymbolID", id(6).to_val())]);
+    let mut frame = node(20, 1, "FRAME");
+    frame.data.set("size", size(10.0, 10.0));
+    frame.data.set("frameMaskDisabled", Val::Bool(true));
+    frame.data.set("fillPaints", paint(0.5, 0.5, 0.5));
+    frame.data.set("effects", Val::Arr(vec![effect_dx(1.0)]));
+    let mut top = instance(10, 20, 2, vec![swap]);
+    top.data.set("size", size(10.0, 10.0));
+    let mut placeholder = instance(3, 2, 4, vec![]);
+    placeholder.data.set("size", size(10.0, 10.0));
+    let doc = document(vec![
+        node(1, 0, "CANVAS"),
+        holder,
+        placeholder,
+        tiny,
+        big,
+        huge,
+        frame,
+        top,
+    ]);
+    assert_eq!(render_sized(&doc, 4200, 2000).approximated_effects, 1);
+}
+
+/// A frame holding an instance whose override swaps a tiny symbol for one with 5000 children
+/// (10x10 white squares at (40,0)); the frame has two drop shadows that move down 40 and 50.
+fn swapped_frame(fill: bool) -> Document {
+    let mut nodes = vec![node(1, 0, "CANVAS"), node(2, 0, "SYMBOL")];
+    nodes.push(instance(3, 2, 4, vec![]));
+    nodes.push(node(4, 0, "SYMBOL"));
+    nodes.push(node(6, 0, "SYMBOL"));
+    for n in 0..5000 {
+        let mut c = node(100 + n, 6, "RECTANGLE");
+        c.data.set("size", size(10.0, 10.0));
+        c.data.set("fillPaints", paint(1.0, 1.0, 1.0));
+        c.data.set("transform", obj(&[("m02", Val::Float(40.0))]));
+        nodes.push(c);
+    }
+    let mut frame = node(20, 1, "FRAME");
+    frame.data.set("size", size(10.0, 10.0));
+    frame.data.set(
+        "fillPaints",
+        if fill {
+            paint(0.5, 0.5, 0.5)
+        } else {
+            Val::Arr(vec![])
+        },
+    );
+    let red = coloured(shadow("DROP_SHADOW", 0.0, 40.0, 0.0), (1.0, 0.0, 0.0));
+    let blue = coloured(shadow("DROP_SHADOW", 0.0, 50.0, 0.0), (0.0, 0.0, 1.0));
+    frame.data.set("effects", Val::Arr(vec![red, blue]));
+    let swap = patch(&[3], &[("overriddenSymbolID", id(6).to_val())]);
+    nodes.push(frame);
+    nodes.push(instance(10, 20, 2, vec![swap]));
+    document(nodes)
+}
+
+#[test]
+fn replay_work_is_enforced_inside_the_traversal() {
+    let mut plain = swapped_frame(true);
+    let mut nodes = plain.nodes.clone();
+    nodes
+        .iter_mut()
+        .find(|n| n.id == id(20))
+        .unwrap()
+        .data
+        .set("effects", Val::Arr(vec![]));
+    plain.set_nodes(nodes).unwrap();
+    let base = render(&plain).1.attempted_work;
+    let (_, stats) = render(&swapped_frame(true));
+    assert!(
+        stats.attempted_work < base + 500,
+        "replays stop at their allowance: {} vs {base} without shadows",
+        stats.attempted_work
+    );
     assert_eq!(
-        stats.approximated_effects, 0,
-        "a paint override keeps the bounds known"
+        stats.approximated_effects, 2,
+        "both shadows fell back, counted"
+    );
+}
+
+#[test]
+fn an_exhausted_replay_leaves_no_half_shadow() {
+    let (px, _) = render(&swapped_frame(true));
+    // The first children's shadows (y 40..50 and 50..60 at x 40..50) would show here if the
+    // partial replay layer were composited.
+    assert_eq!(pixel(&px, 45, 45)[3], 0);
+    assert_eq!(pixel(&px, 45, 55)[3], 0);
+}
+
+#[test]
+fn fill_less_frame_skips_a_refused_replay_instead_of_casting_its_box() {
+    let (px, stats) = render(&swapped_frame(false));
+    assert_eq!(
+        stats.skipped_effects, 2,
+        "no fill mask: skipped and counted"
+    );
+    assert_eq!(pixel(&px, 5, 45)[3], 0, "the frame box casts nothing");
+}
+
+/// `levels` nested 3000x2000 frames (each layer 6M px: under the per-layer cap) with a shadow.
+fn nested_near_cap_layers(levels: u32) -> figstudio_render::Stats {
+    let mut nodes = vec![node(1, 0, "CANVAS")];
+    for i in 0..levels {
+        let mut f = node(2 + i, if i == 0 { 1 } else { 1 + i }, "FRAME");
+        f.data.set("size", size(3000.0, 2000.0));
+        f.data.set("fillPaints", paint(0.5, 0.5, 0.5));
+        f.data.set("effects", Val::Arr(vec![effect_dx(1.0)]));
+        nodes.push(f);
+    }
+    let mut leaf = node(100, 1 + levels, "RECTANGLE");
+    leaf.data.set("size", size(5.0, 5.0));
+    nodes.push(leaf);
+    render_sized(&document(nodes), 3000, 2000)
+}
+
+#[test]
+fn nested_near_cap_layers_stop_at_the_aggregate_budget() {
+    // Each layer is under the per-layer cap; together they are not: 64M px of budget fits ten
+    // 6M px layers, the other two fall back to the counted fill mask.
+    let stats = nested_near_cap_layers(12);
+    assert_eq!(
+        stats.approximated_effects, 2,
+        "ten layers fit, two fall back"
+    );
+}
+
+#[test]
+fn pushed_layer_pixels_are_reported_and_within_the_total_budget() {
+    let stats = nested_near_cap_layers(12);
+    assert!(stats.shadow_layer_pixels > 0);
+    // MAX_SHADOW_LAYER_PIXELS_TOTAL
+    assert!(
+        stats.shadow_layer_pixels <= 64_000_000,
+        "{}",
+        stats.shadow_layer_pixels
     );
 }
 
@@ -874,4 +1042,34 @@ fn plain_opaque_rectangle_stays_on_the_fill_mask_path_pixel_for_pixel() {
     let (px, stats) = render(&document(vec![node(1, 0, "CANVAS"), rect]));
     assert_eq!(pixel(&px, 60, 20), [54, 54, 54, 152]);
     assert_eq!(stats.approximated_effects, 0);
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn a_discarded_redraw_is_erased_in_parallel_strips_too() {
+    let doc = swapped_frame(true);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+    let viewport = Viewport {
+        width: 80,
+        height: 128,
+        transform: Affine::IDENTITY,
+        background: None,
+    };
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let one = r.render(&doc, id(1), &viewport);
+    let many = pool.install(|| r.render_parallel(&doc, id(1), &viewport));
+    assert_eq!(one.stats, many.stats);
+    let (a, b) = (
+        one.pixmap.data_as_u8_slice(),
+        many.pixmap.data_as_u8_slice(),
+    );
+    let alpha = |px: &[u8], x: usize, y: usize| px[(y * 80 + x) * 4 + 3];
+    for (x, y) in [(45, 45), (45, 55), (45, 100)] {
+        assert_eq!(alpha(a, x, y), 0, "single: no half shadow at ({x},{y})");
+        assert_eq!(alpha(b, x, y), 0, "strips: no half shadow at ({x},{y})");
+    }
 }

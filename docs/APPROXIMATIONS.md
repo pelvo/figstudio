@@ -14,8 +14,8 @@ Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
 | Counter (status bar text) | Total | Pages |
 |---|---:|---:|
-| shadow effects approximated | 5349 (2800 after fix #1) | 24 |
-| effects skipped | 483 (477 after fix #1) | 22 |
+| shadow effects approximated | 5349 (3566 after fix #1) | 24 |
+| effects skipped | 483 (533 after fix #1) | 22 |
 | instance ink approximated | 436 | 10 |
 | stroke alignments approximated | 245 | 9 |
 | paints skipped | 189 | 2 |
@@ -23,7 +23,7 @@ Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
 ## What is behind each counter
 
-### C1. shadow effects approximated (2800 after fix #1 and its review fixes; 5349 before)
+### C1. shadow effects approximated (3566 after fix #1 and its review fixes; 5349 before)
 
 Code: `effects::is_approximate`, `effects::approximate_silhouette` (`crates/render/src/effects.rs`),
 `shadow_layer.rs` (whole-node layers).
@@ -38,19 +38,25 @@ with fill-mask ones (spread...), every drop shadow is drawn behind in list order
 paths do not reorder them; the redraw keeps the node's inner shadows. Plain opaque fill-shape nodes keep the
 old path, pixel-identical. Guards (all fall back to the old path and stay counted):
 rendered-alpha area over `MAX_SHADOW_PIXELS`, more than `MAX_WHOLE_SHADOWS` shadows, a subtree
-over `MAX_REPLAY_DESCENDANTS` nodes, or redraw work over its runtime cap.
+over `MAX_REPLAY_DESCENDANTS` nodes, the render's total layer budget, or redraw work over its
+runtime allowance. Everything below is enforced at run time, not predicted.
 
-*Memory:* the layer area is the node's own box and ink (strokes, effects: never trimmed by
-its clip) plus, unless it clips, its descendants' bounds, inflated by the blur reach and
-intersected with the render target. When the extent cannot be known cheaply (an override or
-scale that can change size, position or ink; a resized instance; over 256 nodes) the whole
-target stands in, so such a node falls back, counted, whenever the target exceeds the limit.
-A fill-less node's refused shadow is skipped and counted, never drawn as a whole-content layer.
+*Memory:* a layer's pixels are the node's own box and ink (never trimmed by its clip) plus,
+unless it clips, its descendants' bounds, inflated by the blur reach and intersected with
+the render target. Any instance in the subtree, any override or scale applying to the node, or
+over 256 nodes means the whole target stands in (no list of override keys to keep in sync;
+provably an upper bound). Every whole-node layer pushed, nested and redraw layers included,
+is charged to `MAX_SHADOW_LAYER_PIXELS_TOTAL` (64M px) at plan time and reported in
+`Stats::shadow_layer_pixels`; past it the shadow falls back, counted. The browser build runs
+the same walk. A fill-less node's refused shadow is skipped and counted, never drawn as a
+whole-content layer or cast from the node box.
 
-*Time:* a static estimate over stored effects misses override-added shadows, so the bound is
-enforced at run time: all redraws of one node (nested ones included) may use at most
-`REPLAY_WORK_FACTOR` x subtree size x shadows work units; past that the node's remaining
-whole-node shadows fall back (counted). Planning is charged to the work budget.
+*Time:* all redraws of one node (nested ones included) share an allowance of
+`REPLAY_WORK_FACTOR` x subtree size x shadows node visits, checked at every child visit. When
+it runs out the traversal stops at once and the half-drawn redraw layer is erased (a `Clear`
+fill over what it touched, also recorded for parallel strips), then the shadow falls back to
+the fill mask if the node casts one, else is skipped and counted. Planning is charged to the
+work budget.
 
 **Still counted:** spread other than 0 (vello_cpu 0.3 has no morphology filter), non-NORMAL
 blend, blur under a non-uniform scale, the guards above, and a shadow listed next to a
@@ -61,7 +67,7 @@ spread; the remainder was not broken down again after the fix.
 applied, so a shadow whose source lies off the canvas edge can be missing or doubled.
 Tests keep their shadows on the canvas.
 
-### C2. effects skipped (477 after fix #1; 483 before)
+### C2. effects skipped (533 after fix #1; 483 before)
 
 Code: the effects loop in `Ctx::draw_node` (`crates/render/src/lib.rs`).
 
@@ -149,3 +155,14 @@ sigma), and anything whose exact form costs too much time on large pages.
   at `--scale 0.1`, CPU time, quiet-machine re-times merged: 107.2 s before, 108.2 s after
   (+0.9%), worst page +8.2%; none over 25%. Scale 1, three shadow-heaviest pages: +2%,
   +1.3%, +0.5%. Approximated shadows 2800, skipped 477.
+- 2026-10-11 — Third review pass on fix #1, runtime enforcement: whole target as bound for any
+  instance or override in scope, an aggregate layer-pixel budget (64M px, `Stats::shadow_layer_pixels`),
+  a per-node redraw allowance checked at every child visit with the partial redraw erased,
+  and casts-only fallback. 42 pages at `--scale 0.1`, CPU time, quiet machine: 105.2 s before,
+  105.6 s after (+0.4%), worst page +5.5%; none over 25%. Scale 1, three shadow-heaviest
+  pages: +2.6%, +2.1%, +0.4%. Approximated shadows 3566, skipped 533 (the instance rule is the
+  price of not predicting overrides). Counted-shadow events by guard, overlapping, 42 pages:
+  spread/blend/anisotropic 1717, aggregate memory 934, fill-less mixed lists 760,
+  bounds uncertain on a target over the cap 465, subtree over the node cap 411, replay work 16.
+  A first version cleared the discarded layer with a +-1e6 rect and cost one page +35%;
+  clearing only the bounds the redraw drew removed that.

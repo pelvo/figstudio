@@ -13,8 +13,9 @@ use figstudio_fig::{Guid, Node, Val};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_cpu::kurbo::{Affine, Rect};
 
+use crate::geom::transformed_bounds;
 use crate::geom::{GeomPath, size};
-use crate::{Ctx, effect_reach};
+use crate::{Ctx, Stats, effect_reach, overhang};
 
 /// Largest device area (px²) of one shadow layer: the node's rendered bounds plus the blur
 /// reach, intersected with the render target (Vello never allocates more than the target plus
@@ -23,6 +24,16 @@ use crate::{Ctx, effect_reach};
 /// that needs a bigger target. Where the extent of a node's content is uncertain the whole
 /// target stands in, so such nodes fall back, counted, whenever the target is above this.
 pub(crate) const MAX_SHADOW_PIXELS: f64 = 8_000_000.0;
+/// Most device pixels of whole-node shadow layers one render may push in total, nested and
+/// redraw layers included (charged when they are planned, `Stats::shadow_layer_pixels`).
+/// Vello keeps every filtered layer's pixmap until the frame is rendered, so the sum is what
+/// the memory sees; the browser build walks the same way, so it is covered too. A layer whose
+/// extent is unknown is charged the whole target (provably enough). 64M px is 256 MiB of RGBA
+/// in the worst case. On the 42-page file at scale 0.1: 16M gave 3766 counted shadows,
+/// 64M 3566, 256M 3410, while the peak RSS of the three heaviest pages stayed within 3%
+/// of the pre-change build (Vello allocates the drawn bounding box, not the charge), so
+/// the budget is a bound, not what a typical render uses.
+pub(crate) const MAX_SHADOW_LAYER_PIXELS_TOTAL: usize = 64_000_000;
 /// Most nodes (instances count their symbol's) in a subtree that is redrawn per extra shadow.
 /// Chosen by measurement on the 42-page file (CPU time, quiet machine, gate +10% total and
 /// +25% per page): 512 made one page +31-45% (+1.2 s) for ~250 fewer counted shadows, 128
@@ -91,7 +102,7 @@ impl Ctx<'_> {
         if !wanted || spent {
             return none(bounds);
         }
-        let drops: Vec<&Val> = visible
+        let mut drops: Vec<&Val> = visible
             .iter()
             .copied()
             .filter(|e| supported(e, world) && self.layer_fits(e, world, bounds))
@@ -104,6 +115,27 @@ impl Ctx<'_> {
         {
             return none(bounds);
         }
+        // Layers are charged against the render's total, all of them or (fill-less) none.
+        let pixels: Vec<usize> = drops
+            .iter()
+            .map(|e| self.layer_pixels(e, world, bounds))
+            .collect();
+        if casts {
+            let mut used = self.stats.shadow_layer_pixels;
+            let mut keep = pixels.iter().map(|p| {
+                let fits = used + p <= MAX_SHADOW_LAYER_PIXELS_TOTAL;
+                used += usize::from(fits) * p;
+                fits
+            });
+            drops.retain(|_| keep.next().unwrap_or(false));
+        } else if self.stats.shadow_layer_pixels + pixels.iter().sum::<usize>()
+            > MAX_SHADOW_LAYER_PIXELS_TOTAL
+        {
+            return none(bounds);
+        }
+        if drops.is_empty() {
+            return none(bounds);
+        }
         let redraws = drops.len() > 1 || drops.len() < visible.len();
         let mut replay_budget = 0;
         if redraws {
@@ -112,6 +144,10 @@ impl Ctx<'_> {
             };
             replay_budget = REPLAY_WORK_FACTOR * count * drops.len();
         }
+        self.stats.shadow_layer_pixels += drops
+            .iter()
+            .map(|e| self.layer_pixels(e, world, bounds))
+            .sum::<usize>();
         ShadowPlan {
             whole: drops,
             replay_budget,
@@ -125,15 +161,15 @@ impl Ctx<'_> {
     pub(crate) fn draw_behind_shadows(
         &mut self,
         behind: &[&Val],
-        (whole, replay_budget): (&[&Val], usize),
+        plan: &ShadowPlan,
         node: &Node,
         data: &Val,
         world: Affine,
-        fill_paths: &[GeomPath],
+        (fill_paths, casts): (&[GeomPath], bool),
         path: Option<&[Guid]>,
         inner: &[&Val],
     ) -> usize {
-        let is_whole = |e: &Val| whole.iter().any(|w| std::ptr::eq(*w, e));
+        let is_whole = |e: &Val| plan.whole.iter().any(|w| std::ptr::eq(*w, e));
         if let [one] = behind
             && is_whole(one)
         {
@@ -142,17 +178,26 @@ impl Ctx<'_> {
         }
         // Redraws of this node (and of nodes inside them) stop at this work level.
         let outer_floor = self.replay_floor;
-        self.replay_floor = outer_floor.max(self.work_left.saturating_sub(replay_budget));
+        self.replay_floor = outer_floor.max(self.work_left.saturating_sub(plan.replay_budget));
         for effect in behind {
-            if !is_whole(effect) {
-                self.draw_drop_shadow(effect, fill_paths, world);
-            } else if self.work_left > self.replay_floor && self.charge_work() {
-                self.replay_shadow(effect, node, data, world, fill_paths, path, inner);
-            } else if fill_paths.is_empty() {
-                self.stats.skipped_effects += 1;
-            } else {
+            let replayed = is_whole(effect)
+                && !self.replay_spent()
+                && self.charge_work()
+                && self.replay_shadow(effect, node, data, world, fill_paths, path, inner);
+            if replayed
+                || !is_whole(effect) && {
+                    self.draw_drop_shadow(effect, fill_paths, world);
+                    true
+                }
+            {
+                continue;
+            }
+            // A refused or discarded redraw: cast from the fill mask if there is one.
+            if casts {
                 self.stats.approximated_effects += 1;
                 self.draw_drop_shadow(effect, fill_paths, world);
+            } else {
+                self.stats.skipped_effects += 1;
             }
         }
         self.replay_floor = outer_floor;
@@ -160,7 +205,8 @@ impl Ctx<'_> {
     }
 
     /// One shadow-only layer around a redraw of the content. The redraw's counters and image
-    /// requests are discarded: the real pass draws and counts the same nodes.
+    /// requests are discarded: the real pass draws and counts the same nodes. Returns false,
+    /// with the layer erased, when the redraw ran out of its allowance part-way.
     #[allow(clippy::too_many_arguments)]
     fn replay_shadow(
         &mut self,
@@ -171,20 +217,40 @@ impl Ctx<'_> {
         fill_paths: &[GeomPath],
         path: Option<&[Guid]>,
         inner: &[&Val],
-    ) {
+    ) -> bool {
         let before = self.stats.clone();
         let wanted = self.wanted.len();
+        let outer_aborted = std::mem::replace(&mut self.replay_aborted, false);
+        let (w, h) = size(data);
+        let m = overhang(&node.kind, data, w, h);
+        let own = transformed_bounds(world, Rect::new(-m, -m, w + m, h + m));
+        let outer_bounds = self.replay_bounds.replace(own);
         self.push_shadow(effect, world, true);
         self.draw_body(node, data, world, size(data), fill_paths, path, inner);
+        let complete = !(self.replay_aborted || self.replay_spent());
+        let drawn = self.replay_bounds.unwrap_or(own);
+        if !complete {
+            // Only what the redraw touched: a screen-sized erase would make Vello allocate and
+            // blur a screen-sized layer.
+            self.rc.clear_layer(drawn.inflate(2.0, 2.0));
+        }
         self.rc.pop_layer();
+        // An enclosing redraw also drew what this one did.
+        self.replay_bounds = outer_bounds.map(|o| o.union(drawn));
+        self.rc.set_transform(world);
+        self.replay_aborted = outer_aborted;
         let spent = self
             .stats
             .budget_exhausted
             .saturating_sub(before.budget_exhausted);
-        self.stats = before;
+        self.stats = Stats {
+            shadow_layer_pixels: self.stats.shadow_layer_pixels,
+            ..before
+        };
         self.stats.budget_exhausted += spent;
-        self.stats.shadows += 1;
+        self.stats.shadows += usize::from(complete);
         self.wanted.truncate(wanted);
+        complete
     }
 
     fn push_shadow(&mut self, effect: &Val, world: Affine, only: bool) {
@@ -213,16 +279,39 @@ impl Ctx<'_> {
             .push_filter_layer(Filter::from_primitive(primitive), effect_reach(effect));
     }
 
-    /// Whether a layer around `bounds` (plus the effect's reach) is affordable. Vello allocates
-    /// at most the part of the layer inside the target (plus the filter padding), so the area
-    /// is taken inside the target: when the target itself is small, every layer fits.
-    pub(crate) fn layer_fits(&self, effect: &Val, world: Affine, bounds: Rect) -> bool {
+    /// Device pixels of a layer around `bounds` plus the effect's reach. Vello allocates at most
+    /// the part of the layer inside the target (plus the filter padding), so the area is taken
+    /// inside the target: when the target is small, every layer is small. Infinite for
+    /// non-finite bounds.
+    fn layer_pixels(&self, effect: &Val, world: Affine, bounds: Rect) -> usize {
         let [a, b, c, d, _, _] = world.as_coeffs();
         let reach = effect_reach(effect) * a.hypot(b).max(c.hypot(d));
         let bounds = bounds.inflate(reach, reach);
         let area = bounds.intersect(self.screen.inflate(reach, reach));
         let pixels = area.width().max(0.0) * area.height().max(0.0);
-        bounds.width().is_finite() && bounds.height().is_finite() && pixels <= MAX_SHADOW_PIXELS
+        if bounds.width().is_finite() && bounds.height().is_finite() && pixels.is_finite() {
+            // Saturating float-to-int cast: a huge area is just "too big".
+            pixels.ceil() as usize
+        } else {
+            usize::MAX / 4
+        }
+    }
+
+    /// Whether one layer around `bounds` is under the per-layer cap.
+    pub(crate) fn layer_fits(&self, effect: &Val, world: Affine, bounds: Rect) -> bool {
+        self.layer_pixels(effect, world, bounds) as f64 <= MAX_SHADOW_PIXELS
+    }
+
+    /// `layer_fits`, and the layer is charged to the render's total (see
+    /// `MAX_SHADOW_LAYER_PIXELS_TOTAL`); false, uncharged, when either cap would be exceeded.
+    pub(crate) fn charge_layer(&mut self, effect: &Val, world: Affine, bounds: Rect) -> bool {
+        let pixels = self.layer_pixels(effect, world, bounds);
+        let fits = pixels as f64 <= MAX_SHADOW_PIXELS
+            && self.stats.shadow_layer_pixels + pixels <= MAX_SHADOW_LAYER_PIXELS_TOTAL;
+        if fits {
+            self.stats.shadow_layer_pixels += pixels;
+        }
+        fits
     }
 }
 

@@ -5,10 +5,9 @@
 use vello_cpu::PaintType;
 use vello_cpu::RenderContext;
 use vello_cpu::filter_effects::Filter;
-#[cfg(feature = "parallel")]
 use vello_cpu::kurbo::Rect;
 use vello_cpu::kurbo::{Affine, BezPath};
-use vello_cpu::peniko::Fill;
+use vello_cpu::peniko::{BlendMode, Compose, Fill, Mix};
 
 /// The drawing calls the renderer makes (a subset of `RenderContext`).
 pub(crate) trait Canvas {
@@ -25,6 +24,8 @@ pub(crate) trait Canvas {
     /// `reach`: how far (in local units) the filter can move or spread what is drawn in it.
     fn push_filter_layer(&mut self, filter: Filter, reach: f64);
     fn pop_layer(&mut self);
+    /// Erases everything drawn so far in the innermost layer (a discarded partial redraw).
+    fn clear_layer(&mut self, area: Rect);
 }
 
 impl Canvas for RenderContext {
@@ -61,6 +62,12 @@ impl Canvas for RenderContext {
     fn pop_layer(&mut self) {
         RenderContext::pop_layer(self);
     }
+    fn clear_layer(&mut self, area: Rect) {
+        RenderContext::set_transform(self, Affine::IDENTITY);
+        RenderContext::set_blend_mode(self, BlendMode::new(Mix::Normal, Compose::Clear));
+        RenderContext::fill_rect(self, &area);
+        RenderContext::set_blend_mode(self, BlendMode::new(Mix::Normal, Compose::SrcOver));
+    }
 }
 
 #[cfg(feature = "parallel")]
@@ -87,6 +94,8 @@ enum Cmd {
     Push(Layer, Rect, usize),
     Pop,
     PopClip,
+    /// Erase the innermost layer within the given output area.
+    Clear(Rect),
 }
 
 /// Commands recorded in output pixel coordinates, with the output area each fill and layer
@@ -193,6 +202,14 @@ impl Recorder {
                 }
                 Cmd::Pop => rc.pop_layer(),
                 Cmd::PopClip => rc.pop_clip(),
+                Cmd::Clear(area) => {
+                    if hits(area) {
+                        Canvas::clear_layer(
+                            rc,
+                            Rect::new(area.x0, area.y0 - y0, area.x1, area.y1 - y0),
+                        );
+                    }
+                }
             }
             i += 1;
         }
@@ -239,6 +256,9 @@ impl Canvas for Recorder {
     }
     fn pop_layer(&mut self) {
         self.close(Cmd::Pop);
+    }
+    fn clear_layer(&mut self, area: Rect) {
+        self.cmds.push(Cmd::Clear(area));
     }
 }
 

@@ -82,6 +82,8 @@ pub struct Stats {
     pub depth_skipped: usize,
     pub preparation_skipped: usize,
     pub attempted_work: usize,
+    /// Device pixels of every whole-node shadow layer pushed (see `MAX_SHADOW_LAYER_PIXELS_TOTAL`).
+    pub shadow_layer_pixels: usize,
 }
 
 impl fmt::Display for Stats {
@@ -203,6 +205,10 @@ struct Ctx<'a> {
     exhausted: bool,
     /// Whole-node shadow redraws stop while `work_left` is at or below this.
     replay_floor: usize,
+    /// Set when a redraw ran out of its allowance: the traversal inside it stops at once.
+    replay_aborted: bool,
+    /// Output bounds of what the running whole-node shadow redraw has drawn (to erase it).
+    replay_bounds: Option<Rect>,
     /// Output area in pixels, for culling.
     screen: Rect,
 }
@@ -416,6 +422,8 @@ impl Renderer {
             depth: 0,
             exhausted: false,
             replay_floor: 0,
+            replay_aborted: false,
+            replay_bounds: None,
             screen,
         };
         if let Some(node) = doc.node(root) {
@@ -902,6 +910,11 @@ impl Ctx<'_> {
         let kind = node.kind.as_str();
         let world = parent * affine(data.get("transform"));
         let (w, h) = size(data);
+        if self.replay_floor > 0 {
+            let m = overhang(kind, data, w, h);
+            let b = transformed_bounds(world, Rect::new(-m, -m, w + m, h + m));
+            self.replay_bounds = Some(self.replay_bounds.map_or(b, |r| r.union(b)));
+        }
         if self.off_screen(node, kind, data, world, w, h) {
             self.stats.culled += 1;
             self.depth -= 1;
@@ -944,8 +957,7 @@ impl Ctx<'_> {
                 data,
                 !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
             );
-        let plan = self.whole_shadow_plan(node, data, world, (casts, silhouette || !casts));
-        let mut whole = plan.whole.clone();
+        let mut plan = self.whole_shadow_plan(node, data, world, (casts, silhouette || !casts));
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
             if effect.flag("visible") == Some(false) {
@@ -953,13 +965,13 @@ impl Ctx<'_> {
             }
             if !self.admit_effect(effect, &mut shadow_layers) {
                 // A refused effect is skipped everywhere, also as a whole-node shadow.
-                whole.retain(|e| !std::ptr::eq(*e, effect));
+                plan.whole.retain(|e| !std::ptr::eq(*e, effect));
                 continue;
             }
             let radius = effect.num("radius").unwrap_or(0.0).max(0.0);
             let primitive = match effect.text("type") {
                 // Cast from the whole node: drawn behind with the others, in list order.
-                Some("DROP_SHADOW") if whole.iter().any(|e| std::ptr::eq(*e, effect)) => {
+                Some("DROP_SHADOW") if plan.whole.iter().any(|e| std::ptr::eq(*e, effect)) => {
                     shadows.push(effect);
                     continue;
                 }
@@ -976,7 +988,7 @@ impl Ctx<'_> {
                 }
                 // No fill mask to draw from: one whole-content layer, if it is affordable.
                 Some("DROP_SHADOW")
-                    if layers == 0 && self.layer_fits(effect, world, plan.bounds) =>
+                    if layers == 0 && self.charge_layer(effect, world, plan.bounds) =>
                 {
                     self.stats.shadows += 1;
                     self.stats.approximated_effects +=
@@ -1019,11 +1031,11 @@ impl Ctx<'_> {
             .partition(|e| e.text("type") == Some("DROP_SHADOW"));
         layers += self.draw_behind_shadows(
             &behind,
-            (&whole, plan.replay_budget),
+            &plan,
             node,
             data,
             world,
-            &fill_paths,
+            (&fill_paths, casts),
             path,
             &above,
         );
@@ -1257,6 +1269,12 @@ impl Ctx<'_> {
             } else {
                 index
             }];
+            // Inside a redraw whose allowance is spent: stop at once, the redraw is discarded.
+            // (Every node below the root is reached from here.)
+            if self.replay_spent() {
+                self.replay_aborted = true;
+                break;
+            }
             if self.exhausted || !self.charge_work() {
                 break;
             }
@@ -1310,6 +1328,11 @@ impl Ctx<'_> {
         for _ in 0..mask_layers {
             self.rc.pop_clip();
         }
+    }
+
+    /// Whether a whole-node shadow redraw is running and has used up its work allowance.
+    fn replay_spent(&self) -> bool {
+        self.replay_floor > 0 && self.work_left <= self.replay_floor
     }
 
     fn charge_work(&mut self) -> bool {
