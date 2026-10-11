@@ -93,6 +93,33 @@ enum Cmd {
     PopClip,
 }
 
+#[cfg(feature = "parallel")]
+fn path_bytes(p: &BezPath) -> usize {
+    // A clone's vector has exactly the elements' length as capacity.
+    size_of_val(p.elements())
+}
+
+#[cfg(feature = "parallel")]
+impl Cmd {
+    /// Heap bytes this command owns (conservative). Image pixels are shared with the image
+    /// cache and not counted.
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Cmd::Fill(p, _) | Cmd::Push(Layer::Clip(p) | Layer::ClipPath(p), _, _) => path_bytes(p),
+            Cmd::Paint(PaintType::Gradient(g)) => {
+                g.stops.capacity() * size_of::<vello_cpu::peniko::ColorStop>()
+            }
+            // The graph is shared (`Arc`), but each push makes its own: count its primitives.
+            Cmd::Push(Layer::Filter(f), _, _) => {
+                size_of_val(&*f.graph)
+                    + f.graph.primitives.capacity()
+                        * size_of::<vello_cpu::filter_effects::FilterPrimitive>()
+            }
+            _ => 0,
+        }
+    }
+}
+
 /// Commands recorded in output pixel coordinates, with the output area each fill and layer
 /// can change, so a replay can skip what lies outside its strip.
 #[cfg(feature = "parallel")]
@@ -154,15 +181,16 @@ impl Recorder {
         self.bytes
     }
 
-    /// Appends `cmd`, which holds `path` (if any), unless the limit is passed.
-    fn add(&mut self, cmd: Cmd, path: Option<&BezPath>) {
+    /// Appends `cmd` unless that passes the limit (checked before it is kept).
+    fn add(&mut self, cmd: Cmd) {
         if self.over {
             return;
         }
-        let elements = path.map_or(0, |p| p.elements().len());
+        // The command, its vector slot once grown (up to twice its size), and what it owns.
         self.bytes = self
             .bytes
-            .saturating_add(size_of::<Cmd>() + elements * size_of::<vello_cpu::kurbo::PathEl>());
+            .saturating_add(2 * size_of::<Cmd>())
+            .saturating_add(cmd.heap_bytes());
         if self.bytes > self.limit {
             self.over = true;
             self.cmds = Vec::new();
@@ -190,16 +218,12 @@ impl Recorder {
 
     pub(crate) fn fill_rect(&mut self, rect: &Rect) {
         let area = self.touched(*rect);
-        self.add(Cmd::FillRect(*rect, area), None);
+        self.add(Cmd::FillRect(*rect, area));
     }
 
     fn push(&mut self, layer: Layer, reach: f64) {
-        let path = match &layer {
-            Layer::Clip(p) | Layer::ClipPath(p) => Some(p.clone()),
-            _ => None,
-        };
         let at = self.cmds.len();
-        self.add(Cmd::Push(layer, NOTHING, 0), path.as_ref());
+        self.add(Cmd::Push(layer, NOTHING, 0));
         if !self.over {
             self.open.push((at, NOTHING, reach));
         }
@@ -258,20 +282,20 @@ impl Recorder {
 impl Canvas for Recorder {
     fn set_transform(&mut self, t: Affine) {
         self.transform = t;
-        self.add(Cmd::Transform(t), None);
+        self.add(Cmd::Transform(t));
     }
     fn set_paint(&mut self, paint: PaintType) {
-        self.add(Cmd::Paint(paint), None);
+        self.add(Cmd::Paint(paint));
     }
     fn set_paint_transform(&mut self, t: Affine) {
-        self.add(Cmd::PaintTransform(t), None);
+        self.add(Cmd::PaintTransform(t));
     }
     fn set_fill_rule(&mut self, rule: Fill) {
-        self.add(Cmd::FillRule(rule), None);
+        self.add(Cmd::FillRule(rule));
     }
     fn fill_path(&mut self, path: &BezPath) {
         let area = self.touched(path.control_box());
-        self.add(Cmd::Fill(path.clone(), area), Some(path));
+        self.add(Cmd::Fill(path.clone(), area));
     }
     fn push_clip_layer(&mut self, path: &BezPath) {
         let r = self.reach();
@@ -308,7 +332,7 @@ impl Recorder {
             return;
         };
         let end = self.cmds.len();
-        self.add(pop, None);
+        self.add(pop);
         if self.over {
             return;
         }

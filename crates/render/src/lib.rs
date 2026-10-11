@@ -271,6 +271,9 @@ struct Ctx<'a> {
     exhausted: bool,
     /// Output area in pixels, for culling.
     screen: Rect,
+    /// How far (output pixels) the open filter layers of enclosing nodes spread what is drawn
+    /// now: culling grows each node by it, so a blur still reaching the output keeps it.
+    inherited_reach: f64,
 }
 
 impl Renderer {
@@ -559,6 +562,7 @@ impl Renderer {
             depth: 0,
             exhausted: false,
             screen,
+            inherited_reach: 0.0,
         }
     }
     pub fn render_fit(
@@ -886,7 +890,8 @@ impl Ctx<'_> {
             return false;
         }
         let m = overhang(kind, data, w, h);
-        let b = transformed_bounds(world, Rect::new(-m, -m, w + m, h + m));
+        let r = self.inherited_reach;
+        let b = transformed_bounds(world, Rect::new(-m, -m, w + m, h + m)).inflate(r, r);
         if !b.overlaps(self.screen) {
             return true;
         }
@@ -1032,6 +1037,7 @@ impl Ctx<'_> {
         let mut shadows = Vec::new();
         let mut layers = 0;
         let mut shadow_layers = 0;
+        let outer_reach = self.inherited_reach;
         let silhouette = casts
             && effects::approximate_silhouette(
                 data,
@@ -1087,6 +1093,7 @@ impl Ctx<'_> {
             self.rc.set_transform(world);
             self.rc
                 .push_filter_layer(Filter::from_primitive(primitive), effect_reach(effect));
+            self.inherited_reach += effect_reach(effect) * paint::linear_scale(world);
             layers += 1;
         }
         let opacity = data.num("opacity").unwrap_or(1.0).clamp(0.0, 1.0);
@@ -1146,6 +1153,7 @@ impl Ctx<'_> {
         for _ in 0..layers {
             self.rc.pop_layer();
         }
+        self.inherited_reach = outer_reach;
         self.depth -= 1;
     }
 

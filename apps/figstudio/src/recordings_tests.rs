@@ -171,3 +171,66 @@ fn placeholders_are_recorded_again_when_images_arrive() {
     recordings.draw(&mut r, &job(&doc, &keys, 1), &keys[1]);
     assert_eq!(recordings.walks, 2, "an image arrived");
 }
+
+/// A fill with 20,000 gradient stops makes the recording too big for a limit the plain page
+/// fits in many times over: its tiles render directly and are counted.
+#[test]
+fn a_huge_gradient_falls_back_counted() {
+    let plain = structure();
+    let keys = tiles_of(&plain, 0);
+    let mut recordings = Recordings::default();
+    recordings.draw(&mut renderer(), &job(&plain, &keys, 0), &keys[0]);
+    let limit = 4 * recordings.entries[0].rec.as_ref().unwrap().bytes();
+    let stop = |i: u32| {
+        let mut o = figstudio_fig::Obj::new();
+        o.insert(
+            "position",
+            figstudio_fig::Val::Float(f64::from(i) / 20_000.0),
+        );
+        let mut c = figstudio_fig::Obj::new();
+        c.insert("a", figstudio_fig::Val::Float(1.0));
+        o.insert("color", figstudio_fig::Val::Obj(c));
+        figstudio_fig::Val::Obj(o)
+    };
+    let mut paint = figstudio_fig::Obj::new();
+    paint.insert("type", figstudio_fig::Val::Enum("GRADIENT_LINEAR"));
+    paint.insert("visible", figstudio_fig::Val::Bool(true));
+    paint.insert(
+        "stops",
+        figstudio_fig::Val::Arr((0..20_000).map(stop).collect()),
+    );
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/structure.fig"
+    );
+    let mut doc = Document::open(path).unwrap();
+    let mut nodes = doc.nodes.clone();
+    let target = doc.children(doc.pages[0])[0];
+    let rect = nodes.iter_mut().find(|n| n.id == target).unwrap();
+    rect.data.set(
+        "fillPaints",
+        figstudio_fig::Val::Arr(vec![figstudio_fig::Val::Obj(paint)]),
+    );
+    doc.set_nodes(nodes).unwrap();
+    let doc = Arc::new(doc);
+    // Same tile positions; keys carry the document instance.
+    let keys: Vec<Key> = keys
+        .iter()
+        .map(|k| Key {
+            doc: doc.instance,
+            ..*k
+        })
+        .collect();
+    for (d, counted) in [(&plain, 0), (&doc, 1)] {
+        let mut recordings = Recordings {
+            limit,
+            ..Recordings::default()
+        };
+        let key = Key {
+            doc: d.instance,
+            ..keys[0]
+        };
+        let frame = recordings.draw(&mut renderer(), &job(d, &keys, 0), &key);
+        assert_eq!(frame.stats.unrecorded_tiles, counted);
+    }
+}

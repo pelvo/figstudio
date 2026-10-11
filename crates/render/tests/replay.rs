@@ -246,3 +246,95 @@ fn a_recording_over_its_limit_is_dropped() {
     let (rec, _) = renderer().record(&doc, page, Affine::scale(1.0), area, full.bytes());
     assert!(rec.is_some(), "exactly the recording fits");
 }
+
+/// A blurred parent spreads a child lying just outside a tile into it: a direct render of the
+/// tile must not cull that child, so it matches replays of recordings over any area.
+#[test]
+fn a_child_blurred_in_from_outside_the_tile_is_drawn() {
+    let mut parent = node(2, 1, "FRAME");
+    parent.data.set("size", size(700.0, 100.0));
+    parent.data.set(
+        "effects",
+        Val::Arr(vec![obj(&[
+            ("type", Val::Str("LAYER_BLUR".into())),
+            ("visible", Val::Bool(true)),
+            ("radius", Val::Float(24.0)),
+        ])]),
+    );
+    // Tile (0, 0) at scale 1 ends at page x 514; the child starts 6 units later.
+    let mut child = node(3, 2, "RECTANGLE");
+    child.data.set("size", size(60.0, 60.0));
+    child.data.set(
+        "transform",
+        obj(&[("m02", Val::Float(520.0)), ("m12", Val::Float(20.0))]),
+    );
+    child.data.set("fillPaints", paint(0.0, 0.0, 0.0));
+    let doc = document(vec![node(1, 0, "CANVAS"), parent, child]);
+    for n in [1, 64] {
+        let (rec, _) =
+            renderer().record(&doc, id(1), Affine::IDENTITY, tiles_around(n), usize::MAX);
+        let (worst, _) = compare(&doc, id(1), &rec.unwrap(), 1.0, 0, 0);
+        assert!(worst <= 1, "recorded over {n} tiles: differs by {worst}");
+    }
+}
+
+/// Paint allocations count toward the limit: a gradient with 20,000 stops (about 400 KB of
+/// stops) does not fit a 16 KiB recording.
+#[test]
+fn many_gradient_stops_exceed_the_limit() {
+    let stop = |i: u32| {
+        obj(&[
+            ("position", Val::Float(f64::from(i) / 20_000.0)),
+            (
+                "color",
+                obj(&[("r", Val::Float(1.0)), ("a", Val::Float(1.0))]),
+            ),
+        ])
+    };
+    let mut rect = node(2, 1, "RECTANGLE");
+    rect.data.set(
+        "fillPaints",
+        Val::Arr(vec![obj(&[
+            ("type", Val::Str("GRADIENT_LINEAR".into())),
+            ("visible", Val::Bool(true)),
+            ("stops", Val::Arr((0..20_000).map(stop).collect())),
+        ])]),
+    );
+    let doc = document(vec![node(1, 0, "CANVAS"), rect]);
+    let (rec, _) = renderer().record(&doc, id(1), Affine::IDENTITY, tiles_around(1), usize::MAX);
+    let bytes = rec.unwrap().bytes();
+    assert!(bytes > 20_000 * 16, "the stops are counted: {bytes} bytes");
+    let (rec, _) = renderer().record(&doc, id(1), Affine::IDENTITY, tiles_around(1), 16 << 10);
+    assert!(rec.is_none(), "over a 16 KiB limit");
+}
+
+/// A blur's reach applies to its own node's content only: a later sibling outside the view is
+/// still culled.
+#[test]
+fn a_blur_does_not_keep_its_siblings_from_being_culled() {
+    let mut blurred = node(2, 1, "FRAME");
+    blurred.data.set(
+        "effects",
+        Val::Arr(vec![obj(&[
+            ("type", Val::Str("LAYER_BLUR".into())),
+            ("visible", Val::Bool(true)),
+            ("radius", Val::Float(24.0)),
+        ])]),
+    );
+    let mut child = node(3, 2, "RECTANGLE");
+    child.data.set("fillPaints", paint(0.0, 0.0, 0.0));
+    // 10 units right of an 80-unit-wide view: within the blur's reach, outside the view.
+    let mut sibling = node(4, 1, "RECTANGLE");
+    sibling
+        .data
+        .set("transform", obj(&[("m02", Val::Float(90.0))]));
+    sibling.data.set("fillPaints", paint(0.0, 0.0, 0.0));
+    let doc = document(vec![node(1, 0, "CANVAS"), blurred, child, sibling]);
+    let vp = Viewport {
+        width: 80,
+        height: 80,
+        transform: Affine::IDENTITY,
+        background: None,
+    };
+    assert_eq!(renderer().render(&doc, id(1), &vp).stats.culled, 1);
+}
