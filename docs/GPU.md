@@ -35,6 +35,18 @@ stays reproducible.
 4. Browser: WebGPU where available, else WebGL2 through `vello_gpu`'s `webgl` feature, else
    the CPU path. The thread-based CPU workers stay for the fallback.
 
+## Smooth panning first (requested 2026-10-12)
+
+Figma pans smoothly because it shows cached tiles; figstudio re-renders the whole view after
+every move (0.4–0.6 s on a large page, mostly the layer walk, not pixels). Order:
+
+| # | Lane | Done when |
+|---|---|---|
+| P1 | Overscan: render a margin around the view; short pans show already-drawn content | Panning by less than the margin shows no empty edge; test of the margin/view maths; app checked by eye |
+| P2 | Tile cache: fixed tiles per zoom level, kept in an LRU; zoom shows the nearest level stretched until sharp tiles arrive | Revisiting an area shows cached tiles at once; memory bounded; tests of tile keys, eviction, fallback |
+| P3 | Record once per page and zoom level, replay per tile (reuse `record.rs`) | A second tile at the same zoom does not walk the document again; pixels equal to a direct render |
+| L2–L5 | GPU lanes below, drawing tiles with `vello_gpu` | as below |
+
 ## Lanes (one at a time, each committed after its gate)
 
 | # | Lane | Done when |
