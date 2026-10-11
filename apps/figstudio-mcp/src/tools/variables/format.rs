@@ -15,6 +15,7 @@ pub(super) fn value(value: TokenValue) -> Option<Value> {
     }
 }
 
+/// `#RRGGBB`, or `#RRGGBBAA` when not opaque, from a stored colour message.
 pub(crate) fn color(v: &Val, opacity: f32) -> Option<String> {
     let channels = [
         v.num("r")?,

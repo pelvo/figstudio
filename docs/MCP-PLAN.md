@@ -340,10 +340,40 @@ through `derivedSymbolData` (the instance's own data wins).
 `original=true` for image-fill source bytes by hash. **Done:** tests decode each format and
 compare the original bytes to `Document.images`.
 
+L7 done. `tools/assets.rs` (+ `assets/originals.rs`): up to 20 ids, every id format
+(instance paths via `render_path`), rendering shared with `get_screenshot` through
+`screenshot::render_node` (same 0.01–4 scale range and 4096 px cap). JPG (quality 90, `image`
+crate) is flattened onto white; pages keep their page background. `original=true` returns the
+stored bytes of the visible IMAGE paints (fills and strokes) of the node, its descendants and
+the instances inside it, each hash once, at most 20 per call, as `image` items (MIME from
+`image::guess_format`) or blob resources (`application/octet-stream`) when the format is
+unknown. Hashes with no stored bytes are counted in the text. A failing node is reported in
+its text line; the call is an error only when every node fails. Each behaviour has a test
+proven by a mutation. Not verified: lazily opened documents (`lazy_images` bytes are not
+read; the MCP registry opens eager), huge originals (no per-image size cap), SVG/PDF (absent).
+
 **L8: `get_figjam`.** The L2 XML with FigJam extras: sticky text and colour, connector
 endpoints, and per-node screenshots (L3) at small scale. **Done:** a built FigJam-kind document
 in the test (no public FigJam fixture), plus an approximation count for kinds that are not
 drawn.
+
+L8 done. `tools/figjam.rs` (`get_figjam`) reuses the L2 writer: `metadata::run` takes an
+optional `Extras`, and `metadata/figjam.rs` adds attributes and text per kind (field names
+from the L0 schema facts): STICKY `color` (first visible solid fill) and text; SHAPE_WITH_TEXT
+`shape`, `color`, text; CONNECTOR `start`/`end` node ids, `startMagnet`/`endMagnet` (NONE
+left out), `lineStyle`; SECTION `status`; CODE_BLOCK `language` and `sourceCode`; TABLE_CELL
+text; WIDGET `widget` name; STAMP as a plain element. `includeImages` (default false) adds a
+text line and PNG per sticky, shape, section, table, code block, widget and stamp via
+`screenshot::render_node`, `imageScale` 0.01–0.5 (default 0.25), at most 20 (a note counts
+the rest). An XML comment counts the FigJam kinds the renderer does not draw. Tests build the
+board in the test. Not verified: real FigJam files (field shapes come from the schema, not a
+capture), connector geometry beyond `startX/startY/endX/endY` for loose ends, table row/column structure, merged cells, sticky text style.
+
+L8 second pass. Extra attribute values go through `clean_xml` like text (NUL, other control
+characters and U+FFFE/U+FFFF); a test parses the output with quick-xml's reader. A connector end
+with only `position` emits `startX/startY` or `endX/endY`. HIGHLIGHT and SECTION_OVERLAY are
+counted in the not-drawn comment. `includeImages` shares the 32 MB payload budget with
+`download_assets` (`figjam_within`).
 
 **L9: Code Connect and design system (local).** `get_context_for_code_connect` (property
 definitions and variants of a component); `get_code_connect_map` / `add_code_connect_map`

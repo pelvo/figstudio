@@ -35,8 +35,12 @@ apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
   tools/metadata.rs      get_metadata: typed inputs, quick-xml, bounded iterative tree walk;
                          instances expand through fig::resolve::walk_instance (metadata/node.rs
                          writes one element)
-  tools/screenshot.rs    get_screenshot; an instance path uses Renderer::render_path and
+  tools/figjam.rs        get_figjam: metadata::run with FigJam Extras, optional small PNGs
+                         (metadata/figjam.rs: per-kind attributes, text, undrawn-kind counts)
+  tools/screenshot.rs    get_screenshot (render_node/Shot shared with assets and figjam); an instance path uses Renderer::render_path and
                          path_bounds (render/src/focus.rs: only that node, laid out as drawn)
+  tools/assets.rs        download_assets: PNG/JPG renders (screenshot::render_node) or original
+                         image bytes; assets/originals.rs finds image-fill hashes in a node
   tools/variables.rs     get_variable_defs; walks resolved instance content
   tools/design/          get_design_context: mod.rs (tool, output sections, Notes), walk.rs
                          (layers incl. resolved instances), jsx.rs (elements, picture assets),

@@ -4,6 +4,7 @@ use crate::{
     node_id::{NodeId, parse_node_id},
     tools::tool_error,
 };
+use figjam::Extras;
 use figstudio_fig::{
     Document, Guid, Node,
     resolve::{InstancePath, walk_path},
@@ -21,6 +22,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+pub(crate) mod figjam;
 mod node;
 mod resolved;
 use resolved::Out;
@@ -60,26 +62,40 @@ impl FigstudioServer {
 
 /// Return a page list or bounded subtree as XML; invalid IDs include the page list.
 pub fn metadata(doc: &Document, node_id: Option<&str>, depth: Option<u32>) -> CallToolResult {
+    match run(doc, node_id, depth, None) {
+        Ok((xml, _)) => CallToolResult::success(vec![ContentBlock::text(xml)]),
+        Err(result) => result,
+    }
+}
+
+/// The XML for `node_id` (or the page list), with FigJam output when `extras` is given.
+/// `Err` is the finished tool result for a bad id or a write fault.
+pub(crate) fn run(
+    doc: &Document,
+    node_id: Option<&str>,
+    depth: Option<u32>,
+    extras: Option<Extras>,
+) -> Result<(String, Option<Extras>), CallToolResult> {
     let root = match node_id {
         None => None,
         Some(input) => match parse_node_id(input) {
             Ok(NodeId::Node(id)) if doc.node(id).is_some() => Some(Root::Node(id)),
             Ok(NodeId::InstancePath(path)) => Some(Root::Path(path)),
-            _ => return unknown(doc),
+            _ => return Err(unknown(doc)),
         },
     };
-    match xml(doc, root, depth) {
-        Ok(Some(xml)) => CallToolResult::success(vec![ContentBlock::text(xml)]),
-        Ok(None) => unknown(doc),
-        Err(error) => CallToolResult::error(vec![ContentBlock::text(format!(
+    match xml(doc, root, depth, extras) {
+        Ok(Some(out)) => Ok(out),
+        Ok(None) => Err(unknown(doc)),
+        Err(error) => Err(CallToolResult::error(vec![ContentBlock::text(format!(
             "could not write metadata XML: {error}"
-        ))]),
+        ))])),
     }
 }
 
 fn unknown(doc: &Document) -> CallToolResult {
-    let pages = xml(doc, None, None)
-        .map(Option::unwrap_or_default)
+    let pages = xml(doc, None, None, None)
+        .map(|out| out.map(|(xml, _)| xml).unwrap_or_default())
         .unwrap_or_else(|error| error.to_string());
     CallToolResult::error(vec![ContentBlock::text(format!(
         "Unknown or invalid node ID. Available pages:\n{pages}"
@@ -102,8 +118,16 @@ enum Step {
     End(String),
 }
 
-fn xml(doc: &Document, root: Option<Root>, depth: Option<u32>) -> std::io::Result<Option<String>> {
+type XmlOut = (String, Option<Extras>);
+
+fn xml(
+    doc: &Document,
+    root: Option<Root>,
+    depth: Option<u32>,
+    figjam: Option<Extras>,
+) -> std::io::Result<Option<XmlOut>> {
     let mut writer = Writer::new(Vec::new());
+    let mut figjam = figjam;
     match root {
         None => pages(doc, &mut writer)?,
         Some(root) => {
@@ -113,6 +137,7 @@ fn xml(doc: &Document, root: Option<Root>, depth: Option<u32>) -> std::io::Resul
                 truncated: false,
                 skipped: 0,
                 definitions: None,
+                figjam: figjam.take(),
             };
             let found = match root {
                 Root::Node(id) => subtree(doc, id, depth, &mut out).map(|()| true)?,
@@ -121,11 +146,11 @@ fn xml(doc: &Document, root: Option<Root>, depth: Option<u32>) -> std::io::Resul
             if !found {
                 return Ok(None);
             }
-            out.finish(&mut writer)?;
+            figjam = out.finish(&mut writer)?;
         }
     }
     String::from_utf8(writer.into_inner())
-        .map(Some)
+        .map(|xml| Some((xml, figjam)))
         .map_err(std::io::Error::other)
 }
 
@@ -228,12 +253,17 @@ fn subtree(doc: &Document, root: Guid, depth: Option<u32>, out: &mut Out) -> std
                                 .any(|child| !is_internal(child))
                     }
                 };
+                let shown = id.to_string();
+                if let Some(extras) = &mut out.figjam {
+                    extras.note(&shown, &node.kind);
+                }
                 let open = write_node(
                     &mut out.body,
-                    &id.to_string(),
+                    &shown,
                     &node.kind,
                     &node.data,
                     has_children,
+                    out.figjam.is_some(),
                 )?;
                 if let Some(walk) = &inside {
                     out.resolved(doc, &walk.nodes)?;

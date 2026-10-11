@@ -1,6 +1,10 @@
 //! Offline discovery and read-only document tools.
+/// PNG or JPG renders and original image bytes.
+pub mod assets;
 /// React + Tailwind design context with rendered assets.
 pub mod design;
+/// FigJam boards as metadata XML with FigJam details.
+pub mod figjam;
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
 /// PNG renders of nodes.

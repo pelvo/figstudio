@@ -412,3 +412,13 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   `--assets-dir` (default ./figma-assets) or `--assets inline`, node/size caps and counted
   approximations. Built-document and fixture tests, each mutation-proven; check.sh passed.
   Not verified: live clients, private/large files, visual fidelity of the generated code.
+- 2026-10-11 — MCP L7: `download_assets` renders up to 20 nodes to PNG/JPG (JPG flattened onto
+  white, same scale range and 4096 px cap as get_screenshot via a shared `render_node`) or
+  returns the original image-fill bytes (`original=true`). 9 tests in `tests/assets.rs`, each
+  proven by a mutation; 28 fixture PNGs unaffected (no render crate change); check.sh passed.
+  Not verified: lazily opened files, very large originals, live clients.
+- 2026-10-11 — MCP L8: `get_figjam` = get_metadata XML plus FigJam attributes and text
+  (sticky colour/text, shape type, connector endpoints and magnets, section status, code, table
+  cell, widget), optional small screenshots (max 20, scale <= 0.5) and an approximations
+  comment for kinds the renderer does not draw. 5 tests on an in-test board, mutation-proven;
+  check.sh passed. Not verified: real FigJam files, connector geometry, table structure.

@@ -1,5 +1,5 @@
 //! One metadata element: attributes, text and escaping.
-use super::MAX_TEXT_CHARS;
+use super::{MAX_TEXT_CHARS, figjam};
 use figstudio_fig::Val;
 use quick_xml::{
     Writer,
@@ -7,20 +7,33 @@ use quick_xml::{
 };
 
 /// Writes one element for a node of type `kind` with (resolved) `data`, shown as `id`.
-/// Returns whether the element was left open (children or text follow).
+/// `figjam` adds the FigJam attributes and text. Returns whether the element was left open
+/// (children or text follow).
 pub(super) fn write_node(
     writer: &mut Writer<Vec<u8>>,
     id: &str,
     kind: &str,
     data: &Val,
     children: bool,
+    figjam: bool,
 ) -> std::io::Result<bool> {
-    let attrs = attributes(id, kind, data);
+    let mut attrs = attributes(id, kind, data);
+    if figjam {
+        attrs.extend(
+            figjam::attributes(kind, data)
+                .into_iter()
+                .map(|(key, value)| (key, clean_xml(&value))),
+        );
+    }
     let mut tag = BytesStart::new(tag_name(kind));
     for (key, value) in &attrs {
         tag.push_attribute((*key, value.as_str()));
     }
-    let text = node_text(kind, data);
+    let text = if figjam {
+        figjam::text(kind, data).unwrap_or_else(|| node_text(kind, data))
+    } else {
+        node_text(kind, data)
+    };
     let needs_end = children || !text.is_empty();
     if needs_end {
         writer.write_event(Event::Start(tag))?;
@@ -81,7 +94,7 @@ fn attributes(id: &str, kind: &str, data: &Val) -> Vec<(&'static str, String)> {
 pub(super) fn clean_xml(value: &str) -> String {
     value
         .chars()
-        .filter(|c| !matches!(*c, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}'))
+        .filter(|c| !matches!(*c, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}'))
         .collect()
 }
 
@@ -89,11 +102,16 @@ fn node_text(kind: &str, data: &Val) -> String {
     if kind != "TEXT" {
         return String::new();
     }
-    let clean = clean_xml(
+    capped(
         data.path(&["textData", "characters"])
             .and_then(Val::as_str)
             .unwrap_or(""),
-    );
+    )
+}
+
+/// `value` without control characters, cut to [`MAX_TEXT_CHARS`] plus an ellipsis.
+pub(super) fn capped(value: &str) -> String {
+    let clean = clean_xml(value);
     let mut chars = clean.chars();
     let mut text: String = chars.by_ref().take(MAX_TEXT_CHARS).collect();
     if chars.next().is_some() {
