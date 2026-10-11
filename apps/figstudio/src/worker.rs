@@ -24,7 +24,11 @@ use figstudio_render::images::{ImageRequest, Images};
 use figstudio_render::{Renderer, Stats};
 use web_time::{Duration, Instant};
 
-use crate::recordings::Recordings;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::gpu_tiles::{GpuTexture, TileGpu};
+#[cfg(target_arch = "wasm32")]
+use crate::recordings::{GpuTexture, TileGpu};
+use crate::recordings::{Pixels, Recordings};
 use crate::source::Source;
 use crate::tile_queue::{Msg, Queue};
 use crate::tiles;
@@ -54,8 +58,7 @@ pub struct RenderDone {
     pub tab: u64,
     pub key: tiles::Key,
     pub images: u64,
-    pub size: [usize; 2],
-    pub rgba_premultiplied: Vec<u8>,
+    pub pixels: Pixels<GpuTexture>,
     pub stats: Stats,
     pub elapsed: Duration,
 }
@@ -257,7 +260,17 @@ pub struct Workers {
 }
 
 impl Workers {
+    /// Workers drawing every canvas tile on the CPU.
+    #[cfg_attr(
+        all(not(test), not(target_arch = "wasm32")),
+        expect(dead_code, reason = "the desktop app passes its GPU")
+    )]
     pub fn new(ctx: &egui::Context) -> Self {
+        Self::with_gpu(ctx, TileGpu::default())
+    }
+
+    /// Workers whose render thread draws canvas tiles with `gpu` where it can.
+    pub fn with_gpu(ctx: &egui::Context, mut gpu: TileGpu) -> Self {
         let (render_tx, jobs) = channel::<Msg>();
         let (done_tx, render_rx) = channel();
         let waker = Waker::new(ctx);
@@ -303,9 +316,9 @@ impl Workers {
                     continue;
                 };
                 let start = Instant::now();
-                let mut frame = recordings.draw(&mut renderer, job, &key);
+                let drawn = gpu.draw(&mut recordings, &mut renderer, job, &key);
                 let elapsed = start.elapsed();
-                let wanted = std::mem::take(&mut frame.wanted);
+                let (pixels, stats, wanted) = drawn.into_parts();
                 // A document closed while drawing stores and requests nothing (`Images`).
                 if !wanted.is_empty() {
                     match &job.source {
@@ -319,12 +332,8 @@ impl Workers {
                     tab: job.tab,
                     key,
                     images: job.images,
-                    size: [
-                        usize::from(frame.pixmap.width()),
-                        usize::from(frame.pixmap.height()),
-                    ],
-                    rgba_premultiplied: frame.pixmap.data_as_u8_slice().to_vec(),
-                    stats: frame.stats,
+                    pixels,
+                    stats,
                     elapsed,
                 };
                 let (tab, images) = (job.tab, job.images);

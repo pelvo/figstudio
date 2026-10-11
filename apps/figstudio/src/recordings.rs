@@ -24,6 +24,72 @@ const LIMIT: usize = 32 << 20;
 /// Recordings kept (levels of the current page, and other tabs'), least recently used out.
 const ENTRIES: usize = 4;
 
+/// A tile drawn by [`Recordings::draw_with`]: CPU pixels, or the GPU's tile with the
+/// recording's stats and the images its walk asked for.
+pub enum Drawn<G> {
+    Cpu(Frame),
+    Gpu {
+        tile: G,
+        stats: figstudio_render::Stats,
+        wanted: Vec<figstudio_render::images::ImageRequest>,
+    },
+}
+
+/// A finished tile's pixels: CPU bytes (premultiplied RGBA8) or the GPU's texture.
+pub enum Pixels<G> {
+    Cpu { size: [usize; 2], rgba: Vec<u8> },
+    Gpu(G),
+}
+
+impl<G> Drawn<G> {
+    /// The tile's pixels, stats and the images its walk asked for.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Pixels<G>,
+        figstudio_render::Stats,
+        Vec<figstudio_render::images::ImageRequest>,
+    ) {
+        match self {
+            Drawn::Cpu(frame) => {
+                let (w, h) = (frame.pixmap.width(), frame.pixmap.height());
+                let pixels = Pixels::Cpu {
+                    size: [usize::from(w), usize::from(h)],
+                    rgba: frame.pixmap.data_as_u8_slice().to_vec(),
+                };
+                (pixels, frame.stats, frame.wanted)
+            }
+            Drawn::Gpu {
+                tile,
+                stats,
+                wanted,
+            } => (Pixels::Gpu(tile), stats, wanted),
+        }
+    }
+}
+
+/// The browser's tile drawer until the GPU canvas reaches it (T20 L4): every tile on the CPU.
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Default)]
+pub struct TileGpu;
+
+/// No GPU tiles in the browser yet.
+#[cfg(target_arch = "wasm32")]
+pub type GpuTexture = std::convert::Infallible;
+
+#[cfg(target_arch = "wasm32")]
+impl TileGpu {
+    pub fn draw(
+        &mut self,
+        recordings: &mut Recordings,
+        renderer: &mut Renderer,
+        job: &RenderJob,
+        key: &Key,
+    ) -> Drawn<GpuTexture> {
+        recordings.draw_with(renderer, job, key, |_, _| None)
+    }
+}
+
 fn bytes(e: &Entry) -> usize {
     e.rec.as_ref().map_or(0, Recording::bytes)
 }
@@ -121,7 +187,24 @@ impl Recordings {
 
     /// Renders tile `key` of `job`: replayed from a recording of its level, recorded first
     /// if none covers it. The frame's `wanted` lists the images the recording walk asked for.
+    #[cfg(test)]
     pub fn draw(&mut self, renderer: &mut Renderer, job: &RenderJob, key: &Key) -> Frame {
+        match self.draw_with(renderer, job, key, |_, _| None::<std::convert::Infallible>) {
+            Drawn::Cpu(frame) => frame,
+            Drawn::Gpu { tile, .. } => match tile {},
+        }
+    }
+
+    /// Like [`Recordings::draw`], but first offers the tile's recording (`None`: over the size
+    /// limit or the work budget) and viewport to `gpu`; when it returns a tile, no CPU pixels
+    /// are drawn.
+    pub fn draw_with<G>(
+        &mut self,
+        renderer: &mut Renderer,
+        job: &RenderJob,
+        key: &Key,
+        gpu: impl FnOnce(Option<&Recording>, &Viewport) -> Option<G>,
+    ) -> Drawn<G> {
         let viewport = Viewport {
             width: TEXTURE,
             height: TEXTURE,
@@ -145,6 +228,14 @@ impl Recordings {
         self.clock += 1;
         let entry = &mut self.entries[at];
         entry.used = self.clock;
+        if let Some(tile) = gpu(entry.rec.as_ref(), &viewport) {
+            let stats = entry.rec.as_ref().map(|r| r.stats().clone());
+            return Drawn::Gpu {
+                tile,
+                stats: stats.unwrap_or_default(),
+                wanted,
+            };
+        }
         let replayed = entry.rec.as_ref().and_then(|r| r.render(&viewport));
         let mut frame = match replayed {
             Some((frame, _)) => frame,
@@ -156,7 +247,7 @@ impl Recordings {
         };
         // Asked for by the recording walk: sent on, or they would stay "in flight" for ever.
         frame.wanted.extend(wanted);
-        frame
+        Drawn::Cpu(frame)
     }
 
     /// Records `key`'s level for its batch's area; returns the entry's index and the images

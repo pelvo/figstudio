@@ -2,6 +2,10 @@
 
 mod canvas;
 mod gpu;
+#[cfg(not(target_arch = "wasm32"))]
+mod gpu_registry;
+#[cfg(not(target_arch = "wasm32"))]
+mod gpu_tiles;
 mod labels;
 mod panels;
 mod recordings;
@@ -109,16 +113,37 @@ struct App {
     /// The window size cap last sent (`gpu::cap_window`).
     #[cfg(not(target_arch = "wasm32"))]
     window_cap: Option<f32>,
+    /// What draws the canvas tiles ("GPU (Metal)", "CPU"), for the status bar.
+    renderer: String,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
         theme::install_fonts(&cc.egui_ctx);
-        let workers = Workers::new(&cc.egui_ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        let (workers, renderer, tiles) = {
+            let mut tiles = tiles_view::Tiles::default();
+            let state = cc.wgpu_render_state.as_ref();
+            let env = std::env::var("FIGSTUDIO_RENDERER").ok();
+            let side = state.map(|s| s.device.limits().max_texture_dimension_2d);
+            let choice = gpu_tiles::choose(env.as_deref(), side);
+            let backend = state.map(|s| s.adapter.get_info().backend);
+            tiles.gpu = state.map(gpu_tiles::Registry::new);
+            let gpu = gpu_tiles::TileGpu::new(choice, state);
+            let label = gpu_tiles::label(choice, backend);
+            (Workers::with_gpu(&cc.egui_ctx, gpu), label, tiles)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let (workers, renderer, tiles) = (
+            Workers::new(&cc.egui_ctx),
+            String::from("CPU"),
+            tiles_view::Tiles::default(),
+        );
         let mut app = App {
             workers,
-            tiles: tiles_view::Tiles::default(),
+            renderer,
+            tiles,
             render_worker_lost: false,
             tabs: Vec::new(),
             active: 0,
@@ -703,6 +728,13 @@ impl App {
                 return;
             };
             ui.label(format!("{:.0}%", tab.view.zoom * 100.0));
+            ui.separator();
+            let cpu_tiles = match tab.stats.gpu_fallback_tiles {
+                0 => String::new(),
+                n => format!(" · {n} tiles on the CPU"),
+            };
+            ui.label(RichText::new(format!("{}{cpu_tiles}", self.renderer)).color(theme::TEXT_DIM))
+                .on_hover_text("What draws the canvas (FIGSTUDIO_RENDERER=cpu|gpu). Tiles on the CPU use something the GPU path cannot draw yet.");
             ui.separator();
             if let Some(p) = self.cursor {
                 ui.label(RichText::new(format!("{:.0}, {:.0}", p.x, p.y)).color(theme::TEXT_DIM));

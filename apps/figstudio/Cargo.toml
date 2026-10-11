@@ -18,7 +18,12 @@ image = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # parallel: page recordings replayed per tile (recordings.rs), as in the browser build.
-figstudio-render = { workspace = true, features = ["parallel"] }
+# gpu: recorded tiles replayed into vello_gpu scenes (gpu_tiles.rs).
+figstudio-render = { workspace = true, features = ["gpu"] }
+# The GPU canvas: vello_gpu renders tiles on eframe's wgpu device (same wgpu 30).
+vello_gpu = { workspace = true }
+# Resolves wgpu error-scope futures (immediate on native) for the GPU tile path.
+pollster = { workspace = true }
 # wgpu: eframe's wgpu renderer (Metal, Vulkan, DX12, GL fallback via egui-wgpu defaults), so
 # the GPU canvas (docs/GPU.md) can share its device.
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11"] }

@@ -5,6 +5,7 @@ use egui::{Color32, Pos2, Rect};
 use figstudio_render::Stats;
 use web_time::Duration;
 
+use crate::recordings::Pixels;
 use crate::tab::Tab;
 use crate::tiles::{self, Cache, TILE_BYTES};
 use crate::worker::{RenderDone, RenderJob, Workers};
@@ -17,10 +18,26 @@ const BUDGET_BYTES: usize = 256 << 20;
 #[cfg(target_arch = "wasm32")]
 const BUDGET_BYTES: usize = 128 << 20;
 
-/// A rendered tile; its pixels live only in the texture.
+/// A rendered tile; its pixels live only in the texture (egui's, or the GPU's own).
 pub struct Tile {
-    texture: egui::TextureHandle,
+    texture: Texture,
     elapsed: Duration,
+}
+
+enum Texture {
+    Cpu(egui::TextureHandle),
+    #[cfg(not(target_arch = "wasm32"))]
+    Gpu(crate::gpu_tiles::NativeTexture),
+}
+
+impl Texture {
+    fn id(&self) -> egui::TextureId {
+        match self {
+            Texture::Cpu(t) => t.id(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Texture::Gpu(t) => t.id,
+        }
+    }
 }
 
 impl std::fmt::Debug for Tile {
@@ -35,12 +52,17 @@ impl std::fmt::Debug for Tile {
 #[derive(Debug)]
 pub struct Tiles {
     cache: Cache<Tile>,
+    /// Registers GPU tiles with egui (desktop with the GPU canvas).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub gpu: Option<crate::gpu_tiles::Registry>,
 }
 
 impl Default for Tiles {
     fn default() -> Self {
         Tiles {
             cache: Cache::new(BUDGET_BYTES / TILE_BYTES),
+            #[cfg(not(target_arch = "wasm32"))]
+            gpu: None,
         }
     }
 }
@@ -55,8 +77,20 @@ impl Tiles {
     pub fn accept(&mut self, ctx: &egui::Context, tab: &mut Tab, done: RenderDone) {
         tab.tile_requests.retain(|k| *k != done.key);
         tab.tiles_received.push((done.key, done.images));
-        let image = egui::ColorImage::from_rgba_premultiplied(done.size, &done.rgba_premultiplied);
-        let texture = ctx.load_texture("tile", image, egui::TextureOptions::LINEAR);
+        let texture = match done.pixels {
+            Pixels::Cpu { size, rgba } => {
+                let image = egui::ColorImage::from_rgba_premultiplied(size, &rgba);
+                Texture::Cpu(ctx.load_texture("tile", image, egui::TextureOptions::LINEAR))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Pixels::Gpu(texture) => match &self.gpu {
+                Some(registry) => Texture::Gpu(registry.register(texture)),
+                // Not reached: GPU tiles come only from workers given the registry's device.
+                None => return,
+            },
+            #[cfg(target_arch = "wasm32")]
+            Pixels::Gpu(never) => match never {},
+        };
         let images = (done.stats.images_loading > 0).then_some(done.images);
         let tile = Tile {
             texture,
@@ -87,6 +121,7 @@ impl Tiles {
         let uv = tiles::uv();
         let mut stats: Option<Stats> = None;
         let mut elapsed = Duration::ZERO;
+        let mut fallbacks = 0;
         for key in self.cache.draw_order(doc, page, level, visible) {
             self.cache.touch(&key);
             let Some(entry) = self.cache.get(&key) else {
@@ -101,13 +136,16 @@ impl Tiles {
                 Color32::WHITE,
             );
             if key.level == level {
+                fallbacks += entry.stats.gpu_fallback_tiles;
                 stats.get_or_insert_default().max_with(&entry.stats);
                 elapsed += entry.value.elapsed;
             }
         }
         // The status bar describes the sharp tiles on screen (each count is a lower bound: the
         // largest of any one tile); it keeps the last numbers while none has arrived.
-        if let Some(stats) = stats {
+        if let Some(mut stats) = stats {
+            // Added up, unlike the other counts: how many sharp tiles on screen are CPU tiles.
+            stats.gpu_fallback_tiles = fallbacks;
             tab.stats = stats;
             tab.render_time = elapsed;
         }
