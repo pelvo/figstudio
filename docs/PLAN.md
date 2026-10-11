@@ -221,6 +221,12 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-11 — T19 #1: whole-node shadow layers (`crates/render/src/shadow_layer.rs`).
+  42 pages at scale 0.1, CPU time: +0.4% total, worst page +12%; approximated shadows
+  5349→2084, skipped effects 483→427. Spread is still counted. wasm32 check not run for the
+  app (needs atomics flags); `figstudio-render` checks for wasm32. Live Figma comparison
+  not verified.
+
 - 2026-10-11 — Approximation counters measured on a large real file and broken down by
   reason; plan to clear them recorded in `docs/APPROXIMATIONS.md` (task T19).
 

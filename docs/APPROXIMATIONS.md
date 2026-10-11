@@ -14,8 +14,8 @@ Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
 | Counter (status bar text) | Total | Pages |
 |---|---:|---:|
-| shadow effects approximated | 5324 | 24 |
-| effects skipped | 483 | 22 |
+| shadow effects approximated | 5349 (2084 after fix #1) | 24 |
+| effects skipped | 483 (427 after fix #1) | 22 |
 | instance ink approximated | 436 | 10 |
 | stroke alignments approximated | 245 | 9 |
 | paints skipped | 189 | 2 |
@@ -23,38 +23,39 @@ Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
 ## What is behind each counter
 
-### C1. shadow effects approximated (5324)
+### C1. shadow effects approximated (2084 after fix #1; 5349 before)
 
-Code: `effects::is_approximate`, `effects::approximate_silhouette` (`crates/render/src/effects.rs`).
+Code: `effects::is_approximate`, `effects::approximate_silhouette` (`crates/render/src/effects.rs`),
+`shadow_layer.rs` (whole-node layers).
 
-| Reason | Count |
-|---|---:|
-| Shadow cast from the fill shape, but the node has children, strokes, style-override fills or translucent/gradient/image fills | 4873 |
-| Positive spread on the fallback path (node without a fill) | 376 |
-| Negative spread | 100 |
-| Blend mode, compound inner shape, anisotropic blur | 0 |
+**Fix #1 (done):** a zero-spread, normal-blend drop shadow with a uniform transform is cast
+from the node's whole rendered alpha (fills, strokes, children) when the fill shape is not
+exact. One such shadow wraps the content in one `DropShadow` layer. Several shadows draw the
+content once per shadow into a `DropShadowOnly` layer (in list order, behind) and then the
+real content once, so a shadow is never cast from another shadow; the redraws are charged
+to the work budget and their counters are discarded. Plain opaque fill-shape nodes keep the
+old path, pixel-identical. Guards (all fall back to the old path and stay counted):
+layer area over `MAX_SHADOW_PIXELS`, more than `MAX_WHOLE_SHADOWS` shadows, or two or more
+shadows on a subtree over `MAX_REPLAY_DESCENDANTS` nodes (instances count their symbol).
 
-Silhouette reasons seen on shadow-casting nodes (a node can have several): children ~96k,
-strokes ~107k, style-override fills ~44k, translucent or non-solid fills ~5k.
+**Still counted:** spread other than 0 (vello_cpu 0.3 has no morphology filter), non-NORMAL
+blend, blur under a non-uniform scale, the guards above, and a shadow listed next to a
+whole-node one that falls back. In the measured file most of the remainder is non-zero
+spread; the remainder was not broken down again after the fix.
 
-**Exact fix:** draw the node (fills, strokes and children) into an offscreen layer and build
-the shadow from that layer's alpha. vello_cpu 0.3 has `FilterPrimitive::DropShadowOnly`
-(shadow of a layer's alpha without the layer). Spread needs an alpha dilate/erode. Inner
-shadow needs the inverted alpha clipped to the layer. Cost must be measured: about 800
-shadows on one page.
+**vello_cpu quirk:** a filter layer is clipped to the canvas *before* the shadow offset is
+applied, so a shadow whose source lies off the canvas edge can be missing or doubled.
+Tests keep their shadows on the canvas.
 
-### C2. effects skipped (483)
+### C2. effects skipped (427 after fix #1; 483 before)
 
 Code: the effects loop in `Ctx::draw_node` (`crates/render/src/lib.rs`).
 
 | Reason | Count |
 |---|---:|
-| Second and later drop shadows on a node without fills (container frames/instances use one whole-node filter layer) | 471 |
+| Second and later drop shadows on a node without fills, when a whole-node layer is refused | most of 427 |
 | Inner shadow on a node without a fill shape | 12 |
-| Per-node cap (8) or work budget | 0 |
-| Progressive or other blurs | 0 |
-
-**Exact fix:** the same offscreen-layer shadow as C1. It clears both counters.
+| Per-node cap (8), work budget, progressive or unsupported effects | 0 |
 
 ### C3. instance ink approximated (436 nodes)
 
@@ -101,7 +102,7 @@ seen failing first, a review by a different model family, and a re-measurement h
 
 | # | Fix | Clears | Size | Status |
 |---|---|---|---|---|
-| 1 | Shadows from an offscreen layer of the whole node | C1, C2 (~5800) | large, measure speed | open |
+| 1 | Shadows from an offscreen layer of the whole node | C1, C2 (~3300 cleared) | large, measure speed | done; spread still counted |
 | 2 | Scale inherited radius, dash, outlines and glyphs | C3 (436) | medium | open |
 | 3 | Clip inside/outside strokes on open vectors (A14) | C4 (245) | medium | open |
 | 4 | Vertex/segment styles in rebuilt network fills | C5 (189) | small | open |
@@ -113,3 +114,10 @@ sigma), and anything whose exact form costs too much time on large pages.
 ## Log
 
 - 2026-10-11 — First measurement and breakdown recorded (this file).
+- 2026-10-11 — Fix #1, whole-node shadow layers (`shadow_layer.rs`). 42 pages at
+  `--scale 0.1`, CPU time (user+sys, min of two runs per binary, interleaved, load 12-30):
+  110.5 s before, 110.8 s after (+0.3%) with `MAX_REPLAY_DESCENDANTS` 64 (shadows 2308);
+  124.8 s / 125.3 s (+0.4%) with 512 (shadows 2084, skipped 427), the kept value; the
+  second run was on a busier machine. Worst page +12% (+0.3-0.4 s); none over 25%. At
+  `--scale 1` the three pages with most shadows: -1.2%, -13%, +1%. Fixture thumbnail sheet
+  unchanged; two real-file crops show softer shadow edges that follow the content.
