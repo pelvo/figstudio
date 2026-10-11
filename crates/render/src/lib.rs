@@ -230,11 +230,31 @@ impl Renderer {
         doc: &Document,
         root: Guid,
         viewport: &Viewport,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> Frame {
+        self.complete_with(read, |this| this.render(doc, root, viewport))
+    }
+
+    /// [`Renderer::render_complete`] for a node inside an instance (see [`Renderer::render_path`]).
+    pub fn render_path_complete(
+        &mut self,
+        doc: &Document,
+        path: &InstancePath,
+        viewport: &Viewport,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> Frame {
+        self.complete_with(read, |this| this.render_path(doc, path, viewport))
+    }
+
+    /// Runs `draw` until no image is wanted, reading each wanted image with `read`.
+    fn complete_with(
+        &mut self,
         mut read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+        draw: impl Fn(&mut Self) -> Frame,
     ) -> Frame {
         // Thumbnail first, then the image, then perhaps a finer level: a few rounds at most.
         for _ in 0..6 {
-            let frame = self.render(doc, root, viewport);
+            let frame = draw(self);
             if frame.wanted.is_empty() && self.images.in_flight() == 0 {
                 return frame;
             }
@@ -247,7 +267,7 @@ impl Renderer {
                 }
             }
         }
-        self.render(doc, root, viewport)
+        draw(self)
     }
 
     /// Bytes of decoded pixels held by the image cache.
