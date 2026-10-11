@@ -221,6 +221,10 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-11: MCP L10 adds create_design_system_rules prompt with capped local inventory; SDK protocol mutation proofs and full gate passed. Not verified: live rule-file generation or official text parity.
+
+- 2026-10-11: MCP L9 adds offline Code Connect sidecars and local design-system discovery; mutation-proven tests and full gate passed. Not verified: live parity, Windows, cross-process/concurrent filesystem writers.
+
 - 2026-10-11: MCP L4: public read-only token/style model and `get_variable_defs` with all
   stored modes, bounded aliases, legacy/current refs and text-run bindings. Foreground
   `scripts/check.sh` passed; seven public fixture PNGs byte-identical at scale 0.25.
@@ -400,6 +404,11 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   28 fixture renders byte-identical before/after, thumb sheet viewed, new tests proven by
   mutations, scripts/check.sh passed. Not verified: private/large files, screenshot box of
   scaled or resized instances, live clients.
+- 2026-10-11 — MCP L9/L10 second-pass review: real component-set fields and variants,
+  normalized/capped properties, bounded permission-preserving sidecars, requested map keys,
+  snippet imports and bounded prompt names; failing-first regressions and mutation proofs;
+  foreground `scripts/check.sh`: all checks passed.
+  Not verified: live clients, official-server parity, private files, Windows or concurrent writers.
 - 2026-10-11 — MCP L5 review: instance paths resolve by tree position (metadata depth
   counts tree levels), instance-child screenshots draw only that node with the renderer's
   scaled layout (Renderer::render_path / path_bounds), variable defs ignore override and

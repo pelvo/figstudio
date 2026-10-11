@@ -1,8 +1,12 @@
-//! Offline discovery and read-only document tools.
+//! Offline document tools and local Code Connect sidecar storage.
 /// PNG or JPG renders and original image bytes.
 pub mod assets;
+/// Local Code Connect context and mappings.
+pub mod codeconnect;
 /// React + Tailwind design context with rendered assets.
 pub mod design;
+/// Local component and token discovery.
+pub mod design_system;
 /// FigJam boards as metadata XML with FigJam details.
 pub mod figjam;
 /// Sparse XML page lists and node subtrees.

@@ -311,7 +311,7 @@ shadows `[text-shadow:..]`, blurs `blur`/`backdrop-blur` (radius/2), opacity, CS
 modes; text `<p>` with family, weight (numeric or `fig::tokens::font_weight`), size,
 `Number` line height/tracking, case, decoration, alignment and solid colour; runs from
 `characterStyleIDs` (UTF-16 units) and `styleOverrideTable` as `<span>`. Vector kinds and
-image-filled leaves render through `screenshot::layer_png` at scale 2 (max 30 per call) as
+image-filled leaves render through `screenshot::layer_shot` at scale 2 (max 30 per call) as
 `<img>`; files are named `<fileKey>_<id>.png` with only `[A-Za-z0-9_-]`, written to a
 `create_new` temp file and renamed inside the directory. Escaping uses `html-escape` (new
 crate). Every mapping was proven by a mutation that made its test fail.
@@ -375,14 +375,41 @@ with only `position` emits `startX/startY` or `endX/endY`. HIGHLIGHT and SECTION
 counted in the not-drawn comment. `includeImages` shares the 32 MB payload budget with
 `download_assets` (`figjam_within`).
 
-**L9: Code Connect and design system (local).** `get_context_for_code_connect` (property
+**L9: Code Connect and design system (local).** [x] Complete. `get_context_for_code_connect` (property
 definitions and variants of a component); `get_code_connect_map` / `add_code_connect_map`
 backed by the sidecar JSON, written atomically; `search_design_system(query)` and
 `get_libraries` over local components and styles. **Done:** round-trip add → get; a search
-test on a fixture.
+test on a fixture. Named codeconnect/design_system routers add five tools. Properties preserve
+unknown enum strings; component sets expose variants, instances resolve their component (including
+instance paths). Maps use serde_json and tempfile atomic replacement beside the registered file,
+reject symlinks and corrupt sidecars, and serialize writes across cloned server sessions. Framework
+filters match labels; languages match labels or source extensions. Search ranks exact/prefix/substring
+names and caps results; libraries report local-only components and token collections/modes/styles.
+Tests were proven failing with property, search, persist, filter, corrupt-input and symlink mutations.
+Second-pass review fixes: real `isStateGroup` sets (public sections fixture), schema-named
+`initialValue`/property definitions, GUID strings, ordered `variantOptions` and per-variant
+`variantProperties`; property lists cap at 100 and omit binary bytes. Selected map keys are
+requested IDs with instance → component → set fallback. Sidecars cap at 10 MiB, source at
+4096 bytes, snippets at 100000 bytes, imports at 100 × 4096 bytes; atomic rewrites preserve
+permissions (new Unix files 0644). Add accepts `snippetImports` (`imports` alias); outputs
+always include `snippet` (null when absent) and `snippetImports` ([] when absent).
+`tempfile` now uses workspace dependencies. Prompt inventory names cap at 200 Unicode
+characters. Regression tests failed on the old code; GUID/binary/cap/options/property
+mutations also failed. Foreground `scripts/check.sh` ended with `all checks passed`.
+Applied M-CARGO-WORKSPACE, M-INTEGRATION-TESTS, M-PUBLIC-DEBUG
+and M-PANIC-IS-STOP; errors remain tool errors, with no new public error type.
+Not verified: live official-server shape parity, private files, Windows, cross-process writers
+(last writer wins), hostile concurrent filesystem replacement, or remote libraries.
 
-**L10: `create_design_system_rules` prompt.** `prompts/get` returns Figma-style rule-file
-guidance plus the file's token summary (L4) and component list. **Done:** a protocol test.
+**L10: `create_design_system_rules` prompt.** [x] Complete. `prompts/get` returns Figma-style rule-file
+guidance plus the file's token summary (L4) and component list. **Done:** a protocol test. rmcp prompt_router/prompt_handler advertise the
+prompts capability. Optional clientFrameworks/clientLanguages are comma-separated MCP prompt
+strings; fileKey uses registry selection. Guidance covers rules/ or instructions/ files, component
+reuse, tokens, assets and context/metadata/screenshot tools; no files are written. Local inventory
+reuses L9 bounded summaries. SDK in-process protocol tests verify prompts/list, prompts/get,
+optional arguments, unknown prompt/file errors and unchanged fixture bytes. Capability, tool-guidance
+and inventory mutations each failed before restoration; scripts/check.sh passed.
+Not verified: live client rule-file generation, official-server text parity or private files.
 
 **L11:** merged into L1 (Streamable HTTP is required).
 

@@ -27,7 +27,8 @@ apps/figstudio-cli/src/
   synth.rs               stress-file generator
 apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
   main.rs                clap options, stdio / Streamable HTTP, Ctrl-C / SIGTERM shutdown
-  lib.rs                 rmcp handler, capabilities, /mcp HTTP service
+  lib.rs                 rmcp handler, tools/prompts capabilities, /mcp HTTP service
+  prompts.rs             create_design_system_rules prompt and bounded local inventory
   files.rs               lazy shared local document registry and fileKey resolution
   node_id.rs             node IDs, Figma URLs, instance paths (figstudio_fig::resolve::InstancePath)
   error.rs               canonical error type; tools/mod.rs maps tool failures
@@ -41,6 +42,10 @@ apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
                          path_bounds (render/src/focus.rs: only that node, laid out as drawn)
   tools/assets.rs        download_assets: PNG/JPG renders (screenshot::render_node) or original
                          image bytes; assets/originals.rs finds image-fill hashes in a node
+  tools/codeconnect.rs    component context + atomic local source mappings (named router)
+    codeconnect/context.rs component sets, properties, instance resolution
+    codeconnect/sidecar.rs  serde_json + tempfile persist, filters, symlink rejection
+  tools/design_system.rs  capped local component/token search and summaries
   tools/variables.rs     get_variable_defs; walks resolved instance content
   tools/design/          get_design_context: mod.rs (tool, output sections, Notes), walk.rs
                          (layers incl. resolved instances), jsx.rs (elements, picture assets),
@@ -48,7 +53,7 @@ apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
                          gradients, var()), style.rs (border, radius, effects, blend),
                          text.rs (typography, runs, html-escape), assets.rs (stable names,
                          writes kept inside --assets-dir); PNGs come from
-                         screenshot::layer_png, the get_screenshot render path
+                         screenshot::layer_shot, the get_screenshot render path
                          New tools belong in tools/<name>.rs with a typed input struct.
                          Use #[tool_router(router = <name>_router, vis = "pub(crate)")]
                          on an impl FigstudioServer, declare the module here, and combine
