@@ -25,6 +25,10 @@ pub(crate) trait Canvas {
     /// `reach`: how far (in local units) the filter can move or spread what is drawn in it.
     fn push_filter_layer(&mut self, filter: Filter, reach: f64);
     fn pop_layer(&mut self);
+    /// True once a recording is over its size limit: the walk stops (its output is discarded).
+    fn full(&self) -> bool {
+        false
+    }
 }
 
 impl Canvas for RenderContext {
@@ -98,6 +102,10 @@ pub(crate) struct Recorder {
     /// Open layers: index of the `Push`, its contents' area so far, and the filter reach in
     /// output pixels that its contents are spread by (summed over enclosing filters).
     open: Vec<(usize, Rect, f64)>,
+    /// Estimated bytes held by `cmds`, and the most allowed; over it, everything is dropped.
+    bytes: usize,
+    limit: usize,
+    over: bool,
 }
 
 /// An empty area (`union` with it gives the other rectangle).
@@ -122,11 +130,46 @@ fn union(a: Rect, b: Rect) -> Rect {
 #[cfg(feature = "parallel")]
 impl Recorder {
     pub(crate) fn new() -> Self {
+        Self::with_limit(usize::MAX)
+    }
+
+    /// A recorder that gives up (see [`Recorder::over`]) past about `limit` bytes.
+    pub(crate) fn with_limit(limit: usize) -> Self {
         Recorder {
             cmds: Vec::new(),
             transform: Affine::IDENTITY,
             open: Vec::new(),
+            bytes: 0,
+            limit,
+            over: false,
         }
+    }
+
+    /// The recording passed its limit and holds nothing.
+    pub(crate) fn over(&self) -> bool {
+        self.over
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Appends `cmd`, which holds `path` (if any), unless the limit is passed.
+    fn add(&mut self, cmd: Cmd, path: Option<&BezPath>) {
+        if self.over {
+            return;
+        }
+        let elements = path.map_or(0, |p| p.elements().len());
+        self.bytes = self
+            .bytes
+            .saturating_add(size_of::<Cmd>() + elements * size_of::<vello_cpu::kurbo::PathEl>());
+        if self.bytes > self.limit {
+            self.over = true;
+            self.cmds = Vec::new();
+            self.open = Vec::new();
+            return;
+        }
+        self.cmds.push(cmd);
     }
 
     fn reach(&self) -> f64 {
@@ -147,19 +190,28 @@ impl Recorder {
 
     pub(crate) fn fill_rect(&mut self, rect: &Rect) {
         let area = self.touched(*rect);
-        self.cmds.push(Cmd::FillRect(*rect, area));
+        self.add(Cmd::FillRect(*rect, area), None);
     }
 
     fn push(&mut self, layer: Layer, reach: f64) {
-        self.open.push((self.cmds.len(), NOTHING, reach));
-        self.cmds.push(Cmd::Push(layer, NOTHING, 0));
+        let path = match &layer {
+            Layer::Clip(p) | Layer::ClipPath(p) => Some(p.clone()),
+            _ => None,
+        };
+        let at = self.cmds.len();
+        self.add(Cmd::Push(layer, NOTHING, 0), path.as_ref());
+        if !self.over {
+            self.open.push((at, NOTHING, reach));
+        }
     }
 
-    /// Replays every command that can change output rows `y0..y1` into `rc`, shifted so row
-    /// `y0` is the context's first row.
-    pub(crate) fn replay(&self, rc: &mut RenderContext, y0: f64, y1: f64) {
-        let shift = Affine::translate((0.0, -y0));
-        let hits = |r: &Rect| r.y1 > y0 && r.y0 < y1;
+    /// Replays into `rc` every command that can change the recorded pixels `window`, each
+    /// transform preceded by `shift` (recorded pixels to `rc` pixels). Returns how many fills
+    /// were replayed.
+    pub(crate) fn replay(&self, rc: &mut RenderContext, window: Rect, shift: Affine) -> usize {
+        let hits =
+            |r: &Rect| r.x1 > window.x0 && r.x0 < window.x1 && r.y1 > window.y0 && r.y0 < window.y1;
+        let mut fills = 0;
         let mut i = 0;
         while i < self.cmds.len() {
             match &self.cmds[i] {
@@ -170,11 +222,13 @@ impl Recorder {
                 Cmd::Fill(path, area) => {
                     if hits(area) {
                         rc.fill_path(path);
+                        fills += 1;
                     }
                 }
                 Cmd::FillRect(rect, area) => {
                     if hits(area) {
                         rc.fill_rect(rect);
+                        fills += 1;
                     }
                 }
                 Cmd::Push(layer, area, end) => {
@@ -196,6 +250,7 @@ impl Recorder {
             }
             i += 1;
         }
+        fills
     }
 }
 
@@ -203,20 +258,20 @@ impl Recorder {
 impl Canvas for Recorder {
     fn set_transform(&mut self, t: Affine) {
         self.transform = t;
-        self.cmds.push(Cmd::Transform(t));
+        self.add(Cmd::Transform(t), None);
     }
     fn set_paint(&mut self, paint: PaintType) {
-        self.cmds.push(Cmd::Paint(paint));
+        self.add(Cmd::Paint(paint), None);
     }
     fn set_paint_transform(&mut self, t: Affine) {
-        self.cmds.push(Cmd::PaintTransform(t));
+        self.add(Cmd::PaintTransform(t), None);
     }
     fn set_fill_rule(&mut self, rule: Fill) {
-        self.cmds.push(Cmd::FillRule(rule));
+        self.add(Cmd::FillRule(rule), None);
     }
     fn fill_path(&mut self, path: &BezPath) {
         let area = self.touched(path.control_box());
-        self.cmds.push(Cmd::Fill(path.clone(), area));
+        self.add(Cmd::Fill(path.clone(), area), Some(path));
     }
     fn push_clip_layer(&mut self, path: &BezPath) {
         let r = self.reach();
@@ -240,6 +295,9 @@ impl Canvas for Recorder {
     fn pop_layer(&mut self) {
         self.close(Cmd::Pop);
     }
+    fn full(&self) -> bool {
+        self.over
+    }
 }
 
 #[cfg(feature = "parallel")]
@@ -250,7 +308,10 @@ impl Recorder {
             return;
         };
         let end = self.cmds.len();
-        self.cmds.push(pop);
+        self.add(pop, None);
+        if self.over {
+            return;
+        }
         if let Cmd::Push(_, a, e) = &mut self.cmds[at] {
             *a = area;
             *e = end;

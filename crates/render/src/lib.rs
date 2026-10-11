@@ -11,6 +11,8 @@ mod layout;
 mod network;
 pub mod paint;
 mod record;
+#[cfg(feature = "parallel")]
+mod replay;
 mod stroke;
 mod text;
 mod variables;
@@ -34,6 +36,8 @@ use crate::geom::{
 use crate::images::{ImageRequest, Images};
 use crate::record::Canvas;
 
+#[cfg(feature = "parallel")]
+pub use replay::Recording;
 pub use vello_cpu::{color, kurbo};
 
 /// Total attempted-work units per render. The real large-file page render used 12,418 work
@@ -442,7 +446,8 @@ impl Renderer {
                 // At most the output height, which is a u16.
                 let sh = u16::try_from(y1 - y0).unwrap_or(u16::MAX);
                 let mut rc = RenderContext::new_with(w, sh, RenderSettings::default());
-                rec.replay(&mut rc, f64::from(y0), f64::from(y1));
+                let rows = Rect::new(0.0, f64::from(y0), f64::from(w), f64::from(y1));
+                rec.replay(&mut rc, rows, Affine::translate((0.0, -f64::from(y0))));
                 rc.flush();
                 let mut part = Pixmap::new(w, sh);
                 rc.render(&mut part, &mut Resources::new());
@@ -1369,6 +1374,10 @@ impl Ctx<'_> {
     }
 
     fn charge_work(&mut self) -> bool {
+        // A recording over its size limit is thrown away: stop walking, count nothing.
+        if self.rc.full() {
+            return false;
+        }
         if self.exhausted || self.work_left == 0 {
             self.exhausted = true;
             self.stats.budget_exhausted += 1;
