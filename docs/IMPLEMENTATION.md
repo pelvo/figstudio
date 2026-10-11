@@ -121,7 +121,12 @@ tree from `root` (a page or any node). For each node, `Ctx::draw`:
 5. Opacity layer if `opacity < 1`.
 6. Fills: `fillGeometry` blobs; else text outlines for TEXT; else a base shape. Paths with a
    `styleID` use paints from `vectorData.styleOverrideTable`.
-7. Strokes: `strokeGeometry` blobs; else stroke the base shape with `strokeWeight`.
+7. Strokes: `strokeGeometry` blobs; else per-side borders (`borderStrokeWeightsIndependent`)
+   as an aligned ring; else stroke the base shape (`stroke.rs`: `strokeJoin`, `strokeCap`,
+   `dashPattern`, miter limit 4). An instance override that changes a stroke field drops the
+   stored `strokeGeometry` unless a derived patch supplies new geometry. A frame that clips
+   its content draws its strokes after its children instead (step 8), so cells that fill a
+   table cannot hide its border; a non-clipping frame keeps them below its children.
 8. Children: clip layer if the frame clips; `draw_instance` for INSTANCE, else
    `draw_children`, which honors `stackReverseZIndex` and turns `mask` children into clip
    layers for the siblings above them.
@@ -141,7 +146,8 @@ by GUID or exact asset key/version; unresolved aliases use the stored colour and
 `approximated_paints`. First stored variable mode is used (inherited mode selection is open).
 Derived transforms are authoritative; when omitted, uniform instance scale updates translation
 and CENTER/MAX/SCALE constraints adjust it for resized containers without double-scaling stored
-geometry. Property/variable index preparation charges the shared render-work budget.
+geometry. Constraints skip in-flow children of an auto-layout parent (only `stackPositioning`
+ABSOLUTE ones follow them): auto layout keeps those at the padding. Property/variable index preparation charges the shared render-work budget.
 Patches from outer instances are applied last so they win; derived data is applied after
 the overrides of the same instance. A text override without fresh derived glyphs marks the
 stored glyphs stale, and text falls back to installed fonts. `MAX_RENDER_WORK` (2,000,000)
@@ -328,6 +334,7 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T4 | Virtualise the Layers panel (draw only visible rows) | `apps/figstudio/src/panels.rs` | 100k-node stress file: Layers expand-all stays under 16 ms per frame (`FIGSTUDIO_PROFILE=1`) |
 | T5 | Fit-to-page on huge pages (~0.4 s per frame today): level-of-detail or tile cache | `crates/render`, `apps/figstudio/src/canvas.rs` | 100k-node stress page pans smoothly at fit zoom; culling test still passes |
 | T6 | Inner shadow, background blur, blend modes | `crates/render/src/lib.rs` | Each drawn and tested, or still counted; thumb sheet reviewed |
+| T19 | Clear the approximation counters, one fix at a time (plan and measurements in `docs/APPROXIMATIONS.md`) | `crates/render/src` | Each row of the plan done or explained; counters re-measured and logged there |
 | T7 | Progressive blur, noise / grain / texture | `crates/render/src/lib.rs` | `noise_and_grain.fig` matches its thumbnail more closely; skipped count drops |
 | T8 | Rotated / skewed gradient check | `crates/render/src/paint.rs` | A fixture with rotated gradients compared with its thumbnail (needs a real Figma file) |
 | T9 | ~~wasm build~~ done: browser app with threads (`scripts/web-build.sh`) | — | — |

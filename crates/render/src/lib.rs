@@ -2,12 +2,16 @@
 //!
 //! The same code path serves the desktop app, the headless CLI and the browser build.
 
+mod connector;
+mod effects;
 pub mod geom;
 pub mod images;
 mod instance;
 mod layout;
+mod network;
 pub mod paint;
 mod record;
+mod stroke;
 mod text;
 mod variables;
 
@@ -18,11 +22,13 @@ use std::sync::Arc;
 use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
-use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape, Stroke};
+use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape};
 use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
 
+use crate::effects::casts_shadow;
 use crate::geom::{
-    GeomPath, affine, base_shape, clips_content, geometry, size, transformed_bounds,
+    GeomPath, affine, base_shape, clips_content, closed_network, geometry, is_container, size,
+    transformed_bounds,
 };
 use crate::images::{ImageRequest, Images};
 use crate::record::Canvas;
@@ -55,11 +61,19 @@ pub struct Stats {
     pub missing_symbols: usize,
     pub masks: usize,
     pub shadows: usize,
+    pub inner_shadows: usize,
+    /// Drawn shadows with approximate geometry, paint alpha, spread, blend or blur.
+    /// Each effect is counted once even when it has several limitations.
+    pub approximated_effects: usize,
     pub blurs: usize,
     pub skipped_effects: usize,
     pub unsupported_paints: usize,
     pub approximated_blends: usize,
     pub approximated_paints: usize,
+    /// Inside or outside strokes drawn without clipping to their shape (vector-like nodes).
+    pub approximated_strokes: usize,
+    /// Inherited stored geometry or other ink lengths not recomputed for a uniform instance scale.
+    pub approximated_instance_ink: usize,
     /// Layers skipped because they are outside the viewport or smaller than a pixel.
     pub culled: usize,
     /// Nodes or instance expansions skipped after exhausting the shared work budget.
@@ -85,6 +99,8 @@ impl fmt::Display for Stats {
         note(self.text_truncation_ignored, "text truncation ignored")?;
         note(self.masks, "masks")?;
         note(self.shadows, "drop shadows")?;
+        note(self.inner_shadows, "inner shadows")?;
+        note(self.approximated_effects, "shadow effects approximated")?;
         note(self.blurs, "blurs")?;
         note(self.skipped_effects, "effects skipped")?;
         note(self.missing_images, "images missing")?;
@@ -93,6 +109,8 @@ impl fmt::Display for Stats {
         note(self.unsupported_paints, "paints skipped")?;
         note(self.approximated_blends, "blend modes approximated")?;
         note(self.approximated_paints, "paints approximated")?;
+        note(self.approximated_strokes, "stroke alignments approximated")?;
+        note(self.approximated_instance_ink, "instance ink approximated")?;
         note(self.culled, "off screen")?;
         note(self.budget_exhausted, "layers skipped (work budget)")?;
         note(self.depth_skipped, "layers skipped (depth)")?;
@@ -666,7 +684,7 @@ fn overhang(kind: &str, data: &Val, w: f64, h: f64) -> f64 {
         .is_some_and(|p| !p.items().is_empty())
     {
         // Outside strokes plus miter joins (Figma's miter limit is 4).
-        m += f64::from(data.num("strokeWeight").unwrap_or(1.0).max(0.0)) * 4.0;
+        m += stroke::max_weight(data) * 4.0;
     }
     m += effects_reach(data.get("effects"));
     if kind == "TEXT" {
@@ -687,6 +705,29 @@ fn effects_reach(effects: Option<&Val>) -> f64 {
 }
 
 /// How far (in local units) one effect moves or spreads what it applies to.
+/// Clip for an inside (`outside == false`) or outside stroke: the fill shape, or a large
+/// rectangle minus it. `None` when the node has no fill shape to align to.
+fn align_clip(fill: &[GeomPath], outside: bool) -> Option<(BezPath, vello_cpu::peniko::Fill)> {
+    use vello_cpu::peniko::Fill;
+    let first = fill.first()?;
+    let mut clip = BezPath::new();
+    for g in fill {
+        clip.extend(g.path.iter());
+    }
+    if !outside {
+        return Some((clip, first.rule));
+    }
+    // Far enough for any stroke: reach is bounded by the stroke weight, not the shape.
+    let outer = clip.bounding_box().inflate(1.0e6, 1.0e6);
+    clip.extend(outer.path_elements(0.1));
+    Some((clip, Fill::EvenOdd))
+}
+
+/// Closed box-like shapes whose fill path is the stroke-alignment boundary.
+fn is_box_shape(kind: &str) -> bool {
+    is_container(kind) || matches!(kind, "RECTANGLE" | "ROUNDED_RECTANGLE" | "ELLIPSE")
+}
+
 fn effect_reach(e: &Val) -> f64 {
     let r = f64::from(e.num("radius").unwrap_or(0.0).abs());
     let spread = f64::from(e.num("spread").unwrap_or(0.0).abs());
@@ -729,10 +770,15 @@ impl Ctx<'_> {
         }
     }
 
-    /// Node data with instance overrides applied, plus whether stored text glyphs are stale.
-    fn patched<'n>(&self, node: &'n Node, path: Option<&[Guid]>) -> (Cow<'n, Val>, bool) {
+    /// Patched node data, plus whether glyphs are stale or inherited ink remains approximate.
+    fn patched<'n>(
+        &self,
+        node: &'n Node,
+        path: Option<&[Guid]>,
+        parent: Option<(&Val, &Val)>,
+    ) -> (Cow<'n, Val>, bool, bool) {
         let Some(path) = path else {
-            return (Cow::Borrowed(&node.data), false);
+            return (Cow::Borrowed(&node.data), false, false);
         };
         let mut matches: Vec<&Patch> = self
             .patch_index
@@ -741,27 +787,49 @@ impl Ctx<'_> {
             .flatten()
             .filter_map(|index| self.patches.get(*index))
             .collect();
-        let mut property_patch = self.properties.patch(&node.data);
-        let scale = self.instance_scales.last().copied().unwrap_or(1.0);
-        if scale != 1.0 && !matches.iter().any(|p| p.data.get("transform").is_some()) {
-            let tf = affine(node.data.get("transform")).as_coeffs();
-            let mut transform = node
-                .data
-                .get("transform")
-                .cloned()
-                .unwrap_or(Val::Obj(figstudio_fig::Obj::new()));
-            transform.set("m02", Val::Float(tf[4] * scale));
-            transform.set("m12", Val::Float(tf[5] * scale));
-            property_patch.set("transform", transform);
-        }
-        if matches.is_empty() && property_patch == Val::Obj(figstudio_fig::Obj::new()) {
-            return (Cow::Borrowed(&node.data), false);
-        }
         matches.sort_by_key(|p| (std::cmp::Reverse(p.owner_depth), p.derived));
+        let property_patch = self.properties.patch(&node.data);
+        // A value comes from the outermost level that states it, already in that level's
+        // scaled space; every uniformly scaled instance outside that level still scales it.
+        let scales = &self.instance_scales;
+        let outer_scale = |field: &str| -> f64 {
+            let level = matches
+                .iter()
+                .filter(|p| p.data.get(field).is_some())
+                .map(|p| p.owner_depth)
+                .min()
+                .unwrap_or(scales.len());
+            scales[..level.min(scales.len())].iter().product()
+        };
+        let (move_by, grow_by) = (outer_scale("transform"), outer_scale("size"));
+        let transform_stated = matches.iter().any(|p| p.data.get("transform").is_some());
+        let glyph_scale = outer_scale("derivedTextData");
+        let stroke_scales = layout::STROKE_LENGTHS.map(&outer_scale);
+        if matches.is_empty()
+            && property_patch == Val::Obj(figstudio_fig::Obj::new())
+            && move_by == 1.0
+            && grow_by == 1.0
+            && parent.is_none()
+        {
+            return (Cow::Borrowed(&node.data), false, false);
+        }
         let mut data = node.data.merged(&property_patch);
         let mut text_changed = data.get("textData") != node.data.get("textData");
         let mut glyphs_fresh = false;
-        for p in matches {
+        let mut stroke_stale = false;
+        for p in &matches {
+            // Stored stroke outlines no longer match an overridden stroke unless a derived
+            // patch stores new ones.
+            if !p.derived
+                && stroke::STROKE_SHAPE
+                    .iter()
+                    .any(|k| p.data.get(k).is_some_and(|v| data.get(k) != Some(v)))
+            {
+                stroke_stale = true;
+            }
+            if p.data.get("strokeGeometry").is_some() {
+                stroke_stale = false;
+            }
             if p.data.get("textData").is_some() && !p.derived {
                 text_changed = true;
                 glyphs_fresh = false;
@@ -780,7 +848,23 @@ impl Ctx<'_> {
                 }
             }
         }
-        (Cow::Owned(data), text_changed && !glyphs_fresh)
+        // shortcut: vector-like nodes have no base shape to redraw from, so they keep the old
+        // outline (about 25 nodes in the private file); restroke the vector network if one shows.
+        if stroke_stale
+            && base_shape(&node.kind, &data).is_some()
+            && let Val::Obj(o) = &mut data
+        {
+            o.remove("strokeGeometry");
+        }
+        if !transform_stated && let Some((old, new)) = parent {
+            layout::constrain(&node.data, &mut data, old, new, (move_by, grow_by));
+        }
+        layout::scale_inherited(&mut data, move_by, grow_by);
+        layout::scale_ink(&mut data, glyph_scale, stroke_scales);
+        instance::inherit_swapped(self.doc, &node.data, &mut data);
+        let stale_glyphs = text_changed && !glyphs_fresh;
+        let approximate_ink = layout::approximate_ink(&data, &node.kind, stale_glyphs, outer_scale);
+        (Cow::Owned(data), stale_glyphs, approximate_ink)
     }
 
     fn draw(&mut self, node: &Node, parent: Affine, path: Option<&[Guid]>) {
@@ -792,7 +876,7 @@ impl Ctx<'_> {
         node: &'n Node,
         parent: Affine,
         path: Option<&[Guid]>,
-        patched: Option<(Cow<'n, Val>, bool)>,
+        patched: Option<(Cow<'n, Val>, bool, bool)>,
     ) {
         if self.depth >= 96 {
             self.stats.depth_skipped += 1;
@@ -802,7 +886,8 @@ impl Ctx<'_> {
             return;
         }
         self.depth += 1;
-        let (data, stale_glyphs) = patched.unwrap_or_else(|| self.patched(node, path));
+        let (data, stale_glyphs, approximate_ink) =
+            patched.unwrap_or_else(|| self.patched(node, path, None));
         let (data, unresolved_variables) = self.variables.paints(data.as_ref());
         let data = data.as_ref();
         self.stats.approximated_paints += unresolved_variables;
@@ -819,28 +904,68 @@ impl Ctx<'_> {
             return;
         }
         self.stats.nodes += 1;
+        self.stats.approximated_instance_ink += usize::from(approximate_ink);
         if data.text("blendMode").is_some_and(|mode| mode != "NORMAL") {
             self.stats.approximated_blends += 1;
         }
+        // The shape the node's fills and its shadows follow.
+        let mut fill_paths = geometry(
+            data,
+            "fillGeometry",
+            &self.doc.blobs,
+            &mut self.stats.unsupported_paints,
+        );
+        if kind == "VECTOR" && fill_paths.is_empty() {
+            // No stored geometry: rebuild the fill from the editable vector network. `fills`
+            // owns the count of any visible fill it cannot fully draw.
+            fill_paths = network::fills(data, &self.doc.blobs, &mut self.stats.unsupported_paints);
+        }
+        if kind == "TEXT" {
+            fill_paths = self
+                .text_paths(data, stale_glyphs)
+                .into_iter()
+                .map(GeomPath::plain)
+                .collect();
+        } else if fill_paths.is_empty()
+            && let Some(shape) = base_shape(kind, data)
+        {
+            fill_paths.push(GeomPath::plain(shape));
+        }
+        let casts = casts_shadow(data, &fill_paths);
+        let mut shadows = Vec::new();
         let mut layers = 0;
+        let mut shadow_layers = 0;
+        let silhouette = casts
+            && effects::approximate_silhouette(
+                data,
+                !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
+            );
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
             if effect.flag("visible") == Some(false) {
                 continue;
             }
+            if !self.admit_effect(effect, &mut shadow_layers) {
+                continue;
+            }
             let radius = effect.num("radius").unwrap_or(0.0).max(0.0);
             let primitive = match effect.text("type") {
+                Some("DROP_SHADOW" | "INNER_SHADOW") if casts => {
+                    self.stats.approximated_effects += usize::from(effects::is_approximate(
+                        effect,
+                        &fill_paths,
+                        world,
+                        silhouette,
+                        false,
+                    ));
+                    shadows.push(effect);
+                    continue;
+                }
                 Some("DROP_SHADOW") if layers == 0 => {
                     self.stats.shadows += 1;
-                    let offset = effect.get("offset");
-                    FilterPrimitive::DropShadow {
-                        dx: offset.and_then(|o| o.num("x")).unwrap_or(0.0),
-                        dy: offset.and_then(|o| o.num("y")).unwrap_or(0.0),
-                        std_deviation: radius / 2.0,
-                        color: paint::color(effect.get("color"), 1.0)
-                            .unwrap_or(AlphaColor::new([0.0, 0.0, 0.0, 0.25])),
-                        edge_mode: EdgeMode::None,
-                    }
+                    self.stats.approximated_effects +=
+                        usize::from(effects::is_approximate(effect, &[], world, false, true));
+                    self.fallback_shadow(effect)
                 }
                 // Progressive blur fades in across the layer; a uniform blur looks far worse
                 // than none, so it is skipped (and counted) until it is implemented.
@@ -875,33 +1000,67 @@ impl Ctx<'_> {
         }
 
         // Fills.
-        let mut fill_paths = geometry(
-            data,
-            "fillGeometry",
-            &self.doc.blobs,
-            &mut self.stats.unsupported_paints,
-        );
-        if kind == "VECTOR"
-            && data
-                .get("fillGeometry")
-                .is_none_or(|geometry| geometry.items().is_empty())
-        {
-            self.stats.unsupported_paints += 1;
-        }
-        if kind == "TEXT" {
-            fill_paths = self
-                .text_paths(data, stale_glyphs)
-                .into_iter()
-                .map(GeomPath::plain)
-                .collect();
-        } else if fill_paths.is_empty()
-            && let Some(shape) = base_shape(kind, data)
-        {
-            fill_paths.push(GeomPath::plain(shape));
+        let (behind, above): (Vec<_>, Vec<_>) = shadows
+            .into_iter()
+            .partition(|e| e.text("type") == Some("DROP_SHADOW"));
+        for effect in behind {
+            self.draw_drop_shadow(effect, &fill_paths, world);
         }
         self.paint_paths(data, "fillPaints", &fill_paths, world, w, h);
+        for effect in above {
+            self.draw_inner_shadow(effect, &fill_paths, world);
+        }
 
-        // Strokes: precomputed outline geometry, or stroke the base shape.
+        // A frame that clips its content draws its stroke above its children; others below.
+        let clips = kind != "TEXT" && clips_content(kind, data);
+        if !clips {
+            self.draw_strokes(kind, data, &fill_paths, world, (w, h));
+        }
+
+        // Children.
+        if kind != "TEXT" {
+            let clip = clips.then(|| base_shape(kind, data)).flatten();
+            if let Some(clip) = &clip {
+                self.rc.set_transform(world);
+                self.rc.push_clip_layer(clip);
+            }
+            if kind == "INSTANCE" {
+                self.draw_instance(data, world, path);
+            } else if kind == "CONNECTOR" {
+                let parts = connector::parts(node);
+                // Nothing stored to draw the connector from: counted, never hidden.
+                self.stats.unsupported_paints += usize::from(parts.is_empty());
+                for (part, parent) in parts {
+                    let data = Cow::Borrowed(&part.data);
+                    self.draw_with_data(&part, world * parent, None, Some((data, false, false)));
+                }
+            } else {
+                // Override paths contain instance ancestors, not ordinary frame/group ancestors.
+                let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
+                self.draw_children(node, data, world, child_path);
+            }
+            if clip.is_some() {
+                self.rc.pop_layer();
+            }
+            if clips {
+                self.draw_strokes(kind, data, &fill_paths, world, (w, h));
+            }
+        }
+        for _ in 0..layers {
+            self.rc.pop_layer();
+        }
+        self.depth -= 1;
+    }
+
+    /// Strokes: precomputed outline geometry, or stroke the base shape.
+    fn draw_strokes(
+        &mut self,
+        kind: &str,
+        data: &Val,
+        fill_paths: &[GeomPath],
+        world: Affine,
+        (w, h): (f64, f64),
+    ) {
         if data
             .get("strokePaints")
             .is_some_and(|p| !p.items().is_empty())
@@ -912,18 +1071,45 @@ impl Ctx<'_> {
                 &self.doc.blobs,
                 &mut self.stats.unsupported_paints,
             );
+            // Per-side borders are built already aligned, so they skip the clip below.
+            let ring = (outlines.is_empty() && is_box_shape(kind))
+                .then(|| stroke::sides(kind, data))
+                .flatten();
+            // Figma stores inside and outside strokes as centred strokes of twice the weight
+            // and clips them to the fill shape (inside) or to everything but it (outside).
+            let align = data.text("strokeAlign").filter(|a| *a != "CENTER");
+            let aligned = match align {
+                // The network is only scanned when an inside/outside stroke needs it.
+                Some(a)
+                    if ring.is_none()
+                        && (is_box_shape(kind)
+                            || (kind == "VECTOR" && closed_network(data, &self.doc.blobs))) =>
+                {
+                    align_clip(fill_paths, a == "OUTSIDE")
+                }
+                _ => None,
+            };
+            // shortcut: open vectors and other vector-like kinds draw stored inside/outside
+            // strokes unclipped (counted); clip them too when a case needs it.
+            if align.is_some() && aligned.is_none() && ring.is_none() && kind != "TEXT" {
+                self.stats.approximated_strokes += 1;
+            }
+            if let Some((clip, rule)) = &aligned {
+                self.rc.set_transform(world);
+                self.rc.set_fill_rule(*rule);
+                self.rc.push_clip_layer(clip);
+            }
             if !outlines.is_empty() {
                 self.paint_paths(data, "strokePaints", &outlines, world, w, h);
+            } else if let Some(ring) = ring {
+                self.paint_paths(data, "strokePaints", &[ring], world, w, h);
             } else if let (Some(weight), Some(shape)) =
                 (data.num("strokeWeight"), base_shape(kind, data))
                 && weight > 0.0
             {
-                let outline = vello_cpu::kurbo::stroke(
-                    shape.path_elements(0.1),
-                    &Stroke::new(f64::from(weight)),
-                    &Default::default(),
-                    0.1,
-                );
+                let width = f64::from(weight) * if aligned.is_some() { 2.0 } else { 1.0 };
+                let (outline, approximated) = stroke::outline(data, &shape, width);
+                self.stats.approximated_strokes += usize::from(approximated);
                 self.paint_paths(
                     data,
                     "strokePaints",
@@ -933,32 +1119,10 @@ impl Ctx<'_> {
                     h,
                 );
             }
-        }
-
-        // Children.
-        if kind != "TEXT" {
-            let clip = clips_content(kind, data)
-                .then(|| base_shape(kind, data))
-                .flatten();
-            if let Some(clip) = &clip {
-                self.rc.set_transform(world);
-                self.rc.push_clip_layer(clip);
-            }
-            if kind == "INSTANCE" {
-                self.draw_instance(data, world, path);
-            } else {
-                // Override paths contain instance ancestors, not ordinary frame/group ancestors.
-                let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
-                self.draw_children(node, data, world, child_path);
-            }
-            if clip.is_some() {
+            if aligned.is_some() {
                 self.rc.pop_layer();
             }
         }
-        for _ in 0..layers {
-            self.rc.pop_layer();
-        }
-        self.depth -= 1;
     }
 
     fn text_paths(&mut self, data: &Val, stale_glyphs: bool) -> Vec<BezPath> {
@@ -1074,10 +1238,10 @@ impl Ctx<'_> {
                 v.push(child.override_key());
                 v
             });
-            let (mut child_data, stale_glyphs) = self.patched(child, child_path.as_deref());
-            if path.is_some() && size(data) != size(&node.data) {
-                layout::constrain(&child.data, child_data.to_mut(), &node.data, data);
-            }
+            let constraint_parent =
+                (path.is_some() && size(data) != size(&node.data)).then_some((&node.data, data));
+            let (child_data, stale_glyphs, approximate_ink) =
+                self.patched(child, child_path.as_deref(), constraint_parent);
             if child_data.flag("mask") == Some(true) && visible(&child_data) {
                 if !self.charge_work() {
                     break;
@@ -1098,6 +1262,7 @@ impl Ctx<'_> {
                 }
                 if !combined.elements().is_empty() {
                     self.stats.masks += 1;
+                    self.stats.approximated_instance_ink += usize::from(approximate_ink);
                     self.rc.set_transform(tf);
                     self.rc.push_clip_path(&combined);
                     self.rc.set_transform(world);
@@ -1109,7 +1274,7 @@ impl Ctx<'_> {
                 child,
                 world,
                 child_path.as_deref(),
-                Some((child_data, stale_glyphs)),
+                Some((child_data, stale_glyphs, approximate_ink)),
             );
         }
         for _ in 0..mask_layers {

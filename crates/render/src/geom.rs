@@ -85,6 +85,13 @@ pub fn blob_path(bytes: &[u8]) -> Option<BezPath> {
     Some(path)
 }
 
+/// Whether a vector's network (`vectorData.vectorNetworkBlob`) is closed: every segment lies on
+/// a region loop, so its fill outline is the boundary inside/outside strokes align to.
+/// True when every segment of the vector network lies on some region loop.
+pub fn closed_network(data: &Val, blobs: &[Vec<u8>]) -> bool {
+    crate::network::closed(data, blobs)
+}
+
 /// One precomputed path. `style` points into `vectorData.styleOverrideTable` (0 = node paints).
 pub struct GeomPath {
     pub path: BezPath,
