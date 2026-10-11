@@ -92,13 +92,14 @@ fn the_visible_tiles_cover_negative_coordinates_and_fractional_screens() {
             y1: 4
         }
     );
-    assert!(r.contains(3, 2) && !r.contains(4, 2) && !r.contains(-1, 0));
 }
 
 #[test]
 fn absurd_views_give_no_panic() {
     let r = Range::covering(40, visible_page(256.0, [f32::MAX, -f32::MAX], [1e9, 1e9]));
-    let _ = r.grow(1);
+    assert!(r.by_distance(7, PAGE).len() <= 64 * 64);
+    let huge = Rect::new(-1e12, -1e12, 1e12, 1e12);
+    assert!(Range::covering(0, huge).grow(1).by_distance(7, PAGE).len() <= 66 * 66);
 }
 
 #[test]
@@ -197,4 +198,22 @@ fn retain_drops_the_tiles_of_a_closed_document() {
     c.retain(|k| k.doc != 7);
     assert_eq!(c.len(), 1);
     assert!(c.get(&other).is_some());
+}
+
+#[test]
+fn no_more_tiles_are_wanted_than_half_the_budget() {
+    let c: Cache<()> = Cache::new(8);
+    let r = Range {
+        level: 0,
+        x0: -5,
+        y0: -5,
+        x1: 5,
+        y1: 5,
+    };
+    let w = wanted(&c, r, 7, PAGE, 0);
+    assert_eq!(w.len(), 4);
+    assert!(
+        w.iter()
+            .all(|k| (-1..=0).contains(&k.x) && (-1..=0).contains(&k.y))
+    );
 }

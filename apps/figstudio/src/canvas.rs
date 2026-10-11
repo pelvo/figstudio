@@ -4,13 +4,13 @@ use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use figstudio_fig::Guid;
 use figstudio_render::kurbo::Point;
 use figstudio_render::{
-    Viewport, absolute_transform, color::AlphaColor, content_bounds, geom, hit_test,
-    page_background,
+    absolute_transform, color::AlphaColor, content_bounds, geom, hit_test, page_background,
 };
 
-use crate::tab::{Shown, Tab, View};
+use crate::tab::{Tab, View};
 use crate::theme;
-use crate::worker::{RenderJob, Workers};
+use crate::tiles_view::Tiles;
+use crate::worker::Workers;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
@@ -56,6 +56,7 @@ pub fn show(
     ui: &mut egui::Ui,
     tab: &mut Tab,
     workers: &mut Workers,
+    tiles: &mut Tiles,
     tool: Tool,
     space_held: bool,
 ) -> Option<Pos2> {
@@ -134,73 +135,11 @@ pub fn show(
         );
     }
 
-    // Rendering: request a frame when the view changed, show the newest one we have.
-    let ppp = ui.pixels_per_point();
-    let px = (rect.size() * ppp).round();
-    // While the shown frame waits for images, each image that arrives renders the view again.
-    let images = if tab.stats.images_loading > 0 {
-        workers.images_arrived()
-    } else {
-        0
-    };
-    // The pan is not in the key: a frame with a margin covers short pans (overscan.rs).
-    let key = format!(
-        "{}|{}|{:.4}|{}x{}|{ppp}|{images}",
-        tab.page,
-        tab.doc.nodes.len(),
-        tab.view.zoom,
-        px.x,
-        px.y
-    );
-    let last = tab
-        .requested_key
-        .as_ref()
-        .filter(|(k, _)| *k == key)
-        .map(|(_, f)| f);
-    let max_side = ui.ctx().input(|i| i.max_texture_side);
-    let planned = crate::overscan::plan(last, tab.view, px, ppp, max_side);
-    if let Some(frame) = planned.filter(|_| px.x >= 1.0 && px.y >= 1.0) {
-        tab.generation += 1;
-        if workers
-            .render(RenderJob {
-                tab: tab.id,
-                generation: tab.generation,
-                doc: tab.doc.clone(),
-                source: tab.source.clone(),
-                root: tab.page,
-                viewport: Viewport {
-                    width: frame.px[0],
-                    height: frame.px[1],
-                    transform: frame.transform(),
-                    background: Some(page_background(&tab.doc, tab.page)),
-                },
-                // The frame's own corner view, so the re-projection below places the margin.
-                view: frame.view,
-                size_points: frame.size_points,
-            })
-            .is_ok()
-        {
-            tab.requested_key = Some((key, frame));
-        } else {
-            tab.requested_key = None;
-        }
-    }
-
+    // Rendering: cached tiles now, missing ones requested (tiles_view.rs).
     let painter = ui.painter_at(rect);
     let bg = page_background(&tab.doc, tab.page);
     painter.rect_filled(rect, 0.0, to_color32(bg));
-    if let Some(shown) = tab.shown.as_ref().filter(|s| s.page == tab.page) {
-        // Re-project the frame from the view it was rendered with to the current view.
-        let scale = tab.view.zoom / shown.view.zoom;
-        let min = origin + tab.view.pan - shown.view.pan * scale;
-        let image_rect = Rect::from_min_size(min, shown.size_points * scale);
-        painter.image(
-            shown.texture.id(),
-            image_rect,
-            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-            Color32::WHITE,
-        );
-    }
+    tiles.show(&painter, rect, tab, workers, ui.pixels_per_point());
 
     // Overlays.
     crate::labels::paint(
@@ -271,36 +210,4 @@ pub fn to_color32(c: AlphaColor<figstudio_render::color::Srgb>) -> Color32 {
         (b * 255.0) as u8,
         (a * 255.0) as u8,
     )
-}
-
-/// Stores a finished frame on the tab unless a newer one is already shown.
-pub fn accept(ctx: &egui::Context, tab: &mut Tab, done: crate::worker::RenderDone) {
-    if done.generation <= tab.shown_generation {
-        return;
-    }
-    tab.shown_generation = done.generation;
-    let image = egui::ColorImage::from_rgba_premultiplied(done.size, &done.rgba_premultiplied);
-    match &mut tab.shown {
-        Some(shown) => {
-            shown.texture.set(image, egui::TextureOptions::LINEAR);
-            shown.view = done.view;
-            shown.size_points = done.size_points;
-            shown.page = done.root;
-        }
-        None => {
-            let texture = ctx.load_texture(
-                format!("canvas-{}", tab.id),
-                image,
-                egui::TextureOptions::LINEAR,
-            );
-            tab.shown = Some(Shown {
-                texture,
-                view: done.view,
-                size_points: done.size_points,
-                page: done.root,
-            });
-        }
-    }
-    tab.stats = done.stats;
-    tab.render_time = done.elapsed;
 }

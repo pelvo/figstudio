@@ -238,11 +238,16 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 ### The desktop app (`apps/figstudio`)
 
 - The UI thread never decodes or renders. `worker.rs` loads files on short-lived threads and
-  renders on one long-lived thread that keeps only the newest request per tab.
-- `canvas::show` builds a key from page, zoom, pan, size and pixel ratio; when it changes it
-  sends a `RenderJob` carrying the `View` it was made for. `canvas::accept` keeps the newest
-  frame; until a new frame lands the old texture is re-projected from its `View` to the
-  current one, so pan and zoom stay smooth.
+  renders tiles on one long-lived thread; a newer tile batch for a tab replaces the older one.
+- The canvas is drawn from 512x512-pixel tiles (`tiles.rs` grid, levels and LRU cache;
+  `tiles_view.rs` drawing and requests). Level `n` draws `2^(n/2)` pixels per page unit; the
+  canvas shows the first level at least as sharp as zoom x pixels per point. Cached tiles of
+  coarser and finer levels are drawn under the sharp ones, so a missing tile shows a
+  stretched fallback instead of empty canvas. Missing tiles of the view plus a one-tile ring
+  are requested nearest the centre first. Tiles are keyed by document instance, page, level
+  and position; tiles drawn while images loaded are drawn again when more images arrive.
+  The cache holds 256 MiB of tile textures (128 MiB in the browser). The status bar shows
+  the per-field maximum of the sharp tiles on screen (`Stats::max_with`).
 - `Tab` holds the document (`Arc<Document>`), page, view, selection, hover, expanded tree
   nodes and stats. `Tab::select` switches page and expands ancestors so the Layers tree can
   scroll to the layer.

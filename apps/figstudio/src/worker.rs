@@ -19,35 +19,36 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use figstudio_fig::{Document, Guid};
+use figstudio_render::color::{AlphaColor, Srgb};
 use figstudio_render::images::{ImageRequest, Images};
 use figstudio_render::{Renderer, Stats, Viewport};
 use web_time::{Duration, Instant};
 
 use crate::source::Source;
-use crate::tab::View;
+use crate::tiles;
 
 /// Image reads running at once (each holds the compressed bytes and the decoded copy).
 const READERS: usize = 4;
 
+/// A batch of tiles to render for one tab, nearest the view centre first. A newer batch for
+/// the same tab replaces the tiles of this one not rendered yet (they left the view).
 pub struct RenderJob {
     pub tab: u64,
-    pub generation: u64,
     pub doc: Arc<Document>,
     /// Where unread images come from (lazily opened documents).
     pub source: Option<Source>,
     pub root: Guid,
-    pub viewport: Viewport,
-    /// Echoed back so the frame can be placed correctly after the view has moved on.
-    pub view: View,
-    pub size_points: egui::Vec2,
+    pub background: Option<AlphaColor<Srgb>>,
+    /// `Workers::images_arrived` when requested, echoed back (see `tiles::Entry::images`).
+    pub images: u64,
+    pub tiles: VecDeque<tiles::Key>,
 }
 
+/// One rendered tile.
 pub struct RenderDone {
     pub tab: u64,
-    pub generation: u64,
-    pub root: Guid,
-    pub view: View,
-    pub size_points: egui::Vec2,
+    pub key: tiles::Key,
+    pub images: u64,
     pub size: [usize; 2],
     pub rgba_premultiplied: Vec<u8>,
     pub stats: Stats,
@@ -148,14 +149,20 @@ fn next_job(jobs: &Receiver<RenderJob>) -> Option<RenderJob> {
     }
 }
 
-fn draw(renderer: &mut Renderer, job: &RenderJob) -> figstudio_render::Frame {
+fn draw(renderer: &mut Renderer, job: &RenderJob, key: &tiles::Key) -> figstudio_render::Frame {
+    let viewport = Viewport {
+        width: tiles::TILE,
+        height: tiles::TILE,
+        transform: key.transform(),
+        background: job.background,
+    };
     #[cfg(target_arch = "wasm32")]
     {
-        renderer.render_parallel(&job.doc, job.root, &job.viewport)
+        renderer.render_parallel(&job.doc, job.root, &viewport)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        renderer.render(&job.doc, job.root, &job.viewport)
+        renderer.render(&job.doc, job.root, &viewport)
     }
 }
 
@@ -260,23 +267,40 @@ impl Workers {
         let render_loop = move || {
             let mut renderer = Renderer::with_images(images.images.clone());
             let mut queue: Vec<RenderJob> = Vec::new();
+            // Tiles finished since their tab's last batch arrived. That batch was planned
+            // before their results reached the UI, so it may ask for them again.
+            let mut rendered: Vec<(u64, tiles::Key, u64)> = Vec::new();
             loop {
-                if queue.is_empty() {
+                let first = if queue.is_empty() {
                     match next_job(&jobs) {
-                        Some(job) => queue.push(job),
+                        Some(job) => Some(job),
                         None => break,
                     }
-                }
-                // Only the newest request per tab matters; drop older ones still queued.
-                while let Ok(newer) = jobs.try_recv() {
+                } else {
+                    None
+                };
+                // Only the newest batch per tab matters; drop older ones still queued.
+                let arrived = first
+                    .into_iter()
+                    .chain(std::iter::from_fn(|| jobs.try_recv().ok()));
+                for mut newer in arrived {
+                    let done = |k: &tiles::Key| rendered.contains(&(newer.tab, *k, newer.images));
+                    newer.tiles.retain(|k| !done(k));
+                    rendered.retain(|r| r.0 != newer.tab);
                     let before = queue.len();
                     queue.retain(|j| j.tab != newer.tab);
                     count.fetch_sub(before - queue.len(), Ordering::Relaxed);
-                    queue.push(newer);
+                    // The newest batch is the tab on screen; other tabs' leftovers wait.
+                    queue.insert(0, newer);
                 }
-                let job = queue.remove(0);
+                let Some(key) = queue[0].tiles.pop_front() else {
+                    queue.remove(0);
+                    count.fetch_sub(1, Ordering::Relaxed);
+                    continue;
+                };
+                let job = &queue[0];
                 let start = Instant::now();
-                let mut frame = draw(&mut renderer, &job);
+                let mut frame = draw(&mut renderer, job, &key);
                 let elapsed = start.elapsed();
                 let wanted = std::mem::take(&mut frame.wanted);
                 if !wanted.is_empty() {
@@ -287,23 +311,26 @@ impl Workers {
                             .for_each(|w| images.images.fail(&w.key, w.level)),
                     }
                 }
-                let size = [
-                    usize::from(frame.pixmap.width()),
-                    usize::from(frame.pixmap.height()),
-                ];
                 let done = RenderDone {
                     tab: job.tab,
-                    generation: job.generation,
-                    root: job.root,
-                    view: job.view,
-                    size_points: job.size_points,
-                    size,
+                    key,
+                    images: job.images,
+                    size: [
+                        usize::from(frame.pixmap.width()),
+                        usize::from(frame.pixmap.height()),
+                    ],
                     rgba_premultiplied: frame.pixmap.data_as_u8_slice().to_vec(),
                     stats: frame.stats,
                     elapsed,
                 };
+                rendered.push((job.tab, key, job.images));
+                let last = job.tiles.is_empty();
+                // Sent before `in_flight` drops, so the browser UI polls until it arrives.
                 let sent = done_tx.send(done);
-                count.fetch_sub(1, Ordering::Relaxed);
+                if last {
+                    queue.remove(0);
+                    count.fetch_sub(1, Ordering::Relaxed);
+                }
                 if sent.is_err() {
                     break;
                 }

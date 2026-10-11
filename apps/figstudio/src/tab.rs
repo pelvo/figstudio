@@ -1,4 +1,4 @@
-//! One open document: view state, selection and the last rendered frame.
+//! One open document: view state, selection and its pending tile requests.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -36,15 +36,6 @@ impl View {
 pub const MIN_ZOOM: f32 = 0.01;
 pub const MAX_ZOOM: f32 = 256.0;
 
-/// A rendered frame and the view it was rendered for, so it can be re-projected while a
-/// newer frame is on its way.
-pub struct Shown {
-    pub texture: egui::TextureHandle,
-    pub view: View,
-    pub size_points: egui::Vec2,
-    pub page: Guid,
-}
-
 pub struct Tab {
     pub id: u64,
     pub path: PathBuf,
@@ -58,11 +49,8 @@ pub struct Tab {
     pub hover: Option<Guid>,
     pub expanded: HashSet<Guid>,
     pub reveal: Option<Guid>,
-    pub shown: Option<Shown>,
-    pub generation: u64,
-    /// The last requested render: its key (all but the pan) and its frame with margin.
-    pub requested_key: Option<(String, crate::overscan::Frame)>,
-    pub shown_generation: u64,
+    /// Tiles requested from the render worker and not back yet (`tiles::next_batch`).
+    pub tile_requests: Vec<crate::tiles::Key>,
     pub stats: Stats,
     pub render_time: Duration,
     pub load_time: Duration,
@@ -99,10 +87,7 @@ impl Tab {
             hover: None,
             expanded: HashSet::new(),
             reveal: None,
-            shown: None,
-            generation: 0,
-            requested_key: None,
-            shown_generation: 0,
+            tile_requests: Vec::new(),
             stats: Stats::default(),
             render_time: Duration::ZERO,
             load_time,

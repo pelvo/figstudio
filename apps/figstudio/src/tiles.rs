@@ -14,6 +14,8 @@ pub const TILE: u16 = 512;
 pub const TILE_BYTES: usize = TILE as usize * TILE as usize * 4;
 /// Levels outside this range are clamped (zoom limits times any sane pixels per point).
 const LEVELS: std::ops::RangeInclusive<i32> = -40..=40;
+/// Most tiles across or down a view: a 16384-px canvas needs 32 (plus the ring).
+const MAX_SPAN: u16 = 64;
 
 /// One tile of one page of one document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -70,13 +72,20 @@ impl Range {
     /// The tiles of `level` touching the page area `visible`.
     pub fn covering(level: i32, visible: Rect) -> Range {
         let k = scale(level) / f64::from(TILE);
-        // `as` saturates, so absurd pans give an empty or clamped range, never a panic.
+        // `as` saturates, so absurd pans give an empty or clamped range, never a panic; the
+        // span is capped so such a range never lists billions of tiles.
+        let span = |a: f64, b: f64| {
+            let (a, b) = ((a * k).floor(), (b * k).ceil());
+            let b = b.min(a + f64::from(MAX_SPAN));
+            (a as i32, b as i32)
+        };
+        let ((x0, x1), (y0, y1)) = (span(visible.x0, visible.x1), span(visible.y0, visible.y1));
         Range {
             level,
-            x0: (visible.x0 * k).floor() as i32,
-            y0: (visible.y0 * k).floor() as i32,
-            x1: (visible.x1 * k).ceil() as i32,
-            y1: (visible.y1 * k).ceil() as i32,
+            x0,
+            y0,
+            x1,
+            y1,
         }
     }
 
@@ -89,10 +98,6 @@ impl Range {
             y1: self.y1.saturating_add(n),
             ..self
         }
-    }
-
-    pub fn contains(&self, x: i32, y: i32) -> bool {
-        (self.x0..self.x1).contains(&x) && (self.y0..self.y1).contains(&y)
     }
 
     /// Every tile, nearest the range's centre first.
@@ -170,6 +175,7 @@ impl<T> Cache<T> {
         self.budget
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.tiles.len()
     }
@@ -240,11 +246,14 @@ impl<T> Cache<T> {
 }
 
 /// The tiles of `range` to render, nearest its centre first: those not cached, and those
-/// cached with placeholders before more images arrived.
+/// cached with placeholders before more images arrived. Only the nearest half of the cache
+/// budget is considered, so new tiles never evict the ones on screen (a canvas larger than
+/// that shows fallback tiles at its edges).
 pub fn wanted<T>(cache: &Cache<T>, range: Range, doc: u64, page: Guid, arrived: u64) -> Vec<Key> {
     range
         .by_distance(doc, page)
         .into_iter()
+        .take((cache.budget() / 2).max(1))
         .filter(|k| cache.get(k).is_none_or(|e| !e.fresh(arrived)))
         .collect()
 }

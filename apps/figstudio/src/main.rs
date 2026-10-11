@@ -3,14 +3,13 @@
 mod canvas;
 mod gpu;
 mod labels;
-mod overscan;
 mod panels;
 mod source;
 mod state;
 mod tab;
 mod theme;
-#[allow(dead_code, reason = "wired into the canvas in the next commit")]
 mod tiles;
+mod tiles_view;
 #[cfg(target_arch = "wasm32")]
 mod web;
 mod worker;
@@ -84,6 +83,7 @@ struct Toast {
 
 struct App {
     workers: Workers,
+    tiles: tiles_view::Tiles,
     render_worker_lost: bool,
     tabs: Vec<Tab>,
     active: usize,
@@ -115,6 +115,7 @@ impl App {
         let workers = Workers::new(&cc.egui_ctx);
         let mut app = App {
             workers,
+            tiles: tiles_view::Tiles::default(),
             render_worker_lost: false,
             tabs: Vec::new(),
             active: 0,
@@ -200,6 +201,7 @@ impl App {
             let instance = closed.doc.instance;
             if !self.tabs.iter().any(|t| t.doc.instance == instance) {
                 self.workers.images().forget_document(instance);
+                self.tiles.forget(instance);
             }
             if self.active >= self.tabs.len() {
                 self.active = self.tabs.len().saturating_sub(1);
@@ -315,7 +317,7 @@ impl App {
             match classify(self.workers.render_rx.try_recv()) {
                 Poll::Msg(done) => {
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == done.tab) {
-                        canvas::accept(ctx, tab, done);
+                        self.tiles.accept(ctx, tab, done);
                     }
                 }
                 Poll::Empty => break,
@@ -936,7 +938,16 @@ impl App {
                         );
                     });
                 }
-                Some(tab) => cursor = canvas::show(ui, tab, &mut self.workers, tool, space_held),
+                Some(tab) => {
+                    cursor = canvas::show(
+                        ui,
+                        tab,
+                        &mut self.workers,
+                        &mut self.tiles,
+                        tool,
+                        space_held,
+                    )
+                }
                 None => open_clicked = empty_state(ui),
             }
         });

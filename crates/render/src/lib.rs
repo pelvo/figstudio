@@ -82,6 +82,68 @@ pub struct Stats {
     pub attempted_work: usize,
 }
 
+impl Stats {
+    /// Keeps the larger count of every field: the summary of several tiles of one view, where
+    /// a layer crossing tiles is drawn (and counted) in each. Every count of `other` stays
+    /// visible (any gap stays non-zero) without counting a split layer twice.
+    pub fn max_with(&mut self, other: &Stats) {
+        let Stats {
+            nodes,
+            instances,
+            text_stored_glyphs,
+            text_system_fonts,
+            text_missing,
+            text_truncation_ignored,
+            missing_images,
+            images_loading,
+            missing_symbols,
+            masks,
+            shadows,
+            inner_shadows,
+            approximated_effects,
+            blurs,
+            skipped_effects,
+            unsupported_paints,
+            approximated_blends,
+            approximated_paints,
+            approximated_strokes,
+            approximated_instance_ink,
+            culled,
+            budget_exhausted,
+            depth_skipped,
+            preparation_skipped,
+            attempted_work,
+        } = other;
+        self.nodes = self.nodes.max(*nodes);
+        self.instances = self.instances.max(*instances);
+        self.text_stored_glyphs = self.text_stored_glyphs.max(*text_stored_glyphs);
+        self.text_system_fonts = self.text_system_fonts.max(*text_system_fonts);
+        self.text_missing = self.text_missing.max(*text_missing);
+        self.text_truncation_ignored = self.text_truncation_ignored.max(*text_truncation_ignored);
+        self.missing_images = self.missing_images.max(*missing_images);
+        self.images_loading = self.images_loading.max(*images_loading);
+        self.missing_symbols = self.missing_symbols.max(*missing_symbols);
+        self.masks = self.masks.max(*masks);
+        self.shadows = self.shadows.max(*shadows);
+        self.inner_shadows = self.inner_shadows.max(*inner_shadows);
+        self.approximated_effects = self.approximated_effects.max(*approximated_effects);
+        self.blurs = self.blurs.max(*blurs);
+        self.skipped_effects = self.skipped_effects.max(*skipped_effects);
+        self.unsupported_paints = self.unsupported_paints.max(*unsupported_paints);
+        self.approximated_blends = self.approximated_blends.max(*approximated_blends);
+        self.approximated_paints = self.approximated_paints.max(*approximated_paints);
+        self.approximated_strokes = self.approximated_strokes.max(*approximated_strokes);
+        self.approximated_instance_ink = self
+            .approximated_instance_ink
+            .max(*approximated_instance_ink);
+        self.culled = self.culled.max(*culled);
+        self.budget_exhausted = self.budget_exhausted.max(*budget_exhausted);
+        self.depth_skipped = self.depth_skipped.max(*depth_skipped);
+        self.preparation_skipped = self.preparation_skipped.max(*preparation_skipped);
+        self.attempted_work = self.attempted_work.max(*attempted_work);
+    }
+}
+
 impl fmt::Display for Stats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} nodes, {} instances", self.nodes, self.instances)?;
