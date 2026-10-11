@@ -136,8 +136,21 @@ impl<T> Cache<T> {
 
     /// Whether every tile of `level` under `key` is cached.
     fn covered(&self, key: &Key, level: i32) -> bool {
-        let under = Range::covering(level, key.page_rect()).by_distance(key.doc, key.page);
-        under.len() <= MAX_COVER_CHECK && under.iter().all(|k| self.tiles.contains_key(k))
+        // Counted before listing: a big level gap would otherwise list thousands of tiles
+        // per candidate on every insert, only to refuse them.
+        let under = Range::covering(level, key.page_rect());
+        under.count() <= MAX_COVER_CHECK as u64
+            && (under.y0..under.y1).all(|y| {
+                (under.x0..under.x1).all(|x| {
+                    let k = Key {
+                        level,
+                        x,
+                        y,
+                        ..*key
+                    };
+                    self.tiles.contains_key(&k)
+                })
+            })
     }
 
     /// Drops every tile `keep` refuses (a closed document).

@@ -221,3 +221,27 @@ fn the_plan_never_lists_more_than_half_the_cache() {
         }
     }
 }
+
+#[test]
+fn a_range_counts_its_tiles_without_listing_them() {
+    // A coarse tile seen at a level 12 half-steps finer covers 64 x 64 tiles.
+    let under = Range::covering(12, key(0, 0, 0).page_rect());
+    assert_eq!(under.count(), 64 * 64);
+    assert_eq!(under.count(), under.by_distance(7, PAGE).len() as u64);
+    let empty = Range {
+        level: 0,
+        x0: 3,
+        y0: 3,
+        x1: 3,
+        y1: 9,
+    };
+    assert_eq!(empty.count(), 0);
+    let inverted = Range {
+        level: 0,
+        x0: 5,
+        y0: 0,
+        x1: 1,
+        y1: 4,
+    };
+    assert_eq!(inverted.count(), 0);
+}

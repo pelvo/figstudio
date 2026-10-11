@@ -114,6 +114,12 @@ impl Range {
         }
     }
 
+    /// How many tiles the range holds, without listing them.
+    pub fn count(&self) -> u64 {
+        let span = |a: i32, b: i32| u64::try_from(i64::from(b) - i64::from(a)).unwrap_or(0);
+        span(self.x0, self.x1) * span(self.y0, self.y1)
+    }
+
     /// Whether `key` is at one of this range's positions (any document or page).
     pub fn contains(&self, key: &Key) -> bool {
         key.level == self.level
