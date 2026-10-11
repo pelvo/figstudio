@@ -3,6 +3,8 @@
 pub mod metadata;
 /// PNG renders of nodes.
 pub mod screenshot;
+/// Used variable and style definitions.
+pub mod variables;
 use crate::FigstudioServer;
 use rmcp::{model::CallToolResult, tool, tool_router};
 use serde_json::json;

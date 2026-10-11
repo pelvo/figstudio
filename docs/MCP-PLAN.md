@@ -201,6 +201,23 @@ switches to `fig::tokens` with no change to its pictures. **Done:** unit tests o
 document with 2 modes and an alias; a fixture test; render tests unchanged; thumb sheet
 unchanged.
 
+**L4 complete:** public `fig::tokens` indexes collections, named modes, stored style
+payloads and GUID/asset references; aliases resolve with the historical 24-hop cap.
+`get_variable_defs` walks local stored subtrees, including text run fragments and
+consumption maps, and emits deterministic JSON with non-default mode suffixes.
+Unresolved refs/cycles and duplicate names are counted in a text note. The renderer
+keeps exact first-entry semantics. Synthetic tests were proven by disabling indexes,
+reference discovery, error handling and router registration; restoring them passes.
+All seven public fixtures contain no style definitions (verified), so style coverage is
+synthetic; fixture protocol and empty-map coverage remain. `scripts/check.sh` passed;
+all seven fixture renders at scale 0.25 are byte-identical before/after.
+Not verified: wasm target (not installed), private/library files, visual inspection at
+full scale, and instance expansion (L5). Named-style weight is inferred from the stored
+style name when no numeric weight exists; line-height units and grids retain raw summaries.
+Ripwire contract check: server constructor unchanged, no incompatible callers. Quality
+check reports the deliberate metadata-style SDK wrapper duplication and new reference-walk
+complexity (17); macro/test dead-code reports are covered by protocol/integration tests.
+
 **L5: public instance resolver (highest risk, frontier-tier worker).** Pull the
 override-merge logic out of the private `Renderer::patched` into a public
 `resolve_instance(doc, instance) -> ResolvedTree` (symbol children with `symbolOverrides`,
