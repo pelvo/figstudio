@@ -69,10 +69,9 @@ fn attributes(id: &str, kind: &str, data: &Val) -> Vec<(&'static str, String)> {
     if rotation != "0" {
         attrs.push(("rotation", rotation));
     }
+    // A swapped instance shows the component it was swapped to.
     if kind == "INSTANCE"
-        && let Some(id) = data
-            .path(&["symbolData", "symbolID"])
-            .and_then(Val::as_guid)
+        && let Some(id) = figstudio_fig::resolve::symbol_id(data)
     {
         attrs.push(("componentId", id.to_string()));
     }

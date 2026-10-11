@@ -35,8 +35,8 @@ apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
   tools/metadata.rs      get_metadata: typed inputs, quick-xml, bounded iterative tree walk;
                          instances expand through fig::resolve::walk_instance (metadata/node.rs
                          writes one element)
-  tools/screenshot.rs    get_screenshot; an instance path renders the instance cropped to the
-                         child's resolved box (the renderer only walks document nodes)
+  tools/screenshot.rs    get_screenshot; an instance path uses Renderer::render_path and
+                         path_bounds (render/src/focus.rs: only that node, laid out as drawn)
   tools/variables.rs     get_variable_defs; walks resolved instance content
                          New tools belong in tools/<name>.rs with a typed input struct.
                          Use #[tool_router(router = <name>_router, vis = "pub(crate)")]

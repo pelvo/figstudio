@@ -1,47 +1,10 @@
 //! Walks an instance's resolved children and looks up one child by its Figma-style id path.
-use std::backtrace::Backtrace;
-use std::fmt;
 use std::sync::Arc;
 
+use super::types::Kind;
+pub use super::types::{InstancePath, ResolveError};
 use super::{Definitions, Overrides, definitions, symbol_id};
 use crate::{Document, Guid, Node, Val};
-
-/// A node inside an instance, as Figma names it: `I<instance>;<key>[;<key>...]`. The first
-/// guid is the instance in the document; each further one is the override key (`overrideKey`,
-/// else the guid) of a node in the component the previous instance shows. Ordinary frames and
-/// groups between them are not part of the path, only nested instances.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct InstancePath(Vec<Guid>);
-
-impl InstancePath {
-    /// `None` unless there is an instance and at least one key.
-    pub fn new(guids: Vec<Guid>) -> Option<Self> {
-        (guids.len() >= 2).then_some(Self(guids))
-    }
-
-    /// The instance in the document.
-    pub fn instance(&self) -> Guid {
-        self.0[0]
-    }
-
-    /// The override path inside the instance (every guid after the first).
-    pub fn keys(&self) -> &[Guid] {
-        &self.0[1..]
-    }
-}
-
-impl fmt::Display for InstancePath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("I")?;
-        for (index, guid) in self.0.iter().enumerate() {
-            if index > 0 {
-                f.write_str(";")?;
-            }
-            write!(f, "{guid}")?;
-        }
-        Ok(())
-    }
-}
 
 /// One node inside an instance with every override applied.
 #[derive(Clone, Debug)]
@@ -52,7 +15,8 @@ pub struct Resolved {
     pub node: Guid,
     /// The component node's data with overrides, properties and swaps applied.
     pub data: Val,
-    /// Tree depth below the walked instance (its direct children are at level 1).
+    /// Tree depth below where the walk started: an instance's children are level 1, the
+    /// target of [`walk_path`] or [`resolve_path`] is level 0. Every tree level counts.
     pub level: usize,
 }
 
@@ -66,39 +30,12 @@ pub struct Walk {
     pub skipped_instances: usize,
 }
 
-impl Walk {
-    /// The node at `path` followed by all its walked descendants (pre-order, so they are the
-    /// nodes right after it with a greater level). `None` when the walk did not reach `path`.
-    pub fn subtree(&self, path: &InstancePath) -> Option<&[Resolved]> {
-        let start = self.nodes.iter().position(|r| &r.path == path)?;
-        let level = self.nodes[start].level;
-        let end = self.nodes[start + 1..]
-            .iter()
-            .position(|r| r.level <= level)
-            .map_or(self.nodes.len(), |offset| start + 1 + offset);
-        Some(&self.nodes[start..end])
-    }
-
-    /// The chain from the walked instance's child down to `path`, outermost first. Each node's
-    /// transform is relative to the previous one (the first to the instance itself).
-    pub fn ancestors(&self, path: &InstancePath) -> Option<Vec<&Resolved>> {
-        let end = self.nodes.iter().position(|r| &r.path == path)?;
-        let mut chain = vec![&self.nodes[end]];
-        for node in self.nodes[..end].iter().rev() {
-            if node.level < chain[chain.len() - 1].level {
-                chain.push(node);
-            }
-        }
-        chain.reverse();
-        Some(chain)
-    }
-}
-
 /// One step of the walk's explicit stack (no recursion, so deep files cannot overflow it).
+/// Children are queued one at a time, so a huge component costs nothing past the node cap.
 #[derive(Debug)]
 enum Step {
     Visit(Guid, Vec<Guid>, usize),
-    Children(Guid, Vec<Guid>, usize),
+    Children(Guid, Vec<Guid>, usize, usize),
     Leave,
 }
 
@@ -111,8 +48,9 @@ pub fn resolve_instance(doc: &Document, instance: Guid) -> Result<Walk, ResolveE
     walk_instance(doc, &definitions, instance, None, MAX_RESOLVED_NODES)
 }
 
-/// Nodes inside `instance` down to `max_level` (unbounded when `None`), at most `max_nodes`.
-/// `definitions` is [`definitions`]`(doc)`, built once when many instances are walked.
+/// Nodes inside `instance` down to `max_level` (unbounded when `None`; its children are level
+/// 1, every tree level counts), at most `max_nodes`. `definitions` is [`definitions`]`(doc)`,
+/// built once when many instances are walked.
 pub fn walk_instance(
     doc: &Document,
     definitions: &Arc<Definitions>,
@@ -127,17 +65,55 @@ pub fn walk_instance(
         return Err(ResolveError::new(Kind::NotInstance));
     }
     let mut overrides = Overrides::new(definitions.clone());
-    let mut walk = Walk::default();
     let mut stack = Vec::new();
     if max_level.is_none_or(|limit| limit >= 1) {
         enter(doc, &mut overrides, &node.data, Vec::new(), 1, &mut stack)?;
     }
+    Ok(run(doc, overrides, instance, stack, max_level, max_nodes))
+}
+
+/// The node at `path` (level 0) and its descendants down to `max_level`, at most `max_nodes`.
+/// The node is found by its position in the tree, so ordinary frames between the nested
+/// instances of the path do not count against `max_level`.
+pub fn walk_path(
+    doc: &Document,
+    definitions: &Arc<Definitions>,
+    path: &InstancePath,
+    max_level: Option<usize>,
+    max_nodes: usize,
+) -> Result<Walk, ResolveError> {
+    let mut overrides = Overrides::new(definitions.clone());
+    let (_, node, _) = descend(doc, &mut overrides, path)?;
+    let base = path.keys()[..path.keys().len() - 1].to_vec();
+    let stack = vec![Step::Visit(node.id, base, 0)];
+    Ok(run(
+        doc,
+        overrides,
+        path.instance(),
+        stack,
+        max_level,
+        max_nodes,
+    ))
+}
+
+fn run(
+    doc: &Document,
+    mut overrides: Overrides,
+    instance: Guid,
+    mut stack: Vec<Step>,
+    max_level: Option<usize>,
+    max_nodes: usize,
+) -> Walk {
+    let mut walk = Walk::default();
     while let Some(step) = stack.pop() {
+        #[cfg(test)]
+        tests::PEAK.with(|peak| peak.set(peak.get().max(stack.len())));
         match step {
             Step::Leave => overrides.leave(),
-            Step::Children(parent, base, level) => {
-                for child in doc.children(parent).iter().rev() {
-                    stack.push(Step::Visit(*child, base.clone(), level));
+            Step::Children(parent, base, level, index) => {
+                if let Some(child) = doc.children(parent).get(index) {
+                    stack.push(Step::Children(parent, base.clone(), level, index + 1));
+                    stack.push(Step::Visit(*child, base, level));
                 }
             }
             Step::Visit(id, base, level) => {
@@ -163,7 +139,7 @@ pub fn walk_instance(
                     );
                     walk.skipped_instances += usize::from(entered.is_err());
                 } else if deeper {
-                    stack.push(Step::Children(id, base, level + 1));
+                    stack.push(Step::Children(id, base, level + 1, 0));
                 }
                 let mut guids = vec![instance];
                 guids.extend(path);
@@ -176,7 +152,7 @@ pub fn walk_instance(
             }
         }
     }
-    Ok(walk)
+    walk
 }
 
 /// Enters the instance with resolved `data` at override path `base` and queues its children.
@@ -190,7 +166,7 @@ fn enter(
 ) -> Result<(), ResolveError> {
     let symbol = enter_symbol(doc, overrides, data, &base)?;
     stack.push(Step::Leave);
-    stack.push(Step::Children(symbol.id, base, level));
+    stack.push(Step::Children(symbol.id, base, level, 0));
     Ok(())
 }
 
@@ -212,97 +188,79 @@ fn enter_symbol<'d>(
 
 /// The node at `path` with every override applied.
 pub fn resolve_path(doc: &Document, path: &InstancePath) -> Result<Resolved, ResolveError> {
-    let instance = doc
-        .node(path.instance())
-        .ok_or_else(|| ResolveError::new(Kind::UnknownNode))?;
-    if instance.kind != "INSTANCE" {
-        return Err(ResolveError::new(Kind::NotInstance));
-    }
     let mut overrides = Overrides::new(Arc::new(definitions(doc)));
-    let mut data = instance.data.clone();
-    let mut node = instance;
-    for (index, key) in path.keys().iter().enumerate() {
-        if node.kind != "INSTANCE" {
-            return Err(ResolveError::new(Kind::UnknownPath));
-        }
-        let symbol = enter_symbol(doc, &mut overrides, &data, &path.keys()[..index])?;
-        node =
-            find_key(doc, symbol.id, *key).ok_or_else(|| ResolveError::new(Kind::UnknownPath))?;
-        data = overrides
-            .resolve(doc, node, &path.keys()[..=index])
-            .into_owned();
-    }
+    let (_, node, data) = descend(doc, &mut overrides, path)?;
     Ok(Resolved {
         path: path.clone(),
         node: node.id,
         data,
-        level: path.keys().len(),
+        level: 0,
     })
 }
 
-/// The descendant of `root` with override key (or guid) `key`, not looking inside instances.
-fn find_key(doc: &Document, root: Guid, key: Guid) -> Option<&Node> {
-    let mut stack: Vec<Guid> = doc.children(root).to_vec();
+/// The document nodes from the instance down to the node at `path`, both included: ordinary
+/// frames and groups, nested instances and the target, in tree order.
+pub fn tree_path(doc: &Document, path: &InstancePath) -> Result<Vec<Guid>, ResolveError> {
+    let mut overrides = Overrides::new(Arc::new(definitions(doc)));
+    descend(doc, &mut overrides, path).map(|(chain, _, _)| chain)
+}
+
+/// Enters every instance along `path` (left entered in `overrides`) and returns the tree
+/// chain (as [`tree_path`]), the target node and its resolved data.
+fn descend<'d>(
+    doc: &'d Document,
+    overrides: &mut Overrides,
+    path: &InstancePath,
+) -> Result<(Vec<Guid>, &'d Node, Val), ResolveError> {
+    let mut node = doc
+        .node(path.instance())
+        .ok_or_else(|| ResolveError::new(Kind::UnknownNode))?;
+    if node.kind != "INSTANCE" {
+        return Err(ResolveError::new(Kind::NotInstance));
+    }
+    let mut chain = vec![node.id];
+    let mut data = node.data.clone();
+    for (index, key) in path.keys().iter().enumerate() {
+        if node.kind != "INSTANCE" {
+            return Err(ResolveError::new(Kind::UnknownPath));
+        }
+        let symbol = enter_symbol(doc, overrides, &data, &path.keys()[..index])?;
+        let trail =
+            find_key(doc, symbol.id, *key).ok_or_else(|| ResolveError::new(Kind::UnknownPath))?;
+        node = trail
+            .last()
+            .and_then(|id| doc.node(*id))
+            .ok_or_else(|| ResolveError::new(Kind::UnknownPath))?;
+        chain.extend(trail);
+        data = overrides
+            .resolve(doc, node, &path.keys()[..=index])
+            .into_owned();
+    }
+    Ok((chain, node, data))
+}
+
+/// The chain of descendants of `root` down to the one with override key (or guid) `key`, not
+/// looking inside instances.
+fn find_key(doc: &Document, root: Guid, key: Guid) -> Option<Vec<Guid>> {
+    let mut stack: Vec<(Guid, usize)> = doc.children(root).iter().map(|id| (*id, 0)).collect();
+    let mut trail = Vec::new();
     // Each node is visited at most once in a tree; the budget also ends any malformed loop.
     let mut budget = doc.nodes.len();
-    while let Some(id) = stack.pop() {
+    while let Some((id, depth)) = stack.pop() {
         budget = budget.checked_sub(1)?;
         let node = doc.node(id)?;
+        trail.truncate(depth);
+        trail.push(id);
         if node.override_key() == key || node.id == key {
-            return Some(node);
+            return Some(trail);
         }
         if node.kind != "INSTANCE" {
-            stack.extend(doc.children(id));
+            stack.extend(doc.children(id).iter().map(|id| (*id, depth + 1)));
         }
     }
     None
 }
 
-/// Why an instance or instance path could not be resolved.
-#[derive(Debug)]
-pub struct ResolveError {
-    kind: Kind,
-    backtrace: Backtrace,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    UnknownNode,
-    NotInstance,
-    MissingComponent,
-    TooDeep,
-    UnknownPath,
-}
-
-impl ResolveError {
-    fn new(kind: Kind) -> Self {
-        Self {
-            kind,
-            backtrace: Backtrace::capture(),
-        }
-    }
-
-    /// The instance, or a key of the path, names no node at that place.
-    pub fn is_not_found(&self) -> bool {
-        matches!(self.kind, Kind::UnknownNode | Kind::UnknownPath)
-    }
-
-    /// The captured backtrace (empty unless `RUST_BACKTRACE` is set).
-    pub fn backtrace(&self) -> &Backtrace {
-        &self.backtrace
-    }
-}
-
-impl fmt::Display for ResolveError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self.kind {
-            Kind::UnknownNode => "the instance does not exist in this file",
-            Kind::NotInstance => "the first id of an instance path must be an instance",
-            Kind::MissingComponent => "the instance's component is missing from this file",
-            Kind::TooDeep => "instances nest too deeply or form a cycle",
-            Kind::UnknownPath => "the instance path names no node inside the instance",
-        })
-    }
-}
-
-impl std::error::Error for ResolveError {}
+#[cfg(test)]
+#[path = "walk_tests.rs"]
+mod tests;

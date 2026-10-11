@@ -7,7 +7,7 @@ use crate::{
 };
 use figstudio_fig::{
     Document, Guid, Val,
-    resolve::{self, InstancePath, walk_instance},
+    resolve::{self, InstancePath, walk_instance, walk_path},
     tokens::{Tokens, Variable},
 };
 use rmcp::{
@@ -68,12 +68,11 @@ pub fn variable_defs(doc: &Document, node_id: &str) -> CallToolResult {
     let mut instances = Vec::new();
     match root {
         Root::Path(path) => {
-            let walk = walk_instance(doc, &definitions, path.instance(), None, MAX_RESOLVED);
-            let Some(nodes) = walk.as_ref().ok().and_then(|w| w.subtree(&path)) else {
+            let Ok(walk) = walk_path(doc, &definitions, &path, None, MAX_RESOLVED) else {
                 return unknown();
             };
-            nodes.iter().for_each(|r| skipped += add(&r.data));
-            skipped += walk.map_or(0, |w| w.skipped_instances + usize::from(w.truncated));
+            walk.nodes.iter().for_each(|r| skipped += add(&r.data));
+            skipped += walk.skipped_instances + usize::from(walk.truncated);
         }
         Root::Node(root) => {
             let mut seen = HashSet::new();
@@ -143,6 +142,15 @@ enum Root {
 /// Resolved nodes walked per instance; bounds work on exponentially nested files.
 const MAX_RESOLVED: usize = resolve::MAX_RESOLVED_NODES;
 
+/// Fields that store instance overrides or component property definitions and assignments.
+const NOT_EFFECTIVE: [&str; 5] = [
+    "symbolData",
+    "derivedSymbolData",
+    "componentPropAssignments",
+    "componentPropDefs",
+    "componentPropRefs",
+];
+
 const STYLE_FIELDS: [&str; 10] = [
     "styleIdForFill",
     "styleIdForStrokeFill",
@@ -193,7 +201,13 @@ fn references(
                         None => unresolved += 1,
                     }
                 }
-                stack.extend(o.values());
+                // Override and property storage is not what the node shows: overrides reach
+                // the nodes they target through the resolver, unused ones must not count.
+                stack.extend(
+                    o.iter()
+                        .filter(|(key, _)| !NOT_EFFECTIVE.contains(key))
+                        .map(|(_, value)| value),
+                );
             }
             Val::Arr(items) => stack.extend(items),
             _ => {}

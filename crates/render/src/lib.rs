@@ -4,6 +4,7 @@
 
 mod connector;
 mod effects;
+mod focus;
 pub mod geom;
 pub mod images;
 mod layout;
@@ -18,7 +19,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 
-use figstudio_fig::resolve::{self, Overrides};
+use figstudio_fig::resolve::{self, InstancePath, Overrides};
 use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
@@ -135,6 +136,13 @@ pub struct Frame {
     pub wanted: Vec<ImageRequest>,
 }
 
+/// What a frame draws: a document node (or page), or one node inside an instance.
+#[derive(Clone, Copy)]
+enum Target<'p> {
+    Node(Guid),
+    Path(&'p InstancePath),
+}
+
 /// Holds caches (decoded images, system fonts) between renders of the same document.
 pub struct Renderer {
     images: Images,
@@ -249,12 +257,35 @@ impl Renderer {
 
     /// Draws `root` (a page or any node) into `viewport`.
     pub fn render(&mut self, doc: &Document, root: Guid, viewport: &Viewport) -> Frame {
-        self.render_budgeted(doc, root, viewport, MAX_RENDER_WORK, 0)
+        self.render_budgeted(doc, Target::Node(root), viewport, MAX_RENDER_WORK, 0)
     }
+
+    /// Draws only the node at `path` inside an instance (with its descendants), laid out as it
+    /// is when the whole instance is drawn: overrides, uniform scale and constraints applied.
+    /// Its siblings and ancestors are not drawn, so ancestor clips and masks are not applied.
+    /// An unknown or hidden path gives an empty frame.
+    pub fn render_path(
+        &mut self,
+        doc: &Document,
+        path: &InstancePath,
+        viewport: &Viewport,
+    ) -> Frame {
+        self.render_budgeted(doc, Target::Path(path), viewport, MAX_RENDER_WORK, 0)
+    }
+
+    /// The page-space box of the node at `path` as [`Renderer::render_path`] draws it; `None`
+    /// when the path does not resolve or the node or an ancestor is hidden.
+    pub fn path_bounds(&mut self, doc: &Document, path: &InstancePath) -> Option<Rect> {
+        let mut canvas = RenderContext::new_with(1, 1, RenderSettings::default());
+        let screen = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let mut ctx = self.context(doc, &mut canvas, screen, MAX_RENDER_WORK, 0);
+        ctx.focus(path, Affine::IDENTITY, false)
+    }
+
     fn render_budgeted(
         &mut self,
         doc: &Document,
-        root: Guid,
+        root: Target<'_>,
         viewport: &Viewport,
         work: usize,
         preparation_skipped: usize,
@@ -315,7 +346,7 @@ impl Renderer {
         }
         let (stats, wanted) = self.walk(
             doc,
-            root,
+            Target::Node(root),
             viewport.transform,
             full,
             &mut rec,
@@ -361,46 +392,21 @@ impl Renderer {
     fn walk(
         &mut self,
         doc: &Document,
-        root: Guid,
+        root: Target<'_>,
         transform: Affine,
         screen: Rect,
         canvas: &mut dyn Canvas,
         work: usize,
         preparation_skipped: usize,
     ) -> (Stats, Vec<ImageRequest>) {
-        self.images.begin_frame();
-        // Bounded by MAX_DECODED_NODES, so not charged to the per-frame work budget.
-        let (definitions, variables) = match &self.indexes {
-            Some((instance, d, v)) if *instance == doc.instance => (d.clone(), v.clone()),
-            _ => {
-                let d = Arc::new(resolve::definitions(doc));
-                let v = Arc::new(variables::Variables::new(doc));
-                self.indexes = Some((doc.instance, d.clone(), v.clone()));
-                (d, v)
+        let mut ctx = self.context(doc, canvas, screen, work, preparation_skipped);
+        let root = match root {
+            Target::Node(id) => id,
+            Target::Path(path) => {
+                ctx.focus(path, transform, true);
+                ctx.stats.attempted_work = work.saturating_sub(ctx.work_left);
+                return (ctx.stats, ctx.wanted);
             }
-        };
-        let work_left = work;
-        let mut ctx = Ctx {
-            doc,
-            rc: canvas,
-            stats: Stats {
-                preparation_skipped,
-                ..Stats::default()
-            },
-            images: &self.images,
-            wanted: Vec::new(),
-            fonts: if self.system_fonts {
-                Some(&mut self.fonts)
-            } else {
-                None
-            },
-            overrides: Overrides::new(definitions),
-            instance_scales: Vec::new(),
-            variables,
-            work_left,
-            depth: 0,
-            exhausted: false,
-            screen,
         };
         if let Some(node) = doc.node(root) {
             if node.kind == "CANVAS" || node.kind == "DOCUMENT" {
@@ -422,6 +428,49 @@ impl Renderer {
         ctx.stats.attempted_work = work.saturating_sub(ctx.work_left);
         (ctx.stats, ctx.wanted)
     }
+    /// A drawing context for one frame over `canvas`; `screen` is the output area for culling.
+    fn context<'a>(
+        &'a mut self,
+        doc: &'a Document,
+        canvas: &'a mut dyn Canvas,
+        screen: Rect,
+        work: usize,
+        preparation_skipped: usize,
+    ) -> Ctx<'a> {
+        self.images.begin_frame();
+        // Bounded by MAX_DECODED_NODES, so not charged to the per-frame work budget.
+        let (definitions, variables) = match &self.indexes {
+            Some((instance, d, v)) if *instance == doc.instance => (d.clone(), v.clone()),
+            _ => {
+                let d = Arc::new(resolve::definitions(doc));
+                let v = Arc::new(variables::Variables::new(doc));
+                self.indexes = Some((doc.instance, d.clone(), v.clone()));
+                (d, v)
+            }
+        };
+        Ctx {
+            doc,
+            rc: canvas,
+            stats: Stats {
+                preparation_skipped,
+                ..Stats::default()
+            },
+            images: &self.images,
+            wanted: Vec::new(),
+            fonts: if self.system_fonts {
+                Some(&mut self.fonts)
+            } else {
+                None
+            },
+            overrides: Overrides::new(definitions),
+            instance_scales: Vec::new(),
+            variables,
+            work_left: work,
+            depth: 0,
+            exhausted: false,
+            screen,
+        }
+    }
     pub fn render_fit(
         &mut self,
         doc: &Document,
@@ -433,7 +482,7 @@ impl Renderer {
         let (viewport, omitted, prep_work) = fit_viewport(doc, root, scale, padding, background)?;
         let mut frame = self.render_budgeted(
             doc,
-            root,
+            Target::Node(root),
             &viewport,
             MAX_RENDER_WORK.saturating_sub(prep_work),
             omitted,
@@ -1279,14 +1328,17 @@ impl Ctx<'_> {
         }
         let base: Vec<Guid> = path.map(<[Guid]>::to_vec).unwrap_or_default();
         self.overrides.enter(symbol, data, &base);
-        let scale = data
-            .path(&["symbolData", "uniformScaleFactor"])
-            .and_then(Val::as_f32)
-            .filter(|s| s.is_finite() && *s > 0.0)
-            .map_or(1.0, f64::from);
-        self.instance_scales.push(scale);
+        self.instance_scales.push(uniform_scale(data));
         self.draw_children(symbol, &symbol.data, world, Some(&base));
         self.instance_scales.pop();
         self.overrides.leave();
     }
+}
+
+/// An instance's `uniformScaleFactor`, 1 when missing or invalid.
+fn uniform_scale(data: &Val) -> f64 {
+    data.path(&["symbolData", "uniformScaleFactor"])
+        .and_then(Val::as_f32)
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .map_or(1.0, f64::from)
 }

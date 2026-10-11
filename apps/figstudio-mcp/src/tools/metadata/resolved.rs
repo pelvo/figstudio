@@ -22,6 +22,13 @@ pub(super) struct Out {
 
 impl Out {
     /// The resolved content of `instance` down to `max_level`, at most `max_nodes` nodes.
+    /// Component property definitions, built on the first instance expanded.
+    pub(super) fn definitions(&mut self, doc: &Document) -> Arc<Definitions> {
+        self.definitions
+            .get_or_insert_with(|| Arc::new(resolve::definitions(doc)))
+            .clone()
+    }
+
     pub(super) fn walk(
         &mut self,
         doc: &Document,
@@ -29,10 +36,8 @@ impl Out {
         max_level: Option<usize>,
         max_nodes: usize,
     ) -> Option<resolve::Walk> {
-        let definitions = self
-            .definitions
-            .get_or_insert_with(|| Arc::new(resolve::definitions(doc)));
-        let Ok(walk) = walk_instance(doc, definitions, instance, max_level, max_nodes) else {
+        let definitions = self.definitions(doc);
+        let Ok(walk) = walk_instance(doc, &definitions, instance, max_level, max_nodes) else {
             self.skipped += 1;
             return None;
         };

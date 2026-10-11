@@ -6,7 +6,7 @@ use crate::{
 };
 use figstudio_fig::{
     Document, Guid, Node,
-    resolve::{InstancePath, MAX_RESOLVED_NODES},
+    resolve::{InstancePath, walk_path},
 };
 use node::{clean_xml, tag_name, write_node};
 use quick_xml::{
@@ -163,16 +163,15 @@ fn path_subtree(
     depth: Option<u32>,
     out: &mut Out,
 ) -> std::io::Result<bool> {
-    let base = path.keys().len();
-    let max_level = depth.map(|d| base.saturating_add(d as usize));
-    let Some(walk) = out.walk(doc, path.instance(), max_level, MAX_RESOLVED_NODES) else {
+    let definitions = out.definitions(doc);
+    let max_level = depth.map(|d| d as usize);
+    // One more than the cap tells a full output apart from a truncated one.
+    let Ok(walk) = walk_path(doc, &definitions, path, max_level, MAX_ELEMENTS + 1) else {
         return Ok(false);
     };
-    let Some(nodes) = walk.subtree(path) else {
-        return Ok(false);
-    };
-    out.truncated |= nodes.len() > MAX_ELEMENTS;
-    out.resolved(doc, &nodes[..nodes.len().min(MAX_ELEMENTS)])?;
+    out.truncated |= walk.truncated || walk.nodes.len() > MAX_ELEMENTS;
+    out.skipped += walk.skipped_instances;
+    out.resolved(doc, &walk.nodes[..walk.nodes.len().min(MAX_ELEMENTS)])?;
     Ok(true)
 }
 

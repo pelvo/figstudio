@@ -262,15 +262,19 @@ fig builds without the renderer): `Overrides` (scope stack and `merge`, used by
 stroke corrections. `get_metadata` expands instances inside the 5 000 cap and depth, with
 `I…;…` ids, overridden names/text/visibility and `componentId`; an XML comment counts
 instances that could not be expanded. `I…` ids resolve in `get_metadata`, `get_variable_defs`
-(which now also walks every instance's resolved content) and `get_screenshot`. The renderer
-only walks document nodes, so a screenshot of an instance child renders the whole instance
-cropped to the child's resolved page box (overlapping siblings inside the instance show).
+(which now also walks every instance's resolved content) and `get_screenshot`.
+Review fixes: an `I…` id is found by its tree position (`resolve::walk_path`, `tree_path`) and
+metadata depth counts tree levels from it; a screenshot of an instance child uses
+`Renderer::render_path`/`path_bounds`, which walk down the instance as `draw_instance` does
+(uniform scale and constraints included) and draw only that node, so siblings and ancestor
+clips are left out; `get_variable_defs` reads only effective node data (not
+`symbolData`/`derivedSymbolData`/component property storage); a swapped nested instance
+reports the component it shows; the walk queues children one at a time.
 Verified: 28 fixture renders (7 files, scale 0.25 and 1, system fonts on/off) byte-identical
 before/after; thumb sheet viewed; new tests on built documents and on structure.fig's
 instances 1:38/1:45, each proven by a mutation; `scripts/check.sh` passed.
-Not verified: private and large files (output size and time of fully expanded pages), the
-screenshot box for uniformly scaled or resized instances (resolved data without the
-renderer's layout corrections), live clients.
+Not verified: private and large files (output size and time of fully expanded pages), live
+clients, instance-child screenshots under ancestor masks or clips (they are not applied).
 
 **L6: `get_design_context`.** Node → JSX + Tailwind:
 - frames with auto-layout become `flex`, with gap, padding, alignment and grow;

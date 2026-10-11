@@ -13,13 +13,14 @@ use crate::{Document, Guid, Node, Obj, Val};
 
 mod properties;
 mod swap;
+mod types;
 mod walk;
 
 pub use properties::{Definitions, definitions};
 pub use swap::inherit_swapped;
 pub use walk::{
     InstancePath, MAX_RESOLVED_NODES, ResolveError, Resolved, Walk, resolve_instance, resolve_path,
-    walk_instance,
+    tree_path, walk_instance, walk_path,
 };
 
 /// Instances nested deeper than this are not expanded. Guards against cycles and exponential
