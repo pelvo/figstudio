@@ -14,8 +14,8 @@ Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
 | Counter (status bar text) | Total | Pages |
 |---|---:|---:|
-| shadow effects approximated | 5349 (2084 after fix #1) | 24 |
-| effects skipped | 483 (427 after fix #1) | 22 |
+| shadow effects approximated | 5349 (2233 after fix #1) | 24 |
+| effects skipped | 483 (468 after fix #1) | 22 |
 | instance ink approximated | 436 | 10 |
 | stroke alignments approximated | 245 | 9 |
 | paints skipped | 189 | 2 |
@@ -23,7 +23,7 @@ Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
 ## What is behind each counter
 
-### C1. shadow effects approximated (2084 after fix #1; 5349 before)
+### C1. shadow effects approximated (2233 after fix #1 and its review fixes; 5349 before)
 
 Code: `effects::is_approximate`, `effects::approximate_silhouette` (`crates/render/src/effects.rs`),
 `shadow_layer.rs` (whole-node layers).
@@ -33,10 +33,14 @@ from the node's whole rendered alpha (fills, strokes, children) when the fill sh
 exact. One such shadow wraps the content in one `DropShadow` layer. Several shadows draw the
 content once per shadow into a `DropShadowOnly` layer (in list order, behind) and then the
 real content once, so a shadow is never cast from another shadow; the redraws are charged
-to the work budget and their counters are discarded. Plain opaque fill-shape nodes keep the
+to the work budget and their counters are discarded. When a node mixes whole-node shadows
+with fill-mask ones (spread...), every drop shadow is drawn behind in list order, so the
+paths do not reorder them; the redraw keeps the node's inner shadows. Plain opaque fill-shape nodes keep the
 old path, pixel-identical. Guards (all fall back to the old path and stay counted):
-layer area over `MAX_SHADOW_PIXELS`, more than `MAX_WHOLE_SHADOWS` shadows, or two or more
-shadows on a subtree over `MAX_REPLAY_DESCENDANTS` nodes (instances count their symbol).
+rendered-alpha area (the node box, strokes and descendants unless it clips them; instances
+use their symbol) over `MAX_SHADOW_PIXELS`, more than `MAX_WHOLE_SHADOWS` shadows, or a
+redraw cost over `MAX_REPLAY_DESCENDANTS` node draws (nested multi-shadow descendants
+multiply it).
 
 **Still counted:** spread other than 0 (vello_cpu 0.3 has no morphology filter), non-NORMAL
 blend, blur under a non-uniform scale, the guards above, and a shadow listed next to a
@@ -47,7 +51,7 @@ spread; the remainder was not broken down again after the fix.
 applied, so a shadow whose source lies off the canvas edge can be missing or doubled.
 Tests keep their shadows on the canvas.
 
-### C2. effects skipped (427 after fix #1; 483 before)
+### C2. effects skipped (468 after fix #1; 483 before)
 
 Code: the effects loop in `Ctx::draw_node` (`crates/render/src/lib.rs`).
 
@@ -121,3 +125,10 @@ sigma), and anything whose exact form costs too much time on large pages.
   second run was on a busier machine. Worst page +12% (+0.3-0.4 s); none over 25%. At
   `--scale 1` the three pages with most shadows: -1.2%, -13%, +1%. Fixture thumbnail sheet
   unchanged; two real-file crops show softer shadow edges that follow the content.
+- 2026-10-11 — Review fixes for fix #1: guard on rendered alpha bounds, list order across
+  paths, inner shadows in the redraw, replay-stable planning with a nested redraw cost,
+  refused effects not drawn. 42 pages at `--scale 0.1`, CPU time: 115.0 s before, 116.6 s
+  after (+1.4%), worst page +18.6% in the full run and +8.7% (+0.25 s) on a re-time on a
+  quieter machine; none over 25%. Scale 1, three shadow-heaviest pages: +5.6%, +3%, -1.2%.
+  Approximated shadows 2233, skipped effects 468 (the stricter guards refuse more than the
+  first version's 2084 / 427).

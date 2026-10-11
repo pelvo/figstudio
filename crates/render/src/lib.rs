@@ -200,8 +200,6 @@ struct Ctx<'a> {
     work_left: usize,
     depth: usize,
     exhausted: bool,
-    /// Greater than zero while a node is redrawn for another node's shadow layer.
-    replay_depth: usize,
     /// Output area in pixels, for culling.
     screen: Rect,
 }
@@ -414,7 +412,6 @@ impl Renderer {
             work_left,
             depth: 0,
             exhausted: false,
-            replay_depth: 0,
             screen,
         };
         if let Some(node) = doc.node(root) {
@@ -943,29 +940,22 @@ impl Ctx<'_> {
                 data,
                 !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
             );
-        let whole =
-            self.whole_shadow_plan(node.id, data, world, (w, h), (casts, silhouette || !casts));
+        let mut whole = self.whole_shadow_plan(node.id, data, world, (casts, silhouette || !casts));
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
             if effect.flag("visible") == Some(false) {
                 continue;
             }
             if !self.admit_effect(effect, &mut shadow_layers) {
+                // A refused effect is skipped everywhere, also as a whole-node shadow.
+                whole.retain(|e| !std::ptr::eq(*e, effect));
                 continue;
             }
             let radius = effect.num("radius").unwrap_or(0.0).max(0.0);
             let primitive = match effect.text("type") {
-                // Cast from the whole node below (`draw_whole_shadows`).
-                Some("DROP_SHADOW") if whole.iter().any(|e| std::ptr::eq(*e, effect)) => continue,
-                // Next to a whole-node layer the old path must not add another layer (that
-                // would cast a shadow of a shadow): draw it from the fill mask or drop it.
-                Some("DROP_SHADOW") if !whole.is_empty() => {
-                    if casts {
-                        self.stats.approximated_effects += 1;
-                        shadows.push(effect);
-                    } else {
-                        self.stats.skipped_effects += 1;
-                    }
+                // Cast from the whole node: drawn behind with the others, in list order.
+                Some("DROP_SHADOW") if whole.iter().any(|e| std::ptr::eq(*e, effect)) => {
+                    shadows.push(effect);
                     continue;
                 }
                 Some("DROP_SHADOW" | "INNER_SHADOW") if casts => {
@@ -1019,10 +1009,16 @@ impl Ctx<'_> {
         let (behind, above): (Vec<_>, Vec<_>) = shadows
             .into_iter()
             .partition(|e| e.text("type") == Some("DROP_SHADOW"));
-        for effect in behind {
-            self.draw_drop_shadow(effect, &fill_paths, world);
-        }
-        layers += self.draw_whole_shadows(&whole, node, data, world, &fill_paths, path);
+        layers += self.draw_behind_shadows(
+            &behind,
+            &whole,
+            node,
+            data,
+            world,
+            &fill_paths,
+            path,
+            &above,
+        );
         self.draw_body(node, data, world, (w, h), &fill_paths, path, &above);
         for _ in 0..layers {
             self.rc.pop_layer();

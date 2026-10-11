@@ -580,3 +580,174 @@ fn content_is_composited_once_however_many_shadows() {
         "a translucent child drawn once: {alpha}"
     );
 }
+
+fn render_sized(doc: &Document, width: u16, height: u16) -> figstudio_render::Stats {
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    renderer
+        .render(
+            doc,
+            id(1),
+            &Viewport {
+                width,
+                height,
+                transform: Affine::IDENTITY,
+                background: None,
+            },
+        )
+        .stats
+}
+
+/// A 1x1 opaque frame with a big child: the node bounds are tiny, the rendered alpha is not.
+fn tiny_frame_with_big_child(clip: bool) -> Document {
+    let mut frame = node(2, 1, "FRAME");
+    frame.data.set("size", size(1.0, 1.0));
+    frame.data.set("fillPaints", paint(0.5, 0.5, 0.5));
+    frame.data.set("frameMaskDisabled", Val::Bool(!clip));
+    frame.data.set(
+        "effects",
+        Val::Arr(vec![shadow("DROP_SHADOW", 1.0, 0.0, 0.0)]),
+    );
+    let mut child = node(3, 2, "RECTANGLE");
+    child.data.set("size", size(2200.0, 2000.0));
+    child.data.set("fillPaints", paint(1.0, 1.0, 1.0));
+    document(vec![node(1, 0, "CANVAS"), frame, child])
+}
+
+#[test]
+fn guard_measures_the_rendered_alpha_not_the_node_box() {
+    let stats = render_sized(&tiny_frame_with_big_child(false), 2200, 2000);
+    assert_eq!(stats.approximated_effects, 1, "4.4M px layer is refused");
+}
+
+#[test]
+fn guard_ignores_children_clipped_by_the_frame() {
+    let stats = render_sized(&tiny_frame_with_big_child(true), 2200, 2000);
+    assert_eq!(stats.approximated_effects, 0, "clipped: the layer is tiny");
+}
+
+#[test]
+fn mixed_whole_and_mask_shadows_keep_list_order() {
+    let red = coloured(shadow("DROP_SHADOW", 10.0, 0.0, 0.0), (1.0, 0.0, 0.0));
+    let mut blue = coloured(shadow("DROP_SHADOW", 10.0, 0.0, 0.0), (0.0, 0.0, 1.0));
+    blue.set("spread", Val::Float(3.0));
+    let mut doc = with_effects(vec![red, blue]);
+    let mut nodes = doc.nodes.clone();
+    nodes[1].data.set("strokePaints", paint(1.0, 1.0, 1.0));
+    nodes[1].data.set("strokeWeight", Val::Float(2.0));
+    doc.set_nodes(nodes).unwrap();
+    let (px, _) = render(&doc);
+    assert_eq!(
+        pixel(&px, 70, 40),
+        [0, 0, 255, 255],
+        "later blue covers red"
+    );
+}
+
+#[test]
+fn inner_shadows_do_not_change_the_replayed_shadow_alpha() {
+    // A half-transparent fill whose inner shadow makes it opaque; a second, invisible drop
+    // shadow must not change the first one.
+    let build = |extra: bool| {
+        let mut inner = shadow("INNER_SHADOW", 100.0, 0.0, 0.0);
+        inner.set("spread", Val::Float(0.0));
+        let mut effects = vec![shadow("DROP_SHADOW", 20.0, 0.0, 0.0)];
+        if extra {
+            let mut clear = shadow("DROP_SHADOW", 30.0, 0.0, 0.0);
+            clear.set(
+                "color",
+                obj(&[("r", Val::Float(0.0)), ("a", Val::Float(0.0))]),
+            );
+            effects.push(clear);
+        }
+        effects.push(inner);
+        let mut doc = with_effects(effects);
+        let mut nodes = doc.nodes.clone();
+        let mut fill = nodes[1].data.get("fillPaints").unwrap().items()[0].clone();
+        fill.set("opacity", Val::Float(0.5));
+        nodes[1].data.set("fillPaints", Val::Arr(vec![fill]));
+        doc.set_nodes(nodes).unwrap();
+        pixel(&render(&doc).0, 70, 40)[3]
+    };
+    assert_eq!(build(true), build(false));
+    assert_eq!(build(false), 255, "the inner shadow makes the node opaque");
+}
+
+fn fill_less_frame(n: u32, parent: u32, effects: Vec<Val>) -> figstudio_fig::Node {
+    let mut f = node(n, parent, "FRAME");
+    f.data.set("fillPaints", Val::Arr(vec![]));
+    f.data.set("effects", Val::Arr(effects));
+    f
+}
+
+#[test]
+fn nested_multi_shadow_children_keep_both_shadows_inside_a_parent_shadow() {
+    let child_effects = vec![
+        coloured(shadow("DROP_SHADOW", 20.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        coloured(shadow("DROP_SHADOW", 40.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+    ];
+    let parent_effects = vec![
+        coloured(shadow("DROP_SHADOW", 0.0, 20.0, 0.0), (1.0, 0.0, 0.0)),
+        coloured(shadow("DROP_SHADOW", 0.0, 60.0, 0.0), (1.0, 1.0, 0.0)),
+    ];
+    let mut g = node(4, 3, "RECTANGLE");
+    g.data.set("fillPaints", paint(1.0, 1.0, 1.0));
+    g.data.set("size", size(10.0, 10.0));
+    g.data.set(
+        "transform",
+        obj(&[("m02", Val::Float(10.0)), ("m12", Val::Float(10.0))]),
+    );
+    let doc = document(vec![
+        node(1, 0, "CANVAS"),
+        fill_less_frame(2, 1, parent_effects),
+        fill_less_frame(3, 2, child_effects),
+        g,
+    ]);
+    let (px, stats) = render(&doc);
+    assert_eq!(
+        pixel(&px, 55, 15),
+        [0, 0, 255, 255],
+        "child's own second shadow"
+    );
+    assert_eq!(
+        pixel(&px, 55, 35),
+        [255, 0, 0, 255],
+        "the parent's shadow includes the child's second shadow"
+    );
+    assert_eq!(stats.approximated_effects, 0);
+}
+
+#[test]
+fn refused_effects_are_not_drawn() {
+    // Eight inner shadows use the per-node cap; the ninth effect (a drop shadow) is refused.
+    let mut effects = vec![shadow("INNER_SHADOW", 1.0, 0.0, 0.0); 8];
+    effects.push(shadow("DROP_SHADOW", 10.0, 0.0, 0.0));
+    let mut doc = with_effects(effects);
+    let mut nodes = doc.nodes.clone();
+    nodes[1].data.set("strokePaints", paint(1.0, 1.0, 1.0));
+    nodes[1].data.set("strokeWeight", Val::Float(2.0));
+    doc.set_nodes(nodes).unwrap();
+    let (px, stats) = render(&doc);
+    assert_eq!(stats.skipped_effects, 1);
+    assert_eq!(stats.shadows, 0, "no drop shadow is drawn");
+    assert_eq!(pixel(&px, 67, 40)[3], 0, "and none is visible");
+}
+
+#[test]
+fn faded_node_fades_every_shadow_of_several() {
+    let red = coloured(shadow("DROP_SHADOW", -20.0, 0.0, 0.0), (1.0, 0.0, 0.0));
+    let blue = coloured(shadow("DROP_SHADOW", 20.0, 0.0, 0.0), (0.0, 0.0, 1.0));
+    let mut doc = frame_with_child(vec![red, blue]);
+    let mut nodes = doc.nodes.clone();
+    nodes[1].data.set("opacity", Val::Float(0.5));
+    nodes[2].data.set(
+        "transform",
+        obj(&[("m02", Val::Float(30.0)), ("m12", Val::Float(10.0))]),
+    );
+    doc.set_nodes(nodes).unwrap();
+    let px = render(&doc).0;
+    for x in [15, 55] {
+        let a = pixel(&px, x, 15)[3];
+        assert!((126..=130).contains(&a), "shadow at x={x} is faded: {a}");
+    }
+}

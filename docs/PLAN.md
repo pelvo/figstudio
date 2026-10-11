@@ -221,6 +221,10 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-11 — T19 #1 review fixes: rendered-bounds guard, list order, replay-stable plan.
+  42 pages at scale 0.1, CPU time +1.4% total, worst page +8.7% (re-timed); approximated
+  shadows 2233, skipped 468. Workspace and wasm (pinned nightly, thread flags) checks pass.
+
 - 2026-10-11 — T19 #1: whole-node shadow layers (`crates/render/src/shadow_layer.rs`).
   42 pages at scale 0.1, CPU time: +0.4% total, worst page +12%; approximated shadows
   5349→2084, skipped effects 483→427. Spread is still counted. wasm32 check not run for the
