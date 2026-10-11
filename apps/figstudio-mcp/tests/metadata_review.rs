@@ -147,3 +147,54 @@ fn document_subtrees_exclude_internal_canvases_and_their_descendants() {
     assert!(!output.contains("internal child"));
     assert!(output.contains("Page 1"));
 }
+
+#[test]
+fn output_stays_within_the_byte_budget_and_marks_truncation() {
+    // 1000 frames, each with a long name: well under the 5000-node cap, far over the byte budget.
+    let mut doc = document();
+    let root = Guid(9, 1);
+    let mut nodes = doc.nodes.clone();
+    nodes.push(node(1, Guid(0, 1), "FRAME", &"n".repeat(180)));
+    for index in 2..=1001 {
+        nodes.push(node(
+            index,
+            root,
+            "FRAME",
+            &format!("child {index} {}", "x".repeat(180)),
+        ));
+    }
+    doc.set_nodes(nodes).unwrap();
+    let out = xml(&doc, Some("9:1"), None);
+    assert!(out.len() <= 80_000, "{} bytes", out.len());
+    assert!(
+        out.starts_with("<metadata truncated=\"true\">"),
+        "{}",
+        &out[..60]
+    );
+    assert!(
+        out.contains("call get_metadata again with a child nodeId"),
+        "{out}"
+    );
+    // Output is still well-formed XML.
+    let mut reader = Reader::from_str(&out);
+    while !matches!(reader.read_event().unwrap(), Event::Eof) {}
+}
+
+#[test]
+fn figjam_output_shares_the_byte_budget() {
+    use figstudio_mcp::tools::figjam::figjam;
+    let mut doc = document();
+    let mut nodes = doc.nodes.clone();
+    nodes.push(node(1, Guid(0, 1), "FRAME", "board"));
+    for index in 2..=1001 {
+        nodes.push(node(index, Guid(9, 1), "STICKY", &"s".repeat(180)));
+    }
+    doc.set_nodes(nodes).unwrap();
+    let result = figjam(&doc, Some("9:1"), None, false, None, false);
+    let out = serde_json::to_value(result).unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(out.len() <= 80_000, "{} bytes", out.len());
+    assert!(out.contains("truncated=\"true\""));
+}

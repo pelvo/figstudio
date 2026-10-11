@@ -9,7 +9,7 @@ use figstudio_fig::{
     Document, Guid, Node,
     resolve::{InstancePath, walk_path},
 };
-use node::{clean_xml, tag_name, write_node};
+use node::{tag_name, write_node};
 use quick_xml::{
     Writer,
     events::{BytesStart, Event},
@@ -24,6 +24,7 @@ use serde::Deserialize;
 
 pub(crate) mod figjam;
 mod node;
+mod pages;
 mod resolved;
 use resolved::Out;
 
@@ -42,7 +43,7 @@ pub(crate) struct MetadataInput {
 #[tool_router(router = metadata_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Get sparse XML metadata: node IDs, names, types, parent-relative positions and sizes. Rotation is degrees, counter-clockwise positive (Figma convention). Call without nodeId for visible pages. Canvas/document elements omit geometry; unsized nodes omit dimensions. Instances list their component's children with overrides applied, with ids like I<instance>;<child> that every tool accepts; componentId names the main component. depth limits children. Output caps at 5000 nodes: truncated=\"true\" on <metadata> or <pages> marks omitted nodes. Text caps at 200 characters plus an ellipsis when cut. Use get_design_context for implementation details when available."
+        description = "Get sparse XML metadata: node IDs, names, types, parent-relative positions and sizes. Rotation is degrees, counter-clockwise positive (Figma convention). Call without nodeId for visible pages. Canvas/document elements omit geometry; unsized nodes omit dimensions. Instances list their component's children with overrides applied, with ids like I<instance>;<child> that every tool accepts; componentId names the main component. depth limits children. Output caps at 5000 nodes and 80 kB: truncated=\"true\" on <metadata> or <pages> marks omitted nodes, and then call again with a child nodeId or a smaller depth. Text caps at 200 characters plus an ellipsis when cut. Use get_design_context for implementation details when available."
     )]
     async fn get_metadata(&self, Parameters(input): Parameters<MetadataInput>) -> CallToolResult {
         let document = match self.files().open(input.file_key.as_deref()).await {
@@ -111,6 +112,11 @@ enum Root {
 // Bounds node output and stack memory even for deeply nested or very wide documents.
 const MAX_ELEMENTS: usize = 5_000;
 const MAX_TEXT_CHARS: usize = 200;
+/// Output bytes, closing tags included. Claude Code rejects tool results over about 25k
+/// tokens, so an agent that gets this cut calls again with a child nodeId or a smaller depth.
+pub const MAX_XML_BYTES: usize = 80_000;
+/// Upper bound on one element's bytes (name and text are capped, so this is generous).
+const ELEMENT_MAX_BYTES: usize = 1_024;
 
 enum Step {
     Visit(Guid, u32),
@@ -129,12 +135,13 @@ fn xml(
     let mut writer = Writer::new(Vec::new());
     let mut figjam = figjam;
     match root {
-        None => pages(doc, &mut writer)?,
+        None => pages::write(doc, &mut writer)?,
         Some(root) => {
             let mut out = Out {
                 body: Writer::new(Vec::new()),
                 count: 0,
                 truncated: false,
+                close_reserve: 0,
                 skipped: 0,
                 definitions: None,
                 figjam: figjam.take(),
@@ -152,33 +159,6 @@ fn xml(
     String::from_utf8(writer.into_inner())
         .map(|xml| Some((xml, figjam)))
         .map_err(std::io::Error::other)
-}
-
-fn pages(doc: &Document, writer: &mut Writer<Vec<u8>>) -> std::io::Result<()> {
-    let visible: Vec<_> = doc
-        .pages
-        .iter()
-        .filter_map(|id| doc.node(*id))
-        .filter(|node| {
-            node.data.flag("visible") != Some(false) && node.data.flag("internalOnly") != Some(true)
-        })
-        .take(MAX_ELEMENTS + 1)
-        .collect();
-    let mut pages = BytesStart::new("pages");
-    if visible.len() > MAX_ELEMENTS {
-        pages.push_attribute(("truncated", "true"));
-    }
-    writer.write_event(Event::Start(pages))?;
-    for node in visible.into_iter().take(MAX_ELEMENTS) {
-        let mut tag = BytesStart::new("canvas");
-        let id = node.id.to_string();
-        tag.push_attribute(("id", id.as_str()));
-        let name = clean_xml(&node.name);
-        tag.push_attribute(("name", name.as_str()));
-        writer.write_event(Event::Empty(tag))?;
-    }
-    writer.write_event(Event::End(BytesStart::new("pages").to_end()))?;
-    Ok(())
 }
 
 /// A node inside an instance and its resolved descendants; `false` when the path names none.
@@ -204,16 +184,18 @@ fn subtree(doc: &Document, root: Guid, depth: Option<u32>, out: &mut Out) -> std
     let mut stack = vec![Step::Visit(root, 0)];
     while let Some(step) = stack.pop() {
         match step {
-            Step::End(kind) => out
-                .body
-                .write_event(Event::End(BytesStart::new(kind).to_end()))?,
+            Step::End(kind) => {
+                out.close_reserve -= kind.len() + 3;
+                out.body
+                    .write_event(Event::End(BytesStart::new(kind).to_end()))?
+            }
             Step::Children(id, level, index) => {
                 if let Some(child) = doc.children(id).get(index) {
                     if doc.node(*child).is_some_and(is_internal) {
                         stack.push(Step::Children(id, level, index + 1));
                         continue;
                     }
-                    if out.count == MAX_ELEMENTS {
+                    if out.count == MAX_ELEMENTS || !out.has_room() {
                         out.truncated = true;
                         continue;
                     }
@@ -222,7 +204,7 @@ fn subtree(doc: &Document, root: Guid, depth: Option<u32>, out: &mut Out) -> std
                 }
             }
             Step::Visit(id, level) => {
-                if out.count == MAX_ELEMENTS {
+                if out.count == MAX_ELEMENTS || !out.has_room() {
                     out.truncated = true;
                     continue;
                 }
@@ -269,7 +251,9 @@ fn subtree(doc: &Document, root: Guid, depth: Option<u32>, out: &mut Out) -> std
                     out.resolved(doc, &walk.nodes)?;
                 }
                 if open {
-                    stack.push(Step::End(tag_name(&node.kind)));
+                    let tag = tag_name(&node.kind);
+                    out.close_reserve += tag.len() + 3;
+                    stack.push(Step::End(tag));
                 }
                 if has_children && inside.is_none() {
                     stack.push(Step::Children(id, level + 1, 0));

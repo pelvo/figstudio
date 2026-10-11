@@ -183,7 +183,8 @@ fn synthetic_attributes_text_escaping_and_instance_expansion() {
 }
 
 #[test]
-fn output_caps_at_five_thousand_and_marks_truncation() {
+fn output_is_capped_by_bytes_and_marks_truncation() {
+    // Short elements: the 80 KB byte budget ends the output long before the 5000-node cap.
     let mut doc = document();
     let root = Guid(9, 1);
     let mut nodes = doc.nodes.clone();
@@ -193,14 +194,16 @@ fn output_caps_at_five_thousand_and_marks_truncation() {
     }
     doc.set_nodes(nodes).unwrap();
     let xml = text(&metadata(&doc, Some("9:1"), None));
+    assert!(xml.len() <= 80_000, "{} bytes", xml.len());
     let tags = elements(&xml);
-    assert_eq!(tags.len(), 5001);
+    assert!(tags.len() > 1 && tags.len() < 5001, "{}", tags.len());
     assert_eq!(tags[0].1["truncated"], "true");
+    // Under the budget, the node cap is still what cuts output.
     let mut nodes = doc.nodes.clone();
-    nodes.retain(|node| node.id.0 != 9 || node.id.1 <= 5000);
+    nodes.retain(|node| node.id.0 != 9 || node.id.1 <= 40);
     doc.set_nodes(nodes).unwrap();
     let tags = elements(&text(&metadata(&doc, Some("9:1"), None)));
-    assert_eq!(tags.len(), 5001);
+    assert_eq!(tags.len(), 41, "the <metadata> wrapper plus 40 nodes");
     assert!(!tags[0].1.contains_key("truncated"));
 }
 
@@ -217,8 +220,10 @@ fn deeply_nested_subtrees_are_bounded_without_recursion() {
         nodes.push(node(Guid(9, index), parent, "FRAME", "nested"));
     }
     doc.set_nodes(nodes).unwrap();
-    let tags = elements(&text(&metadata(&doc, Some("9:1"), None)));
-    assert_eq!(tags.len(), 5001);
+    let xml = text(&metadata(&doc, Some("9:1"), None));
+    let tags = elements(&xml);
+    assert!(xml.len() <= 80_000, "{} bytes", xml.len());
+    assert!(tags.len() > 1 && tags.len() < 5001, "{}", tags.len());
     assert_eq!(tags[0].1["truncated"], "true");
 }
 
