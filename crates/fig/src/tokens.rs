@@ -6,79 +6,27 @@ use std::collections::HashMap;
 /// chains unresolved; raising it permits more work on hostile alias cycles.
 pub const MAX_ALIAS_DEPTH: usize = 24;
 
-/// One named variable mode.
-#[derive(Clone, Debug)]
-pub struct Mode {
-    pub id: Guid,
-    pub name: String,
-}
-
-/// A local variable collection.
-#[derive(Debug)]
-pub struct Collection {
-    pub id: Guid,
-    pub name: String,
-    pub modes: Vec<Mode>,
-    pub default_mode: Option<Guid>,
-}
-
-/// One per-mode stored variable value.
-#[derive(Debug)]
-pub struct ModeValue {
-    pub mode: Option<Guid>,
-    pub data: Val,
-}
-
-/// A variable retains its original per-mode payload without modifying the document.
-#[derive(Debug)]
-pub struct Variable {
-    pub id: Guid,
-    pub name: String,
-    pub collection: Option<Guid>,
-    pub resolved_type: Option<String>,
-    pub values: Vec<ModeValue>,
-    /// Exact first stored entry, including absence, for renderer compatibility.
-    pub first_value: Option<Val>,
-}
-
-/// Final variable value, after bounded alias resolution.
-#[derive(Debug, PartialEq)]
-pub enum Value {
-    Color(Val),
-    Float(f64),
-    String(String),
-    Bool(bool),
-}
-
-/// Stored style payload, addressed by either a local GUID or published asset reference.
-#[derive(Debug)]
-pub struct Style {
-    pub id: Guid,
-    pub name: String,
-    pub kind: String,
-    pub paints: Option<Val>,
-    pub text: Val,
-    pub effects: Option<Val>,
-    pub grids: Option<Val>,
-}
+mod types;
+pub use types::{Collection, Mode, ModeValue, Style, StyleKind, Value, Variable};
 
 /// An owned read-only index; no decoding, fonts or write-time changes.
 #[derive(Debug, Default)]
 pub struct Tokens {
-    pub collections: HashMap<Guid, Collection>,
-    pub variables: HashMap<Guid, Variable>,
-    pub styles: HashMap<Guid, Style>,
+    collections: HashMap<Guid, Collection>,
+    variables: HashMap<Guid, Variable>,
+    styles: HashMap<Guid, Style>,
     variable_assets: HashMap<(String, String), Guid>,
     style_assets: HashMap<(String, String), Guid>,
 }
 
 impl Tokens {
+    /// Index local collections, variables and styles in document order.
     pub fn new(doc: &Document) -> Self {
         let mut out = Self::default();
         for node in &doc.nodes {
             let d = &node.data;
             if node.kind == "VARIABLE_SET" {
-                let modes: Vec<_> = d
+                let mut modes: Vec<_> = d
                     .get("variableSetModes")
                     .into_iter()
                     .flat_map(Val::items)
@@ -86,9 +34,11 @@ impl Tokens {
                         Some(Mode {
                             id: m.get("id")?.as_guid()?,
                             name: m.text("name").unwrap_or("").into(),
+                            sort_position: m.text("sortPosition").unwrap_or("").into(),
                         })
                     })
                     .collect();
+                modes.sort_by(|a, b| a.sort_position.cmp(&b.sort_position));
                 let default_mode = d
                     .get("variableSetDefaultModeID")
                     .and_then(Val::as_guid)
@@ -132,7 +82,10 @@ impl Tokens {
                         values,
                     },
                 );
-                if let (Some(k), Some(v)) = (d.text("key"), d.text("version")) {
+                // Legacy rendering indexed only variables with a first stored payload.
+                if out.variables[&node.id].first_value.is_some()
+                    && let (Some(k), Some(v)) = (d.text("key"), d.text("version"))
+                {
                     out.variable_assets.insert((k.into(), v.into()), node.id);
                 }
             }
@@ -142,9 +95,16 @@ impl Tokens {
                     Style {
                         id: node.id,
                         name: node.name.clone(),
-                        kind: kind.into(),
+                        kind: match kind {
+                            "FILL" => StyleKind::Fill,
+                            "STROKE" => StyleKind::Stroke,
+                            "TEXT" => StyleKind::Text,
+                            "EFFECT" => StyleKind::Effect,
+                            "GRID" => StyleKind::Grid,
+                            other => StyleKind::Other(other.into()),
+                        },
                         paints: d.get("fillPaints").cloned(),
-                        text: d.clone(),
+                        data: d.clone(),
                         effects: d.get("effects").cloned(),
                         grids: d.get("layoutGrids").cloned(),
                     },
@@ -157,20 +117,37 @@ impl Tokens {
         out
     }
 
+    /// Look up a collection by local identifier.
+    pub fn collection(&self, id: Guid) -> Option<&Collection> {
+        self.collections.get(&id)
+    }
+
+    /// Iterate local variables; iteration order is unspecified.
+    pub fn variables(&self) -> impl Iterator<Item = &Variable> {
+        self.variables.values()
+    }
+
+    /// Resolve a local or published variable reference.
     pub fn variable(&self, reference: &Val) -> Option<&Variable> {
         self.variables
             .get(&reference_id(reference, &self.variable_assets)?)
     }
 
+    /// Resolve a local or published style reference.
     pub fn style(&self, reference: &Val) -> Option<&Style> {
         self.styles
             .get(&reference_id(reference, &self.style_assets)?)
     }
 
+    /// Resolve aliases in the requested mode, or first stored entries when absent.
     pub fn resolve(&self, data: &Val, mode: Option<Guid>) -> Option<Value> {
         self.resolve_at(data, mode, 0)
     }
 
+    /// Resolve with the renderer's existing depth count and first-stored-mode semantics.
+    ///
+    /// Pass `None` for the mode to preserve renderer compatibility; sorted collection
+    /// defaults are intentionally independent of this historical storage-order rule.
     pub fn resolve_at(&self, data: &Val, mode: Option<Guid>, depth: usize) -> Option<Value> {
         if depth >= MAX_ALIAS_DEPTH {
             return None;
@@ -211,6 +188,26 @@ impl Tokens {
         };
         self.resolve_at(entry, mode, depth + 1)
     }
+}
+
+/// Infer numeric font weight from the stored style name, without loading fonts.
+pub fn font_weight(style: &str) -> u16 {
+    let s = style.to_ascii_lowercase().replace([' ', '-'], "");
+    for (names, weight) in [
+        (["thin", "hairline"], 100),
+        (["extralight", "ultralight"], 200),
+        (["semibold", "demibold"], 600),
+        (["extrabold", "ultrabold"], 800),
+        (["black", "heavy"], 900),
+        (["bold", "bold"], 700),
+        (["medium", "medium"], 500),
+        (["light", "light"], 300),
+    ] {
+        if names.iter().any(|n| s.contains(n)) {
+            return weight;
+        }
+    }
+    400
 }
 
 fn reference_id(reference: &Val, assets: &HashMap<(String, String), Guid>) -> Option<Guid> {

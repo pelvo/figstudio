@@ -25,11 +25,11 @@ fn used_tokens_modes_runs_legacy_styles_and_effects() {
     assert_eq!(map["Surface"], "#FF000080");
     assert_eq!(
         map["Body"],
-        "Font(family: \"Sans\", style: Regular, size: 16.0, weight: 400, lineHeight: 24.0, letterSpacing: 0.0)"
+        "Font(family: \"Sans\", style: Regular, size: 16, weight: 400, lineHeight: 24, letterSpacing: 0)"
     );
     assert_eq!(
         map["Shadow"],
-        "Effect(type: DROP_SHADOW, color: #FF000080, offset: (1.0, 2.0), radius: 3.0, spread: 0.0)"
+        "Effect(type: DROP_SHADOW, color: #FF000080, offset: (1, 2), radius: 3, spread: 0)"
     );
     assert!(map.get("Unused").is_none());
     assert!(map.get("Cycle").is_none());
@@ -38,7 +38,7 @@ fn used_tokens_modes_runs_legacy_styles_and_effects() {
     assert_eq!(map["Grid"], json!([{"pattern":"COLUMNS", "count":12}]));
     assert_eq!(
         map["Gradient"],
-        json!({"type":"GRADIENT_LINEAR", "stops":[{"position":0.0,"color":"#FF000080"}]})
+        json!({"type":"GRADIENT_LINEAR", "stops":[{"position":0,"color":"#FF000080"}]})
     );
     let text = serde_json::to_string(&map).unwrap();
     assert!(text.find("Alias").unwrap() < text.find("Body").unwrap());
@@ -77,6 +77,12 @@ fn all_public_fixtures_have_no_style_definitions() {
         let result = variable_defs(&doc, &doc.pages[0].to_string());
         assert_ne!(result.is_error, Some(true));
         assert_eq!(result.structured_content, Some(json!({})));
+        assert!(
+            !result.content.iter().any(|c| c
+                .as_text()
+                .is_some_and(|t| t.text.contains("approximations:"))),
+            "{name}"
+        );
     }
 }
 

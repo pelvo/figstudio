@@ -2,16 +2,16 @@ use super::*;
 pub fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../tests/fixtures/{name}.fig"))
 }
-fn obj<const N: usize>(fields: [(&str, Val); N]) -> Val {
+pub fn obj<const N: usize>(fields: [(&str, Val); N]) -> Val {
     Val::Obj(Obj::from(fields))
 }
-fn id(n: u32) -> Val {
+pub fn id(n: u32) -> Val {
     Guid(9, n).to_val()
 }
-fn alias(n: u32) -> Val {
+pub fn alias(n: u32) -> Val {
     obj([("value", obj([("alias", obj([("guid", id(n))]))]))])
 }
-fn node(n: u32, kind: &str, name: &str, fields: &[(&str, Val)]) -> Node {
+pub fn node(n: u32, kind: &str, name: &str, fields: &[(&str, Val)]) -> Node {
     let mut d = obj([
         ("guid", id(n)),
         ("type", Val::Str(kind.into())),
@@ -27,7 +27,7 @@ fn node(n: u32, kind: &str, name: &str, fields: &[(&str, Val)]) -> Node {
     }
     node
 }
-fn variable(n: u32, name: &str, values: Vec<Val>) -> Node {
+pub fn variable(n: u32, name: &str, values: Vec<Val>) -> Node {
     node(
         n,
         "VARIABLE",
@@ -50,7 +50,7 @@ fn variable(n: u32, name: &str, values: Vec<Val>) -> Node {
         ],
     )
 }
-fn color() -> Val {
+pub fn color() -> Val {
     obj([
         ("r", Val::Float(1.0)),
         ("g", Val::Float(0.0)),
@@ -214,8 +214,14 @@ pub fn document() -> Document {
                 ),
                 ("fontSize", Val::Float(16.0)),
                 ("fontWeight", Val::Int(400)),
-                ("lineHeight", Val::Float(24.0)),
-                ("letterSpacing", Val::Float(0.0)),
+                (
+                    "lineHeight",
+                    obj([("value", Val::Float(24.0)), ("units", Val::Enum("PIXELS"))]),
+                ),
+                (
+                    "letterSpacing",
+                    obj([("value", Val::Float(0.0)), ("units", Val::Enum("PIXELS"))]),
+                ),
             ],
         ),
         node(

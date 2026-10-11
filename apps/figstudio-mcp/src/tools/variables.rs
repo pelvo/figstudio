@@ -43,7 +43,7 @@ impl FigstudioServer {
         };
         match tokio::task::spawn_blocking(move || variable_defs(&doc, &input.node_id)).await {
             Ok(result) => result,
-            Err(error) => tool_error(crate::error::McpError::load_task(error)),
+            Err(error) => tool_error(crate::error::McpError::token_task(error)),
         }
     }
 }
@@ -75,16 +75,15 @@ pub fn variable_defs(doc: &Document, node_id: &str) -> CallToolResult {
     }
     // A used style can itself consume variables. Do not include unrelated definitions.
     for id in &styles {
-        skipped += references(
-            &tokens.styles[id].text,
-            &tokens,
-            &mut BTreeSet::new(),
-            &mut variables,
-        );
+        if let Some(style) = tokens.style(&id.to_val()) {
+            skipped += references(&style.data, &tokens, &mut BTreeSet::new(), &mut variables);
+        }
     }
     let mut map = BTreeMap::new();
     for id in styles {
-        let style = &tokens.styles[&id];
+        let Some(style) = tokens.style(&id.to_val()) else {
+            continue;
+        };
         match format::style(style, &tokens) {
             Some(value) => {
                 insert(&mut map, &style.name, value, &mut skipped);
@@ -92,9 +91,7 @@ pub fn variable_defs(doc: &Document, node_id: &str) -> CallToolResult {
             None => skipped += 1,
         }
     }
-    for id in variables {
-        add_variable(&tokens.variables[&id], &tokens, &mut map, &mut skipped);
-    }
+    add_variables(&variables, &tokens, &mut map, &mut skipped);
     let mut result = CallToolResult::structured(json!(map));
     if map.is_empty() {
         result.content.push(ContentBlock::text(
@@ -134,6 +131,13 @@ fn references(
         match value {
             Val::Obj(o) => {
                 for reference in STYLE_FIELDS.iter().filter_map(|field| value.get(field)) {
+                    if reference
+                        .as_guid()
+                        .or_else(|| reference.get("guid").and_then(Val::as_guid))
+                        == Some(Guid(u32::MAX, u32::MAX))
+                    {
+                        continue;
+                    }
                     match tokens.style(reference) {
                         Some(style) => {
                             styles.insert(style.id);
@@ -161,21 +165,52 @@ fn references(
     unresolved
 }
 
-fn add_variable(
-    variable: &Variable,
+fn add_variables(
+    ids: &BTreeSet<Guid>,
     tokens: &Tokens,
     map: &mut BTreeMap<String, Value>,
     skipped: &mut usize,
 ) {
-    let collection = variable
-        .collection
-        .and_then(|id| tokens.collections.get(&id));
+    let mut names: BTreeMap<&str, HashSet<Option<Guid>>> = BTreeMap::new();
+    for id in ids {
+        if let Some(v) = tokens.variable(&id.to_val()) {
+            names.entry(&v.name).or_default().insert(v.collection);
+        }
+    }
+    for id in ids {
+        if let Some(variable) = tokens.variable(&id.to_val()) {
+            let duplicate = names
+                .get(variable.name.as_str())
+                .is_some_and(|c| c.len() > 1);
+            let name = if duplicate {
+                let collection = variable.collection.and_then(|id| tokens.collection(id));
+                format!(
+                    "{} ({})",
+                    variable.name,
+                    collection.map_or("uncollected", |c| c.name.as_str())
+                )
+            } else {
+                variable.name.clone()
+            };
+            add_variable(variable, &name, tokens, map, skipped);
+        }
+    }
+}
+
+fn add_variable(
+    variable: &Variable,
+    base_name: &str,
+    tokens: &Tokens,
+    map: &mut BTreeMap<String, Value>,
+    skipped: &mut usize,
+) {
+    let collection = variable.collection.and_then(|id| tokens.collection(id));
     let default = collection
         .and_then(|c| c.default_mode)
         .or_else(|| variable.values.first().and_then(|v| v.mode));
     for entry in &variable.values {
         let name = if variable.values.len() == 1 || entry.mode == default {
-            variable.name.clone()
+            base_name.to_owned()
         } else {
             let mode_name = collection
                 .and_then(|c| c.modes.iter().find(|m| Some(m.id) == entry.mode))
@@ -186,7 +221,7 @@ fn add_variable(
                         .map(|id| id.to_string())
                         .unwrap_or_else(|| "unnamed".into())
                 });
-            format!("{} ({mode_name})", variable.name)
+            format!("{base_name} ({mode_name})")
         };
         match tokens
             .resolve(&entry.data, entry.mode)
@@ -198,7 +233,7 @@ fn add_variable(
     }
 }
 
-// The official shape cannot represent duplicate names; keep the lowest GUID deterministically.
+// Styles win exact name collisions with variables; within each kind, the lowest GUID wins.
 fn insert(map: &mut BTreeMap<String, Value>, name: &str, value: Value, skipped: &mut usize) {
     if let std::collections::btree_map::Entry::Vacant(entry) = map.entry(name.into()) {
         entry.insert(value);

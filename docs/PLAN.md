@@ -388,3 +388,9 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   fixture node), the 4096 px cap works below the old 0.01 scale floor and reports the real
   scale, approximations come from Stats' fields incl. culled. New tests proven by mutations;
   scripts/check.sh: all checks passed. Not verified: live clients, private files, L5 expansion.
+- 2026-10-11 — MCP L4 review: read real Number messages and mode sort positions, ignore
+  detached style sentinels, remove f32 decimal noise, qualify cross-collection collisions,
+  share font weights and preserve first-stored-mode/valued-only asset rendering. Regression
+  proofs and the full gate pass; parallel clippy passes; seven scale-0.25 PNGs byte-match
+  before/after and thumbnail sheet inspected. Renderer equivalence also passes on fb03bf8.
+  Not verified: wasm, live clients, private/library documents, full-scale visual accuracy.

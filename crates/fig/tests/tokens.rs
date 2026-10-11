@@ -103,31 +103,38 @@ fn modes_aliases_and_missing_targets() {
         variable(8, vec![data(obj(&[("boolValue", Val::Bool(true))]))]),
     ]);
     let t = Tokens::new(&doc);
-    let c = &t.collections[&id(10)];
+    let c = t.collection(id(10)).unwrap();
     assert_eq!(
         c.modes.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
         ["Light", "Dark"]
     );
     assert_eq!(c.default_mode, Some(id(21)));
-    let v = &t.variables[&id(1)];
+    assert_eq!(t.variables().count(), 8);
+    let v = t.variable(&id(1).to_val()).unwrap();
     assert_eq!(v.collection, Some(id(10)));
     assert_eq!(
         t.resolve(&v.values[0].data, Some(id(20))),
         Some(Value::Color(color()))
     );
     assert_eq!(
-        t.resolve(&t.variables[&id(3)].values[0].data, Some(id(21))),
+        t.resolve(
+            &t.variable(&id(3).to_val()).unwrap().values[0].data,
+            Some(id(21))
+        ),
         Some(Value::Float(12.5))
     );
     for n in [4, 6] {
-        assert_eq!(t.resolve(&t.variables[&id(n)].values[0].data, None), None);
+        assert_eq!(
+            t.resolve(&t.variable(&id(n).to_val()).unwrap().values[0].data, None),
+            None
+        );
     }
     assert_eq!(
-        t.resolve(&t.variables[&id(7)].values[0].data, None),
+        t.resolve(&t.variable(&id(7).to_val()).unwrap().values[0].data, None),
         Some(Value::String("hello".into()))
     );
     assert_eq!(
-        t.resolve(&t.variables[&id(8)].values[0].data, None),
+        t.resolve(&t.variable(&id(8).to_val()).unwrap().values[0].data, None),
         Some(Value::Bool(true))
     );
 }
@@ -206,7 +213,38 @@ fn style_payload_and_asset_lookup() {
     )]);
     assert_eq!(t.style(&reference).unwrap().paints.as_ref(), Some(&paints));
     assert_eq!(
-        t.style(&id(2).to_val()).unwrap().text.num("fontSize"),
+        t.style(&id(2).to_val()).unwrap().data.num("fontSize"),
         Some(16.0)
     );
+    assert_eq!(
+        t.style(&id(2).to_val()).unwrap().kind,
+        figstudio_fig::tokens::StyleKind::Text
+    );
+}
+
+#[test]
+fn unknown_style_kinds_and_font_weight_inference() {
+    use figstudio_fig::tokens::{StyleKind, font_weight};
+    let doc = document(vec![node(
+        1,
+        "FRAME",
+        &[("styleType", Val::Str("FUTURE".into()))],
+    )]);
+    assert_eq!(
+        Tokens::new(&doc).style(&id(1).to_val()).unwrap().kind,
+        StyleKind::Other("FUTURE".into())
+    );
+    for (style, weight) in [
+        ("Hairline Italic", 100),
+        ("Ultra-Light", 200),
+        ("Light", 300),
+        ("Regular", 400),
+        ("Medium", 500),
+        ("Demi Bold", 600),
+        ("Bold", 700),
+        ("ExtraBold", 800),
+        ("Heavy", 900),
+    ] {
+        assert_eq!(font_weight(style), weight, "{style}");
+    }
 }

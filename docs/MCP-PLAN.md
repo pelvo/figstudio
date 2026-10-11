@@ -212,8 +212,36 @@ All seven public fixtures contain no style definitions (verified), so style cove
 synthetic; fixture protocol and empty-map coverage remain. `scripts/check.sh` passed;
 all seven fixture renders at scale 0.25 are byte-identical before/after.
 Not verified: wasm target (not installed), private/library files, visual inspection at
-full scale, and instance expansion (L5). Named-style weight is inferred from the stored
-style name when no numeric weight exists; line-height units and grids retain raw summaries.
+full scale, and instance expansion (L5). Named-style weight is inferred by the shared `fig::tokens::font_weight` accessor when no
+numeric weight exists. Number messages use their value and units: PIXELS emit bare px
+numbers, PERCENT retains `%`, RAW zero line height is `auto`; grids retain JSON summaries.
+Floats use shortest f32 round-trip decimals; integral values emit integer JSON numbers.
+Modes sort by `sortPosition`; default is the first sorted mode unless the optional legacy
+override exists. Renderer resolution remains first-stored-entry based, independent of that
+ordering. Same-name variables in different used collections use `name (Collection)`;
+non-default modes append ` (Mode)`. Styles win exact collisions with variables; within
+each kind the lowest GUID wins. Remaining collisions count as approximations.
+Detached-style sentinels are ignored; hidden paints are skipped and paint opacity multiplies
+colour alpha. Token-task failures are distinguished from document-load failures.
+
+L4 review focused checks: fixture sentinel, Number units, decimal noise, mode ordering,
+collection collisions and visibility/opacity regressions were seen failing before fixes.
+A synthetic renderer regression uses two differing modes, a 24-hop alias chain and a
+later empty variable with the same asset key; it failed before restoring valued-only
+asset indexing. It now passes on this branch and on the full archived `fb03bf8` source,
+asserting first-stored-mode pixels, depth-ceiling fallback pixels and two unresolved paints.
+Public token fields are documented, maps are private behind accessors, style kind is an
+extensible enum, and style node payload is named `data`.
+Review gate: `scripts/check.sh` ends with `all checks passed`, including parallel-feature
+clippy/tests; the separate parallel clippy invocation passes too. All seven fixture PNGs
+at scale 0.25 are byte-identical before/after; the regenerated thumbnail sheet was inspected.
+Ripwire reports no incompatible callers (the private `add_variable` signature gained the
+qualified base name). Its quality lens flags added collection-index complexity and test/error
+constructor duplication; these remain bounded, tested additions rather than hidden failures.
+Applied Rust rules: M-PUBLIC-DEBUG, M-CANONICAL-DOCS, M-FIRST-DOC-SENTENCE,
+M-STRONG-TYPES, M-ERRORS-CANONICAL-STRUCTS and M-INTEGRATION-TESTS.
+Not verified in this review: wasm/browser builds, private or library documents, live MCP
+clients, and full-scale visual accuracy. Existing renderer approximations are unchanged.
 Ripwire contract check: server constructor unchanged, no incompatible callers. Quality
 check reports the deliberate metadata-style SDK wrapper duplication and new reference-walk
 complexity (17); macro/test dead-code reports are covered by protocol/integration tests.

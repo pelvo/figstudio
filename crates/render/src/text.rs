@@ -121,27 +121,7 @@ mod system {
     }
 
     fn weight_of(style: &str) -> Weight {
-        let s = style.to_ascii_lowercase().replace([' ', '-'], "");
-        let w = if s.contains("thin") || s.contains("hairline") {
-            100
-        } else if s.contains("extralight") || s.contains("ultralight") {
-            200
-        } else if s.contains("semibold") || s.contains("demibold") {
-            600
-        } else if s.contains("extrabold") || s.contains("ultrabold") {
-            800
-        } else if s.contains("black") || s.contains("heavy") {
-            900
-        } else if s.contains("bold") {
-            700
-        } else if s.contains("medium") {
-            500
-        } else if s.contains("light") {
-            300
-        } else {
-            400
-        };
-        Weight(w)
+        Weight(figstudio_fig::tokens::font_weight(style))
     }
 
     struct Placed {

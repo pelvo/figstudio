@@ -111,7 +111,13 @@ async fn stdio_discovers_and_calls_tools() {
         assert!(info.instructions.as_ref().unwrap().contains("Offline"));
         let tools = client.list_all_tools().await.unwrap();
         assert_eq!(tools.len(), 5);
-        for name in ["whoami", "list_files", "get_metadata", "get_screenshot", "get_variable_defs"] {
+        for name in [
+            "whoami",
+            "list_files",
+            "get_metadata",
+            "get_screenshot",
+            "get_variable_defs",
+        ] {
             assert!(tools.iter().any(|tool| tool.name == name));
         }
         let result = client
