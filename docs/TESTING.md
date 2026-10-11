@@ -64,12 +64,15 @@ The `parallel` tests run with `cargo test -p figstudio-render --features paralle
 `scripts/check.sh` runs them. Proven: ignoring a filter's reach in `Recorder` makes the shadow
 test fail (a channel off by 60).
 
-The `gpu` tests (`crates/render/tests/gpu.rs`, `cargo test -p figstudio-render --features gpu`,
+The `gpu` tests (`crates/render/tests/gpu.rs` and `gpu_refuse.rs`, `cargo test -p figstudio-render --features gpu`,
 run by `scripts/check.sh`) render recorded tiles with `vello_gpu` on this machine's GPU and
 compare them with the CPU tiles (tolerances and measurements in `docs/GPU.md`, L2 notes). With
 no GPU adapter they print `SKIPPED: ...` and pass; `WGPU_BACKEND=vulkan` on a Mac forces that.
 Proven: an opacity layer drawn opaque on the GPU fails (126/255); dropping the image refusal
 fails the refusal test and vello_gpu panics on the fixture tile.
+Nested filters: checking each filter alone fails `nested_filters_that_outgrow_gpu_intermediates_are_refused`;
+`every_tile_the_scan_accepts_renders_on_the_gpu` sweeps blur radii across the limit and renders
+every accepted tile.
 
 ## 3. Fixtures
 

@@ -39,7 +39,7 @@ use crate::images::{ImageRequest, Images};
 use crate::record::Canvas;
 
 #[cfg(feature = "gpu")]
-pub use gpu::{GpuUnsupported, MAX_FILTER_REACH, MAX_LAYERS};
+pub use gpu::{GPU_LAYER_TEXTURE, GpuUnsupported, MAX_LAYERS};
 #[cfg(feature = "parallel")]
 pub use replay::Recording;
 pub use vello_cpu::{color, kurbo};

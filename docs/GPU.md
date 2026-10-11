@@ -119,9 +119,13 @@ patched egui-wgpu that bounds the surface before configuring it.
   backends). Feature `gpu` of figstudio-render implies `parallel` (recordings).
 - One command list: `Recorder::replay` now takes any `Canvas` (`fill_rect` joined the trait),
   so the CPU tile, the GPU scene and the support scan replay the same culled commands.
-  `Recording::gpu_scene(viewport)` returns `None` (other zoom, outside the area) like
-  `Recording::render`, `Some(Err(GpuUnsupported))` to draw that tile on the CPU, or the scene
-  (background included) and its fill count. The caller renders it (`vello_gpu::Renderer::render`).
+  `Recording::gpu_scene(viewport, max_texture)` returns `None` (other zoom, outside the area)
+  like `Recording::render`, `Some(Err(GpuUnsupported))` to draw that tile on the CPU, or the
+  scene (background included) and its fill count. `max_texture` is the renderer's largest
+  intermediate texture: `GPU_LAYER_TEXTURE` (4096, vello_gpu's default) or the device's
+  `max_texture_dimension_2d` if smaller. The caller renders the scene
+  (`vello_gpu::Renderer::render`, which returns `Result`): an `Err` there must also send the
+  tile to the CPU and be counted (L3). Nothing in `crates/render` panics on a render error.
 - `vello_gpu` 0.3 API used: `Scene::{new, set_transform, set_paint, set_paint_transform,
   set_fill_rule, fill_path, fill_rect, push_clip_layer, push_clip_path, pop_clip,
   push_opacity_layer, push_filter_layer, pop_layer}`; tests: `Renderer::{new, render,
@@ -135,8 +139,16 @@ patched egui-wgpu that bounds the surface before configuring it.
     end colour (a dotted line of 255/255 errors in the angular-gradient test).
   - `FilterGraph`: anything but one blur, drop shadow, shadow-only, offset or flood primitive
     (vello_common `PreparedFilter::new` panics). The renderer emits only the first three.
-  - `FilterReach`: filter expansion over 1024 px (intermediate textures are at most 4096 px;
-    `IntermediateTextureError::TooLarge` otherwise).
+  - `FilterReach`: a filter layer that would not fit an intermediate texture
+    (`IntermediateTextureError::TooLarge`). vello_gpu grows the strip viewport by each filter's
+    tile-snapped source padding (`ViewportState::push_root_viewport`), so nested filters add
+    up; the scan keeps that stack and sizes each filter layer as its grown viewport plus its
+    filter padding plus the atlas padding (`FilterLayerPlacement::new`,
+    `LayersConfig::required_intermediate_texture_size`). Conservative: it assumes the layer
+    content fills the grown viewport, so it refuses before the GPU fails (eight nested blurs
+    on Metal: refused from radius 150, GPU fails from 300). Fix pass 1 of the L2 review: the
+    first version checked each filter alone and accepted eight nested radius-600 blurs, which
+    failed to render (8716 px against 4096).
   - `Layers`: over 10,000 layers in a tile (the scheduler panics after 40,000 rounds; the
     filter data texture has a fixed size). Not reached by any fixture.
   - Not emitted by the renderer, so not scanned: mask layers, blend layers, `set_blend_mode`.

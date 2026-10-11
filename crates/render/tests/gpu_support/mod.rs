@@ -1,5 +1,10 @@
 //! A headless wgpu device and `vello_gpu` renderer for `tests/gpu.rs`, after `vello_gpu`'s
 //! `render_to_file` example: renders a scene into a texture and reads it back.
+#![allow(
+    dead_code,
+    reason = "each GPU suite uses a different subset of these helpers"
+)]
+pub mod docs;
 
 /// Tile side with its gutter, as the app draws tiles.
 pub const SIDE: u16 = 516;
@@ -48,8 +53,16 @@ impl Gpu {
         })
     }
 
-    /// Renders `scene` (`SIDE` square) and returns its RGBA8 pixels.
-    pub fn render(&mut self, scene: &vello_gpu::Scene) -> Vec<u8> {
+    /// The largest intermediate texture side the renderer uses (its default, capped by the
+    /// device), for `Recording::gpu_scene`.
+    pub fn max_texture(&self) -> u16 {
+        let device =
+            u16::try_from(self.device.limits().max_texture_dimension_2d).unwrap_or(u16::MAX);
+        device.min(figstudio_render::GPU_LAYER_TEXTURE)
+    }
+
+    /// Renders `scene` (`SIDE` square) and returns its RGBA8 pixels, or `vello_gpu`'s error.
+    pub fn render(&mut self, scene: &vello_gpu::Scene) -> Result<Vec<u8>, vello_gpu::RenderError> {
         let side = u32::from(SIDE);
         let extent = wgpu::Extent3d {
             width: side,
@@ -73,20 +86,18 @@ impl Gpu {
         };
         let depth = vello_gpu::Renderer::create_depth_texture_view(&self.device, &size);
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        self.renderer
-            .render(
-                scene,
-                &mut self.resources,
-                &self.device,
-                &self.queue,
-                &mut encoder,
-                &size,
-                &view,
-                Some(&depth),
-                &vello_gpu::TextureBindings::new(),
-                vello_gpu::TargetInit::Clear(vello_gpu::ClearSettings::default()),
-            )
-            .expect("render");
+        self.renderer.render(
+            scene,
+            &mut self.resources,
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &size,
+            &view,
+            Some(&depth),
+            &vello_gpu::TextureBindings::new(),
+            vello_gpu::TargetInit::Clear(vello_gpu::ClearSettings::default()),
+        )?;
         let row = (side * 4).next_multiple_of(256);
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -114,10 +125,10 @@ impl Gpu {
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("poll");
         let mapped = buffer.get_mapped_range(..).expect("mapped");
-        mapped
+        Ok(mapped
             .chunks_exact(row as usize)
             .flat_map(|r| &r[..usize::from(SIDE) * 4])
             .copied()
-            .collect()
+            .collect())
     }
 }

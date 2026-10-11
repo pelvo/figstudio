@@ -33,8 +33,8 @@ pub enum GpuUnsupported {
     /// A filter other than one blur, drop shadow, offset or flood (`vello_gpu` panics on
     /// multi-primitive graphs and other primitives).
     FilterGraph,
-    /// A filter spreading further than [`MAX_FILTER_REACH`] pixels: its layer would exceed the
-    /// GPU's intermediate textures.
+    /// A filter whose layer, grown by the filters around it, would not fit the GPU's
+    /// intermediate textures (`vello_gpu` fails the render with `TooLarge`).
     FilterReach,
     /// More than [`MAX_LAYERS`] layers in the tile (`vello_gpu`'s scheduler gives up, with a
     /// panic, on extreme scenes; its filter data texture has a fixed size).
@@ -55,9 +55,15 @@ impl fmt::Display for GpuUnsupported {
 
 impl std::error::Error for GpuUnsupported {}
 
-/// Largest filter expansion, in output pixels each way, drawn on the GPU (its intermediate
-/// textures are at most 4096 px; a 516 px tile plus twice this stays inside).
-pub const MAX_FILTER_REACH: f64 = 1024.0;
+/// `vello_gpu`'s default largest intermediate texture side (`LayersConfig::max_texture_size`),
+/// before it is lowered to the device's texture limit: pass the smaller of the two to
+/// [`Recording::gpu_scene`].
+pub const GPU_LAYER_TEXTURE: u16 = 4096;
+/// `vello_gpu`'s `FILTER_ATLAS_PADDING` (`MAX_KERNEL_SIZE / 2`), added on each side of the
+/// largest filter layer when sizing intermediate textures.
+const FILTER_ATLAS_PADDING: f64 = 6.0;
+/// `vello_common`'s tile side: filter paddings and layer bounds are snapped up to it.
+const TILE: f64 = 4.0;
 /// Most layers (clip, opacity and filter) one GPU tile may push.
 pub const MAX_LAYERS: usize = 10_000;
 
@@ -66,14 +72,28 @@ impl Recording {
     /// CPU (with its background). Returns the scene and how many fills were replayed,
     /// `Some(Err(_))` when the tile uses something `vello_gpu` cannot draw (draw it with
     /// [`Recording::render`]), or `None` when [`Recording::render`] would.
-    pub fn gpu_scene(&self, viewport: &Viewport) -> Option<Result<(Scene, usize), GpuUnsupported>> {
+    ///
+    /// `max_texture`: the renderer's largest intermediate texture side, the smaller of
+    /// [`GPU_LAYER_TEXTURE`] and the device's `max_texture_dimension_2d`. Rendering the scene
+    /// can still fail (`vello_gpu::RenderError`); draw the tile on the CPU then.
+    pub fn gpu_scene(
+        &self,
+        viewport: &Viewport,
+        max_texture: u16,
+    ) -> Option<Result<(Scene, usize), GpuUnsupported>> {
         let (window, shift) = self.place(viewport)?;
-        let mut scan = Scan::default();
+        let (w, h) = (viewport.width.max(1), viewport.height.max(1));
+        let mut scan = Scan {
+            transform: Affine::IDENTITY,
+            layers: 0,
+            viewports: vec![(f64::from(w), f64::from(h))],
+            max: f64::from(max_texture),
+            unsupported: None,
+        };
         self.rec.replay(&mut scan, window, shift);
         if let Some(why) = scan.unsupported {
             return Some(Err(why));
         }
-        let (w, h) = (viewport.width.max(1), viewport.height.max(1));
         let mut scene = Scene::new(w, h);
         if let Some(bg) = viewport.background {
             scene.set_paint(bg);
@@ -85,10 +105,14 @@ impl Recording {
 }
 
 /// Checks the commands a tile replays; keeps the first reason it cannot go to the GPU.
-#[derive(Default)]
 struct Scan {
     transform: Affine,
     layers: usize,
+    /// Strip viewport size per open layer (the scene's first). `vello_gpu` grows it by each
+    /// filter's source padding (`ViewportState::push_root_viewport`), so nested filters add up.
+    viewports: Vec<(f64, f64)>,
+    /// Largest intermediate texture side.
+    max: f64,
     unsupported: Option<GpuUnsupported>,
 }
 
@@ -97,11 +121,37 @@ impl Scan {
         self.unsupported.get_or_insert(why);
     }
 
-    fn layer(&mut self) {
+    /// Opens a layer with strip viewport `size`.
+    fn layer(&mut self, size: (f64, f64)) {
         self.layers += 1;
         if self.layers > MAX_LAYERS {
             self.refuse(GpuUnsupported::Layers);
         }
+        self.viewports.push(size);
+    }
+
+    fn viewport(&self) -> (f64, f64) {
+        self.viewports.last().copied().unwrap_or_default()
+    }
+
+    /// Refuses `filter` unless its intermediate texture fits, as `vello_gpu` 0.3 sizes it:
+    /// `FilterData::new` snaps both paddings up to tiles; the layer's pixmap is at most the grown
+    /// viewport plus the filter padding (`FilterLayerPlacement::new`), plus the atlas padding on
+    /// each side (`LayersConfig::required_intermediate_texture_size`). Returns the grown viewport.
+    fn fit_filter(&mut self, filter: &Filter) -> (f64, f64) {
+        let snap = |v: f64| (v.max(0.0) / TILE).ceil() * TILE;
+        let pad = |r: Rect| (snap(-r.x0) + snap(r.x1), snap(-r.y0) + snap(r.y1));
+        let (sw, sh) = pad(filter.source_expansion(&self.transform));
+        let (fw, fh) = pad(filter.filter_expansion(&self.transform));
+        let (w, h) = self.viewport();
+        let grown = (w + sw, h + sh);
+        let atlas = 2.0 * FILTER_ATLAS_PADDING + TILE;
+        let (lw, lh) = (grown.0 + fw + atlas, grown.1 + fh + atlas);
+        // NaN (a broken transform) is refused too.
+        if !(lw <= self.max && lh <= self.max) {
+            self.refuse(GpuUnsupported::FilterReach);
+        }
+        grown
     }
 }
 
@@ -115,13 +165,6 @@ fn supported_filter(filter: &Filter) -> bool {
             | FilterPrimitive::Offset { .. }
             | FilterPrimitive::Flood { .. }]
     )
-}
-
-fn reach(r: Rect) -> f64 {
-    [r.x0, r.y0, r.x1, r.y1]
-        .into_iter()
-        .map(f64::abs)
-        .fold(0.0, f64::max)
 }
 
 impl Canvas for Scan {
@@ -142,27 +185,28 @@ impl Canvas for Scan {
     fn fill_path(&mut self, _: &BezPath) {}
     fn fill_rect(&mut self, _: &Rect) {}
     fn push_clip_layer(&mut self, _: &BezPath) {
-        self.layer();
+        self.layer(self.viewport());
     }
     fn push_clip_path(&mut self, _: &BezPath) {}
     fn pop_clip(&mut self) {}
     fn push_opacity_layer(&mut self, _: f32) {
-        self.layer();
+        self.layer(self.viewport());
     }
     fn push_filter_layer(&mut self, filter: Filter, _: f64) {
-        self.layer();
-        if !supported_filter(&filter) {
+        let size = if supported_filter(&filter) {
+            self.fit_filter(&filter)
+        } else {
             self.refuse(GpuUnsupported::FilterGraph);
-            return;
-        }
-        let t = self.transform;
-        let far = reach(filter.filter_expansion(&t)).max(reach(filter.source_expansion(&t)));
-        // NaN (a broken transform) is refused too.
-        if far.is_nan() || far > MAX_FILTER_REACH {
-            self.refuse(GpuUnsupported::FilterReach);
+            self.viewport()
+        };
+        self.layer(size);
+    }
+    fn pop_layer(&mut self) {
+        // The scene's own viewport stays (an unbalanced pop is not ours to fix here).
+        if self.viewports.len() > 1 {
+            self.viewports.pop();
         }
     }
-    fn pop_layer(&mut self) {}
 }
 
 impl Canvas for Scene {

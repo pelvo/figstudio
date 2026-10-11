@@ -511,3 +511,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   gradients, other filter graphs, huge filter reach and >10k layers (`GpuUnsupported`, counted as
   `Stats::gpu_fallback_tiles` once L3 wires the app). GPU vs CPU tiles on Metal: ≤ 2/255 (filters ≤ 5/255).
   Not verified: Vulkan/DX12/GL/WebGPU/WebGL2 pixels, GPU-side panics beyond the scanned cases.
+- 2026-10-12 — T20 L2 fix 1: the GPU scan sizes nested filter layers as vello_gpu does (each filter
+  grows the intermediate viewport), refusing tiles that would fail with `TooLarge`;
+  `gpu_scene` takes the texture limit. Test seen failing first. Not verified: non-Metal GPUs.
