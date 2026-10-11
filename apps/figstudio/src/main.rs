@@ -1,6 +1,7 @@
 //! figstudio — desktop and browser app for Figma `.fig` local copies.
 
 mod canvas;
+mod labels;
 mod panels;
 mod source;
 mod state;

@@ -201,6 +201,10 @@ pub fn show(
     }
 
     // Overlays.
+    crate::labels::paint(
+        &painter,
+        &crate::labels::labels(&tab.doc, tab.page, tab.view, origin, rect),
+    );
     if let Some(h) = tab.hover.filter(|h| Some(*h) != tab.selection) {
         outline(
             &painter,
