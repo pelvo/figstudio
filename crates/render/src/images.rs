@@ -200,6 +200,12 @@ impl Images {
         }
     }
 
+    /// A request will not be answered (its document closed): forget it without marking the
+    /// image missing.
+    pub fn abandon(&self, hash: &str, level: u8) {
+        self.lock().in_flight.remove(&(hash.to_string(), level));
+    }
+
     /// The bytes for a request could not be read: treat the image as missing.
     pub fn fail(&self, hash: &str, level: u8) {
         let mut inner = self.lock();

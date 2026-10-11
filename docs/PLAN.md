@@ -496,3 +496,7 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   native / 128 MiB web) with coarser/finer fallback under missing tiles and centre-first requests;
   overscan.rs removed; 12 unit tests seen failing under mutations; scripted pan/zoom logged no
   uncovered tile during pans. Not verified: real hand-tool drag, web by eye, large file by eye.
+- 2026-10-12 — T20 P2 fix: full coverage of views over half the cache (coarser level, on-screen
+  tiles protected), evicted tiles re-requested (worker skips only unacknowledged tiles), 2-px
+  tile gutters (seam 37/255 → ≤3/255 in a CPU model of the GPU's sampling), tab close cancels its
+  batch and closed documents store no images. Tests seen failing first. Not verified: GPU seams.

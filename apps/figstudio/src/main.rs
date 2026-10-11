@@ -8,6 +8,8 @@ mod source;
 mod state;
 mod tab;
 mod theme;
+mod tile_cache;
+mod tile_queue;
 mod tiles;
 mod tiles_view;
 #[cfg(target_arch = "wasm32")]
@@ -198,9 +200,10 @@ impl App {
     fn close(&mut self, i: usize) {
         if i < self.tabs.len() {
             let closed = self.tabs.remove(i);
+            self.workers.close_tab(closed.id);
             let instance = closed.doc.instance;
             if !self.tabs.iter().any(|t| t.doc.instance == instance) {
-                self.workers.images().forget_document(instance);
+                self.workers.close_document(instance);
                 self.tiles.forget(instance);
             }
             if self.active >= self.tabs.len() {

@@ -83,9 +83,9 @@ pub struct Stats {
 }
 
 impl Stats {
-    /// Keeps the larger count of every field: the summary of several tiles of one view, where
-    /// a layer crossing tiles is drawn (and counted) in each. Every count of `other` stays
-    /// visible (any gap stays non-zero) without counting a split layer twice.
+    /// Keeps the larger count of every field: a summary of several tiles of one view. Each
+    /// count is a lower bound for the view (the largest of any one tile; layers in different
+    /// tiles are not added up), and any gap on any tile stays non-zero.
     pub fn max_with(&mut self, other: &Stats) {
         let Stats {
             nodes,

@@ -8,10 +8,23 @@
 use figstudio_fig::Guid;
 use figstudio_render::kurbo::{Affine, Rect};
 
-/// Tile side in device pixels.
+pub use crate::tile_cache::Cache;
+
+/// Tile side in device pixels (the part drawn on screen).
 pub const TILE: u16 = 512;
-/// Bytes of one tile's RGBA pixels (as an uploaded texture).
-pub const TILE_BYTES: usize = TILE as usize * TILE as usize * 4;
+/// Pixels of the neighbouring tiles rendered around each tile, so linear filtering at a tile
+/// edge blends with the neighbour's pixels instead of repeating the edge (no seams).
+pub const GUTTER: u16 = 2;
+/// Side of a tile's texture: the tile and its gutter on both sides.
+pub const TEXTURE: u16 = TILE + 2 * GUTTER;
+/// Bytes of one tile's texture (RGBA), gutter included.
+pub const TILE_BYTES: usize = TEXTURE as usize * TEXTURE as usize * 4;
+
+/// The texture coordinates of the tile inside its texture (the gutter is not drawn).
+pub fn uv() -> [f32; 2] {
+    let t = f32::from(TEXTURE);
+    [f32::from(GUTTER) / t, f32::from(GUTTER + TILE) / t]
+}
 /// Levels outside this range are clamped (zoom limits times any sane pixels per point).
 const LEVELS: std::ops::RangeInclusive<i32> = -40..=40;
 /// Most tiles across or down a view: a 16384-px canvas needs 32 (plus the ring).
@@ -50,10 +63,11 @@ impl Key {
         Rect::new(x, y, x + side, y + side)
     }
 
-    /// Page-to-tile-pixel transform for the render viewport.
+    /// Page-to-texture-pixel transform for the render viewport ([`TEXTURE`] square): the
+    /// tile's page rect lands on pixels `GUTTER..GUTTER + TILE`.
     pub fn transform(&self) -> Affine {
-        let t = f64::from(TILE);
-        Affine::translate((-f64::from(self.x) * t, -f64::from(self.y) * t))
+        let (t, g) = (f64::from(TILE), f64::from(GUTTER));
+        Affine::translate((g - f64::from(self.x) * t, g - f64::from(self.y) * t))
             * Affine::scale(scale(self.level))
     }
 }
@@ -137,123 +151,36 @@ pub fn visible_page(zoom: f32, pan: [f32; 2], size: [f32; 2]) -> Rect {
     )
 }
 
-/// A cached tile: its texture (or anything, in tests) and how fresh it is.
-#[derive(Debug)]
-pub struct Entry<T> {
-    pub value: T,
-    pub stats: figstudio_render::Stats,
-    /// `Some(n)`: drawn with placeholders while images loaded, requested when `n` images had
-    /// arrived; such a tile is drawn but rendered again once more images arrive.
-    pub images: Option<u64>,
-    used: u64,
-}
-
-impl<T> Entry<T> {
-    pub fn fresh(&self, images_arrived: u64) -> bool {
-        self.images.is_none_or(|n| n == images_arrived)
+/// The level and tiles to show for `visible`: `level`, or a coarser one when its tiles would
+/// fill more than half the cache (a huge canvas on a small budget), plus a one-tile prefetch
+/// ring when that still fits. Every tile of the plan then fits in the cache at once.
+pub fn plan(level: i32, visible: Rect, budget: usize) -> Range {
+    let cap = (budget / 2).max(1) as f64;
+    // Worst case over every pan: a misaligned view touches one more tile per axis.
+    let fits = |level: i32, ring: f64| {
+        let k = scale(level) / f64::from(TILE);
+        let n = |extent: f64| (extent * k).ceil() + 1.0 + 2.0 * ring;
+        n(visible.width()) * n(visible.height()) <= cap
+    };
+    let mut level = level;
+    while level > *LEVELS.start() && !fits(level, 0.0) {
+        level -= 1;
+    }
+    let range = Range::covering(level, visible);
+    if fits(level, 1.0) {
+        range.grow(1)
+    } else {
+        range
     }
 }
 
-/// Least-recently-used tiles, at most `budget` of them.
-#[derive(Debug)]
-pub struct Cache<T> {
-    tiles: std::collections::HashMap<Key, Entry<T>>,
-    budget: usize,
-    clock: u64,
-}
-
-impl<T> Cache<T> {
-    pub fn new(budget: usize) -> Self {
-        Cache {
-            tiles: std::collections::HashMap::new(),
-            budget: budget.max(1),
-            clock: 0,
-        }
-    }
-
-    pub fn budget(&self) -> usize {
-        self.budget
-    }
-
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.tiles.len()
-    }
-
-    pub fn get(&self, key: &Key) -> Option<&Entry<T>> {
-        self.tiles.get(key)
-    }
-
-    /// Marks a tile as just used (drawn), so it is evicted last.
-    pub fn touch(&mut self, key: &Key) {
-        self.clock += 1;
-        if let Some(e) = self.tiles.get_mut(key) {
-            e.used = self.clock;
-        }
-    }
-
-    /// Stores a tile, evicting the least recently used ones beyond the budget.
-    pub fn insert(
-        &mut self,
-        key: Key,
-        value: T,
-        stats: figstudio_render::Stats,
-        images: Option<u64>,
-    ) {
-        self.clock += 1;
-        let used = self.clock;
-        self.tiles.insert(
-            key,
-            Entry {
-                value,
-                stats,
-                images,
-                used,
-            },
-        );
-        while self.tiles.len() > self.budget {
-            let Some(oldest) = self
-                .tiles
-                .iter()
-                .min_by_key(|(_, e)| e.used)
-                .map(|(k, _)| *k)
-            else {
-                break;
-            };
-            self.tiles.remove(&oldest);
-        }
-    }
-
-    /// Drops every tile `keep` refuses (a closed document).
-    pub fn retain(&mut self, mut keep: impl FnMut(&Key) -> bool) {
-        self.tiles.retain(|k, _| keep(k));
-    }
-
-    /// Cached tiles of `doc`/`page` touching `visible`, in drawing order: coarser levels
-    /// first, `level` (the sharp one) last, so each missing tile shows the best tile cached
-    /// under it (a coarser one stretched, or a finer one shrunk) and never empty canvas.
-    pub fn draw_order(&self, doc: u64, page: Guid, level: i32, visible: Rect) -> Vec<Key> {
-        let mut keys: Vec<Key> = self
-            .tiles
-            .keys()
-            .filter(|k| k.doc == doc && k.page == page)
-            .filter(|k| k.page_rect().intersect(visible).area() > 0.0)
-            .copied()
-            .collect();
-        keys.sort_by_key(|k| (k.level == level, k.level, k.y, k.x));
-        keys
-    }
-}
-
-/// The tiles of `range` to render, nearest its centre first: those not cached, and those
-/// cached with placeholders before more images arrived. Only the nearest half of the cache
-/// budget is considered, so new tiles never evict the ones on screen (a canvas larger than
-/// that shows fallback tiles at its edges).
+/// The tiles of `range` (from [`plan`], so at most half the cache) to render, nearest its
+/// centre first: those not cached, and those cached with placeholders before more images
+/// arrived.
 pub fn wanted<T>(cache: &Cache<T>, range: Range, doc: u64, page: Guid, arrived: u64) -> Vec<Key> {
     range
         .by_distance(doc, page)
         .into_iter()
-        .take((cache.budget() / 2).max(1))
         .filter(|k| cache.get(k).is_none_or(|e| !e.fresh(arrived)))
         .collect()
 }
@@ -269,3 +196,7 @@ pub fn next_batch(wanted: Vec<Key>, pending: &[Key]) -> Option<Vec<Key>> {
 #[cfg(test)]
 #[path = "tiles_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "tiles_seam_tests.rs"]
+mod seam_tests;

@@ -51,6 +51,8 @@ pub struct Tab {
     pub reveal: Option<Guid>,
     /// Tiles requested from the render worker and not back yet (`tiles::next_batch`).
     pub tile_requests: Vec<crate::tiles::Key>,
+    /// Tiles received since the last batch, told to the worker with the next one.
+    pub tiles_received: Vec<(crate::tiles::Key, u64)>,
     pub stats: Stats,
     pub render_time: Duration,
     pub load_time: Duration,
@@ -88,6 +90,7 @@ impl Tab {
             expanded: HashSet::new(),
             reveal: None,
             tile_requests: Vec::new(),
+            tiles_received: Vec::new(),
             stats: Stats::default(),
             render_time: Duration::ZERO,
             load_time,
