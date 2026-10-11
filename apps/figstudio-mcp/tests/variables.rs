@@ -133,3 +133,41 @@ async fn protocol_and_fixture_style_subtrees() {
     .await
     .expect("variables protocol timed out");
 }
+
+#[test]
+fn instances_contribute_their_resolved_content() {
+    use support::{id, node, obj};
+    let mut doc = document();
+    let mut nodes = doc.nodes.clone();
+    let mut child = node(
+        41,
+        "RECTANGLE",
+        "child",
+        &[("styleIdForFill", obj([("guid", id(30))]))],
+    );
+    child.parent = Some(Guid(9, 40));
+    // The override puts an effect style on the component child, only in this instance.
+    let patch = obj([
+        ("guidPath", obj([("guids", Val::Arr(vec![id(41)]))])),
+        ("styleIdForEffect", obj([("guid", id(32))])),
+    ]);
+    let symbol_data = obj([
+        ("symbolID", id(40)),
+        ("symbolOverrides", Val::Arr(vec![patch])),
+    ]);
+    nodes.extend([
+        node(40, "SYMBOL", "component", &[]),
+        child,
+        node(42, "INSTANCE", "instance", &[("symbolData", symbol_data)]),
+    ]);
+    doc.set_nodes(nodes).unwrap();
+    for target in ["9:42", "I9:42;9:41"] {
+        let map = variable_defs(&doc, target).structured_content.unwrap();
+        assert_eq!(map["Surface"], "#FF000080", "{target}");
+        assert!(
+            map.get("Shadow").is_some(),
+            "{target}: override not applied"
+        );
+        assert!(map.get("Accent").is_none(), "{target}: outside the subtree");
+    }
+}

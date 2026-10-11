@@ -1,13 +1,13 @@
 use crate::error::McpError;
-use figstudio_fig::Guid;
+use figstudio_fig::{Guid, resolve::InstancePath};
 
-/// A document node or an unresolved instance path (resolution belongs to L5).
+/// A document node or a node inside an instance (`I<instance>;<key>...`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NodeId {
     /// One node GUID.
     Node(Guid),
-    /// Instance and descendant GUIDs, reserved for instance expansion.
-    InstancePath(Vec<Guid>),
+    /// A node inside an instance; resolve it with `figstudio_fig::resolve`.
+    InstancePath(InstancePath),
 }
 
 /// Parse colon/dash IDs, instance paths, and node-id query parameters in Figma URLs.
@@ -36,10 +36,9 @@ pub fn parse_node_id(input: &str) -> Result<NodeId, McpError> {
             .split(';')
             .map(parse_guid)
             .collect::<Result<Vec<_>, _>>()?;
-        if nodes.len() < 2 {
-            return Err(McpError::invalid_node_id());
-        }
-        Ok(NodeId::InstancePath(nodes))
+        InstancePath::new(nodes)
+            .map(NodeId::InstancePath)
+            .ok_or_else(McpError::invalid_node_id)
     } else {
         parse_guid(input).map(NodeId::Node)
     }
@@ -77,7 +76,7 @@ mod tests {
         }
         assert_eq!(
             parse_node_id("I1:2;3:4").unwrap(),
-            NodeId::InstancePath(vec![Guid(1, 2), Guid(3, 4)])
+            NodeId::InstancePath(InstancePath::new(vec![Guid(1, 2), Guid(3, 4)]).unwrap())
         );
     }
 

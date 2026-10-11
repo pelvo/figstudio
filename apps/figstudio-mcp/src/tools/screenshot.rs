@@ -5,9 +5,15 @@ use crate::{
     tools::tool_error,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use figstudio_fig::Document;
+use figstudio_fig::{
+    Document, Guid,
+    resolve::{InstancePath, resolve_instance},
+};
 use figstudio_render::{
-    Renderer, Stats, Viewport, content_bounds, kurbo::Affine, node_bounds, page_background,
+    Renderer, Stats, Viewport, absolute_transform, content_bounds,
+    geom::{affine, size, transformed_bounds},
+    kurbo::{Affine, Rect},
+    node_bounds, page_background,
 };
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -37,7 +43,7 @@ pub(crate) struct ScreenshotInput {
 #[tool_router(router = screenshot_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Render a node to a PNG image. Pages (canvases) are drawn on the page background colour; every other node on a transparent background. scale defaults to 1 (0.01 to 4) and the longest side is capped at 4096 px; the output is cropped to the node's own box (no padding), so shadows and strokes outside it are cut off. The text reply lists what was approximated or not drawn. Instance paths are not supported yet."
+        description = "Render a node to a PNG image. Pages (canvases) are drawn on the page background colour; every other node on a transparent background. scale defaults to 1 (0.01 to 4) and the longest side is capped at 4096 px; the output is cropped to the node's own box (no padding), so shadows and strokes outside it are cut off. The text reply lists what was approximated or not drawn. An instance path (I1:2;3:4) renders the whole instance cropped to that child's box, so overlapping siblings inside the instance show too."
     )]
     async fn get_screenshot(
         &self,
@@ -76,8 +82,11 @@ pub fn screenshot(
     }
     let id = match parse_node_id(node_id) {
         Ok(NodeId::Node(id)) => id,
-        Ok(NodeId::InstancePath(_)) => {
-            return failure("instance paths are not yet supported for screenshots");
+        Ok(NodeId::InstancePath(path)) => {
+            return match child_bounds(doc, &path) {
+                Ok(bounds) => render(doc, path.instance(), bounds, scale, None, system_fonts),
+                Err(message) => failure(message),
+            };
         }
         Err(error) => return tool_error(error),
     };
@@ -105,9 +114,48 @@ pub fn screenshot(
     } else {
         node_bounds(doc, id).unwrap_or(content)
     };
+    let background = is_page.then(|| page_background(doc, page));
+    render(doc, id, bounds, scale, background, system_fonts)
+}
+
+/// The page-space box of a node inside an instance, from the resolved transforms and size.
+/// The renderer cannot draw a node inside an instance on its own (it only walks document
+/// nodes), so the instance is drawn into this box instead. shortcut: uniform-scale and
+/// constraint corrections the renderer applies are not repeated here, so the box can be off
+/// for scaled or resized instances; share the renderer's layout step if that shows up.
+fn child_bounds(doc: &Document, path: &InstancePath) -> Result<Rect, String> {
+    let walk = resolve_instance(doc, path.instance()).map_err(|error| error.to_string())?;
+    let chain = walk
+        .ancestors(path)
+        .ok_or_else(|| format!("{path} names no node inside the instance"))?;
+    let leaf = chain[chain.len() - 1];
+    if leaf.data.flag("visible") == Some(false) {
+        return Err(format!("node {path} is hidden"));
+    }
+    let transform = chain
+        .iter()
+        .fold(absolute_transform(doc, path.instance()), |tf, node| {
+            tf * affine(node.data.get("transform"))
+        });
+    let (w, h) = size(&leaf.data);
+    if w <= 0.0 && h <= 0.0 {
+        return Err(format!("node {path} has zero size, nothing to render"));
+    }
+    Ok(transformed_bounds(transform, Rect::new(0.0, 0.0, w, h)))
+}
+
+/// Renders `root` into `bounds` (page units) at `scale`, capped at [`MAX_SIDE_PX`].
+fn render(
+    doc: &Document,
+    root: Guid,
+    bounds: Rect,
+    scale: f64,
+    background: Option<figstudio_render::color::AlphaColor<figstudio_render::color::Srgb>>,
+    system_fonts: bool,
+) -> CallToolResult {
     let longest = bounds.width().max(bounds.height()) * scale;
     if !longest.is_finite() || longest <= 0.0 {
-        return failure(format!("node {id} has no finite size to render"));
+        return failure(format!("node {root} has no finite size to render"));
     }
     // Cap the longest side by lowering the scale (no floor: a huge node needs a tiny scale);
     // the epsilon keeps `ceil` from rounding the side up to 4097.
@@ -124,11 +172,11 @@ pub fn screenshot(
         width,
         height,
         transform: Affine::scale(scale) * Affine::translate((-bounds.x0, -bounds.y0)),
-        background: is_page.then(|| page_background(doc, page)),
+        background,
     };
     let mut renderer = Renderer::new();
     renderer.system_fonts = system_fonts;
-    let frame = renderer.render(doc, id, &viewport);
+    let frame = renderer.render(doc, root, &viewport);
     let png = match frame.pixmap.into_png() {
         Ok(png) => png,
         Err(error) => return failure(format!("PNG encoding failed: {error}")),

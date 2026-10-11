@@ -7,6 +7,7 @@ use crate::{
 };
 use figstudio_fig::{
     Document, Guid, Val,
+    resolve::{self, InstancePath, walk_instance},
     tokens::{Tokens, Variable},
 };
 use rmcp::{
@@ -18,11 +19,12 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct VariablesInput {
-    /// Local node ID or Figma URL; instance paths are not yet resolved.
+    /// Node ID, instance path (I1:2;3:4) or Figma URL.
     node_id: String,
     /// Registered file key; optional when just one file is registered.
     file_key: Option<String>,
@@ -31,7 +33,7 @@ pub(crate) struct VariablesInput {
 #[tool_router(router = variables_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Get a flat JSON map of variable and style names used by a local subtree. Aliases resolve, additional modes use name (Mode) keys. Instance paths are not yet resolved."
+        description = "Get a flat JSON map of variable and style names used by a local subtree, including the content of instances with their overrides applied. Aliases resolve, additional modes use name (Mode) keys. nodeId may be an instance path (I1:2;3:4)."
     )]
     async fn get_variable_defs(
         &self,
@@ -48,29 +50,55 @@ impl FigstudioServer {
     }
 }
 
-/// Build a map from local stored references, without expanding symbol instances.
+/// Build a map from the references of a subtree; instances contribute their resolved content.
 pub fn variable_defs(doc: &Document, node_id: &str) -> CallToolResult {
-    let Ok(NodeId::Node(root)) = parse_node_id(node_id) else {
-        return CallToolResult::error(vec![ContentBlock::text(
-            "Invalid or unresolved instance node ID",
-        )]);
+    let unknown = || CallToolResult::error(vec![ContentBlock::text("Unknown node ID")]);
+    let root = match parse_node_id(node_id) {
+        Ok(NodeId::Node(id)) if doc.node(id).is_some() => Root::Node(id),
+        Ok(NodeId::Node(_)) => return unknown(),
+        Ok(NodeId::InstancePath(path)) => Root::Path(path),
+        Err(_) => return CallToolResult::error(vec![ContentBlock::text("Invalid node ID")]),
     };
-    if doc.node(root).is_none() {
-        return CallToolResult::error(vec![ContentBlock::text("Unknown node ID")]);
-    }
     let tokens = Tokens::new(doc);
     let mut styles = BTreeSet::new();
     let mut variables = BTreeSet::new();
-    let mut seen = HashSet::new();
-    let mut stack = vec![root];
     let mut skipped = 0;
-    while let Some(id) = stack.pop() {
-        if !seen.insert(id) {
-            continue;
+    let definitions = Arc::new(resolve::definitions(doc));
+    let mut add = |data: &Val| references(data, &tokens, &mut styles, &mut variables);
+    let mut instances = Vec::new();
+    match root {
+        Root::Path(path) => {
+            let walk = walk_instance(doc, &definitions, path.instance(), None, MAX_RESOLVED);
+            let Some(nodes) = walk.as_ref().ok().and_then(|w| w.subtree(&path)) else {
+                return unknown();
+            };
+            nodes.iter().for_each(|r| skipped += add(&r.data));
+            skipped += walk.map_or(0, |w| w.skipped_instances + usize::from(w.truncated));
         }
-        if let Some(node) = doc.node(id) {
-            skipped += references(&node.data, &tokens, &mut styles, &mut variables);
-            stack.extend(doc.children(id));
+        Root::Node(root) => {
+            let mut seen = HashSet::new();
+            let mut stack = vec![root];
+            while let Some(id) = stack.pop() {
+                let Some(node) = doc.node(id).filter(|_| seen.insert(id)) else {
+                    continue;
+                };
+                skipped += add(&node.data);
+                if node.kind == "INSTANCE" {
+                    instances.push(id);
+                } else {
+                    stack.extend(doc.children(id));
+                }
+            }
+        }
+    }
+    // Every instance's content, as drawn: its component's children with overrides applied.
+    for id in instances {
+        match walk_instance(doc, &definitions, id, None, MAX_RESOLVED) {
+            Ok(walk) => {
+                walk.nodes.iter().for_each(|r| skipped += add(&r.data));
+                skipped += walk.skipped_instances + usize::from(walk.truncated);
+            }
+            Err(_) => skipped += 1,
         }
     }
     // A used style can itself consume variables. Do not include unrelated definitions.
@@ -100,11 +128,20 @@ pub fn variable_defs(doc: &Document, node_id: &str) -> CallToolResult {
     }
     if skipped != 0 {
         result.content.push(ContentBlock::text(format!(
-            "approximations: {skipped} unresolved or duplicate token definitions"
+            "approximations: {skipped} unresolved or duplicate token definitions or unexpanded instances"
         )));
     }
     result
 }
+
+/// Where the references are collected: a document subtree or a node inside an instance.
+enum Root {
+    Node(Guid),
+    Path(InstancePath),
+}
+
+/// Resolved nodes walked per instance; bounds work on exponentially nested files.
+const MAX_RESOLVED: usize = resolve::MAX_RESOLVED_NODES;
 
 const STYLE_FIELDS: [&str; 10] = [
     "styleIdForFill",

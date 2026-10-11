@@ -130,7 +130,7 @@ fn text_marks_only_actual_truncation_and_empty_leaves_self_close() {
         assert!(!output.contains("approximations:"));
     }
     assert!(!xml(&doc, Some("0:1"), Some(0)).contains("approximations:"));
-    assert!(xml(&doc, Some("1:38"), None).contains("approximations: 1"));
+    assert!(!xml(&doc, Some("1:38"), None).contains("approximations:"));
 }
 
 #[test]

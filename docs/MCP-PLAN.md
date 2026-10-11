@@ -15,7 +15,7 @@ Figma URL with `node-id=`) and an optional `fileKey` (the loaded file's stem or 
 
 | Official tool | Offline | Source in figstudio | Lane |
 |---|---|---|---|
-| `get_metadata` | full (instances are leaves until L5) | `Document` tree, parent-relative transform, size | L2 |
+| `get_metadata` | full (instances expand with overrides, L5) | `Document` tree, parent-relative transform, size | L2 |
 | `get_screenshot` | full | `Renderer::render_fit` + `into_png` | L3 |
 | `get_variable_defs` | full (all modes) | `VARIABLE` / `styleType` nodes, `render/variables.rs` | L4 |
 | `get_design_context` | partial: React + Tailwind from stored data, no shader runtime | node fields, instance resolver | L6 |
@@ -67,7 +67,7 @@ L2/L4 are frozen; see the open questions):
    use and are cached. An `open_file` tool loads more files. The `.fig` is never written, apart
    from the L9 sidecar `FILE.fig.codeconnect.json`.
 5. **Data model goes into the `fig` crate.** Read-only token and style models
-   (`fig::tokens`) and the instance resolver (`fig::resolve` or `render::resolve`) become
+   (`fig::tokens`) and the instance resolver (`fig::resolve`, chosen in L5) become
    public APIs that the renderer also uses, so the two never disagree.
 6. **Privacy.** The server returns names and text to the local client by design. That is not
    `doctor`, and the doctor no-PII rule is unchanged. Tests and docs use only the 7 public
@@ -253,6 +253,24 @@ component-property assignments and swaps applied; ids `I<instance>;<child>` like
 renderer keeps its scale and glyph corrections but builds on the same merge. **Done:** every
 existing render test and thumb sheet unchanged; new tests on built documents for text
 override, fill override, swap and nested instance; `get_metadata` now expands instances.
+
+L5 done. The merge lives in `crates/fig/src/resolve*` (it needs only `Document`/`Val`, and
+fig builds without the renderer): `Overrides` (scope stack and `merge`, used by
+`Renderer::patched`/`draw_instance`), `resolve_instance`/`walk_instance` (iterative walk,
+`MAX_RESOLVED_NODES` 100 000, `MAX_INSTANCE_DEPTH` 24, cycles counted) and `resolve_path`
+(`InstancePath`, `ResolveError`). The renderer keeps only its scale, constraint, glyph and
+stroke corrections. `get_metadata` expands instances inside the 5 000 cap and depth, with
+`I…;…` ids, overridden names/text/visibility and `componentId`; an XML comment counts
+instances that could not be expanded. `I…` ids resolve in `get_metadata`, `get_variable_defs`
+(which now also walks every instance's resolved content) and `get_screenshot`. The renderer
+only walks document nodes, so a screenshot of an instance child renders the whole instance
+cropped to the child's resolved page box (overlapping siblings inside the instance show).
+Verified: 28 fixture renders (7 files, scale 0.25 and 1, system fonts on/off) byte-identical
+before/after; thumb sheet viewed; new tests on built documents and on structure.fig's
+instances 1:38/1:45, each proven by a mutation; `scripts/check.sh` passed.
+Not verified: private and large files (output size and time of fully expanded pages), the
+screenshot box for uniformly scaled or resized instances (resolved data without the
+renderer's layout corrections), live clients.
 
 **L6: `get_design_context`.** Node → JSX + Tailwind:
 - frames with auto-layout become `flex`, with gap, padding, alignment and grow;

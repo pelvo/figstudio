@@ -3,7 +3,7 @@ use std::backtrace::Backtrace;
 use std::fmt;
 use std::sync::Arc;
 
-use super::{Overrides, definitions, symbol_id};
+use super::{Definitions, Overrides, definitions, symbol_id};
 use crate::{Document, Guid, Node, Val};
 
 /// A node inside an instance, as Figma names it: `I<instance>;<key>[;<key>...]`. The first
@@ -66,6 +66,34 @@ pub struct Walk {
     pub skipped_instances: usize,
 }
 
+impl Walk {
+    /// The node at `path` followed by all its walked descendants (pre-order, so they are the
+    /// nodes right after it with a greater level). `None` when the walk did not reach `path`.
+    pub fn subtree(&self, path: &InstancePath) -> Option<&[Resolved]> {
+        let start = self.nodes.iter().position(|r| &r.path == path)?;
+        let level = self.nodes[start].level;
+        let end = self.nodes[start + 1..]
+            .iter()
+            .position(|r| r.level <= level)
+            .map_or(self.nodes.len(), |offset| start + 1 + offset);
+        Some(&self.nodes[start..end])
+    }
+
+    /// The chain from the walked instance's child down to `path`, outermost first. Each node's
+    /// transform is relative to the previous one (the first to the instance itself).
+    pub fn ancestors(&self, path: &InstancePath) -> Option<Vec<&Resolved>> {
+        let end = self.nodes.iter().position(|r| &r.path == path)?;
+        let mut chain = vec![&self.nodes[end]];
+        for node in self.nodes[..end].iter().rev() {
+            if node.level < chain[chain.len() - 1].level {
+                chain.push(node);
+            }
+        }
+        chain.reverse();
+        Some(chain)
+    }
+}
+
 /// One step of the walk's explicit stack (no recursion, so deep files cannot overflow it).
 #[derive(Debug)]
 enum Step {
@@ -79,12 +107,15 @@ pub const MAX_RESOLVED_NODES: usize = 100_000;
 
 /// Every node inside `instance`, at most [`MAX_RESOLVED_NODES`].
 pub fn resolve_instance(doc: &Document, instance: Guid) -> Result<Walk, ResolveError> {
-    walk_instance(doc, instance, None, MAX_RESOLVED_NODES)
+    let definitions = Arc::new(definitions(doc));
+    walk_instance(doc, &definitions, instance, None, MAX_RESOLVED_NODES)
 }
 
 /// Nodes inside `instance` down to `max_level` (unbounded when `None`), at most `max_nodes`.
+/// `definitions` is [`definitions`]`(doc)`, built once when many instances are walked.
 pub fn walk_instance(
     doc: &Document,
+    definitions: &Arc<Definitions>,
     instance: Guid,
     max_level: Option<usize>,
     max_nodes: usize,
@@ -95,7 +126,7 @@ pub fn walk_instance(
     if node.kind != "INSTANCE" {
         return Err(ResolveError::new(Kind::NotInstance));
     }
-    let mut overrides = Overrides::new(Arc::new(definitions(doc)));
+    let mut overrides = Overrides::new(definitions.clone());
     let mut walk = Walk::default();
     let mut stack = Vec::new();
     if max_level.is_none_or(|limit| limit >= 1) {

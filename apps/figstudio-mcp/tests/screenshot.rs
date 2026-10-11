@@ -144,10 +144,9 @@ fn invalid_requests_are_tool_errors() {
         assert!(is_error(&result), "scale {scale}");
         assert!(text(&result).contains("scale"));
     }
-    for id in ["99:99", "bad", "I1:38;1:42", "0:0"] {
+    for id in ["99:99", "bad", "I1:38;9:9", "0:0"] {
         assert!(is_error(&shot(&doc, id, None)), "{id}");
     }
-    assert!(text(&shot(&doc, "I1:38;1:42", None)).contains("not yet supported"));
 }
 
 #[test]

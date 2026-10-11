@@ -29,10 +29,15 @@ apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
   main.rs                clap options, stdio / Streamable HTTP, Ctrl-C / SIGTERM shutdown
   lib.rs                 rmcp handler, capabilities, /mcp HTTP service
   files.rs               lazy shared local document registry and fileKey resolution
-  node_id.rs             node IDs, Figma URLs, unresolved instance paths
+  node_id.rs             node IDs, Figma URLs, instance paths (figstudio_fig::resolve::InstancePath)
   error.rs               canonical error type; tools/mod.rs maps tool failures
   tools/mod.rs           whoami and list_files; metadata router declared here
-  tools/metadata.rs      get_metadata: typed inputs, quick-xml, bounded iterative tree walk
+  tools/metadata.rs      get_metadata: typed inputs, quick-xml, bounded iterative tree walk;
+                         instances expand through fig::resolve::walk_instance (metadata/node.rs
+                         writes one element)
+  tools/screenshot.rs    get_screenshot; an instance path renders the instance cropped to the
+                         child's resolved box (the renderer only walks document nodes)
+  tools/variables.rs     get_variable_defs; walks resolved instance content
                          New tools belong in tools/<name>.rs with a typed input struct.
                          Use #[tool_router(router = <name>_router, vis = "pub(crate)")]
                          on an impl FigstudioServer, declare the module here, and combine
@@ -164,7 +169,8 @@ instance (Figma ids `I<instance>;<key>…`, merged data, level; capped at
 renderer) keeps an `Overrides` stack: `enter`/`leave` per instance, `matches` + `merge` (or
 `resolve`) per node. The renderer adds only its render-side steps on top of `merge`:
 uniform-scale and constraint corrections, glyph/stroke scaling, stale glyph and stroke
-geometry detection. `draw_instance` pushes every `symbolOverrides` entry (and `derivedSymbolData`)
+geometry detection. Any tool that reads node data inside instances must use
+`fig::resolve`, never `symbolOverrides` directly. `draw_instance` pushes every `symbolOverrides` entry (and `derivedSymbolData`)
 as a `Patch` keyed by the full override path (instance path + `guidPath.guids`), then draws
 the component's children with that path. A node's override key is `Node::override_key()`.
 Override paths include only instance ancestors and the target key, not intervening ordinary

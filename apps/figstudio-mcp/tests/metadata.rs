@@ -110,7 +110,7 @@ fn depth_zero_is_root_only_and_one_includes_children() {
 }
 
 #[test]
-fn synthetic_attributes_text_escaping_and_instance_leaves() {
+fn synthetic_attributes_text_escaping_and_instance_expansion() {
     let mut doc = document();
     let root = Guid(9, 1);
     let mut frame = node(root, Guid(0, 1), "FRAME", "<&\"");
@@ -144,6 +144,7 @@ fn synthetic_attributes_text_escaping_and_instance_leaves() {
         "symbolData",
         Val::Obj(Obj::from([("symbolID", Guid(1, 37).to_val())])),
     );
+    // Stored children of an instance are not its content; the component's are.
     let child = node(Guid(9, 4), instance.id, "FRAME", "must not expand");
     let mut nodes = doc.nodes.clone();
     let mut counter_clockwise = node(Guid(9, 5), root, "FRAME", "counter-clockwise");
@@ -174,6 +175,7 @@ fn synthetic_attributes_text_escaping_and_instance_leaves() {
     assert!(xml.contains(&format!("&lt;&amp;{}…", "é".repeat(198))));
     assert!(!xml.contains("tail"));
     assert!(!xml.contains("id=\"9:4\""));
+    assert!(xml.contains("id=\"I9:3;1:42\""));
     assert_eq!(
         tags.iter().find(|(kind, _)| kind == "instance").unwrap().1["componentId"],
         "1:37"
@@ -279,7 +281,7 @@ async fn check_metadata_protocol() {
         assert_ne!(result.is_error, Some(true));
         assert!(text(&result).contains("id=\"0:1\""));
     }
-    for input in ["99:99", "bad", "I1:38;1:42"] {
+    for input in ["99:99", "bad", "I1:38;9:9"] {
         let args = json!({"fileKey":"structure", "nodeId": input});
         let result = client
             .call_tool(

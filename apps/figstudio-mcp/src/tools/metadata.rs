@@ -4,10 +4,14 @@ use crate::{
     node_id::{NodeId, parse_node_id},
     tools::tool_error,
 };
-use figstudio_fig::{Document, Guid, Node, Val};
+use figstudio_fig::{
+    Document, Guid, Node,
+    resolve::{InstancePath, MAX_RESOLVED_NODES},
+};
+use node::{clean_xml, tag_name, write_node};
 use quick_xml::{
     Writer,
-    events::{BytesStart, BytesText, Event},
+    events::{BytesStart, Event},
 };
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -16,6 +20,10 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
+
+mod node;
+mod resolved;
+use resolved::Out;
 
 /// Inputs for sparse metadata retrieval.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -32,7 +40,7 @@ pub(crate) struct MetadataInput {
 #[tool_router(router = metadata_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Get sparse XML metadata: node IDs, names, types, parent-relative positions and sizes. Rotation is degrees, counter-clockwise positive (Figma convention). Call without nodeId for visible pages. Canvas/document elements omit geometry; unsized nodes omit dimensions. Instances remain leaves; depth limits children. Output caps at 5000 nodes: truncated=\"true\" on <metadata> or <pages> marks omitted nodes. Text caps at 200 characters plus an ellipsis when cut. Use get_design_context for implementation details when available."
+        description = "Get sparse XML metadata: node IDs, names, types, parent-relative positions and sizes. Rotation is degrees, counter-clockwise positive (Figma convention). Call without nodeId for visible pages. Canvas/document elements omit geometry; unsized nodes omit dimensions. Instances list their component's children with overrides applied, with ids like I<instance>;<child> that every tool accepts; componentId names the main component. depth limits children. Output caps at 5000 nodes: truncated=\"true\" on <metadata> or <pages> marks omitted nodes. Text caps at 200 characters plus an ellipsis when cut. Use get_design_context for implementation details when available."
     )]
     async fn get_metadata(&self, Parameters(input): Parameters<MetadataInput>) -> CallToolResult {
         let document = match self.files().open(input.file_key.as_deref()).await {
@@ -55,21 +63,33 @@ pub fn metadata(doc: &Document, node_id: Option<&str>, depth: Option<u32>) -> Ca
     let root = match node_id {
         None => None,
         Some(input) => match parse_node_id(input) {
-            Ok(NodeId::Node(id)) if doc.node(id).is_some() => Some(id),
-            _ => {
-                let pages = xml(doc, None, None).unwrap_or_else(|error| error.to_string());
-                return CallToolResult::error(vec![ContentBlock::text(format!(
-                    "Unknown, invalid or unresolved node ID. Available pages:\n{pages}"
-                ))]);
-            }
+            Ok(NodeId::Node(id)) if doc.node(id).is_some() => Some(Root::Node(id)),
+            Ok(NodeId::InstancePath(path)) => Some(Root::Path(path)),
+            _ => return unknown(doc),
         },
     };
     match xml(doc, root, depth) {
-        Ok(xml) => CallToolResult::success(vec![ContentBlock::text(xml)]),
+        Ok(Some(xml)) => CallToolResult::success(vec![ContentBlock::text(xml)]),
+        Ok(None) => unknown(doc),
         Err(error) => CallToolResult::error(vec![ContentBlock::text(format!(
             "could not write metadata XML: {error}"
         ))]),
     }
+}
+
+fn unknown(doc: &Document) -> CallToolResult {
+    let pages = xml(doc, None, None)
+        .map(Option::unwrap_or_default)
+        .unwrap_or_else(|error| error.to_string());
+    CallToolResult::error(vec![ContentBlock::text(format!(
+        "Unknown or invalid node ID. Available pages:\n{pages}"
+    ))])
+}
+
+/// Where a subtree starts: a document node or a node inside an instance.
+enum Root {
+    Node(Guid),
+    Path(InstancePath),
 }
 
 // Bounds node output and stack memory even for deeply nested or very wide documents.
@@ -82,14 +102,31 @@ enum Step {
     End(String),
 }
 
-fn xml(doc: &Document, root: Option<Guid>, depth: Option<u32>) -> std::io::Result<String> {
+fn xml(doc: &Document, root: Option<Root>, depth: Option<u32>) -> std::io::Result<Option<String>> {
     let mut writer = Writer::new(Vec::new());
-    if let Some(root) = root {
-        subtree(doc, root, depth, &mut writer)?;
-    } else {
-        pages(doc, &mut writer)?;
+    match root {
+        None => pages(doc, &mut writer)?,
+        Some(root) => {
+            let mut out = Out {
+                body: Writer::new(Vec::new()),
+                count: 0,
+                truncated: false,
+                skipped: 0,
+                definitions: None,
+            };
+            let found = match root {
+                Root::Node(id) => subtree(doc, id, depth, &mut out).map(|()| true)?,
+                Root::Path(path) => path_subtree(doc, &path, depth, &mut out)?,
+            };
+            if !found {
+                return Ok(None);
+            }
+            out.finish(&mut writer)?;
+        }
     }
-    String::from_utf8(writer.into_inner()).map_err(std::io::Error::other)
+    String::from_utf8(writer.into_inner())
+        .map(Some)
+        .map_err(std::io::Error::other)
 }
 
 fn pages(doc: &Document, writer: &mut Writer<Vec<u8>>) -> std::io::Result<()> {
@@ -119,28 +156,41 @@ fn pages(doc: &Document, writer: &mut Writer<Vec<u8>>) -> std::io::Result<()> {
     Ok(())
 }
 
-fn subtree(
+/// A node inside an instance and its resolved descendants; `false` when the path names none.
+fn path_subtree(
     doc: &Document,
-    root: Guid,
+    path: &InstancePath,
     depth: Option<u32>,
-    writer: &mut Writer<Vec<u8>>,
-) -> std::io::Result<()> {
-    let mut body = Writer::new(Vec::new());
+    out: &mut Out,
+) -> std::io::Result<bool> {
+    let base = path.keys().len();
+    let max_level = depth.map(|d| base.saturating_add(d as usize));
+    let Some(walk) = out.walk(doc, path.instance(), max_level, MAX_RESOLVED_NODES) else {
+        return Ok(false);
+    };
+    let Some(nodes) = walk.subtree(path) else {
+        return Ok(false);
+    };
+    out.truncated |= nodes.len() > MAX_ELEMENTS;
+    out.resolved(doc, &nodes[..nodes.len().min(MAX_ELEMENTS)])?;
+    Ok(true)
+}
+
+fn subtree(doc: &Document, root: Guid, depth: Option<u32>, out: &mut Out) -> std::io::Result<()> {
     let mut stack = vec![Step::Visit(root, 0)];
-    let mut count = 0;
-    let mut truncated = false;
-    let mut instances = 0;
     while let Some(step) = stack.pop() {
         match step {
-            Step::End(kind) => body.write_event(Event::End(BytesStart::new(kind).to_end()))?,
+            Step::End(kind) => out
+                .body
+                .write_event(Event::End(BytesStart::new(kind).to_end()))?,
             Step::Children(id, level, index) => {
                 if let Some(child) = doc.children(id).get(index) {
                     if doc.node(*child).is_some_and(is_internal) {
                         stack.push(Step::Children(id, level, index + 1));
                         continue;
                     }
-                    if count == MAX_ELEMENTS {
-                        truncated = true;
+                    if out.count == MAX_ELEMENTS {
+                        out.truncated = true;
                         continue;
                     }
                     stack.push(Step::Children(id, level, index + 1));
@@ -148,8 +198,8 @@ fn subtree(
                 }
             }
             Step::Visit(id, level) => {
-                if count == MAX_ELEMENTS {
-                    truncated = true;
+                if out.count == MAX_ELEMENTS {
+                    out.truncated = true;
                     continue;
                 }
                 let Some(node) = doc.node(id) else {
@@ -158,145 +208,49 @@ fn subtree(
                 if is_internal(node) {
                     continue;
                 }
-                count += 1;
-                let kind = node.kind.to_ascii_lowercase().replace('_', "-");
-                let has_children = node.kind != "INSTANCE"
-                    && depth.is_none_or(|limit| level < limit)
-                    && doc
-                        .children(id)
-                        .iter()
-                        .filter_map(|id| doc.node(*id))
-                        .any(|child| !is_internal(child));
-                if write_node(&mut body, node, &kind, has_children)? {
-                    stack.push(Step::End(kind));
+                out.count += 1;
+                let deeper = depth.is_none_or(|limit| level < limit);
+                let instance = node.kind == "INSTANCE";
+                let inside = (instance && deeper)
+                    .then(|| {
+                        let max_level = depth.map(|limit| (limit - level) as usize);
+                        out.walk(doc, id, max_level, MAX_ELEMENTS - out.count)
+                    })
+                    .flatten();
+                let has_children = match &inside {
+                    Some(walk) => !walk.nodes.is_empty(),
+                    None => {
+                        !instance
+                            && deeper
+                            && doc
+                                .children(id)
+                                .iter()
+                                .filter_map(|id| doc.node(*id))
+                                .any(|child| !is_internal(child))
+                    }
+                };
+                let open = write_node(
+                    &mut out.body,
+                    &id.to_string(),
+                    &node.kind,
+                    &node.data,
+                    has_children,
+                )?;
+                if let Some(walk) = &inside {
+                    out.resolved(doc, &walk.nodes)?;
                 }
-                if has_children {
+                if open {
+                    stack.push(Step::End(tag_name(&node.kind)));
+                }
+                if has_children && inside.is_none() {
                     stack.push(Step::Children(id, level + 1, 0));
-                }
-                if node.kind == "INSTANCE" {
-                    instances += 1;
                 }
             }
         }
     }
-    let mut wrapper = BytesStart::new("metadata");
-    if truncated {
-        wrapper.push_attribute(("truncated", "true"));
-    }
-    writer.write_event(Event::Start(wrapper))?;
-    writer.get_mut().extend(body.into_inner());
-    writer.write_event(Event::End(BytesStart::new("metadata").to_end()))?;
-    if instances > 0 {
-        let note =
-            format!("approximations: {instances} instance leaves (expansion deferred to L5)");
-        writer.write_event(Event::Comment(BytesText::new(&note)))?;
-    }
     Ok(())
-}
-
-fn write_node(
-    writer: &mut Writer<Vec<u8>>,
-    node: &Node,
-    kind: &str,
-    children: bool,
-) -> std::io::Result<bool> {
-    let attrs = attributes(node);
-    let mut tag = BytesStart::new(kind);
-    for (key, value) in &attrs {
-        tag.push_attribute((*key, value.as_str()));
-    }
-    let text = node_text(node);
-    let needs_end = children || !text.is_empty();
-    if needs_end {
-        writer.write_event(Event::Start(tag))?;
-        if !text.is_empty() {
-            writer.write_event(Event::Text(BytesText::new(&text)))?;
-        }
-    } else {
-        writer.write_event(Event::Empty(tag))?;
-    }
-    Ok(needs_end)
-}
-
-fn attributes(node: &Node) -> Vec<(&'static str, String)> {
-    let num = |field: &str, key: &str, default: f64| {
-        node.data
-            .get(field)
-            .and_then(|value| value.num(key))
-            .map_or(default, f64::from)
-    };
-    let mut attrs = vec![("id", node.id.to_string()), ("name", clean_xml(&node.name))];
-    if !matches!(node.kind.as_str(), "CANVAS" | "DOCUMENT") {
-        attrs.extend([
-            ("x", number(num("transform", "m02", 0.0))),
-            ("y", number(num("transform", "m12", 0.0))),
-        ]);
-        if node.data.get("size").is_some() {
-            attrs.extend([
-                ("width", number(num("size", "x", 0.0))),
-                ("height", number(num("size", "y", 0.0))),
-            ]);
-        }
-    }
-    if node.data.flag("visible") == Some(false) {
-        attrs.push(("hidden", "true".into()));
-    }
-    let rotation = number(
-        (-num("transform", "m10", 0.0))
-            .atan2(num("transform", "m00", 1.0))
-            .to_degrees(),
-    );
-    if rotation != "0" {
-        attrs.push(("rotation", rotation));
-    }
-    if node.kind == "INSTANCE"
-        && let Some(id) = node
-            .data
-            .path(&["symbolData", "symbolID"])
-            .and_then(Val::as_guid)
-    {
-        attrs.push(("componentId", id.to_string()));
-    }
-    attrs
 }
 
 fn is_internal(node: &Node) -> bool {
     node.kind == "CANVAS" && node.data.flag("internalOnly") == Some(true)
-}
-
-fn clean_xml(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| !matches!(*c, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}'))
-        .collect()
-}
-
-fn node_text(node: &Node) -> String {
-    if node.kind != "TEXT" {
-        return String::new();
-    }
-    let clean = clean_xml(
-        node.data
-            .path(&["textData", "characters"])
-            .and_then(Val::as_str)
-            .unwrap_or(""),
-    );
-    let mut chars = clean.chars();
-    let mut text: String = chars.by_ref().take(MAX_TEXT_CHARS).collect();
-    if chars.next().is_some() {
-        text.push('…');
-    }
-    text
-}
-
-fn number(value: f64) -> String {
-    if !value.is_finite() {
-        return "0".into();
-    }
-    let value = (value * 1000.0).round() / 1000.0;
-    if value == 0.0 {
-        "0".into()
-    } else {
-        value.to_string()
-    }
 }
