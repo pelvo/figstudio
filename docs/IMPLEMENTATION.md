@@ -27,7 +27,8 @@ apps/figstudio-cli/src/
   synth.rs               stress-file generator
 apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
   main.rs                clap options, stdio / Streamable HTTP, Ctrl-C / SIGTERM shutdown
-  lib.rs                 rmcp handler, capabilities, /mcp HTTP service
+  lib.rs                 rmcp handler, tools/prompts capabilities, /mcp HTTP service
+  prompts.rs             create_design_system_rules prompt and bounded local inventory
   files.rs               lazy shared local document registry and fileKey resolution
   node_id.rs             node IDs, Figma URLs, instance paths (figstudio_fig::resolve::InstancePath)
   error.rs               canonical error type; tools/mod.rs maps tool failures

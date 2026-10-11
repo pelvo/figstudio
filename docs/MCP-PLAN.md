@@ -317,8 +317,15 @@ Tests were proven failing with property, search, persist, filter, corrupt-input 
 Not verified: live official-server shape parity, private files, Windows, cross-process writers
 (last writer wins), hostile concurrent filesystem replacement, or remote libraries.
 
-**L10: `create_design_system_rules` prompt.** `prompts/get` returns Figma-style rule-file
-guidance plus the file's token summary (L4) and component list. **Done:** a protocol test.
+**L10: `create_design_system_rules` prompt.** [x] Complete. `prompts/get` returns Figma-style rule-file
+guidance plus the file's token summary (L4) and component list. **Done:** a protocol test. rmcp prompt_router/prompt_handler advertise the
+prompts capability. Optional clientFrameworks/clientLanguages are comma-separated MCP prompt
+strings; fileKey uses registry selection. Guidance covers rules/ or instructions/ files, component
+reuse, tokens, assets and context/metadata/screenshot tools; no files are written. Local inventory
+reuses L9 bounded summaries. SDK in-process protocol tests verify prompts/list, prompts/get,
+optional arguments, unknown prompt/file errors and unchanged fixture bytes. Capability, tool-guidance
+and inventory mutations each failed before restoration; scripts/check.sh passed.
+Not verified: live client rule-file generation, official-server text parity or private files.
 
 **L11:** merged into L1 (Streamable HTTP is required).
 
