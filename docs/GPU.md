@@ -81,6 +81,25 @@ stays reproducible.
 - Size (macOS arm64 release): app binary 10.08 MB (glow) → 15.32 MB (wgpu); `figstudio_bg.wasm`
   8.51 MB → 13.60 MB.
 
+### Known limit, accepted (review of 69966f5)
+
+On a GPU whose texture limit is smaller than the window (mostly 4096-px WebGL2), the app can
+still crash or misdraw. Both caps above run in our UI code, but eframe configures the surface
+outside it, and egui-wgpu has no hook before `Surface::configure`. Glow had no such limit, so
+this is a regression, limited to those GPUs. Reproduced or reasoned by the reviewer:
+
+1. Browser: eframe sometimes paints without running the UI (pointer event already queued a
+   paint). A pixel-ratio or resize change in between enlarges the backing store past the
+   limit and the next paint panics in `Surface::configure`; the app stops.
+2. Browser fullscreen overrides the CSS cap: the backing store stays at the limit but is
+   shown stretched, so pointer positions no longer match what is drawn.
+3. Desktop: eframe configures the surface at startup (before the app exists) and on every
+   `Resized` before the next UI callback, so `MaxInnerSize` is only a hint, not a guarantee.
+
+Planned answers, not done: the L3/L4 CPU fallback (use the CPU canvas when the device limit is
+below a safe size), a wgpu error handler that skips the frame instead of panicking, or a
+patched egui-wgpu that bounds the surface before configuring it.
+
 ## Risks
 
 - `vello_gpu` maturity: some failures panic. Every scene feature we emit must be known to be

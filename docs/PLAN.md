@@ -243,6 +243,10 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-12 — T20 L1 (wgpu) reviewed three times; GPUs with a texture limit below the
+  window size can still crash on some resize/fullscreen paths. Accepted and documented in
+  `docs/GPU.md` ("Known limit"); the L3/L4 CPU fallback is the planned answer.
+
 - 2026-10-11: MCP L4: public read-only token/style model and `get_variable_defs` with all
   stored modes, bounded aliases, legacy/current refs and text-run bindings. Foreground
   `scripts/check.sh` passed; seven public fixture PNGs byte-identical at scale 0.25.
