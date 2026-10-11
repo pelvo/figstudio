@@ -129,6 +129,12 @@ impl Ctx<'_> {
         }
     }
 
+    /// Offset, sigma and colour of a shadow, for the whole-node layers.
+    pub(crate) fn shadow_params(&self, effect: &Val) -> (f32, f32, f32, AlphaColor<Srgb>) {
+        let s = self.shadow(effect);
+        (s.dx, s.dy, s.sigma, s.color)
+    }
+
     fn push_shadow_layer(&mut self, s: &Shadow, effect: &Val, world: Affine) {
         self.rc.set_transform(world);
         self.rc.push_filter_layer(

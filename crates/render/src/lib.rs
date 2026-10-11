@@ -10,6 +10,7 @@ mod layout;
 mod network;
 pub mod paint;
 mod record;
+mod shadow_layer;
 mod stroke;
 mod text;
 mod variables;
@@ -199,6 +200,8 @@ struct Ctx<'a> {
     work_left: usize,
     depth: usize,
     exhausted: bool,
+    /// Greater than zero while a node is redrawn for another node's shadow layer.
+    replay_depth: usize,
     /// Output area in pixels, for culling.
     screen: Rect,
 }
@@ -411,6 +414,7 @@ impl Renderer {
             work_left,
             depth: 0,
             exhausted: false,
+            replay_depth: 0,
             screen,
         };
         if let Some(node) = doc.node(root) {
@@ -939,6 +943,8 @@ impl Ctx<'_> {
                 data,
                 !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
             );
+        let whole =
+            self.whole_shadow_plan(node.id, data, world, (w, h), (casts, silhouette || !casts));
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
             if effect.flag("visible") == Some(false) {
@@ -949,6 +955,19 @@ impl Ctx<'_> {
             }
             let radius = effect.num("radius").unwrap_or(0.0).max(0.0);
             let primitive = match effect.text("type") {
+                // Cast from the whole node below (`draw_whole_shadows`).
+                Some("DROP_SHADOW") if whole.iter().any(|e| std::ptr::eq(*e, effect)) => continue,
+                // Next to a whole-node layer the old path must not add another layer (that
+                // would cast a shadow of a shadow): draw it from the fill mask or drop it.
+                Some("DROP_SHADOW") if !whole.is_empty() => {
+                    if casts {
+                        self.stats.approximated_effects += 1;
+                        shadows.push(effect);
+                    } else {
+                        self.stats.skipped_effects += 1;
+                    }
+                    continue;
+                }
                 Some("DROP_SHADOW" | "INNER_SHADOW") if casts => {
                     self.stats.approximated_effects += usize::from(effects::is_approximate(
                         effect,
@@ -997,23 +1016,43 @@ impl Ctx<'_> {
             self.rc.push_opacity_layer(opacity);
             layers += 1;
         }
-
-        // Fills.
         let (behind, above): (Vec<_>, Vec<_>) = shadows
             .into_iter()
             .partition(|e| e.text("type") == Some("DROP_SHADOW"));
         for effect in behind {
             self.draw_drop_shadow(effect, &fill_paths, world);
         }
-        self.paint_paths(data, "fillPaints", &fill_paths, world, w, h);
-        for effect in above {
-            self.draw_inner_shadow(effect, &fill_paths, world);
+        layers += self.draw_whole_shadows(&whole, node, data, world, &fill_paths, path);
+        self.draw_body(node, data, world, (w, h), &fill_paths, path, &above);
+        for _ in 0..layers {
+            self.rc.pop_layer();
+        }
+        self.depth -= 1;
+    }
+
+    /// Fills, inner shadows, strokes and children: everything but the node's drop shadows.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_body(
+        &mut self,
+        node: &Node,
+        data: &Val,
+        world: Affine,
+        (w, h): (f64, f64),
+        fill_paths: &[GeomPath],
+        path: Option<&[Guid]>,
+        inner: &[&Val],
+    ) {
+        let kind = node.kind.as_str();
+        // Fills.
+        self.paint_paths(data, "fillPaints", fill_paths, world, w, h);
+        for effect in inner {
+            self.draw_inner_shadow(effect, fill_paths, world);
         }
 
         // A frame that clips its content draws its stroke above its children; others below.
         let clips = kind != "TEXT" && clips_content(kind, data);
         if !clips {
-            self.draw_strokes(kind, data, &fill_paths, world, (w, h));
+            self.draw_strokes(kind, data, fill_paths, world, (w, h));
         }
 
         // Children.
@@ -1034,13 +1073,9 @@ impl Ctx<'_> {
                 self.rc.pop_layer();
             }
             if clips {
-                self.draw_strokes(kind, data, &fill_paths, world, (w, h));
+                self.draw_strokes(kind, data, fill_paths, world, (w, h));
             }
         }
-        for _ in 0..layers {
-            self.rc.pop_layer();
-        }
-        self.depth -= 1;
     }
 
     /// Strokes: precomputed outline geometry, or stroke the base shape.
