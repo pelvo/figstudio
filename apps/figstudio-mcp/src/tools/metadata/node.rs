@@ -19,7 +19,11 @@ pub(super) fn write_node(
 ) -> std::io::Result<bool> {
     let mut attrs = attributes(id, kind, data);
     if figjam {
-        attrs.extend(figjam::attributes(kind, data));
+        attrs.extend(
+            figjam::attributes(kind, data)
+                .into_iter()
+                .map(|(key, value)| (key, clean_xml(&value))),
+        );
     }
     let mut tag = BytesStart::new(tag_name(kind));
     for (key, value) in &attrs {
@@ -90,7 +94,7 @@ fn attributes(id: &str, kind: &str, data: &Val) -> Vec<(&'static str, String)> {
 pub(super) fn clean_xml(value: &str) -> String {
     value
         .chars()
-        .filter(|c| !matches!(*c, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}'))
+        .filter(|c| !matches!(*c, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}'))
         .collect()
 }
 

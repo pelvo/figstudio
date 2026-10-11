@@ -1,6 +1,9 @@
 //! `get_figjam` on a board built in the test (no public FigJam fixture exists).
 use figstudio_fig::{Document, Guid, Node, Obj, Val};
-use figstudio_mcp::tools::{figjam::figjam, metadata::metadata};
+use figstudio_mcp::tools::{
+    figjam::{figjam, figjam_within},
+    metadata::metadata,
+};
 use rmcp::model::CallToolResult;
 use std::path::PathBuf;
 
@@ -231,4 +234,152 @@ fn bad_ids_list_the_pages_and_no_id_lists_pages() {
     assert_eq!(bad.is_error, Some(true));
     assert!(text(&bad).contains("Available pages"));
     assert!(text(&figjam(&doc, None, None, false, None, false)).starts_with("<pages"));
+}
+
+/// One parsed element: name, attributes, text.
+type Element = (String, Vec<(String, String)>, String);
+/// Every element's attributes and text, read back with quick-xml (fails on bad XML).
+fn parse(xml: &str) -> Vec<Element> {
+    use quick_xml::{Reader, events::Event};
+    let mut reader = Reader::from_str(xml);
+    let mut out: Vec<Element> = Vec::new();
+    loop {
+        match reader.read_event().unwrap() {
+            Event::Start(e) | Event::Empty(e) => {
+                let attrs = e
+                    .attributes()
+                    .map(|a| {
+                        let a = a.unwrap();
+                        (
+                            String::from_utf8(a.key.as_ref().to_vec()).unwrap(),
+                            a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                                .unwrap()
+                                .into_owned(),
+                        )
+                    })
+                    .collect();
+                out.push((
+                    String::from_utf8(e.name().as_ref().to_vec()).unwrap(),
+                    attrs,
+                    String::new(),
+                ));
+            }
+            Event::Text(t) => {
+                if let Some(last) = out.last_mut() {
+                    last.2.push_str(&t.decode().unwrap());
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    out
+}
+fn attr<'a>(el: &'a Element, key: &str) -> Option<&'a str> {
+    el.1.iter().find(|a| a.0 == key).map(|a| a.1.as_str())
+}
+
+#[test]
+fn control_characters_never_reach_the_xml() {
+    let mut doc = board();
+    let mut nodes = doc.nodes.clone();
+    nodes.extend([
+        node(
+            50,
+            Guid(9, 1),
+            "WIDGET",
+            &[(
+                "widgetMetadata",
+                obj(&[("widgetName", Val::Str("Po\0ll\u{1}\u{ffff}".into()))]),
+            )],
+        ),
+        node(
+            51,
+            Guid(9, 1),
+            "STICKY",
+            &[("textData", text_data("a\0b\u{8}c\u{1f}d"))],
+        ),
+    ]);
+    doc.set_nodes(nodes).unwrap();
+    let xml = text(&call(&doc, "9:1", false, None));
+    let els = parse(&xml);
+    let widget = els.iter().find(|e| attr(e, "id") == Some("9:50")).unwrap();
+    assert_eq!(attr(widget, "widget"), Some("Poll"));
+    let sticky = els.iter().find(|e| attr(e, "id") == Some("9:51")).unwrap();
+    assert_eq!(sticky.2, "abcd");
+}
+
+#[test]
+fn unattached_connector_ends_show_their_coordinates() {
+    let mut doc = board();
+    let pos = |x: f64, y: f64| obj(&[("x", Val::Float(x)), ("y", Val::Float(y))]);
+    let mut nodes = doc.nodes.clone();
+    nodes.push(node(
+        60,
+        Guid(9, 1),
+        "CONNECTOR",
+        &[
+            ("connectorStart", obj(&[("position", pos(10.0, 20.5))])),
+            (
+                "connectorEnd",
+                obj(&[
+                    ("position", pos(30.0, 40.0)),
+                    ("endpointNodeID", Guid(9, 3).to_val()),
+                ]),
+            ),
+        ],
+    ));
+    doc.set_nodes(nodes).unwrap();
+    let els = parse(&text(&call(&doc, "9:1", false, None)));
+    let connector = els.iter().find(|e| attr(e, "id") == Some("9:60")).unwrap();
+    assert_eq!(attr(connector, "startX"), Some("10"));
+    assert_eq!(attr(connector, "startY"), Some("20.5"));
+    assert_eq!(attr(connector, "start"), None);
+    // An attached end names its node, not a point.
+    assert_eq!(attr(connector, "end"), Some("9:3"));
+    assert_eq!(attr(connector, "endX"), None);
+}
+
+#[test]
+fn highlights_and_section_overlays_are_counted_as_not_drawn() {
+    let mut doc = board();
+    let mut nodes = doc.nodes.clone();
+    nodes.extend([
+        node(70, Guid(9, 1), "HIGHLIGHT", &[]),
+        node(71, Guid(9, 1), "SECTION_OVERLAY", &[]),
+    ]);
+    doc.set_nodes(nodes).unwrap();
+    let xml = text(&call(&doc, "9:1", false, None));
+    let note = xml.split("<!--").nth(1).unwrap();
+    assert!(note.contains("highlight 1"), "{note}");
+    assert!(note.contains("section-overlay 1"), "{note}");
+}
+
+#[test]
+fn image_payload_budget_leaves_out_pictures_with_a_note() {
+    let doc = board();
+    let full = call(&doc, "9:1", true, None);
+    let value = serde_json::to_value(&full).unwrap();
+    let first = value["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["type"] == "image")
+        .unwrap()["data"]
+        .as_str()
+        .unwrap()
+        .len();
+    // Base64 is 4/3 of the PNG; allow one picture's worth of raw bytes.
+    let raw = first / 4 * 3;
+    let tight = figjam_within(&doc, Some("9:1"), None, true, None, false, raw);
+    assert!(images(&tight) < 7, "{}", images(&tight));
+    assert!(images(&tight) >= 1);
+    let value = serde_json::to_value(&tight).unwrap();
+    let notes: Vec<&str> = value["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect();
+    assert!(notes.iter().any(|t| t.contains("omitted")), "{notes:?}");
 }

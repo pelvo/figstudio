@@ -325,7 +325,13 @@ text line and PNG per sticky, shape, section, table, code block, widget and stam
 `screenshot::render_node`, `imageScale` 0.01–0.5 (default 0.25), at most 20 (a note counts
 the rest). An XML comment counts the FigJam kinds the renderer does not draw. Tests build the
 board in the test. Not verified: real FigJam files (field shapes come from the schema, not a
-capture), connector geometry, table row/column structure, merged cells, sticky text style.
+capture), connector geometry beyond `startX/startY/endX/endY` for loose ends, table row/column structure, merged cells, sticky text style.
+
+L8 second pass. Extra attribute values go through `clean_xml` like text (NUL, other control
+characters and U+FFFE/U+FFFF); a test parses the output with quick-xml's reader. A connector end
+with only `position` emits `startX/startY` or `endX/endY`. HIGHLIGHT and SECTION_OVERLAY are
+counted in the not-drawn comment. `includeImages` shares the 32 MB payload budget with
+`download_assets` (`figjam_within`).
 
 **L9: Code Connect and design system (local).** `get_context_for_code_connect` (property
 definitions and variants of a component); `get_code_connect_map` / `add_code_connect_map`

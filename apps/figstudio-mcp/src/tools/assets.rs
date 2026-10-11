@@ -16,6 +16,7 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::collections::HashSet;
 
 mod originals;
 
@@ -23,6 +24,8 @@ mod originals;
 pub const MAX_NODES: usize = 20;
 /// Most original images one call returns, so a page of photos cannot flood the reply.
 pub const MAX_ORIGINALS: usize = 20;
+/// Raw bytes (before base64) of images one call may return, rendered and originals together.
+pub const MAX_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 const JPEG_QUALITY: u8 = 90;
 
 /// Output format of a rendered asset.
@@ -95,6 +98,27 @@ pub fn download(
     original: bool,
     system_fonts: bool,
 ) -> CallToolResult {
+    download_within(
+        doc,
+        node_ids,
+        format,
+        scale,
+        original,
+        system_fonts,
+        MAX_PAYLOAD_BYTES,
+    )
+}
+
+/// [`download`] with an explicit payload budget in bytes (before base64).
+pub fn download_within(
+    doc: &Document,
+    node_ids: &[String],
+    format: AssetFormat,
+    scale: Option<f64>,
+    original: bool,
+    system_fonts: bool,
+    max_payload: usize,
+) -> CallToolResult {
     if node_ids.is_empty() || node_ids.len() > MAX_NODES {
         return failure(format!("nodeIds must hold 1 to {MAX_NODES} ids"));
     }
@@ -103,12 +127,12 @@ pub fn download(
     }
     let mut content = Vec::new();
     let mut failed = 0;
-    let mut budget = MAX_ORIGINALS;
+    let mut budget = Budget::new(max_payload);
     for id in node_ids {
         let outcome = if original {
             original_images(doc, id, &mut budget)
         } else {
-            rendered(doc, id, format, scale, system_fonts)
+            rendered(doc, id, format, scale, system_fonts, &mut budget.payload)
         };
         match outcome {
             Ok(items) => content.extend(items),
@@ -126,6 +150,57 @@ pub fn download(
     }
 }
 
+/// Raw bytes (before base64) still allowed in one reply.
+#[derive(Debug)]
+pub(crate) struct Payload(usize);
+
+impl Payload {
+    pub(crate) fn new(max: usize) -> Self {
+        Self(max)
+    }
+
+    /// Whether anything more fits at all.
+    pub(crate) fn is_full(&self) -> bool {
+        self.0 == 0
+    }
+
+    /// Reserves `bytes`; `false` (and nothing taken) when they do not fit.
+    pub(crate) fn take(&mut self, bytes: usize) -> bool {
+        match self.0.checked_sub(bytes) {
+            Some(rest) => {
+                self.0 = rest;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The text of an item that did not fit.
+    pub(crate) fn omitted(id: &str) -> String {
+        format!(
+            "{id}: omitted, the reply holds at most {} MB of image data",
+            MAX_PAYLOAD_BYTES / (1024 * 1024)
+        )
+    }
+}
+
+/// What one call may still return: image bytes, original images and which were sent.
+struct Budget {
+    payload: Payload,
+    originals: usize,
+    sent: HashSet<String>,
+}
+
+impl Budget {
+    fn new(max_payload: usize) -> Self {
+        Self {
+            payload: Payload::new(max_payload),
+            originals: MAX_ORIGINALS,
+            sent: HashSet::new(),
+        }
+    }
+}
+
 /// A text line and the encoded image of one node.
 fn rendered(
     doc: &Document,
@@ -133,7 +208,11 @@ fn rendered(
     format: AssetFormat,
     scale: Option<f64>,
     system_fonts: bool,
+    payload: &mut Payload,
 ) -> Result<Vec<ContentBlock>, String> {
+    if payload.is_full() {
+        return Err(Payload::omitted(id));
+    }
     let shot = render_node(doc, id, scale, system_fonts)?;
     let mut text = format!("{id}: {}", shot.describe());
     let pixmap = shot.frame.pixmap;
@@ -150,6 +229,9 @@ fn rendered(
             (jpeg(pixmap.data_as_u8_slice(), w, h)?, "image/jpeg")
         }
     };
+    if !payload.take(bytes.len()) {
+        return Err(Payload::omitted(id));
+    }
     Ok(vec![
         ContentBlock::text(text),
         ContentBlock::image(STANDARD.encode(bytes), mime),
@@ -178,25 +260,34 @@ fn jpeg(pixels: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// The original files behind the image fills of `id`, as image or blob items.
+/// The original files behind the image fills of `id` that this call has not sent yet, as
+/// image or blob items. Fails when the node has no image fills or none has stored bytes.
 fn original_images(
     doc: &Document,
     id: &str,
-    budget: &mut usize,
+    budget: &mut Budget,
 ) -> Result<Vec<ContentBlock>, String> {
     let hashes = originals::image_hashes(doc, id)?;
+    if hashes.is_empty() {
+        return Err("no image fills inside this node".into());
+    }
     let mut content = vec![];
-    let (mut missing, mut skipped) = (0, 0);
+    let (mut missing, mut omitted, mut repeated) = (0, 0, 0);
     for hash in &hashes {
+        if budget.sent.contains(hash) {
+            repeated += 1;
+            continue;
+        }
         let Some(bytes) = doc.images.get(hash) else {
             missing += 1;
             continue;
         };
-        if *budget == 0 {
-            skipped += 1;
+        if budget.originals == 0 || !budget.payload.take(bytes.len()) {
+            omitted += 1;
             continue;
         }
-        *budget -= 1;
+        budget.originals -= 1;
+        budget.sent.insert(hash.clone());
         let data = STANDARD.encode(bytes);
         let mime = image::guess_format(bytes).ok().map(|f| f.to_mime_type());
         content.push(match mime {
@@ -212,12 +303,13 @@ fn original_images(
             mime.unwrap_or("unknown type")
         )));
     }
-    if hashes.is_empty() {
-        return Err("no image fills inside this node".into());
+    if missing == hashes.len() {
+        return Err(format!("{missing} image(s) not stored in the file"));
     }
-    if missing + skipped > 0 {
+    if missing + omitted + repeated > 0 {
         content.push(ContentBlock::text(format!(
-            "{id}: {missing} image(s) not stored in the file, {skipped} omitted (limit {MAX_ORIGINALS} per call)"
+            "{id}: {missing} image(s) not stored in the file, {omitted} omitted (limit {MAX_ORIGINALS} images and {} MB per call), {repeated} already returned for another node",
+            MAX_PAYLOAD_BYTES / (1024 * 1024)
         )));
     }
     Ok(content)

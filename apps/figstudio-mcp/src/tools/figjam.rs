@@ -2,6 +2,7 @@
 use crate::{
     FigstudioServer,
     tools::{
+        assets::Payload,
         metadata::{figjam::Extras, run},
         screenshot::render_node,
         tool_error,
@@ -78,6 +79,27 @@ pub fn figjam(
     image_scale: Option<f64>,
     system_fonts: bool,
 ) -> CallToolResult {
+    figjam_within(
+        doc,
+        node_id,
+        depth,
+        include_images,
+        image_scale,
+        system_fonts,
+        crate::tools::assets::MAX_PAYLOAD_BYTES,
+    )
+}
+
+/// [`figjam`] with an explicit image payload budget in bytes (before base64).
+pub fn figjam_within(
+    doc: &Document,
+    node_id: Option<&str>,
+    depth: Option<u32>,
+    include_images: bool,
+    image_scale: Option<f64>,
+    system_fonts: bool,
+    max_payload: usize,
+) -> CallToolResult {
     let scale = image_scale.unwrap_or(DEFAULT_IMAGE_SCALE);
     if !(0.01..=MAX_IMAGE_SCALE).contains(&scale) {
         return CallToolResult::error(vec![ContentBlock::text(
@@ -90,10 +112,11 @@ pub fn figjam(
     };
     let mut content = vec![ContentBlock::text(xml)];
     if include_images {
-        let skipped = extras.pictured.len().saturating_sub(MAX_IMAGES);
+        let mut payload = Payload::new(max_payload);
         for id in extras.pictured.iter().take(MAX_IMAGES) {
-            content.extend(picture(doc, id, scale, system_fonts));
+            content.extend(picture(doc, id, scale, system_fonts, &mut payload));
         }
+        let skipped = extras.pictured.len().saturating_sub(MAX_IMAGES);
         if skipped > 0 {
             content.push(ContentBlock::text(format!(
                 "{skipped} more node(s) not pictured (limit {MAX_IMAGES})"
@@ -103,18 +126,29 @@ pub fn figjam(
     CallToolResult::success(content)
 }
 
-/// A text line and PNG for one node, or only the line when it cannot be rendered.
-fn picture(doc: &Document, id: &str, scale: f64, system_fonts: bool) -> Vec<ContentBlock> {
+/// A text line and PNG for one node, or only a line when it cannot be rendered or no longer
+/// fits the reply's image budget.
+fn picture(
+    doc: &Document,
+    id: &str,
+    scale: f64,
+    system_fonts: bool,
+    payload: &mut Payload,
+) -> Vec<ContentBlock> {
+    if payload.is_full() {
+        return vec![ContentBlock::text(Payload::omitted(id))];
+    }
     let shot = match render_node(doc, id, Some(scale), system_fonts) {
         Ok(shot) => shot,
         Err(message) => return vec![ContentBlock::text(format!("{id}: no image: {message}"))],
     };
     let line = format!("{id}: {}", shot.describe());
     match shot.frame.pixmap.into_png() {
-        Ok(png) => vec![
+        Ok(png) if payload.take(png.len()) => vec![
             ContentBlock::text(line),
             ContentBlock::image(STANDARD.encode(png), "image/png"),
         ],
+        Ok(_) => vec![ContentBlock::text(Payload::omitted(id))],
         Err(error) => vec![ContentBlock::text(format!(
             "{id}: PNG encoding failed: {error}"
         ))],

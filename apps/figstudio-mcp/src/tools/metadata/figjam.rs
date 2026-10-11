@@ -7,7 +7,7 @@ use figstudio_fig::Val;
 use std::collections::BTreeMap;
 
 /// Kinds the renderer draws as a plain box with no text or shape, or not at all.
-const NOT_DRAWN: [&str; 10] = [
+const NOT_DRAWN: [&str; 12] = [
     "STICKY",
     "SHAPE_WITH_TEXT",
     "CONNECTOR",
@@ -18,6 +18,8 @@ const NOT_DRAWN: [&str; 10] = [
     "STAMP",
     "MEDIA",
     "WASHI_TAPE",
+    "HIGHLIGHT",
+    "SECTION_OVERLAY",
 ];
 /// Kinds that get an optional screenshot (connectors are lines, cells are part of a table).
 const PICTURED: [&str; 7] = [
@@ -99,9 +101,22 @@ pub(super) fn attributes(kind: &str, data: &Val) -> Vec<(&'static str, String)> 
             let node = |e: Option<&Val>| e.and_then(|e| e.get("endpointNodeID")?.as_guid());
             let magnet = |e: Option<&Val>| e.and_then(|e| enum_name(e, "magnet"));
             let (start, end) = (endpoint("connectorStart"), endpoint("connectorEnd"));
+            // An end attached to a node names it; a loose end carries its own point.
+            let point = |e: Option<&Val>, axis: &str| {
+                e.and_then(|e| e.path(&["position", axis])?.as_f32())
+                    .map(|v| format!("{}", (f64::from(v) * 1000.0).round() / 1000.0))
+            };
             add("start", node(start).map(|g| g.to_string()));
+            if node(start).is_none() {
+                add("startX", point(start, "x"));
+                add("startY", point(start, "y"));
+            }
             add("startMagnet", magnet(start).filter(|m| m != "none"));
             add("end", node(end).map(|g| g.to_string()));
+            if node(end).is_none() {
+                add("endX", point(end, "x"));
+                add("endY", point(end, "y"));
+            }
             add("endMagnet", magnet(end).filter(|m| m != "none"));
             add("lineStyle", enum_name(data, "connectorLineStyle"));
         }
