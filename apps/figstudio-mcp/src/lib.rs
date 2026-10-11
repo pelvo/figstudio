@@ -34,7 +34,8 @@ impl FigstudioServer {
                 + Self::metadata_router()
                 + Self::screenshot_router()
                 + Self::variables_router()
-                + Self::assets_router(),
+                + Self::assets_router()
+                + Self::figjam_router(),
         }
     }
 

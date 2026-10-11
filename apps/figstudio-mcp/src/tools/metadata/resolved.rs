@@ -1,5 +1,8 @@
 //! Writing resolved instance content into the metadata body.
-use super::node::{tag_name, write_node};
+use super::{
+    figjam::Extras,
+    node::{tag_name, write_node},
+};
 use figstudio_fig::{
     Document, Guid,
     resolve::{self, Definitions, Resolved, walk_instance},
@@ -18,6 +21,8 @@ pub(super) struct Out {
     pub(super) skipped: usize,
     /// Component property definitions, built on the first instance expanded.
     pub(super) definitions: Option<Arc<Definitions>>,
+    /// FigJam attributes, text and counters; `None` for plain `get_metadata`.
+    pub(super) figjam: Option<Extras>,
 }
 
 impl Out {
@@ -57,7 +62,11 @@ impl Out {
             let kind = doc.node(node.node).map_or("UNKNOWN", |n| n.kind.as_str());
             let children = nodes.get(index + 1).is_some_and(|n| n.level > node.level);
             let id = node.path.to_string();
-            if write_node(&mut self.body, &id, kind, &node.data, children)? {
+            if let Some(extras) = &mut self.figjam {
+                extras.note(&id, kind);
+            }
+            let figjam = self.figjam.is_some();
+            if write_node(&mut self.body, &id, kind, &node.data, children, figjam)? {
                 open.push((node.level, tag_name(kind)));
             }
             self.count += 1;
@@ -69,7 +78,7 @@ impl Out {
         Ok(())
     }
 
-    pub(super) fn finish(self, writer: &mut Writer<Vec<u8>>) -> std::io::Result<()> {
+    pub(super) fn finish(self, writer: &mut Writer<Vec<u8>>) -> std::io::Result<Option<Extras>> {
         let mut wrapper = BytesStart::new("metadata");
         if self.truncated {
             wrapper.push_attribute(("truncated", "true"));
@@ -84,6 +93,9 @@ impl Out {
             );
             writer.write_event(Event::Comment(BytesText::new(&note)))?;
         }
-        Ok(())
+        if let Some(note) = self.figjam.as_ref().and_then(Extras::approximations) {
+            writer.write_event(Event::Comment(BytesText::new(&note)))?;
+        }
+        Ok(self.figjam)
     }
 }

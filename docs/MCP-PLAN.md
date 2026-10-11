@@ -315,6 +315,18 @@ endpoints, and per-node screenshots (L3) at small scale. **Done:** a built FigJa
 in the test (no public FigJam fixture), plus an approximation count for kinds that are not
 drawn.
 
+L8 done. `tools/figjam.rs` (`get_figjam`) reuses the L2 writer: `metadata::run` takes an
+optional `Extras`, and `metadata/figjam.rs` adds attributes and text per kind (field names
+from the L0 schema facts): STICKY `color` (first visible solid fill) and text; SHAPE_WITH_TEXT
+`shape`, `color`, text; CONNECTOR `start`/`end` node ids, `startMagnet`/`endMagnet` (NONE
+left out), `lineStyle`; SECTION `status`; CODE_BLOCK `language` and `sourceCode`; TABLE_CELL
+text; WIDGET `widget` name; STAMP as a plain element. `includeImages` (default false) adds a
+text line and PNG per sticky, shape, section, table, code block, widget and stamp via
+`screenshot::render_node`, `imageScale` 0.01–0.5 (default 0.25), at most 20 (a note counts
+the rest). An XML comment counts the FigJam kinds the renderer does not draw. Tests build the
+board in the test. Not verified: real FigJam files (field shapes come from the schema, not a
+capture), connector geometry, table row/column structure, merged cells, sticky text style.
+
 **L9: Code Connect and design system (local).** `get_context_for_code_connect` (property
 definitions and variants of a component); `get_code_connect_map` / `add_code_connect_map`
 backed by the sidecar JSON, written atomically; `search_design_system(query)` and
