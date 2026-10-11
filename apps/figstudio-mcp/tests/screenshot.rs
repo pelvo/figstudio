@@ -51,6 +51,9 @@ fn shot(doc: &Document, id: &str, scale: Option<f64>) -> CallToolResult {
     screenshot(doc, id, scale, false)
 }
 fn frame(id: Guid, width: f64, height: f64, visible: bool) -> Node {
+    child(id, Guid(0, 1), "FRAME", width, height, visible)
+}
+fn child(id: Guid, parent: Guid, kind: &str, width: f64, height: f64, visible: bool) -> Node {
     let size = Val::Obj(Obj::from([
         ("x", Val::Float(width)),
         ("y", Val::Float(height)),
@@ -59,9 +62,9 @@ fn frame(id: Guid, width: f64, height: f64, visible: bool) -> Node {
         ("guid", id.to_val()),
         (
             "parentIndex",
-            Val::Obj(Obj::from([("guid", Guid(0, 1).to_val())])),
+            Val::Obj(Obj::from([("guid", parent.to_val())])),
         ),
-        ("type", Val::Str("FRAME".into())),
+        ("type", Val::Str(kind.into())),
         ("name", Val::Str("synthetic".into())),
         ("visible", Val::Bool(visible)),
     ])))
@@ -77,25 +80,40 @@ fn with_frames(frames: Vec<Node>) -> Document {
     doc
 }
 
+/// The scale printed in the reply's first line.
+fn reported_scale(reply: &str) -> f64 {
+    reply
+        .lines()
+        .next()
+        .unwrap()
+        .rsplit("scale ")
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
 #[test]
-fn png_size_covers_the_node_and_follows_scale() {
+fn png_is_cropped_to_the_node_box_and_follows_scale() {
     let doc = doc();
-    // Node 1:34 is 381x191 design units; the render adds a margin for strokes and effects.
-    let (w1, h1) = png_size(&shot(&doc, "1:34", None));
-    assert!(
-        (381..381 + 60).contains(&w1) && (191..191 + 60).contains(&h1),
-        "{w1}x{h1}"
-    );
-    let (w2, h2) = png_size(&shot(&doc, "1-34", Some(0.5)));
-    assert!(
-        w2.abs_diff(w1 / 2) <= 2 && h2.abs_diff(h1 / 2) <= 2,
-        "{w2}x{h2}"
-    );
+    // Node 1:34 is 381x191 design units: exactly that many pixels, no margin.
+    assert_eq!(png_size(&shot(&doc, "1:34", None)), (381, 191));
+    assert_eq!(png_size(&shot(&doc, "1-34", Some(0.5))), (191, 96));
     let reply = text(&shot(&doc, "1:34", Some(0.5)));
-    assert!(
-        reply.starts_with(&format!("{w2}x{h2} px, scale 0.5")),
-        "{reply}"
-    );
+    assert!(reply.starts_with("191x96 px, scale 0.5"), "{reply}");
+}
+
+#[test]
+fn a_text_box_is_not_padded_by_its_overhang() {
+    let doc = with_frames(vec![child(
+        Guid(9, 1),
+        Guid(0, 1),
+        "TEXT",
+        100.0,
+        20.0,
+        true,
+    )]);
+    assert_eq!(png_size(&shot(&doc, "9:1", None)), (100, 20));
 }
 
 #[test]
@@ -150,10 +168,37 @@ fn zero_size_and_hidden_nodes_are_errors() {
 }
 
 #[test]
-fn longest_side_is_capped_at_4096() {
+fn longest_side_is_capped_at_4096_and_the_scale_is_honest() {
     let doc = with_frames(vec![frame(Guid(9, 1), 20_000.0, 100.0, true)]);
     let (w, h) = png_size(&shot(&doc, "9:1", Some(4.0)));
     assert!(w <= 4096 && w > 4000 && h < 100, "{w}x{h}");
+    // Past 409 600 units the cap needs a scale below the renderer's old 0.01 floor.
+    for width in [409_600.0, 500_000.0, 2_000_000.0] {
+        let doc = with_frames(vec![frame(Guid(9, 1), width, 100.0, true)]);
+        let result = shot(&doc, "9:1", None);
+        let (w, h) = png_size(&result);
+        assert!(w <= 4096 && w > 4000 && h >= 1, "{width}: {w}x{h}");
+        let scale = reported_scale(&text(&result));
+        assert!(
+            (scale * width - f64::from(w)).abs() <= 0.001 * f64::from(w),
+            "{width}: scale {scale} gives {w} px"
+        );
+    }
+}
+
+#[test]
+fn omitted_subpixel_layers_are_reported() {
+    let doc = with_frames(vec![
+        frame(Guid(9, 1), 100.0, 100.0, true),
+        child(Guid(9, 2), Guid(9, 1), "FRAME", 0.1, 0.1, true),
+    ]);
+    let reply = text(&shot(&doc, "9:1", None));
+    assert!(
+        reply.contains("approximations: 1 off screen or subpixel layers omitted"),
+        "{reply}"
+    );
+    let clean = with_frames(vec![frame(Guid(9, 1), 100.0, 100.0, true)]);
+    assert!(!text(&shot(&clean, "9:1", None)).contains("approximations"));
 }
 
 #[tokio::test]

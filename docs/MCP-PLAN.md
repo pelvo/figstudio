@@ -176,11 +176,12 @@ expansion. No renderer changes, so visual and wasm checks are not needed.
 1; outside 0.01..=4 or non-finite gives isError). Background: a page (CANVAS) is drawn on its
 page background colour, every other node on transparent (Figma's own node screenshots are
 transparent). The longest side is capped at 4096 px by lowering the scale; the text line
-reports the effective scale. The render covers the node's visible bounds plus the renderer's
-overhang margin for strokes, shadows and text, so the PNG is a little larger than the node
-(fixture node 381x191 gives about 417x227 at scale 1). Returns an `image/png` item (base64
+reports the effective scale. The render is cropped to the node's own box (absolute transform
+and size, no padding, like a Figma export), so strokes or shadows outside the box are cut off
+(fixture node 381x191 gives exactly 381x191 at scale 1). A scale below the renderer's 0.01
+floor is used when the cap needs it. Returns an `image/png` item (base64
 crate) and a text item `<w>x<h> px, scale <s>` plus an `approximations:` line with the
-non-zero gap counters of `Stats` (skipped, missing, approximated, not drawn). Instance paths,
+non-zero gap counters of `Stats`, read from its public fields (including `culled`: off-screen or subpixel layers omitted). Instance paths,
 zero-size nodes, hidden nodes, the document root, unknown ids and bad scales give isError.
 Documents opened by the server are eager (`Document::open`), so image fills are present and
 no two-pass render is needed.
