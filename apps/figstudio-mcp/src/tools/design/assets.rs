@@ -2,7 +2,7 @@
 use super::jsx::Writer;
 use super::walk::Target;
 use super::{MAX_ASSETS, MAX_INLINE_BYTES};
-use crate::tools::screenshot::{Root, layer_png};
+use crate::tools::screenshot::{Root, layer_shot};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -95,26 +95,31 @@ pub(super) fn render(w: &mut Writer<'_>, target: &Target, name: String) -> bool 
         Target::Node(id) => Root::Node(*id),
         Target::Path(path) => Root::Path(path),
     };
-    let Ok(png) = layer_png(w.doc, root, ASSET_SCALE, w.options.system_fonts) else {
+    let Ok(shot) = layer_shot(w.doc, root, ASSET_SCALE, w.options.system_fonts) else {
         w.out.notes.add("assets not rendered (empty or hidden)");
         return false;
     };
-    if !crate::tools::screenshot::approximations(&png.stats).is_empty() {
+    let approximated = !crate::tools::screenshot::approximations(&shot.frame.stats).is_empty();
+    let Ok(png) = shot.frame.pixmap.into_png() else {
+        w.out.notes.add("assets not rendered (empty or hidden)");
+        return false;
+    };
+    if approximated {
         w.out
             .notes
             .add("assets with render approximations (see get_screenshot)");
     }
     let (reference, inline) = match &w.options.assets {
         Assets::Inline => {
-            let encoded = png.bytes.len().div_ceil(3) * 4;
+            let encoded = png.len().div_ceil(3) * 4;
             if w.inline_bytes + encoded > MAX_INLINE_BYTES {
                 w.out.notes.add("assets not rendered (inline size cap)");
                 return false;
             }
             w.inline_bytes += encoded;
-            (name.clone(), Some(png.bytes))
+            (name.clone(), Some(png))
         }
-        Assets::Dir(dir) => match write(dir, &name, &png.bytes) {
+        Assets::Dir(dir) => match write(dir, &name, &png) {
             Ok(path) => (path.display().to_string(), None),
             Err(_) => {
                 w.out
