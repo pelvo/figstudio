@@ -1,4 +1,8 @@
-//! Offline discovery and read-only document tools.
+//! Offline document tools and local Code Connect sidecar storage.
+/// Local Code Connect context and mappings.
+pub mod codeconnect;
+/// Local component and token discovery.
+pub mod design_system;
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
 /// PNG renders of nodes.

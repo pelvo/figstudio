@@ -303,11 +303,19 @@ endpoints, and per-node screenshots (L3) at small scale. **Done:** a built FigJa
 in the test (no public FigJam fixture), plus an approximation count for kinds that are not
 drawn.
 
-**L9: Code Connect and design system (local).** `get_context_for_code_connect` (property
+**L9: Code Connect and design system (local).** [x] Complete. `get_context_for_code_connect` (property
 definitions and variants of a component); `get_code_connect_map` / `add_code_connect_map`
 backed by the sidecar JSON, written atomically; `search_design_system(query)` and
 `get_libraries` over local components and styles. **Done:** round-trip add → get; a search
-test on a fixture.
+test on a fixture. Named codeconnect/design_system routers add five tools. Properties preserve
+unknown enum strings; component sets expose variants, instances resolve their component (including
+instance paths). Maps use serde_json and tempfile atomic replacement beside the registered file,
+reject symlinks and corrupt sidecars, and serialize writes across cloned server sessions. Framework
+filters match labels; languages match labels or source extensions. Search ranks exact/prefix/substring
+names and caps results; libraries report local-only components and token collections/modes/styles.
+Tests were proven failing with property, search, persist, filter, corrupt-input and symlink mutations.
+Not verified: live official-server shape parity, private files, Windows, cross-process writers
+(last writer wins), hostile concurrent filesystem replacement, or remote libraries.
 
 **L10: `create_design_system_rules` prompt.** `prompts/get` returns Figma-style rule-file
 guidance plus the file's token summary (L4) and component list. **Done:** a protocol test.

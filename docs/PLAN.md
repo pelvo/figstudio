@@ -221,6 +221,8 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-11: MCP L9 adds offline Code Connect sidecars and local design-system discovery; mutation-proven tests and full gate passed. Not verified: live parity, Windows, cross-process/concurrent filesystem writers.
+
 - 2026-10-11: MCP L4: public read-only token/style model and `get_variable_defs` with all
   stored modes, bounded aliases, legacy/current refs and text-run bindings. Foreground
   `scripts/check.sh` passed; seven public fixture PNGs byte-identical at scale 0.25.

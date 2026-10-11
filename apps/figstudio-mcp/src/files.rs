@@ -79,6 +79,14 @@ impl FileRegistry {
         }
     }
 
+    /// Return the registered path, using the same selection rules as document loading.
+    ///
+    /// # Errors
+    /// Returns an error for a missing or ambiguous file key.
+    pub fn path(&self, key: Option<&str>) -> Result<PathBuf, McpError> {
+        Ok(self.resolve(key)?.path.clone())
+    }
+
     /// Open once per file; failures remain retryable even after cancellation.
     pub async fn open(&self, key: Option<&str>) -> Result<Arc<Document>, McpError> {
         let file = self.resolve(key)?;

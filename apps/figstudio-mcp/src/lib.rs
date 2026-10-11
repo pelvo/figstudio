@@ -22,6 +22,7 @@ pub struct FigstudioServer {
     files: FileRegistry,
     no_system_fonts: bool,
     tool_router: ToolRouter<Self>,
+    codeconnect_lock: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
 impl FigstudioServer {
@@ -30,10 +31,13 @@ impl FigstudioServer {
         Self {
             files: FileRegistry::new(paths),
             no_system_fonts,
+            codeconnect_lock: Default::default(),
             tool_router: Self::tool_router()
                 + Self::metadata_router()
                 + Self::screenshot_router()
-                + Self::variables_router(),
+                + Self::variables_router()
+                + Self::codeconnect_router()
+                + Self::design_system_router(),
         }
     }
 
@@ -53,7 +57,7 @@ impl ServerHandler for FigstudioServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("figstudio-mcp", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Offline access to local .fig files only. fileKey is optional for one file; otherwise use its stem or listed full path. nodeId accepts 1:2, 1-2, Figma URLs with node-id, and instance paths I1:2;3:4 (nodes inside an instance, with overrides applied). Write and cloud tools of the official Figma server are not available.")
+            .with_instructions("Offline access to local .fig files only. fileKey is optional for one file; otherwise use its stem or listed full path. nodeId accepts 1:2, 1-2, Figma URLs with node-id, and instance paths I1:2;3:4 (nodes inside an instance, with overrides applied). Only Code Connect sidecar writes are supported; the .fig is never changed. Cloud tools are unavailable.")
     }
 }
 

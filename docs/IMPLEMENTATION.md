@@ -37,6 +37,10 @@ apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
                          writes one element)
   tools/screenshot.rs    get_screenshot; an instance path uses Renderer::render_path and
                          path_bounds (render/src/focus.rs: only that node, laid out as drawn)
+  tools/codeconnect.rs    component context + atomic local source mappings (named router)
+    codeconnect/context.rs component sets, properties, instance resolution
+    codeconnect/sidecar.rs  serde_json + tempfile persist, filters, symlink rejection
+  tools/design_system.rs  capped local component/token search and summaries
   tools/variables.rs     get_variable_defs; walks resolved instance content
                          New tools belong in tools/<name>.rs with a typed input struct.
                          Use #[tool_router(router = <name>_router, vis = "pub(crate)")]
