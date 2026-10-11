@@ -221,6 +221,11 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-11 — T19 #1 fifth review pass: whole-node shadow layers never nest (one open at a
+  time, counted fallback for nested nodes). Approximated shadows 3744, skipped 587. Timing not
+  re-run for this commit (last full gate, 8d67e25: +0.4% total CPU, worst page +5.3%).
+  Workspace, parallel shadows tests and wasm checks pass.
+
 - 2026-10-11 — T19 #1 fourth review pass: shadow layers bounded by the geometry actually
   drawn (stored fill/stroke/glyph blobs boxed), discarded redraws erased over the paths
   actually issued. 42 pages at scale 0.1: +0.4% total CPU, worst page +5.3%; approximated

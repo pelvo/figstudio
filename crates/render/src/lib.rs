@@ -11,6 +11,7 @@ mod network;
 pub mod paint;
 mod record;
 mod shadow_bounds;
+mod shadow_charge;
 mod shadow_layer;
 mod stroke;
 mod text;
@@ -86,6 +87,8 @@ pub struct Stats {
     pub attempted_work: usize,
     /// Device pixels of every whole-node shadow layer pushed (see `MAX_SHADOW_LAYER_PIXELS_TOTAL`).
     pub shadow_layer_pixels: usize,
+    /// Most whole-node shadow layers (single layers and redraw layers) open at the same time.
+    pub shadow_layer_depth_peak: usize,
 }
 
 impl fmt::Display for Stats {
@@ -209,6 +212,10 @@ struct Ctx<'a> {
     replay_floor: usize,
     /// Set when a redraw ran out of its allowance: the traversal inside it stops at once.
     replay_aborted: bool,
+    /// Whole-node shadow layers open right now.
+    whole_open: usize,
+    /// Drop shadows of nodes inside a whole-node layer or redraw that could not use one.
+    nested_refused: usize,
     /// Output bounds of the stored geometry of each blob, for shadow layer bounds (decoded once).
     blob_boxes: std::collections::HashMap<u32, Option<Option<Rect>>>,
     /// Output area in pixels, for culling.
@@ -425,6 +432,8 @@ impl Renderer {
             exhausted: false,
             replay_floor: 0,
             replay_aborted: false,
+            whole_open: 0,
+            nested_refused: 0,
             blob_boxes: std::collections::HashMap::new(),
             screen,
         };
@@ -954,6 +963,7 @@ impl Ctx<'_> {
                 data,
                 !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
             );
+        let mut whole_layers = 0;
         let mut plan = self.whole_shadow_plan(
             node,
             data,
@@ -972,6 +982,7 @@ impl Ctx<'_> {
                 continue;
             }
             let radius = effect.num("radius").unwrap_or(0.0).max(0.0);
+            let mut is_whole_fallback = false;
             let primitive = match effect.text("type") {
                 // Cast from the whole node: drawn behind with the others, in list order.
                 Some("DROP_SHADOW") if plan.whole.iter().any(|e| std::ptr::eq(*e, effect)) => {
@@ -991,11 +1002,14 @@ impl Ctx<'_> {
                 }
                 // No fill mask to draw from: one whole-content layer, if it is affordable.
                 Some("DROP_SHADOW")
-                    if layers == 0 && self.charge_layer(effect, world, plan.bounds) =>
+                    if layers == 0
+                        && self.whole_open == 0
+                        && self.charge_layer(effect, world, plan.bounds) =>
                 {
                     self.stats.shadows += 1;
                     self.stats.approximated_effects +=
                         usize::from(effects::is_approximate(effect, &[], world, false, true));
+                    is_whole_fallback = true;
                     self.fallback_shadow(effect)
                 }
                 // Progressive blur fades in across the layer; a uniform blur looks far worse
@@ -1022,6 +1036,10 @@ impl Ctx<'_> {
             self.rc
                 .push_filter_layer(Filter::from_primitive(primitive), effect_reach(effect));
             layers += 1;
+            if is_whole_fallback {
+                self.open_whole_layer();
+                whole_layers += 1;
+            }
         }
         let opacity = data.num("opacity").unwrap_or(1.0).clamp(0.0, 1.0);
         if opacity < 1.0 {
@@ -1032,7 +1050,7 @@ impl Ctx<'_> {
         let (behind, above): (Vec<_>, Vec<_>) = shadows
             .into_iter()
             .partition(|e| e.text("type") == Some("DROP_SHADOW"));
-        layers += self.draw_behind_shadows(
+        let single = self.draw_behind_shadows(
             &behind,
             &plan,
             node,
@@ -1042,9 +1060,14 @@ impl Ctx<'_> {
             path,
             &above,
         );
+        layers += single;
+        whole_layers += single;
         self.draw_body(node, data, world, (w, h), &fill_paths, path, &above);
         for _ in 0..layers {
             self.rc.pop_layer();
+        }
+        for _ in 0..whole_layers {
+            self.close_whole_layer();
         }
         self.depth -= 1;
     }

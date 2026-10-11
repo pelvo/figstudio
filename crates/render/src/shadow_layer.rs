@@ -103,6 +103,13 @@ impl Ctx<'_> {
         if !wanted || spent {
             return none(bounds);
         }
+        // Vello grows the viewport of every filter layer inside another one, so nested layers'
+        // padding adds up and the per-layer charge stops being a bound. Never open one inside
+        // another (a redraw is one too): such a node's shadows take the old counted path.
+        if self.whole_open > 0 {
+            self.nested_refused += 1;
+            return none(bounds);
+        }
         let mut drops: Vec<&Val> = visible
             .iter()
             .copied()
@@ -221,6 +228,7 @@ impl Ctx<'_> {
     ) -> bool {
         let before = self.stats.clone();
         let wanted = self.wanted.len();
+        let refused = self.nested_refused;
         let outer_aborted = std::mem::replace(&mut self.replay_aborted, false);
         self.push_shadow(effect, world, true);
         // Everything the redraw issues to the scene is recorded, so a discarded redraw is
@@ -233,6 +241,7 @@ impl Ctx<'_> {
             self.rc.clear_layer(area);
         }
         self.rc.pop_layer();
+        self.close_whole_layer();
         self.rc.set_transform(world);
         self.replay_aborted = outer_aborted;
         let spent = self
@@ -241,10 +250,13 @@ impl Ctx<'_> {
             .saturating_sub(before.budget_exhausted);
         self.stats = Stats {
             shadow_layer_pixels: self.stats.shadow_layer_pixels,
+            shadow_layer_depth_peak: self.stats.shadow_layer_depth_peak,
             ..before
         };
         self.stats.budget_exhausted += spent;
         self.stats.shadows += usize::from(complete);
+        // A nested node's shadows could not be part of this one: it is approximate.
+        self.stats.approximated_effects += usize::from(complete && self.nested_refused > refused);
         self.wanted.truncate(wanted);
         complete
     }
@@ -273,45 +285,7 @@ impl Ctx<'_> {
         self.rc.set_transform(world);
         self.rc
             .push_filter_layer(Filter::from_primitive(primitive), effect_reach(effect));
-    }
-
-    /// Device pixels of a layer around `bounds` plus the effect's reach, clamped to the render
-    /// target grown by that reach. Vello cannot allocate more per layer: a filter layer's strip
-    /// generator is the target plus the filter's source padding (vello_common 0.3.0
-    /// `viewport.rs:94-107`), so drawing is clipped to it, and its pixmap is that bbox plus the
-    /// filter padding (`filter/mod.rs:156-157`, `geometry.rs:219` `expand`), tile-snapped. Both
-    /// paddings are about the blur reach per side, so target + reach on every side is the same
-    /// order (a few tile pixels of snapping aside). When the target is small, every layer is
-    /// small. Huge for non-finite bounds.
-    fn layer_pixels(&self, effect: &Val, world: Affine, bounds: Rect) -> usize {
-        let [a, b, c, d, _, _] = world.as_coeffs();
-        let reach = effect_reach(effect) * a.hypot(b).max(c.hypot(d));
-        let bounds = bounds.inflate(reach, reach);
-        let area = bounds.intersect(self.screen.inflate(reach, reach));
-        let pixels = area.width().max(0.0) * area.height().max(0.0);
-        if bounds.width().is_finite() && bounds.height().is_finite() && pixels.is_finite() {
-            // Saturating float-to-int cast: a huge area is just "too big".
-            pixels.ceil() as usize
-        } else {
-            usize::MAX / 4
-        }
-    }
-
-    /// Whether one layer around `bounds` is under the per-layer cap.
-    pub(crate) fn layer_fits(&self, effect: &Val, world: Affine, bounds: Rect) -> bool {
-        self.layer_pixels(effect, world, bounds) as f64 <= MAX_SHADOW_PIXELS
-    }
-
-    /// `layer_fits`, and the layer is charged to the render's total (see
-    /// `MAX_SHADOW_LAYER_PIXELS_TOTAL`); false, uncharged, when either cap would be exceeded.
-    pub(crate) fn charge_layer(&mut self, effect: &Val, world: Affine, bounds: Rect) -> bool {
-        let pixels = self.layer_pixels(effect, world, bounds);
-        let fits = pixels as f64 <= MAX_SHADOW_PIXELS
-            && self.stats.shadow_layer_pixels + pixels <= MAX_SHADOW_LAYER_PIXELS_TOTAL;
-        if fits {
-            self.stats.shadow_layer_pixels += pixels;
-        }
-        fits
+        self.open_whole_layer();
     }
 }
 

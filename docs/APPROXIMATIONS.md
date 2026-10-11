@@ -14,8 +14,8 @@ Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
 | Counter (status bar text) | Total | Pages |
 |---|---:|---:|
-| shadow effects approximated | 5349 (3567 after fix #1) | 24 |
-| effects skipped | 483 (533 after fix #1) | 22 |
+| shadow effects approximated | 5349 (3744 after fix #1) | 24 |
+| effects skipped | 483 (587 after fix #1) | 22 |
 | instance ink approximated | 436 | 10 |
 | stroke alignments approximated | 245 | 9 |
 | paints skipped | 189 | 2 |
@@ -23,7 +23,7 @@ Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
 ## What is behind each counter
 
-### C1. shadow effects approximated (3567 after fix #1 and its review fixes; 5349 before)
+### C1. shadow effects approximated (3744 after fix #1 and its review fixes; 5349 before)
 
 Code: `effects::is_approximate`, `effects::approximate_silhouette` (`crates/render/src/effects.rs`),
 `shadow_layer.rs` (whole-node layers).
@@ -57,6 +57,14 @@ is charged to `MAX_SHADOW_LAYER_PIXELS_TOTAL` (64M px) at plan time and reported
 the same walk. A fill-less node's refused shadow is skipped and counted, never drawn as a
 whole-content layer or cast from the node box.
 
+*Nesting:* at most one whole-node shadow layer is open at any time (a redraw for one counts).
+Vello grows the viewport of every filter layer inside another one, so nested padding adds up
+and the per-layer charge would stop being a bound. A node inside an open whole-node layer or
+redraw never opens one: its drop shadows take the old path (fill mask when the node casts one,
+else skipped), counted. A redraw that lost a nested node's shadows is counted too.
+`Stats::shadow_layer_depth_peak` reports the most that were open (always 1 or 0). The
+fill-less whole-content fallback layer follows the same rule.
+
 *Time:* all redraws of one node (nested ones included) share an allowance of
 `REPLAY_WORK_FACTOR` x subtree size x shadows node visits, checked at every child visit. When
 it runs out the traversal stops at once and the half-drawn redraw layer is erased (a `Clear`
@@ -74,7 +82,7 @@ spread; the remainder was not broken down again after the fix.
 applied, so a shadow whose source lies off the canvas edge can be missing or doubled.
 Tests keep their shadows on the canvas.
 
-### C2. effects skipped (533 after fix #1; 483 before)
+### C2. effects skipped (587 after fix #1; 483 before)
 
 Code: the effects loop in `Ctx::draw_node` (`crates/render/src/lib.rs`).
 
@@ -184,3 +192,13 @@ sigma), and anything whose exact form costs too much time on large pages.
   fill-less mixed lists 760, bounds uncertain on a target over the cap 465, subtree over the
   node cap 411, replay work 16. A first version returned the whole target for any instance
   before looking at the clip: counters 4660 / 855.
+- 2026-10-11 — Fifth review pass on fix #1: whole-node shadow layers never nest (a fill-less
+  fallback layer and a redraw count as one). A six-deep radius-200 scene over oversized
+  content on an 80x80 target charged 9.89M px before and 1.65M px (one layer) after.
+  Approximated shadows 3744, skipped 587 (+177 / +54 against the previous pass: nested nodes
+  inside a whole-node layer now take the counted path). Counted-shadow events by guard,
+  overlapping, 42 pages: spread/blend/anisotropic 1588, nested inside a whole-node layer 724,
+  fill-less mixed lists 760, aggregate memory 614, bounds uncertain on a target over the cap
+  465, subtree over the node cap 337, replay work 12. Timing was not re-run for this commit
+  (the last full gate, 8d67e25, was +0.4% total CPU on 42 pages at `--scale 0.1`, worst page
+  +5.3%); performance is a sanity check only and is left to the GPU backend.

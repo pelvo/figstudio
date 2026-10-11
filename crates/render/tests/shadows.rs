@@ -681,7 +681,11 @@ fn fill_less_frame(n: u32, parent: u32, effects: Vec<Val>) -> figstudio_fig::Nod
 }
 
 #[test]
-fn nested_multi_shadow_children_keep_both_shadows_inside_a_parent_shadow() {
+fn a_redraw_that_loses_a_nested_nodes_shadows_is_counted() {
+    // The parent casts two whole-node shadows (redraws). Inside a redraw no whole-node layer
+    // may open (nested filter padding adds up), so the child's own two shadows are not part of
+    // the parent's shadow: that is counted once per parent shadow, never silent. The child's
+    // own shadows are still drawn by the real pass, after the redraw layers have closed.
     let child_effects = vec![
         coloured(shadow("DROP_SHADOW", 20.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
         coloured(shadow("DROP_SHADOW", 40.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
@@ -705,16 +709,23 @@ fn nested_multi_shadow_children_keep_both_shadows_inside_a_parent_shadow() {
     ]);
     let (px, stats) = render(&doc);
     assert_eq!(
-        pixel(&px, 55, 15),
-        [0, 0, 255, 255],
-        "child's own second shadow"
+        stats.shadow_layer_depth_peak, 1,
+        "one whole-node layer at a time"
     );
     assert_eq!(
-        pixel(&px, 55, 35),
-        [255, 0, 0, 255],
-        "the parent's shadow includes the child's second shadow"
+        stats.approximated_effects, 2,
+        "both parent shadows lost the child's shadows"
     );
-    assert_eq!(stats.approximated_effects, 0);
+    assert_eq!(
+        pixel(&px, 15, 35),
+        [255, 0, 0, 255],
+        "the parent's shadow still follows the child's content"
+    );
+    assert_eq!(
+        pixel(&px, 55, 15),
+        [0, 0, 255, 255],
+        "the child's own shadow is drawn by the real pass"
+    );
 }
 
 #[test]
@@ -949,27 +960,27 @@ fn fill_less_frame_skips_a_refused_replay_instead_of_casting_its_box() {
     assert_eq!(pixel(&px, 5, 45)[3], 0, "the frame box casts nothing");
 }
 
-/// `levels` nested 3000x2000 frames (each layer 6M px: under the per-layer cap) with a shadow.
-fn nested_near_cap_layers(levels: u32) -> figstudio_render::Stats {
+/// `levels` sibling 3000x2000 frames (each layer 6M px: under the per-layer cap) with a shadow.
+fn near_cap_layers(levels: u32) -> figstudio_render::Stats {
     let mut nodes = vec![node(1, 0, "CANVAS")];
     for i in 0..levels {
-        let mut f = node(2 + i, if i == 0 { 1 } else { 1 + i }, "FRAME");
+        let mut f = node(2 + i, 1, "FRAME");
         f.data.set("size", size(3000.0, 2000.0));
         f.data.set("fillPaints", paint(0.5, 0.5, 0.5));
         f.data.set("effects", Val::Arr(vec![effect_dx(1.0)]));
         nodes.push(f);
+        let mut leaf = node(100 + i, 2 + i, "RECTANGLE");
+        leaf.data.set("size", size(5.0, 5.0));
+        nodes.push(leaf);
     }
-    let mut leaf = node(100, 1 + levels, "RECTANGLE");
-    leaf.data.set("size", size(5.0, 5.0));
-    nodes.push(leaf);
     render_sized(&document(nodes), 3000, 2000)
 }
 
 #[test]
-fn nested_near_cap_layers_stop_at_the_aggregate_budget() {
+fn near_cap_layers_stop_at_the_aggregate_budget() {
     // Each layer is under the per-layer cap; together they are not: 64M px of budget fits ten
     // 6M px layers, the other two fall back to the counted fill mask.
-    let stats = nested_near_cap_layers(12);
+    let stats = near_cap_layers(12);
     assert_eq!(
         stats.approximated_effects, 2,
         "ten layers fit, two fall back"
@@ -978,7 +989,7 @@ fn nested_near_cap_layers_stop_at_the_aggregate_budget() {
 
 #[test]
 fn pushed_layer_pixels_are_reported_and_within_the_total_budget() {
-    let stats = nested_near_cap_layers(12);
+    let stats = near_cap_layers(12);
     assert!(stats.shadow_layer_pixels > 0);
     // MAX_SHADOW_LAYER_PIXELS_TOTAL
     assert!(
@@ -1310,4 +1321,64 @@ fn a_clipping_instance_keeps_its_overrides_inside_its_own_bounds() {
         "{}",
         stats.shadow_layer_pixels
     );
+}
+
+/// `levels` nested frames, each with a radius-200 shadow, over a child far larger than the 80x80
+/// target: Vello grows the viewport per enclosing filter layer, so nested layers add padding.
+fn nested_radius_shadows(levels: u32) -> figstudio_render::Stats {
+    let mut nodes = vec![node(1, 0, "CANVAS")];
+    for i in 0..levels {
+        let mut f = node(2 + i, if i == 0 { 1 } else { 1 + i }, "FRAME");
+        f.data.set("size", size(40.0, 40.0));
+        f.data.set("frameMaskDisabled", Val::Bool(true));
+        f.data.set("fillPaints", paint(0.5, 0.5, 0.5));
+        f.data.set(
+            "effects",
+            Val::Arr(vec![shadow("DROP_SHADOW", 1.0, 1.0, 200.0)]),
+        );
+        nodes.push(f);
+    }
+    let mut big = node(100, 1 + levels, "RECTANGLE");
+    big.data.set("size", size(4000.0, 4000.0));
+    big.data.set("fillPaints", paint(1.0, 1.0, 1.0));
+    nodes.push(big);
+    render(&document(nodes)).1
+}
+
+#[test]
+fn whole_node_shadow_layers_never_nest() {
+    let stats = nested_radius_shadows(6);
+    assert_eq!(stats.shadow_layer_depth_peak, 1, "at most one layer open");
+    assert!(
+        stats.approximated_effects >= 5,
+        "the five nested shadows are counted: {}",
+        stats.approximated_effects
+    );
+    assert!(
+        stats.shadow_layer_pixels <= (80 + 2 * 602) * (80 + 2 * 602),
+        "charged for one layer (target plus its own reach) only: {}",
+        stats.shadow_layer_pixels
+    );
+}
+
+#[test]
+fn a_fill_less_whole_content_layer_does_not_nest_either() {
+    // The old fill-less fallback layer is a whole-content filter layer too.
+    let mut nodes = vec![node(1, 0, "CANVAS")];
+    for i in 0..4u32 {
+        let mut f = node(2 + i, if i == 0 { 1 } else { 1 + i }, "FRAME");
+        f.data.set("size", size(40.0, 40.0));
+        f.data.set("frameMaskDisabled", Val::Bool(true));
+        f.data.set("fillPaints", Val::Arr(vec![]));
+        let mut spread = shadow("DROP_SHADOW", 1.0, 1.0, 200.0);
+        spread.set("spread", Val::Float(3.0));
+        f.data.set("effects", Val::Arr(vec![spread]));
+        nodes.push(f);
+    }
+    let mut big = node(100, 5, "RECTANGLE");
+    big.data.set("size", size(4000.0, 4000.0));
+    big.data.set("fillPaints", paint(1.0, 1.0, 1.0));
+    nodes.push(big);
+    let stats = render(&document(nodes)).1;
+    assert_eq!(stats.shadow_layer_depth_peak, 1);
 }
