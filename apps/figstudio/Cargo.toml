@@ -18,14 +18,17 @@ image = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 figstudio-render = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "glow", "wayland", "x11"] }
+# wgpu: eframe's wgpu renderer (Metal, Vulkan, DX12, GL fallback via egui-wgpu defaults), so
+# the GPU canvas (docs/GPU.md) can share its device.
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11"] }
 rfd = { workspace = true }
 fontdb = { workspace = true }
 
 # Browser build: see scripts/web-build.sh (nightly, shared memory, Web Worker threads).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 figstudio-render = { path = "../../crates/render", default-features = false, features = ["parallel"] }
-eframe = { workspace = true, features = ["default_fonts", "glow"] }
+# wgpu: WebGPU where the browser has it, else WebGL2 (egui-wgpu enables wgpu/webgpu + webgl).
+eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 # file-handle-inner: the picked `File`, so big files are read in slices, not whole.
 rfd = { workspace = true, features = ["file-handle-inner"] }
 rayon = { workspace = true }

@@ -39,11 +39,27 @@ stays reproducible.
 
 | # | Lane | Done when |
 |---|---|---|
-| L1 | eframe glow → wgpu, desktop + web, no rendering change | App runs on macOS with wgpu; wasm check passes; `scripts/check.sh` passes; screenshots match the glow build |
+| L1 | eframe glow → wgpu, desktop + web, no rendering change | **Done 2026-10-11.** App runs on macOS with wgpu (Metal); web build passes; `scripts/check.sh` passes; window screenshot matches the glow build (only the status-bar ms text differs, rest ≤ 1/255) |
 | L2 | `gpu` feature: `Canvas` for `vello_gpu::Scene`, headless test rendering a fixture on the GPU and comparing with the CPU pixmap | Fixtures differ from CPU by less than a small per-pixel tolerance (test skips with a message when no GPU adapter exists) |
 | L3 | App draws the canvas with `vello_gpu` into an egui-registered texture, CPU fallback + `FIGSTUDIO_RENDERER` | Large real file pans/zooms on GPU; forcing `cpu` gives today's behaviour; no panics on any fixture |
 | L4 | Browser: WebGPU, then WebGL2, then CPU fallback | `scripts/web-build.sh` build runs in a WebGPU browser and in one without WebGPU |
 | L5 | Docs: PLAN, IMPLEMENTATION, TESTING updated; what is not verified | Docs list the GPU path, the fallback and the remaining gaps |
+
+## L1 notes
+
+- eframe features: `wgpu` (pulls `egui-wgpu/default`: wgpu `default` = Metal, Vulkan, DX12,
+  GLES, WebGPU, plus `webgl`). Native backends are wgpu's `PRIMARY | GL` (or `WGPU_BACKEND`);
+  on the web egui-wgpu tries WebGPU and falls back to WebGL2. `Renderer::Wgpu` is set
+  explicitly in `NativeOptions` and `WebOptions`.
+- No usable GPU adapter (no Vulkan/Metal/DX12 and no GL driver): `run_native` returns an
+  error; the app prints `figstudio: could not start the window: <reason>` and exits 1. There is
+  no CPU fallback for the window itself (wgpu's GL backend covers most machines; a software
+  GL such as llvmpipe/Mesa also works). In the browser, `start` rejects and `index.html`
+  shows "figstudio could not start". The vello CPU fallback for the canvas is L3.
+  Checked on macOS with `WGPU_BACKEND=vulkan` (no such backend): `could not start the window:
+  WGPU error: Failed to create surface for any enabled backend`, exit 1, no panic.
+- Size (macOS arm64 release): app binary 10.08 MB (glow) → 15.32 MB (wgpu); `figstudio_bg.wasm`
+  8.51 MB → 13.60 MB.
 
 ## Risks
 

@@ -22,9 +22,10 @@ use worker::{Loaded, Workers};
 const APP_NAME: &str = "figstudio";
 
 #[cfg(not(target_arch = "wasm32"))]
-fn main() -> eframe::Result {
+fn main() -> std::process::ExitCode {
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     let options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)
             .with_app_id(APP_NAME)
@@ -33,11 +34,19 @@ fn main() -> eframe::Result {
             .with_drag_and_drop(true),
         ..Default::default()
     };
-    eframe::run_native(
+    let run = eframe::run_native(
         APP_NAME,
         options,
         Box::new(move |cc| Ok(Box::new(App::new(cc, files)))),
-    )
+    );
+    // No usable GPU adapter (or no window) ends here: say why instead of a bare Debug dump.
+    match run {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{APP_NAME}: could not start the window: {err}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 /// Renders `root` for export, reading every image it needs at full sharpness.

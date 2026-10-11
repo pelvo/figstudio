@@ -471,3 +471,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   session against the 1.7 GB file (the reviewer's measurements are the evidence for the
   limits); the sidecar lock on network filesystems; the wasm UI (unchanged).
 
+- 2026-10-11 — T20 L1: app runs eframe on wgpu (desktop + web) instead of glow; window screenshot
+  on macOS matches the glow build; web build and `scripts/check.sh` passed. Not verified: Linux,
+  Windows, a browser run (WebGPU or WebGL2).

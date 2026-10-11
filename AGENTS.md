@@ -63,8 +63,8 @@ cargo run --release -p figstudio -- tests/fixtures/structure.fig   # desktop app
 scripts/web-build.sh --serve                            # browser app (nightly) on :8765
 ```
 
-Linux needs the usual eframe/rfd system libraries (X11 or Wayland, OpenGL, GTK/portal for
-the file dialog). macOS needs only Xcode command line tools.
+Linux needs the usual eframe/rfd system libraries (X11 or Wayland, a Vulkan or OpenGL/EGL
+driver for wgpu, GTK/portal for the file dialog). macOS needs only Xcode command line tools.
 
 ## Commits and branches
 
