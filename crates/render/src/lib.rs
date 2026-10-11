@@ -6,7 +6,6 @@ mod connector;
 mod effects;
 pub mod geom;
 pub mod images;
-mod instance;
 mod layout;
 mod network;
 pub mod paint;
@@ -19,6 +18,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 
+use figstudio_fig::resolve::{self, Overrides};
 use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
@@ -35,8 +35,6 @@ use crate::record::Canvas;
 
 pub use vello_cpu::{color, kurbo};
 
-/// Instances nested deeper than this are not expanded (guards against cycles).
-const MAX_INSTANCE_DEPTH: usize = 24;
 /// Total attempted-work units per render. The real large-file page render used 12,418 work
 /// units, so this cap leaves over 160x headroom before any truncation is possible.
 pub const MAX_RENDER_WORK: usize = 2_000_000;
@@ -145,7 +143,7 @@ pub struct Renderer {
     pub system_fonts: bool,
     /// Property and style indexes of the last document drawn, by [`Document::instance`]:
     /// built once per document, not per frame (they scan every node of every page).
-    indexes: Option<(u64, Arc<instance::Definitions>, Arc<variables::Variables>)>,
+    indexes: Option<(u64, Arc<resolve::Definitions>, Arc<variables::Variables>)>,
 }
 
 impl fmt::Debug for Renderer {
@@ -178,12 +176,6 @@ impl Default for Renderer {
     }
 }
 
-struct Patch {
-    data: Val,
-    owner_depth: usize,
-    derived: bool,
-}
-
 struct Ctx<'a> {
     doc: &'a Document,
     rc: &'a mut dyn Canvas,
@@ -191,11 +183,10 @@ struct Ctx<'a> {
     images: &'a Images,
     wanted: Vec<ImageRequest>,
     fonts: Option<&'a mut text::SystemFonts>,
-    patches: Vec<Patch>,
-    patch_index: std::collections::HashMap<Vec<Guid>, Vec<usize>>,
-    symbol_stack: Vec<Guid>,
+    /// Override scopes of the instances being drawn (the merge shared with `fig::resolve`).
+    overrides: Overrides,
+    /// `uniformScaleFactor` of each entered instance, parallel to `overrides`.
     instance_scales: Vec<f64>,
-    properties: instance::Properties,
     variables: Arc<variables::Variables>,
     work_left: usize,
     depth: usize,
@@ -382,7 +373,7 @@ impl Renderer {
         let (definitions, variables) = match &self.indexes {
             Some((instance, d, v)) if *instance == doc.instance => (d.clone(), v.clone()),
             _ => {
-                let d = Arc::new(instance::definitions(doc));
+                let d = Arc::new(resolve::definitions(doc));
                 let v = Arc::new(variables::Variables::new(doc));
                 self.indexes = Some((doc.instance, d.clone(), v.clone()));
                 (d, v)
@@ -403,11 +394,8 @@ impl Renderer {
             } else {
                 None
             },
-            patches: Vec::new(),
-            patch_index: std::collections::HashMap::new(),
-            symbol_stack: Vec::new(),
+            overrides: Overrides::new(definitions),
             instance_scales: Vec::new(),
-            properties: instance::Properties::new(definitions),
             variables,
             work_left,
             depth: 0,
@@ -780,15 +768,8 @@ impl Ctx<'_> {
         let Some(path) = path else {
             return (Cow::Borrowed(&node.data), false, false);
         };
-        let mut matches: Vec<&Patch> = self
-            .patch_index
-            .get(path)
-            .into_iter()
-            .flatten()
-            .filter_map(|index| self.patches.get(*index))
-            .collect();
-        matches.sort_by_key(|p| (std::cmp::Reverse(p.owner_depth), p.derived));
-        let property_patch = self.properties.patch(&node.data);
+        let matches = self.overrides.matches(path);
+        let property_patch = self.overrides.property_patch(&node.data);
         // A value comes from the outermost level that states it, already in that level's
         // scaled space; every uniformly scaled instance outside that level still scales it.
         let scales = &self.instance_scales;
@@ -813,11 +794,12 @@ impl Ctx<'_> {
         {
             return (Cow::Borrowed(&node.data), false, false);
         }
-        let mut data = node.data.merged(&property_patch);
-        let mut text_changed = data.get("textData") != node.data.get("textData");
+        let mut text_changed = property_patch
+            .get("textData")
+            .is_some_and(|t| node.data.get("textData") != Some(t));
         let mut glyphs_fresh = false;
         let mut stroke_stale = false;
-        for p in &matches {
+        let mut data = resolve::merge(&node.data, &property_patch, &matches, |data, p| {
             // Stored stroke outlines no longer match an overridden stroke unless a derived
             // patch stores new ones.
             if !p.derived
@@ -837,17 +819,7 @@ impl Ctx<'_> {
             if p.data.get("derivedTextData").is_some() && p.derived {
                 glyphs_fresh = true;
             }
-            data = data.merged(&p.data);
-            // An explicit paint override replaces the paints of a style it does not restate.
-            for (style, key) in variables::STYLED_PAINTS {
-                if p.data.get(key).is_some()
-                    && p.data.get(style).is_none()
-                    && let Val::Obj(o) = &mut data
-                {
-                    o.remove(style);
-                }
-            }
-        }
+        });
         // shortcut: vector-like nodes have no base shape to redraw from, so they keep the old
         // outline (about 25 nodes in the private file); restroke the vector network if one shows.
         if stroke_stale
@@ -861,7 +833,7 @@ impl Ctx<'_> {
         }
         layout::scale_inherited(&mut data, move_by, grow_by);
         layout::scale_ink(&mut data, glyph_scale, stroke_scales);
-        instance::inherit_swapped(self.doc, &node.data, &mut data);
+        resolve::inherit_swapped(self.doc, &node.data, &mut data);
         let stale_glyphs = text_changed && !glyphs_fresh;
         let approximate_ink = layout::approximate_ink(&data, &node.kind, stale_glyphs, outer_scale);
         (Cow::Owned(data), stale_glyphs, approximate_ink)
@@ -1294,22 +1266,11 @@ impl Ctx<'_> {
     }
     fn draw_instance(&mut self, data: &Val, world: Affine, path: Option<&[Guid]>) {
         self.stats.instances += 1;
-        let symbol_id = data
-            .get("overriddenSymbolID")
-            .and_then(Val::as_guid)
-            .or_else(|| {
-                data.path(&["symbolData", "symbolID"])
-                    .and_then(Val::as_guid)
-            });
-        let Some(symbol) = symbol_id.and_then(|id| self.doc.node(id)) else {
+        let Some(symbol) = resolve::symbol_id(data).and_then(|id| self.doc.node(id)) else {
             self.stats.missing_symbols += 1;
             return;
         };
-        if self.symbol_stack.contains(&symbol.id) {
-            self.stats.depth_skipped += 1;
-            return;
-        }
-        if self.symbol_stack.len() >= MAX_INSTANCE_DEPTH {
+        if !self.overrides.can_enter(symbol.id) {
             self.stats.depth_skipped += 1;
             return;
         }
@@ -1317,42 +1278,7 @@ impl Ctx<'_> {
             return;
         }
         let base: Vec<Guid> = path.map(<[Guid]>::to_vec).unwrap_or_default();
-        let owner_depth = self.symbol_stack.len();
-        let before = self.patches.len();
-        let mut added_keys = Vec::new();
-        let lists = [
-            (data.path(&["symbolData", "symbolOverrides"]), false),
-            (data.get("derivedSymbolData"), true),
-        ];
-        for (list, derived) in lists {
-            for item in list.map(Val::items).unwrap_or_default() {
-                let guids: Vec<Guid> = item
-                    .path(&["guidPath", "guids"])
-                    .map(Val::items)
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(Val::as_guid)
-                    .collect();
-                if guids.is_empty() {
-                    continue;
-                }
-                let mut full = base.clone();
-                full.extend(guids);
-                let index = self.patches.len();
-                self.patch_index
-                    .entry(full.clone())
-                    .or_default()
-                    .push(index);
-                added_keys.push(full);
-                self.patches.push(Patch {
-                    data: item.clone(),
-                    owner_depth,
-                    derived,
-                });
-            }
-        }
-        self.symbol_stack.push(symbol.id);
-        self.properties.push(symbol, data);
+        self.overrides.enter(symbol, data, &base);
         let scale = data
             .path(&["symbolData", "uniformScaleFactor"])
             .and_then(Val::as_f32)
@@ -1361,17 +1287,6 @@ impl Ctx<'_> {
         self.instance_scales.push(scale);
         self.draw_children(symbol, &symbol.data, world, Some(&base));
         self.instance_scales.pop();
-        self.properties.pop();
-        self.symbol_stack.pop();
-        self.patches.truncate(before);
-        for key in added_keys {
-            let remove = self.patch_index.get_mut(&key).is_some_and(|indexes| {
-                indexes.pop();
-                indexes.is_empty()
-            });
-            if remove {
-                self.patch_index.remove(&key);
-            }
-        }
+        self.overrides.leave();
     }
 }

@@ -12,6 +12,8 @@ crates/fig/src/          no UI, no rendering; builds for wasm (browser app)
   read.rs                Kiwi bytes -> Val, driven by the schema stored in the file
   val.rs                 Val, Obj (field list), Guid, intern()
   write.rs               Val -> Kiwi bytes, canvas chunks, zip; Document::to_bytes / save
+  resolve.rs, resolve/   public instance resolver: Overrides scope stack and merge (shared
+                         with the renderer), component properties, swaps, walk / path lookup
 crates/render/src/       Document -> pixels with vello_cpu; builds for wasm without fonts
   lib.rs                 Renderer, Stats, Viewport, the draw walk, culling, instances, masks,
                          bounds / hit test helpers; render_parallel (feature parallel)
@@ -154,7 +156,15 @@ Paints are resolved in `paint::resolve()`. SOLID, linear / radial / angular grad
 IMAGE (stretch / fill / fit / tile) are drawn; diamond gradients are approximated as radial
 (`approximated_paints`); a missing image draws a grey placeholder (`missing_images`).
 
-**Instances.** `draw_instance` pushes every `symbolOverrides` entry (and `derivedSymbolData`)
+**Instances.** The override merge lives in `figstudio_fig::resolve` and is shared by the
+renderer and the MCP tools. `resolve_instance(doc, instance)` lists every node inside an
+instance (Figma ids `I<instance>;<key>…`, merged data, level; capped at
+`MAX_RESOLVED_NODES`), `walk_instance` adds depth and node caps, and
+`resolve_path(doc, &InstancePath)` looks one node up. A walker that descends by itself (the
+renderer) keeps an `Overrides` stack: `enter`/`leave` per instance, `matches` + `merge` (or
+`resolve`) per node. The renderer adds only its render-side steps on top of `merge`:
+uniform-scale and constraint corrections, glyph/stroke scaling, stale glyph and stroke
+geometry detection. `draw_instance` pushes every `symbolOverrides` entry (and `derivedSymbolData`)
 as a `Patch` keyed by the full override path (instance path + `guidPath.guids`), then draws
 the component's children with that path. A node's override key is `Node::override_key()`.
 Override paths include only instance ancestors and the target key, not intervening ordinary

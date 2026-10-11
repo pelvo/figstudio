@@ -39,11 +39,7 @@ fn mentions_paint_reference(value: &Val) -> bool {
     false
 }
 
-/// A node's style reference and the paint list that the style replaces.
-pub(crate) const STYLED_PAINTS: [(&str, &str); 2] = [
-    ("styleIdForFill", "fillPaints"),
-    ("styleIdForStrokeFill", "strokePaints"),
-];
+pub(crate) use figstudio_fig::resolve::STYLED_PAINTS;
 
 impl Variables {
     pub fn new(doc: &Document) -> Self {
