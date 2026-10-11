@@ -13,9 +13,9 @@ use figstudio_fig::{Guid, Node, Val};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_cpu::kurbo::{Affine, Rect};
 
-use crate::geom::transformed_bounds;
 use crate::geom::{GeomPath, size};
-use crate::{Ctx, Stats, effect_reach, overhang};
+use crate::record::Canvas;
+use crate::{Ctx, Stats, effect_reach};
 
 /// Largest device area (px²) of one shadow layer: the node's rendered bounds plus the blur
 /// reach, intersected with the render target (Vello never allocates more than the target plus
@@ -70,6 +70,7 @@ impl Ctx<'_> {
         data: &'d Val,
         world: Affine,
         (casts, wanted): (bool, bool),
+        fill_paths: &[GeomPath],
     ) -> ShadowPlan<'d> {
         let visible: Vec<&Val> = data
             .get("effects")
@@ -92,7 +93,7 @@ impl Ctx<'_> {
         let bounds = if spent {
             self.screen
         } else {
-            self.alpha_bounds(node, data, world)
+            self.alpha_bounds(node, data, world, fill_paths)
         };
         let none = |bounds| ShadowPlan {
             whole: Vec::new(),
@@ -221,22 +222,17 @@ impl Ctx<'_> {
         let before = self.stats.clone();
         let wanted = self.wanted.len();
         let outer_aborted = std::mem::replace(&mut self.replay_aborted, false);
-        let (w, h) = size(data);
-        let m = overhang(&node.kind, data, w, h);
-        let own = transformed_bounds(world, Rect::new(-m, -m, w + m, h + m));
-        let outer_bounds = self.replay_bounds.replace(own);
         self.push_shadow(effect, world, true);
+        // Everything the redraw issues to the scene is recorded, so a discarded redraw is
+        // erased exactly where it drew.
+        self.rc.begin_track();
         self.draw_body(node, data, world, size(data), fill_paths, path, inner);
+        let drawn = self.rc.end_track();
         let complete = !(self.replay_aborted || self.replay_spent());
-        let drawn = self.replay_bounds.unwrap_or(own);
-        if !complete {
-            // Only what the redraw touched: a screen-sized erase would make Vello allocate and
-            // blur a screen-sized layer.
-            self.rc.clear_layer(drawn.inflate(2.0, 2.0));
+        if !complete && let Some(area) = drawn {
+            self.rc.clear_layer(area);
         }
         self.rc.pop_layer();
-        // An enclosing redraw also drew what this one did.
-        self.replay_bounds = outer_bounds.map(|o| o.union(drawn));
         self.rc.set_transform(world);
         self.replay_aborted = outer_aborted;
         let spent = self
@@ -279,10 +275,14 @@ impl Ctx<'_> {
             .push_filter_layer(Filter::from_primitive(primitive), effect_reach(effect));
     }
 
-    /// Device pixels of a layer around `bounds` plus the effect's reach. Vello allocates at most
-    /// the part of the layer inside the target (plus the filter padding), so the area is taken
-    /// inside the target: when the target is small, every layer is small. Infinite for
-    /// non-finite bounds.
+    /// Device pixels of a layer around `bounds` plus the effect's reach, clamped to the render
+    /// target grown by that reach. Vello cannot allocate more per layer: a filter layer's strip
+    /// generator is the target plus the filter's source padding (vello_common 0.3.0
+    /// `viewport.rs:94-107`), so drawing is clipped to it, and its pixmap is that bbox plus the
+    /// filter padding (`filter/mod.rs:156-157`, `geometry.rs:219` `expand`), tile-snapped. Both
+    /// paddings are about the blur reach per side, so target + reach on every side is the same
+    /// order (a few tile pixels of snapping aside). When the target is small, every layer is
+    /// small. Huge for non-finite bounds.
     fn layer_pixels(&self, effect: &Val, world: Affine, bounds: Rect) -> usize {
         let [a, b, c, d, _, _] = world.as_coeffs();
         let reach = effect_reach(effect) * a.hypot(b).max(c.hypot(d));

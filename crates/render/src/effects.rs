@@ -11,6 +11,7 @@ use vello_cpu::kurbo::{Affine, BezPath, Shape, Stroke, StrokeOpts};
 use vello_cpu::peniko::Fill;
 
 use crate::geom::GeomPath;
+use crate::record::Canvas;
 use crate::{Ctx, effect_reach, paint};
 
 /// Whether the node's own fill shape can stand in for the node when casting shadows.

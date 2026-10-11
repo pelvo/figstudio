@@ -258,6 +258,11 @@ impl Canvas for Recorder {
         self.close(Cmd::Pop);
     }
     fn clear_layer(&mut self, area: Rect) {
+        // Drawing in the layer: its output area covers the erase too, or a strip that only the
+        // erase reaches would skip the whole layer and keep the discarded redraw's neighbours.
+        // `area` is in output pixels: record it under the identity transform.
+        self.transform = Affine::IDENTITY;
+        let area = self.touched(area);
         self.cmds.push(Cmd::Clear(area));
     }
 }

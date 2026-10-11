@@ -14,6 +14,7 @@ mod shadow_bounds;
 mod shadow_layer;
 mod stroke;
 mod text;
+mod track;
 mod variables;
 
 use std::borrow::Cow;
@@ -33,6 +34,7 @@ use crate::geom::{
 };
 use crate::images::{ImageRequest, Images};
 use crate::record::Canvas;
+use crate::track::Tracked;
 
 pub use vello_cpu::{color, kurbo};
 
@@ -189,7 +191,7 @@ struct Patch {
 
 struct Ctx<'a> {
     doc: &'a Document,
-    rc: &'a mut dyn Canvas,
+    rc: Tracked<'a>,
     stats: Stats,
     images: &'a Images,
     wanted: Vec<ImageRequest>,
@@ -207,8 +209,8 @@ struct Ctx<'a> {
     replay_floor: usize,
     /// Set when a redraw ran out of its allowance: the traversal inside it stops at once.
     replay_aborted: bool,
-    /// Output bounds of what the running whole-node shadow redraw has drawn (to erase it).
-    replay_bounds: Option<Rect>,
+    /// Output bounds of the stored geometry of each blob, for shadow layer bounds (decoded once).
+    blob_boxes: std::collections::HashMap<u32, Option<Option<Rect>>>,
     /// Output area in pixels, for culling.
     screen: Rect,
 }
@@ -400,7 +402,7 @@ impl Renderer {
         let work_left = work;
         let mut ctx = Ctx {
             doc,
-            rc: canvas,
+            rc: Tracked::new(canvas),
             stats: Stats {
                 preparation_skipped,
                 ..Stats::default()
@@ -423,7 +425,7 @@ impl Renderer {
             exhausted: false,
             replay_floor: 0,
             replay_aborted: false,
-            replay_bounds: None,
+            blob_boxes: std::collections::HashMap::new(),
             screen,
         };
         if let Some(node) = doc.node(root) {
@@ -910,11 +912,6 @@ impl Ctx<'_> {
         let kind = node.kind.as_str();
         let world = parent * affine(data.get("transform"));
         let (w, h) = size(data);
-        if self.replay_floor > 0 {
-            let m = overhang(kind, data, w, h);
-            let b = transformed_bounds(world, Rect::new(-m, -m, w + m, h + m));
-            self.replay_bounds = Some(self.replay_bounds.map_or(b, |r| r.union(b)));
-        }
         if self.off_screen(node, kind, data, world, w, h) {
             self.stats.culled += 1;
             self.depth -= 1;
@@ -957,7 +954,13 @@ impl Ctx<'_> {
                 data,
                 !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
             );
-        let mut plan = self.whole_shadow_plan(node, data, world, (casts, silhouette || !casts));
+        let mut plan = self.whole_shadow_plan(
+            node,
+            data,
+            world,
+            (casts, silhouette || !casts),
+            &fill_paths,
+        );
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
             if effect.flag("visible") == Some(false) {

@@ -85,6 +85,36 @@ pub fn blob_path(bytes: &[u8]) -> Option<BezPath> {
     Some(path)
 }
 
+/// Bounding box of the control points of a Figma path blob, read without building the path.
+/// `None` for a malformed or empty blob (which draws nothing).
+pub fn blob_bounds(bytes: &[u8]) -> Option<Rect> {
+    let read = |at: usize| -> Option<f64> {
+        let raw: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
+        Some(f64::from(f32::from_le_bytes(raw)))
+    };
+    let mut bounds: Option<Rect> = None;
+    let mut grow = |x: f64, y: f64| {
+        let r = Rect::new(x, y, x, y);
+        bounds = Some(bounds.map_or(r, |b| b.union(r)));
+    };
+    let mut i = 0;
+    while i < bytes.len() {
+        let points = match bytes[i] {
+            0 => 0,
+            1 | 2 => 1,
+            3 => 2,
+            4 => 3,
+            _ => return None,
+        };
+        i += 1;
+        for k in 0..points {
+            grow(read(i + 8 * k)?, read(i + 8 * k + 4)?);
+        }
+        i += 8 * points;
+    }
+    bounds.filter(|b| b.x0.is_finite() && b.y0.is_finite() && b.x1.is_finite() && b.y1.is_finite())
+}
+
 /// Whether a vector's network (`vectorData.vectorNetworkBlob`) is closed: every segment lies on
 /// a region loop, so its fill outline is the boundary inside/outside strokes align to.
 /// True when every segment of the vector network lies on some region loop.

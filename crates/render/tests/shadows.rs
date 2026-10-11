@@ -1073,3 +1073,241 @@ fn a_discarded_redraw_is_erased_in_parallel_strips_too() {
         assert_eq!(alpha(b, x, y), 0, "strips: no half shadow at ({x},{y})");
     }
 }
+
+/// Adds a closed rectangle path `w`x`h` at (`x`,`y`) to the document's blobs; returns its index.
+fn rect_blob(doc: &mut Document, (x, y, w, h): (f32, f32, f32, f32)) -> i64 {
+    let index = doc.blobs.len() as i64;
+    let mut commands = Vec::new();
+    for (cmd, px, py) in [(1u8, x, y), (2, x + w, y), (2, x + w, y + h), (2, x, y + h)] {
+        commands.push(cmd);
+        commands.extend(px.to_le_bytes());
+        commands.extend(py.to_le_bytes());
+    }
+    commands.push(0);
+    doc.blobs.push(commands);
+    index
+}
+
+/// A 1x1 node of `kind` whose stored fill geometry is a bigger rectangle, with the effects.
+fn tiny_node_with_big_path(kind: &str, path: (f32, f32, f32, f32), effects: Vec<Val>) -> Document {
+    let mut doc = document(vec![node(1, 0, "CANVAS")]);
+    let blob = rect_blob(&mut doc, path);
+    let mut n = node(2, 1, kind);
+    n.data.set("size", size(1.0, 1.0));
+    // Translucent, so the fill-mask path is not exact and the whole node casts the shadow.
+    let mut fill = paint(0.5, 0.5, 0.5).items()[0].clone();
+    fill.set("opacity", Val::Float(0.5));
+    n.data.set("fillPaints", Val::Arr(vec![fill]));
+    n.data.set(
+        "fillGeometry",
+        Val::Arr(vec![obj(&[("commandsBlob", Val::Int(blob))])]),
+    );
+    n.data.set("effects", Val::Arr(effects));
+    let mut nodes = doc.nodes.clone();
+    nodes.push(n);
+    doc.set_nodes(nodes).unwrap();
+    doc
+}
+
+#[test]
+fn stored_geometry_larger_than_the_box_counts_toward_the_layer_guard() {
+    // A 1x1 vector whose stored path is 4200x2000: the layer is that path's size, not the box's.
+    let doc = tiny_node_with_big_path("VECTOR", (0.0, 0.0, 4200.0, 2000.0), vec![effect_dx(1.0)]);
+    let stats = render_sized(&doc, 4200, 2000);
+    assert_eq!(stats.approximated_effects, 1, "8.4M px layer is refused");
+    assert!(
+        stats.shadow_layer_pixels == 0,
+        "and not charged: {}",
+        stats.shadow_layer_pixels
+    );
+}
+
+#[test]
+fn layer_charges_are_at_least_the_area_actually_drawn() {
+    // A 3000x2000 stored path on a 1x1 vector, drawn into a target of the same size: the
+    // layer is 6M px (under the cap), so it is allowed and charged for what it covers.
+    let doc = tiny_node_with_big_path("VECTOR", (0.0, 0.0, 3000.0, 2000.0), vec![effect_dx(1.0)]);
+    let stats = render_sized(&doc, 3000, 2000);
+    assert_eq!(stats.approximated_effects, 0);
+    assert!(
+        stats.shadow_layer_pixels >= 6_000_000,
+        "charged {} for a 6M px layer",
+        stats.shadow_layer_pixels
+    );
+}
+
+fn tiny_node_with_two_shadows_and_an_aborting_replay() -> Document {
+    // A fill-less 1x1 node that strokes a 60x60 stored path at (60,10) (so it casts no mask
+    // shadow), with two shadows; an instance child swapping in 5000 children exhausts the
+    // replay allowance part-way.
+    let mut doc = swapped_frame(false);
+    let blob = rect_blob(&mut doc, (60.0, 10.0, 60.0, 60.0));
+    let mut nodes = doc.nodes.clone();
+    let frame = nodes.iter_mut().find(|n| n.id == id(20)).unwrap();
+    frame.data.set("strokePaints", paint(0.0, 1.0, 0.0));
+    frame.data.set(
+        "strokeGeometry",
+        Val::Arr(vec![obj(&[("commandsBlob", Val::Int(blob))])]),
+    );
+    doc.set_nodes(nodes).unwrap();
+    doc
+}
+
+/// Output size for the aborted-replay scenes: wide and tall enough for the 60x60 path and
+/// its shadows (the stroke path ends at y=70, its shadows reach y=120).
+const ABORT_VIEW: (u16, u16) = (160, 128);
+/// Pixels only a shadow of the path can reach.
+const SHADOW_ONLY: [(usize, usize); 3] = [(65, 100), (65, 115), (110, 90)];
+
+fn alphas_after_aborted_replay(parallel: bool) -> Vec<u8> {
+    let doc = tiny_node_with_two_shadows_and_an_aborting_replay();
+    let viewport = Viewport {
+        width: ABORT_VIEW.0,
+        height: ABORT_VIEW.1,
+        transform: Affine::IDENTITY,
+        background: None,
+    };
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let frame = if parallel {
+        #[cfg(feature = "parallel")]
+        {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(4)
+                .build()
+                .unwrap();
+            pool.install(|| r.render_parallel(&doc, id(1), &viewport))
+        }
+        #[cfg(not(feature = "parallel"))]
+        r.render(&doc, id(1), &viewport)
+    } else {
+        r.render(&doc, id(1), &viewport)
+    };
+    assert_eq!(frame.stats.skipped_effects, 2, "no fill mask: both counted");
+    let px = frame.pixmap.data_as_u8_slice();
+    SHADOW_ONLY
+        .iter()
+        .map(|(x, y)| px[(y * usize::from(ABORT_VIEW.0) + x) * 4 + 3])
+        .collect()
+}
+
+#[test]
+fn an_aborted_replay_is_erased_where_the_geometry_drew() {
+    assert_eq!(alphas_after_aborted_replay(false), [0, 0, 0], "serial");
+}
+
+#[test]
+fn an_aborted_replay_is_erased_in_parallel_strips_where_the_geometry_drew() {
+    assert_eq!(alphas_after_aborted_replay(true), [0, 0, 0], "strips");
+}
+
+#[test]
+fn stored_stroke_geometry_larger_than_the_box_counts_toward_the_layer_guard() {
+    // The same 1x1 vector, but the big path is its stroke outline, not its fill. It has no
+    // fill shape of its own, so only the whole-content layer could draw its shadow.
+    let mut doc = document(vec![node(1, 0, "CANVAS")]);
+    let blob = rect_blob(&mut doc, (0.0, 0.0, 4200.0, 2000.0));
+    let mut n = node(2, 1, "VECTOR");
+    n.data.set("size", size(1.0, 1.0));
+    n.data.set("strokePaints", paint(1.0, 0.0, 0.0));
+    n.data.set(
+        "strokeGeometry",
+        Val::Arr(vec![obj(&[("commandsBlob", Val::Int(blob))])]),
+    );
+    n.data.set("effects", Val::Arr(vec![effect_dx(1.0)]));
+    let mut nodes = doc.nodes.clone();
+    nodes.push(n);
+    doc.set_nodes(nodes).unwrap();
+    let stats = render_sized(&doc, 4200, 2000);
+    assert_eq!(stats.shadows, 0, "no layer is drawn");
+    assert_eq!(stats.skipped_effects, 1, "and the omission is counted");
+}
+
+#[test]
+fn a_discarded_redraw_is_erased_out_to_the_filter_reach_of_what_it_drew() {
+    // A frame with two shadows (offset 100 and 110 px down). Its first child is a 40x40 stored
+    // path with a blurred shadow of its own: that nested filter layer spreads the redraw's
+    // content ~60 px past the path. A later child (5000-node swap) exhausts the redraw's
+    // allowance, so the redraw is erased; the erase has to reach the whole blur or a faint
+    // tinted ring of it survives, shifted down by the frame's shadow offset.
+    let mut doc = document(vec![node(1, 0, "CANVAS")]);
+    let big = rect_blob(&mut doc, (60.0, 10.0, 40.0, 40.0));
+    let mut nodes = doc.nodes.clone();
+    nodes.push(node(2, 0, "SYMBOL"));
+    nodes.push(instance(3, 2, 4, vec![]));
+    nodes.push(node(4, 0, "SYMBOL"));
+    nodes.push(node(6, 0, "SYMBOL"));
+    for n in 0..5000 {
+        let mut c = node(100 + n, 6, "RECTANGLE");
+        c.data.set("size", size(1.0, 1.0));
+        c.data.set("fillPaints", paint(1.0, 1.0, 1.0));
+        c.data.set("transform", obj(&[("m02", Val::Float(150.0))]));
+        nodes.push(c);
+    }
+    let mut frame = node(20, 1, "FRAME");
+    frame.data.set("size", size(1.0, 1.0));
+    frame.data.set("fillPaints", Val::Arr(vec![]));
+    let red = coloured(shadow("DROP_SHADOW", 0.0, 100.0, 0.0), (1.0, 0.0, 0.0));
+    let blue = coloured(shadow("DROP_SHADOW", 0.0, 110.0, 0.0), (0.0, 0.0, 1.0));
+    frame.data.set("effects", Val::Arr(vec![red, blue]));
+    nodes.push(frame);
+    // Id 5 sorts before the instance (id 10), so it is drawn first inside the redraw.
+    let mut child = node(5, 20, "VECTOR");
+    child.data.set("size", size(1.0, 1.0));
+    let mut fill = paint(0.5, 0.5, 0.5).items()[0].clone();
+    fill.set("opacity", Val::Float(0.5));
+    child.data.set("fillPaints", Val::Arr(vec![fill]));
+    child.data.set(
+        "fillGeometry",
+        Val::Arr(vec![obj(&[("commandsBlob", Val::Int(big))])]),
+    );
+    child.data.set(
+        "effects",
+        Val::Arr(vec![shadow("DROP_SHADOW", 0.0, 0.0, 40.0)]),
+    );
+    nodes.push(child);
+    let swap = patch(&[3], &[("overriddenSymbolID", id(6).to_val())]);
+    nodes.push(instance(10, 20, 2, vec![swap]));
+    doc.set_nodes(nodes).unwrap();
+    let viewport = Viewport {
+        width: 160,
+        height: 256,
+        transform: Affine::IDENTITY,
+        background: None,
+    };
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let frame = r.render(&doc, id(1), &viewport);
+    assert_eq!(frame.stats.skipped_effects, 2, "the redraw was refused");
+    let px = frame.pixmap.data_as_u8_slice();
+    // 15 px below the path's blur source, shifted by the first shadow's 100 px: only a leaked
+    // copy of the discarded redraw can be here (the real pass's own blur ends 60 px under 50).
+    let leaked = px[(165 * 160 + 80) * 4 + 3];
+    assert_eq!(leaked, 0, "no ring of the discarded blur survives");
+}
+
+#[test]
+fn a_clipping_instance_keeps_its_overrides_inside_its_own_bounds() {
+    // The instance clips (a component is a clipping frame), so an override that enlarges a
+    // child cannot draw past its box: the layer is the instance's own small box.
+    let mut symbol = node(2, 0, "SYMBOL");
+    symbol.data.set("size", size(10.0, 10.0));
+    symbol.data.set("frameMaskDisabled", Val::Bool(false));
+    let mut child = node(3, 2, "RECTANGLE");
+    child.data.set("size", size(10.0, 10.0));
+    child.data.set("fillPaints", paint(1.0, 1.0, 1.0));
+    let big = patch(&[3], &[("size", size(4200.0, 2000.0))]);
+    let mut inst = instance(5, 1, 2, vec![big]);
+    inst.data.set("size", size(10.0, 10.0));
+    inst.data.set("frameMaskDisabled", Val::Bool(false));
+    inst.data.set("fillPaints", paint(0.5, 0.5, 0.5));
+    inst.data.set("effects", Val::Arr(vec![effect_dx(1.0)]));
+    let doc = document(vec![node(1, 0, "CANVAS"), symbol, child, inst]);
+    let stats = render_sized(&doc, 4200, 2000);
+    assert_eq!(stats.approximated_effects, 0);
+    assert!(
+        stats.shadow_layer_pixels < 10_000,
+        "{}",
+        stats.shadow_layer_pixels
+    );
+}

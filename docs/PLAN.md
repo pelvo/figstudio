@@ -221,6 +221,11 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-11 — T19 #1 fourth review pass: shadow layers bounded by the geometry actually
+  drawn (stored fill/stroke/glyph blobs boxed), discarded redraws erased over the paths
+  actually issued. 42 pages at scale 0.1: +0.4% total CPU, worst page +5.3%; approximated
+  shadows 3567, skipped 533. Workspace and wasm checks pass.
+
 - 2026-10-11 — T19 #1 third review pass: shadow memory and redraw work enforced at run time
   (aggregate layer budget, per-visit allowance, discarded redraw erased). 42 pages at scale
   0.1: +0.4% total CPU, worst page +5.5%; approximated shadows 3566, skipped 533. Workspace

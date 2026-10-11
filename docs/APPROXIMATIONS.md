@@ -14,7 +14,7 @@ Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
 | Counter (status bar text) | Total | Pages |
 |---|---:|---:|
-| shadow effects approximated | 5349 (3566 after fix #1) | 24 |
+| shadow effects approximated | 5349 (3567 after fix #1) | 24 |
 | effects skipped | 483 (533 after fix #1) | 22 |
 | instance ink approximated | 436 | 10 |
 | stroke alignments approximated | 245 | 9 |
@@ -23,7 +23,7 @@ Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
 ## What is behind each counter
 
-### C1. shadow effects approximated (3566 after fix #1 and its review fixes; 5349 before)
+### C1. shadow effects approximated (3567 after fix #1 and its review fixes; 5349 before)
 
 Code: `effects::is_approximate`, `effects::approximate_silhouette` (`crates/render/src/effects.rs`),
 `shadow_layer.rs` (whole-node layers).
@@ -41,11 +41,17 @@ rendered-alpha area over `MAX_SHADOW_PIXELS`, more than `MAX_WHOLE_SHADOWS` shad
 over `MAX_REPLAY_DESCENDANTS` nodes, the render's total layer budget, or redraw work over its
 runtime allowance. Everything below is enforced at run time, not predicted.
 
-*Memory:* a layer's pixels are the node's own box and ink (never trimmed by its clip) plus,
-unless it clips, its descendants' bounds, inflated by the blur reach and intersected with
-the render target. Any instance in the subtree, any override or scale applying to the node, or
-over 256 nodes means the whole target stands in (no list of override keys to keep in sync;
-provably an upper bound). Every whole-node layer pushed, nested and redraw layers included,
+*Memory:* a layer's pixels are the box of everything the node actually draws: its box and
+ink (never trimmed by its own clip), its decoded fill paths, its stored stroke outlines and
+glyphs (path blobs boxed once per render without building the path), and, unless it clips,
+its descendants' the same way. A clipping node bounds everything below it, instances and
+overrides included. Otherwise any instance in the subtree, any override or scale applying to
+the node, a vector known only by its network, text laid out from system fonts, or over 256
+nodes means the whole target stands in (no list of override keys to keep in sync; provably an
+upper bound). The area is clamped to the render target grown by the blur reach: Vello draws a
+filter layer into the target plus the filter's source padding (vello_common 0.3.0
+`viewport.rs:94-107`) and allocates that bbox plus the filter padding (`filter/mod.rs:156-157`),
+so it cannot allocate more. Every whole-node layer pushed, nested and redraw layers included,
 is charged to `MAX_SHADOW_LAYER_PIXELS_TOTAL` (64M px) at plan time and reported in
 `Stats::shadow_layer_pixels`; past it the shadow falls back, counted. The browser build runs
 the same walk. A fill-less node's refused shadow is skipped and counted, never drawn as a
@@ -54,7 +60,8 @@ whole-content layer or cast from the node box.
 *Time:* all redraws of one node (nested ones included) share an allowance of
 `REPLAY_WORK_FACTOR` x subtree size x shadows node visits, checked at every child visit. When
 it runs out the traversal stops at once and the half-drawn redraw layer is erased (a `Clear`
-fill over what it touched, also recorded for parallel strips), then the shadow falls back to
+fill over the output bounds of every path actually issued to the scene while it ran, spread by
+the filters opened inside it, recorded by `track.rs`; also recorded for parallel strips), then the shadow falls back to
 the fill mask if the node casts one, else is skipped and counted. Planning is charged to the
 work budget.
 
@@ -166,3 +173,14 @@ sigma), and anything whose exact form costs too much time on large pages.
   bounds uncertain on a target over the cap 465, subtree over the node cap 411, replay work 16.
   A first version cleared the discarded layer with a +-1e6 rect and cost one page +35%;
   clearing only the bounds the redraw drew removed that.
+- 2026-10-11 — Fourth review pass on fix #1: shadow layers bounded by the geometry actually
+  drawn. Plan-time bounds include the decoded fill paths, stored stroke outlines and glyphs
+  (blobs boxed once); a clipping node bounds everything below it. A discarded redraw is erased
+  over the union of the paths actually issued to the scene while it ran (`track.rs`), not over
+  size-based bounds. 42 pages at `--scale 0.1`, CPU time, quiet machine: 104.9 s before,
+  105.3 s after (+0.4%), worst page +5.3%; none over 25%. Scale 1, three shadow-heaviest pages:
+  +1.9%, +1.2%, -0.4%. Approximated shadows 3567, skipped 533. Counted-shadow events by
+  guard, overlapping, 42 pages: spread/blend/anisotropic 1717, aggregate memory 935,
+  fill-less mixed lists 760, bounds uncertain on a target over the cap 465, subtree over the
+  node cap 411, replay work 16. A first version returned the whole target for any instance
+  before looking at the clip: counters 4660 / 855.
