@@ -8,8 +8,11 @@ use figstudio_render::{absolute_transform, geom};
 
 use crate::tab::View;
 
-/// Smallest on-screen frame width that still gets a label; Figma hides them when zoomed out.
-const MIN_WIDTH: f32 = 40.0;
+/// Smallest on-screen width (points) that still gets a label. Figma keeps section names far
+/// out but drops frame names once frames get small: measured against Figma, frames about
+/// 270 pt wide keep their name and frames about 180 pt wide lose it.
+const MIN_SECTION_WIDTH: f32 = 40.0;
+const MIN_FRAME_WIDTH: f32 = 220.0;
 /// Bound on labels laid out per frame, so pages with thousands of frames stay fast.
 const MAX_LABELS: usize = 2_000;
 
@@ -41,7 +44,12 @@ pub fn labels(doc: &Document, page: Guid, view: View, origin: Pos2, screen: Rect
         let b = tf * Point::new(w, 0.0);
         let at = view.to_screen(origin, Pos2::new(a.x as f32, a.y as f32));
         let width = (view.to_screen(origin, Pos2::new(b.x as f32, b.y as f32)) - at).length();
-        if width >= MIN_WIDTH && screen.expand(width).contains(at) {
+        let min = if section {
+            MIN_SECTION_WIDTH
+        } else {
+            MIN_FRAME_WIDTH
+        };
+        if width >= min && screen.expand(width).contains(at) {
             out.push(Label {
                 text: node.name.clone(),
                 at,
@@ -120,11 +128,11 @@ mod tests {
         doc.set_nodes(vec![
             node(1, 0, "CANVAS", "page", 0.0, 0.0),
             node(2, 1, "SECTION", "Section A", 0.0, 400.0),
-            node(3, 2, "FRAME", "Frame in section", 10.0, 200.0),
-            node(4, 3, "FRAME", "Nested frame", 0.0, 100.0),
-            node(5, 1, "FRAME", "Top frame", 500.0, 200.0),
-            node(6, 1, "RECTANGLE", "Shape", 800.0, 200.0),
-            node(7, 1, "FRAME", "Tiny frame", 900.0, 10.0),
+            node(3, 2, "FRAME", "Frame in section", 10.0, 300.0),
+            node(4, 3, "FRAME", "Nested frame", 0.0, 300.0),
+            node(5, 1, "FRAME", "Top frame", 500.0, 300.0),
+            node(6, 1, "RECTANGLE", "Shape", 900.0, 300.0),
+            node(7, 1, "FRAME", "Small frame", 1300.0, 200.0),
         ])
         .unwrap();
         let view = View {
