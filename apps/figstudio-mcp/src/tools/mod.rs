@@ -1,6 +1,8 @@
 //! Offline discovery and read-only document tools.
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
+/// PNG renders of nodes.
+pub mod screenshot;
 use crate::FigstudioServer;
 use rmcp::{model::CallToolResult, tool, tool_router};
 use serde_json::json;

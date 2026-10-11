@@ -171,10 +171,25 @@ pass with balanced XML. No fig/render edits.
 Not verified: official output capture, live Claude/Cursor clients, private files, L5 instance
 expansion. No renderer changes, so visual and wasm checks are not needed.
 
-**L3: `get_screenshot`.** `render_fit`, `scale` param (default 1, longest side clamped to
-4096), base64 `image` content plus a text line with size and approximations. **Done:** decode
-the returned base64 to a PNG with the right dimensions; an id that does not exist gives
-`isError`.
+**L3: `get_screenshot`.** [x] Complete. `Renderer::render_fit` (padding 0) in
+`spawn_blocking`, honouring `--no-system-fonts`. Inputs `nodeId`, `fileKey`, `scale` (default
+1; outside 0.01..=4 or non-finite gives isError). Background: a page (CANVAS) is drawn on its
+page background colour, every other node on transparent (Figma's own node screenshots are
+transparent). The longest side is capped at 4096 px by lowering the scale; the text line
+reports the effective scale. The render covers the node's visible bounds plus the renderer's
+overhang margin for strokes, shadows and text, so the PNG is a little larger than the node
+(fixture node 381x191 gives about 417x227 at scale 1). Returns an `image/png` item (base64
+crate) and a text item `<w>x<h> px, scale <s>` plus an `approximations:` line with the
+non-zero gap counters of `Stats` (skipped, missing, approximated, not drawn). Instance paths,
+zero-size nodes, hidden nodes, the document root, unknown ids and bad scales give isError.
+Documents opened by the server are eager (`Document::open`), so image fills are present and
+no two-pass render is needed.
+
+L3 verified: PNG decoded with the `image` crate; dimensions follow node size and scale;
+URL/dash ids; page render; approximations line; scale, id, zero-size, hidden and instance-path
+errors; 4096 cap; rmcp end-to-end. Each assertion group was proven by a failing mutation.
+Not verified: pixel content (no picture comparison; the renderer is unchanged), live clients,
+very large pages' time and memory, Figma's exact margin around a node.
 
 **L4: tokens and `get_variable_defs`.** Move or extend `render/variables.rs` into a public
 `fig::tokens`: collections, modes, the value for every mode, alias chains (depth-capped), and

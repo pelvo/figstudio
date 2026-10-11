@@ -108,8 +108,9 @@ async fn check_version(version: &str) {
             let (tools, response_session) = post(&client, &uri, &version, session.clone(), json!({"jsonrpc":"2.0", "id":2, "method":"tools/list", "params":{"_meta":meta}})).await;
             if version == ProtocolVersion::LATEST.to_string() { assert!(response_session.is_none()); }
             let tools = tools["result"]["tools"].as_array().unwrap_or_else(|| panic!("tools/list failed: {tools}"));
-            assert_eq!(tools.len(), 3);
+            assert_eq!(tools.len(), 4);
             assert!(tools.iter().any(|tool| tool["name"] == "get_metadata"));
+            assert!(tools.iter().any(|tool| tool["name"] == "get_screenshot"));
             assert!(tools.iter().any(|tool| tool["name"] == "whoami"));
             assert!(tools.iter().any(|tool| tool["name"] == "list_files"));
             let (whoami, _) = post(&client, &uri, &version, session.clone(), json!({"jsonrpc":"2.0", "id":3, "method":"tools/call", "params":{"name":"whoami", "arguments":{}, "_meta":meta}})).await;

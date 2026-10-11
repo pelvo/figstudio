@@ -30,7 +30,7 @@ impl FigstudioServer {
         Self {
             files: FileRegistry::new(paths),
             no_system_fonts,
-            tool_router: Self::tool_router() + Self::metadata_router(),
+            tool_router: Self::tool_router() + Self::metadata_router() + Self::screenshot_router(),
         }
     }
 

@@ -986,9 +986,12 @@ name = "figstudio-mcp"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "clap",
  "figstudio-fig",
+ "figstudio-render",
  "futures-util",
+ "image",
  "quick-xml",
  "reqwest",
  "rmcp",
