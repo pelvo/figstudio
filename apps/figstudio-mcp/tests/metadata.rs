@@ -146,7 +146,15 @@ fn synthetic_attributes_text_escaping_and_instance_leaves() {
     );
     let child = node(Guid(9, 4), instance.id, "FRAME", "must not expand");
     let mut nodes = doc.nodes.clone();
-    nodes.extend([frame, label, instance, child]);
+    let mut counter_clockwise = node(Guid(9, 5), root, "FRAME", "counter-clockwise");
+    counter_clockwise.data.set(
+        "transform",
+        Val::Obj(Obj::from([
+            ("m00", Val::Float(0.0)),
+            ("m10", Val::Float(-1.0)),
+        ])),
+    );
+    nodes.extend([frame, label, instance, child, counter_clockwise]);
     doc.set_nodes(nodes).unwrap();
     let xml = text(&metadata(&doc, Some("9:1"), None));
     let tags = elements(&xml);
@@ -157,8 +165,13 @@ fn synthetic_attributes_text_escaping_and_instance_leaves() {
     assert_eq!(attrs["width"], "80");
     assert_eq!(attrs["height"], "90");
     assert_eq!(attrs["hidden"], "true");
-    assert_eq!(attrs["rotation"], "90");
-    assert!(xml.contains(&format!("&lt;&amp;{}", "é".repeat(198))));
+    assert_eq!(attrs["rotation"], "-90");
+    let opposite = tags
+        .iter()
+        .find(|(_, attrs)| attrs.get("id").is_some_and(|id| id == "9:5"))
+        .unwrap();
+    assert_eq!(opposite.1["rotation"], "90");
+    assert!(xml.contains(&format!("&lt;&amp;{}…", "é".repeat(198))));
     assert!(!xml.contains("tail"));
     assert!(!xml.contains("id=\"9:4\""));
     assert_eq!(
@@ -225,29 +238,69 @@ fn invisible_and_internal_pages_are_excluded() {
 
 #[tokio::test]
 async fn metadata_tool_handles_ids_pages_and_missing_files() {
-    tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        let paths = vec![fixture(), fixture().with_file_name("missing.fig")];
-        let (client_io, server_io) = tokio::io::duplex(65536);
-        let task = tokio::spawn(async move { FigstudioServer::new(paths, true).serve(server_io).await.unwrap().waiting().await });
-        let client = ().serve(client_io).await.unwrap();
-        let tools = client.list_all_tools().await.unwrap();
-        let tool = tools.iter().find(|tool| tool.name == "get_metadata").unwrap();
-        assert!(tool.input_schema["properties"]["nodeId"].is_object());
-        for args in [json!({"fileKey":"structure"}), json!({"fileKey":"structure","nodeId":"0-1"}),
-            json!({"fileKey":"structure","nodeId":"https://www.figma.com/design/example?node-id=0-1"})] {
-            let result = client.call_tool(CallToolRequestParams::new("get_metadata").with_arguments(args.as_object().unwrap().clone())).await.unwrap();
-            assert_ne!(result.is_error, Some(true)); assert!(text(&result).contains("id=\"0:1\""));
-        }
-        for input in ["99:99", "bad", "I1:38;1:42"] {
-            let args = json!({"fileKey":"structure", "nodeId": input});
-            let result = client.call_tool(CallToolRequestParams::new("get_metadata").with_arguments(args.as_object().unwrap().clone())).await.unwrap();
-            assert_eq!(result.is_error, Some(true));
-            assert!(text(&result).contains("Available pages")); assert!(text(&result).contains("id=\"0:1\""));
-        }
-        for args in [json!({"fileKey":"missing"}), json!({"fileKey":"unregistered"}), json!({})] {
-            let result = client.call_tool(CallToolRequestParams::new("get_metadata").with_arguments(args.as_object().unwrap().clone())).await.unwrap();
-            assert_eq!(result.is_error, Some(true));
-        }
-        client.cancel().await.unwrap(); task.await.unwrap().unwrap();
-    }).await.expect("metadata protocol timed out");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        check_metadata_protocol(),
+    )
+    .await
+    .expect("metadata protocol timed out");
+}
+
+async fn check_metadata_protocol() {
+    let paths = vec![fixture(), fixture().with_file_name("missing.fig")];
+    let (client_io, server_io) = tokio::io::duplex(65536);
+    let task = tokio::spawn(async move {
+        FigstudioServer::new(paths, true)
+            .serve(server_io)
+            .await
+            .unwrap()
+            .waiting()
+            .await
+    });
+    let client = ().serve(client_io).await.unwrap();
+    let tools = client.list_all_tools().await.unwrap();
+    let tool = tools
+        .iter()
+        .find(|tool| tool.name == "get_metadata")
+        .unwrap();
+    assert!(tool.input_schema["properties"]["nodeId"].is_object());
+    for args in [
+        json!({"fileKey":"structure"}),
+        json!({"fileKey":"structure","nodeId":"0-1"}),
+        json!({"fileKey":"structure","nodeId":"https://www.figma.com/design/example?node-id=0-1"}),
+    ] {
+        let result = client
+            .call_tool(
+                CallToolRequestParams::new("get_metadata")
+                    .with_arguments(args.as_object().unwrap().clone()),
+            )
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        assert!(text(&result).contains("id=\"0:1\""));
+    }
+    for input in ["99:99", "bad", "I1:38;1:42"] {
+        let args = json!({"fileKey":"structure", "nodeId": input});
+        let result = client
+            .call_tool(
+                CallToolRequestParams::new("get_metadata")
+                    .with_arguments(args.as_object().unwrap().clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(text(&result).contains("Available pages"));
+        assert!(text(&result).contains("id=\"0:1\""));
+    }
+    for file in [Some("missing"), Some("unregistered"), None] {
+        let args = file.map_or(json!({}), |file| json!({"fileKey":file}));
+        let request = CallToolRequestParams::new("get_metadata")
+            .with_arguments(args.as_object().unwrap().clone());
+        assert_eq!(
+            client.call_tool(request).await.unwrap().is_error,
+            Some(true)
+        );
+    }
+    client.cancel().await.unwrap();
+    task.await.unwrap().unwrap();
 }

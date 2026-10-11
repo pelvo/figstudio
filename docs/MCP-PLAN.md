@@ -136,7 +136,8 @@ cancellation, list_files never waits for decoding, and tool load errors include 
 Named tool routers compose in new() (see IMPLEMENTATION). HTTP versions have separate test
 cases; stdio purity, CLI ambiguity, concurrent cache sharing, cancellation retention,
 nonblocking listing, warning and Unix
-SIGTERM exit are tested. Ctrl-C and SIGTERM cancel both transports; runtime shutdown avoids
+SIGTERM exit are tested. Cached documents do not reload when the .fig changes on disk;
+restart the server to read an updated file. Ctrl-C and SIGTERM cancel both transports; runtime shutdown avoids
 waiting on an uncancellable stdin read. Tests use public inputs only.
 Not verified: a live Claude/Cursor client, real Ctrl-C, Windows signals, HTTP OS-signal
 shutdown, or an independent reviewer.
@@ -144,18 +145,25 @@ No renderer/decoder changes; wasm and visual checks were not needed. Instance-pa
 resolution and tools beyond `whoami` / `list_files` remain for later lanes.
 
 **L2: `get_metadata`.** [x] Complete. The page list when there is no node; an XML subtree
-with lower-case, hyphenated node-type element names and `id name x y width height` attributes,
-plus `hidden="true"` and `rotation` when non-zero; text nodes carry their characters
-(truncated at 200 Unicode characters). quick-xml 0.41 writes escaped XML. Instances stay
+with lower-case, hyphenated node-type element names and `id name x y width height` attributes.
+CANVAS/DOCUMENT elements omit geometry; nodes without size omit width/height.
+`hidden="true"` and non-zero `rotation` are included; rotation follows Figma's
+counter-clockwise-positive convention, `(-m10).atan2(m00)` in degrees. Text is capped at
+200 Unicode characters with an appended `…` only when cut. XML-1.0-invalid controls are
+removed from names and text; quick-xml 0.41 escapes the remaining content. Instances stay
 leaves with `componentId` until L5. Typed `nodeId`, `fileKey`, `depth` inputs; depth zero is
 root only, default unlimited. Iterative traversal caps nodes at 5 000, marks the metadata
 wrapper `truncated="true"`, and closes every open element. Page lists exclude invisible and
 internal-only canvases and use the same cap. An XML comment reports approximated instance
-leaves. Unknown/invalid IDs and unresolved instance paths give isError with available pages.
+leaves only when the count is non-zero; leaves without text are self-closing.
+Internal-only canvases and their descendants are excluded from document subtrees too.
+Unknown/invalid IDs and unresolved instance paths give isError with available pages.
 Missing/unregistered/ambiguous files give tool errors, not protocol failures.
 
 L2 verified: public fixture kinds, page list and known parent-relative coordinates; depth;
-synthetic escaping, Unicode text truncation, rounding/no negative zero, hidden/rotation,
+synthetic escaping, Unicode text truncation, rounding/no negative zero and hidden flags;
+review regressions verify both rotation signs against Figma's convention, omitted geometry,
+invalid controls, truncation ellipsis, filtered internal subtrees and sparse empty leaves;
 component ID and instance leaves; 5 000-node cap; hidden/internal pages; rmcp end-to-end
 schema, IDs/URLs, errors and missing-file handling. Each test has a failing mutation proof.
 scripts/check.sh ended with `all checks passed`. Deep/wide cap and exact-boundary checks

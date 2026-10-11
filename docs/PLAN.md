@@ -370,3 +370,8 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   escaping, depth/5 000-node bounds, Unicode text cap and instance leaves. Public fixture,
   synthetic and end-to-end tests proven by mutations; scripts/check.sh: all checks passed.
   Not verified: live clients, official capture, private files or instance expansion (L5).
+- 2026-10-11 — MCP L2 review: correct Figma counter-clockwise rotation, omit page/document
+  geometry and unsized dimensions, sanitize XML controls, mark truncated text, filter internal
+  subtrees and self-close empty leaves. Regression tests proven failing first;
+  scripts/check.sh: all checks passed. Not verified: live clients, official capture,
+  private files or L5 expansion.
