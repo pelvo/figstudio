@@ -503,3 +503,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-12 — T20 P2 fix 2: planned tiles evict drawn fallback tiles (covered ones first), so a
   cache full of fallback settles instead of re-rendering; closed documents are tombstoned in the
   image cache and checked under its lock after decode. Tests seen failing first.
+- 2026-10-12 — T20 P3: tiles of one page and zoom level replay one recording of the page (walked
+  once per batch area); over-limit or budget-cut recordings fall back to direct renders, counted as
+  "tiles not recorded". Tests seen failing first. Not verified: scripted window pan, wasm timing.
