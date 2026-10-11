@@ -15,7 +15,7 @@ Figma URL with `node-id=`) and an optional `fileKey` (the loaded file's stem or 
 
 | Official tool | Offline | Source in figstudio | Lane |
 |---|---|---|---|
-| `get_metadata` | full | `Document` tree, `absolute_transform`, `size` | L2 |
+| `get_metadata` | full (instances are leaves until L5) | `Document` tree, parent-relative transform, size | L2 |
 | `get_screenshot` | full | `Renderer::render_fit` + `into_png` | L3 |
 | `get_variable_defs` | full (all modes) | `VARIABLE` / `styleType` nodes, `render/variables.rs` | L4 |
 | `get_design_context` | partial: React + Tailwind from stored data, no shader runtime | node fields, instance resolver | L6 |
@@ -143,12 +143,25 @@ shutdown, or an independent reviewer.
 No renderer/decoder changes; wasm and visual checks were not needed. Instance-path
 resolution and tools beyond `whoami` / `list_files` remain for later lanes.
 
-**L2: `get_metadata`.** The page list when there is no node; an XML subtree with
-`id name type x y width height`, plus `hidden="true"` and `rotation` when non-zero; text
-nodes carry their characters (truncated at 200); XML escaping. Instances stay leaves with
-`componentId` until L5. Optional `depth` param (default unlimited, capped at 5 000 elements
-with a `truncated` marker). **Done:** structure tests on `structure.fig`; an escaping test on
-a built document; an unknown id returns the page list.
+**L2: `get_metadata`.** [x] Complete. The page list when there is no node; an XML subtree
+with lower-case, hyphenated node-type element names and `id name x y width height` attributes,
+plus `hidden="true"` and `rotation` when non-zero; text nodes carry their characters
+(truncated at 200 Unicode characters). quick-xml 0.41 writes escaped XML. Instances stay
+leaves with `componentId` until L5. Typed `nodeId`, `fileKey`, `depth` inputs; depth zero is
+root only, default unlimited. Iterative traversal caps nodes at 5 000, marks the metadata
+wrapper `truncated="true"`, and closes every open element. Page lists exclude invisible and
+internal-only canvases and use the same cap. An XML comment reports approximated instance
+leaves. Unknown/invalid IDs and unresolved instance paths give isError with available pages.
+Missing/unregistered/ambiguous files give tool errors, not protocol failures.
+
+L2 verified: public fixture kinds, page list and known parent-relative coordinates; depth;
+synthetic escaping, Unicode text truncation, rounding/no negative zero, hidden/rotation,
+component ID and instance leaves; 5 000-node cap; hidden/internal pages; rmcp end-to-end
+schema, IDs/URLs, errors and missing-file handling. Each test has a failing mutation proof.
+scripts/check.sh ended with `all checks passed`. Deep/wide cap and exact-boundary checks
+pass with balanced XML. No fig/render edits.
+Not verified: official output capture, live Claude/Cursor clients, private files, L5 instance
+expansion. No renderer changes, so visual and wasm checks are not needed.
 
 **L3: `get_screenshot`.** `render_fit`, `scale` param (default 1, longest side clamped to
 4096), base64 `image` content plus a text line with size and approximations. **Done:** decode

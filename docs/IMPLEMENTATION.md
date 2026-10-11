@@ -29,7 +29,8 @@ apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
   files.rs               lazy shared local document registry and fileKey resolution
   node_id.rs             node IDs, Figma URLs, unresolved instance paths
   error.rs               canonical error type; tools/mod.rs maps tool failures
-  tools/mod.rs           whoami and list_files; later lanes add separate tool modules
+  tools/mod.rs           whoami and list_files; metadata router declared here
+  tools/metadata.rs      get_metadata: typed inputs, quick-xml, bounded iterative tree walk
                          New tools belong in tools/<name>.rs with a typed input struct.
                          Use #[tool_router(router = <name>_router, vis = "pub(crate)")]
                          on an impl FigstudioServer, declare the module here, and combine

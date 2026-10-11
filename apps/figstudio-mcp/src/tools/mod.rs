@@ -1,4 +1,6 @@
-//! L1 discovery tools. Further lanes add their tools in separate modules.
+//! Offline discovery and read-only document tools.
+/// Sparse XML page lists and node subtrees.
+pub mod metadata;
 use crate::FigstudioServer;
 use rmcp::{model::CallToolResult, tool, tool_router};
 use serde_json::json;

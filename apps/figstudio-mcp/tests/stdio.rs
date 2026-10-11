@@ -110,8 +110,8 @@ async fn stdio_discovers_and_calls_tools() {
         assert_eq!(info.server_info.as_ref().unwrap().name, "figstudio-mcp");
         assert!(info.instructions.as_ref().unwrap().contains("Offline"));
         let tools = client.list_all_tools().await.unwrap();
-        assert_eq!(tools.len(), 2);
-        for name in ["whoami", "list_files"] {
+        assert_eq!(tools.len(), 3);
+        for name in ["whoami", "list_files", "get_metadata"] {
             assert!(tools.iter().any(|tool| tool.name == name));
         }
         let result = client

@@ -366,3 +366,7 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   unambiguous --http=ADDR, non-loopback warning, SIGTERM shutdown and stdio purity tests.
   scripts/check.sh passed; regression and mutation tests proven. Not verified: live clients, real Ctrl-C,
   Windows or HTTP OS signals; no renderer or decoder changes.
+- 2026-10-11 — MCP L2: get_metadata page lists and sparse parent-relative XML, quick-xml
+  escaping, depth/5 000-node bounds, Unicode text cap and instance leaves. Public fixture,
+  synthetic and end-to-end tests proven by mutations; scripts/check.sh: all checks passed.
+  Not verified: live clients, official capture, private files or instance expansion (L5).

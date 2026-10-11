@@ -989,6 +989,7 @@ dependencies = [
  "clap",
  "figstudio-fig",
  "futures-util",
+ "quick-xml",
  "reqwest",
  "rmcp",
  "schemars",
