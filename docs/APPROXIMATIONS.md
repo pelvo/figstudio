@@ -14,8 +14,8 @@ Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
 | Counter (status bar text) | Total | Pages |
 |---|---:|---:|
-| shadow effects approximated | 5349 (2233 after fix #1) | 24 |
-| effects skipped | 483 (468 after fix #1) | 22 |
+| shadow effects approximated | 5349 (2800 after fix #1) | 24 |
+| effects skipped | 483 (477 after fix #1) | 22 |
 | instance ink approximated | 436 | 10 |
 | stroke alignments approximated | 245 | 9 |
 | paints skipped | 189 | 2 |
@@ -23,7 +23,7 @@ Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
 ## What is behind each counter
 
-### C1. shadow effects approximated (2233 after fix #1 and its review fixes; 5349 before)
+### C1. shadow effects approximated (2800 after fix #1 and its review fixes; 5349 before)
 
 Code: `effects::is_approximate`, `effects::approximate_silhouette` (`crates/render/src/effects.rs`),
 `shadow_layer.rs` (whole-node layers).
@@ -37,10 +37,20 @@ to the work budget and their counters are discarded. When a node mixes whole-nod
 with fill-mask ones (spread...), every drop shadow is drawn behind in list order, so the
 paths do not reorder them; the redraw keeps the node's inner shadows. Plain opaque fill-shape nodes keep the
 old path, pixel-identical. Guards (all fall back to the old path and stay counted):
-rendered-alpha area (the node box, strokes and descendants unless it clips them; instances
-use their symbol) over `MAX_SHADOW_PIXELS`, more than `MAX_WHOLE_SHADOWS` shadows, or a
-redraw cost over `MAX_REPLAY_DESCENDANTS` node draws (nested multi-shadow descendants
-multiply it).
+rendered-alpha area over `MAX_SHADOW_PIXELS`, more than `MAX_WHOLE_SHADOWS` shadows, a subtree
+over `MAX_REPLAY_DESCENDANTS` nodes, or redraw work over its runtime cap.
+
+*Memory:* the layer area is the node's own box and ink (strokes, effects: never trimmed by
+its clip) plus, unless it clips, its descendants' bounds, inflated by the blur reach and
+intersected with the render target. When the extent cannot be known cheaply (an override or
+scale that can change size, position or ink; a resized instance; over 256 nodes) the whole
+target stands in, so such a node falls back, counted, whenever the target exceeds the limit.
+A fill-less node's refused shadow is skipped and counted, never drawn as a whole-content layer.
+
+*Time:* a static estimate over stored effects misses override-added shadows, so the bound is
+enforced at run time: all redraws of one node (nested ones included) may use at most
+`REPLAY_WORK_FACTOR` x subtree size x shadows work units; past that the node's remaining
+whole-node shadows fall back (counted). Planning is charged to the work budget.
 
 **Still counted:** spread other than 0 (vello_cpu 0.3 has no morphology filter), non-NORMAL
 blend, blur under a non-uniform scale, the guards above, and a shadow listed next to a
@@ -51,7 +61,7 @@ spread; the remainder was not broken down again after the fix.
 applied, so a shadow whose source lies off the canvas edge can be missing or doubled.
 Tests keep their shadows on the canvas.
 
-### C2. effects skipped (468 after fix #1; 483 before)
+### C2. effects skipped (477 after fix #1; 483 before)
 
 Code: the effects loop in `Ctx::draw_node` (`crates/render/src/lib.rs`).
 
@@ -132,3 +142,10 @@ sigma), and anything whose exact form costs too much time on large pages.
   quieter machine; none over 25%. Scale 1, three shadow-heaviest pages: +5.6%, +3%, -1.2%.
   Approximated shadows 2233, skipped effects 468 (the stricter guards refuse more than the
   first version's 2084 / 427).
+- 2026-10-11 — Second review pass on fix #1: memory guard on target-bounded, ink-aware bounds
+  (clip never trims own stroke; uncertain instances assume the whole target; fill-less
+  fallback obeys the guard) and a run-time redraw work cap per node. `MAX_SHADOW_PIXELS`
+  8M, `MAX_REPLAY_DESCENDANTS` 128 (512 made one page +31-45% on a quiet machine). 42 pages
+  at `--scale 0.1`, CPU time, quiet-machine re-times merged: 107.2 s before, 108.2 s after
+  (+0.9%), worst page +8.2%; none over 25%. Scale 1, three shadow-heaviest pages: +2%,
+  +1.3%, +0.5%. Approximated shadows 2800, skipped 477.

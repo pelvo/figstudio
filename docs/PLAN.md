@@ -221,6 +221,10 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-11 — T19 #1 second review pass: target-bounded memory guard, run-time redraw work
+  cap. 42 pages at scale 0.1: +0.9% total CPU, worst page +8.2%; approximated shadows 2800,
+  skipped 477. Workspace and wasm checks pass.
+
 - 2026-10-11 — T19 #1 review fixes: rendered-bounds guard, list order, replay-stable plan.
   42 pages at scale 0.1, CPU time +1.4% total, worst page +8.7% (re-timed); approximated
   shadows 2233, skipped 468. Workspace and wasm (pinned nightly, thread flags) checks pass.

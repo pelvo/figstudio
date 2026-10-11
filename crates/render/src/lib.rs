@@ -10,6 +10,7 @@ mod layout;
 mod network;
 pub mod paint;
 mod record;
+mod shadow_bounds;
 mod shadow_layer;
 mod stroke;
 mod text;
@@ -200,6 +201,8 @@ struct Ctx<'a> {
     work_left: usize,
     depth: usize,
     exhausted: bool,
+    /// Whole-node shadow redraws stop while `work_left` is at or below this.
+    replay_floor: usize,
     /// Output area in pixels, for culling.
     screen: Rect,
 }
@@ -412,6 +415,7 @@ impl Renderer {
             work_left,
             depth: 0,
             exhausted: false,
+            replay_floor: 0,
             screen,
         };
         if let Some(node) = doc.node(root) {
@@ -940,7 +944,8 @@ impl Ctx<'_> {
                 data,
                 !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
             );
-        let mut whole = self.whole_shadow_plan(node.id, data, world, (casts, silhouette || !casts));
+        let plan = self.whole_shadow_plan(node, data, world, (casts, silhouette || !casts));
+        let mut whole = plan.whole.clone();
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
             if effect.flag("visible") == Some(false) {
@@ -969,7 +974,10 @@ impl Ctx<'_> {
                     shadows.push(effect);
                     continue;
                 }
-                Some("DROP_SHADOW") if layers == 0 => {
+                // No fill mask to draw from: one whole-content layer, if it is affordable.
+                Some("DROP_SHADOW")
+                    if layers == 0 && self.layer_fits(effect, world, plan.bounds) =>
+                {
                     self.stats.shadows += 1;
                     self.stats.approximated_effects +=
                         usize::from(effects::is_approximate(effect, &[], world, false, true));
@@ -1011,7 +1019,7 @@ impl Ctx<'_> {
             .partition(|e| e.text("type") == Some("DROP_SHADOW"));
         layers += self.draw_behind_shadows(
             &behind,
-            &whole,
+            (&whole, plan.replay_budget),
             node,
             data,
             world,

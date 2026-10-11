@@ -609,20 +609,20 @@ fn tiny_frame_with_big_child(clip: bool) -> Document {
         Val::Arr(vec![shadow("DROP_SHADOW", 1.0, 0.0, 0.0)]),
     );
     let mut child = node(3, 2, "RECTANGLE");
-    child.data.set("size", size(2200.0, 2000.0));
+    child.data.set("size", size(4200.0, 2000.0));
     child.data.set("fillPaints", paint(1.0, 1.0, 1.0));
     document(vec![node(1, 0, "CANVAS"), frame, child])
 }
 
 #[test]
 fn guard_measures_the_rendered_alpha_not_the_node_box() {
-    let stats = render_sized(&tiny_frame_with_big_child(false), 2200, 2000);
-    assert_eq!(stats.approximated_effects, 1, "4.4M px layer is refused");
+    let stats = render_sized(&tiny_frame_with_big_child(false), 4200, 2000);
+    assert_eq!(stats.approximated_effects, 1, "8.4M px layer is refused");
 }
 
 #[test]
 fn guard_ignores_children_clipped_by_the_frame() {
-    let stats = render_sized(&tiny_frame_with_big_child(true), 2200, 2000);
+    let stats = render_sized(&tiny_frame_with_big_child(true), 4200, 2000);
     assert_eq!(stats.approximated_effects, 0, "clipped: the layer is tiny");
 }
 
@@ -750,4 +750,128 @@ fn faded_node_fades_every_shadow_of_several() {
         let a = pixel(&px, x, 15)[3];
         assert!((126..=130).contains(&a), "shadow at x={x} is faded: {a}");
     }
+}
+
+/// Render size where a whole-content layer would pass the 8M-pixel guard if the guard were
+/// fooled: the target is large, so only the bounds decide.
+const BIG: (u16, u16) = (4200, 2000);
+
+fn effect_dx(dx: f64) -> Val {
+    shadow("DROP_SHADOW", dx, 0.0, 0.0)
+}
+
+#[test]
+fn fill_less_shadow_fallback_obeys_the_size_guard() {
+    // A fill-less 1x1 frame with a huge child: no mask fallback exists, so the refused
+    // shadow is skipped and counted instead of becoming another whole-content layer.
+    let mut doc = tiny_frame_with_big_child(false);
+    let mut nodes = doc.nodes.clone();
+    nodes[1].data.set("fillPaints", Val::Arr(vec![]));
+    doc.set_nodes(nodes).unwrap();
+    let stats = render_sized(&doc, BIG.0, BIG.1);
+    assert_eq!(stats.shadows, 0, "no layer is drawn");
+    assert_eq!(stats.skipped_effects, 1, "and the omission is counted");
+}
+
+#[test]
+fn clipping_does_not_trim_the_nodes_own_stroke() {
+    let mut frame = node(2, 1, "FRAME");
+    frame.data.set("size", size(1000.0, 1000.0));
+    frame.data.set("frameMaskDisabled", Val::Bool(false));
+    frame.data.set("fillPaints", paint(0.5, 0.5, 0.5));
+    frame.data.set("strokePaints", paint(1.0, 0.0, 0.0));
+    frame.data.set("strokeWeight", Val::Float(1200.0));
+    frame.data.set("effects", Val::Arr(vec![effect_dx(1.0)]));
+    let doc = document(vec![node(1, 0, "CANVAS"), frame]);
+    let stats = render_sized(&doc, 4200, 2000);
+    assert_eq!(
+        stats.approximated_effects, 1,
+        "the stroke makes a >8M px layer"
+    );
+}
+
+/// A symbol with one 10x10 child, and an instance whose override changes that child.
+fn instance_with_override(fields: &[(&str, Val)]) -> Document {
+    let mut symbol = node(2, 0, "SYMBOL");
+    symbol.data.set("size", size(10.0, 10.0));
+    let mut child = node(3, 2, "RECTANGLE");
+    child.data.set("size", size(10.0, 10.0));
+    child.data.set("fillPaints", paint(1.0, 1.0, 1.0));
+    let mut inst = instance(4, 1, 2, vec![patch(&[3], fields)]);
+    inst.data.set("size", size(10.0, 10.0));
+    inst.data.set("fillPaints", paint(0.5, 0.5, 0.5));
+    inst.data.set("effects", Val::Arr(vec![effect_dx(1.0)]));
+    document(vec![node(1, 0, "CANVAS"), symbol, child, inst])
+}
+
+#[test]
+fn instance_override_that_enlarges_a_child_is_guarded() {
+    let big = instance_with_override(&[("size", size(4200.0, 2000.0))]);
+    let stats = render_sized(&big, 4200, 2000);
+    assert_eq!(
+        stats.approximated_effects, 1,
+        "uncertain bounds: whole target"
+    );
+    let same = instance_with_override(&[("fillPaints", paint(0.0, 1.0, 0.0))]);
+    let stats = render_sized(&same, 4200, 2000);
+    assert_eq!(
+        stats.approximated_effects, 0,
+        "a paint override keeps the bounds known"
+    );
+}
+
+/// `levels` nested frames in a symbol; an override on the instance gives each two shadows.
+fn nested_override_shadows(levels: u32) -> usize {
+    let mut nodes = vec![node(1, 0, "CANVAS"), node(2, 0, "SYMBOL")];
+    let mut patches = Vec::new();
+    for i in 0..levels {
+        let n = 3 + i;
+        let parent = if i == 0 { 2 } else { n - 1 };
+        let mut f = node(n, parent, "FRAME");
+        f.data.set("size", size(10.0, 10.0));
+        f.data.set("fillPaints", paint(1.0, 1.0, 1.0));
+        nodes.push(f);
+        // Override paths name instances, not the ordinary frames above the node.
+        let effects = Val::Arr(vec![effect_dx(1.0), effect_dx(2.0)]);
+        patches.push(patch(&[n], &[("effects", effects)]));
+    }
+    let mut inst = instance(100, 1, 2, patches);
+    inst.data.set("size", size(10.0, 10.0));
+    nodes.push(inst);
+    render(&document(nodes)).1.attempted_work
+}
+
+#[test]
+fn override_added_shadows_cannot_blow_up_the_work() {
+    // A static estimate over stored effects sees no shadows here; unbounded redraws would
+    // multiply by 3 per level (2,000,000 work units, the whole budget, at 20 levels).
+    let (twenty, forty) = (nested_override_shadows(20), nested_override_shadows(40));
+    assert!(twenty < 10_000, "20 levels: {twenty} work units");
+    assert!(forty < 8 * twenty, "at most quadratic: {forty} vs {twenty}");
+}
+
+#[test]
+fn plain_opaque_rectangle_stays_on_the_fill_mask_path_pixel_for_pixel() {
+    // Fractional placement and offset, translucent shadow: the mask path gives 152 here, a
+    // whole-node layer (blurred-alpha path, rounded differently) gives 153.
+    let mut rect = node(2, 1, "RECTANGLE");
+    rect.data.set(
+        "transform",
+        obj(&[("m02", Val::Float(20.3)), ("m12", Val::Float(20.3))]),
+    );
+    rect.data.set("fillPaints", paint(1.0, 1.0, 1.0));
+    let mut s = shadow("DROP_SHADOW", 7.3, 0.0, 0.0);
+    s.set(
+        "color",
+        obj(&[
+            ("r", Val::Float(0.0)),
+            ("g", Val::Float(0.0)),
+            ("b", Val::Float(0.0)),
+            ("a", Val::Float(0.7)),
+        ]),
+    );
+    rect.data.set("effects", Val::Arr(vec![s]));
+    let (px, stats) = render(&document(vec![node(1, 0, "CANVAS"), rect]));
+    assert_eq!(pixel(&px, 60, 20), [54, 54, 54, 152]);
+    assert_eq!(stats.approximated_effects, 0);
 }

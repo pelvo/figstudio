@@ -13,38 +13,53 @@ use figstudio_fig::{Guid, Node, Val};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_cpu::kurbo::{Affine, Rect};
 
-use crate::geom::{GeomPath, affine, size, transformed_bounds};
-use crate::{Ctx, clips_content, effect_reach, overhang, visible};
+use crate::geom::{GeomPath, size};
+use crate::{Ctx, effect_reach};
 
-/// Largest device area (px²) of one shadow layer, inflated by the blur reach and clipped to the
-/// screen: about 16 MB of RGBA per layer. Never reached on the 42-page measurement file, so it
-/// is a memory bound, not a speed one; larger layers take the counted fill-mask path.
-pub(crate) const MAX_SHADOW_PIXELS: f64 = 4_000_000.0;
-/// Most node draws (instances count their symbol's nodes; nested replays multiply) that one
-/// replay of a node may cost when it needs per-shadow redraws. Chosen by measurement on a
-/// 42-page file: 64 cleared 2308 approximated shadows at +0.3% CPU, 512 cleared 2084 at +0.4%
-/// total and +12% on the worst page (gate: +10% total, +25% per page).
-pub(crate) const MAX_REPLAY_DESCENDANTS: usize = 512;
+/// Largest device area (px²) of one shadow layer: the node's rendered bounds plus the blur
+/// reach, intersected with the render target (Vello never allocates more than the target plus
+/// filter padding). 8M px is 32 MiB of RGBA per layer; it admits the 6M px targets of the
+/// 42-page file at scale 0.1 (4M refused them: counters 2922 vs 2233) and refuses anything
+/// that needs a bigger target. Where the extent of a node's content is uncertain the whole
+/// target stands in, so such nodes fall back, counted, whenever the target is above this.
+pub(crate) const MAX_SHADOW_PIXELS: f64 = 8_000_000.0;
+/// Most nodes (instances count their symbol's) in a subtree that is redrawn per extra shadow.
+/// Chosen by measurement on the 42-page file (CPU time, quiet machine, gate +10% total and
+/// +25% per page): 512 made one page +31-45% (+1.2 s) for ~250 fewer counted shadows, 128
+/// kept the worst page near +6% and the total near +2%.
+pub(crate) const MAX_REPLAY_DESCENDANTS: usize = 128;
 /// Most drop shadows per node cast from the whole node; every one after the first redraws the
 /// content once, so this bounds the redraw factor. Nodes in the file have at most 3.
 pub(crate) const MAX_WHOLE_SHADOWS: usize = 4;
-/// Nodes visited when bounding a node's rendered alpha; past it the screen stands in.
-const MAX_BOUNDS_VISITS: usize = 4096;
+/// Runtime cap on the work all redraws of one node (nested ones included) may use, as a
+/// multiple of its stored subtree size per whole-node shadow. Overrides can make a node draw
+/// more than it stores, so the plan is only a hint; this cap is the bound. Once spent, the
+/// remaining whole-node shadows of the node fall back and are counted.
+const REPLAY_WORK_FACTOR: usize = 4;
+/// Nodes visited (and charged to the work budget) when bounding a node's rendered alpha; past
+/// it the whole target stands in.
+pub(crate) const MAX_BOUNDS_VISITS: usize = 256;
+
+/// The node's drop shadows that are cast from the whole node, and the bounds of what it draws.
+pub(crate) struct ShadowPlan<'d> {
+    pub whole: Vec<&'d Val>,
+    /// Work units the redraws of this node may use (see `REPLAY_WORK_FACTOR`).
+    pub replay_budget: usize,
+    /// Output bounds of the node's rendered alpha (the whole target when unknown).
+    pub bounds: Rect,
+}
 
 impl Ctx<'_> {
-    /// The node's visible drop shadows that can be cast from the whole node, or none when the
-    /// layer is too big or the redraws too costly; the others (spread...) take the old counted
-    /// path. The answer depends only on the node, so a replay plans like the real pass.
+    /// Plans the visible drop shadows: those cast from the whole node, or none when the layer
+    /// is too big or a redraw too costly; the others (spread...) take the old counted path,
+    /// where a whole-content layer is only allowed if `bounds` fits (`layer_fits`).
     pub(crate) fn whole_shadow_plan<'d>(
-        &self,
-        id: Guid,
+        &mut self,
+        node: &Node,
         data: &'d Val,
         world: Affine,
         (casts, wanted): (bool, bool),
-    ) -> Vec<&'d Val> {
-        if !wanted {
-            return Vec::new();
-        }
+    ) -> ShadowPlan<'d> {
         let visible: Vec<&Val> = data
             .get("effects")
             .map(Val::items)
@@ -53,29 +68,55 @@ impl Ctx<'_> {
             .filter(|e| e.flag("visible") != Some(false))
             .filter(|e| e.text("type") == Some("DROP_SHADOW"))
             .collect();
-        let supported: Vec<&Val> = visible
+        if visible.is_empty() {
+            return ShadowPlan {
+                whole: Vec::new(),
+                replay_budget: 0,
+                bounds: self.screen,
+            };
+        }
+        // Inside a redraw whose budget is spent nothing more is replayed, so do not plan
+        // (planning walks the subtree and would make deep nests quadratic per redraw).
+        let spent = self.work_left <= self.replay_floor;
+        let bounds = if spent {
+            self.screen
+        } else {
+            self.alpha_bounds(node, data, world)
+        };
+        let none = |bounds| ShadowPlan {
+            whole: Vec::new(),
+            replay_budget: 0,
+            bounds,
+        };
+        if !wanted || spent {
+            return none(bounds);
+        }
+        let drops: Vec<&Val> = visible
             .iter()
             .copied()
-            .filter(|e| supported(e, world))
-            .collect();
-        if supported.is_empty() {
-            return Vec::new();
-        }
-        let bounds = self.alpha_bounds(id, data, world);
-        let drops: Vec<&Val> = supported
-            .into_iter()
-            .filter(|e| self.layer_fits(e, world, bounds))
+            .filter(|e| supported(e, world) && self.layer_fits(e, world, bounds))
             .take(MAX_WHOLE_SHADOWS + 1)
             .collect();
         // Without a fill the old path has no mask to draw the rest from: keep it for all.
-        if (!casts && drops.len() != visible.len()) || drops.len() > MAX_WHOLE_SHADOWS {
-            return Vec::new();
+        if drops.is_empty()
+            || (!casts && drops.len() != visible.len())
+            || drops.len() > MAX_WHOLE_SHADOWS
+        {
+            return none(bounds);
         }
         let redraws = drops.len() > 1 || drops.len() < visible.len();
-        if redraws && self.draw_cost(id, 0, true) > MAX_REPLAY_DESCENDANTS {
-            return Vec::new();
+        let mut replay_budget = 0;
+        if redraws {
+            let Some(count) = self.small_subtree(node) else {
+                return none(bounds);
+            };
+            replay_budget = REPLAY_WORK_FACTOR * count * drops.len();
         }
-        drops
+        ShadowPlan {
+            whole: drops,
+            replay_budget,
+            bounds,
+        }
     }
 
     /// Draws the drop shadows behind the node, in list order, and opens the one layer a lone
@@ -84,7 +125,7 @@ impl Ctx<'_> {
     pub(crate) fn draw_behind_shadows(
         &mut self,
         behind: &[&Val],
-        whole: &[&Val],
+        (whole, replay_budget): (&[&Val], usize),
         node: &Node,
         data: &Val,
         world: Affine,
@@ -99,15 +140,22 @@ impl Ctx<'_> {
             self.push_shadow(one, world, false);
             return 1;
         }
+        // Redraws of this node (and of nodes inside them) stop at this work level.
+        let outer_floor = self.replay_floor;
+        self.replay_floor = outer_floor.max(self.work_left.saturating_sub(replay_budget));
         for effect in behind {
             if !is_whole(effect) {
                 self.draw_drop_shadow(effect, fill_paths, world);
-            } else if self.charge_work() {
+            } else if self.work_left > self.replay_floor && self.charge_work() {
                 self.replay_shadow(effect, node, data, world, fill_paths, path, inner);
-            } else {
+            } else if fill_paths.is_empty() {
                 self.stats.skipped_effects += 1;
+            } else {
+                self.stats.approximated_effects += 1;
+                self.draw_drop_shadow(effect, fill_paths, world);
             }
         }
+        self.replay_floor = outer_floor;
         0
     }
 
@@ -165,106 +213,16 @@ impl Ctx<'_> {
             .push_filter_layer(Filter::from_primitive(primitive), effect_reach(effect));
     }
 
-    /// Device area of the shadow layer (rendered bounds plus blur reach, on screen) is affordable.
-    fn layer_fits(&self, effect: &Val, world: Affine, bounds: Rect) -> bool {
+    /// Whether a layer around `bounds` (plus the effect's reach) is affordable. Vello allocates
+    /// at most the part of the layer inside the target (plus the filter padding), so the area
+    /// is taken inside the target: when the target itself is small, every layer fits.
+    pub(crate) fn layer_fits(&self, effect: &Val, world: Affine, bounds: Rect) -> bool {
         let [a, b, c, d, _, _] = world.as_coeffs();
         let reach = effect_reach(effect) * a.hypot(b).max(c.hypot(d));
         let bounds = bounds.inflate(reach, reach);
         let area = bounds.intersect(self.screen.inflate(reach, reach));
         let pixels = area.width().max(0.0) * area.height().max(0.0);
         bounds.width().is_finite() && bounds.height().is_finite() && pixels <= MAX_SHADOW_PIXELS
-    }
-
-    /// Output bounds of everything the node draws: its box, strokes, and its descendants
-    /// unless it clips them. Instances count their symbol's children at the instance origin
-    /// (shortcut: overrides and resizing are ignored). Past `MAX_BOUNDS_VISITS` nodes the
-    /// whole screen stands in, which only the area guard can then refuse.
-    fn alpha_bounds(&self, id: Guid, data: &Val, world: Affine) -> Rect {
-        let mut out: Option<Rect> = None;
-        let mut stack = vec![(id, world, true)];
-        let mut visits = 0;
-        while let Some((id, world, root)) = stack.pop() {
-            visits += 1;
-            let Some(node) = self.doc.node(id) else {
-                continue;
-            };
-            let d = if root { data } else { &node.data };
-            if !root && !visible(d) {
-                continue;
-            }
-            let world = if root {
-                world
-            } else {
-                world * affine(d.get("transform"))
-            };
-            let (w, h) = size(d);
-            let m = overhang(&node.kind, d, w, h);
-            let mut bounds = transformed_bounds(world, Rect::new(-m, -m, w + m, h + m));
-            let clips = clips_content(&node.kind, d);
-            if clips {
-                bounds = bounds.intersect(transformed_bounds(world, Rect::new(0.0, 0.0, w, h)));
-            }
-            out = Some(out.map_or(bounds, |o| o.union(bounds)));
-            if visits > MAX_BOUNDS_VISITS {
-                return self.screen;
-            }
-            if !clips {
-                stack.extend(self.drawn_children(node).map(|c| (c, world, false)));
-            }
-        }
-        out.unwrap_or(self.screen)
-    }
-
-    /// The nodes drawn inside `node`: its children, or its symbol's children for an instance.
-    fn drawn_children(&self, node: &Node) -> impl Iterator<Item = Guid> + '_ {
-        let symbol = (node.kind == "INSTANCE")
-            .then(|| {
-                node.data
-                    .get("overriddenSymbolID")
-                    .and_then(Val::as_guid)
-                    .or_else(|| {
-                        node.data
-                            .path(&["symbolData", "symbolID"])
-                            .and_then(Val::as_guid)
-                    })
-            })
-            .flatten();
-        self.doc
-            .children(node.id)
-            .iter()
-            .chain(symbol.map_or(&[][..], |s| self.doc.children(s)))
-            .copied()
-    }
-
-    /// Node draws needed to draw `id` once, counting the redraws of descendants that have
-    /// several drop shadows (`replays`: the node's own too). Saturates past the limit.
-    fn draw_cost(&self, id: Guid, depth: usize, replays: bool) -> usize {
-        let cap = MAX_REPLAY_DESCENDANTS + 1;
-        let Some(node) = self.doc.node(id) else {
-            return 1;
-        };
-        if depth > 32 {
-            return cap;
-        }
-        let mut cost = 1;
-        for child in self.drawn_children(node) {
-            cost += self.draw_cost(child, depth + 1, true);
-            if cost >= cap {
-                return cap;
-            }
-        }
-        let drops = node
-            .data
-            .get("effects")
-            .map(Val::items)
-            .unwrap_or_default()
-            .iter()
-            .filter(|e| e.flag("visible") != Some(false) && e.text("type") == Some("DROP_SHADOW"))
-            .count();
-        if replays && drops > 1 {
-            cost = cost.saturating_mul(drops + 1);
-        }
-        cost.min(cap)
     }
 }
 
