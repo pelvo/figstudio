@@ -9,7 +9,9 @@ fn fixture() -> PathBuf {
 async fn documents_load_lazily_and_share_the_cache() {
     let files = FileRegistry::new(vec![fixture()]);
     assert_eq!(files.list().await[0].pages, None);
-    let document = files.open(None).await.unwrap();
+    let (first, second) = tokio::join!(files.open(None), files.open(None));
+    let document = first.unwrap();
+    assert!(Arc::ptr_eq(&document, &second.unwrap()));
     assert!(!document.pages.is_empty());
     assert_eq!(files.list().await[0].pages, Some(document.pages.len()));
     assert!(Arc::ptr_eq(
@@ -31,7 +33,13 @@ async fn missing_and_bad_files_become_tool_errors() {
             Err(error) => error,
             Ok(_) => panic!("bad file accepted"),
         };
+        let cause = std::error::Error::source(&error).unwrap().to_string();
         let result = tool_error(error);
+        let text = serde_json::to_value(&result).unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(text.contains(&cause), "missing underlying error: {text}");
         assert_eq!(result.is_error, Some(true));
         assert_eq!(files.list().await[0].pages, None);
     }

@@ -1,6 +1,9 @@
 //! Offline MCP access to registered local Figma documents.
+/// Canonical local input and loading errors.
 pub mod error;
+/// Lazy registered file cache.
 pub mod files;
+/// Accepted Figma node ID formats.
 pub mod node_id;
 pub mod tools;
 
@@ -16,18 +19,29 @@ use std::path::PathBuf;
 /// A cloneable handler sharing the lazy file registry across HTTP sessions.
 #[derive(Clone, Debug)]
 pub struct FigstudioServer {
-    pub files: FileRegistry,
-    pub no_system_fonts: bool,
+    files: FileRegistry,
+    no_system_fonts: bool,
     tool_router: ToolRouter<Self>,
 }
 
 impl FigstudioServer {
+    /// Create a handler without decoding registered files.
     pub fn new(paths: Vec<PathBuf>, no_system_fonts: bool) -> Self {
         Self {
             files: FileRegistry::new(paths),
             no_system_fonts,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Return the registry shared by all sessions.
+    pub fn files(&self) -> &FileRegistry {
+        &self.files
+    }
+
+    /// Whether rendering should avoid installed fonts.
+    pub fn no_system_fonts(&self) -> bool {
+        self.no_system_fonts
     }
 }
 

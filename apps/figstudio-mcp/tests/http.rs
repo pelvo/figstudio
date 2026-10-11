@@ -60,7 +60,23 @@ async fn post(
 }
 
 #[tokio::test]
-async fn http_negotiates_legacy_sessions_and_latest_stateless() {
+async fn http_march_2025() {
+    check_version("2025-03-26").await;
+}
+#[tokio::test]
+async fn http_june_2025() {
+    check_version("2025-06-18").await;
+}
+#[tokio::test]
+async fn http_november_2025() {
+    check_version("2025-11-25").await;
+}
+#[tokio::test]
+async fn http_latest_stateless() {
+    check_version(ProtocolVersion::LATEST.as_str()).await;
+}
+
+async fn check_version(version: &str) {
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let uri: Arc<str> = format!("http://{}/mcp", listener.local_addr().unwrap()).into();
@@ -68,7 +84,8 @@ async fn http_negotiates_legacy_sessions_and_latest_stateless() {
         let shutdown = CancellationToken::new();
         let task = tokio::spawn(serve_http(listener, FigstudioServer::new(vec![fixture], true), shutdown.clone()));
         let client = reqwest::Client::new();
-        for version in ["2025-03-26".to_owned(), "2025-06-18".to_owned(), "2025-11-25".to_owned(), ProtocolVersion::LATEST.to_string()] {
+        let version = version.to_owned();
+        {
             let (reply, session) = post(&client, &uri, &version, None, json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
                 "protocolVersion":version, "capabilities":{}, "clientInfo":{"name":"test", "version":"1"}
             }})).await;

@@ -362,3 +362,7 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   lazy local-file registry, node-ID parser, whoami/list_files; nine failing-first tests,
   workspace gate and clean-stdout release smoke passed. Not verified: live client setup,
   OS-signal shutdown or independent review; no renderer or decoder changes.
+- 2026-10-11 — MCP L1 review: nonblocking OnceCell cache, cause-bearing tool errors,
+  unambiguous --http=ADDR, non-loopback warning, SIGTERM shutdown and stdio purity tests.
+  scripts/check.sh passed; regression and mutation tests proven. Not verified: live clients, real Ctrl-C,
+  Windows or HTTP OS signals; no renderer or decoder changes.

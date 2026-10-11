@@ -44,6 +44,17 @@ impl McpError {
         }
     }
 
+    /// Whether this error describes an invalid node ID.
+    pub fn is_invalid_node_id(&self) -> bool {
+        matches!(self.kind, Kind::InvalidNodeId)
+    }
+
+    /// Whether loading a local document failed.
+    pub fn is_open(&self) -> bool {
+        matches!(self.kind, Kind::Open(_))
+    }
+
+    /// Return the captured diagnostic backtrace.
     pub fn backtrace(&self) -> &Backtrace {
         &self.backtrace
     }
@@ -56,7 +67,7 @@ impl fmt::Display for McpError {
             Kind::FileKey => {
                 f.write_str("fileKey is missing, unknown, or ambiguous; use a listed full path")
             }
-            Kind::Open(_) => f.write_str("could not open local .fig file"),
+            Kind::Open(cause) => write!(f, "could not open local .fig file: {cause}"),
             Kind::LoadTask(_) => f.write_str("document loading task failed"),
         }
     }

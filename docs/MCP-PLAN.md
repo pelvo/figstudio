@@ -51,7 +51,7 @@ L2/L4 are frozen; see the open questions):
    `figstudio-fig` and `figstudio-render`, and is added to `default-members`.
 2. **Transport (crate: `rmcp`, the official MCP Rust SDK, 3.5.x).** Both transports are
    required: **stdio** (`transport-io`) and **Streamable HTTP** (`transport-streamable-http-server`,
-   served with `axum` on `127.0.0.1:3845/mcp` by default, `--http [ADDR]`), so existing
+   served with `axum` on `127.0.0.1:3845/mcp` by default, `--http[=ADDR]`), so existing
    Figma-desktop client configs work unchanged. Protocol versions 2025-03-26, 2025-06-18,
    2025-11-25 and 2026-07-28 are negotiated by rmcp. The legacy 2024-11-05 HTTP+SSE-only
    transport is **not** supported. A stdio session that sends 2024-11-05 still gets rmcp's
@@ -63,7 +63,7 @@ L2/L4 are frozen; see the open questions):
    re-exports one), `quick-xml` (get_metadata / get_figjam XML writer), `clap` (derive, for
    the new binary's arguments). Rendering and decoding stay in the existing crates. Code
    follows `ms-rust-guidelines` (AGENTS.md rule 13).
-4. **Files.** `figstudio-mcp [--fonts system|stored] FILE.fig...`. Files open lazily on first
+4. **Files.** `figstudio-mcp [--no-system-fonts] FILE.fig...`. Files open lazily on first
    use and are cached. An `open_file` tool loads more files. The `.fig` is never written, apart
    from the L9 sidecar `FILE.fig.codeconnect.json`.
 5. **Data model goes into the `fig` crate.** Read-only token and style models
@@ -110,7 +110,7 @@ style payloads; animation or keyframe fields (for `get_motion_context`); FigJam 
 or is marked "absent from all fixtures".
 
 **L1: skeleton and both transports.** [x] Complete. The package; an rmcp `ServerHandler` using the
-`#[tool_router]` macros; `figstudio-mcp [--http [ADDR]] FILE.fig...` (clap; stdio by default);
+`#[tool_router]` macros; `figstudio-mcp [--http[=ADDR]] FILE.fig...` (clap; stdio by default);
 Streamable HTTP through rmcp's `StreamableHttpService` on axum; error mapping (`McpError` for
 protocol faults, `isError: true` results for tool faults, never a panic; a canonical error
 struct, M-ERRORS-CANONICAL-STRUCTS); node-id parsing (`1:2`, `1-2`, a URL, `I1:2;3:4` instance paths); file registry;
@@ -124,13 +124,22 @@ L1 verified: nine tests pass with failing-first mutation proofs, the workspace g
 ends with `all checks passed`, and a release-binary initialize smoke test produces
 exactly one JSON-RPC stdout line with empty stderr. The registry lazily caches public
 fixture documents; `list_files` reports page counts only after opening. CLI accepts
-`--no-system-fonts`; put a bare `--http` after the files or before `--` to avoid clap's
-optional-address ambiguity. `rmcp` 3.5.1 negotiates an initialize request for latest down
+`--no-system-fonts`; `--http FILE.fig` uses the default address, and custom addresses
+require `--http=ADDR`. Non-loopback binds warn on stderr: rmcp's default allowed_hosts
+rejects non-loopback Host headers; binding externally does not enable remote clients. `rmcp` 3.5.1 negotiates an initialize request for latest down
 to 2025-11-25 (with a session); actual 2026-07-28 requests use stateless per-request
 metadata and method/name headers. HTTP tests exercise both behaviors, older sessions,
 unknown tools, and the unchanged localhost Host allowlist. Duplicate dependency review:
 only SDK-required syn 2/3 versions plus host/target copies of identical versions.
-Not verified: a live Claude/Cursor client, OS-signal shutdown, or an independent reviewer.
+L1 review fixes: per-file OnceCell initialization retains completed decodes after request
+cancellation, list_files never waits for decoding, and tool load errors include their cause.
+Named tool routers compose in new() (see IMPLEMENTATION). HTTP versions have separate test
+cases; stdio purity, CLI ambiguity, concurrent cache sharing, cancellation retention,
+nonblocking listing, warning and Unix
+SIGTERM exit are tested. Ctrl-C and SIGTERM cancel both transports; runtime shutdown avoids
+waiting on an uncancellable stdin read. Tests use public inputs only.
+Not verified: a live Claude/Cursor client, real Ctrl-C, Windows signals, HTTP OS-signal
+shutdown, or an independent reviewer.
 No renderer/decoder changes; wasm and visual checks were not needed. Instance-path
 resolution and tools beyond `whoami` / `list_files` remain for later lanes.
 

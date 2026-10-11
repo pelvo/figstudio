@@ -4,7 +4,9 @@ use figstudio_fig::Guid;
 /// A document node or an unresolved instance path (resolution belongs to L5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NodeId {
+    /// One node GUID.
     Node(Guid),
+    /// Instance and descendant GUIDs, reserved for instance expansion.
     InstancePath(Vec<Guid>),
 }
 

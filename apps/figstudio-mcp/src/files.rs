@@ -2,12 +2,12 @@ use crate::error::McpError;
 use figstudio_fig::Document;
 use serde::Serialize;
 use std::{path::PathBuf, sync::Arc};
-use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 
 struct FileEntry {
     key: String,
     path: PathBuf,
-    document: Mutex<Option<Arc<Document>>>,
+    document: Arc<OnceCell<Arc<Document>>>,
 }
 
 /// Shared registry. Documents are opened on demand, once per registered file.
@@ -22,15 +22,19 @@ impl std::fmt::Debug for FileRegistry {
     }
 }
 
+/// Discovery information for a registered file.
 #[derive(Debug, Serialize)]
 pub struct FileInfo {
+    /// Stable file stem used for selection.
     pub key: String,
+    /// Registered path, usable to disambiguate duplicate stems.
     pub path: PathBuf,
     /// None until a tool first opens this file.
     pub pages: Option<usize>,
 }
 
 impl FileRegistry {
+    /// Register paths without opening them.
     pub fn new(paths: Vec<PathBuf>) -> Self {
         Self(Arc::new(
             paths
@@ -42,12 +46,13 @@ impl FileRegistry {
                         .to_string_lossy()
                         .into_owned(),
                     path,
-                    document: Mutex::new(None),
+                    document: Arc::new(OnceCell::new()),
                 })
                 .collect(),
         ))
     }
 
+    /// Return registered file stems.
     pub fn keys(&self) -> Vec<String> {
         self.0.iter().map(|file| file.key.clone()).collect()
     }
@@ -74,34 +79,36 @@ impl FileRegistry {
         }
     }
 
+    /// Open once per file; failures remain retryable even after cancellation.
     pub async fn open(&self, key: Option<&str>) -> Result<Arc<Document>, McpError> {
         let file = self.resolve(key)?;
-        let mut cached = file.document.lock().await;
-        if let Some(document) = &*cached {
-            return Ok(document.clone());
-        }
+        let cached = file.document.clone();
         let path = file.path.clone();
-        let document = tokio::task::spawn_blocking(move || Document::open(path))
-            .await
-            .map_err(McpError::load_task)?
-            .map_err(McpError::open)?;
-        let document = Arc::new(document);
-        *cached = Some(document.clone());
-        Ok(document)
+        // The initializer outlives a cancelled request and caches its completed decode.
+        tokio::spawn(async move {
+            cached
+                .get_or_try_init(|| async move {
+                    tokio::task::spawn_blocking(move || Document::open(path))
+                        .await
+                        .map_err(McpError::load_task)?
+                        .map(Arc::new)
+                        .map_err(McpError::open)
+                })
+                .await
+                .cloned()
+        })
+        .await
+        .map_err(McpError::load_task)?
     }
 
+    /// List cached page counts without waiting for pending loads.
     pub async fn list(&self) -> Vec<FileInfo> {
         let mut files = Vec::with_capacity(self.0.len());
         for file in self.0.iter() {
             files.push(FileInfo {
                 key: file.key.clone(),
                 path: file.path.clone(),
-                pages: file
-                    .document
-                    .lock()
-                    .await
-                    .as_ref()
-                    .map(|doc| doc.pages.len()),
+                pages: file.document.get().map(|doc| doc.pages.len()),
             });
         }
         files
@@ -111,6 +118,43 @@ impl FileRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn list_does_not_wait_for_a_pending_load() {
+        let files = FileRegistry::new(vec![PathBuf::from("structure.fig")]);
+        let cell = files.0[0].document.clone();
+        let mut pending =
+            Box::pin(cell.get_or_try_init(std::future::pending::<Result<Arc<Document>, McpError>>));
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        let listed = tokio::time::timeout(std::time::Duration::from_millis(100), files.list())
+            .await
+            .expect("list blocked on loading");
+        assert_eq!(listed[0].pages, None);
+    }
+
+    #[tokio::test]
+    async fn cancelled_open_still_populates_the_cache() {
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/structure.fig");
+        let files = FileRegistry::new(vec![fixture]);
+        let cell = files.0[0].document.clone();
+        let mut blocked =
+            Box::pin(cell.get_or_try_init(std::future::pending::<Result<Arc<Document>, McpError>>));
+        assert!(futures_util::poll!(&mut blocked).is_pending());
+        let mut open = Box::pin(files.open(None));
+        assert!(futures_util::poll!(&mut open).is_pending());
+        drop(open);
+        drop(blocked);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while files.list().await[0].pages.is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled request discarded its load");
+        let cached = cell.get().unwrap();
+        assert!(Arc::ptr_eq(cached, &files.open(None).await.unwrap()));
+    }
 
     #[test]
     fn resolves_single_and_multiple_files() {
