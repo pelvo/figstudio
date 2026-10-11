@@ -514,3 +514,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-12 — T20 L2 fix 1: the GPU scan sizes nested filter layers as vello_gpu does (each filter
   grows the intermediate viewport), refusing tiles that would fail with `TooLarge`;
   `gpu_scene` takes the texture limit. Test seen failing first. Not verified: non-Metal GPUs.
+- 2026-10-12 — T20 L3: the desktop app draws canvas tiles with vello_gpu on eframe's wgpu device
+  (render thread renders, UI registers), falling back to counted CPU tiles; FIGSTUDIO_RENDERER and
+  a status-bar renderer label. Not verified: Vulkan/DX12/GL pixels, device loss, a sub-4096 GPU.

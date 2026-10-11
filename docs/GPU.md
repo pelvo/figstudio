@@ -53,7 +53,7 @@ every move (0.4–0.6 s on a large page, mostly the layer walk, not pixels). Ord
 |---|---|---|
 | L1 | eframe glow → wgpu, desktop + web, no rendering change | **Done 2026-10-11.** App runs on macOS with wgpu (Metal); web build passes; `scripts/check.sh` passes; window screenshot matches the glow build (only the status-bar ms text differs, rest ≤ 1/255) |
 | L2 | `gpu` feature: `Canvas` for `vello_gpu::Scene`, headless test rendering a fixture on the GPU and comparing with the CPU pixmap | **Done 2026-10-12.** `crates/render/src/gpu.rs` (`Recording::gpu_scene`, `GpuUnsupported`), `crates/render/tests/gpu.rs`: GPU tiles within 2/255 of the CPU (filters 5/255) on Metal; unsupported tiles refused before encoding; tests skip without an adapter. See L2 notes |
-| L3 | App draws the canvas with `vello_gpu` into an egui-registered texture, CPU fallback + `FIGSTUDIO_RENDERER` | Large real file pans/zooms on GPU; forcing `cpu` gives today's behaviour; no panics on any fixture |
+| L3 | App draws the canvas with `vello_gpu` into an egui-registered texture, CPU fallback + `FIGSTUDIO_RENDERER` | **Done 2026-10-12 (desktop).** `apps/figstudio/src/gpu_tiles.rs`, `gpu_registry.rs`: GPU tiles on Metal, shown through egui within 2/255 of CPU tiles; counted CPU fallback; status bar "GPU (Metal)" / "CPU". See L3 notes |
 | L4 | Browser: WebGPU, then WebGL2, then CPU fallback | `scripts/web-build.sh` build runs in a WebGPU browser and in one without WebGPU |
 | L5 | Docs: PLAN, IMPLEMENTATION, TESTING updated; what is not verified | Docs list the GPU path, the fallback and the remaining gaps |
 
@@ -162,6 +162,46 @@ patched egui-wgpu that bounds the surface before configuring it.
   to 150; not visible).
 - wasm32: `cargo check -p figstudio-render --features gpu --target wasm32-unknown-unknown`
   passes with the web build's nightly and thread flags, and with `vello_gpu/webgl` added.
+
+## L3 notes
+
+- Threading: the render worker thread is the GPU thread. It builds the scene, renders it with
+  one `vello_gpu::Renderer` (created there at the first tile) on eframe's device and queue,
+  submits, and sends the `wgpu::Texture`. The UI thread only calls
+  `egui_wgpu::Renderer::register_native_texture`, which creates one bind group per tile and never
+  waits on the GPU. The worker submits before it sends, so the tile is drawn before any egui
+  frame that samples it. One tile at a time, as on the CPU, so tiles per frame are bounded by
+  how many arrive, not by GPU work done on the UI thread.
+- Colour: tile textures are `Rgba8Unorm` and hold premultiplied sRGB-encoded bytes, which is
+  what egui uploads for a CPU tile (`ColorImage::from_rgba_premultiplied`, also `Rgba8Unorm`).
+  egui samples both kinds as gamma bytes with the same linear filter. The app test draws both
+  kinds through egui-wgpu's own renderer: each shows its bytes unchanged (≤ 1/255), and GPU and
+  CPU tiles differ by at most 2/255 (p99.9 2) on vector, corners, sections and structure at
+  levels −1, 0 and 2. An `Rgba8UnormSrgb` tile texture fails that test.
+- Fallback to the CPU tile, counted in `Stats::gpu_fallback_tiles`. The status bar adds the count
+  up over the sharp tiles on screen ("· N tiles on the CPU"):
+
+  | Case | Counted |
+  |---|---|
+  | `FIGSTUDIO_RENDERER=cpu` (case-insensitive; anything else means `gpu`) | no |
+  | No wgpu render state | yes |
+  | Device `max_texture_dimension_2d` < 4096 (`GPU_LAYER_TEXTURE`); this is the Known limit's planned CPU canvas on desktop | yes |
+  | No recording (over its size limit or the work budget, or not covering the tile) | yes |
+  | `gpu_scene` refuses (`GpuUnsupported`: images, angular gradients, filter graphs, filter reach, layers) | yes |
+  | `vello_gpu` render `Err`, or a wgpu validation or out-of-memory error scope fires | yes |
+  | Device lost (wgpu callback), or a panic inside `vello_gpu` (caught): the GPU stays off for the session | yes |
+
+- Freeing: a GPU tile in the cache is a `NativeTexture`. Dropping it (eviction, replacement or a
+  closed document) calls `free_texture` through a weak handle to egui's renderer and drops the
+  `wgpu::Texture`.
+- Measured on Metal (M-series Mac) with `structure.fig`: the GPU path's first tile pays the
+  one-off `vello_gpu::Renderer::new` cost (75 ms in one run; once 1.2 s with cold shader
+  caches, which then showed in the status bar's summed time). Later tiles took 0.2–3 ms on the
+  GPU and 0.1–7 ms on the CPU. UI frame p99 was 0.5 ms on GPU and 0.4 ms on CPU. On a large
+  private file at 2 % zoom, the summed tile time was 184 ms on GPU and 151 ms on CPU, with 36
+  tiles on the CPU (images). At these zooms recording, not rasterising, is the cost. No tuning
+  was done.
+- The browser build keeps CPU tiles (`recordings::TileGpu` stub) until L4.
 
 ## Risks
 
