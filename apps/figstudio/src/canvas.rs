@@ -2,7 +2,7 @@
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use figstudio_fig::Guid;
-use figstudio_render::kurbo::{Affine, Point};
+use figstudio_render::kurbo::Point;
 use figstudio_render::{
     Viewport, absolute_transform, color::AlphaColor, content_bounds, geom, hit_test,
     page_background,
@@ -152,19 +152,15 @@ pub fn show(
         px.x,
         px.y
     );
-    let covered = tab
+    let last = tab
         .requested_key
         .as_ref()
-        .is_some_and(|(k, frame)| *k == key && crate::overscan::covers(frame, tab.view, px / ppp));
-    if !covered && px.x >= 1.0 && px.y >= 1.0 {
+        .filter(|(k, _)| *k == key)
+        .map(|(_, f)| f);
+    let max_side = ui.ctx().input(|i| i.max_texture_side);
+    let planned = crate::overscan::plan(last, tab.view, px, ppp, max_side);
+    if let Some(frame) = planned.filter(|_| px.x >= 1.0 && px.y >= 1.0) {
         tab.generation += 1;
-        let max_side = ui.ctx().input(|i| i.max_texture_side);
-        let frame = crate::overscan::frame_for(tab.view, px, ppp, max_side);
-        let zoom = f64::from(frame.view.zoom * ppp);
-        let transform = Affine::translate((
-            f64::from(frame.view.pan.x * ppp),
-            f64::from(frame.view.pan.y * ppp),
-        )) * Affine::scale(zoom);
         if workers
             .render(RenderJob {
                 tab: tab.id,
@@ -175,7 +171,7 @@ pub fn show(
                 viewport: Viewport {
                     width: frame.px[0],
                     height: frame.px[1],
-                    transform,
+                    transform: frame.transform(),
                     background: Some(page_background(&tab.doc, tab.page)),
                 },
                 // The frame's own corner view, so the re-projection below places the margin.

@@ -42,7 +42,7 @@ every move (0.4–0.6 s on a large page, mostly the layer walk, not pixels). Ord
 
 | # | Lane | Done when |
 |---|---|---|
-| P1 | Overscan: render a margin around the view; short pans show already-drawn content | **Done 2026-10-12.** `apps/figstudio/src/overscan.rs`: half the canvas per side, capped by the texture limit, `u16` and 32 Mpx; a new frame only when less than a quarter margin is left or zoom/size/page/doc/images change; unit tests seen failing; app panned by eye on a fixture and a large file |
+| P1 | Overscan: render a margin around the view; short pans show already-drawn content | **Done 2026-10-12.** `apps/figstudio/src/overscan.rs`: half the canvas per side, capped by the texture limit, `u16` and 32 Mpx (16 Mpx web; a canvas over a cap renders at lower resolution, no margin); a new frame only when less than a quarter margin is left or zoom/size/page/doc/images change; unit tests seen failing; a scripted pan on a fixture checked by eye (no empty edge); a large file only opened and rendered, its pan not looked at |
 | P2 | Tile cache: fixed tiles per zoom level, kept in an LRU; zoom shows the nearest level stretched until sharp tiles arrive | Revisiting an area shows cached tiles at once; memory bounded; tests of tile keys, eviction, fallback |
 | P3 | Record once per page and zoom level, replay per tile (reuse `record.rs`) | A second tile at the same zoom does not walk the document again; pixels equal to a direct render |
 | L2–L5 | GPU lanes below, drawing tiles with `vello_gpu` | as below |

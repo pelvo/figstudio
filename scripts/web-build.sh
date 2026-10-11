@@ -44,7 +44,10 @@ wasm-bindgen --target web --no-typescript --out-dir "$OUT" \
 cp web/index.html web/_headers "$OUT"/
 # CJK font, fetched by the app only when a file has CJK names (see scripts/web-font.sh).
 scripts/web-font.sh "$OUT/fonts"
-ls -l "$OUT" "$OUT/fonts" 2>/dev/null | awk 'NF>5 {printf "%10d  %s\n", $5, $9}'
+# The fonts dir exists only when web-font.sh found a CJK font; ls of a missing dir fails here.
+listed=("$OUT")
+if [ -d "$OUT/fonts" ]; then listed+=("$OUT/fonts"); fi
+ls -l "${listed[@]}" | awk 'NF>5 {printf "%10d  %s\n", $5, $9}'
 
 if [ "${1:-}" = "--serve" ]; then
   exec python3 scripts/web-serve.py "$OUT" 8765

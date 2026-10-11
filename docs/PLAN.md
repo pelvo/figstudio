@@ -488,3 +488,7 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   limit, u16 and 32 Mpx) and requests a new frame only near the margin's edge or on zoom/size/page
   change; 6 unit tests seen failing under 5 mutations; scripted pan showed no empty edge and one
   request per ~320 pt of pan. Not verified: real hand-tool drag (no input tool), web by eye.
+- 2026-10-12 — T20 P1 fix: overscan frames stay within the pixel cap (32 Mpx native, 16 Mpx web)
+  and the texture limit by rendering an over-cap canvas at lower resolution; one planner decides
+  requests, so an over-limit canvas no longer re-requests every update; web-build.sh exits 0
+  without the CJK font. Tests seen failing under mutations. Not verified: over-limit canvas by eye.
