@@ -9,6 +9,8 @@ mod source;
 mod state;
 mod tab;
 mod theme;
+#[allow(dead_code, reason = "wired into the canvas in the next commit")]
+mod tiles;
 #[cfg(target_arch = "wasm32")]
 mod web;
 mod worker;
