@@ -143,6 +143,13 @@ fn asset_files_stay_inside_the_assets_directory() {
     );
     let png = std::fs::read(&file).unwrap();
     assert!(png.starts_with(b"\x89PNG"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Public read like a new Code Connect sidecar, whatever the process umask is.
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "asset file mode");
+    }
     let listing: Vec<_> = std::fs::read_dir(&base)
         .unwrap()
         .map(|e| e.unwrap().file_name())

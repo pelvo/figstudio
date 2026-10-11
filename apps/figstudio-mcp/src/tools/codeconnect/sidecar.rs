@@ -164,19 +164,7 @@ fn write(
     if temp.as_file().metadata()?.len() > MAX_SIDECAR_BYTES {
         return Err(std::io::Error::other("Code Connect sidecar exceeds 10 MiB"));
     }
-    if let Some(permissions) = permissions {
-        temp.as_file().set_permissions(permissions)?;
-    } else {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            temp.as_file()
-                .set_permissions(std::fs::Permissions::from_mode(0o644))?;
-        }
-    }
-    temp.as_file().sync_all()?;
-    temp.persist(path)?;
-    Ok(())
+    crate::tools::persist_file(temp, path, permissions)
 }
 
 fn matches(filters: Option<&[String]>, predicate: impl Fn(&str) -> bool) -> bool {

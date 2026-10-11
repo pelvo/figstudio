@@ -5,7 +5,6 @@ use super::{MAX_ASSETS, MAX_INLINE_BYTES};
 use crate::tools::screenshot::{Root, layer_shot};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Where `get_design_context` puts rendered assets.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,28 +46,21 @@ pub(super) fn name(key: &str, id: &str) -> String {
 }
 
 /// Writes `bytes` as `dir/name` (creating `dir`) and returns the written path. The bytes go to
-/// a new temporary file (`create_new` does not follow links) that is renamed over the target,
-/// so an existing link named `name` is replaced, never followed out of the directory.
+/// a new temporary file in `dir` that is persisted over the target, so an existing link named
+/// `name` is replaced, never followed out of the directory. The temporary file is removed on
+/// failure.
 pub(super) fn write(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     if Path::new(name).file_name() != Some(std::ffi::OsStr::new(name)) || name.starts_with('.') {
         return Err(std::io::Error::other(
             "asset names must be plain file names",
         ));
     }
     std::fs::create_dir_all(dir)?;
-    let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let temp = dir.join(format!(".{name}.{}.{unique}.tmp", std::process::id()));
-    let result = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .and_then(|mut file| file.write_all(bytes))
-        .and_then(|()| std::fs::rename(&temp, dir.join(name)));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result.map(|()| dir.join(name))
+    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+    temp.write_all(bytes)?;
+    let target = dir.join(name);
+    crate::tools::persist_file(temp, &target, None)?;
+    Ok(target)
 }
 
 /// One rendered asset.
