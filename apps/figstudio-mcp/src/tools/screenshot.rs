@@ -10,7 +10,7 @@ use figstudio_fig::{
     resolve::{InstancePath, resolve_path},
 };
 use figstudio_render::{
-    Renderer, Stats, Viewport, content_bounds,
+    Frame, Renderer, Stats, Viewport, content_bounds,
     kurbo::{Affine, Rect},
     node_bounds, page_background,
 };
@@ -75,35 +75,81 @@ pub fn screenshot(
     scale: Option<f64>,
     system_fonts: bool,
 ) -> CallToolResult {
+    let shot = match render_node(doc, node_id, scale, system_fonts) {
+        Ok(shot) => shot,
+        Err(message) => return failure(message),
+    };
+    let text = shot.describe();
+    match shot.frame.pixmap.into_png() {
+        Ok(png) => CallToolResult::success(vec![
+            ContentBlock::image(STANDARD.encode(png), "image/png"),
+            ContentBlock::text(text),
+        ]),
+        Err(error) => failure(format!("PNG encoding failed: {error}")),
+    }
+}
+
+/// A finished render of one node: pixels plus what the renderer reported.
+pub(crate) struct Shot {
+    pub(crate) frame: Frame,
+    pub(crate) scale: f64,
+}
+
+impl Shot {
+    /// "WxH px, scale S", then an approximations line when anything was drawn inexactly.
+    pub(crate) fn describe(&self) -> String {
+        let mut text = format!(
+            "{}x{} px, scale {}",
+            self.frame.pixmap.width(),
+            self.frame.pixmap.height(),
+            significant(self.scale)
+        );
+        let notes = approximations(&self.frame.stats);
+        if !notes.is_empty() {
+            text.push_str("\napproximations: ");
+            text.push_str(&notes.join(", "));
+        }
+        text
+    }
+}
+
+/// Renders any accepted node id (document node or instance path) the way `get_screenshot`
+/// does; `Err` is the message for a tool error. Shared by `download_assets` and `get_figjam`.
+pub(crate) fn render_node(
+    doc: &Document,
+    node_id: &str,
+    scale: Option<f64>,
+    system_fonts: bool,
+) -> Result<Shot, String> {
     let scale = scale.unwrap_or(1.0);
     if !SCALE_RANGE.contains(&scale) {
-        return failure("scale must be between 0.01 and 4");
+        return Err("scale must be between 0.01 and 4".into());
     }
     let id = match parse_node_id(node_id) {
         Ok(NodeId::Node(id)) => id,
         Ok(NodeId::InstancePath(path)) => {
             return instance_child(doc, &path, scale, system_fonts);
         }
-        Err(error) => return tool_error(error),
+        Err(error) => return Err(error.to_string()),
     };
     let Some(node) = doc.node(id) else {
-        return failure(format!("node {id} does not exist in this file"));
+        return Err(format!("node {id} does not exist in this file"));
     };
     if node.kind == "DOCUMENT" {
-        return failure("pick a page or a layer, not the document");
+        return Err("pick a page or a layer, not the document".into());
     }
     let Some(page) = doc.page_of(id) else {
-        return failure(format!("node {id} is not on a page"));
+        return Err(format!("node {id} is not on a page"));
     };
     let is_page = node.kind == "CANVAS";
     let size = |axis: &str| node.data.get("size").and_then(|s| s.num(axis));
     if !is_page && size("x").unwrap_or(0.0) <= 0.0 && size("y").unwrap_or(0.0) <= 0.0 {
-        return failure(format!("node {id} has zero size, nothing to render"));
+        return Err(format!("node {id} has zero size, nothing to render"));
     }
     // `content_bounds` is a culling margin, not ink: it only tells hidden nodes apart and
     // gives a page (which has no size) its extent. Other nodes are cropped to their own box.
     let Some(content) = content_bounds(doc, id) else {
-        return failure(format!("node {id} is hidden or has nothing visible"));
+        return Err(format!("node {id} is hidden or has nothing visible"));
     };
     let bounds = if is_page {
         content
@@ -127,15 +173,15 @@ fn instance_child(
     path: &InstancePath,
     scale: f64,
     system_fonts: bool,
-) -> CallToolResult {
+) -> Result<Shot, String> {
     if let Err(error) = resolve_path(doc, path) {
-        return failure(format!("{path}: {error}"));
+        return Err(format!("{path}: {error}"));
     }
     let Some(bounds) = Renderer::new().path_bounds(doc, path) else {
-        return failure(format!("node {path} is hidden or has nothing visible"));
+        return Err(format!("node {path} is hidden or has nothing visible"));
     };
     if bounds.width() <= 0.0 && bounds.height() <= 0.0 {
-        return failure(format!("node {path} has zero size, nothing to render"));
+        return Err(format!("node {path} has zero size, nothing to render"));
     }
     render(doc, Root::Path(path), bounds, scale, None, system_fonts)
 }
@@ -148,10 +194,10 @@ fn render(
     scale: f64,
     background: Option<figstudio_render::color::AlphaColor<figstudio_render::color::Srgb>>,
     system_fonts: bool,
-) -> CallToolResult {
+) -> Result<Shot, String> {
     let longest = bounds.width().max(bounds.height()) * scale;
     if !longest.is_finite() || longest <= 0.0 {
-        return failure("the node has no finite size to render");
+        return Err("the node has no finite size to render".into());
     }
     // Cap the longest side by lowering the scale (no floor: a huge node needs a tiny scale);
     // the epsilon keeps `ceil` from rounding the side up to 4097.
@@ -176,20 +222,7 @@ fn render(
         Root::Node(id) => renderer.render(doc, id, &viewport),
         Root::Path(path) => renderer.render_path(doc, path, &viewport),
     };
-    let png = match frame.pixmap.into_png() {
-        Ok(png) => png,
-        Err(error) => return failure(format!("PNG encoding failed: {error}")),
-    };
-    let mut text = format!("{width}x{height} px, scale {}", significant(scale));
-    let notes = approximations(&frame.stats);
-    if !notes.is_empty() {
-        text.push_str("\napproximations: ");
-        text.push_str(&notes.join(", "));
-    }
-    CallToolResult::success(vec![
-        ContentBlock::image(STANDARD.encode(png), "image/png"),
-        ContentBlock::text(text),
-    ])
+    Ok(Shot { frame, scale })
 }
 
 /// `value` rounded to four significant figures, so a tiny capped scale is not shown as 0.

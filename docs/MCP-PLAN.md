@@ -298,6 +298,18 @@ test, and an output size cap with a truncation note pointing to `get_metadata`.
 `original=true` for image-fill source bytes by hash. **Done:** tests decode each format and
 compare the original bytes to `Document.images`.
 
+L7 done. `tools/assets.rs` (+ `assets/originals.rs`): up to 20 ids, every id format
+(instance paths via `render_path`), rendering shared with `get_screenshot` through
+`screenshot::render_node` (same 0.01–4 scale range and 4096 px cap). JPG (quality 90, `image`
+crate) is flattened onto white; pages keep their page background. `original=true` returns the
+stored bytes of the visible IMAGE paints (fills and strokes) of the node, its descendants and
+the instances inside it, each hash once, at most 20 per call, as `image` items (MIME from
+`image::guess_format`) or blob resources (`application/octet-stream`) when the format is
+unknown. Hashes with no stored bytes are counted in the text. A failing node is reported in
+its text line; the call is an error only when every node fails. Each behaviour has a test
+proven by a mutation. Not verified: lazily opened documents (`lazy_images` bytes are not
+read; the MCP registry opens eager), huge originals (no per-image size cap), SVG/PDF (absent).
+
 **L8: `get_figjam`.** The L2 XML with FigJam extras: sticky text and colour, connector
 endpoints, and per-node screenshots (L3) at small scale. **Done:** a built FigJam-kind document
 in the test (no public FigJam fixture), plus an approximation count for kinds that are not

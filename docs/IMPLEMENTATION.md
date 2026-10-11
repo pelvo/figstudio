@@ -37,6 +37,8 @@ apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
                          writes one element)
   tools/screenshot.rs    get_screenshot; an instance path uses Renderer::render_path and
                          path_bounds (render/src/focus.rs: only that node, laid out as drawn)
+  tools/assets.rs        download_assets: PNG/JPG renders (screenshot::render_node) or original
+                         image bytes; assets/originals.rs finds image-fill hashes in a node
   tools/variables.rs     get_variable_defs; walks resolved instance content
                          New tools belong in tools/<name>.rs with a typed input struct.
                          Use #[tool_router(router = <name>_router, vis = "pub(crate)")]

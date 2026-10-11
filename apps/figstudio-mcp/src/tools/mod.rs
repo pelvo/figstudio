@@ -1,4 +1,6 @@
 //! Offline discovery and read-only document tools.
+/// PNG or JPG renders and original image bytes.
+pub mod assets;
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
 /// PNG renders of nodes.

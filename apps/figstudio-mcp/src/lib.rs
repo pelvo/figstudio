@@ -33,7 +33,8 @@ impl FigstudioServer {
             tool_router: Self::tool_router()
                 + Self::metadata_router()
                 + Self::screenshot_router()
-                + Self::variables_router(),
+                + Self::variables_router()
+                + Self::assets_router(),
         }
     }
 
