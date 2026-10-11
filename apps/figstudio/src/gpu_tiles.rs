@@ -1,15 +1,6 @@
 //! The GPU canvas (desktop): tiles replayed from page recordings into `vello_gpu` scenes and
 //! rendered on eframe's wgpu device into textures egui draws, with the CPU tiles as fallback.
-//!
-//! Threading: the render worker thread is the GPU thread. It builds each tile's scene (the
-//! CPU half of `vello_gpu`: strips), submits its render to eframe's queue and sends the
-//! texture on; the UI thread only registers it with egui (one bind group), so it never
-//! encodes, submits or waits for a tile. The worker submits before sending, so the queue runs
-//! the tile before any egui frame that samples it. One tile at a time, as on the CPU.
-//!
-//! Colour: the tile texture is `Rgba8Unorm` holding premultiplied, sRGB-encoded bytes, like
-//! the CPU pixmap egui uploads (egui's own textures are `Rgba8Unorm`, sampled as gamma), and
-//! it is sampled with the same linear filter, so both kinds of tile look the same.
+//! Threading and colour handling are explained in `docs/GPU.md` (L3 notes).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -173,13 +164,7 @@ impl TileGpu {
     ) -> Drawn<GpuTexture> {
         let mut why = None;
         let drawn = recordings.draw_with(renderer, job, key, |rec, viewport| {
-            match self.tile(rec, viewport) {
-                Ok(texture) => Some(texture),
-                Err(w) => {
-                    why = Some(w);
-                    None
-                }
-            }
+            self.tile(rec, viewport).map_err(|w| why = Some(w)).ok()
         });
         match drawn {
             Drawn::Cpu(mut frame) => {
@@ -199,14 +184,24 @@ impl TileGpu {
         if gpu.lost.load(Ordering::Acquire) {
             return Err(Fallback::Lost);
         }
-        let scene = scene(rec, viewport, gpu.max_texture)?;
-        // `vello_gpu` 0.3 panics on some inputs the scan does not know about yet.
-        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu.render(&scene)));
-        run.unwrap_or_else(|_| {
-            gpu.lost.store(true, Ordering::Release);
-            Err(Fallback::Lost)
-        })
+        let max_texture = gpu.max_texture;
+        // `vello_gpu` 0.3 panics on some inputs the scan does not know about yet, while the
+        // scene is built as well as while it renders: both stay inside one unwind boundary.
+        let lost = Arc::clone(&gpu.lost);
+        guarded(&lost, || gpu.render(&scene(rec, viewport, max_texture)?))
     }
+}
+
+/// Runs `step`; a panic in it turns the GPU off for the session (`lost`) and becomes a
+/// counted CPU fallback instead of taking the render worker down.
+fn guarded<T>(
+    lost: &AtomicBool,
+    step: impl FnOnce() -> Result<T, Fallback>,
+) -> Result<T, Fallback> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(step)).unwrap_or_else(|_| {
+        lost.store(true, Ordering::Release);
+        Err(Fallback::Lost)
+    })
 }
 
 impl Gpu {

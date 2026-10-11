@@ -199,3 +199,23 @@ fn evicted_and_forgotten_gpu_tiles_free_their_egui_texture() {
 
 #[path = "gpu_tiles_gpu_tests.rs"]
 mod on_gpu;
+
+#[test]
+fn a_panic_while_building_or_rendering_turns_the_gpu_off_and_falls_back() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let lost = AtomicBool::new(false);
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let r: Result<(), Fallback> = guarded(&lost, || panic!("scene build"));
+    std::panic::set_hook(hook);
+    assert_eq!(r, Err(Fallback::Lost));
+    assert!(
+        Fallback::Lost.counted(),
+        "a panic is a counted CPU fallback"
+    );
+    assert!(lost.load(Ordering::Acquire), "the GPU stays off afterwards");
+    // A step that does not panic passes its result through, and the worker carries on.
+    let ok = AtomicBool::new(false);
+    assert_eq!(guarded(&ok, || Ok::<_, Fallback>(7)), Ok(7));
+    assert!(!ok.load(Ordering::Acquire));
+}
