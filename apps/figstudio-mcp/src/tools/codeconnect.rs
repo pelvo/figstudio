@@ -18,10 +18,9 @@ pub struct Mapping {
     pub component_name: String,
     pub source: String,
     pub label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", alias = "imports")]
-    pub snippet_imports: Option<Vec<String>>,
+    #[serde(default, alias = "imports")]
+    pub snippet_imports: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -49,7 +48,8 @@ pub(crate) struct AddInput {
     source: String,
     label: String,
     snippet: Option<String>,
-    imports: Option<Vec<String>>,
+    #[serde(default, alias = "imports")]
+    snippet_imports: Vec<String>,
 }
 
 #[tool_router(router = codeconnect_router, vis = "pub(crate)")]
@@ -72,7 +72,7 @@ impl FigstudioServer {
     }
 
     #[tool(
-        description = "Read offline Code Connect mappings from FILE.fig.codeconnect.json. Instances select their component's mapping. Framework filters match labels; language filters match source extensions or labels."
+        description = "Read offline Code Connect mappings from FILE.fig.codeconnect.json. Lookup falls back from instance to component to component set; selected mappings use the requested node ID as their key. Framework filters match labels; language filters match source extensions or labels."
     )]
     async fn get_code_connect_map(
         &self,
@@ -82,7 +82,7 @@ impl FigstudioServer {
     }
 
     #[tool(
-        description = "Atomically add a local Code Connect mapping next to the registered .fig file, without changing the .fig. Instances map to their component. source is stored, never fetched or written."
+        description = "Atomically add a local Code Connect mapping next to the registered .fig file, without changing the .fig. Instances map to their component. source is stored, never fetched or written. snippetImports accepts an array of imports (imports is a compatibility alias). Limits: source 4096 bytes, snippet 100000 bytes, 100 imports of 4096 bytes each."
     )]
     async fn add_code_connect_map(
         &self,
@@ -93,7 +93,7 @@ impl FigstudioServer {
             source: input.source,
             label: input.label,
             snippet: input.snippet,
-            snippet_imports: input.imports,
+            snippet_imports: input.snippet_imports,
         };
         self.codeconnect_map(
             MapInput {

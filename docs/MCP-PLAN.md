@@ -314,6 +314,18 @@ reject symlinks and corrupt sidecars, and serialize writes across cloned server 
 filters match labels; languages match labels or source extensions. Search ranks exact/prefix/substring
 names and caps results; libraries report local-only components and token collections/modes/styles.
 Tests were proven failing with property, search, persist, filter, corrupt-input and symlink mutations.
+Second-pass review fixes: real `isStateGroup` sets (public sections fixture), schema-named
+`initialValue`/property definitions, GUID strings, ordered `variantOptions` and per-variant
+`variantProperties`; property lists cap at 100 and omit binary bytes. Selected map keys are
+requested IDs with instance → component → set fallback. Sidecars cap at 10 MiB, source at
+4096 bytes, snippets at 100000 bytes, imports at 100 × 4096 bytes; atomic rewrites preserve
+permissions (new Unix files 0644). Add accepts `snippetImports` (`imports` alias); outputs
+always include `snippet` (null when absent) and `snippetImports` ([] when absent).
+`tempfile` now uses workspace dependencies. Prompt inventory names cap at 200 Unicode
+characters. Regression tests failed on the old code; GUID/binary/cap/options/property
+mutations also failed. Foreground `scripts/check.sh` ended with `all checks passed`.
+Applied M-CARGO-WORKSPACE, M-INTEGRATION-TESTS, M-PUBLIC-DEBUG
+and M-PANIC-IS-STOP; errors remain tool errors, with no new public error type.
 Not verified: live official-server shape parity, private files, Windows, cross-process writers
 (last writer wins), hostile concurrent filesystem replacement, or remote libraries.
 

@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 
 [workspace.dependencies]
+tempfile = "3.23"
 figstudio-fig = { path = "crates/fig" }
 figstudio-render = { path = "crates/render" }
 kiwi-schema = "0.2.1"

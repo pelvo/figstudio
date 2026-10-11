@@ -38,7 +38,7 @@ fn node(id: u32, kind: &str, name: &str, parent: u32, fields: &[(&str, Val)]) ->
 fn synthetic() -> Document {
     let mut doc = Document::open(fixture()).unwrap();
     let nodes = vec![
-        node(1, "FRAME", "Set", 0, &[("stateGroup", Val::Bool(true))]),
+        node(1, "FRAME", "Set", 0, &[("isStateGroup", Val::Bool(true))]),
         node(
             2,
             "SYMBOL",
@@ -51,11 +51,10 @@ fn synthetic() -> Document {
                     Val::Arr(vec![obj(&[
                         ("name", Val::Str("Size".into())),
                         ("type", Val::Enum("FUTURE_TYPE")),
-                        ("defaultValue", Val::Str("small".into())),
-                        (
-                            "variantOptions",
-                            Val::Arr(vec![Val::Str("small".into()), Val::Str("large".into())]),
-                        ),
+                        ("id", Guid(9, 10).to_val()),
+                        ("initialValue", obj(&[("boolValue", Val::Bool(true))])),
+                        ("sortPosition", Val::Str("!".into())),
+                        ("parentPropDefId", Guid(9, 11).to_val()),
                     ])]),
                 ),
             ],
@@ -125,16 +124,17 @@ fn component_context_keeps_properties_variants_nested_and_instance_paths() {
     let set = component_context(&doc, "9:1").structured_content.unwrap();
     assert_eq!(
         set["variants"],
-        json!([{"nodeId":"9:2", "name":"Size=small"}])
+        json!([{"nodeId":"9:2", "name":"Size=small", "variantProperties":{}}])
     );
     let direct = component_context(&doc, "9:2").structured_content.unwrap();
     assert_eq!(direct["description"], "local description");
     assert_eq!(direct["componentPropDefs"][0]["type"], "FUTURE_TYPE");
-    assert_eq!(direct["componentPropDefs"][0]["defaultValue"], "small");
     assert_eq!(
-        direct["componentPropDefs"][0]["variantOptions"],
-        json!(["small", "large"])
+        direct["componentPropDefs"][0]["initialValue"]["boolValue"],
+        true
     );
+    assert_eq!(direct["componentPropDefs"][0]["id"], "9:10");
+    assert_eq!(direct["componentPropDefs"][0]["parentPropDefId"], "9:11");
     assert_eq!(direct["nestedInstances"][0]["componentId"], "9:4");
     assert_eq!(
         component_context(&doc, "9:5").structured_content.unwrap(),
@@ -234,7 +234,10 @@ async fn protocol_round_trip_filters_instance_mapping_and_corrupt_sidecar() {
         json!({"nodeId":"1-38", "clientFrameworks":["react"], "clientLanguages":["TypeScript"]}),
     )
     .await;
-    assert_eq!(got.structured_content, Some(expected.clone()));
+    assert_eq!(
+        got.structured_content,
+        Some(json!({"1:38": expected["1:37"]}))
+    );
     assert_eq!(
         call(
             &client,

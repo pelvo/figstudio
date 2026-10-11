@@ -65,7 +65,7 @@ fn entries(doc: &Document) -> Vec<Value> {
     let tokens = Tokens::new(doc);
     let mut entries = Vec::new();
     for node in &doc.nodes {
-        let kind = if node.kind == "COMPONENT_SET" || node.data.flag("stateGroup") == Some(true) {
+        let kind = if node.kind == "COMPONENT_SET" || node.data.flag("isStateGroup") == Some(true) {
             "component_set"
         } else if node.kind == "SYMBOL" {
             "component"
@@ -142,6 +142,16 @@ pub fn summary(doc: &Document) -> Value {
         });
         let total = items.len();
         items.truncate(LIMIT);
+        for item in &mut items {
+            item["name"] = json!(
+                item["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(200)
+                    .collect::<String>()
+            );
+        }
         json!({"items":items, "total":total, "truncated":total > LIMIT})
     };
     let mut collections: Vec<_> = doc
@@ -152,8 +162,8 @@ pub fn summary(doc: &Document) -> Value {
     collections.sort_by_key(|collection| (&collection.name, collection.id));
     let total = collections.len();
     let collections: Vec<_> = collections.into_iter().take(LIMIT).map(|collection| json!({
-        "nodeId":collection.id.to_string(), "name":collection.name,
-        "modes":collection.modes.iter().take(LIMIT).map(|mode| json!({"id":mode.id.to_string(),"name":mode.name})).collect::<Vec<_>>(),
+        "nodeId":collection.id.to_string(), "name":collection.name.chars().take(200).collect::<String>(),
+        "modes":collection.modes.iter().take(LIMIT).map(|mode| json!({"id":mode.id.to_string(),"name":mode.name.chars().take(200).collect::<String>()})).collect::<Vec<_>>(),
         "modeCount":collection.modes.len(), "truncated":collection.modes.len() > LIMIT,
     })).collect();
     json!({"scope":"local file only", "teamLibrariesAvailable":false,

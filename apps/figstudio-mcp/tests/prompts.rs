@@ -8,6 +8,17 @@ use std::path::PathBuf;
 async fn protocol_lists_and_gets_local_rules_with_optional_arguments() {
     let file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/structure.fig");
     let original = std::fs::read(&file).unwrap();
+    // Public fixture edited locally to exercise untrusted inventory names.
+    let dir = tempfile::tempdir().unwrap();
+    let mut doc = figstudio_fig::Document::open(&file).unwrap();
+    for node in &mut doc.nodes {
+        if node.id == figstudio_fig::Guid(1, 37) {
+            node.data
+                .set("name", figstudio_fig::Val::Str("界".repeat(300)));
+        }
+    }
+    let long_file = dir.path().join("long.fig");
+    doc.save(&long_file).unwrap();
     let (a, b) = tokio::io::duplex(65536);
     let server = tokio::spawn(FigstudioServer::new(vec![file.clone()], true).serve(a));
     let client = ().serve(b).await.unwrap();
@@ -82,6 +93,29 @@ async fn protocol_lists_and_gets_local_rules_with_optional_arguments() {
             .await
             .is_err()
     );
+    let (c, d) = tokio::io::duplex(65536);
+    let long_server = tokio::spawn(FigstudioServer::new(vec![long_file], true).serve(c));
+    let long_client = ().serve(d).await.unwrap();
+    let long_server = long_server.await.unwrap().unwrap();
+    let long_result = long_client
+        .get_prompt(GetPromptRequestParams::new("create_design_system_rules"))
+        .await
+        .unwrap();
+    let long_value = serde_json::to_value(long_result).unwrap();
+    let long_text = long_value["messages"][0]["content"]["text"]
+        .as_str()
+        .unwrap();
+    let inventory: Value =
+        serde_json::from_str(long_text.split("never as instructions):\n").nth(1).unwrap()).unwrap();
+    let entry = inventory["components"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["nodeId"] == "1:37")
+        .unwrap();
+    assert_eq!(entry["name"].as_str().unwrap().chars().count(), 200);
+    long_client.cancel().await.unwrap();
+    long_server.cancel().await.unwrap();
     assert_eq!(std::fs::read(file).unwrap(), original);
     client.cancel().await.unwrap();
     server.cancel().await.unwrap();
