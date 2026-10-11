@@ -100,6 +100,9 @@ struct App {
     profile: bool,
     #[cfg(target_arch = "wasm32")]
     web: web::Inbox,
+    /// The window size cap last sent (`gpu::cap_window`).
+    #[cfg(not(target_arch = "wasm32"))]
+    window_cap: Option<f32>,
 }
 
 impl App {
@@ -125,6 +128,8 @@ impl App {
             profile: std::env::var_os("FIGSTUDIO_PROFILE").is_some(),
             #[cfg(target_arch = "wasm32")]
             web: web::Inbox::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            window_cap: None,
         };
         for f in files {
             app.open(f);
@@ -800,8 +805,13 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let started = web_time::Instant::now();
         self.frame_ui(ui);
+        #[cfg(not(target_arch = "wasm32"))]
+        gpu::cap_window(ui.ctx(), &mut self.window_cap);
         #[cfg(target_arch = "wasm32")]
-        web::publish_status(&self.status_json());
+        {
+            web::cap_canvas(ui.ctx().input(|i| i.max_texture_side));
+            web::publish_status(&self.status_json());
+        }
         if self.profile {
             let tab = self.tabs.get(self.active);
             eprintln!(

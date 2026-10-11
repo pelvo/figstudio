@@ -477,3 +477,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-11 — T20 L1 fix: request only the GPU limits the adapter has (WebGL2 with a 4096 texture
   limit started failing on wgpu); unit test seen failing first; headless Chrome with forced WebGL2/4096
   opens a fixture. Not verified: a real 4096-limit device, Linux, Windows.
+- 2026-10-11 — T20 L1 fix 2: keep the GPU surface within the device texture limit (browser canvas
+  cap, desktop max window size) and request the adapter's full texture size; unit tests seen failing;
+  forced WebGL2/4096 resize to 5000 px no longer panics. Not verified: desktop cap on a large screen.
