@@ -2,6 +2,7 @@
 //!
 //! The same code path serves the desktop app, the headless CLI and the browser build.
 
+mod connector;
 mod effects;
 pub mod geom;
 pub mod images;
@@ -1025,6 +1026,14 @@ impl Ctx<'_> {
             }
             if kind == "INSTANCE" {
                 self.draw_instance(data, world, path);
+            } else if kind == "CONNECTOR" {
+                let parts = connector::parts(node);
+                // Nothing stored to draw the connector from: counted, never hidden.
+                self.stats.unsupported_paints += usize::from(parts.is_empty());
+                for (part, parent) in parts {
+                    let data = Cow::Borrowed(&part.data);
+                    self.draw_with_data(&part, world * parent, None, Some((data, false, false)));
+                }
             } else {
                 // Override paths contain instance ancestors, not ordinary frame/group ancestors.
                 let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
