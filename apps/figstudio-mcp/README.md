@@ -52,8 +52,10 @@ works unchanged.
 - Protocol versions 2025-03-26, 2025-06-18, 2025-11-25 and 2026-07-28 are accepted (the
   SDK, `rmcp` 3.5, negotiates them).
 - The legacy 2024-11-05 HTTP+SSE-only transport is **not** supported.
-- The server only accepts loopback `Host` headers. Binding to a non-loopback address
-  prints a warning, and remote clients are still rejected. It is a local tool.
+- The server only accepts loopback `Host` headers. It also checks `Origin`: requests
+  with no `Origin` (CLI and native clients) pass, `http://localhost:*`, `http://127.0.0.1:*`
+  and `http://[::1]:*` pass, and any other origin, including `null`, gets 403. Binding to a
+  non-loopback address prints a warning, and remote clients are still rejected. It is a local tool.
 - All HTTP sessions share one file cache.
 
 ## Client setup

@@ -130,6 +130,25 @@ async fn check_version(version: &str) {
             .json(&json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-03-26", "capabilities":{}, "clientInfo":{"name":"test", "version":"1"}}}))
             .send().await.unwrap();
         assert_eq!(denied.status(), reqwest::StatusCode::FORBIDDEN);
+        // Origin: absent or loopback passes; a web origin or `null` is rejected.
+        let init = json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-03-26", "capabilities":{}, "clientInfo":{"name":"test", "version":"1"}}});
+        let origin_status = |origin: Option<&'static str>| {
+            let client = &client;
+            let uri = &uri;
+            let init = &init;
+            async move {
+                let mut request = client.post(uri.as_ref()).header("Accept", "application/json, text/event-stream").json(init);
+                if let Some(origin) = origin {
+                    request = request.header("Origin", origin);
+                }
+                request.send().await.unwrap().status()
+            }
+        };
+        assert_eq!(origin_status(None).await, reqwest::StatusCode::OK);
+        assert_eq!(origin_status(Some("http://localhost:5173")).await, reqwest::StatusCode::OK);
+        assert_eq!(origin_status(Some("http://127.0.0.1:3000")).await, reqwest::StatusCode::OK);
+        assert_eq!(origin_status(Some("https://evil.example")).await, reqwest::StatusCode::FORBIDDEN);
+        assert_eq!(origin_status(Some("null")).await, reqwest::StatusCode::FORBIDDEN);
         shutdown.cancel();
         task.await.unwrap().unwrap();
     }).await.expect("HTTP protocol timed out");

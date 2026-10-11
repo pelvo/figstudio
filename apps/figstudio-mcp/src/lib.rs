@@ -81,7 +81,8 @@ impl ServerHandler for FigstudioServer {
     }
 }
 
-/// Serve /mcp with rmcp's default sessions and localhost Host allowlist.
+/// Serve /mcp with rmcp's default sessions and a loopback Host and Origin allowlist.
+/// Origin is enforced: a missing Origin passes, a web origin or `null` gets 403.
 pub async fn serve_http(
     listener: tokio::net::TcpListener,
     server: FigstudioServer,
@@ -94,7 +95,14 @@ pub async fn serve_http(
         StreamableHttpService::new(
             move || Ok(server.clone()),
             Default::default(),
-            StreamableHttpServerConfig::default().with_cancellation_token(shutdown.clone()),
+            StreamableHttpServerConfig::default()
+                .with_allowed_origins([
+                    "http://localhost:*",
+                    "http://127.0.0.1:*",
+                    "http://[::1]:*",
+                ])
+                .enforce_origin_validation()
+                .with_cancellation_token(shutdown.clone()),
         );
     axum::serve(listener, axum::Router::new().nest_service("/mcp", service))
         .with_graceful_shutdown(shutdown.cancelled_owned())
