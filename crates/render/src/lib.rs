@@ -84,6 +84,9 @@ pub struct Stats {
     pub depth_skipped: usize,
     pub preparation_skipped: usize,
     pub attempted_work: usize,
+    /// Tiles drawn by walking the page again because their page's recording was over its
+    /// size limit or work budget (set by the app; renders here never set it).
+    pub unrecorded_tiles: usize,
 }
 
 impl Stats {
@@ -117,6 +120,7 @@ impl Stats {
             depth_skipped,
             preparation_skipped,
             attempted_work,
+            unrecorded_tiles,
         } = other;
         self.nodes = self.nodes.max(*nodes);
         self.instances = self.instances.max(*instances);
@@ -145,6 +149,7 @@ impl Stats {
         self.depth_skipped = self.depth_skipped.max(*depth_skipped);
         self.preparation_skipped = self.preparation_skipped.max(*preparation_skipped);
         self.attempted_work = self.attempted_work.max(*attempted_work);
+        self.unrecorded_tiles = self.unrecorded_tiles.max(*unrecorded_tiles);
     }
 }
 
@@ -179,7 +184,8 @@ impl fmt::Display for Stats {
         note(self.culled, "off screen")?;
         note(self.budget_exhausted, "layers skipped (work budget)")?;
         note(self.depth_skipped, "layers skipped (depth)")?;
-        note(self.preparation_skipped, "bounds omitted (budget)")
+        note(self.preparation_skipped, "bounds omitted (budget)")?;
+        note(self.unrecorded_tiles, "tiles not recorded")
     }
 }
 

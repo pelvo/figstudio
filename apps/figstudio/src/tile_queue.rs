@@ -11,6 +11,10 @@ pub enum Msg {
     Close {
         tab: u64,
     },
+    /// A document closed: drop its page recordings (handled by the render loop).
+    Forget {
+        doc: u64,
+    },
 }
 
 #[derive(Default)]
@@ -47,6 +51,7 @@ impl Queue {
                 self.unacked.retain(|u| u.0 != tab);
                 self.drop_tab(tab)
             }
+            Msg::Forget { .. } => 0,
         }
     }
 

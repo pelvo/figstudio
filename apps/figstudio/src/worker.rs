@@ -21,9 +21,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use figstudio_fig::{Document, Guid};
 use figstudio_render::color::{AlphaColor, Srgb};
 use figstudio_render::images::{ImageRequest, Images};
-use figstudio_render::{Renderer, Stats, Viewport};
+use figstudio_render::{Renderer, Stats};
 use web_time::{Duration, Instant};
 
+use crate::recordings::Recordings;
 use crate::source::Source;
 use crate::tile_queue::{Msg, Queue};
 use crate::tiles;
@@ -153,23 +154,6 @@ fn next_job(jobs: &Receiver<Msg>) -> Option<Msg> {
     }
 }
 
-fn draw(renderer: &mut Renderer, job: &RenderJob, key: &tiles::Key) -> figstudio_render::Frame {
-    let viewport = Viewport {
-        width: tiles::TEXTURE,
-        height: tiles::TEXTURE,
-        transform: key.transform(),
-        background: job.background,
-    };
-    #[cfg(target_arch = "wasm32")]
-    {
-        renderer.render_parallel(&job.doc, job.root, &viewport)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        renderer.render(&job.doc, job.root, &viewport)
-    }
-}
-
 /// Images waiting to be read, newest request first, with at most [`READERS`] reading.
 struct ImageQueue {
     pending: Mutex<(VecDeque<(ImageRequest, Source)>, usize)>,
@@ -290,6 +274,7 @@ impl Workers {
         let images = queue.clone();
         let render_loop = move || {
             let mut renderer = Renderer::with_images(images.images.clone());
+            let mut recordings = Recordings::default();
             let mut queue = Queue::default();
             loop {
                 let first = if queue.is_empty() {
@@ -304,6 +289,10 @@ impl Workers {
                     .into_iter()
                     .chain(std::iter::from_fn(|| jobs.try_recv().ok()));
                 for msg in arrived {
+                    if let Msg::Forget { doc } = msg {
+                        recordings.forget(doc);
+                        continue;
+                    }
                     count.fetch_sub(queue.take(msg), Ordering::Relaxed);
                 }
                 if queue.is_empty() {
@@ -314,7 +303,7 @@ impl Workers {
                     continue;
                 };
                 let start = Instant::now();
-                let mut frame = draw(&mut renderer, job, &key);
+                let mut frame = recordings.draw(&mut renderer, job, &key);
                 let elapsed = start.elapsed();
                 let wanted = std::mem::take(&mut frame.wanted);
                 // A document closed while drawing stores and requests nothing (`Images`).
@@ -442,6 +431,9 @@ impl Workers {
     /// and anything a render or read still running would store for it.
     pub fn close_document(&self, instance: u64) {
         self.queue.close(instance);
+        if let Some(tx) = &self.render_tx {
+            let _ = tx.send(Msg::Forget { doc: instance });
+        }
     }
 
     /// Counts images read so far; when it changes, views showing placeholders render again.

@@ -4,6 +4,7 @@ mod canvas;
 mod gpu;
 mod labels;
 mod panels;
+mod recordings;
 mod source;
 mod state;
 mod tab;

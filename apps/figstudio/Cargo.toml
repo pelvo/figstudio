@@ -17,7 +17,8 @@ web-time = { workspace = true }
 image = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-figstudio-render = { workspace = true }
+# parallel: page recordings replayed per tile (recordings.rs), as in the browser build.
+figstudio-render = { workspace = true, features = ["parallel"] }
 # wgpu: eframe's wgpu renderer (Metal, Vulkan, DX12, GL fallback via egui-wgpu defaults), so
 # the GPU canvas (docs/GPU.md) can share its device.
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11"] }
