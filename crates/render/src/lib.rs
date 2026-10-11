@@ -6,6 +6,8 @@ mod connector;
 mod effects;
 mod focus;
 pub mod geom;
+#[cfg(feature = "gpu")]
+mod gpu;
 pub mod images;
 mod layout;
 mod network;
@@ -36,6 +38,8 @@ use crate::geom::{
 use crate::images::{ImageRequest, Images};
 use crate::record::Canvas;
 
+#[cfg(feature = "gpu")]
+pub use gpu::{GpuUnsupported, MAX_FILTER_REACH, MAX_LAYERS};
 #[cfg(feature = "parallel")]
 pub use replay::Recording;
 pub use vello_cpu::{color, kurbo};
@@ -87,6 +91,9 @@ pub struct Stats {
     /// Tiles drawn by walking the page again because their page's recording was over its
     /// size limit or work budget (set by the app; renders here never set it).
     pub unrecorded_tiles: usize,
+    /// Tiles drawn on the CPU because `vello_gpu` cannot draw something in them (feature
+    /// `gpu`, `GpuUnsupported`; set by the app).
+    pub gpu_fallback_tiles: usize,
 }
 
 impl Stats {
@@ -121,6 +128,7 @@ impl Stats {
             preparation_skipped,
             attempted_work,
             unrecorded_tiles,
+            gpu_fallback_tiles,
         } = other;
         self.nodes = self.nodes.max(*nodes);
         self.instances = self.instances.max(*instances);
@@ -150,6 +158,7 @@ impl Stats {
         self.preparation_skipped = self.preparation_skipped.max(*preparation_skipped);
         self.attempted_work = self.attempted_work.max(*attempted_work);
         self.unrecorded_tiles = self.unrecorded_tiles.max(*unrecorded_tiles);
+        self.gpu_fallback_tiles = self.gpu_fallback_tiles.max(*gpu_fallback_tiles);
     }
 }
 
@@ -185,7 +194,11 @@ impl fmt::Display for Stats {
         note(self.budget_exhausted, "layers skipped (work budget)")?;
         note(self.depth_skipped, "layers skipped (depth)")?;
         note(self.preparation_skipped, "bounds omitted (budget)")?;
-        note(self.unrecorded_tiles, "tiles not recorded")
+        note(self.unrecorded_tiles, "tiles not recorded")?;
+        note(
+            self.gpu_fallback_tiles,
+            "tiles drawn on the CPU (GPU unsupported)",
+        )
     }
 }
 

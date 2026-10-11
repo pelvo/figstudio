@@ -13,6 +13,8 @@ default = ["system-fonts"]
 system-fonts = ["dep:fontdb", "dep:ttf-parser"]
 # `Renderer::render_parallel`: horizontal strips on the current Rayon pool (desktop or wasm threads).
 parallel = ["dep:rayon"]
+# `Recording::gpu_scene`: replay a recorded tile into a `vello_gpu::Scene` (app canvas on the GPU).
+gpu = ["parallel", "dep:vello_gpu"]
 
 [dependencies]
 figstudio-fig = { workspace = true }
@@ -21,9 +23,13 @@ image = { workspace = true }
 fontdb = { workspace = true, optional = true }
 ttf-parser = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
+vello_gpu = { workspace = true, optional = true }
 
 [dev-dependencies]
 rayon = { workspace = true }
+# tests/gpu.rs: a headless wgpu device (default backends) to read GPU tiles back.
+wgpu = { workspace = true }
+pollster = { workspace = true }
 
 [lints]
 workspace = true

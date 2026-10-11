@@ -52,7 +52,7 @@ every move (0.4–0.6 s on a large page, mostly the layer walk, not pixels). Ord
 | # | Lane | Done when |
 |---|---|---|
 | L1 | eframe glow → wgpu, desktop + web, no rendering change | **Done 2026-10-11.** App runs on macOS with wgpu (Metal); web build passes; `scripts/check.sh` passes; window screenshot matches the glow build (only the status-bar ms text differs, rest ≤ 1/255) |
-| L2 | `gpu` feature: `Canvas` for `vello_gpu::Scene`, headless test rendering a fixture on the GPU and comparing with the CPU pixmap | Fixtures differ from CPU by less than a small per-pixel tolerance (test skips with a message when no GPU adapter exists) |
+| L2 | `gpu` feature: `Canvas` for `vello_gpu::Scene`, headless test rendering a fixture on the GPU and comparing with the CPU pixmap | **Done 2026-10-12.** `crates/render/src/gpu.rs` (`Recording::gpu_scene`, `GpuUnsupported`), `crates/render/tests/gpu.rs`: GPU tiles within 2/255 of the CPU (filters 5/255) on Metal; unsupported tiles refused before encoding; tests skip without an adapter. See L2 notes |
 | L3 | App draws the canvas with `vello_gpu` into an egui-registered texture, CPU fallback + `FIGSTUDIO_RENDERER` | Large real file pans/zooms on GPU; forcing `cpu` gives today's behaviour; no panics on any fixture |
 | L4 | Browser: WebGPU, then WebGL2, then CPU fallback | `scripts/web-build.sh` build runs in a WebGPU browser and in one without WebGPU |
 | L5 | Docs: PLAN, IMPLEMENTATION, TESTING updated; what is not verified | Docs list the GPU path, the fallback and the remaining gaps |
@@ -111,6 +111,45 @@ this is a regression, limited to those GPUs. Reproduced or reasoned by the revie
 Planned answers, not done: the L3/L4 CPU fallback (use the CPU canvas when the device limit is
 below a safe size), a wgpu error handler that skips the frame instead of panicking, or a
 patched egui-wgpu that bounds the surface before configuring it.
+
+## L2 notes
+
+- Dependency: `vello_gpu 0.3.0` with `default-features = false, features = ["wgpu", "std"]`
+  (no `text`: glyphs are paths already; no `wgpu/default`: the app's eframe picks the wgpu
+  backends). Feature `gpu` of figstudio-render implies `parallel` (recordings).
+- One command list: `Recorder::replay` now takes any `Canvas` (`fill_rect` joined the trait),
+  so the CPU tile, the GPU scene and the support scan replay the same culled commands.
+  `Recording::gpu_scene(viewport)` returns `None` (other zoom, outside the area) like
+  `Recording::render`, `Some(Err(GpuUnsupported))` to draw that tile on the CPU, or the scene
+  (background included) and its fill count. The caller renders it (`vello_gpu::Renderer::render`).
+- `vello_gpu` 0.3 API used: `Scene::{new, set_transform, set_paint, set_paint_transform,
+  set_fill_rule, fill_path, fill_rect, push_clip_layer, push_clip_path, pop_clip,
+  push_opacity_layer, push_filter_layer, pop_layer}`; tests: `Renderer::{new, render,
+  create_depth_texture_view}`, `RenderTargetConfig`, `RenderSize`, `TextureBindings`,
+  `TargetInit::Clear`, read back as in its `render_to_file` example.
+- Refused before encoding (each a `GpuUnsupported`, each a panic or wrong pixels in
+  vello_gpu 0.3; the app (L3) is to count them in `Stats::gpu_fallback_tiles`):
+  - `Image`: vello_gpu panics on `ImageSource::Pixmap` (images must be uploaded to its atlas;
+    a later lane can upload them and lift this).
+  - `SweepGradient`: along the 0° seam the GPU draws the start colour where the CPU draws the
+    end colour (a dotted line of 255/255 errors in the angular-gradient test).
+  - `FilterGraph`: anything but one blur, drop shadow, shadow-only, offset or flood primitive
+    (vello_common `PreparedFilter::new` panics). The renderer emits only the first three.
+  - `FilterReach`: filter expansion over 1024 px (intermediate textures are at most 4096 px;
+    `IntermediateTextureError::TooLarge` otherwise).
+  - `Layers`: over 10,000 layers in a tile (the scheduler panics after 40,000 rounds; the
+    filter data texture has a fixed size). Not reached by any fixture.
+  - Not emitted by the renderer, so not scanned: mask layers, blend layers, `set_blend_mode`.
+- Measured on Metal (Apple GPU), tiles of 516 px at scales 0.75, 1, √2, 3, tiles −2..1 each way
+  (max channel difference / 99.9th percentile, out of 255): fill 1/0, stroke 1/1, opacity 2/0,
+  clip 1/0, linear gradient 1/0, radial gradient 1/0, drop shadow 3/2, layer blur (radius 20)
+  5/3, layer blur (radius 150) 4/3, synthetic effects doc 5/3; fixtures corners 1/1,
+  sections 2/1, stacks_wrap 1/1, structure 2/1 (image tiles refused), vector 2/0,
+  noise_and_grain 1/1. Tolerances in the test: 2/1 for everything but filters, 6/4 for blurs and
+  shadows (the GPU's decimated blur is slightly lighter in the soft ramp, at every radius from 2
+  to 150; not visible).
+- wasm32: `cargo check -p figstudio-render --features gpu --target wasm32-unknown-unknown`
+  passes with the web build's nightly and thread flags, and with `vello_gpu/webgl` added.
 
 ## Risks
 

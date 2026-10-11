@@ -16,7 +16,7 @@ use crate::{Frame, MAX_RENDER_WORK, Renderer, Stats, Target, Viewport};
 /// would decode and hold every image of the page at this zoom. Each replay reports
 /// [`Recording::stats`]: the counts of the whole area, not of the replayed viewport.
 pub struct Recording {
-    rec: Recorder,
+    pub(crate) rec: Recorder,
     stats: Stats,
     transform: Affine,
     area: Rect,
@@ -54,26 +54,14 @@ impl Recording {
     /// were replayed, or `None` when the viewport is not the recorded transform moved by a
     /// translation (another zoom, rotation or skew) or reaches outside the recorded area.
     pub fn render(&self, viewport: &Viewport) -> Option<(Frame, usize)> {
-        let [a, b, c, d, tx, ty] = viewport.transform.as_coeffs();
-        let [ra, rb, rc_, rd, rtx, rty] = self.transform.as_coeffs();
-        if [a, b, c, d] != [ra, rb, rc_, rd] {
-            return None;
-        }
-        let (dx, dy) = (tx - rtx, ty - rty);
+        let (window, shift) = self.place(viewport)?;
         let (w, h) = (viewport.width.max(1), viewport.height.max(1));
-        // The viewport's pixels, in recorded pixels.
-        let window = Rect::new(-dx, -dy, f64::from(w) - dx, f64::from(h) - dy);
-        if !self.covers(window) {
-            return None;
-        }
         let mut rc = RenderContext::new_with(w, h, RenderSettings::default());
         if let Some(bg) = viewport.background {
             rc.set_paint(bg);
             rc.fill_rect(&Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
         }
-        let fills = self
-            .rec
-            .replay(&mut rc, window, Affine::translate((dx, dy)));
+        let fills = self.rec.replay(&mut rc, window, shift);
         rc.flush();
         let mut pixmap = Pixmap::new(w, h);
         rc.render(&mut pixmap, &mut Resources::new());
@@ -83,6 +71,23 @@ impl Recording {
             wanted: Vec::new(),
         };
         Some((frame, fills))
+    }
+}
+
+impl Recording {
+    /// The viewport's pixels in recorded pixels, and the shift from recorded pixels to the
+    /// viewport's; `None` as for [`Recording::render`].
+    pub(crate) fn place(&self, viewport: &Viewport) -> Option<(Rect, Affine)> {
+        let [a, b, c, d, tx, ty] = viewport.transform.as_coeffs();
+        let [ra, rb, rc, rd, rtx, rty] = self.transform.as_coeffs();
+        if [a, b, c, d] != [ra, rb, rc, rd] {
+            return None;
+        }
+        let (dx, dy) = (tx - rtx, ty - rty);
+        let (w, h) = (viewport.width.max(1), viewport.height.max(1));
+        let window = Rect::new(-dx, -dy, f64::from(w) - dx, f64::from(h) - dy);
+        self.covers(window)
+            .then_some((window, Affine::translate((dx, dy))))
     }
 }
 

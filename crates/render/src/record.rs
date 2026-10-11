@@ -5,9 +5,7 @@
 use vello_cpu::PaintType;
 use vello_cpu::RenderContext;
 use vello_cpu::filter_effects::Filter;
-#[cfg(feature = "parallel")]
-use vello_cpu::kurbo::Rect;
-use vello_cpu::kurbo::{Affine, BezPath};
+use vello_cpu::kurbo::{Affine, BezPath, Rect};
 use vello_cpu::peniko::Fill;
 
 /// The drawing calls the renderer makes (a subset of `RenderContext`).
@@ -17,6 +15,11 @@ pub(crate) trait Canvas {
     fn set_paint_transform(&mut self, t: Affine);
     fn set_fill_rule(&mut self, rule: Fill);
     fn fill_path(&mut self, path: &BezPath);
+    #[cfg_attr(
+        not(feature = "parallel"),
+        expect(dead_code, reason = "only replays call it through the trait")
+    )]
+    fn fill_rect(&mut self, rect: &Rect);
     fn push_clip_layer(&mut self, path: &BezPath);
     /// A clip without a layer (cheaper); undone by [`Canvas::pop_clip`], nested like layers.
     fn push_clip_path(&mut self, path: &BezPath);
@@ -46,6 +49,9 @@ impl Canvas for RenderContext {
     }
     fn fill_path(&mut self, path: &BezPath) {
         RenderContext::fill_path(self, path);
+    }
+    fn fill_rect(&mut self, rect: &Rect) {
+        RenderContext::fill_rect(self, rect);
     }
     fn push_clip_layer(&mut self, path: &BezPath) {
         RenderContext::push_clip_layer(self, path);
@@ -216,11 +222,6 @@ impl Recorder {
         area
     }
 
-    pub(crate) fn fill_rect(&mut self, rect: &Rect) {
-        let area = self.touched(*rect);
-        self.add(Cmd::FillRect(*rect, area));
-    }
-
     fn push(&mut self, layer: Layer, reach: f64) {
         let at = self.cmds.len();
         self.add(Cmd::Push(layer, NOTHING, 0));
@@ -229,10 +230,10 @@ impl Recorder {
         }
     }
 
-    /// Replays into `rc` every command that can change the recorded pixels `window`, each
-    /// transform preceded by `shift` (recorded pixels to `rc` pixels). Returns how many fills
-    /// were replayed.
-    pub(crate) fn replay(&self, rc: &mut RenderContext, window: Rect, shift: Affine) -> usize {
+    /// Replays into `rc` (a CPU context, the GPU scene or the GPU support scan of `gpu.rs`)
+    /// every command that can change the recorded pixels `window`, each transform preceded by
+    /// `shift` (recorded pixels to `rc` pixels). Returns how many fills were replayed.
+    pub(crate) fn replay(&self, rc: &mut impl Canvas, window: Rect, shift: Affine) -> usize {
         let hits =
             |r: &Rect| r.x1 > window.x0 && r.x0 < window.x1 && r.y1 > window.y0 && r.y0 < window.y1;
         let mut fills = 0;
@@ -266,7 +267,7 @@ impl Recorder {
                         Layer::Clip(p) => rc.push_clip_layer(p),
                         Layer::ClipPath(p) => rc.push_clip_path(p),
                         Layer::Opacity(o) => rc.push_opacity_layer(*o),
-                        Layer::Filter(f) => rc.push_filter_layer(f.clone()),
+                        Layer::Filter(f) => rc.push_filter_layer(f.clone(), 0.0),
                     }
                 }
                 Cmd::Pop => rc.pop_layer(),
@@ -296,6 +297,10 @@ impl Canvas for Recorder {
     fn fill_path(&mut self, path: &BezPath) {
         let area = self.touched(path.control_box());
         self.add(Cmd::Fill(path.clone(), area));
+    }
+    fn fill_rect(&mut self, rect: &Rect) {
+        let area = self.touched(*rect);
+        self.add(Cmd::FillRect(*rect, area));
     }
     fn push_clip_layer(&mut self, path: &BezPath) {
         let r = self.reach();
