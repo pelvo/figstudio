@@ -474,3 +474,6 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-11 — T20 L1: app runs eframe on wgpu (desktop + web) instead of glow; window screenshot
   on macOS matches the glow build; web build and `scripts/check.sh` passed. Not verified: Linux,
   Windows, a browser run (WebGPU or WebGL2).
+- 2026-10-11 — T20 L1 fix: request only the GPU limits the adapter has (WebGL2 with a 4096 texture
+  limit started failing on wgpu); unit test seen failing first; headless Chrome with forced WebGL2/4096
+  opens a fixture. Not verified: a real 4096-limit device, Linux, Windows.

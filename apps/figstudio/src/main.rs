@@ -1,6 +1,7 @@
 //! figstudio — desktop and browser app for Figma `.fig` local copies.
 
 mod canvas;
+mod gpu;
 mod labels;
 mod panels;
 mod source;
@@ -24,7 +25,7 @@ const APP_NAME: &str = "figstudio";
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> std::process::ExitCode {
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)
@@ -34,6 +35,7 @@ fn main() -> std::process::ExitCode {
             .with_drag_and_drop(true),
         ..Default::default()
     };
+    options.wgpu_options.wgpu_setup = gpu::setup();
     let run = eframe::run_native(
         APP_NAME,
         options,

@@ -58,6 +58,16 @@ stays reproducible.
   shows "figstudio could not start". The vello CPU fallback for the canvas is L3.
   Checked on macOS with `WGPU_BACKEND=vulkan` (no such backend): `could not start the window:
   WGPU error: Failed to create surface for any enabled backend`, exit 1, no panic.
+- Device limits: egui-wgpu asks for `max_texture_dimension_2d = 8192`, which a WebGL2 or weak
+  GL adapter (often 4096) refuses. `apps/figstudio/src/gpu.rs` keeps egui-wgpu's requested
+  limits but lowers each to the adapter's (`Limits::or_worse_values_from`). Checked in headless
+  Chrome with WebGPU hidden and WebGL2 `MAX_TEXTURE_SIZE` reported as 4096: the L1 build fails
+  ("value 8192 is better than allowed 4096"), this one opens and draws `structure.fig`.
+- The canvas texture is never bigger than the window, which is never bigger than the window
+  surface, so it needs no clamp of its own. Remaining gap (eframe, not ours): a window wider or
+  taller than the device limit in device pixels makes eframe's surface configure panic
+  (seen at 5000 px wide with a 4096 limit; 4000 px works). glow drew to the default
+  framebuffer and had no such limit. Real WebGL2 on desktop GPUs usually allows 8192–16384.
 - Size (macOS arm64 release): app binary 10.08 MB (glow) → 15.32 MB (wgpu); `figstudio_bg.wasm`
   8.51 MB → 13.60 MB.
 

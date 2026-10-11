@@ -41,9 +41,13 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
         .start(
             canvas,
             // WebGPU first, WebGL2 when the browser lacks it (egui-wgpu's default backends).
-            eframe::WebOptions {
-                renderer: eframe::Renderer::Wgpu,
-                ..Default::default()
+            {
+                let mut options = eframe::WebOptions {
+                    renderer: eframe::Renderer::Wgpu,
+                    ..Default::default()
+                };
+                options.wgpu_options.wgpu_setup = crate::gpu::setup();
+                options
             },
             Box::new(|cc| Ok(Box::new(crate::App::new(cc, Vec::new())))),
         )

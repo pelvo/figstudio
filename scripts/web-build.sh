@@ -40,7 +40,7 @@ cargo "+$TC" build --release -p figstudio --target wasm32-unknown-unknown \
 
 mkdir -p "$OUT"
 wasm-bindgen --target web --no-typescript --out-dir "$OUT" \
-  target/wasm32-unknown-unknown/release/figstudio.wasm
+  "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/figstudio.wasm"
 cp web/index.html web/_headers "$OUT"/
 # CJK font, fetched by the app only when a file has CJK names (see scripts/web-font.sh).
 scripts/web-font.sh "$OUT/fonts"
