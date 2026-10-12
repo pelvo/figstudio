@@ -517,3 +517,7 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-12 — T20 L3: the desktop app draws canvas tiles with vello_gpu on eframe's wgpu device
   (render thread renders, UI registers), falling back to counted CPU tiles; FIGSTUDIO_RENDERER and
   a status-bar renderer label. Not verified: Vulkan/DX12/GL pixels, device loss, a sub-4096 GPU.
+- 2026-10-12 — T20 L4: the browser draws canvas tiles with vello_gpu (WebGPU, else WebGL2 through
+  wgpu's GL backend, else CPU): the worker builds scenes, the main thread renders ≤ 4 per frame;
+  `?renderer=cpu|gpu`. Headless Chrome, structure.fig: both GPU paths within 1/255 of the CPU.
+  Not verified: a real non-Apple GPU, device loss, a late wgpu error scope firing, Firefox/Safari.

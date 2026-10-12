@@ -54,7 +54,7 @@ every move (0.4–0.6 s on a large page, mostly the layer walk, not pixels). Ord
 | L1 | eframe glow → wgpu, desktop + web, no rendering change | **Done 2026-10-11.** App runs on macOS with wgpu (Metal); web build passes; `scripts/check.sh` passes; window screenshot matches the glow build (only the status-bar ms text differs, rest ≤ 1/255) |
 | L2 | `gpu` feature: `Canvas` for `vello_gpu::Scene`, headless test rendering a fixture on the GPU and comparing with the CPU pixmap | **Done 2026-10-12.** `crates/render/src/gpu.rs` (`Recording::gpu_scene`, `GpuUnsupported`), `crates/render/tests/gpu.rs`: GPU tiles within 2/255 of the CPU (filters 5/255) on Metal; unsupported tiles refused before encoding; tests skip without an adapter. See L2 notes |
 | L3 | App draws the canvas with `vello_gpu` into an egui-registered texture, CPU fallback + `FIGSTUDIO_RENDERER` | **Done 2026-10-12 (desktop).** `apps/figstudio/src/gpu_tiles.rs`, `gpu_registry.rs`: GPU tiles on Metal, shown through egui within 2/255 of CPU tiles; counted CPU fallback; status bar "GPU (Metal)" / "CPU". See L3 notes |
-| L4 | Browser: WebGPU, then WebGL2, then CPU fallback | `scripts/web-build.sh` build runs in a WebGPU browser and in one without WebGPU |
+| L4 | Browser: WebGPU, then WebGL2, then CPU fallback | **Done 2026-10-12.** `gpu_scenes.rs` (worker: scenes), `gpu_tiles_web.rs` (main thread: render ≤ 4 tiles / 8 ms per frame), shared `gpu_common.rs`. Headless Chrome (Apple GPU): "GPU (WebGPU)" and "GPU (WebGL2)" within 1/255 of `?renderer=cpu`; CPU on WebGL2 with 2048 px textures. See L4 notes |
 | L5 | Docs: PLAN, IMPLEMENTATION, TESTING updated; what is not verified | Docs list the GPU path, the fallback and the remaining gaps |
 
 ## L1 notes
@@ -201,7 +201,48 @@ patched egui-wgpu that bounds the surface before configuring it.
   private file at 2 % zoom, the summed tile time was 184 ms on GPU and 151 ms on CPU, with 36
   tiles on the CPU (images). At these zooms recording, not rasterising, is the cost. No tuning
   was done.
-- The browser build keeps CPU tiles (`recordings::TileGpu` stub) until L4.
+
+## L4 notes
+
+- Threading: in the browser wgpu's `Device`, `Queue` and `Texture` are not `Send` (checked: a
+  `Send` bound on `wgpu::Device` does not compile for wasm32 with atomics; wgpu's
+  `WasmNotSend`), while `vello_gpu::Scene` and `figstudio_render::Recording` are `Send`. So the
+  render worker (a Rayon pool thread) builds each tile's `Scene` from its page recording, as
+  before up to the scene (`gpu_scenes::TileGpu`), and sends it in `RenderDone::pixels`. The UI
+  thread queues the scenes (`gpu_scenes::Pending`) and each frame renders at most
+  `TILES_PER_FRAME` (4) of them or until `TIME_PER_FRAME` (8 ms) of GPU work is spent, at least
+  one, on eframe's device (`gpu_tiles_web::WebGpu`), then registers the textures with egui
+  as on the desktop. The tile counts as received only when rendered, so the worker does not
+  skip it meanwhile; the UI keeps repainting while scenes wait. One `vello_gpu::Renderer` on
+  the main thread, created at the first tile (shader compile on the main thread, once).
+- WebGL2: `vello_gpu`'s wgpu path runs on wgpu's GL backend unchanged. It needs no compute
+  and no storage buffers: render pipelines only, uniforms (`BufferBindingType::Uniform`),
+  data in `Rgba32Uint`/`Rgba8Unorm` textures read with `textureLoad`, instanced draws with a
+  first instance (wgpu-hal GLES emulates it with a uniform) and `@interpolate(flat)`
+  (`vello_gpu-0.3.0/src/render/wgpu/mod.rs`, `vello_gpu_shaders` `render.wesl`). Its
+  `webgl` feature (own WebGL2 context) is not used.
+- Renderer choice: `?renderer=cpu` (any case) asks for the CPU, anything else for the GPU; then
+  as on desktop (`gpu_common::choose`). Status bar "GPU (WebGPU)", "GPU (WebGL2)" or "CPU"
+  (wgpu's `Gl` backend is named WebGL2 in the browser). `window.figstudioStatus` gains
+  `renderer` and `gpu_fallback_tiles`. Before L4 the browser drew every tile on the CPU.
+- Fallbacks, counted as on desktop (L3 table), with two browser differences: the browser
+  build aborts on panic, so `guarded` cannot catch a `vello_gpu` panic there (the page shows
+  its "internal error" message); and wgpu error scopes resolve later, so a tile is shown first
+  and, if its scope fires, dropped from the cache, the GPU is turned off and the tile is drawn
+  again on the CPU (counted). A `vello_gpu` render `Err` turns the GPU off at once.
+- Checked in headless Chrome 155 (macOS, Apple GPU, ANGLE Metal), `structure.fig` dropped on
+  the canvas by a local CDP script (not in the repo); canvas area compared with `?renderer=cpu`:
+
+  | Browser setup | Status bar | Tiles on the CPU | Max diff vs CPU |
+  |---|---|---|---|
+  | `--enable-unsafe-webgpu` | GPU (WebGPU) | 2 (images) | 1/255, 1 pixel |
+  | `navigator.gpu` removed | GPU (WebGL2) | 2 (images) | 1/255, 4 pixels |
+  | `navigator.gpu` removed, `MAX_TEXTURE_SIZE` reported as 2048 | CPU | 9 (all on screen) | — |
+  | `?renderer=cpu` | CPU | 0 | reference |
+
+  No panics or console errors (only the favicon 404 and wasm-bindgen's init deprecation
+  warning). One observation of tile time in the status bar: WebGPU 39–41 ms, WebGL2 75–565 ms
+  (first run includes the shader compile), CPU 31 ms; summed over the visible tiles. No tuning.
 
 ## Risks
 
