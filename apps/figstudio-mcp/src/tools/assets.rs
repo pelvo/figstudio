@@ -23,15 +23,22 @@ mod originals;
 
 /// Most nodes one call may name.
 pub const MAX_NODES: usize = 20;
-/// Most original images one call returns, so a page of photos cannot flood the reply.
-pub const MAX_ORIGINALS: usize = 20;
+/// Most original images one call returns. Claude Code truncates a tool reply at 25k tokens and
+/// each image costs about 1.5k, so 12 images leave room for the text lines.
+pub const MAX_ORIGINALS: usize = 12;
 /// Raw bytes (before base64) of images one call may return, rendered and originals together.
 /// Claude Code disconnects a stdio server that writes more than 16 MB without a JSON-RPC line
 /// break; 10 MiB raw is about 13.3 MiB of base64 plus JSON, under that.
 pub const MAX_PAYLOAD_BYTES: usize = 10 * 1024 * 1024;
-/// Raw bytes of one image. The Claude API accepts 5 MB of base64 per image (here 7.5 MiB raw,
-/// about 10 MB base64); a larger image is reported as omitted with its size.
-pub const MAX_IMAGE_BYTES: usize = 7 * 1024 * 1024 + 512 * 1024;
+/// Raw bytes of one image: 3.75 MB, which is 5 MB of base64 (the per-image limit on Amazon
+/// Bedrock and Google Vertex, the stricter of the Claude platforms; the direct API allows
+/// 10 MB). Base64 of n raw bytes is 4n/3 characters, so 3 750 000 bytes make exactly 5 MB.
+/// A larger image is reported as omitted with its size.
+pub const MAX_IMAGE_BYTES: usize = 3_750_000;
+/// [`MAX_IMAGE_BYTES`] as printed in replies.
+pub const IMAGE_CAP_LABEL: &str = "3.75 MB";
+/// [`MAX_PAYLOAD_BYTES`] as printed in replies.
+pub const PAYLOAD_LABEL: &str = "10 MiB";
 const JPEG_QUALITY: u8 = 90;
 
 /// Output format of a rendered asset.
@@ -65,7 +72,7 @@ pub(crate) struct AssetsInput {
 #[tool_router(router = assets_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Download up to 20 nodes as PNG or JPG images (format, scale 0.01 to 4; longest side capped at 2048 px without scale, 4096 px with it). JPG has no transparency: nodes are flattened onto white, pages keep their page background. With original=true the call returns the source files of the image fills inside each node (up to 20 per call, each once) with their detected MIME type instead of a render. Each node gets a text line; a node that fails is reported there and does not fail the call. Instance paths (I1:2;3:4) are accepted. SVG and PDF export are not available offline."
+        description = "Download up to 20 nodes as PNG or JPG images (format, scale 0.01 to 4; longest side capped at 2048 px without scale, 4096 px with it). JPG has no transparency: nodes are flattened onto white, pages keep their page background. With original=true the call returns the source files of the image fills inside each node (up to 12 per call, each once) with their detected MIME type instead of a render. Each node gets a text line; a node that fails is reported there and does not fail the call. Instance paths (I1:2;3:4) are accepted. SVG and PDF export are not available offline."
     )]
     async fn download_assets(&self, Parameters(input): Parameters<AssetsInput>) -> CallToolResult {
         let document = match self.files().open(input.file_key.as_deref()).await {
@@ -156,11 +163,21 @@ pub fn download_within(
         }
     }
     let all_failed = failed == node_ids.len();
+    let content = text_first(content);
     if all_failed {
         CallToolResult::error(content)
     } else {
         CallToolResult::success(content)
     }
+}
+
+/// The same items with every text block before every image or blob, so the summary and
+/// omitted lines reach the agent even when the reply is cut after the images.
+pub(crate) fn text_first(content: Vec<ContentBlock>) -> Vec<ContentBlock> {
+    let (mut text, media): (Vec<_>, Vec<_>) =
+        content.into_iter().partition(|c| c.as_text().is_some());
+    text.extend(media);
+    text
 }
 
 /// Raw bytes (before base64) still allowed in one reply.
@@ -195,17 +212,13 @@ impl Payload {
 
     /// The text of an item that did not fit the reply's budget.
     pub(crate) fn omitted(id: &str) -> String {
-        format!(
-            "{id}: omitted, the reply holds at most {} MB of image data",
-            MAX_PAYLOAD_BYTES / (1024 * 1024)
-        )
+        format!("{id}: omitted, the reply holds at most {PAYLOAD_LABEL} of image data")
     }
 
     /// The text of an image over [`MAX_IMAGE_BYTES`].
     pub(crate) fn too_large(id: &str, bytes: usize) -> String {
         format!(
-            "{id}: omitted, image of {bytes} bytes is over the {} MB per-image limit",
-            MAX_IMAGE_BYTES / (1024 * 1024)
+            "{id}: omitted, image of {bytes} bytes is over the {IMAGE_CAP_LABEL} per-image limit"
         )
     }
 }
@@ -317,8 +330,7 @@ fn original_images(
             let size = usize::try_from(entry.size).unwrap_or(usize::MAX);
             if size > MAX_IMAGE_BYTES {
                 too_large.push(format!(
-                    "{id}: image {hash} omitted, {size} bytes is over the {} MB per-image limit",
-                    MAX_IMAGE_BYTES / (1024 * 1024)
+                    "{id}: image {hash} omitted, {size} bytes is over the {IMAGE_CAP_LABEL} per-image limit"
                 ));
                 continue;
             }
@@ -339,9 +351,8 @@ fn original_images(
         };
         if bytes.len() > MAX_IMAGE_BYTES {
             too_large.push(format!(
-                "{id}: image {hash} omitted, {} bytes is over the {} MB per-image limit",
-                bytes.len(),
-                MAX_IMAGE_BYTES / (1024 * 1024)
+                "{id}: image {hash} omitted, {} bytes is over the {IMAGE_CAP_LABEL} per-image limit",
+                bytes.len()
             ));
             continue;
         }
@@ -374,8 +385,7 @@ fn original_images(
     }
     if missing + omitted + repeated > 0 {
         content.push(ContentBlock::text(format!(
-            "{id}: {missing} image(s) not stored in the file, {omitted} omitted (limit {MAX_ORIGINALS} images and {} MB per call), {repeated} already returned for another node",
-            MAX_PAYLOAD_BYTES / (1024 * 1024)
+            "{id}: {missing} image(s) not stored in the file, {omitted} omitted (limit {MAX_ORIGINALS} images and {PAYLOAD_LABEL} per call), {repeated} already returned for another node"
         )));
     }
     Ok(content)

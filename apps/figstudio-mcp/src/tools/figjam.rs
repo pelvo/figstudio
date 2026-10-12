@@ -2,7 +2,7 @@
 use crate::{
     FigstudioServer,
     tools::{
-        assets::Payload,
+        assets::{self, Payload},
         metadata::{figjam::Extras, run},
         rendering::Rendering,
         screenshot::render_node,
@@ -136,7 +136,7 @@ pub fn figjam_within(
             )));
         }
     }
-    CallToolResult::success(content)
+    CallToolResult::success(assets::text_first(content))
 }
 
 /// A text line and PNG for one node, or only a line when it cannot be rendered or no longer

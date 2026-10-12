@@ -1,7 +1,7 @@
 //! `download_assets`: rendered formats, original image bytes, limits and per-node errors.
 use base64::{Engine, engine::general_purpose::STANDARD};
 use figstudio_fig::{Document, Guid, Node, Obj, Val, hex};
-use figstudio_mcp::tools::assets::{AssetFormat, download, download_within};
+use figstudio_mcp::tools::assets::{AssetFormat, MAX_ORIGINALS, download, download_within};
 use figstudio_mcp::tools::rendering::Rendering;
 use rmcp::model::CallToolResult;
 use serde_json::Value;
@@ -40,6 +40,25 @@ fn blobs(result: &CallToolResult) -> Vec<(Vec<u8>, String)> {
         })
         .map(|(data, mime)| (STANDARD.decode(data).unwrap(), mime.to_owned()))
         .collect()
+}
+/// The content type of every item, in order.
+fn kinds(result: &CallToolResult) -> Vec<String> {
+    content(result)
+        .iter()
+        .map(|c| c["type"].as_str().unwrap().to_owned())
+        .collect()
+}
+/// Asserts that every text item comes before the first image or blob item.
+fn assert_text_first(result: &CallToolResult) {
+    let kinds = kinds(result);
+    let first_media = kinds
+        .iter()
+        .position(|k| k != "text")
+        .unwrap_or(kinds.len());
+    assert!(
+        kinds[first_media..].iter().all(|k| k != "text"),
+        "{kinds:?}"
+    );
 }
 fn ids(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| (*s).to_owned()).collect()
@@ -287,9 +306,12 @@ fn originals_are_capped_per_call_and_found_through_instances() {
         true,
         &Rendering::default(),
     );
-    assert_eq!(blobs(&capped).len(), 20);
+    assert_eq!(MAX_ORIGINALS, 12);
+    assert_eq!(blobs(&capped).len(), 12);
     assert!(
-        texts(&capped).iter().any(|l| l.contains("1 omitted")),
+        texts(&capped)
+            .iter()
+            .any(|l| l.contains("9 omitted") && l.contains("limit 12 images and 10 MiB per call")),
         "{:?}",
         texts(&capped)
     );
@@ -422,10 +444,10 @@ fn originals_are_deduplicated_across_nodes_and_only_new_hashes_count() {
     plain(&mut doc, nodes);
     // The same node twice sends its images once.
     assert_eq!(blobs(&orig(&doc, &["9:1", "9:1"])).len(), 10);
-    // 10 shared + 11 new = 21 unique: 20 returned, one omitted.
+    // 10 shared + 11 new = 21 unique: 12 returned, nine omitted.
     let both = orig(&doc, &["9:1", "9:2"]);
-    assert_eq!(blobs(&both).len(), 20, "{:?}", texts(&both));
-    assert!(texts(&both).iter().any(|l| l.contains("1 omitted")));
+    assert_eq!(blobs(&both).len(), 12, "{:?}", texts(&both));
+    assert!(texts(&both).iter().any(|l| l.contains("9 omitted")));
 }
 
 #[test]
@@ -493,11 +515,36 @@ fn nodes_whose_images_are_not_stored_fail_and_mixed_calls_stay_ok() {
 }
 
 #[test]
+fn text_summary_comes_before_every_image_and_blob() {
+    let doc = fixture("structure");
+    // Two renders: the summary lines come first, then both images.
+    let renders = run(&doc, &["1:34", "1:34"], AssetFormat::Png, None);
+    assert_eq!(kinds(&renders), ["text", "text", "image", "image"]);
+    // Originals: the failing node's line and the omitted note come before the image.
+    let mut doc = fixture("structure");
+    let page = Guid(0, 1);
+    let hash = store(&mut doc, 1);
+    plain(
+        &mut doc,
+        vec![
+            layer(1, page, "FRAME", None),
+            layer(2, Guid(9, 1), "RECTANGLE", Some(hash)),
+        ],
+    );
+    let got = orig(&doc, &["9:1", "9:404", "9:1"]);
+    assert_text_first(&got);
+    assert_eq!(blobs(&got).len(), 1, "{:?}", texts(&got));
+}
+
+#[test]
 fn an_image_over_the_per_image_cap_is_reported_with_its_size_not_sent() {
     use figstudio_mcp::tools::assets::{MAX_IMAGE_BYTES, MAX_PAYLOAD_BYTES};
     // One stdio line must stay under 16 MB: 10 MiB raw is about 13.3 MiB of base64.
     const _: () = assert!(MAX_PAYLOAD_BYTES < 16 * 1024 * 1024);
     const _: () = assert!(MAX_IMAGE_BYTES <= MAX_PAYLOAD_BYTES);
+    // The label printed in replies must match the cap: 5 MB of base64 is 3.75 MB raw.
+    const _: () = assert!(MAX_IMAGE_BYTES * 4 / 3 == 5_000_000);
+    assert_eq!(figstudio_mcp::tools::assets::IMAGE_CAP_LABEL, "3.75 MB");
     let mut doc = fixture("structure");
     let big = [9u8; 20];
     doc.images.insert(hex(&big), vec![1u8; MAX_IMAGE_BYTES + 1]);
@@ -525,7 +572,7 @@ fn an_image_over_the_per_image_cap_is_reported_with_its_size_not_sent() {
         lines
             .iter()
             .any(|l| l.contains(&format!("{} bytes", MAX_IMAGE_BYTES + 1))
-                && l.contains("per-image limit")),
+                && l.contains("over the 3.75 MB per-image limit")),
         "{lines:?}"
     );
     // The small image still comes back; the big one is never base64-encoded into the reply.

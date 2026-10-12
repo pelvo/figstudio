@@ -374,7 +374,7 @@ L7 done. `tools/assets.rs` (+ `assets/originals.rs`): up to 20 ids, every id for
 `screenshot::render_node` (same 0.01–4 scale range and 4096 px cap). JPG (quality 90, `image`
 crate) is flattened onto white; pages keep their page background. `original=true` returns the
 stored bytes of the visible IMAGE paints (fills and strokes) of the node, its descendants and
-the instances inside it, each hash once, at most 20 per call, as `image` items (MIME from
+the instances inside it, each hash once, at most 12 per call, as `image` items (MIME from
 `image::guess_format`) or blob resources (`application/octet-stream`) when the format is
 unknown. Hashes with no stored bytes are counted in the text. A failing node is reported in
 its text line; the call is an error only when every node fails. Each behaviour has a test
@@ -498,9 +498,11 @@ the documented descriptions (question 1 is closed).
 - **Replies stay under the stdio line limit (lane 2).** Claude Code disconnects a stdio
   server that writes more than 16 MB without a JSON-RPC line break. A 32 MiB raw reply
   became about 43 MiB of base64 on one line. `MAX_PAYLOAD_BYTES` is now 10 MiB raw
-  (about 13.3 MiB base64 plus JSON) and `MAX_IMAGE_BYTES` 7.5 MiB raw (the Claude API's
-  per-image 5 MB base64 limit, about 10 MB here). Over-cap images are reported with their
-  size and not read or encoded.
+  (about 13.3 MiB base64 plus JSON). `MAX_IMAGE_BYTES` is 3.75 MB raw, which is 5 MB of
+  base64: the per-image limit on Bedrock and Vertex (the direct API allows 10 MB). Over-cap
+  images are reported with their size and not read or encoded. Text lines come first in
+  every reply, and `MAX_ORIGINALS` is 12: Claude Code cuts a reply at 25k tokens and each
+  image costs about 1.5k.
 
 Measured in a live Claude Code 2.1.296 session against a 1.7 GB file.
 

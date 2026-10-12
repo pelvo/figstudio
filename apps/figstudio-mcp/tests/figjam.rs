@@ -217,15 +217,35 @@ fn more_than_twenty_images_are_cut_with_a_note() {
     doc.set_nodes(nodes).unwrap();
     let result = call(&doc, "9:1", true, None);
     assert_eq!(images(&result), 20);
-    let last = serde_json::to_value(&result).unwrap()["content"]
+    // The note sits with the text, before every image, so it survives a cut reply.
+    let value = serde_json::to_value(&result).unwrap();
+    let kinds: Vec<&str> = value["content"]
         .as_array()
         .unwrap()
-        .last()
-        .unwrap()["text"]
-        .as_str()
+        .iter()
+        .map(|c| c["type"].as_str().unwrap())
+        .collect();
+    let first_image = kinds.iter().position(|k| *k == "image").unwrap();
+    assert!(
+        kinds[..first_image].iter().all(|k| *k == "text"),
+        "{kinds:?}"
+    );
+    assert!(
+        kinds[first_image..].iter().all(|k| *k == "image"),
+        "{kinds:?}"
+    );
+    let notes: Vec<&str> = value["content"]
+        .as_array()
         .unwrap()
-        .to_owned();
-    assert!(last.contains("more node(s) not pictured"), "{last}");
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect();
+    assert!(
+        notes
+            .iter()
+            .any(|t| t.contains("more node(s) not pictured")),
+        "{notes:?}"
+    );
 }
 
 #[test]
