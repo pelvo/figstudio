@@ -11,7 +11,7 @@ Branch `feat/mcp`, cut from `fix/known-gaps` at `f87989d`. Research notes (untra
 ## Status (2026-10-11)
 
 Lanes L0–L12 are done and merged on `feat/mcp`; every gate ended with `all checks passed`.
-Shipped: the `figstudio-mcp` binary (stdio and Streamable HTTP), 13 tools (`whoami`,
+Shipped: the `figstudio-mcp` binary (stdio and Streamable HTTP), 14 tools (`whoami`,
 `list_files`, `get_metadata`, `get_screenshot`, `get_variable_defs`, `get_design_context`,
 `download_assets`, `get_figjam`, `get_context_for_code_connect`, `get_code_connect_map`,
 `add_code_connect_map`, `search_design_system`, `get_libraries`) and the

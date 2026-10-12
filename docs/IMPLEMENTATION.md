@@ -322,7 +322,7 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   stream cannot block the app. A bind or runtime error comes back as an event, turns the toggle
   off, and shows a toast.
 - **Snapshot (app to server).** Each frame while running, `sync` builds a `Key` from the tab ids,
-  the document instance pointers, page, selection and the viewport in whole units. It publishes a new
+  the document pointers (`Arc<Document>`), page, selection and the viewport in whole units. It publishes a new
   `Arc<Snapshot>` only when the key changes. The server reads the snapshot under a lock held
   only for the `Arc` clone, so the UI thread never waits for a tool call. A call that holds an
   old `Arc<Document>` finishes even when the tab closes.
