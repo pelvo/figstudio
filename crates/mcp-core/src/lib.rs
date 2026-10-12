@@ -4,6 +4,8 @@
 
 /// Local Code Connect component context.
 pub mod codeconnect_context;
+/// Local component, style and variable search.
+pub mod design_system;
 /// Errors for node IDs, file keys, links and loading a document.
 pub mod error;
 /// `figstudio://` and figma.com links.
