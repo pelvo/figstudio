@@ -1,6 +1,8 @@
 //! figstudio — desktop and browser app for Figma `.fig` local copies.
 
 mod canvas;
+mod copy;
+mod copy_menu;
 mod gpu;
 mod gpu_common;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -954,7 +956,7 @@ impl App {
                 });
         }
         if has_tab && self.show_right {
-            let tab = &self.tabs[self.active];
+            let tab = &mut self.tabs[self.active];
             egui::Panel::right("properties")
                 .frame(dock)
                 .resizable(true)
@@ -968,7 +970,7 @@ impl App {
                             .strong(),
                     );
                     ui.add_space(2.0);
-                    panels::properties(ui, tab);
+                    tab.pending_copy = panels::properties(ui, tab).or(tab.pending_copy.take());
                 });
         }
 
@@ -1001,6 +1003,14 @@ impl App {
             }
         });
         self.cursor = cursor;
+        if let Some(item) = self
+            .tabs
+            .get_mut(self.active)
+            .and_then(|t| t.pending_copy.take())
+        {
+            let toast = copy_menu::copy(&ctx, item);
+            self.toast(&ctx, toast, false);
+        }
         if open_clicked {
             self.open_dialog(&ctx);
         }

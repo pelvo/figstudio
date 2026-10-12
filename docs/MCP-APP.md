@@ -198,6 +198,18 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
   - `copy::text` keeps 1000+ characters intact.
 - **Prove:** truncate `text` to 400; break the link format.
 - **Gate:** G-check, G-web (or noted), and a manual check: right-click in each of the 3 places, paste into an editor.
+- **Status:** done (commit `feat(app): right-click copy for name, text, id, link and agent block`).
+  - **Files:** `apps/figstudio/src/copy.rs` (pure formatters), `copy_menu.rs` (egui glue), `copy_tests.rs`; hooks in
+    `panels.rs`, `canvas.rs`, `tab.rs` (`pending_copy`) and `main.rs` (copy and toast).
+  - **Menu:** Copy name, Copy text (TEXT nodes only, full `textData.characters`), Copy node ID, Copy link, Copy for
+    agent. Copy properties as JSON is not added: it waits for L5.
+  - **Selectable labels:** egui 0.36 defaults `selectable_labels: true`, and the theme does not change it, so the
+    Properties values were already selectable. Only the Text section needed a Copy button.
+  - **Proved:** truncate `text` to 400 (caught), break the link format (caught by 3 tests), drop the multi-line name
+    flattening (caught), list Copy text for non-text nodes (caught). Each reverted.
+  - **Gates:** G-check passed, G-web exit 0, G-golden identical (197 records), PII scan clean for this lane.
+  - **Not verified:** a real right-click in the window (Computer Use did not bind the app); paste into an editor; the
+    web build's clipboard (`ctx.copy_text` on web was not exercised).
 
 ## L3: marquee and Copy region, text and PNG (M/L, Sonnet)
 

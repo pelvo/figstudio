@@ -58,6 +58,8 @@ pub struct Tab {
     pub load_time: Duration,
     /// Canvas rect from the last frame, for keyboard zoom around the centre.
     pub canvas_rect: Option<egui::Rect>,
+    /// A Copy menu item picked this frame; `main.rs` puts it on the clipboard.
+    pub pending_copy: Option<crate::copy::Item>,
 }
 
 impl Tab {
@@ -95,6 +97,7 @@ impl Tab {
             render_time: Duration::ZERO,
             load_time,
             canvas_rect: None,
+            pending_copy: None,
         }
     }
 

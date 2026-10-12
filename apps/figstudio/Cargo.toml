@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 figstudio-fig = { workspace = true }
+# Node IDs and figstudio:// links for the Copy menus (copy.rs), shared with the MCP server.
+figstudio-mcp-core = { workspace = true }
 egui = { workspace = true }
 web-time = { workspace = true }
 # The browser's `?renderer=cpu|gpu` query (gpu_scenes.rs); the URL crate's own parser.

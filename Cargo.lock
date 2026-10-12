@@ -1093,6 +1093,7 @@ dependencies = [
  "eframe",
  "egui",
  "figstudio-fig",
+ "figstudio-mcp-core",
  "figstudio-render",
  "fontdb",
  "form_urlencoded",

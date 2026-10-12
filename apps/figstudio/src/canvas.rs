@@ -7,6 +7,7 @@ use figstudio_render::{
     absolute_transform, color::AlphaColor, content_bounds, geom, hit_test, page_background,
 };
 
+use crate::copy_menu;
 use crate::tab::{Tab, View};
 use crate::theme;
 use crate::tiles_view::Tiles;
@@ -119,6 +120,16 @@ pub fn show(
             }
             Tool::Hand => {}
         }
+    }
+    // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
+    // canvas nothing is selected, so no menu opens. Any tool, as the spec says.
+    if response.secondary_clicked() {
+        tab.select(tab.hover);
+    }
+    if let Some(id) = tab.selection {
+        let mut picked = None;
+        copy_menu::on_context(&response, tab, id, &mut picked);
+        tab.pending_copy = picked.or(tab.pending_copy.take());
     }
     if response.double_clicked()
         && tool == Tool::Select
