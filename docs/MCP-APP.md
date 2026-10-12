@@ -314,6 +314,14 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
 - **Wasm check:** the wasm build of core uses `--no-default-features`, so it drops fontdb, memmap and tempfile.
 - **Gate:** G-check, G-wasm, G-golden empty against L4. After this lane, `rg 'rmcp|tokio|axum' crates/mcp-core` must
   be empty.
+- **Status:** done. Core now holds `rendering.rs` (`Rendering`, lazy reads via `std::fs::File`), `screenshot.rs`
+  (`Output`-returning; `Root`, `Shot`, `render_node`, `layer_shot`, `approximations`), `assets.rs` + `assets/originals.rs`
+  (`Blob` blocks for non-image originals), `design/*`, `figjam.rs` (picture loop; closes the L4 deviation) and `fs.rs`
+  (`persist_file`, `fs` feature only). Features: `default = ["fs", "system-fonts"]`; the workspace dependency is
+  `default-features = false` and `figstudio-mcp` turns both on. Without `fs`, `design_context` with `Assets::Dir` returns
+  the error "asset files are not available in this build" (`Inline` works). The wasm32 build (`--no-default-features`)
+  passes. `rg 'rmcp|tokio|axum' crates/mcp-core` is empty. Adapter keeps the `JsonSchema` input structs, routers, a
+  schema-bearing `AssetFormat` that converts to core's, and old-signature wrappers. New test: `crates/mcp-core/tests/rendering.rs`.
 
 ## L6: region in MCP (M, Sonnet)
 

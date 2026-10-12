@@ -2,9 +2,8 @@
 use super::jsx::Writer;
 use super::walk::Target;
 use super::{MAX_ASSETS, MAX_INLINE_BYTES};
-use figstudio_mcp_core::screenshot::{Root, approximations, layer_shot};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use crate::screenshot::{Root, approximations, layer_shot};
+use std::path::PathBuf;
 
 /// Where `get_design_context` puts rendered assets.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,7 +48,9 @@ pub(super) fn name(key: &str, id: &str) -> String {
 /// a new temporary file in `dir` that is persisted over the target, so an existing link named
 /// `name` is replaced, never followed out of the directory. The temporary file is removed on
 /// failure.
-pub(super) fn write(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+#[cfg(feature = "fs")]
+pub(super) fn write(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    use std::path::Path;
     if Path::new(name).file_name() != Some(std::ffi::OsStr::new(name)) || name.starts_with('.') {
         return Err(std::io::Error::other(
             "asset names must be plain file names",
@@ -57,9 +58,9 @@ pub(super) fn write(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<Pat
     }
     std::fs::create_dir_all(dir)?;
     let mut temp = tempfile::NamedTempFile::new_in(dir)?;
-    temp.write_all(bytes)?;
+    std::io::Write::write_all(&mut temp, bytes)?;
     let target = dir.join(name);
-    crate::tools::persist_file(temp, &target, None)?;
+    crate::fs::persist_file(temp, &target, None)?;
     Ok(target)
 }
 
@@ -111,6 +112,7 @@ pub(super) fn render(w: &mut Writer<'_>, target: &Target, name: String) -> bool 
             w.inline_bytes += encoded;
             (name.clone(), Some(png))
         }
+        #[cfg(feature = "fs")]
         Assets::Dir(dir) => match write(dir, &name, &png) {
             Ok(path) => (path.display().to_string(), None),
             Err(_) => {
@@ -120,6 +122,9 @@ pub(super) fn render(w: &mut Writer<'_>, target: &Target, name: String) -> bool 
                 return false;
             }
         },
+        // `design_context` refuses this mode before any layer is written.
+        #[cfg(not(feature = "fs"))]
+        Assets::Dir(_) => return false,
     };
     w.out.assets.push(Asset {
         name,

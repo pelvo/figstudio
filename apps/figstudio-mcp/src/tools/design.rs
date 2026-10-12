@@ -1,0 +1,74 @@
+//! `get_design_context`: React + Tailwind reference code for a local node, with assets.
+use crate::{
+    FigstudioServer,
+    tools::{to_call, tool_error},
+};
+use figstudio_fig::Document;
+use figstudio_mcp_core::design as core;
+use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router};
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+pub use core::{Assets, MAX_ASSETS, MAX_CODE_BYTES, MAX_INLINE_BYTES, MAX_NODES, Options};
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesignInput {
+    /// Node ID, instance path (I1:2;3:4) or Figma URL with node-id.
+    node_id: String,
+    /// Registered file stem or full path; optional for a single file.
+    file_key: Option<String>,
+    /// The project's frameworks, for example "React" or "Vue"; echoed in the instructions.
+    client_frameworks: Option<String>,
+    /// The project's languages, for example "typescript"; echoed in the instructions.
+    client_languages: Option<String>,
+    /// Most layers to write (default 1000, at most 5000).
+    max_nodes: Option<usize>,
+}
+
+#[tool_router(router = design_router, vis = "pub(crate)")]
+impl FigstudioServer {
+    #[tool(
+        description = "Get React + Tailwind reference code for a local node (data-node-id and data-name on every element), then instructions for the agent and the rendered assets. Auto-layout becomes flex, other children absolute; fills, gradients, strokes, radii, shadows, blurs, opacity, blend modes, typography and style runs are carried over; bound colour variables become var(--name,fallback). Vectors, boolean operations and image-filled leaves become <img> PNG assets rendered locally (written to the server's assets directory, or inline images). Instances show their resolved content with overrides; nodeId may be an instance path (I1:2;3:4). Large trees are cut (maxNodes, 24 kB code cap by default (--max-output-bytes), 30 assets, 4 MB of inline images) with a note: use get_metadata for the outline, then call this on children."
+    )]
+    async fn get_design_context(
+        &self,
+        Parameters(input): Parameters<DesignInput>,
+    ) -> CallToolResult {
+        let key = self.file_for(input.file_key.as_deref(), Some(&input.node_id));
+        let key = key.as_deref();
+        let rendering = self.files().rendering(key, !self.no_system_fonts());
+        let (document, file_key, rendering) = match (
+            self.files().open(key).await,
+            self.files().key(key),
+            rendering,
+        ) {
+            (Ok(document), Ok(file_key), Ok(rendering)) => (document, file_key, rendering),
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+                return tool_error(error);
+            }
+        };
+        let options = Options {
+            file_key,
+            frameworks: input.client_frameworks,
+            languages: input.client_languages,
+            max_nodes: input.max_nodes,
+            assets: self.assets().clone(),
+            rendering,
+            max_code_bytes: Some(self.max_output_bytes()),
+        };
+        match tokio::task::spawn_blocking(move || {
+            design_context(&document, &input.node_id, &options)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => tool_error(crate::error::McpError::load_task(error)),
+        }
+    }
+}
+
+/// Code, instructions and assets for `node_id`; an unknown or unresolvable id is a tool error.
+pub fn design_context(doc: &Document, node_id: &str, options: &Options) -> CallToolResult {
+    to_call(core::design_context(doc, node_id, options))
+}

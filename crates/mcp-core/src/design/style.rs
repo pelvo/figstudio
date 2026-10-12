@@ -137,7 +137,7 @@ fn effects(out: &mut Classes, text: bool, data: &Val, tokens: &Tokens, notes: &m
             "DROP_SHADOW" | "INNER_SHADOW" => {
                 let color = effect
                     .get("color")
-                    .and_then(|c| figstudio_mcp_core::variables::format::color(c, 1.0))
+                    .and_then(|c| crate::variables::format::color(c, 1.0))
                     .unwrap_or_else(|| "#00000040".into());
                 let offset = |a| {
                     f64::from(

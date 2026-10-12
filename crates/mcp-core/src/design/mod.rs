@@ -8,20 +8,13 @@ mod text;
 mod walk;
 
 use crate::{
-    FigstudioServer,
     node_id::{NodeId, parse_node_id},
-    tools::{rendering::Rendering, tool_error},
+    output::{Block, Output},
+    rendering::Rendering,
 };
 pub use assets::Assets;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use figstudio_fig::Document;
-use rmcp::{
-    handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
-    tool, tool_router,
-};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use walk::Target;
 
@@ -35,21 +28,6 @@ pub const MAX_CODE_BYTES: usize = 24_000;
 pub const MAX_ASSETS: usize = 30;
 /// Base64 bytes of inline images per reply; further assets stay placeholders.
 pub const MAX_INLINE_BYTES: usize = 4_000_000;
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct DesignInput {
-    /// Node ID, instance path (I1:2;3:4) or Figma URL with node-id.
-    node_id: String,
-    /// Registered file stem or full path; optional for a single file.
-    file_key: Option<String>,
-    /// The project's frameworks, for example "React" or "Vue"; echoed in the instructions.
-    client_frameworks: Option<String>,
-    /// The project's languages, for example "typescript"; echoed in the instructions.
-    client_languages: Option<String>,
-    /// Most layers to write (default 1000, at most 5000).
-    max_nodes: Option<usize>,
-}
 
 /// Inputs of [`design_context`] besides the document and node.
 #[derive(Clone, Debug, Default)]
@@ -70,72 +48,30 @@ pub struct Options {
     pub max_code_bytes: Option<usize>,
 }
 
-#[tool_router(router = design_router, vis = "pub(crate)")]
-impl FigstudioServer {
-    #[tool(
-        description = "Get React + Tailwind reference code for a local node (data-node-id and data-name on every element), then instructions for the agent and the rendered assets. Auto-layout becomes flex, other children absolute; fills, gradients, strokes, radii, shadows, blurs, opacity, blend modes, typography and style runs are carried over; bound colour variables become var(--name,fallback). Vectors, boolean operations and image-filled leaves become <img> PNG assets rendered locally (written to the server's assets directory, or inline images). Instances show their resolved content with overrides; nodeId may be an instance path (I1:2;3:4). Large trees are cut (maxNodes, 24 kB code cap by default (--max-output-bytes), 30 assets, 4 MB of inline images) with a note: use get_metadata for the outline, then call this on children."
-    )]
-    async fn get_design_context(
-        &self,
-        Parameters(input): Parameters<DesignInput>,
-    ) -> CallToolResult {
-        let key = self.file_for(input.file_key.as_deref(), Some(&input.node_id));
-        let key = key.as_deref();
-        let rendering = self.files().rendering(key, !self.no_system_fonts());
-        let (document, file_key, rendering) = match (
-            self.files().open(key).await,
-            self.files().key(key),
-            rendering,
-        ) {
-            (Ok(document), Ok(file_key), Ok(rendering)) => (document, file_key, rendering),
-            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
-                return tool_error(error);
-            }
-        };
-        let options = Options {
-            file_key,
-            frameworks: input.client_frameworks,
-            languages: input.client_languages,
-            max_nodes: input.max_nodes,
-            assets: self.assets().clone(),
-            rendering,
-            max_code_bytes: Some(self.max_output_bytes()),
-        };
-        match tokio::task::spawn_blocking(move || {
-            design_context(&document, &input.node_id, &options)
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(error) => tool_error(crate::error::McpError::load_task(error)),
-        }
-    }
-}
-
-fn failure(message: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![ContentBlock::text(message)])
-}
-
 /// Code, instructions and assets for `node_id`; an unknown or unresolvable id is a tool error.
-pub fn design_context(doc: &Document, node_id: &str, options: &Options) -> CallToolResult {
+pub fn design_context(doc: &Document, node_id: &str, options: &Options) -> Output {
+    #[cfg(not(feature = "fs"))]
+    if matches!(options.assets, Assets::Dir(_)) {
+        return Output::fault("asset files are not available in this build");
+    }
     let root = match parse_node_id(node_id) {
         Ok(NodeId::Node(id)) if doc.node(id).is_some_and(|n| n.kind != "DOCUMENT") => {
             Target::Node(id)
         }
         Ok(NodeId::Node(id)) => {
-            return failure(format!(
+            return Output::fault(format!(
                 "Unknown node ID {id}; use get_metadata to list pages and layers"
             ));
         }
         Ok(NodeId::InstancePath(path)) => Target::Path(path),
-        Err(error) => return tool_error(error.into()),
+        Err(error) => return Output::fault(error.to_string()),
     };
     let limit = options
         .max_nodes
         .unwrap_or(MAX_NODES.0)
         .clamp(1, MAX_NODES.1);
     let Some(layers) = walk::collect(doc, &root, limit) else {
-        return failure(format!(
+        return Output::fault(format!(
             "Unknown node ID {}; use get_metadata to list pages and layers",
             root.id()
         ));
@@ -164,7 +100,7 @@ pub fn design_context(doc: &Document, node_id: &str, options: &Options) -> CallT
                 asset.name, asset.node, asset.reference
             ));
             if let Some(png) = &asset.inline {
-                images.push(ContentBlock::image(STANDARD.encode(png), "image/png"));
+                images.push(Block::image(STANDARD.encode(png), "image/png"));
             }
         }
     }
@@ -173,9 +109,9 @@ pub fn design_context(doc: &Document, node_id: &str, options: &Options) -> CallT
         text.push_str(&line);
         text.push('\n');
     }
-    let mut content = vec![ContentBlock::text(out.code), ContentBlock::text(text)];
+    let mut content = vec![Block::text(out.code), Block::text(text)];
     content.extend(images);
-    CallToolResult::success(content)
+    Output::success(content)
 }
 
 fn instructions(options: &Options) -> String {
