@@ -1,0 +1,32 @@
+[package]
+name = "figstudio-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+figstudio-fig.workspace = true
+figstudio-render.workspace = true
+base64.workspace = true
+html-escape.workspace = true
+image.workspace = true
+rmcp.workspace = true
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+quick-xml.workspace = true
+clap.workspace = true
+url.workspace = true
+tokio-util.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+reqwest.workspace = true
+futures-util.workspace = true

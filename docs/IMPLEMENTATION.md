@@ -12,6 +12,10 @@ crates/fig/src/          no UI, no rendering; builds for wasm (browser app)
   read.rs                Kiwi bytes -> Val, driven by the schema stored in the file
   val.rs                 Val, Obj (field list), Guid, intern()
   write.rs               Val -> Kiwi bytes, canvas chunks, zip; Document::to_bytes / save
+  tokens.rs, tokens/     read-only variable / style index (types.rs: Collection, Mode, Variable,
+                         Style, Value); shared by the renderer and MCP tools
+  resolve.rs, resolve/   public instance resolver: Overrides scope stack and merge (shared
+                         with the renderer), component properties, swaps, walk / path lookup
 crates/render/src/       Document -> pixels with vello_cpu; builds for wasm without fonts
   lib.rs                 Renderer, Stats, Viewport, the draw walk, culling, instances, masks,
                          bounds / hit test helpers; render_parallel (feature parallel)
@@ -19,10 +23,50 @@ crates/render/src/       Document -> pixels with vello_cpu; builds for wasm with
   geom.rs                transforms, sizes, path blobs, base shapes, clipping rules
   paint.rs               solid / gradient / image paints, image cache
   text.rs                stored glyph outlines; installed-font layout (feature system-fonts)
+  focus.rs               render_path / path_bounds: draw one node inside an instance on its own,
+                         laid out as the instance draws it (used by MCP instance-path shots)
 apps/figstudio-cli/src/
   main.rs                argument parsing and commands
   doctor.rs              privacy-safe structure report
   synth.rs               stress-file generator
+apps/figstudio-mcp/src/  offline MCP server (separate library and binary)
+  main.rs                clap options, stdio / Streamable HTTP, Ctrl-C / SIGTERM shutdown
+  lib.rs                 rmcp handler, tools/prompts capabilities, /mcp HTTP service
+  prompts.rs             create_design_system_rules prompt and bounded local inventory
+  files.rs               lazy shared local document registry and fileKey resolution
+  node_id.rs             node IDs, Figma URLs, instance paths (figstudio_fig::resolve::InstancePath)
+  error.rs               canonical error type; tools/mod.rs maps tool failures
+  tools/mod.rs           whoami, list_files, tool_error; declares every tool module
+  tools/metadata.rs      get_metadata: typed inputs, quick-xml, bounded iterative tree walk;
+                         instances expand through fig::resolve::walk_instance (metadata/node.rs
+                         writes one element, metadata/resolved.rs writes resolved instance
+                         content into the body)
+  tools/figjam.rs        get_figjam: metadata::run with FigJam Extras, optional small PNGs
+                         (metadata/figjam.rs: per-kind attributes, text, undrawn-kind counts)
+  tools/screenshot.rs    get_screenshot (render_node/Shot shared with assets and figjam); an instance path uses Renderer::render_path and
+                         path_bounds (render/src/focus.rs: only that node, laid out as drawn)
+  tools/assets.rs        download_assets: PNG/JPG renders (screenshot::render_node) or original
+                         image bytes; assets/originals.rs finds image-fill hashes in a node
+  tools/codeconnect.rs    component context + atomic local source mappings (named router)
+    codeconnect/context.rs component sets, properties, instance resolution
+    codeconnect/sidecar.rs  serde_json + tempfile persist, filters, symlink rejection
+  tools/design_system.rs  capped local component/token search and summaries
+  tools/variables.rs     get_variable_defs; walks resolved instance content
+    variables/format.rs  stored style payloads -> text (colours, fonts, numbers)
+  tools/design/          get_design_context: mod.rs (tool, output sections, Notes), walk.rs
+                         (layers incl. resolved instances), jsx.rs (elements, picture assets),
+                         layout.rs (position, size, stack → flex), paint.rs (colours,
+                         gradients, var()), style.rs (border, radius, effects, blend),
+                         text.rs (typography, runs, html-escape), assets.rs (stable names,
+                         writes kept inside --assets-dir); PNGs come from
+                         screenshot::layer_shot, the get_screenshot render path
+                         New tools belong in tools/<name>.rs with a typed input struct.
+                         Use #[tool_router(router = <name>_router, vis = "pub(crate)")]
+                         on an impl FigstudioServer, declare the module here, and combine
+                         Self::tool_router() + Self::<name>_router() in lib.rs new().
+apps/figstudio-mcp/tests/  protocol tests (stdio.rs, http.rs, prompts.rs, files.rs) and one
+                         file per tool (see docs/TESTING.md "MCP server"); README.md is the
+                         user doc
 apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   main.rs                App: menus, shortcuts, panel layout, message polling, export
   canvas.rs              canvas input, render requests, frame re-projection, outlines
@@ -40,6 +84,12 @@ Dependencies are declared once in the root `Cargo.toml` (`[workspace.dependencie
 Do not add a dependency without a reason you can state in the commit message.
 
 ## 2. Data flow
+
+### Tokens (`crates/fig/src/tokens.rs`)
+
+`Tokens::new(&Document)` indexes variable collections, per-mode values and stored style
+payloads by field name. GUID/asset lookups and bounded alias resolution are shared with
+rendering; the renderer deliberately keeps the first stored mode. No fonts or new dependencies.
 
 ### Reading a file (`crates/fig`)
 
@@ -136,7 +186,18 @@ Paints are resolved in `paint::resolve()`. SOLID, linear / radial / angular grad
 IMAGE (stretch / fill / fit / tile) are drawn; diamond gradients are approximated as radial
 (`approximated_paints`); a missing image draws a grey placeholder (`missing_images`).
 
-**Instances.** `draw_instance` pushes every `symbolOverrides` entry (and `derivedSymbolData`)
+**Instances.** The override merge lives in `figstudio_fig::resolve` and is shared by the
+renderer and the MCP tools. `resolve_instance(doc, instance)` lists every node inside an
+instance (Figma ids `I<instance>;<key>…`, merged data, level; capped at
+`MAX_RESOLVED_NODES`), `walk_instance` adds depth and node caps, and
+`resolve_path(doc, &InstancePath)` looks one node up. A walker that descends by itself (the
+renderer) keeps an `Overrides` stack: `enter`/`leave` per instance, `matches` + `merge` (or
+`resolve`) per node. Uniform instance scale is shared too: `resolve::scale_inherited` with
+`Overrides::outer_scale` (owner-aware) scales translation, size, stroke weights and stored
+glyphs, and `resolve` applies it, so tools report the geometry the renderer draws. The
+renderer adds only its render-side steps on top of `merge`: constraint corrections and stale
+glyph and stroke geometry detection. Any tool that reads node data inside instances must use
+`fig::resolve`, never `symbolOverrides` directly. `draw_instance` pushes every `symbolOverrides` entry (and `derivedSymbolData`)
 as a `Patch` keyed by the full override path (instance path + `guidPath.guids`), then draws
 the component's children with that path. A node's override key is `Node::override_key()`.
 Override paths include only instance ancestors and the target key, not intervening ordinary
@@ -223,10 +284,13 @@ Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared mem
 
 ### Big files and images
 
-- `Document::open` reads the whole file (capped at `MAX_FILE_BYTES`, 1 GiB). The app opens
-  archives over 256 MB with `Document::open_lazy` (desktop) / `Document::from_lazy`
-  (browser): only the canvas, `meta.json` and the thumbnail are read; images stay in
-  `doc.lazy_images` as archive entries (`fig::archive`). Such a document cannot be saved.
+- `Document::open` reads the whole file (capped at `MAX_FILE_BYTES`, 1 GiB).
+  `Document::open_auto` (`crates/fig/src/open.rs`) opens archives over `LAZY_ABOVE` (256 MiB)
+  with `Document::open_lazy`; the desktop app and the MCP server use it, the browser uses
+  `Document::from_lazy`. A lazy open reads only the canvas, `meta.json` and the thumbnail;
+  images stay in `doc.lazy_images` as archive entries (`fig::archive`). Such a document
+  cannot be saved. The MCP server renders through `tools::rendering::Rendering`
+  (`render_complete` / `render_path_complete`, images read from the registered path).
 - Images are decoded per (image, level) in `render::images::Images`, a cache shared by all
   renders (`Renderer::with_images`). Level n is the image shrunk 2ⁿ times; the level comes
   from the paint's on-screen scale. Figma's `imageThumbnail` is used up to 256 px on screen.
@@ -348,6 +412,12 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T15 | Doctor on a file with a parent cycle or oversized input (report U1 from the audit) | `apps/figstudio-cli/src/doctor.rs` | Doctor reports the cycle as an error and exits 1, with a test |
 | T16 | Derive a shared render-work budget from real-file measurements and bound all traversal work | `crates/render/src/lib.rs` | Shared `MAX_RENDER_WORK` test bounds ordinary, mask, and instance work; page 4 completed without reported truncation. Attempt-count telemetry for the final real-file render remains pending. |
 | T17 | Make the synth command's `set_nodes` error path a test (`apps/figstudio-cli/src/synth.rs`) | `apps/figstudio-cli/` | A test covers a synth that would create a cycle |
+| M1 | MCP: `get_motion_context` (deferred: no public file with motion data to validate the schema) | `apps/figstudio-mcp/src/tools` | A real motion file decoded; the tool tested on that file's shape and on documents built in the test, proven by mutation |
+| M2 | MCP: SVG export in `download_assets` | `apps/figstudio-mcp/src/tools/assets.rs`, `crates/render` | A vector writer (or a trustworthy crate) with tests; the tool description updated |
+| M3 | MCP: ancestor masks and clips for instance-child screenshots (`I…;…`) | `crates/render/src/focus.rs` | A built document with a masked ancestor renders the same as the node inside the full instance |
+| M4 | MCP: nested-instance override visibility in `download_assets original=true` (frames between nested instances use stored visibility, the `shortcut:` in `tools/assets/originals.rs`) | `apps/figstudio-mcp/src/tools/assets/originals.rs` | A hidden override on a nested instance hides its image fills; test proven by mutation |
+| M5 | MCP: live-client check (Claude Code, Cursor, VS Code, Codex) over stdio and HTTP | — | A person runs each client; result recorded in `docs/PLAN.md` |
+| M6 | MCP: real FigJam and motion files (field shapes come from the schema today) | `apps/figstudio-mcp/src/tools/metadata/figjam.rs` | Output compared with a real board; tests updated |
 | T18 | Re-check the file-level RSS for a 54 MB input with the new per-item caps (measured sizes only so far) | `crates/fig` | Peak RSS recorded for the largest real file in `docs/PLAN.md` |
 
 Things an agent cannot verify alone (say so in the report): opening our files in Figma,

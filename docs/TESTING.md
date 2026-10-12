@@ -238,3 +238,49 @@ Looked at:         thumb sheet / GUI screenshots (which ones)
 Not verified:      <real desktop, macOS, Figma, big private file, …>
 Numbers:           <performance before → after, same machine>   (if relevant)
 ```
+
+## 12. MCP server (`apps/figstudio-mcp/tests`)
+
+All tests are integration tests under `tests/` and run in the gate. They use the public
+fixtures (`structure.fig`, `sections.fig`) or documents **built inside the test** (variables,
+FigJam and most design-context mappings; the fixtures have no variables or FigJam kinds). No private file is used.
+
+**Protocol tests**
+- `stdio.rs` spawns the real binary (`CARGO_BIN_EXE_figstudio-mcp`), writes JSON-RPC lines
+  to stdin and checks stdout: only protocol lines, one `initialize` reply, a tool listing and
+  calls, SIGTERM shutdown, and the non-loopback `--http` warning on stderr.
+- `http.rs` starts the server on port 0 and sends plain POSTs (reqwest). One test per protocol
+  version (2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28): `initialize`, `tools/list`,
+  `whoami`, an unknown tool, and a non-loopback `Host` that must be refused.
+- `prompts.rs`, `files.rs` and most per-tool files use rmcp's client over an in-process duplex
+  pipe against the same handler the transports use.
+
+**Tool tests** (one file or pair per tool: `metadata*.rs`, `screenshot.rs`, `variables*.rs`,
+`instances*.rs`, `design*.rs`, `assets.rs`, `figjam.rs`, `codeconnect*.rs`, `lazy.rs` for
+forced-lazy opens matching eager ones). They check output
+shape, every nodeId form, errors as `isError` results, caps at their exact boundary, and
+unchanged fixture bytes. `*_review.rs` files hold regressions from the cross-family reviews;
+each failed on the code it reviewed. Code Connect tests write sidecars into a temp directory
+(copy of a fixture), never beside the repo fixture.
+
+Prove each test as in section 5 (mutate the code, see it fail).
+
+**Manual smoke test** with the release binary (stdio, one JSON object per line):
+
+```sh
+cargo build --release -p figstudio-mcp
+{ printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_metadata","arguments":{"nodeId":"1:38"}}}'
+  sleep 2; } | target/release/figstudio-mcp tests/fixtures/structure.fig
+```
+
+Keep stdin open (`sleep`) until the replies arrive; closing it ends the session. Expect 13
+tools in the listing. For HTTP, run `target/release/figstudio-mcp --http tests/fixtures/structure.fig`
+and POST to `http://127.0.0.1:3845/mcp` with `Accept: application/json, text/event-stream`.
+Do not run `add_code_connect_map` against a fixture in `tests/fixtures`: it writes a sidecar
+beside the file. Copy the fixture to a temp directory first.
+
+Not covered: a live Claude Code, Cursor, VS Code or Codex client, real Ctrl-C, Windows.

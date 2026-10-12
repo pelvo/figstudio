@@ -1,17 +1,13 @@
 //! Resolve paint styles and paint-variable aliases from an index built once per document.
+use figstudio_fig::{
+    Document, Val,
+    tokens::{Tokens, Value},
+};
 use std::borrow::Cow;
-use std::collections::HashMap;
-
-use figstudio_fig::{Document, Guid, Val};
 
 #[derive(Default)]
 pub(crate) struct Variables {
-    by_id: HashMap<Guid, Val>,
-    by_asset: HashMap<(String, String), Val>,
-    /// Paint style nodes by guid and by library asset (key, version); styles keep paints in
-    /// `fillPaints`, for fill and stroke styles alike.
-    styles: HashMap<Guid, Val>,
-    styles_by_asset: HashMap<(String, String), Val>,
+    tokens: Tokens,
     /// Some value in the document mentions a style reference or a paint variable; when none
     /// does, [`Variables::paints`] has nothing to resolve or count and returns at once.
     used: bool,
@@ -43,77 +39,27 @@ fn mentions_paint_reference(value: &Val) -> bool {
     false
 }
 
-/// A node's style reference and the paint list that the style replaces.
-pub(crate) const STYLED_PAINTS: [(&str, &str); 2] = [
-    ("styleIdForFill", "fillPaints"),
-    ("styleIdForStrokeFill", "strokePaints"),
-];
+pub(crate) use figstudio_fig::resolve::STYLED_PAINTS;
 
 impl Variables {
     pub fn new(doc: &Document) -> Self {
-        let mut out = Self::default();
-        for node in &doc.nodes {
-            out.used = out.used || mentions_paint_reference(&node.data);
-            if node.data.get("styleType").is_some()
-                && let Some(paints) = node.data.get("fillPaints")
-            {
-                out.styles.insert(node.id, paints.clone());
-                if let (Some(key), Some(version)) =
-                    (node.data.text("key"), node.data.text("version"))
-                {
-                    out.styles_by_asset
-                        .insert((key.into(), version.into()), paints.clone());
-                }
-            }
-            if node.kind != "VARIABLE" {
-                continue;
-            }
-            // shortcut: use the first stored mode; add inherited mode selection when needed.
-            let Some(value) = node
-                .data
-                .path(&["variableDataValues", "entries"])
-                .and_then(|v| v.items().first())
-                .and_then(|e| e.get("variableData"))
-            else {
-                continue;
-            };
-            out.by_id.insert(node.id, value.clone());
-            if let (Some(key), Some(version)) = (node.data.text("key"), node.data.text("version")) {
-                out.by_asset
-                    .insert((key.into(), version.into()), value.clone());
-            }
+        Self {
+            used: doc.nodes.iter().any(|n| mentions_paint_reference(&n.data)),
+            tokens: Tokens::new(doc),
         }
-        out
     }
 
     pub fn color(&self, data: &Val, depth: usize) -> Option<Val> {
-        if depth >= 24 {
-            return None;
+        // shortcut: preserve the first stored mode; inherited mode selection is separate.
+        match self.tokens.resolve_at(data, None, depth) {
+            Some(Value::Color(color)) => Some(color),
+            _ => None,
         }
-        let value = data.get("value")?;
-        if let Some(color) = value.get("colorValue") {
-            return Some(color.clone());
-        }
-        let alias = value.get("alias")?;
-        let target = if let Some(id) = alias.get("guid").and_then(Val::as_guid) {
-            self.by_id.get(&id)
-        } else {
-            let asset = alias.get("assetRef")?;
-            self.by_asset
-                .get(&(asset.text("key")?.into(), asset.text("version")?.into()))
-        }?;
-        self.color(target, depth + 1)
     }
 
-    /// Paints of the style a `styleIdFor*` reference points at; `None` for the detached
-    /// sentinel or a style missing from the file, which keep the node's stored paints.
+    /// Attached styles supply paints; detached or missing styles keep stored paints.
     fn style(&self, reference: &Val) -> Option<&Val> {
-        if let Some(id) = reference.get("guid").and_then(Val::as_guid) {
-            return self.styles.get(&id);
-        }
-        let asset = reference.get("assetRef")?;
-        self.styles_by_asset
-            .get(&(asset.text("key")?.into(), asset.text("version")?.into()))
+        self.tokens.style(reference)?.paints.as_ref()
     }
 
     pub fn paints<'a>(&self, data: &'a Val) -> (Cow<'a, Val>, usize) {

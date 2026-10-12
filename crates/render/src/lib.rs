@@ -4,9 +4,9 @@
 
 mod connector;
 mod effects;
+mod focus;
 pub mod geom;
 pub mod images;
-mod instance;
 mod layout;
 mod network;
 pub mod paint;
@@ -19,6 +19,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 
+use figstudio_fig::resolve::{self, InstancePath, Overrides};
 use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
@@ -35,8 +36,6 @@ use crate::record::Canvas;
 
 pub use vello_cpu::{color, kurbo};
 
-/// Instances nested deeper than this are not expanded (guards against cycles).
-const MAX_INSTANCE_DEPTH: usize = 24;
 /// Total attempted-work units per render. The real large-file page render used 12,418 work
 /// units, so this cap leaves over 160x headroom before any truncation is possible.
 pub const MAX_RENDER_WORK: usize = 2_000_000;
@@ -137,6 +136,13 @@ pub struct Frame {
     pub wanted: Vec<ImageRequest>,
 }
 
+/// What a frame draws: a document node (or page), or one node inside an instance.
+#[derive(Clone, Copy)]
+enum Target<'p> {
+    Node(Guid),
+    Path(&'p InstancePath),
+}
+
 /// Holds caches (decoded images, system fonts) between renders of the same document.
 pub struct Renderer {
     images: Images,
@@ -145,7 +151,7 @@ pub struct Renderer {
     pub system_fonts: bool,
     /// Property and style indexes of the last document drawn, by [`Document::instance`]:
     /// built once per document, not per frame (they scan every node of every page).
-    indexes: Option<(u64, Arc<instance::Definitions>, Arc<variables::Variables>)>,
+    indexes: Option<(u64, Arc<resolve::Definitions>, Arc<variables::Variables>)>,
 }
 
 impl fmt::Debug for Renderer {
@@ -178,12 +184,6 @@ impl Default for Renderer {
     }
 }
 
-struct Patch {
-    data: Val,
-    owner_depth: usize,
-    derived: bool,
-}
-
 struct Ctx<'a> {
     doc: &'a Document,
     rc: &'a mut dyn Canvas,
@@ -191,11 +191,8 @@ struct Ctx<'a> {
     images: &'a Images,
     wanted: Vec<ImageRequest>,
     fonts: Option<&'a mut text::SystemFonts>,
-    patches: Vec<Patch>,
-    patch_index: std::collections::HashMap<Vec<Guid>, Vec<usize>>,
-    symbol_stack: Vec<Guid>,
-    instance_scales: Vec<f64>,
-    properties: instance::Properties,
+    /// Override scopes of the instances being drawn (the merge shared with `fig::resolve`).
+    overrides: Overrides,
     variables: Arc<variables::Variables>,
     work_left: usize,
     depth: usize,
@@ -231,11 +228,31 @@ impl Renderer {
         doc: &Document,
         root: Guid,
         viewport: &Viewport,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> Frame {
+        self.complete_with(read, |this| this.render(doc, root, viewport))
+    }
+
+    /// [`Renderer::render_complete`] for a node inside an instance (see [`Renderer::render_path`]).
+    pub fn render_path_complete(
+        &mut self,
+        doc: &Document,
+        path: &InstancePath,
+        viewport: &Viewport,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> Frame {
+        self.complete_with(read, |this| this.render_path(doc, path, viewport))
+    }
+
+    /// Runs `draw` until no image is wanted, reading each wanted image with `read`.
+    fn complete_with(
+        &mut self,
         mut read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+        draw: impl Fn(&mut Self) -> Frame,
     ) -> Frame {
         // Thumbnail first, then the image, then perhaps a finer level: a few rounds at most.
         for _ in 0..6 {
-            let frame = self.render(doc, root, viewport);
+            let frame = draw(self);
             if frame.wanted.is_empty() && self.images.in_flight() == 0 {
                 return frame;
             }
@@ -248,7 +265,7 @@ impl Renderer {
                 }
             }
         }
-        self.render(doc, root, viewport)
+        draw(self)
     }
 
     /// Bytes of decoded pixels held by the image cache.
@@ -258,12 +275,35 @@ impl Renderer {
 
     /// Draws `root` (a page or any node) into `viewport`.
     pub fn render(&mut self, doc: &Document, root: Guid, viewport: &Viewport) -> Frame {
-        self.render_budgeted(doc, root, viewport, MAX_RENDER_WORK, 0)
+        self.render_budgeted(doc, Target::Node(root), viewport, MAX_RENDER_WORK, 0)
     }
+
+    /// Draws only the node at `path` inside an instance (with its descendants), laid out as it
+    /// is when the whole instance is drawn: overrides, uniform scale and constraints applied.
+    /// Its siblings and ancestors are not drawn, so ancestor clips and masks are not applied.
+    /// An unknown or hidden path gives an empty frame.
+    pub fn render_path(
+        &mut self,
+        doc: &Document,
+        path: &InstancePath,
+        viewport: &Viewport,
+    ) -> Frame {
+        self.render_budgeted(doc, Target::Path(path), viewport, MAX_RENDER_WORK, 0)
+    }
+
+    /// The page-space box of the node at `path` as [`Renderer::render_path`] draws it; `None`
+    /// when the path does not resolve or the node or an ancestor is hidden.
+    pub fn path_bounds(&mut self, doc: &Document, path: &InstancePath) -> Option<Rect> {
+        let mut canvas = RenderContext::new_with(1, 1, RenderSettings::default());
+        let screen = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let mut ctx = self.context(doc, &mut canvas, screen, MAX_RENDER_WORK, 0);
+        ctx.focus(path, Affine::IDENTITY, false)
+    }
+
     fn render_budgeted(
         &mut self,
         doc: &Document,
-        root: Guid,
+        root: Target<'_>,
         viewport: &Viewport,
         work: usize,
         preparation_skipped: usize,
@@ -324,7 +364,7 @@ impl Renderer {
         }
         let (stats, wanted) = self.walk(
             doc,
-            root,
+            Target::Node(root),
             viewport.transform,
             full,
             &mut rec,
@@ -370,49 +410,21 @@ impl Renderer {
     fn walk(
         &mut self,
         doc: &Document,
-        root: Guid,
+        root: Target<'_>,
         transform: Affine,
         screen: Rect,
         canvas: &mut dyn Canvas,
         work: usize,
         preparation_skipped: usize,
     ) -> (Stats, Vec<ImageRequest>) {
-        self.images.begin_frame();
-        // Bounded by MAX_DECODED_NODES, so not charged to the per-frame work budget.
-        let (definitions, variables) = match &self.indexes {
-            Some((instance, d, v)) if *instance == doc.instance => (d.clone(), v.clone()),
-            _ => {
-                let d = Arc::new(instance::definitions(doc));
-                let v = Arc::new(variables::Variables::new(doc));
-                self.indexes = Some((doc.instance, d.clone(), v.clone()));
-                (d, v)
+        let mut ctx = self.context(doc, canvas, screen, work, preparation_skipped);
+        let root = match root {
+            Target::Node(id) => id,
+            Target::Path(path) => {
+                ctx.focus(path, transform, true);
+                ctx.stats.attempted_work = work.saturating_sub(ctx.work_left);
+                return (ctx.stats, ctx.wanted);
             }
-        };
-        let work_left = work;
-        let mut ctx = Ctx {
-            doc,
-            rc: canvas,
-            stats: Stats {
-                preparation_skipped,
-                ..Stats::default()
-            },
-            images: &self.images,
-            wanted: Vec::new(),
-            fonts: if self.system_fonts {
-                Some(&mut self.fonts)
-            } else {
-                None
-            },
-            patches: Vec::new(),
-            patch_index: std::collections::HashMap::new(),
-            symbol_stack: Vec::new(),
-            instance_scales: Vec::new(),
-            properties: instance::Properties::new(definitions),
-            variables,
-            work_left,
-            depth: 0,
-            exhausted: false,
-            screen,
         };
         if let Some(node) = doc.node(root) {
             if node.kind == "CANVAS" || node.kind == "DOCUMENT" {
@@ -434,6 +446,48 @@ impl Renderer {
         ctx.stats.attempted_work = work.saturating_sub(ctx.work_left);
         (ctx.stats, ctx.wanted)
     }
+    /// A drawing context for one frame over `canvas`; `screen` is the output area for culling.
+    fn context<'a>(
+        &'a mut self,
+        doc: &'a Document,
+        canvas: &'a mut dyn Canvas,
+        screen: Rect,
+        work: usize,
+        preparation_skipped: usize,
+    ) -> Ctx<'a> {
+        self.images.begin_frame();
+        // Bounded by MAX_DECODED_NODES, so not charged to the per-frame work budget.
+        let (definitions, variables) = match &self.indexes {
+            Some((instance, d, v)) if *instance == doc.instance => (d.clone(), v.clone()),
+            _ => {
+                let d = Arc::new(resolve::definitions(doc));
+                let v = Arc::new(variables::Variables::new(doc));
+                self.indexes = Some((doc.instance, d.clone(), v.clone()));
+                (d, v)
+            }
+        };
+        Ctx {
+            doc,
+            rc: canvas,
+            stats: Stats {
+                preparation_skipped,
+                ..Stats::default()
+            },
+            images: &self.images,
+            wanted: Vec::new(),
+            fonts: if self.system_fonts {
+                Some(&mut self.fonts)
+            } else {
+                None
+            },
+            overrides: Overrides::new(definitions),
+            variables,
+            work_left: work,
+            depth: 0,
+            exhausted: false,
+            screen,
+        }
+    }
     pub fn render_fit(
         &mut self,
         doc: &Document,
@@ -445,7 +499,7 @@ impl Renderer {
         let (viewport, omitted, prep_work) = fit_viewport(doc, root, scale, padding, background)?;
         let mut frame = self.render_budgeted(
             doc,
-            root,
+            Target::Node(root),
             &viewport,
             MAX_RENDER_WORK.saturating_sub(prep_work),
             omitted,
@@ -780,31 +834,11 @@ impl Ctx<'_> {
         let Some(path) = path else {
             return (Cow::Borrowed(&node.data), false, false);
         };
-        let mut matches: Vec<&Patch> = self
-            .patch_index
-            .get(path)
-            .into_iter()
-            .flatten()
-            .filter_map(|index| self.patches.get(*index))
-            .collect();
-        matches.sort_by_key(|p| (std::cmp::Reverse(p.owner_depth), p.derived));
-        let property_patch = self.properties.patch(&node.data);
-        // A value comes from the outermost level that states it, already in that level's
-        // scaled space; every uniformly scaled instance outside that level still scales it.
-        let scales = &self.instance_scales;
-        let outer_scale = |field: &str| -> f64 {
-            let level = matches
-                .iter()
-                .filter(|p| p.data.get(field).is_some())
-                .map(|p| p.owner_depth)
-                .min()
-                .unwrap_or(scales.len());
-            scales[..level.min(scales.len())].iter().product()
-        };
+        let matches = self.overrides.matches(path);
+        let property_patch = self.overrides.property_patch(&node.data);
+        let outer_scale = |field: &str| self.overrides.outer_scale(&matches, field);
         let (move_by, grow_by) = (outer_scale("transform"), outer_scale("size"));
         let transform_stated = matches.iter().any(|p| p.data.get("transform").is_some());
-        let glyph_scale = outer_scale("derivedTextData");
-        let stroke_scales = layout::STROKE_LENGTHS.map(&outer_scale);
         if matches.is_empty()
             && property_patch == Val::Obj(figstudio_fig::Obj::new())
             && move_by == 1.0
@@ -813,11 +847,12 @@ impl Ctx<'_> {
         {
             return (Cow::Borrowed(&node.data), false, false);
         }
-        let mut data = node.data.merged(&property_patch);
-        let mut text_changed = data.get("textData") != node.data.get("textData");
+        let mut text_changed = property_patch
+            .get("textData")
+            .is_some_and(|t| node.data.get("textData") != Some(t));
         let mut glyphs_fresh = false;
         let mut stroke_stale = false;
-        for p in &matches {
+        let mut data = resolve::merge(&node.data, &property_patch, &matches, |data, p| {
             // Stored stroke outlines no longer match an overridden stroke unless a derived
             // patch stores new ones.
             if !p.derived
@@ -837,17 +872,7 @@ impl Ctx<'_> {
             if p.data.get("derivedTextData").is_some() && p.derived {
                 glyphs_fresh = true;
             }
-            data = data.merged(&p.data);
-            // An explicit paint override replaces the paints of a style it does not restate.
-            for (style, key) in variables::STYLED_PAINTS {
-                if p.data.get(key).is_some()
-                    && p.data.get(style).is_none()
-                    && let Val::Obj(o) = &mut data
-                {
-                    o.remove(style);
-                }
-            }
-        }
+        });
         // shortcut: vector-like nodes have no base shape to redraw from, so they keep the old
         // outline (about 25 nodes in the private file); restroke the vector network if one shows.
         if stroke_stale
@@ -859,9 +884,8 @@ impl Ctx<'_> {
         if !transform_stated && let Some((old, new)) = parent {
             layout::constrain(&node.data, &mut data, old, new, (move_by, grow_by));
         }
-        layout::scale_inherited(&mut data, move_by, grow_by);
-        layout::scale_ink(&mut data, glyph_scale, stroke_scales);
-        instance::inherit_swapped(self.doc, &node.data, &mut data);
+        resolve::scale_inherited(&mut data, outer_scale);
+        resolve::inherit_swapped(self.doc, &node.data, &mut data);
         let stale_glyphs = text_changed && !glyphs_fresh;
         let approximate_ink = layout::approximate_ink(&data, &node.kind, stale_glyphs, outer_scale);
         (Cow::Owned(data), stale_glyphs, approximate_ink)
@@ -1294,22 +1318,11 @@ impl Ctx<'_> {
     }
     fn draw_instance(&mut self, data: &Val, world: Affine, path: Option<&[Guid]>) {
         self.stats.instances += 1;
-        let symbol_id = data
-            .get("overriddenSymbolID")
-            .and_then(Val::as_guid)
-            .or_else(|| {
-                data.path(&["symbolData", "symbolID"])
-                    .and_then(Val::as_guid)
-            });
-        let Some(symbol) = symbol_id.and_then(|id| self.doc.node(id)) else {
+        let Some(symbol) = resolve::symbol_id(data).and_then(|id| self.doc.node(id)) else {
             self.stats.missing_symbols += 1;
             return;
         };
-        if self.symbol_stack.contains(&symbol.id) {
-            self.stats.depth_skipped += 1;
-            return;
-        }
-        if self.symbol_stack.len() >= MAX_INSTANCE_DEPTH {
+        if !self.overrides.can_enter(symbol.id) {
             self.stats.depth_skipped += 1;
             return;
         }
@@ -1317,61 +1330,8 @@ impl Ctx<'_> {
             return;
         }
         let base: Vec<Guid> = path.map(<[Guid]>::to_vec).unwrap_or_default();
-        let owner_depth = self.symbol_stack.len();
-        let before = self.patches.len();
-        let mut added_keys = Vec::new();
-        let lists = [
-            (data.path(&["symbolData", "symbolOverrides"]), false),
-            (data.get("derivedSymbolData"), true),
-        ];
-        for (list, derived) in lists {
-            for item in list.map(Val::items).unwrap_or_default() {
-                let guids: Vec<Guid> = item
-                    .path(&["guidPath", "guids"])
-                    .map(Val::items)
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(Val::as_guid)
-                    .collect();
-                if guids.is_empty() {
-                    continue;
-                }
-                let mut full = base.clone();
-                full.extend(guids);
-                let index = self.patches.len();
-                self.patch_index
-                    .entry(full.clone())
-                    .or_default()
-                    .push(index);
-                added_keys.push(full);
-                self.patches.push(Patch {
-                    data: item.clone(),
-                    owner_depth,
-                    derived,
-                });
-            }
-        }
-        self.symbol_stack.push(symbol.id);
-        self.properties.push(symbol, data);
-        let scale = data
-            .path(&["symbolData", "uniformScaleFactor"])
-            .and_then(Val::as_f32)
-            .filter(|s| s.is_finite() && *s > 0.0)
-            .map_or(1.0, f64::from);
-        self.instance_scales.push(scale);
+        self.overrides.enter(symbol, data, &base);
         self.draw_children(symbol, &symbol.data, world, Some(&base));
-        self.instance_scales.pop();
-        self.properties.pop();
-        self.symbol_stack.pop();
-        self.patches.truncate(before);
-        for key in added_keys {
-            let remove = self.patch_index.get_mut(&key).is_some_and(|indexes| {
-                indexes.pop();
-                indexes.is_empty()
-            });
-            if remove {
-                self.patch_index.remove(&key);
-            }
-        }
+        self.overrides.leave();
     }
 }

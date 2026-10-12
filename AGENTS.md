@@ -9,6 +9,8 @@ picking up work. Read the three documents below before changing code.
 | `docs/PLAN.md` | Requirements, phases, **what is done and what is open**, progress log |
 | `docs/IMPLEMENTATION.md` | Architecture, data flow, how to add a feature, gotchas, task board |
 | `docs/TESTING.md` | Every test and check, how to write new ones, how to prove a test works |
+| `apps/figstudio-mcp/README.md` | The offline MCP server: install, client setup, tools, limits |
+| `docs/MCP-PLAN.md` | MCP server plan, lane notes, what shipped and what is open |
 | `docs/APPROXIMATIONS.md` | What each status-bar "approximated"/"skipped" counter is made of, and the plan to clear it |
 
 ## Ground rules
@@ -40,6 +42,16 @@ picking up work. Read the three documents below before changing code.
 10. **No new `unsafe`.** The workspace denies it; the one FFI call is in `doctor.rs`.
 11. **Update `docs/PLAN.md`** when you finish something: tick the box only after its check
     really passed, and add one line to the progress log. Report what you did **not** verify.
+12. **Use trustworthy crates; do not hand-roll.** For protocols, formats and encodings
+    (JSON, MCP/JSON-RPC, HTTP, XML, base64, CLI parsing in new code, …) use a well-known,
+    maintained crate (official SDK, high download count, active repo) instead of writing
+    your own. State the crate and the reason in the commit message. Hand-written code is
+    only for figstudio's own logic.
+13. **Follow the Rust guidelines.** New Rust code follows Microsoft's Pragmatic Rust
+    Guidelines (the `ms-rust-guidelines` skill, `M-*` IDs): canonical error structs,
+    no panics on bad input, `Debug` on public types, integration tests under `tests/`,
+    `#[expect]` for lint overrides. Workers cite the `M-*` IDs they applied; reviewers check
+    against them.
 
 ## Quick start
 

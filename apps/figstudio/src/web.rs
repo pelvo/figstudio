@@ -18,11 +18,11 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use figstudio_fig::archive::{self, Entry};
-use figstudio_fig::{Document, FigError};
+use figstudio_fig::{Document, FigError, LAZY_ABOVE};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
-use crate::source::{ImageSource, LAZY_ABOVE, Source};
+use crate::source::{ImageSource, Source};
 
 /// Exposed to JavaScript as `initThreadPool(n)`; await it before `start`. (The export comes
 /// from the crate's `#[wasm_bindgen]`; this binary never calls it, hence the allow.)

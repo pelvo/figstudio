@@ -1,0 +1,530 @@
+# MCP server plan (figstudio-mcp)
+
+Goal: an offline MCP server that reads local `.fig` files and answers the same tools as
+Figma's official MCP server, so a coding agent (Claude Code, Cursor, Codex, VS Code) can
+work from a local copy without the Figma app or an account.
+
+Branch `feat/mcp`, cut from `fix/known-gaps` at `f87989d`. Research notes (untracked) are in
+`target/mcp-research/figma-mcp-tools.md` (the official tools) and
+`target/mcp-research/codebase-recon.md` (what figstudio already has).
+
+## Status (2026-10-11)
+
+Lanes L0–L12 are done and merged on `feat/mcp`; every gate ended with `all checks passed`.
+Shipped: the `figstudio-mcp` binary (stdio and Streamable HTTP), 13 tools (`whoami`,
+`list_files`, `get_metadata`, `get_screenshot`, `get_variable_defs`, `get_design_context`,
+`download_assets`, `get_figjam`, `get_context_for_code_connect`, `get_code_connect_map`,
+`add_code_connect_map`, `search_design_system`, `get_libraries`) and the
+`create_design_system_rules` prompt. The user doc is `apps/figstudio-mcp/README.md`.
+Note: the plan below mentions an `open_file` tool; it was not built (files are given on the
+command line).
+
+Open follow-ups (task board M1–M6 in `docs/IMPLEMENTATION.md`): `get_motion_context`
+(needs a real motion file), SVG export, ancestor masks and clips on instance-child
+screenshots, nested-instance override visibility in `download_assets original=true`,
+a check with live clients, and real FigJam and motion files.
+
+## 1. Official tools and what we can do offline
+
+"Selection" does not exist offline. Every tool takes `nodeId` (`123:456`, `123-456`, or a
+Figma URL with `node-id=`) and an optional `fileKey` (the loaded file's stem or path).
+
+| Official tool | Offline | Source in figstudio | Lane |
+|---|---|---|---|
+| `get_metadata` | full (instances expand with overrides, L5) | `Document` tree, parent-relative transform, size | L2 |
+| `get_screenshot` | full | `Renderer::render_fit` + `into_png` | L3 |
+| `get_variable_defs` | full (all modes) | `VARIABLE` / `styleType` nodes, `render/variables.rs` | L4 |
+| `get_design_context` | partial: React + Tailwind from stored data, no shader runtime | node fields, instance resolver | L6 |
+| `download_assets` | partial: PNG/JPG renders and original image bytes, no SVG/PDF | renderer, `Document.images` | L7 |
+| `get_figjam` | partial: decode only, FigJam kinds are not drawn yet | generic `Node.data` | L8 |
+| `get_context_for_code_connect` | full: component property definitions | `componentPropDefs` | L9 |
+| `get_code_connect_map` / `add_code_connect_map` | partial: local sidecar JSON instead of Figma's cloud | new | L9 |
+| `search_design_system` / `get_libraries` | partial: components and styles in this file only | `SYMBOL` / style nodes | L9 |
+| `create_design_system_rules` (prompt) | full: prompt text plus a summary of the file's tokens | L4 output | L10 |
+| `get_motion_context` | unknown: needs keyframe fields in the schema | L0 checks | later |
+| `whoami` | stub only (`{"mode":"offline"}`) | none | L1 |
+| `use_figma`, `create_new_file`, `generate_figma_design`, `generate_image`, shader tools, generative-plugin tools, `weave_*`, `get_code_connect_suggestions` | no: they write to Figma's canvas or need Figma's cloud | none | not registered |
+
+Tools that cannot work offline are **not registered**, and the README lists them. Registering
+them only to fail would waste the client's tool budget.
+
+Output shapes we copy from the official server (to be checked against a real capture before
+L2/L4 are frozen; see the open questions):
+- `get_metadata`: XML, one element per node (`<frame id name x y width height>`), with
+  `x`/`y` relative to the parent. With no `nodeId` it returns the page list. An unknown
+  `nodeId` returns an error that includes the page list.
+- `get_variable_defs`: a flat JSON object of `name → value`. Colours are `#RRGGBB(AA)`,
+  numbers stay numbers, and text styles are `Font(family: …, style: …, size: …, weight: …,
+  lineHeight: …, letterSpacing: …)`. Extra modes become `name (Mode)` keys.
+- `get_design_context`: JSX with `data-node-id` and `data-name`, followed by agent
+  instructions and asset references.
+- `get_screenshot`: an MCP `image` content item (base64 PNG).
+
+## 2. Design decisions (defaults, to be confirmed)
+
+1. **Layout.** New package `apps/figstudio-mcp` with `src/lib.rs` (tools: pure functions from
+   `&Document` to text, JSON or PNG) and a thin `src/main.rs` (transport). It depends only on
+   `figstudio-fig` and `figstudio-render`, and is added to `default-members`.
+2. **Transport (crate: `rmcp`, the official MCP Rust SDK, 3.5.x).** Both transports are
+   required: **stdio** (`transport-io`) and **Streamable HTTP** (`transport-streamable-http-server`,
+   served with `axum` on `127.0.0.1:3845/mcp` by default, `--http[=ADDR]`), so existing
+   Figma-desktop client configs work unchanged. Protocol versions 2025-03-26, 2025-06-18,
+   2025-11-25 and 2026-07-28 are negotiated by rmcp. The legacy 2024-11-05 HTTP+SSE-only
+   transport is **not** supported. A stdio session that sends 2024-11-05 still gets rmcp's
+   normal negotiation.
+3. **Dependencies (AGENTS.md rule 12: trustworthy crates, no hand-rolled protocols or
+   formats).** `rmcp` (server, macros, transport-io, transport-streamable-http-server),
+   `tokio` (rt-multi-thread, macros, io-std, net, signal), `axum`, `serde` + `serde_json`,
+   `schemars` (tool input schemas, through rmcp), `base64` (the screenshot payload; rmcp
+   re-exports one), `quick-xml` (get_metadata / get_figjam XML writer), `clap` (derive, for
+   the new binary's arguments). Rendering and decoding stay in the existing crates. Code
+   follows `ms-rust-guidelines` (AGENTS.md rule 13).
+4. **Files.** `figstudio-mcp [--no-system-fonts] FILE.fig...`. Files open lazily on first
+   use and are cached. (No `open_file` tool was built; files come from the command line.) The `.fig` is never written, apart
+   from the L9 sidecar `FILE.fig.codeconnect.json`.
+5. **Data model goes into the `fig` crate.** Read-only token and style models
+   (`fig::tokens`) and the instance resolver (`fig::resolve`, chosen in L5) become
+   public APIs that the renderer also uses, so the two never disagree.
+6. **Privacy.** The server returns names and text to the local client by design. That is not
+   `doctor`, and the doctor no-PII rule is unchanged. Tests and docs use only the 7 public
+   fixtures or documents built inside the test (ground rule 9).
+7. **Unsupported means counted.** Every tool response ends with a short `approximations:`
+   line built from `Stats` (screenshot) or skipped-field counters (design context), so the
+   agent knows what is not exact.
+
+## 3. Lanes (one worker per lane; commit after each lane passes `scripts/check.sh`)
+
+Each lane: ≤ ~150 new lines per turn, source files ≤ ~300 lines, every behaviour has a test
+seen failing first (docs/TESTING.md "Prove the test").
+
+**L0 findings (done 2026-10-11, `target/mcp-research/schema-facts.md`):**
+- Padding: there is no `stackPaddingLeft`/`Top`. Left = `stackHorizontalPadding`,
+  top = `stackVerticalPadding`, right = `stackPaddingRight`, bottom = `stackPaddingBottom`
+  (right and bottom fall back to the axis value when absent). Alignment:
+  `stackPrimaryAlignItems`/`stackCounterAlignItems` (old `stackAlign`/`stackJustify` are
+  legacy fallbacks). Sizing: `stackPrimarySizing`/`stackCounterSizing`.
+  `stackCounterSpacing` can be NaN, meaning unset.
+- Schemas differ per file (format v20 to v106), so read fields **by name only**; never by id.
+- Text runs: `textData.styleOverrideTable[]` holds NodeChange fragments, keyed by
+  `characterStyleIDs`. They merge the same way as instance overrides.
+- Styles are bound by `styleIdFor{Fill,StrokeFill,Text,Effect,Grid}` (StyleId {guid,assetRef})
+  and by the legacy `inherit*StyleID` fields.
+- **No fixture has `VARIABLE`/`VARIABLE_SET` nodes, FigJam kinds, or motion data.** The
+  L4, L8 and motion tests must build their documents inside the test. `get_motion_context`
+  stays deferred until we have a real motion file to validate against.
+- `ComponentPropType` has 18 values in v106 (VARIANT, NUMBER, IMAGE, SLOT, …). L9 must
+  handle unknown values as plain strings.
+
+**L0: schema facts (scout, read-only, about 1 hour).** Dump the embedded Kiwi schema from a
+fixture and record the exact field names for: auto-layout (`stackSpacing`,
+`stackHorizontalPadding`/`stackPaddingRight`/…, `stackPrimaryAlignItems`,
+`stackCounterAlignItems`, sizing and grow fields); text style runs (`textData.styleOverrideTable`,
+`characterStyleIDs`); variable collections, modes and `variableConsumptionMap`; text and effect
+style payloads; animation or keyframe fields (for `get_motion_context`); FigJam kinds
+(`STICKY`, `CONNECTOR`, `SHAPE_WITH_TEXT`, `TABLE`, …). Output:
+`target/mcp-research/schema-facts.md`. **Done:** every name has a fixture node id that has it,
+or is marked "absent from all fixtures".
+
+**L1: skeleton and both transports.** [x] Complete. The package; an rmcp `ServerHandler` using the
+`#[tool_router]` macros; `figstudio-mcp [--http[=ADDR]] FILE.fig...` (clap; stdio by default);
+Streamable HTTP through rmcp's `StreamableHttpService` on axum; error mapping (`McpError` for
+protocol faults, `isError: true` results for tool faults, never a panic; a canonical error
+struct, M-ERRORS-CANONICAL-STRUCTS); node-id parsing (`1:2`, `1-2`, a URL, `I1:2;3:4` instance paths); file registry;
+`whoami`. **Done:** integration tests under `tests/` (M-INTEGRATION-TESTS) drive (a) stdio, by
+spawning the binary or using rmcp's client over a duplex pipe, and (b) Streamable HTTP, by
+starting the server on port 0 and using rmcp's streamable-http client or plain POSTs:
+initialize → tools/list → tools/call whoami → unknown tool, for protocol versions 2025-03-26
+and 2025-06-18 plus the latest.
+
+L1 verified: nine tests pass with failing-first mutation proofs, the workspace gate
+ends with `all checks passed`, and a release-binary initialize smoke test produces
+exactly one JSON-RPC stdout line with empty stderr. The registry lazily caches public
+fixture documents; `list_files` reports page counts only after opening. CLI accepts
+`--no-system-fonts`; `--http FILE.fig` uses the default address, and custom addresses
+require `--http=ADDR`. Non-loopback binds warn on stderr: rmcp's default allowed_hosts
+rejects non-loopback Host headers; binding externally does not enable remote clients. `rmcp` 3.5.1 negotiates an initialize request for latest down
+to 2025-11-25 (with a session); actual 2026-07-28 requests use stateless per-request
+metadata and method/name headers. HTTP tests exercise both behaviors, older sessions,
+unknown tools, and the unchanged localhost Host allowlist. Duplicate dependency review:
+only SDK-required syn 2/3 versions plus host/target copies of identical versions.
+L1 review fixes: per-file OnceCell initialization retains completed decodes after request
+cancellation, list_files never waits for decoding, and tool load errors include their cause.
+Named tool routers compose in new() (see IMPLEMENTATION). HTTP versions have separate test
+cases; stdio purity, CLI ambiguity, concurrent cache sharing, cancellation retention,
+nonblocking listing, warning and Unix
+SIGTERM exit are tested. Cached documents do not reload when the .fig changes on disk;
+restart the server to read an updated file. Ctrl-C and SIGTERM cancel both transports; runtime shutdown avoids
+waiting on an uncancellable stdin read. Tests use public inputs only.
+Not verified: a live Claude/Cursor client, real Ctrl-C, Windows signals, HTTP OS-signal
+shutdown, or an independent reviewer.
+No renderer/decoder changes; wasm and visual checks were not needed. Instance-path
+resolution and tools beyond `whoami` / `list_files` remain for later lanes.
+
+**L2: `get_metadata`.** [x] Complete. The page list when there is no node; an XML subtree
+with lower-case, hyphenated node-type element names and `id name x y width height` attributes.
+CANVAS/DOCUMENT elements omit geometry; nodes without size omit width/height.
+`hidden="true"` and non-zero `rotation` are included; rotation follows Figma's
+counter-clockwise-positive convention, `(-m10).atan2(m00)` in degrees. Text is capped at
+200 Unicode characters with an appended `…` only when cut. XML-1.0-invalid controls are
+removed from names and text; quick-xml 0.41 escapes the remaining content. Instances stay
+leaves with `componentId` until L5. Typed `nodeId`, `fileKey`, `depth` inputs; depth zero is
+root only, default unlimited. Iterative traversal caps nodes at 5 000, marks the metadata
+wrapper `truncated="true"`, and closes every open element. Page lists exclude invisible and
+internal-only canvases and use the same cap. An XML comment reports approximated instance
+leaves only when the count is non-zero; leaves without text are self-closing.
+Internal-only canvases and their descendants are excluded from document subtrees too.
+Unknown/invalid IDs and unresolved instance paths give isError with available pages.
+Missing/unregistered/ambiguous files give tool errors, not protocol failures.
+
+L2 verified: public fixture kinds, page list and known parent-relative coordinates; depth;
+synthetic escaping, Unicode text truncation, rounding/no negative zero and hidden flags;
+review regressions verify both rotation signs against Figma's convention, omitted geometry,
+invalid controls, truncation ellipsis, filtered internal subtrees and sparse empty leaves;
+component ID and instance leaves; 5 000-node cap; hidden/internal pages; rmcp end-to-end
+schema, IDs/URLs, errors and missing-file handling. Each test has a failing mutation proof.
+scripts/check.sh ended with `all checks passed`. Deep/wide cap and exact-boundary checks
+pass with balanced XML. No fig/render edits.
+Not verified: official output capture, live Claude/Cursor clients, private files, L5 instance
+expansion. No renderer changes, so visual and wasm checks are not needed.
+
+**L3: `get_screenshot`.** [x] Complete. `Renderer::render_fit` (padding 0) in
+`spawn_blocking`, honouring `--no-system-fonts`. Inputs `nodeId`, `fileKey`, `scale` (default
+1; outside 0.01..=4 or non-finite gives isError). Background: a page (CANVAS) is drawn on its
+page background colour, every other node on transparent (Figma's own node screenshots are
+transparent). The longest side is capped at 4096 px by lowering the scale; the text line
+reports the effective scale. The render is cropped to the node's own box (absolute transform
+and size, no padding, like a Figma export), so strokes or shadows outside the box are cut off
+(fixture node 381x191 gives exactly 381x191 at scale 1). A scale below the renderer's 0.01
+floor is used when the cap needs it. Returns an `image/png` item (base64
+crate) and a text item `<w>x<h> px, scale <s>` plus an `approximations:` line with the
+non-zero gap counters of `Stats`, read from its public fields (including `culled`: off-screen or subpixel layers omitted). Instance paths,
+zero-size nodes, hidden nodes, the document root, unknown ids and bad scales give isError.
+Documents opened by the server are eager (`Document::open`), so image fills are present and
+no two-pass render is needed.
+
+L3 verified: PNG decoded with the `image` crate; dimensions follow node size and scale;
+URL/dash ids; page render; approximations line; scale, id, zero-size, hidden and instance-path
+errors; 4096 cap; rmcp end-to-end. Each assertion group was proven by a failing mutation.
+Not verified: pixel content (no picture comparison; the renderer is unchanged), live clients,
+very large pages' time and memory, Figma's exact margin around a node.
+
+**L4: tokens and `get_variable_defs`.** Move or extend `render/variables.rs` into a public
+`fig::tokens`: collections, modes, the value for every mode, alias chains (depth-capped), and
+colour, float, string and boolean values; paint, text, effect and grid styles with resolved
+payloads. Then walk the subtree, collect the style ids and variable bindings it uses
+(`styleIdFor*`, `colorVar`, `variableConsumptionMap`) and emit the flat map. The renderer
+switches to `fig::tokens` with no change to its pictures. **Done:** unit tests on a built
+document with 2 modes and an alias; a fixture test; render tests unchanged; thumb sheet
+unchanged.
+
+**L4 complete:** public `fig::tokens` indexes collections, named modes, stored style
+payloads and GUID/asset references; aliases resolve with the historical 24-hop cap.
+`get_variable_defs` walks local stored subtrees, including text run fragments and
+consumption maps, and emits deterministic JSON with non-default mode suffixes.
+Unresolved refs/cycles and duplicate names are counted in a text note. The renderer
+keeps exact first-entry semantics. Synthetic tests were proven by disabling indexes,
+reference discovery, error handling and router registration; restoring them passes.
+All seven public fixtures contain no style definitions (verified), so style coverage is
+synthetic; fixture protocol and empty-map coverage remain. `scripts/check.sh` passed;
+all seven fixture renders at scale 0.25 are byte-identical before/after.
+Not verified: wasm target (not installed), private/library files, visual inspection at
+full scale, and instance expansion (L5). Named-style weight is inferred by the shared `fig::tokens::font_weight` accessor when no
+numeric weight exists. Number messages use their value and units: PIXELS emit bare px
+numbers, PERCENT retains `%`, RAW zero line height is `auto`; grids retain JSON summaries.
+Floats use shortest f32 round-trip decimals; integral values emit integer JSON numbers.
+Modes sort by `sortPosition`; default is the first sorted mode unless the optional legacy
+override exists. Renderer resolution remains first-stored-entry based, independent of that
+ordering. Same-name variables in different used collections use `name (Collection)`;
+non-default modes append ` (Mode)`. Styles win exact collisions with variables; within
+each kind the lowest GUID wins. Remaining collisions count as approximations.
+Detached-style sentinels are ignored; hidden paints are skipped and paint opacity multiplies
+colour alpha. Token-task failures are distinguished from document-load failures.
+
+L4 review focused checks: fixture sentinel, Number units, decimal noise, mode ordering,
+collection collisions and visibility/opacity regressions were seen failing before fixes.
+A synthetic renderer regression uses two differing modes, a 24-hop alias chain and a
+later empty variable with the same asset key; it failed before restoring valued-only
+asset indexing. It now passes on this branch and on the full archived `fb03bf8` source,
+asserting first-stored-mode pixels, depth-ceiling fallback pixels and two unresolved paints.
+Public token fields are documented, maps are private behind accessors, style kind is an
+extensible enum, and style node payload is named `data`.
+Review gate: `scripts/check.sh` ends with `all checks passed`, including parallel-feature
+clippy/tests; the separate parallel clippy invocation passes too. All seven fixture PNGs
+at scale 0.25 are byte-identical before/after; the regenerated thumbnail sheet was inspected.
+Ripwire reports no incompatible callers (the private `add_variable` signature gained the
+qualified base name). Its quality lens flags added collection-index complexity and test/error
+constructor duplication; these remain bounded, tested additions rather than hidden failures.
+Applied Rust rules: M-PUBLIC-DEBUG, M-CANONICAL-DOCS, M-FIRST-DOC-SENTENCE,
+M-STRONG-TYPES, M-ERRORS-CANONICAL-STRUCTS and M-INTEGRATION-TESTS.
+Not verified in this review: wasm/browser builds, private or library documents, live MCP
+clients, and full-scale visual accuracy. Existing renderer approximations are unchanged.
+Ripwire contract check: server constructor unchanged, no incompatible callers. Quality
+check reports the deliberate metadata-style SDK wrapper duplication and new reference-walk
+complexity (17); macro/test dead-code reports are covered by protocol/integration tests.
+
+**L5: public instance resolver (highest risk, frontier-tier worker).** Pull the
+override-merge logic out of the private `Renderer::patched` into a public
+`resolve_instance(doc, instance) -> ResolvedTree` (symbol children with `symbolOverrides`,
+component-property assignments and swaps applied; ids `I<instance>;<child>` like Figma). The
+renderer keeps its scale and glyph corrections but builds on the same merge. **Done:** every
+existing render test and thumb sheet unchanged; new tests on built documents for text
+override, fill override, swap and nested instance; `get_metadata` now expands instances.
+
+L5 done. The merge lives in `crates/fig/src/resolve*` (it needs only `Document`/`Val`, and
+fig builds without the renderer): `Overrides` (scope stack and `merge`, used by
+`Renderer::patched`/`draw_instance`), `resolve_instance`/`walk_instance` (iterative walk,
+`MAX_RESOLVED_NODES` 100 000, `MAX_INSTANCE_DEPTH` 24, cycles counted) and `resolve_path`
+(`InstancePath`, `ResolveError`). The renderer keeps only its scale, constraint, glyph and
+stroke corrections. `get_metadata` expands instances inside the 5 000 cap and depth, with
+`I…;…` ids, overridden names/text/visibility and `componentId`; an XML comment counts
+instances that could not be expanded. `I…` ids resolve in `get_metadata`, `get_variable_defs`
+(which now also walks every instance's resolved content) and `get_screenshot`.
+Review fixes: an `I…` id is found by its tree position (`resolve::walk_path`, `tree_path`) and
+metadata depth counts tree levels from it; a screenshot of an instance child uses
+`Renderer::render_path`/`path_bounds`, which walk down the instance as `draw_instance` does
+(uniform scale and constraints included) and draw only that node, so siblings and ancestor
+clips are left out; `get_variable_defs` reads only effective node data (not
+`symbolData`/`derivedSymbolData`/component property storage); a swapped nested instance
+reports the component it shows; the walk queues children one at a time.
+Verified: 28 fixture renders (7 files, scale 0.25 and 1, system fonts on/off) byte-identical
+before/after; thumb sheet viewed; new tests on built documents and on structure.fig's
+instances 1:38/1:45, each proven by a mutation; `scripts/check.sh` passed.
+Not verified: private and large files (output size and time of fully expanded pages), live
+clients, instance-child screenshots under ancestor masks or clips (they are not applied).
+PR #5 review fix (uniform scale): children of an instance with
+`symbolData.uniformScaleFactor` were listed at the component's size and offset while
+`get_screenshot` drew them scaled. The renderer's scale step moved into `fig::resolve`
+(`uniform_scale`, `scale_inherited`, `Overrides::outer_scale`/`scale`, `Resolved::scale`); the
+renderer and `Overrides::resolve` both call it, so `get_metadata` and `get_design_context`
+report scaled x/y/width/height and stroke weights (nested scales multiply; a value an
+override states is scaled only by the instances outside its owner). Padding, gap, radii and
+text-style lengths stay stored values, as the renderer draws them; design context counts
+`lengths kept unscaled in scaled instances`. Verified: `tests/instance_scale.rs` (metadata =
+screenshot size at scales 1 and 0.5, nested x1.5·x2, owner-stated size, constraint-resized
+instance unchanged, design-context classes), each proven failing by a mutation; 28 fixture
+renders byte-identical before/after. Not verified: private files, Figma's own scaling of
+padding/gap/radius/font size.
+
+**L6: `get_design_context`.** Node → JSX + Tailwind:
+- frames with auto-layout become `flex`, with gap, padding, alignment and grow;
+  absolute children become `absolute` with `left`/`top`;
+- fills become `bg-[#..]`, gradients become `bg-[linear-gradient(..)]`, image fills become
+  an asset;
+- strokes become `border`, radii become `rounded-[..]`, effects become `shadow-[..]` or
+  `blur`, opacity and blend are carried over;
+- text becomes `<p>` with font family, weight, size, line-height and tracking; style runs
+  become `<span>`;
+- vectors and boolean operations become an `<img>` of a rendered PNG asset (no SVG writer yet).
+
+Variables appear as `var(--name,fallback)` when bound. `clientFrameworks` and
+`clientLanguages` are accepted and echoed in the instructions. Output is the code, then
+"instructions for the agent", then assets (written to `--assets-dir`, default
+`./figma-assets/`, or inline base64 if `--assets inline`). Files are kept under 300 lines.
+**Done:** snapshot-style string tests on built documents for each mapping, a fixture smoke
+test, and an output size cap with a truncation note pointing to `get_metadata`.
+
+L6 done. `apps/figstudio-mcp/src/tools/design/` (each file under 300 lines). Layers come from
+the document or `fig::resolve::walk_path`/`walk_instance` (overrides applied, hidden layers
+left out, `maxNodes` default 1000, at most 5000); code is cut at a layer boundary past
+100 000 bytes, with a TRUNCATED note pointing to `get_metadata`. The reply is three parts:
+the code, then "Instructions for the agent" (echoing `clientFrameworks`/`clientLanguages`),
+asset list and an `approximations:` line, then inline images when `--assets inline` is set.
+Mapping: stack fields as in the L0 findings (NaN counter spacing is unset; SPACE_BETWEEN
+drops the gap), `stackPositioning=ABSOLUTE` and non-stack children `absolute left/top`,
+rotation `rotate-[..deg]`, hug sizing and text auto-resize drop `w`/`h`, grow/STRETCH become
+`grow`/`self-stretch`; paints from the attached style when one resolves, top paint last in
+CSS order, gradient direction from the paint transform; `colorVar` becomes
+`var(--css-name,#hex)` (paint opacity <1 keeps only the hex); strokes `border-[..]` (only
+INSIDE is exact), independent radii per corner, drop/inner shadows `shadow-[..]`, text
+shadows `[text-shadow:..]`, blurs `blur`/`backdrop-blur` (radius/2), opacity, CSS blend
+modes; text `<p>` with family, weight (numeric or `fig::tokens::font_weight`), size,
+`Number` line height/tracking, case, decoration, alignment and solid colour; runs from
+`characterStyleIDs` (UTF-16 units) and `styleOverrideTable` as `<span>`. Vector kinds and
+image-filled leaves render through `screenshot::layer_shot` at scale 2 (max 30 per call) as
+`<img>`; files are named `<fileKey>_<id>.png` with only `[A-Za-z0-9_-]`, written to a
+`create_new` temp file and renamed inside the directory. Escaping uses `html-escape` (new
+crate). Every mapping was proven by a mutation that made its test fail.
+Not verified: live MCP clients, private or large files (time and size of real pages), how
+closely the generated code matches the design visually, image fills behind children
+(counted, dropped), mirrored layers (counted), grid stacks (placed absolutely, counted).
+
+L6 review fixes (cross-family review of `247c8de`): the 100 000-byte code cap now holds
+exactly. Each element is measured after escaping, together with the closing tags it leaves
+pending. An element that does not fit is cut out, and its asset is not rendered. Inline
+images are limited to `MAX_INLINE_BYTES` (4 MB of base64) per reply; assets past that are
+counted as `inline size cap`. An instance root merges its component root's data under its
+own resolved data (identity fields excluded), so the component's fills, radii and layout
+show. Tailwind arbitrary values carry no spaces (`_`). Line height follows the renderer:
+RAW is a unitless multiplier (`leading-[1.5]`), PERCENT `%`, PIXELS px, and zero or less is
+skipped. Tracking drops only a numeric zero. Assets keep only blend mode and masks (opacity
+and effects are in the PNG). Effect styles resolve through `styleIdForEffect` and
+`inheritEffectStyleID`. Gradient stops read `stopsVar` (ColorStopVar with `colorVar`) before
+`stops`. Weight comes only from `fontName.style` through `fig::tokens::font_weight`; NodeChange
+has no `fontWeight`. Each fix has a test in `tests/design_review.rs` that failed on `247c8de`,
+and each was proven again by a mutation.
+Not verified: a component root's fields that differ between component and instance only
+through `derivedSymbolData` (the instance's own data wins).
+
+**L7: `download_assets`.** `nodeIds` (up to 20), `format` png|jpg, `scale` 0.01–4, and
+`original=true` for image-fill source bytes by hash. **Done:** tests decode each format and
+compare the original bytes to `Document.images`.
+
+L7 done. `tools/assets.rs` (+ `assets/originals.rs`): up to 20 ids, every id format
+(instance paths via `render_path`), rendering shared with `get_screenshot` through
+`screenshot::render_node` (same 0.01–4 scale range and 4096 px cap). JPG (quality 90, `image`
+crate) is flattened onto white; pages keep their page background. `original=true` returns the
+stored bytes of the visible IMAGE paints (fills and strokes) of the node, its descendants and
+the instances inside it, each hash once, at most 12 per call, as `image` items (MIME from
+`image::guess_format`) or blob resources (`application/octet-stream`) when the format is
+unknown. Hashes with no stored bytes are counted in the text. A failing node is reported in
+its text line; the call is an error only when every node fails. Each behaviour has a test
+proven by a mutation. Not verified: SVG/PDF (absent).
+
+L7 lazy documents (PR #5 review). `FileRegistry` opens with `Document::open_auto_above`
+(eager up to `figstudio_fig::LAZY_ABOVE`, 256 MiB; `with_lazy_above(0)` forces lazy in
+tests). Every render (`get_screenshot`, `download_assets`, `get_design_context` assets,
+`get_figjam` pictures) goes through `tools::rendering::Rendering::draw`, which calls
+`render_complete` / `render_path_complete` and reads wanted images from the registered path
+with `archive::read_entry`; one `Images` cache (256 MiB) per registered file is shared by
+all calls. `original=true` on a lazy document checks the entry's stored size against the
+remaining payload budget before reading it, so an oversized original is omitted unread.
+Tests (`tests/lazy.rs`, each seen failing under a mutation): screenshots and originals of a
+forced-lazy open are byte-identical to an eager one, an image inside an instance path
+(built in-test) matches, and an over-budget original is omitted without a read.
+
+**L8: `get_figjam`.** The L2 XML with FigJam extras: sticky text and colour, connector
+endpoints, and per-node screenshots (L3) at small scale. **Done:** a built FigJam-kind document
+in the test (no public FigJam fixture), plus an approximation count for kinds that are not
+drawn.
+
+L8 done. `tools/figjam.rs` (`get_figjam`) reuses the L2 writer: `metadata::run` takes an
+optional `Extras`, and `metadata/figjam.rs` adds attributes and text per kind (field names
+from the L0 schema facts): STICKY `color` (first visible solid fill) and text; SHAPE_WITH_TEXT
+`shape`, `color`, text; CONNECTOR `start`/`end` node ids, `startMagnet`/`endMagnet` (NONE
+left out), `lineStyle`; SECTION `status`; CODE_BLOCK `language` and `sourceCode`; TABLE_CELL
+text; WIDGET `widget` name; STAMP as a plain element. `includeImages` (default false) adds a
+text line and PNG per sticky, shape, section, table, code block, widget and stamp via
+`screenshot::render_node`, `imageScale` 0.01–0.5 (default 0.25), at most 20 (a note counts
+the rest). An XML comment counts the FigJam kinds the renderer does not draw. Tests build the
+board in the test. Not verified: real FigJam files (field shapes come from the schema, not a
+capture), connector geometry beyond `startX/startY/endX/endY` for loose ends, table row/column structure, merged cells, sticky text style.
+
+L8 second pass. Extra attribute values go through `clean_xml` like text (NUL, other control
+characters and U+FFFE/U+FFFF); a test parses the output with quick-xml's reader. A connector end
+with only `position` emits `startX/startY` or `endX/endY`. HIGHLIGHT and SECTION_OVERLAY are
+counted in the not-drawn comment. `includeImages` shares the 10 MiB payload budget with
+`download_assets` (`figjam_within`).
+
+**L9: Code Connect and design system (local).** [x] Complete. `get_context_for_code_connect` (property
+definitions and variants of a component); `get_code_connect_map` / `add_code_connect_map`
+backed by the sidecar JSON, written atomically; `search_design_system(query)` and
+`get_libraries` over local components and styles. **Done:** round-trip add → get; a search
+test on a fixture. Named codeconnect/design_system routers add five tools. Properties preserve
+unknown enum strings; component sets expose variants, instances resolve their component (including
+instance paths). Maps use serde_json and tempfile atomic replacement beside the registered file,
+reject symlinks and corrupt sidecars, and serialize writes across cloned server sessions. Framework
+filters match labels; languages match labels or source extensions. Search ranks exact/prefix/substring
+names and caps results; libraries report local-only components and token collections/modes/styles.
+Tests were proven failing with property, search, persist, filter, corrupt-input and symlink mutations.
+Second-pass review fixes: real `isStateGroup` sets (public sections fixture), schema-named
+`initialValue`/property definitions, GUID strings, ordered `variantOptions` and per-variant
+`variantProperties`; property lists cap at 100 and omit binary bytes. Selected map keys are
+requested IDs with instance → component → set fallback. Sidecars cap at 10 MiB, source at
+4096 bytes, snippets at 100000 bytes, imports at 100 × 4096 bytes; atomic rewrites preserve
+permissions (new Unix files 0644). Add accepts `snippetImports` (`imports` alias); outputs
+always include `snippet` (null when absent) and `snippetImports` ([] when absent).
+`tempfile` now uses workspace dependencies. Prompt inventory names cap at 200 Unicode
+characters. Regression tests failed on the old code; GUID/binary/cap/options/property
+mutations also failed. Foreground `scripts/check.sh` ended with `all checks passed`.
+Applied M-CARGO-WORKSPACE, M-INTEGRATION-TESTS, M-PUBLIC-DEBUG
+and M-PANIC-IS-STOP; errors remain tool errors, with no new public error type.
+Not verified: live official-server shape parity, private files, Windows, cross-process writers
+(last writer wins), hostile concurrent filesystem replacement, or remote libraries.
+
+**L10: `create_design_system_rules` prompt.** [x] Complete. `prompts/get` returns Figma-style rule-file
+guidance plus the file's token summary (L4) and component list. **Done:** a protocol test. rmcp prompt_router/prompt_handler advertise the
+prompts capability. Optional clientFrameworks/clientLanguages are comma-separated MCP prompt
+strings; fileKey uses registry selection. Guidance covers rules/ or instructions/ files, component
+reuse, tokens, assets and context/metadata/screenshot tools; no files are written. Local inventory
+reuses L9 bounded summaries. SDK in-process protocol tests verify prompts/list, prompts/get,
+optional arguments, unknown prompt/file errors and unchanged fixture bytes. Capability, tool-guidance
+and inventory mutations each failed before restoration; scripts/check.sh passed.
+Not verified: live client rule-file generation, official-server text parity or private files.
+
+**L11:** merged into L1 (Streamable HTTP is required).
+
+**L12: docs.** [x] Complete. README client setup (Claude Code `claude mcp add`, Cursor, Codex), the
+not-replicable list, `docs/PLAN.md` phase and log, `docs/IMPLEMENTATION.md` map and task
+board, `docs/TESTING.md` protocol tests.
+
+Order: L0 → L1 → L2 → L3 → L4 → L5 → L6 → L7, and L8/L9/L10 in any order → L12. L2, L3 and L4
+can run in parallel worktrees after L1 lands (different files); L5 and L6 are sequential.
+
+## 4. Verification for every lane
+
+- `scripts/check.sh` ends with `all checks passed` (fmt, clippy `-D warnings`, tests,
+  release build). Run `--web` when `crates/fig` or `crates/render` change, because they build
+  for wasm.
+- For lanes that touch the renderer (L4, L5): thumb sheet before and after, with no visual
+  diff.
+- Manual: `claude mcp add figstudio -- target/release/figstudio-mcp tests/fixtures/structure.fig`
+  and call each new tool once.
+- Before each commit: the PII check from AGENTS.md (`git diff --cached`).
+- Reviewer per lane: a different model family from the worker; report only.
+
+## 5. Open questions
+
+1. Exact official output shapes for `get_variable_defs` and `get_design_context`: is there a
+   real capture available (from someone with a Figma Dev seat)? Without one we follow the
+   documented descriptions above.
+Decided 2026-10-11 by the owner: crates over hand-rolled code (`serde_json`, `rmcp`, …);
+both stdio and Streamable HTTP are required, and the 2024 SSE-only transport is not;
+a separate `figstudio-mcp` binary; no official output capture is available, so we follow
+the documented descriptions (question 1 is closed).
+
+## 6. Risks
+
+- L5 surgery on `Renderer::patched` can shift pictures. It is guarded by the full render
+  suite and the thumb sheet, and kept behind the same merge function.
+- Design-context quality depends on auto-layout field names that no code reads today (L0
+  closes this).
+- Big files (50+ MB, several GB RAM): files load lazily, only on demand, and there is an
+  output size cap on every text tool.
+- The official tool surface changes often (37 tools at research time). Pin the names we copy
+  and record the research date in the README.
+
+## 7. Second review round (PR #5, 2026-10-12)
+
+- **Replies stay under the stdio line limit (lane 2).** Claude Code disconnects a stdio
+  server that writes more than 16 MB without a JSON-RPC line break. A 32 MiB raw reply
+  became about 43 MiB of base64 on one line. `MAX_PAYLOAD_BYTES` is now 10 MiB raw
+  (about 13.3 MiB base64 plus JSON). `MAX_IMAGE_BYTES` is 3.75 MB raw, which is 5 MB of
+  base64: the per-image limit on Bedrock and Vertex (the direct API allows 10 MB). Over-cap
+  images are reported with their size and not read or encoded. Text lines come first in
+  every reply, and `MAX_ORIGINALS` is 12: Claude Code cuts a reply at 25k tokens and each
+  image costs about 1.5k.
+
+Measured in a live Claude Code 2.1.296 session against a 1.7 GB file.
+
+- **Text outputs fit the inline limit (lane 1).** Claude Code delivered 20,166 and 25,810
+  characters and rejected 44,674 and above (design) and 74,213 and above (metadata). The
+  byte caps of `get_metadata`, `get_design_context` and `get_figjam` drop from 80 000 to
+  24 000 by default, and `--max-output-bytes N` (4000–100000) overrides them.
+- **Default screenshots fit the image limits (lane 3).** A 4096 px PNG measured 3.1–3.7 MB,
+  close to the 5 MB base64 limit of Bedrock and Vertex, and Claude downscales above 1568 px.
+  `render_node` (get_screenshot, download_assets, get_figjam) caps the longest side at 2048 px
+  when `scale` is omitted and keeps 4096 px for an explicit `scale`. Design assets
+  (`layer_shot`, fixed scale) keep 4096 px.
+- **Wrapped auto-layout aligns its lines (lane 4).** `get_design_context` now sets
+  `content-start` on every `stackWrap = WRAP` frame, and `content-between` when
+  `stackCounterAlignContent` is `SPACE_BETWEEN` (schema: `AUTO = 0`, `SPACE_BETWEEN = 1`).
+  Before, the wrapped lines had no align-content, so the browser default stretched them.
+- **The Code Connect sidecar is locked across processes (lane 5).** Four processes each
+  adding ten mappings kept 10 of 40 before: a read-modify-write with no lock between
+  processes. `add_code_connect_map` now takes an exclusive `File::lock` on
+  `<file>.fig.codeconnect.json.lock` before reading the sidecar and releases it after the
+  write. `std::fs::File::lock` is stable since Rust 1.89; the workspace MSRV is 1.95.
+  Tests (`tests/codeconnect_lock.rs`) prove it: with the lock removed, a child add
+  completes while the parent holds the lock (the wait assertion fails) and the concurrent
+  test keeps 10 of 40 (the lost-update assertion fails); with the lock, both pass.
+
