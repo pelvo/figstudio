@@ -431,6 +431,7 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T4 | Virtualise the Layers panel (draw only visible rows) | `apps/figstudio/src/panels.rs` | 100k-node stress file: Layers expand-all stays under 16 ms per frame (`FIGSTUDIO_PROFILE=1`) |
 | T5 | Fit-to-page on huge pages (~0.4 s per frame today): level-of-detail or tile cache | `crates/render`, `apps/figstudio/src/canvas.rs` | 100k-node stress page pans smoothly at fit zoom; culling test still passes |
 | T6 | Inner shadow, background blur, blend modes | `crates/render/src/lib.rs` | Each drawn and tested, or still counted; thumb sheet reviewed |
+| T21 | MCP inside the app: shared `mcp-core`, embedded desktop server (off by default), right-click Copy and Copy region (issue #9); plan and lanes in `docs/MCP-APP.md` | `crates/mcp-core`, `apps/figstudio-mcp`, `apps/figstudio` | Lanes L0–L9 in `docs/MCP-APP.md` done |
 | T20 | GPU canvas with `vello_gpu` (desktop + browser) with CPU fallback; plan and lanes in `docs/GPU.md` | `crates/render`, `apps/figstudio` | Lanes L1–L5 in `docs/GPU.md` done |
 | T19 | Clear the approximation counters, one fix at a time (plan and measurements in `docs/APPROXIMATIONS.md`) | `crates/render/src` | Each row of the plan done or explained; counters re-measured and logged there |
 | T7 | Progressive blur, noise / grain / texture | `crates/render/src/lib.rs` | `noise_and_grain.fig` matches its thumbnail more closely; skipped count drops |
