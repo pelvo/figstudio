@@ -49,6 +49,12 @@ pub(super) fn map(
     let mut name = name.to_os_string();
     name.push(".codeconnect.json");
     let path = parent.join(name);
+    // Held until this function returns, so the read below and the write are one step across
+    // processes; the in-process mutex in `codeconnect.rs` covers threads of this server.
+    let _lock = match lock_sidecar(&path) {
+        Ok(lock) => lock,
+        Err(_) => return fault("Cannot lock Code Connect sidecar"),
+    };
     let meta = match std::fs::symlink_metadata(&path) {
         Ok(meta) if !meta.file_type().is_file() => {
             return fault("Code Connect sidecar must be a regular file, not a symlink");
@@ -119,6 +125,26 @@ pub(super) fn map(
         Ok(value) => CallToolResult::structured(value),
         Err(_) => fault("Cannot serialize Code Connect mappings"),
     }
+}
+
+/// An exclusive lock on the sibling `<sidecar>.lock` file, released when the handle drops.
+/// `File::lock` is advisory: every writer of the sidecar takes it, which is the case here.
+fn lock_sidecar(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".lock");
+    let name = std::path::PathBuf::from(name);
+    // A symlink at the lock path would make the lock land on another file: refuse it.
+    if std::fs::symlink_metadata(&name).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(std::io::Error::other("Code Connect lock is a symlink"));
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&name)?;
+    file.lock()?;
+    Ok(file)
 }
 
 fn validate(mapping: &Mapping) -> Result<(), &'static str> {

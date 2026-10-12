@@ -504,4 +504,12 @@ Measured in a live Claude Code 2.1.296 session against a 1.7 GB file.
   `content-start` on every `stackWrap = WRAP` frame, and `content-between` when
   `stackCounterAlignContent` is `SPACE_BETWEEN` (schema: `AUTO = 0`, `SPACE_BETWEEN = 1`).
   Before, the wrapped lines had no align-content, so the browser default stretched them.
+- **The Code Connect sidecar is locked across processes (lane 5).** Four processes each
+  adding ten mappings kept 10 of 40 before: a read-modify-write with no lock between
+  processes. `add_code_connect_map` now takes an exclusive `File::lock` on
+  `<file>.fig.codeconnect.json.lock` before reading the sidecar and releases it after the
+  write. `std::fs::File::lock` is stable since Rust 1.89; the workspace MSRV is 1.95.
+  Tests (`tests/codeconnect_lock.rs`) prove it: with the lock removed, a child add
+  completes while the parent holds the lock (the wait assertion fails) and the concurrent
+  test keeps 10 of 40 (the lost-update assertion fails); with the lock, both pass.
 

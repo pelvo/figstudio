@@ -183,9 +183,12 @@ MCP output from a private file into a public place.
 
 - **Code Connect sidecar:** `add_code_connect_map` writes `<file>.fig.codeconnect.json`
   beside the registered file (atomic replace, existing permissions kept, new files 0644
-  on Unix). A symlink at that path or a sidecar over 10 MiB is refused. Concurrent writers
-  from other processes are not coordinated (the last one wins). Writes from sessions of
-  one server are serialized.
+  on Unix). A symlink at that path or a sidecar over 10 MiB is refused. Each add holds an
+  exclusive lock on the sibling `<file>.fig.codeconnect.json.lock` (an advisory
+  `File::lock`, kept between runs, never deleted) from before it reads the sidecar until
+  it has written it, so adds from several server processes do not lose each other's
+  mappings. Other tools that edit the sidecar must take the same lock. A symlink at the
+  lock path is refused.
 - **Asset PNGs:** `get_design_context` writes `<fileKey>_<id>.png` files into
   `--assets-dir` (or returns them inline with `--assets inline`).
 - The `.fig` itself is never opened for writing.
