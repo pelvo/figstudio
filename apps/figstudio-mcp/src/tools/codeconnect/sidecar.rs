@@ -1,10 +1,7 @@
-use super::{
-    MapInput, Mapping, Mappings,
-    context::{component_id, component_set},
-    fault,
-};
+use super::{MapInput, Mapping, Mappings, fault};
 use crate::node_id::{NodeId, parse_node_id};
 use figstudio_fig::Document;
+use figstudio_mcp_core::codeconnect_context::{component_id, component_set};
 use rmcp::model::CallToolResult;
 use std::{
     io::{Read, Write},

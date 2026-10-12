@@ -2,6 +2,8 @@
 //!
 //! No async runtime and no I/O: this crate builds for `wasm32-unknown-unknown`.
 
+/// Local Code Connect component context.
+pub mod codeconnect_context;
 /// Errors for node IDs, file keys, links and loading a document.
 pub mod error;
 /// `figstudio://` and figma.com links.

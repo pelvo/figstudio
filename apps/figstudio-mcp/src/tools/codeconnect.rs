@@ -1,15 +1,18 @@
 //! Local Code Connect context and sidecar mappings; never changes the document.
-mod context;
 mod sidecar;
 
-use super::tool_error;
+use super::{to_call, tool_error};
 use crate::FigstudioServer;
+use figstudio_mcp_core::codeconnect_context;
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub use context::component_context;
+/// Return schema-preserving component properties and bounded local child context.
+pub fn component_context(doc: &figstudio_fig::Document, input: &str) -> CallToolResult {
+    to_call(codeconnect_context::component_context(doc, input))
+}
 
 /// A local source binding for a component.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
