@@ -55,7 +55,7 @@ every move (0.4–0.6 s on a large page, mostly the layer walk, not pixels). Ord
 | L2 | `gpu` feature: `Canvas` for `vello_gpu::Scene`, headless test rendering a fixture on the GPU and comparing with the CPU pixmap | **Done 2026-10-12.** `crates/render/src/gpu.rs` (`Recording::gpu_scene`, `GpuUnsupported`), `crates/render/tests/gpu.rs`: GPU tiles within 2/255 of the CPU (filters 5/255) on Metal; unsupported tiles refused before encoding; tests skip without an adapter. See L2 notes |
 | L3 | App draws the canvas with `vello_gpu` into an egui-registered texture, CPU fallback + `FIGSTUDIO_RENDERER` | **Done 2026-10-12 (desktop).** `apps/figstudio/src/gpu_tiles.rs`, `gpu_registry.rs`: GPU tiles on Metal, shown through egui within 2/255 of CPU tiles; counted CPU fallback; status bar "GPU (Metal)" / "CPU". See L3 notes |
 | L4 | Browser: WebGPU, then WebGL2, then CPU fallback | **Done 2026-10-12.** `gpu_scenes.rs` (worker: scenes), `gpu_tiles_web.rs` (main thread: render ≤ 4 tiles / 8 ms per frame), shared `gpu_common.rs`. Headless Chrome (Apple GPU): "GPU (WebGPU)" and "GPU (WebGL2)" within 1/255 of `?renderer=cpu`; CPU on WebGL2 with 2048 px textures. See L4 notes |
-| L5 | Docs: PLAN, IMPLEMENTATION, TESTING updated; what is not verified | Docs list the GPU path, the fallback and the remaining gaps |
+| L5 | Docs: PLAN, IMPLEMENTATION, TESTING updated; what is not verified | **Done 2026-10-12.** IMPLEMENTATION (desktop and browser GPU canvas), TESTING (GPU tests), this file; open gaps below |
 
 ## L1 notes
 
@@ -275,3 +275,17 @@ patched egui-wgpu that bounds the surface before configuring it.
   reference for tests and export.
 - Browser WebGL2 limits (texture size, no compute) and wasm threads interplay.
 - CI or machines without a GPU: GPU tests must skip, not fail.
+
+## Open gaps after L1–L5 (2026-10-12)
+
+- Only an Apple GPU (Metal, and Chrome's WebGPU/WebGL2 on it) was run. Vulkan, DX12, GL on
+  Linux/Windows, Firefox and Safari are untested.
+- Not exercised for real: device loss, out-of-memory, a `vello_gpu` panic in the app.
+- GPU textures smaller than the window can still crash on some resize/fullscreen paths
+  (L1 "Known limit"); devices under 4096 px use CPU tiles.
+- Images, angular gradients and (in the browser) every filter are drawn on the CPU; uploading
+  images to `vello_gpu`'s atlas would move most of the remaining CPU tiles to the GPU.
+- The browser scene-byte estimate is a model measured on unfiltered scenes (1.9–5x the
+  live heap); deep clip stacks and huge paths were not measured.
+- No timing in the browser and no long pan/zoom session timing on the desktop.
+

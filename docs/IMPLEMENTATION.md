@@ -264,6 +264,17 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 - Keyboard shortcuts are in `App::shortcuts`. Shift+digit uses `shifted_digit` because the
   logical key depends on the keyboard layout (Shift+1 is `!` on US layouts).
 - `FIGSTUDIO_PROFILE=1` prints per-frame UI time, render time, drawn and culled counts.
+- Tiles are drawn from a per-page, per-level recording (`recordings.rs`, `Renderer::record`):
+  the first tile walks the page once, later tiles replay only the commands that touch them.
+- **GPU canvas** (`gpu_tiles.rs`, `gpu_registry.rs`, shared `gpu_common.rs`; plan and notes
+  in `docs/GPU.md`). eframe runs on wgpu; the render worker replays the recording into a
+  `vello_gpu` scene, renders it on eframe's device into a texture and the UI registers it with
+  egui. Tiles `vello_gpu` cannot draw (images, angular gradients, unsupported filters, nested
+  filters too big for its intermediates, too many layers), render errors, a lost device or a
+  device with textures under 4096 px fall back to CPU tiles, counted in
+  `Stats::gpu_fallback_tiles` ("N tiles on the CPU"). `FIGSTUDIO_RENDERER=cpu` forces the CPU;
+  the status bar names the renderer ("GPU (Metal)" or "CPU"). The CLI, tests and export always
+  use the CPU renderer, so their output stays reproducible.
 
 ### The browser app (`apps/figstudio` on wasm32)
 
@@ -279,6 +290,13 @@ Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared mem
   the UI repaints every 16 ms while `Workers::busy()`.
 - Work runs on the Rayon pool (`rayon::spawn`), not `std::thread` (unsupported on wasm).
   The render loop uses `render_parallel`.
+- **GPU canvas in the browser** (`gpu_scenes.rs`, `gpu_tiles_web.rs`): wgpu objects live on
+  the main thread, so the worker builds `vello_gpu` scenes and the main thread renders at most
+  4 tiles or 8 ms per frame, WebGPU first, then WebGL2. Queued scenes are pruned to the current
+  view and capped (64 scenes); every scene reserves its estimated bytes from one shared 64 MiB
+  budget before it is built. Tiles with any filter, over 8 MiB, or past the budget are drawn
+  on the CPU, counted. `?renderer=cpu` forces the CPU. A panic aborts the page on wasm, so
+  the support scan is the only guard against a `vello_gpu` panic there.
 - Files arrive as browser `File`s (picker via `rfd::AsyncFileDialog` with
   `file-handle-inner`, drops via `DroppedFile::web_file`) through `web::Inbox`. Files up to
   256 MB are read whole; bigger archives open lazily (below). Exports render on a worker

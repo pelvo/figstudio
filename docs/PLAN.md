@@ -243,6 +243,9 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-12 — T20 L5: docs for the GPU canvas (IMPLEMENTATION desktop + browser, GPU.md open
+  gaps). L1–L4 and P1–P3 reviewed until clean; branch feat/vello-hybrid.
+
 - 2026-10-12 — T20 L1 (wgpu) reviewed three times; GPUs with a texture limit below the
   window size can still crash on some resize/fullscreen paths. Accepted and documented in
   `docs/GPU.md` ("Known limit"); the L3/L4 CPU fallback is the planned answer.
