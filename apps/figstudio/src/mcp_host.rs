@@ -54,7 +54,9 @@ struct Running {
 type TabKey = (u64, usize, Guid, Option<Guid>, Option<[i64; 4]>);
 
 /// Everything a snapshot shows, cheap to compare: tab id, document pointer, page,
-/// selection and viewport rounded to whole page units, plus the active tab id.
+/// selection and viewport rounded to whole page units, plus the active tab id. Assumes a
+/// document is never mutated in place (edits would replace the `Arc`), so its pointer stands
+/// for its content.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Key {
     tabs: Vec<TabKey>,

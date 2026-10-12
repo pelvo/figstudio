@@ -462,8 +462,10 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
   nodeId, reveal (selection moved), tab closed during 4×30 concurrent `get_screenshot` calls (no hang, server and app
   up); toggle off at launch: no listener on 3845. Not verified: clicking the menu toggle (no UI automation access to
   the window), `claude mcp add`, visual fit after reveal. Binary: 15.9 MB → 23.2 MB release (feature on); off = unchanged.
-  Seen on the standalone server too (not L8): several concurrent calls on **one** session over curl can stall; one
-  session per client does not.
+  Seen on the standalone server too (not L8): several concurrent calls on **one** session over curl appeared to stall.
+  The L8 review could not reproduce it (2 and 4 concurrent calls on one session all answered); rmcp answers with an
+  SSE stream, so a curl without `--max-time` can keep reading after the call finished. Open as a separate note, not
+  part of this lane.
 
 ## L9: docs (S, Haiku)
 
