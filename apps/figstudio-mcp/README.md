@@ -38,6 +38,23 @@ figstudio-mcp [--http[=ADDR]] [--no-system-fonts] [--assets-dir DIR | --assets i
 | `--max-output-bytes N` | Byte cap of the text from `get_metadata`, `get_design_context` and `get_figjam` (default 24000, accepted 4000–100000). Claude Code delivered 20,166- and 25,810-character replies and rejected 44,674 and 74,213 characters, so the default stays under the delivered sizes. Raising it risks a rejected reply. |
 | `--version`, `--help` | As usual. |
 
+### Inside the figstudio app (live mode)
+
+The desktop app can host this server with the files it has open. Turn it on in **View →
+Agent access (MCP server)**. It is off at every launch and is not saved.
+
+- While it runs, the status bar shows `MCP 127.0.0.1:3845/mcp`. Point your client there.
+  The app tries 3845, then 3846–3855, and shows the address it got.
+- It is loopback only. The app has no address setting.
+- Tabs are the files: `fileKey` is the file's stem (or its full path when two open files
+  share a stem), as `list_open_tabs` shows.
+- The app serves every tool of this server, plus the three live tools (below), on the open
+  tabs. Assets come back inline, so the app writes no PNG files.
+
+```sh
+claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp
+```
+
 ### stdio
 
 The default. The client starts the binary and speaks JSON-RPC lines over stdin/stdout.
@@ -58,6 +75,14 @@ works unchanged.
   and `http://[::1]:*` pass, and any other origin, including `null`, gets 403. Binding to a
   non-loopback address prints a warning, and remote clients are still rejected. It is a local tool.
 - All HTTP sessions share one file cache.
+
+**Security (both servers).**
+
+- The app binds loopback only, with no address setting. `--http=ADDR` can bind another
+  address; that prints a warning, and remote clients are still refused by the `Host` check.
+- `Host` must be loopback and `Origin` (when sent) must be loopback. Anything else is 403.
+- No CORS: no reply carries `Access-Control-Allow-Origin`, and a preflight from another
+  origin is refused. A web page cannot read the server.
 
 ## Client setup
 
@@ -124,13 +149,41 @@ the same stem need the full path. A missing, unknown or ambiguous key is a tool 
 
 An instance path names a node *inside* an instance, with that instance's overrides
 applied. `get_metadata` prints such ids for the children of every instance; the other
-tools accept them. There is no "current selection" offline, so `nodeId` is always
-explicit.
+tools accept them.
+
+**Links (`figstudio://`).** The app's Copy menus put these on the clipboard. A node link
+works wherever a `nodeId` is taken, and `reveal_node` takes one too. A region link works in
+`get_screenshot` (`nodeId`) and `get_nodes_in_region` (`region`); other tools reject it:
+
+| Form | Example |
+|---|---|
+| Node | `figstudio://structure?node-id=1-42` |
+| Region | `figstudio://structure?page=0-1&rect=0,0,400,300` |
+
+- The host is the file's key, percent-encoded. A file stem such as `structure` is the usual
+  key. Exactly one of `node-id` or `page` + `rect` is allowed; `rect` is `x,y,w,h` with
+  width and height above 0.
+- A `figma.com` link (`/design`, `/file` or `/board`, host `figma.com` or `www.figma.com`)
+  also works.
+- **File choice** (`fileKey` argument first, then the link):
+  - an explicit `fileKey` wins;
+  - a `figstudio://` link names its file, and an unknown key is a tool error;
+  - a figma.com link names a file when its key equals a file's stem, or its slug equals
+    the stem with spaces turned into `-`;
+  - otherwise the link's file part is ignored and the usual rule applies: the single file,
+    or the active tab in live mode.
+
+**Selection defaults (live mode only).** In the app, a missing `nodeId` falls back to the
+node selected in the tab, for `get_design_context`, `get_screenshot`, `get_variable_defs`,
+`download_assets` (when `nodeIds` is empty) and `get_context_for_code_connect`. With nothing
+selected the reply is `nodeId is required: nothing is selected in this tab`. Standalone, a
+missing `nodeId` is `nodeId is required`. `get_metadata` with no `nodeId` still lists the
+pages.
 
 ## Tools
 
-14 tools and 1 prompt. "Official" means Figma's server; "differs offline" lists what a
-client should expect to be different.
+14 tools and 1 prompt, plus 3 live tools in the app. "Official" means Figma's server;
+"differs offline" lists what a client should expect to be different.
 
 | Tool | Inputs | Output | Differs offline / limits |
 |---|---|---|---|
@@ -148,6 +201,9 @@ client should expect to be different.
 | `add_code_connect_map` | `nodeId`, `componentName`, `source`, `label`, `snippet?`, `snippetImports?` | The stored mapping | Writes the sidecar atomically. An instance is stored under its component's id. `source` is stored, never fetched. Limits: source 4096 bytes, snippet 100 000 bytes, 100 imports of 4096 bytes. `imports` is accepted as an alias of `snippetImports`. |
 | `search_design_system` | `query`, `kinds?`, `fileKey?` | Ranked matches | This file only (no team libraries). `kinds`: `component`, `component_set`, `style`, `variable`. Exact names first; at most 100 results. |
 | `get_libraries` | `fileKey?` | Summary of this file's components, token collections, modes and styles | Local only; lists capped at 100, with totals. |
+| `list_open_tabs` *(app only)* | none | `{tabs: [{tabId, fileKey, path, title, page: {id, name}, selection, active}]}` | Lists the app's open tabs. `fileKey` is what the other tools take. |
+| `get_selection` *(app only)* | `fileKey?` | `{fileKey, tabId, page, node: {nodeId, name, kind, bounds: {x, y, width, height}}}`, or `node: null` | The selected node of a tab (default the active tab). Bounds are in page units. |
+| `reveal_node` *(app only)* | `nodeId` (or a link), `fileKey?` | One line: the node is revealed in tab N | Selects the node in the app; the tab becomes active and the view fits the node. An instance path reveals its outer instance and says so. Waits 5 s for the app; then the error "the app did not respond" (a minimised window may not run frames, so the reveal can time out). |
 
 **Prompt: `create_design_system_rules`** (`prompts/get`; optional arguments
 `clientFrameworks`, `clientLanguages`, `fileKey`, all strings). Returns guidance for a

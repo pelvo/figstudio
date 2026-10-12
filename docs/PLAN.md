@@ -209,6 +209,11 @@ requester confirms it runs.
 - [x] L10 `create_design_system_rules` prompt
 - [x] L11 merged into L1 (Streamable HTTP)
 - [x] L12 docs: `apps/figstudio-mcp/README.md`, `docs/TESTING.md` section 12, code map and task board
+- [x] MCP inside the app (`docs/MCP-APP.md`, issue #9): L0–L9 done. Shared `crates/mcp-core`; right-click Copy and
+      marquee Copy region (text and PNG) in the app; View → Agent access starts the live server on loopback
+      (`list_open_tabs`, `get_selection`, `reveal_node`; nodeId defaults from the selection; `figstudio://` links)
+- [ ] MCP inside the app, open: a live client session (`claude mcp add`), clicking the toggle, the clipboard paths
+      in a real window and browser, paste into Preview or an editor
 - [ ] Open (task board M1–M6): `get_motion_context`, SVG export, ancestor masks on instance-child
       screenshots, nested-instance override visibility in `original=true`, live-client check,
       real FigJam and motion files
@@ -537,3 +542,8 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-12 — MCP-APP L6: `get_screenshot` accepts a `figstudio://…?page=…&rect=…` region link (same crop and caps as the app's Copy region PNG, shared in `crates/mcp-core/src/region_shot.rs`); new tool `get_nodes_in_region` (`region` or `page`+`rect`, `limit` ≤ 500, JSON `{page, rect, nodes, total, truncated}`). Golden differs only in `00-tools-list.json` and the new tool. Not verified: a link pasted from a real app session, a live MCP client.
 - 2026-10-12 — MCP-APP L7: live mode in `figstudio-mcp` (`live.rs` snapshot/commands, `Files::{Registry,Live}`, `FigstudioServer::live` with `list_open_tabs`/`get_selection`/`reveal_node`, nodeId defaults from the selection, standalone "nodeId is required"), bare `--http` falls back 3845→3846–3855, `--http=ADDR` never does; http tests assert no CORS header. Golden (`f753974`) differs only in `00-tools-list.json` (nodeId optional on 5 tools). check.sh passed, 20 mutations caught. Not verified: a real app driving the snapshot (L8), a live MCP client.
 - 2026-10-12 — MCP-APP L8: the desktop app hosts the live MCP server (feature `mcp`, default on, desktop only; `mcp_host.rs`): View → "Agent access (MCP server)" (off at every launch), loopback 3845→3855, status bar shows the address, `reveal_node` selects and fits via `Tab.fit_node`, snapshot swapped only on key change. Gates: check.sh passed (both feature sets, new `--no-default-features` clippy step), web build exit 0, `scripts/mcp-golden.sh bdafdc4` identical (197 records), 11 mutations caught; manual curl session against the app. Not verified: clicking the toggle, `claude mcp add`, the visual fit.
+- 2026-10-12 — MCP-APP L9: docs. `apps/figstudio-mcp/README.md` (app mode, `figstudio://` links and the file rule,
+  selection defaults, live tools, security), `docs/IMPLEMENTATION.md` (`mcp-core`, copy menus, `mcp_host` data flow),
+  `docs/TESTING.md` (live and golden tests, mcp-core without default features). Every tool, flag, port and reply named was
+  grepped against the code; two wrong statements fixed. check.sh passed (see the commit). Not verified: a live client
+  session, GitHub rendering of the README.

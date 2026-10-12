@@ -19,6 +19,10 @@ Shipped: the `figstudio-mcp` binary (stdio and Streamable HTTP), 13 tools (`whoa
 Note: the plan below mentions an `open_file` tool; it was not built (files are given on the
 command line).
 
+The app work (shared `crates/mcp-core`, the server inside the desktop app, right-click Copy and
+Copy region, live tools `list_open_tabs`, `get_selection`, `reveal_node`) is planned and tracked
+in `docs/MCP-APP.md`; L0–L9 are done there.
+
 Open follow-ups (task board M1–M6 in `docs/IMPLEMENTATION.md`): `get_motion_context`
 (needs a real motion file), SVG export, ancestor masks and clips on instance-child
 screenshots, nested-instance override visibility in `download_assets original=true`,

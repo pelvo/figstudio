@@ -480,6 +480,19 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
 - **`docs/MCP-PLAN.md` and `docs/PLAN.md`:** tick boxes, with a progress line per lane. Each lane already ticks its
   own box; L9 fills the gaps.
 - **Gate:** G-check, and `doc_drift` has no new drift.
+- **Status:** done (commit `docs(mcp,app): document MCP inside the app`).
+  - **Files:** `apps/figstudio-mcp/README.md` (app mode, `figstudio://` and figma.com links with the file
+    rule, selection defaults, the three live tools, the security notes), `docs/IMPLEMENTATION.md` (the
+    `crates/mcp-core` map entry, the copy menus, marquee and region copy, the app ↔ `mcp_host` ↔ server
+    data flow), `docs/TESTING.md` (live tests, the golden harness, the `mcp-core` no-default-features run,
+    GPU-free notes), `docs/PLAN.md` (P7 boxes and one progress line), `docs/MCP-PLAN.md` (a pointer to this
+    plan for the app lanes).
+  - **Checked against the code:** every tool, flag, port, link form, file rule and reply text named in the
+    docs was grepped. Two wrong statements were found and corrected before the commit: that a region link is
+    only for region tools (`get_screenshot` takes one too), and that the flags apply to the app (the app
+    serves live tabs, with inline assets).
+  - **Not verified:** a live client (`claude mcp add` and a tool call) against the app; the README was
+    not rendered on GitHub.
 
 ## Risks
 
