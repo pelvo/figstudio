@@ -20,6 +20,29 @@ fn size(data: &Val) -> (f64, f64) {
     (axis("x"), axis("y"))
 }
 
+/// Lengths the renderer does not scale in a uniformly scaled instance either (only position,
+/// size, strokes and stored glyphs are scaled): padding, gap, radii and text-style lengths.
+pub(super) fn keeps_stored_lengths(data: &Val) -> bool {
+    const LENGTHS: [&str; 13] = [
+        "stackSpacing",
+        "stackCounterSpacing",
+        "stackPadding",
+        "stackHorizontalPadding",
+        "stackVerticalPadding",
+        "stackPaddingRight",
+        "stackPaddingBottom",
+        "cornerRadius",
+        "rectangleTopLeftCornerRadius",
+        "rectangleTopRightCornerRadius",
+        "rectangleBottomRightCornerRadius",
+        "rectangleBottomLeftCornerRadius",
+        "fontSize",
+    ];
+    LENGTHS
+        .iter()
+        .any(|key| data.num(key).is_some_and(|v| v.is_finite() && v != 0.0))
+}
+
 /// Whether the child is placed by its parent's auto-layout rather than by coordinates.
 pub(super) fn in_flow(data: &Val, parent: Option<&Val>) -> bool {
     parent.is_some_and(|p| stack(p).is_some()) && data.text("stackPositioning") != Some("ABSOLUTE")

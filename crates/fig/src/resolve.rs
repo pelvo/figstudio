@@ -12,11 +12,13 @@ use std::sync::Arc;
 use crate::{Document, Guid, Node, Obj, Val};
 
 mod properties;
+mod scale;
 mod swap;
 mod types;
 mod walk;
 
 pub use properties::{Definitions, definitions};
+pub use scale::{STROKE_LENGTHS, scale_inherited, uniform_scale};
 pub use swap::inherit_swapped;
 pub use walk::{
     InstancePath, MAX_RESOLVED_NODES, ResolveError, Resolved, Walk, resolve_instance, resolve_path,
@@ -48,6 +50,8 @@ pub struct Patch {
 #[derive(Debug)]
 struct Frame {
     symbol: Guid,
+    /// The instance's `uniformScaleFactor`.
+    scale: f64,
     patches_before: usize,
     keys: Vec<Vec<Guid>>,
 }
@@ -127,6 +131,7 @@ impl Overrides {
         self.properties.push(symbol, data);
         self.frames.push(Frame {
             symbol: symbol.id,
+            scale: uniform_scale(data),
             patches_before,
             keys,
         });
@@ -160,20 +165,43 @@ impl Overrides {
         matches
     }
 
+    /// Product of the uniform scales of every entered instance.
+    pub fn scale(&self) -> f64 {
+        self.frames.iter().map(|f| f.scale).product()
+    }
+
+    /// The factor that scales `field` of a node with patches `matches`: a value comes from the
+    /// outermost level that states it, already in that level's scaled space, so only the
+    /// uniformly scaled instances outside that level still scale it.
+    pub fn outer_scale(&self, matches: &[&Patch], field: &str) -> f64 {
+        let level = matches
+            .iter()
+            .filter(|p| p.data.get(field).is_some())
+            .map(|p| p.owner_depth)
+            .min()
+            .unwrap_or(self.frames.len());
+        self.frames[..level.min(self.frames.len())]
+            .iter()
+            .map(|f| f.scale)
+            .product()
+    }
+
     /// Fields set on `data`'s node by component properties of the innermost instance.
     pub fn property_patch(&self, data: &Val) -> Val {
         self.properties.patch(data)
     }
 
-    /// The node's data after overrides and swaps, borrowed when nothing applies. This is the
-    /// renderer's merge without its scale, constraint and glyph corrections.
+    /// The node's data after overrides, uniform scale ([`scale_inherited`]) and swaps,
+    /// borrowed when nothing applies. This is the renderer's merge without its constraint and
+    /// glyph-freshness corrections.
     pub fn resolve<'n>(&self, doc: &Document, node: &'n Node, path: &[Guid]) -> Cow<'n, Val> {
         let matches = self.matches(path);
         let property_patch = self.property_patch(&node.data);
-        if matches.is_empty() && property_patch == Val::Obj(Obj::new()) {
+        if matches.is_empty() && property_patch == Val::Obj(Obj::new()) && self.scale() == 1.0 {
             return Cow::Borrowed(&node.data);
         }
         let mut data = merge(&node.data, &property_patch, &matches, |_, _| {});
+        scale_inherited(&mut data, |field| self.outer_scale(&matches, field));
         inherit_swapped(doc, &node.data, &mut data);
         Cow::Owned(data)
     }

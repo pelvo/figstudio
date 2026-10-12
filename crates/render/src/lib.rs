@@ -193,8 +193,6 @@ struct Ctx<'a> {
     fonts: Option<&'a mut text::SystemFonts>,
     /// Override scopes of the instances being drawn (the merge shared with `fig::resolve`).
     overrides: Overrides,
-    /// `uniformScaleFactor` of each entered instance, parallel to `overrides`.
-    instance_scales: Vec<f64>,
     variables: Arc<variables::Variables>,
     work_left: usize,
     depth: usize,
@@ -483,7 +481,6 @@ impl Renderer {
                 None
             },
             overrides: Overrides::new(definitions),
-            instance_scales: Vec::new(),
             variables,
             work_left: work,
             depth: 0,
@@ -839,22 +836,9 @@ impl Ctx<'_> {
         };
         let matches = self.overrides.matches(path);
         let property_patch = self.overrides.property_patch(&node.data);
-        // A value comes from the outermost level that states it, already in that level's
-        // scaled space; every uniformly scaled instance outside that level still scales it.
-        let scales = &self.instance_scales;
-        let outer_scale = |field: &str| -> f64 {
-            let level = matches
-                .iter()
-                .filter(|p| p.data.get(field).is_some())
-                .map(|p| p.owner_depth)
-                .min()
-                .unwrap_or(scales.len());
-            scales[..level.min(scales.len())].iter().product()
-        };
+        let outer_scale = |field: &str| self.overrides.outer_scale(&matches, field);
         let (move_by, grow_by) = (outer_scale("transform"), outer_scale("size"));
         let transform_stated = matches.iter().any(|p| p.data.get("transform").is_some());
-        let glyph_scale = outer_scale("derivedTextData");
-        let stroke_scales = layout::STROKE_LENGTHS.map(&outer_scale);
         if matches.is_empty()
             && property_patch == Val::Obj(figstudio_fig::Obj::new())
             && move_by == 1.0
@@ -900,8 +884,7 @@ impl Ctx<'_> {
         if !transform_stated && let Some((old, new)) = parent {
             layout::constrain(&node.data, &mut data, old, new, (move_by, grow_by));
         }
-        layout::scale_inherited(&mut data, move_by, grow_by);
-        layout::scale_ink(&mut data, glyph_scale, stroke_scales);
+        resolve::scale_inherited(&mut data, outer_scale);
         resolve::inherit_swapped(self.doc, &node.data, &mut data);
         let stale_glyphs = text_changed && !glyphs_fresh;
         let approximate_ink = layout::approximate_ink(&data, &node.kind, stale_glyphs, outer_scale);
@@ -1348,17 +1331,7 @@ impl Ctx<'_> {
         }
         let base: Vec<Guid> = path.map(<[Guid]>::to_vec).unwrap_or_default();
         self.overrides.enter(symbol, data, &base);
-        self.instance_scales.push(uniform_scale(data));
         self.draw_children(symbol, &symbol.data, world, Some(&base));
-        self.instance_scales.pop();
         self.overrides.leave();
     }
-}
-
-/// An instance's `uniformScaleFactor`, 1 when missing or invalid.
-fn uniform_scale(data: &Val) -> f64 {
-    data.path(&["symbolData", "uniformScaleFactor"])
-        .and_then(Val::as_f32)
-        .filter(|s| s.is_finite() && *s > 0.0)
-        .map_or(1.0, f64::from)
 }

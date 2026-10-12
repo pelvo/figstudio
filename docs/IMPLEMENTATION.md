@@ -192,9 +192,11 @@ instance (Figma ids `I<instance>;<key>…`, merged data, level; capped at
 `MAX_RESOLVED_NODES`), `walk_instance` adds depth and node caps, and
 `resolve_path(doc, &InstancePath)` looks one node up. A walker that descends by itself (the
 renderer) keeps an `Overrides` stack: `enter`/`leave` per instance, `matches` + `merge` (or
-`resolve`) per node. The renderer adds only its render-side steps on top of `merge`:
-uniform-scale and constraint corrections, glyph/stroke scaling, stale glyph and stroke
-geometry detection. Any tool that reads node data inside instances must use
+`resolve`) per node. Uniform instance scale is shared too: `resolve::scale_inherited` with
+`Overrides::outer_scale` (owner-aware) scales translation, size, stroke weights and stored
+glyphs, and `resolve` applies it, so tools report the geometry the renderer draws. The
+renderer adds only its render-side steps on top of `merge`: constraint corrections and stale
+glyph and stroke geometry detection. Any tool that reads node data inside instances must use
 `fig::resolve`, never `symbolOverrides` directly. `draw_instance` pushes every `symbolOverrides` entry (and `derivedSymbolData`)
 as a `Patch` keyed by the full override path (instance path + `guidPath.guids`), then draws
 the component's children with that path. A node's override key is `Node::override_key()`.

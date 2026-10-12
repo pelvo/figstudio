@@ -18,6 +18,9 @@ pub struct Resolved {
     /// Tree depth below where the walk started: an instance's children are level 1, the
     /// target of [`walk_path`] or [`resolve_path`] is level 0. Every tree level counts.
     pub level: usize,
+    /// Product of the `uniformScaleFactor`s of the instances enclosing this node, already
+    /// applied to its inherited position, size, strokes and glyphs ([`super::scale_inherited`]).
+    pub scale: f64,
 }
 
 /// The resolved children of one instance, in document (back to front) pre-order.
@@ -127,6 +130,7 @@ fn run(
                 let mut path = base.clone();
                 path.push(child.override_key());
                 let data = overrides.resolve(doc, child, &path).into_owned();
+                let scale = overrides.scale();
                 let deeper = max_level.is_none_or(|limit| level < limit);
                 if deeper && child.kind == "INSTANCE" {
                     let entered = enter(
@@ -148,6 +152,7 @@ fn run(
                     node: id,
                     data,
                     level,
+                    scale,
                 });
             }
         }
@@ -195,6 +200,7 @@ pub fn resolve_path(doc: &Document, path: &InstancePath) -> Result<Resolved, Res
         node: node.id,
         data,
         level: 0,
+        scale: overrides.scale(),
     })
 }
 
