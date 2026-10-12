@@ -33,6 +33,8 @@ cargo $TC clippy --release --workspace --all-targets -- -D warnings
 cargo $TC clippy --release -p figstudio-render --features parallel --all-targets -- -D warnings
 # GPU tile replay (vello_gpu; the app wires it). Its pixel tests skip without a GPU adapter.
 cargo $TC clippy --release -p figstudio-render --features gpu --all-targets -- -D warnings
+# The app without agent access (feature `mcp` off), as the browser build compiles it.
+cargo $TC clippy --release -p figstudio --no-default-features --all-targets -- -D warnings
 
 step "tests"
 cargo $TC test --release --workspace

@@ -45,6 +45,8 @@ pub struct Tab {
     pub page: Guid,
     pub view: View,
     pub fit_pending: bool,
+    /// Fit this node into view on the next canvas frame (`reveal_node` from an agent).
+    pub fit_node: Option<Guid>,
     pub selection: Option<Guid>,
     pub hover: Option<Guid>,
     pub expanded: HashSet<Guid>,
@@ -89,6 +91,7 @@ impl Tab {
                 pan: egui::Vec2::ZERO,
             },
             fit_pending: true,
+            fit_node: None,
             selection: None,
             hover: None,
             expanded: HashSet::new(),

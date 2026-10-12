@@ -39,6 +39,17 @@ pub fn fit(tab: &mut Tab, rect: Rect) {
     );
 }
 
+/// Fits node `id` into `rect`; nothing happens when it has no bounds.
+fn fit_node(tab: &mut Tab, rect: Rect, id: Guid) {
+    if let Some(b) = figstudio_render::node_bounds(&tab.doc, id) {
+        let page = Rect::from_min_max(
+            Pos2::new(b.x0 as f32, b.y0 as f32),
+            Pos2::new(b.x1 as f32, b.y1 as f32),
+        );
+        fit_rect(tab, rect, page);
+    }
+}
+
 pub fn fit_rect(tab: &mut Tab, rect: Rect, page_rect: Rect) {
     let margin = 40.0;
     let avail = (rect.size() - Vec2::splat(margin * 2.0)).max(Vec2::splat(10.0));
@@ -69,6 +80,11 @@ pub fn show(
     if tab.fit_pending && rect.width() > 10.0 {
         fit(tab, rect);
         tab.fit_pending = false;
+    }
+    if rect.width() > 10.0
+        && let Some(id) = tab.fit_node.take()
+    {
+        fit_node(tab, rect, id);
     }
 
     // Input: pan.
@@ -138,16 +154,8 @@ pub fn show(
     if response.double_clicked()
         && tool == Tool::Select
         && let Some(sel) = tab.selection
-        && let Some(b) = figstudio_render::node_bounds(&tab.doc, sel)
     {
-        fit_rect(
-            tab,
-            rect,
-            Rect::from_min_max(
-                Pos2::new(b.x0 as f32, b.y0 as f32),
-                Pos2::new(b.x1 as f32, b.y1 as f32),
-            ),
-        );
+        fit_node(tab, rect, sel);
     }
 
     // Rendering: cached tiles now, missing ones requested (tiles_view.rs).

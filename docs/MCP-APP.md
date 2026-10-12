@@ -448,6 +448,22 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
   - Close the tab during a big call: no crash.
   - With the toggle off: `lsof -i :3845` is empty and the app behaves as before.
 - **Gate:** G-check (both feature sets), G-web (the wasm app still builds), and the manual list above.
+- **Status:** done. `apps/figstudio/src/mcp_host.rs` (`McpHost { on, addrs, running }`; `frame(&mut tabs, &mut active)` at the
+  start of a frame polls the server thread's events and drains `Command::Reveal`; `sync(ctx, &tabs, active)` at the end
+  starts/stops as the toggle says and swaps the snapshot only when `Key` changes; `stop()` cancels, never joins).
+  `mcp_off.rs` is the same API with no thread (feature off, wasm). The server thread builds a 2-worker runtime, binds
+  `bind_first(default_http_addrs())`, serves `FigstudioServer::live(..).with_assets(Assets::Inline)` (the app's working
+  directory is arbitrary, so no asset files are written) and ends with `shutdown_background`. A bind/runtime error is a
+  toast and turns the toggle off. Reveal: `Tab.fit_node`, fitted in `canvas::show` after `fit_pending` with the
+  double-click code (now `canvas::fit_node`). The status bar's first item while running is `MCP 127.0.0.1:3845/mcp`.
+  Tests: `src/mcp_host_tests.rs` (5: key, reveal/stale tab, busy-port fallback, no free port, HTTP client
+  `list_open_tabs` + `reveal_node` + `get_selection` + port closed after toggle off), 11 mutations caught. Manual:
+  curl session against the release app (temporary env hook, not committed): list, selection, design context without
+  nodeId, reveal (selection moved), tab closed during 4×30 concurrent `get_screenshot` calls (no hang, server and app
+  up); toggle off at launch: no listener on 3845. Not verified: clicking the menu toggle (no UI automation access to
+  the window), `claude mcp add`, visual fit after reveal. Binary: 15.9 MB → 23.2 MB release (feature on); off = unchanged.
+  Seen on the standalone server too (not L8): several concurrent calls on **one** session over curl can stall; one
+  session per client does not.
 
 ## L9: docs (S, Haiku)
 

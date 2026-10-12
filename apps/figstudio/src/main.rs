@@ -16,6 +16,8 @@ mod gpu_tiles;
 mod gpu_tiles_web;
 mod labels;
 mod marquee;
+#[cfg_attr(any(not(feature = "mcp"), target_arch = "wasm32"), path = "mcp_off.rs")]
+mod mcp_host;
 mod panels;
 mod recordings;
 mod region_copy;
@@ -128,6 +130,8 @@ struct App {
     window_cap: Option<f32>,
     /// What draws the canvas tiles ("GPU (Metal)", "CPU"), for the status bar.
     renderer: String,
+    /// Agent access: the MCP server, off at every launch (`mcp_host.rs`).
+    mcp: mcp_host::McpHost,
 }
 
 impl App {
@@ -178,6 +182,7 @@ impl App {
             web: web::Inbox::new(),
             #[cfg(not(target_arch = "wasm32"))]
             window_cap: None,
+            mcp: Default::default(),
         };
         for f in files {
             app.open(f);
@@ -611,6 +616,7 @@ impl App {
                 ui.separator();
                 ui.checkbox(&mut self.show_left, "Layers panel");
                 ui.checkbox(&mut self.show_right, "Properties panel");
+                self.mcp.menu(ui);
             });
             ui.menu_button("Help", |ui| {
                 ui.label(
@@ -744,6 +750,7 @@ impl App {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            self.mcp.status(ui);
             let Some(tab) = self.tabs.get(self.active) else {
                 ui.label(RichText::new("No file open").color(theme::TEXT_FAINT));
                 return;
@@ -864,6 +871,10 @@ fn shifted_digit(i: &egui::InputState, digit: Key, shifted: Option<Key>) -> bool
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self) {
+        self.mcp.stop();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let started = web_time::Instant::now();
         self.frame_ui(ui);
@@ -891,6 +902,9 @@ impl App {
     fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
+        if let Some(error) = self.mcp.frame(&mut self.tabs, &mut self.active) {
+            self.toast(&ctx, error, true);
+        }
         self.shortcuts(&ctx);
         let space_held = ctx.input(|i| i.key_down(Key::Space)) && !ctx.egui_wants_keyboard_input();
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
@@ -1030,6 +1044,7 @@ impl App {
             );
         }
         self.toasts(&ctx);
+        self.mcp.sync(&ctx, &self.tabs, self.active);
         if let Some(tab) = self.tabs.get(self.active) {
             let title = format!("{} — {APP_NAME}", tab.title());
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
