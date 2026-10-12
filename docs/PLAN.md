@@ -528,3 +528,4 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   wgpu's GL backend, else CPU): the worker builds scenes, the main thread renders ≤ 4 per frame;
   `?renderer=cpu|gpu`. Headless Chrome, structure.fig: both GPU paths within 1/255 of the CPU.
   Not verified: a real non-Apple GPU, device loss, a late wgpu error scope firing, Firefox/Safari.
+- 2026-10-12 — MCP-APP L0: golden harness (`apps/figstudio-mcp/tests/golden.rs`, `scripts/mcp-golden.sh <rev>`) records every tool's reply over the 7 fixtures; 3 same-tree runs identical, description and output mutations caught, check.sh passed. Not verified: cross-machine byte equality, add_code_connect_map (writes a sidecar, not recorded).

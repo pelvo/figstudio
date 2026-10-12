@@ -96,6 +96,10 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
   not in the tools.
 - **Gate:** G-check, and G-golden against HEAD is empty.
 - **Prove:** change one character in a description in `tools/metadata.rs`; the diff must show it.
+- **Status:** done (commit `e5dfd1d`). Harness `apps/figstudio-mcp/tests/golden.rs` + `scripts/mcp-golden.sh`.
+  Run: `scripts/mcp-golden.sh HEAD` (exit 0 = identical, 156 records). Determinism: 3 same-tree runs and 2 script runs
+  identical. Mutation: a description char shows in `00-tools-list.json`; an output char shows in 7 `invalid-get_metadata`
+  records. Not recorded: `add_code_connect_map` (writes a sidecar). Not verified: cross-machine byte equality.
 
 ## L1: `crates/mcp-core` seed with node IDs and links (M, Sonnet)
 
