@@ -16,19 +16,43 @@ use figstudio_render::GpuUnsupported;
 #[test]
 fn the_env_var_and_the_device_choose_the_renderer() {
     let big = Some(8192);
-    assert_eq!(choose(None, big), Choice::Gpu);
-    assert_eq!(choose(Some("gpu"), big), Choice::Gpu);
-    assert_eq!(choose(Some(" CPU "), big), Choice::Cpu(CpuWhy::Asked));
-    assert_eq!(choose(Some("cpu"), None), Choice::Cpu(CpuWhy::Asked));
+    assert_eq!(choose(None, big, None), Choice::Gpu);
+    assert_eq!(choose(Some("gpu"), big, None), Choice::Gpu);
+    assert_eq!(choose(Some(" CPU "), big, None), Choice::Cpu(CpuWhy::Asked));
+    assert_eq!(choose(Some("cpu"), None, None), Choice::Cpu(CpuWhy::Asked));
     // Anything else means the default: the GPU when there is one.
-    assert_eq!(choose(Some("vulkan"), big), Choice::Gpu);
-    assert_eq!(choose(Some("gpu"), None), Choice::Cpu(CpuWhy::NoDevice));
-    assert_eq!(choose(None, Some(MIN_TEXTURE)), Choice::Gpu);
+    assert_eq!(choose(Some("vulkan"), big, None), Choice::Gpu);
     assert_eq!(
-        choose(None, Some(MIN_TEXTURE - 1)),
+        choose(Some("gpu"), None, None),
+        Choice::Cpu(CpuWhy::NoDevice)
+    );
+    assert_eq!(choose(None, Some(MIN_TEXTURE), None), Choice::Gpu);
+    assert_eq!(
+        choose(None, Some(MIN_TEXTURE - 1), None),
         Choice::Cpu(CpuWhy::SmallTextures)
     );
-    assert_eq!(choose(None, Some(2048)), Choice::Cpu(CpuWhy::SmallTextures));
+    // Software adapters draw on the CPU unless the GPU is asked for explicitly; wgpu's GL
+    // backend on a real GPU reports `Other`, which stays on the GPU.
+    use eframe::wgpu::DeviceType;
+    let soft = Some(DeviceType::Cpu);
+    assert_eq!(choose(None, big, soft), Choice::Cpu(CpuWhy::Software));
+    assert_eq!(
+        choose(Some("vulkan"), big, soft),
+        Choice::Cpu(CpuWhy::Software)
+    );
+    assert_eq!(choose(Some(" GPU "), big, soft), Choice::Gpu);
+    assert_eq!(label(choose(None, big, soft), None), "CPU");
+    for kind in [
+        DeviceType::Other,
+        DeviceType::IntegratedGpu,
+        DeviceType::DiscreteGpu,
+    ] {
+        assert_eq!(choose(None, big, Some(kind)), Choice::Gpu, "{kind:?}");
+    }
+    assert_eq!(
+        choose(None, Some(2048), None),
+        Choice::Cpu(CpuWhy::SmallTextures)
+    );
 }
 
 #[test]

@@ -17,7 +17,7 @@ fn the_query_names_the_renderer() {
     assert_eq!(asked_renderer("?renderers=cpu"), None);
     let asked = asked_renderer("?renderer=Cpu");
     assert_eq!(
-        choose(asked.as_deref(), Some(8192)),
+        choose(asked.as_deref(), Some(8192), None),
         Choice::Cpu(CpuWhy::Asked)
     );
 }
@@ -26,7 +26,7 @@ fn the_query_names_the_renderer() {
 fn the_browser_backend_and_its_texture_limit_choose_the_renderer() {
     // WebGPU and WebGL2 alike: a device with 4096 px textures or more draws on the GPU.
     for backend in [Backend::BrowserWebGpu, Backend::Gl] {
-        let choice = choose(None, Some(MIN_TEXTURE));
+        let choice = choose(None, Some(MIN_TEXTURE), None);
         assert_eq!(choice, Choice::Gpu);
         let name = if backend == Backend::Gl {
             "WebGL2"
@@ -40,7 +40,7 @@ fn the_browser_backend_and_its_texture_limit_choose_the_renderer() {
         );
     }
     // The Known limit: below 4096 px the canvas stays on the CPU.
-    let small = choose(None, Some(2048));
+    let small = choose(None, Some(2048), None);
     assert_eq!(small, Choice::Cpu(CpuWhy::SmallTextures));
     assert_eq!(label(small, Some(Backend::Gl)), "CPU");
 }

@@ -204,3 +204,32 @@ fn gpu_tiles_reach_the_window_like_cpu_tiles() {
     eprintln!("{gpu_tiles} GPU tiles, {compared} with content");
     assert!(compared > 10, "tiles with content were compared");
 }
+
+/// A wgpu error outside any error scope goes to our handler (logged, GPU tiles off) instead of
+/// wgpu's default handler, which panics (it would kill the app on a failed surface configure).
+#[test]
+fn an_uncaptured_wgpu_error_turns_the_gpu_off_instead_of_panicking() {
+    let Some(d) = device() else { return };
+    let lost = Arc::new(AtomicBool::new(false));
+    crate::gpu_common::catch_uncaptured(&d.device, lost.clone());
+    // A zero-sized texture is a validation error, raised outside any error scope.
+    let _bad = d.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 0,
+            height: 0,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let _ = d.device.poll(wgpu::PollType::wait_indefinitely());
+    assert!(
+        lost.load(Ordering::Acquire),
+        "the error reached the handler"
+    );
+}

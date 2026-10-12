@@ -133,7 +133,8 @@ impl App {
             let state = cc.wgpu_render_state.as_ref();
             let env = std::env::var("FIGSTUDIO_RENDERER").ok();
             let side = state.map(|s| s.device.limits().max_texture_dimension_2d);
-            let choice = gpu_tiles::choose(env.as_deref(), side);
+            let kind = state.map(|s| s.adapter.get_info().device_type);
+            let choice = gpu_tiles::choose(env.as_deref(), side, kind);
             let backend = state.map(|s| s.adapter.get_info().backend);
             tiles.gpu = state.map(gpu_tiles::Registry::new);
             let gpu = gpu_tiles::TileGpu::new(choice, state);

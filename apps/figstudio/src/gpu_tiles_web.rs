@@ -13,7 +13,7 @@ use eframe::egui_wgpu::RenderState;
 use eframe::wgpu;
 use web_time::Instant;
 
-use crate::gpu_common::{Choice, CpuWhy, Vello, choose, label};
+use crate::gpu_common::{Choice, CpuWhy, Vello, catch_uncaptured, choose, label};
 use crate::gpu_registry::{NativeTexture, Registry};
 use crate::gpu_scenes::{Credits, Pending, Plan, TileGpu, asked_renderer};
 use crate::recordings::Pixels;
@@ -27,9 +27,14 @@ pub fn start(state: Option<&RenderState>) -> (TileGpu, Option<WebGpu>, String) {
         .and_then(|w| w.location().search().ok())
         .unwrap_or_default();
     let side = state.map(|s| s.device.limits().max_texture_dimension_2d);
-    let choice = choose(asked_renderer(&search).as_deref(), side);
+    let kind = state.map(|s| s.adapter.get_info().device_type);
+    let choice = choose(asked_renderer(&search).as_deref(), side, kind);
     let name = label(choice, state.map(|s| s.adapter.get_info().backend));
     let lost = Arc::new(AtomicBool::new(false));
+    if let Some(s) = state {
+        // Also when the canvas is on the CPU: egui's own surface errors must not abort the page.
+        catch_uncaptured(&s.device, lost.clone());
+    }
     let (Choice::Gpu, Some(state), Some(side)) = (choice, state, side) else {
         let why = match choice {
             Choice::Cpu(why) => why,

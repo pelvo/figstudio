@@ -108,9 +108,11 @@ this is a regression, limited to those GPUs. Reproduced or reasoned by the revie
 3. Desktop: eframe configures the surface at startup (before the app exists) and on every
    `Resized` before the next UI callback, so `MaxInnerSize` is only a hint, not a guarantee.
 
-Planned answers, not done: the L3/L4 CPU fallback (use the CPU canvas when the device limit is
-below a safe size), a wgpu error handler that skips the frame instead of panicking, or a
-patched egui-wgpu that bounds the surface before configuring it.
+Planned answers: the L3/L4 CPU canvas when the device limit is below 4096 (done), a wgpu
+uncaptured-error handler that logs and skips the frame instead of panicking (done after the
+PR #7 review; it should turn path 3's `Surface::configure` panic into a skipped frame, not
+tested on that path), or a patched egui-wgpu that bounds the surface before configuring it
+(not done).
 
 ## L2 notes
 
@@ -183,13 +185,15 @@ patched egui-wgpu that bounds the surface before configuring it.
 
   | Case | Counted |
   |---|---|
-  | `FIGSTUDIO_RENDERER=cpu` (case-insensitive; anything else means `gpu`) | no |
+  | `FIGSTUDIO_RENDERER=cpu` (case-insensitive; anything else means the default) | no |
+  | Software adapter (`DeviceType::Cpu`: llvmpipe, SwiftShader, WARP; `vello_gpu` there is slower than the CPU tiles). An explicit `FIGSTUDIO_RENDERER=gpu` / `?renderer=gpu` still uses it | no |
   | No wgpu render state | yes |
   | Device `max_texture_dimension_2d` < 4096 (`GPU_LAYER_TEXTURE`); this is the Known limit's planned CPU canvas on desktop | yes |
   | No recording (over its size limit or the work budget, or not covering the tile) | yes |
   | `gpu_scene` refuses (`GpuUnsupported`: images, angular gradients, filter graphs, filter reach, layers; in the browser also any filter, `Filtered`, scenes over 8 MiB, `TooBig`, and scenes the 64 MiB credit budget has no room for) | yes |
   | `vello_gpu` render `Err`, or a wgpu validation or out-of-memory error scope fires | yes |
   | Device lost (wgpu callback), or a panic inside `vello_gpu` (caught): the GPU stays off for the session | yes |
+  | A wgpu error outside any error scope (`on_uncaptured_error`, set on eframe's device on desktop and web; wgpu's default handler panics): logged, frame skipped, GPU tiles off for the session | yes |
 
 - Freeing: a GPU tile in the cache is a `NativeTexture`. Dropping it (eviction, replacement or a
   closed document) calls `free_texture` through a weak handle to egui's renderer and drops the
@@ -278,8 +282,10 @@ patched egui-wgpu that bounds the surface before configuring it.
 
 ## Open gaps after L1–L5 (2026-10-12)
 
-- Only an Apple GPU (Metal, and Chrome's WebGPU/WebGL2 on it) was run. Vulkan, DX12, GL on
-  Linux/Windows, Firefox and Safari are untested.
+- Run on an Apple GPU (Metal; Chrome WebGPU/WebGL2) and on Linux with an AMD integrated GPU
+  (Mesa RADV Vulkan and radeonsi GL; Chrome WebGPU on Vulkan, WebGL2 through ANGLE on Vulkan).
+  DX12, Windows GL, Firefox and Safari are untested. On Mesa's software GL (llvmpipe) the GPU
+  canvas was slower than the CPU tiles, so software adapters now use the CPU canvas.
 - Not exercised for real: device loss, out-of-memory, a `vello_gpu` panic in the app.
 - GPU textures smaller than the window can still crash on some resize/fullscreen paths
   (L1 "Known limit"); devices under 4096 px use CPU tiles.

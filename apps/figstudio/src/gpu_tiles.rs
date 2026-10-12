@@ -52,8 +52,21 @@ impl std::fmt::Debug for Gpu {
 }
 
 impl TileGpu {
-    /// eframe's GPU (`state`) when `choice` is [`Choice::Gpu`].
+    /// eframe's GPU (`state`) when `choice` is [`Choice::Gpu`]. Uncaptured wgpu errors on
+    /// `state`'s device are logged and turn the GPU tiles off, whatever the choice.
     pub fn new(choice: Choice, state: Option<&RenderState>) -> Self {
+        let tiles = Self::choose_on(choice, state);
+        if let Some(s) = state {
+            let lost = tiles
+                .gpu
+                .as_ref()
+                .map_or_else(|_| Arc::default(), |g| g.lost.clone());
+            crate::gpu_common::catch_uncaptured(&s.device, lost);
+        }
+        tiles
+    }
+
+    fn choose_on(choice: Choice, state: Option<&RenderState>) -> Self {
         let state = match (choice, state) {
             (Choice::Cpu(why), _) => return TileGpu { gpu: Err(why) },
             (Choice::Gpu, None) => {

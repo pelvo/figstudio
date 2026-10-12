@@ -31,19 +31,43 @@ pub enum CpuWhy {
     NoDevice,
     /// The device's largest texture is below [`MIN_TEXTURE`].
     SmallTextures,
+    /// A software adapter (llvmpipe, SwiftShader, WARP): `vello_gpu` on it is slower than the
+    /// CPU tiles. An explicit `gpu` still uses it, for debugging.
+    Software,
 }
 
 /// The renderer for the asked one (`cpu` or `gpu`, any case; unset or anything else means
-/// `gpu`) and the device's largest texture side (`None`: no wgpu device).
-pub fn choose(asked: Option<&str>, max_texture: Option<u32>) -> Choice {
-    if asked.is_some_and(|v| v.trim().eq_ignore_ascii_case("cpu")) {
+/// the default), the device's largest texture side (`None`: no wgpu device) and its type.
+pub fn choose(
+    asked: Option<&str>,
+    max_texture: Option<u32>,
+    device: Option<wgpu::DeviceType>,
+) -> Choice {
+    let is = |want: &str| asked.is_some_and(|v| v.trim().eq_ignore_ascii_case(want));
+    if is("cpu") {
         return Choice::Cpu(CpuWhy::Asked);
     }
     match max_texture {
         None => Choice::Cpu(CpuWhy::NoDevice),
         Some(side) if side < MIN_TEXTURE => Choice::Cpu(CpuWhy::SmallTextures),
+        // Only `Cpu` is software: wgpu's GL backend on a real GPU reports `Other`.
+        Some(_) if device == Some(wgpu::DeviceType::Cpu) && !is("gpu") => {
+            Choice::Cpu(CpuWhy::Software)
+        }
         Some(_) => Choice::Gpu,
     }
+}
+
+/// Routes wgpu errors raised outside an error scope (wgpu's default handler panics, and
+/// egui-wgpu sets none) to a log line and turns the GPU tiles off (`lost`): a failed
+/// `Surface::configure` or a stray validation error skips a frame instead of killing the app.
+pub fn catch_uncaptured(device: &wgpu::Device, lost: std::sync::Arc<AtomicBool>) {
+    device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| {
+        // shortcut: stderr only (nothing shows in a browser console); add a console log if
+        // web users need to see it.
+        eprintln!("figstudio: wgpu error (frame skipped, canvas tiles on the CPU): {e}");
+        lost.store(true, Ordering::Release);
+    }));
 }
 
 /// Why one tile was drawn on the CPU.
