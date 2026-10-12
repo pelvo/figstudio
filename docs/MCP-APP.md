@@ -245,6 +245,24 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
   - The PNG-size cap function.
 - **Prove:** reverse the BFS order; remove the cap.
 - **Gate:** G-check, G-wasm, G-web; manual on macOS: paste the PNG into Preview and the text into an editor.
+- **Status:** done (commit `feat(app): marquee and copy region as text or PNG`).
+  - **Files:** `apps/figstudio/src/marquee.rs` (drag, draw, hit logic), `region_copy.rs` (menu + `region_text`),
+    `region_png.rs` (size cap `plan`, off-thread render, clipboard, web fallback), tests beside each, and
+    `crates/mcp-core/src/region.rs` (`nodes_in`, tests in `crates/mcp-core/tests/region.rs`). Core depends on
+    `figstudio-render` with `default-features = false`; the wasm32 core build passes.
+  - **Behaviour:** Select tool + primary drag draws the marquee (kept if ≥ 4 screen points a side). Esc, a click or a
+    page switch clears it. Right-click inside it opens **Copy region** / **Copy region as PNG**; outside it, L2's node
+    menu. The node menu also has **Copy as PNG** (2x, within the same caps).
+  - **Region text:** `figstudio://<stem>?page=<g>&rect=x,y,w,h`, then `file: <title> · page: <name>`, then
+    `nodes (k of N, top-level first):` and rows `1:42 "Name" (KIND)`, at most 50 (`N` gets a `+` when the 200k visit
+    budget ran out).
+  - **PNG:** longest side ≤ 4096 px, ≤ 16 MP, scale stepped down; zoom × pixels-per-point; premultiplied RGBA to
+    `ctx.copy_image`. Toast: `Copied W×H image · ⚠ <gaps>`; desktop adds a second line that a failed copy is only
+    logged by egui-winit. Web: if there is no secure context or `ClipboardItem`, the PNG is downloaded instead.
+  - **Proved:** reverse the BFS order, ignore `visible`, drop the budget, drop the pixel cap, drop side/pixel clamps,
+    swap the drag rect for a non-normalising one: each caught, reverted.
+  - **Not verified:** a real drag and right-click in the window; paste into Preview; the web clipboard and the
+    download fallback in a browser; Safari's refusal after the gesture expires (cannot be detected up front).
 
 ## L4: Phase 1a, move the text tools to core (L, Sonnet; Haiku only if split per file)
 

@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 figstudio-fig = { workspace = true }
+# node_bounds for the region walk; no default features, so it stays wasm-safe (no system fonts).
+figstudio-render = { path = "../render", default-features = false }
 url = { workspace = true }
 percent-encoding = { workspace = true }
 

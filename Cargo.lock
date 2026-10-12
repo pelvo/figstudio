@@ -1162,6 +1162,7 @@ name = "figstudio-mcp-core"
 version = "0.1.0"
 dependencies = [
  "figstudio-fig",
+ "figstudio-render",
  "percent-encoding",
  "url",
 ]

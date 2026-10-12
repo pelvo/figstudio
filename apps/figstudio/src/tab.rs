@@ -60,6 +60,8 @@ pub struct Tab {
     pub canvas_rect: Option<egui::Rect>,
     /// A Copy menu item picked this frame; `main.rs` puts it on the clipboard.
     pub pending_copy: Option<crate::copy::Item>,
+    /// The drag-drawn region (`marquee.rs`).
+    pub marquee: crate::marquee::Marquee,
 }
 
 impl Tab {
@@ -98,6 +100,7 @@ impl Tab {
             load_time,
             canvas_rect: None,
             pending_copy: None,
+            marquee: Default::default(),
         }
     }
 

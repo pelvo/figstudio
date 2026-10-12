@@ -15,8 +15,11 @@ mod gpu_tiles;
 #[cfg(target_arch = "wasm32")]
 mod gpu_tiles_web;
 mod labels;
+mod marquee;
 mod panels;
 mod recordings;
+mod region_copy;
+mod region_png;
 mod source;
 mod state;
 mod tab;
@@ -108,6 +111,8 @@ struct App {
     /// A background worker is gone; reported once so the toast does not repeat every frame.
     worker_lost: state::Once,
     toasts: Vec<Toast>,
+    /// Finished "Copy as PNG" renders (`region_png.rs`).
+    png: region_png::Inbox,
     layer_filter: String,
     /// Share of the left dock's height given to the page list (the rest is layers).
     pages_share: f32,
@@ -162,6 +167,7 @@ impl App {
             loading: Pending::default(),
             worker_lost: state::Once::default(),
             toasts: Vec::new(),
+            png: Default::default(),
             layer_filter: String::new(),
             pages_share: 0.55,
             show_left: true,
@@ -1003,13 +1009,9 @@ impl App {
             }
         });
         self.cursor = cursor;
-        if let Some(item) = self
-            .tabs
-            .get_mut(self.active)
-            .and_then(|t| t.pending_copy.take())
-        {
-            let toast = copy_menu::copy(&ctx, item);
-            self.toast(&ctx, toast, false);
+        let tab = self.tabs.get_mut(self.active);
+        for (text, error) in region_png::drive(&ctx, &self.workers, &self.png, tab) {
+            self.toast(&ctx, text, error);
         }
         if open_clicked {
             self.open_dialog(&ctx);

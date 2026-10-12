@@ -11,11 +11,31 @@ use figstudio_mcp_core::node_id::NodeId;
 use crate::tab::Tab;
 
 /// One menu entry: the button label, the noun the toast shows ("Copied link"), and the text.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Item {
     pub label: &'static str,
     pub what: &'static str,
     pub text: String,
+    /// Set for an image item: `text` is empty and `region_png::drive` renders and copies it.
+    pub png: Option<crate::region_png::Job>,
+}
+
+impl Item {
+    pub fn text(label: &'static str, what: &'static str, text: String) -> Item {
+        Item {
+            label,
+            what,
+            text,
+            png: None,
+        }
+    }
+
+    pub fn png(label: &'static str, what: &'static str, job: crate::region_png::Job) -> Item {
+        Item {
+            png: Some(job),
+            ..Item::text(label, what, String::new())
+        }
+    }
 }
 
 /// The menu for node `id`, in display order. Empty when the node is not in the document.
@@ -42,7 +62,7 @@ pub fn items(tab: &Tab, id: Guid) -> Vec<Item> {
 }
 
 fn item(label: &'static str, what: &'static str, text: String) -> Item {
-    Item { label, what, text }
+    Item::text(label, what, text)
 }
 
 /// The whole `textData.characters` of a TEXT node, not the 400-character Properties preview.

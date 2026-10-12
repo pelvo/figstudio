@@ -6,6 +6,7 @@
 use figstudio_fig::{Guid, Node};
 
 use crate::copy::{self, Item};
+use crate::region_png::Job;
 use crate::tab::Tab;
 use crate::theme;
 
@@ -16,6 +17,10 @@ pub fn node_menu(ui: &mut egui::Ui, tab: &Tab, id: Guid, picked: &mut Option<Ite
             *picked = Some(item);
             ui.close();
         }
+    }
+    if ui.button("Copy as PNG").clicked() {
+        *picked = Some(Item::png("Copy as PNG", "image", Job::Node(id)));
+        ui.close();
     }
 }
 

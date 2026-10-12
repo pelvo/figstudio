@@ -8,5 +8,7 @@ pub mod error;
 pub mod link;
 /// Accepted Figma node ID formats.
 pub mod node_id;
+/// The nodes a page rectangle touches.
+pub mod region;
 
 pub use error::CoreError;

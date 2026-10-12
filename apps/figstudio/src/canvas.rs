@@ -8,6 +8,7 @@ use figstudio_render::{
 };
 
 use crate::copy_menu;
+use crate::marquee;
 use crate::tab::{Tab, View};
 use crate::theme;
 use crate::tiles_view::Tiles;
@@ -123,10 +124,13 @@ pub fn show(
     }
     // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
     // canvas nothing is selected, so no menu opens. Any tool, as the spec says.
-    if response.secondary_clicked() {
+    if response.secondary_clicked() && !marquee::right_click(&response, tab, origin) {
         tab.select(tab.hover);
     }
-    if let Some(id) = tab.selection {
+    marquee::update(ui, &response, tab, origin, tool == Tool::Select && !panning);
+    if tab.marquee.menu {
+        marquee::context(&response, tab);
+    } else if let Some(id) = tab.selection {
         let mut picked = None;
         copy_menu::on_context(&response, tab, id, &mut picked);
         tab.pending_copy = picked.or(tab.pending_copy.take());
@@ -169,6 +173,7 @@ pub fn show(
     if let Some(sel) = tab.selection {
         outline(&painter, tab, origin, sel, Stroke::new(1.5, theme::ACCENT));
     }
+    marquee::paint(&painter, tab, origin);
 
     let cursor = match tool {
         _ if panning => egui::CursorIcon::Grab,
