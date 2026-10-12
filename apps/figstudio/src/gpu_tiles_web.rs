@@ -17,8 +17,9 @@ use crate::gpu_common::{Choice, CpuWhy, Vello, choose, label};
 use crate::gpu_registry::{NativeTexture, Registry};
 use crate::gpu_scenes::{Pending, TileGpu, asked_renderer};
 use crate::recordings::Pixels;
-use crate::tiles::Key;
+use crate::tiles::{Key, Range};
 use crate::worker::RenderDone;
+use figstudio_fig::Guid;
 
 /// The render worker's scene builder, the main thread's renderer (`None`: CPU canvas) and the
 /// status bar's name for them, from eframe's device and the page's `?renderer=` query.
@@ -61,7 +62,7 @@ pub struct WebGpu {
     vello: Vello,
     /// Shared with the worker's [`TileGpu`]: once set, every tile is drawn on the CPU.
     lost: Arc<AtomicBool>,
-    pending: Pending<RenderDone>,
+    pending: Pending,
     /// Tiles whose wgpu error scope fired after they were shown (errors resolve later in the
     /// browser): dropped from the cache, so they are asked for again and drawn on the CPU.
     failed: Rc<RefCell<Vec<Key>>>,
@@ -86,7 +87,7 @@ impl WebGpu {
 
     /// Drops the waiting scenes of a closed document.
     pub fn forget(&mut self, doc: u64) {
-        self.pending.retain(|d| d.key.doc != doc);
+        self.pending.forget(doc);
     }
 
     /// Tiles to drop from the cache because their GPU work failed.
@@ -94,11 +95,17 @@ impl WebGpu {
         std::mem::take(&mut self.failed.borrow_mut())
     }
 
-    /// Renders this frame's share of the waiting scenes and hands each tile to `each` with its
-    /// texture, or `None` when the GPU failed (the GPU is then off: the tile is asked for
-    /// again and drawn on the CPU, counted).
-    pub fn pump(&mut self, mut each: impl FnMut(RenderDone, Option<NativeTexture>)) {
+    /// Drops the scenes outside `plan` (the last frame's document, page and tiles) and renders
+    /// this frame's share of the rest, nearest the view centre first. Hands each tile to
+    /// `each` with its texture, or `None` when it was dropped or the GPU failed (the GPU is
+    /// then off): such a tile is not stored, and asked for again while it is still wanted.
+    pub fn pump(
+        &mut self,
+        plan: Option<(u64, Guid, Range)>,
+        mut each: impl FnMut(RenderDone, Option<NativeTexture>),
+    ) {
         let mut pending = std::mem::take(&mut self.pending);
+        pending.prune(plan, |done| each(done, None));
         pending.pump(|mut done| {
             let start = Instant::now();
             let texture = match &done.pixels {

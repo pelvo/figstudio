@@ -11,8 +11,9 @@ use crate::tiles::{self, Cache, TILE_BYTES};
 use crate::worker::{RenderDone, RenderJob, Workers};
 
 /// Budget for the tiles kept as textures (resident cache, gutters included): 256 MiB native,
-/// 128 MiB in the browser. Tiles still being rendered or uploaded are not counted; at most
-/// one batch per tab (half the cache) is outstanding.
+/// 128 MiB in the browser. Tiles still being rendered or uploaded are not counted: at most
+/// one batch per tab (half the cache) is queued in the worker, plus, in the browser, at most
+/// `gpu_scenes::MAX_PENDING` scenes of the current plan waiting for the main thread.
 #[cfg(not(target_arch = "wasm32"))]
 const BUDGET_BYTES: usize = 256 << 20;
 #[cfg(target_arch = "wasm32")]
@@ -95,7 +96,7 @@ impl Tiles {
         let failed = gpu.take_failed();
         self.cache.retain(|k| !failed.contains(k));
         let cache = &mut self.cache;
-        gpu.pump(|done, texture| {
+        gpu.pump(cache.plan(), |done, texture| {
             let Some(tab) = tabs.iter_mut().find(|t| t.id == done.tab) else {
                 return;
             };
@@ -211,8 +212,9 @@ impl Tiles {
     }
 }
 
-/// The UI has the tile: no longer requested, and the worker hears it was received.
-fn received(tab: &mut Tab, done: &RenderDone) {
+/// The UI has the tile (or dropped it): no longer requested, and the worker hears it was
+/// received, so a later request for it is rendered again (`tile_queue::Queue`).
+pub(crate) fn received(tab: &mut Tab, done: &RenderDone) {
     tab.tile_requests.retain(|k| *k != done.key);
     tab.tiles_received.push((done.key, done.images));
 }

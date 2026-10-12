@@ -7,13 +7,14 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use figstudio_fig::Guid;
 use figstudio_render::{GPU_LAYER_TEXTURE, Recording, Renderer, Viewport};
 use web_time::Duration;
 
 use crate::gpu_common::{CpuWhy, Fallback, guarded, scene};
 use crate::recordings::{Drawn, Recordings};
-use crate::tiles::Key;
-use crate::worker::RenderJob;
+use crate::tiles::{Key, Range};
+use crate::worker::{RenderDone, RenderJob};
 
 /// A GPU tile on its way to the main thread: its scene, rendered there.
 pub type GpuTexture = vello_gpu::Scene;
@@ -88,38 +89,91 @@ pub fn asked_renderer(search: &str) -> Option<String> {
         .map(|(_, v)| v.into_owned())
 }
 
-/// Scenes waiting for the main thread, oldest first, rendered a few per frame.
-#[derive(Debug)]
-pub struct Pending<T> {
-    queue: VecDeque<T>,
+/// Most scenes kept for the main thread after [`Pending::prune`]. A plan is at most half the
+/// tile cache (63 tiles in the browser, `tiles::plan`), so the current view always fits.
+pub const MAX_PENDING: usize = 64;
+
+/// Scenes waiting for the main thread, rendered a few per frame. Pruned every frame to the
+/// current plan, nearest its centre first, and to [`MAX_PENDING`], so a view that moved on
+/// leaves nothing queued. Every scene dropped is handed back to the caller, which must
+/// acknowledge it to the worker as not delivered (`tiles_view::received`), or the worker
+/// would skip that tile when it is asked for again (`tile_queue::Queue`).
+#[derive(Default)]
+pub struct Pending {
+    queue: VecDeque<RenderDone>,
 }
 
-impl<T> Default for Pending<T> {
-    fn default() -> Self {
-        Pending {
-            queue: VecDeque::new(),
-        }
+impl std::fmt::Debug for Pending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pending")
+            .field("len", &self.queue.len())
+            .finish_non_exhaustive()
     }
 }
 
-impl<T> Pending<T> {
-    pub fn push(&mut self, item: T) {
+impl Pending {
+    pub fn push(&mut self, item: RenderDone) {
         self.queue.push_back(item);
     }
 
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    #[cfg_attr(
+        all(test, not(target_arch = "wasm32")),
+        expect(dead_code, reason = "the browser repaints while scenes wait")
+    )]
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
-    /// Drops the items `keep` refuses (a closed document).
-    pub fn retain(&mut self, keep: impl FnMut(&T) -> bool) {
-        self.queue.retain(keep);
+    /// Drops the scenes of a closed document (its tab and worker history are gone).
+    #[cfg_attr(
+        all(test, not(target_arch = "wasm32")),
+        expect(dead_code, reason = "the browser forgets closed documents")
+    )]
+    pub fn forget(&mut self, doc: u64) {
+        self.queue.retain(|d| d.key.doc != doc);
+    }
+
+    /// Keeps the scenes of `plan` (the last frame's document, page and planned tiles, ring
+    /// included), nearest its centre first, at most [`MAX_PENDING`]; hands every other one to
+    /// `dropped`.
+    pub fn prune(&mut self, plan: Option<(u64, Guid, Range)>, mut dropped: impl FnMut(RenderDone)) {
+        let rank = |k: &Key| {
+            let (doc, page, range) = plan?;
+            if k.doc != doc || k.page != page || !range.contains(k) {
+                return None;
+            }
+            // Twice the distance from the range's centre, in f64: no overflow at any pan.
+            let d = |k: i32, a: i32, b: i32| 2.0 * f64::from(k) + 1.0 - f64::from(a) - f64::from(b);
+            let (dx, dy) = (d(k.x, range.x0, range.x1), d(k.y, range.y0, range.y1));
+            Some(dx * dx + dy * dy)
+        };
+        let mut kept = Vec::with_capacity(self.queue.len());
+        for item in self.queue.drain(..) {
+            match rank(&item.key) {
+                Some(r) => kept.push((r, item)),
+                None => dropped(item),
+            }
+        }
+        // Stable: equally near scenes keep their arrival order.
+        kept.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (i, (_, item)) in kept.into_iter().enumerate() {
+            if i < MAX_PENDING {
+                self.queue.push_back(item);
+            } else {
+                dropped(item);
+            }
+        }
     }
 
     /// Hands items to `render`, which returns the time it took, until [`TILES_PER_FRAME`]
     /// were rendered or [`TIME_PER_FRAME`] was spent. At least one goes per frame, so a slow
     /// tile (the first one compiles the shaders) cannot stall the queue.
-    pub fn pump(&mut self, mut render: impl FnMut(T) -> Duration) {
+    pub fn pump(&mut self, mut render: impl FnMut(RenderDone) -> Duration) {
         let mut spent = Duration::ZERO;
         for _ in 0..TILES_PER_FRAME {
             if spent >= TIME_PER_FRAME {

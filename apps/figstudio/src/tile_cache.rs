@@ -73,6 +73,15 @@ impl<T> Cache<T> {
         self.plan = Some((doc, page, plan));
     }
 
+    /// What the last frame planned: document, page and tiles (see [`Cache::begin_frame`]).
+    #[cfg_attr(
+        all(not(test), not(target_arch = "wasm32")),
+        expect(dead_code, reason = "the browser prunes its GPU scenes by it")
+    )]
+    pub fn plan(&self) -> Option<(u64, Guid, Range)> {
+        self.plan
+    }
+
     /// Marks a tile as drawn this frame: a fallback on screen is evicted after tiles that are
     /// not, but before planned tiles.
     pub fn touch(&mut self, key: &Key) {

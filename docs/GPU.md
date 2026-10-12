@@ -212,7 +212,12 @@ patched egui-wgpu that bounds the surface before configuring it.
   thread queues the scenes (`gpu_scenes::Pending`) and each frame renders at most
   `TILES_PER_FRAME` (4) of them or until `TIME_PER_FRAME` (8 ms) of GPU work is spent, at least
   one, on eframe's device (`gpu_tiles_web::WebGpu`), then registers the textures with egui
-  as on the desktop. The tile counts as received only when rendered, so the worker does not
+  as on the desktop. Before rendering, the queue is pruned to the last frame's plan (document,
+  page, level and tiles, ring included), sorted nearest the view centre first and capped at
+  `MAX_PENDING` (64; a plan is at most 63 tiles in the browser). A dropped scene is
+  acknowledged to the worker like a received tile, so asking for it again renders it again
+  (fix 1 of the L4 review: the first version kept every scene in an unbounded FIFO, so after
+  quick pans the screen waited behind hundreds of stale scenes). The tile counts as received only when rendered, so the worker does not
   skip it meanwhile; the UI keeps repainting while scenes wait. One `vello_gpu::Renderer` on
   the main thread, created at the first tile (shader compile on the main thread, once).
 - WebGL2: `vello_gpu`'s wgpu path runs on wgpu's GL backend unchanged. It needs no compute

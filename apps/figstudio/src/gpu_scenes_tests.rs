@@ -1,5 +1,5 @@
 //! The browser GPU canvas without a device: the `?renderer=` query, the renderer choice, the
-//! per-frame bound and the fallback counts of scenes built on the worker.
+//! fallback counts of scenes built on the worker. The main thread's queue: `gpu_scenes_queue_tests.rs`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,34 +44,6 @@ fn the_browser_backend_and_its_texture_limit_choose_the_renderer() {
     let small = choose(None, Some(2048));
     assert_eq!(small, Choice::Cpu(CpuWhy::SmallTextures));
     assert_eq!(label(small, Some(Backend::Gl)), "CPU");
-}
-
-#[test]
-fn a_frame_renders_at_most_a_few_scenes() {
-    let mut pending = Pending::default();
-    (0..10).for_each(|i| pending.push(i));
-    let mut done = Vec::new();
-    pending.pump(|i| {
-        done.push(i);
-        Duration::from_millis(1)
-    });
-    assert_eq!(done, (0..TILES_PER_FRAME).collect::<Vec<_>>());
-    // A slow scene ends the frame's GPU work, but one always goes.
-    let mut done = Vec::new();
-    pending.pump(|i| {
-        done.push(i);
-        TIME_PER_FRAME
-    });
-    assert_eq!(done, [TILES_PER_FRAME]);
-    pending.retain(|i| i % 2 == 0);
-    let mut rest = Vec::new();
-    while !pending.is_empty() {
-        pending.pump(|i| {
-            rest.push(i);
-            Duration::ZERO
-        });
-    }
-    assert_eq!(rest, [6, 8]);
 }
 
 fn open(name: &str) -> Arc<figstudio_fig::Document> {
@@ -149,3 +121,6 @@ fn the_worker_builds_scenes_and_counts_every_unwanted_cpu_tile() {
     assert_eq!(draw(&mut small, "vector"), Some(1));
     assert_eq!(draw(&mut TileGpu::default(), "vector"), Some(0));
 }
+
+#[path = "gpu_scenes_queue_tests.rs"]
+mod queue;
