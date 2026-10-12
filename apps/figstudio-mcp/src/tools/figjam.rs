@@ -1,23 +1,15 @@
 //! `get_figjam`: `get_metadata` XML plus FigJam details, with optional small screenshots.
 use crate::{
     FigstudioServer,
-    tools::{assets::Payload, rendering::Rendering, to_call, tool_error},
+    tools::{rendering::Rendering, to_call, tool_error},
 };
-use base64::{Engine, engine::general_purpose::STANDARD};
 use figstudio_fig::Document;
-use figstudio_mcp_core::{
-    figjam::{Board, board},
-    screenshot::render_node,
-};
-use rmcp::{
-    handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
-    tool, tool_router,
-};
+use figstudio_mcp_core::figjam as core;
+use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-pub use figstudio_mcp_core::figjam::{MAX_IMAGE_SCALE, MAX_IMAGES};
+pub use core::{MAX_IMAGE_SCALE, MAX_IMAGES};
 
 /// Inputs for a FigJam board listing.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -84,16 +76,14 @@ pub fn figjam(
     image_scale: Option<f64>,
     rendering: &Rendering,
 ) -> CallToolResult {
-    figjam_within(
+    to_call(core::figjam(
         doc,
         node_id,
         depth,
         include_images,
         image_scale,
         rendering,
-        crate::tools::assets::MAX_PAYLOAD_BYTES,
-        crate::tools::metadata::DEFAULT_OUTPUT_BYTES,
-    )
+    ))
 }
 
 /// [`figjam`] with explicit image payload and XML output budgets in bytes (before base64).
@@ -108,63 +98,14 @@ pub fn figjam_within(
     max_payload: usize,
     max_bytes: usize,
 ) -> CallToolResult {
-    let Board {
-        xml,
-        pictured,
-        scale,
-    } = match board(doc, node_id, depth, image_scale, max_bytes) {
-        Ok(board) => board,
-        Err(output) => return to_call(output),
-    };
-    let mut content = vec![ContentBlock::text(xml)];
-    if include_images {
-        let mut payload = Payload::new(max_payload);
-        for id in pictured.iter().take(MAX_IMAGES) {
-            content.extend(picture(doc, id, scale, rendering, &mut payload));
-        }
-        let skipped = pictured.len().saturating_sub(MAX_IMAGES);
-        if skipped > 0 {
-            content.push(ContentBlock::text(format!(
-                "{skipped} more node(s) not pictured (limit {MAX_IMAGES})"
-            )));
-        }
-    }
-    CallToolResult::success(text_first(content))
-}
-
-/// A text line and PNG for one node, or only a line when it cannot be rendered or no longer
-/// fits the reply's image budget.
-fn picture(
-    doc: &Document,
-    id: &str,
-    scale: f64,
-    rendering: &Rendering,
-    payload: &mut Payload,
-) -> Vec<ContentBlock> {
-    if payload.is_full() {
-        return vec![ContentBlock::text(Payload::omitted(id))];
-    }
-    let shot = match render_node(doc, id, Some(scale), rendering) {
-        Ok(shot) => shot,
-        Err(message) => return vec![ContentBlock::text(format!("{id}: no image: {message}"))],
-    };
-    let line = format!("{id}: {}", shot.describe());
-    match shot.frame.pixmap.into_png() {
-        Ok(png) if payload.take(png.len()) => vec![
-            ContentBlock::text(line),
-            ContentBlock::image(STANDARD.encode(png), "image/png"),
-        ],
-        Ok(_) => vec![ContentBlock::text(Payload::omitted(id))],
-        Err(error) => vec![ContentBlock::text(format!(
-            "{id}: PNG encoding failed: {error}"
-        ))],
-    }
-}
-
-/// The same items with every text block before every image.
-fn text_first(content: Vec<ContentBlock>) -> Vec<ContentBlock> {
-    let (mut text, media): (Vec<_>, Vec<_>) =
-        content.into_iter().partition(|c| c.as_text().is_some());
-    text.extend(media);
-    text
+    to_call(core::figjam_within(
+        doc,
+        node_id,
+        depth,
+        include_images,
+        image_scale,
+        rendering,
+        max_payload,
+        max_bytes,
+    ))
 }
