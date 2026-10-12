@@ -117,3 +117,35 @@ fn every_tile_the_scan_accepts_renders_on_the_gpu() {
         "refused no later than it fails"
     );
 }
+
+/// `gpu_scene_within` refuses a scene over the caller's byte limit before building it, and
+/// returns its estimate, which grows with the content.
+#[test]
+fn scenes_over_the_byte_limit_are_refused() {
+    let doc = open("vector");
+    let rec = record(&doc, doc.pages[0], 1.0);
+    let b = figstudio_render::content_bounds(&doc, doc.pages[0]).unwrap();
+    let (x, y) = ((b.x0 / TILE).floor() as i32, (b.y0 / TILE).floor() as i32);
+    let vp = tile(1.0, x, y);
+    let (_, fills, bytes) = rec
+        .gpu_scene_within(&vp, GPU_LAYER_TEXTURE, usize::MAX)
+        .unwrap()
+        .unwrap();
+    assert!(fills > 0 && bytes > 0, "{fills} fills, {bytes} bytes");
+    let refused = rec
+        .gpu_scene_within(&vp, GPU_LAYER_TEXTURE, bytes - 1)
+        .unwrap();
+    assert_eq!(refused.err(), Some(GpuUnsupported::TooBig));
+    assert!(
+        rec.gpu_scene_within(&vp, GPU_LAYER_TEXTURE, bytes)
+            .unwrap()
+            .is_ok()
+    );
+    // An empty tile far from the content costs only its background.
+    let empty = tile(1.0, x - 20, y - 20);
+    let (_, _, little) = rec
+        .gpu_scene_within(&empty, GPU_LAYER_TEXTURE, usize::MAX)
+        .unwrap()
+        .unwrap();
+    assert!(little < bytes, "{little} >= {bytes}");
+}

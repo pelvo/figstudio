@@ -10,7 +10,7 @@ use eframe::wgpu;
 use figstudio_render::{GPU_LAYER_TEXTURE, Recording, Renderer, Viewport};
 
 pub use crate::gpu_common::{Choice, CpuWhy, Fallback, choose, label};
-use crate::gpu_common::{Vello, guarded, scene};
+use crate::gpu_common::{Vello, guarded};
 pub use crate::gpu_registry::Registry;
 use crate::recordings::{Drawn, Recordings};
 use crate::tiles::Key;
@@ -113,6 +113,19 @@ impl TileGpu {
         // scene is built as well as while it renders: both stay inside one unwind boundary.
         let lost = Arc::clone(&gpu.lost);
         guarded(&lost, || gpu.render(&scene(rec, viewport, max_texture)?))
+    }
+}
+
+/// The tile's `vello_gpu` scene from its recording, or why the tile goes to the CPU.
+pub fn scene(
+    rec: Option<&Recording>,
+    viewport: &Viewport,
+    max_texture: u16,
+) -> Result<vello_gpu::Scene, Fallback> {
+    match rec.map(|r| r.gpu_scene(viewport, max_texture)) {
+        None | Some(None) => Err(Fallback::NoRecording),
+        Some(Some(Err(why))) => Err(Fallback::Unsupported(why)),
+        Some(Some(Ok((scene, _)))) => Ok(scene),
     }
 }
 

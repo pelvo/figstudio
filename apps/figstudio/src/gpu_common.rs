@@ -73,19 +73,6 @@ impl Fallback {
     }
 }
 
-/// The tile's `vello_gpu` scene from its recording, or why the tile goes to the CPU.
-pub fn scene(
-    rec: Option<&Recording>,
-    viewport: &Viewport,
-    max_texture: u16,
-) -> Result<vello_gpu::Scene, Fallback> {
-    match rec.map(|r| r.gpu_scene(viewport, max_texture)) {
-        None | Some(None) => Err(Fallback::NoRecording),
-        Some(Some(Err(why))) => Err(Fallback::Unsupported(why)),
-        Some(Some(Ok((scene, _)))) => Ok(scene),
-    }
-}
-
 /// Draws tile `key` of `job` with `gpu` when its recording allows, else on the CPU with
 /// `Stats::gpu_fallback_tiles` set when the GPU was wanted.
 pub fn draw<G>(

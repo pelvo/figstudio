@@ -15,11 +15,10 @@ use web_time::Instant;
 
 use crate::gpu_common::{Choice, CpuWhy, Vello, choose, label};
 use crate::gpu_registry::{NativeTexture, Registry};
-use crate::gpu_scenes::{Pending, TileGpu, asked_renderer};
+use crate::gpu_scenes::{Pending, Plan, TileGpu, asked_renderer};
 use crate::recordings::Pixels;
-use crate::tiles::{Key, Range};
+use crate::tiles::Key;
 use crate::worker::RenderDone;
-use figstudio_fig::Guid;
 
 /// The render worker's scene builder, the main thread's renderer (`None`: CPU canvas) and the
 /// status bar's name for them, from eframe's device and the page's `?renderer=` query.
@@ -75,9 +74,14 @@ impl std::fmt::Debug for WebGpu {
 }
 
 impl WebGpu {
-    /// Queues a tile whose pixels are a scene.
-    pub fn push(&mut self, done: RenderDone) {
-        self.pending.push(done);
+    /// Queues a tile whose pixels are a scene, within the queue's bounds: scenes over them,
+    /// the farthest from `plan`, go to `dropped` (to be acknowledged as not delivered).
+    pub fn push(&mut self, done: RenderDone, plan: Plan, dropped: impl FnMut(RenderDone)) {
+        let bytes = match &done.pixels {
+            Pixels::Gpu(t) => t.bytes,
+            Pixels::Cpu { rgba, .. } => rgba.len(),
+        };
+        self.pending.push(done, bytes, plan, dropped);
     }
 
     /// Scenes are waiting (the UI keeps repainting until they are drawn).
@@ -99,17 +103,13 @@ impl WebGpu {
     /// this frame's share of the rest, nearest the view centre first. Hands each tile to
     /// `each` with its texture, or `None` when it was dropped or the GPU failed (the GPU is
     /// then off): such a tile is not stored, and asked for again while it is still wanted.
-    pub fn pump(
-        &mut self,
-        plan: Option<(u64, Guid, Range)>,
-        mut each: impl FnMut(RenderDone, Option<NativeTexture>),
-    ) {
+    pub fn pump(&mut self, plan: Plan, mut each: impl FnMut(RenderDone, Option<NativeTexture>)) {
         let mut pending = std::mem::take(&mut self.pending);
         pending.prune(plan, |done| each(done, None));
         pending.pump(|mut done| {
             let start = Instant::now();
             let texture = match &done.pixels {
-                Pixels::Gpu(scene) => self.render(scene, done.key),
+                Pixels::Gpu(t) => self.render(&t.scene, done.key),
                 Pixels::Cpu { .. } => None,
             };
             let spent = start.elapsed();

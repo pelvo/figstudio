@@ -13,7 +13,7 @@ use crate::worker::{RenderDone, RenderJob, Workers};
 /// Budget for the tiles kept as textures (resident cache, gutters included): 256 MiB native,
 /// 128 MiB in the browser. Tiles still being rendered or uploaded are not counted: at most
 /// one batch per tab (half the cache) is queued in the worker, plus, in the browser, at most
-/// `gpu_scenes::MAX_PENDING` scenes of the current plan waiting for the main thread.
+/// `gpu_scenes::MAX_PENDING` scenes (`MAX_PENDING_BYTES`) waiting for the main thread.
 #[cfg(not(target_arch = "wasm32"))]
 const BUDGET_BYTES: usize = 256 << 20;
 #[cfg(target_arch = "wasm32")]
@@ -111,8 +111,8 @@ impl Tiles {
     pub fn accept(&mut self, ctx: &egui::Context, tab: &mut Tab, done: RenderDone) {
         #[cfg(target_arch = "wasm32")]
         if let (Pixels::Gpu(_), Some(gpu)) = (&done.pixels, &mut self.gpu) {
-            // Still requested and not received until the main thread renders it.
-            gpu.push(done);
+            // Still requested and not received until the main thread renders (or drops) it.
+            gpu.push(done, self.cache.plan(), |d| received(tab, &d));
             return;
         }
         received(tab, &done);

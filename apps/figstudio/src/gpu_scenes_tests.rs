@@ -122,5 +122,107 @@ fn the_worker_builds_scenes_and_counts_every_unwanted_cpu_tile() {
     assert_eq!(draw(&mut TileGpu::default(), "vector"), Some(0));
 }
 
+/// A page of `n` overlapping `side`-px ellipses around the origin (a heavy vector page).
+fn ellipses(n: u32, side: f64) -> Arc<figstudio_fig::Document> {
+    use figstudio_fig::{Guid, Node, Obj, Val};
+    let obj = |f: &[(&str, Val)]| {
+        Val::Obj(f.iter().fold(Obj::new(), |mut o, (k, v)| {
+            o.insert(k, v.clone());
+            o
+        }))
+    };
+    let num = Val::Float;
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/vector.fig"
+    );
+    let mut doc = figstudio_fig::Document::open(path).unwrap();
+    let page = Guid(99, 1);
+    let mut nodes = vec![
+        Node::from_data(obj(&[
+            ("guid", page.to_val()),
+            ("type", Val::Str("CANVAS".into())),
+        ]))
+        .unwrap(),
+    ];
+    for i in 0..n {
+        let (x, y) = (f64::from(i * 37 % 500), f64::from(i * 53 % 500));
+        let paint = obj(&[
+            ("type", Val::Str("SOLID".into())),
+            ("visible", Val::Bool(true)),
+            ("opacity", num(0.5)),
+            ("color", obj(&[("r", num(0.5)), ("a", num(1.0))])),
+        ]);
+        nodes.push(
+            Node::from_data(obj(&[
+                ("guid", Guid(99, i + 2).to_val()),
+                ("type", Val::Str("ELLIPSE".into())),
+                (
+                    "parentIndex",
+                    obj(&[
+                        ("guid", page.to_val()),
+                        ("position", Val::Str(format!("{i:05}"))),
+                    ]),
+                ),
+                ("size", obj(&[("x", num(side)), ("y", num(side))])),
+                (
+                    "transform",
+                    obj(&[
+                        ("m00", num(1.0)),
+                        ("m11", num(1.0)),
+                        ("m02", num(x - side / 2.0)),
+                        ("m12", num(y - side / 2.0)),
+                    ]),
+                ),
+                ("fillPaints", Val::Arr(vec![paint])),
+            ]))
+            .unwrap(),
+        );
+    }
+    doc.set_nodes(nodes).unwrap();
+    Arc::new(doc)
+}
+
+/// The scene the worker sends for tile (0, 0) of `doc`, or the tile's fallback count.
+fn scene_of(doc: &Arc<figstudio_fig::Document>) -> Result<usize, usize> {
+    let key = Key {
+        doc: doc.instance,
+        page: figstudio_fig::Guid(99, 1),
+        level: 0,
+        x: 0,
+        y: 0,
+    };
+    let job = RenderJob {
+        tab: 1,
+        doc: doc.clone(),
+        source: None,
+        root: key.page,
+        background: None,
+        images: 0,
+        tiles: [key].into_iter().collect(),
+        received: Vec::new(),
+    };
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    let mut gpu = TileGpu::new(Ok(8192), Arc::default());
+    let drawn = gpu.draw(&mut Recordings::default(), &mut renderer, &job, &key);
+    match drawn.into_parts() {
+        (Pixels::Gpu(t), ..) => Ok(t.bytes),
+        (Pixels::Cpu { .. }, stats, _) => Err(stats.gpu_fallback_tiles),
+    }
+}
+
+#[test]
+fn an_oversized_scene_falls_back_counted_and_sent_scenes_carry_their_size() {
+    // 1,000 small ellipses: a scene of a few MiB, sent with its estimate.
+    let small = scene_of(&ellipses(1000, 40.0));
+    assert!(
+        small.is_ok_and(|b| b > 1 << 20 && b <= MAX_SCENE_BYTES),
+        "{small:?}"
+    );
+    // 1,000 large overlapping ellipses: over the per-scene limit, drawn on the CPU, counted.
+    assert_eq!(scene_of(&ellipses(1000, 500.0)), Err(1));
+}
+
 #[path = "gpu_scenes_queue_tests.rs"]
 mod queue;

@@ -27,6 +27,8 @@ struct Model {
     rendered: Vec<Key>,
     /// Every scene the main thread rendered, in order.
     shown: Vec<Key>,
+    /// What each scene the worker sends keeps.
+    scene_bytes: usize,
 }
 
 impl Model {
@@ -45,6 +47,7 @@ impl Model {
             pending: Pending::default(),
             rendered: Vec::new(),
             shown: Vec::new(),
+            scene_bytes: 0,
         }
     }
 
@@ -100,18 +103,27 @@ impl Model {
             let (tab, images) = (job.tab, job.images);
             self.worker.sent(tab, key, images);
             self.rendered.push(key);
-            self.pending.push(RenderDone {
-                tab,
-                key,
-                images,
-                pixels: Pixels::Cpu {
-                    size: [0, 0],
-                    rgba: Vec::new(),
-                },
-                stats: Default::default(),
-                elapsed: Duration::ZERO,
-            });
+            let ui = &mut self.tab;
+            let plan = self.cache.plan();
+            let bytes = self.scene_bytes;
+            self.pending
+                .push(done(tab, key, images), bytes, plan, |d| received(ui, &d));
         }
+    }
+}
+
+/// A finished tile for the queue (its pixels do not matter here).
+fn done(tab: u64, key: Key, images: u64) -> RenderDone {
+    RenderDone {
+        tab,
+        key,
+        images,
+        pixels: Pixels::Cpu {
+            size: [0, 0],
+            rgba: Vec::new(),
+        },
+        stats: Default::default(),
+        elapsed: Duration::ZERO,
     }
 }
 
@@ -131,7 +143,7 @@ fn views_that_move_on_leave_no_scenes_and_the_centre_renders_first() {
     // view change lets through at most one frame's worth of the old view's scenes.
     let stale = m.shown.iter().filter(|k| !last.contains(k)).count();
     assert!(stale <= TILES_PER_FRAME * 10, "{stale} stale scenes shown");
-    let queued: Vec<Key> = m.pending.queue.iter().map(|d| d.key).collect();
+    let queued: Vec<Key> = m.pending.queue.iter().map(|(d, _)| d.key).collect();
     assert!(
         queued.iter().all(|k| last.contains(k)),
         "scenes of other views still queued: {queued:?}"
@@ -177,9 +189,8 @@ fn a_dropped_scene_is_rendered_again_when_its_view_returns() {
     }
 }
 
-#[test]
-fn a_frame_renders_at_most_a_few_scenes_and_the_queue_is_bounded() {
-    let mut m = Model::new();
+/// A 20 x 20 plan, planned in `m`'s cache, and its tiles nearest the centre first.
+fn big_plan(m: &mut Model) -> Vec<Key> {
     let range = Range {
         level: 0,
         x0: 0,
@@ -188,23 +199,32 @@ fn a_frame_renders_at_most_a_few_scenes_and_the_queue_is_bounded() {
         y1: 20,
     };
     m.cache.begin_frame(m.tab.doc.instance, m.tab.page, range);
-    let by_distance = range.by_distance(m.tab.doc.instance, m.tab.page);
-    // They arrive farthest first; they render nearest the view centre first.
-    for &key in by_distance.iter().rev() {
-        m.pending.push(RenderDone {
-            tab: 1,
-            key,
-            images: 0,
-            pixels: Pixels::Cpu {
-                size: [0, 0],
-                rgba: Vec::new(),
-            },
-            stats: Default::default(),
-            elapsed: Duration::ZERO,
-        });
-    }
+    range.by_distance(m.tab.doc.instance, m.tab.page)
+}
+
+/// Queues `keys` (farthest first, as a worker far behind would send them), each keeping
+/// `bytes`; checks both bounds after every arrival; returns how many were dropped.
+fn admit(m: &mut Model, keys: &[Key], bytes: usize) -> usize {
     let mut dropped = 0;
-    m.pending.prune(m.cache.plan(), |_| dropped += 1);
+    let plan = m.cache.plan();
+    for &key in keys.iter().rev() {
+        m.pending
+            .push(done(1, key, 0), bytes, plan, |_| dropped += 1);
+        assert!(m.pending.len() <= MAX_PENDING, "{} scenes", m.pending.len());
+        assert!(
+            m.pending.bytes() <= MAX_PENDING_BYTES,
+            "{} bytes",
+            m.pending.bytes()
+        );
+    }
+    dropped
+}
+
+#[test]
+fn a_frame_renders_at_most_a_few_scenes_and_the_queue_is_bounded() {
+    let mut m = Model::new();
+    let by_distance = big_plan(&mut m);
+    let dropped = admit(&mut m, &by_distance, 0);
     assert_eq!((m.pending.len(), dropped), (MAX_PENDING, 400 - MAX_PENDING));
     let mut first = Vec::new();
     m.pending.pump(|d| {
@@ -225,4 +245,56 @@ fn a_frame_renders_at_most_a_few_scenes_and_the_queue_is_bounded() {
         TIME_PER_FRAME
     });
     assert_eq!(n, 1);
+}
+
+#[test]
+fn large_scenes_stay_within_the_byte_budget_nearest_first() {
+    let mut m = Model::new();
+    let by_distance = big_plan(&mut m);
+    // The largest scenes the worker sends: the budget holds 8 of them.
+    let dropped = admit(&mut m, &by_distance, MAX_SCENE_BYTES);
+    let fits = MAX_PENDING_BYTES / MAX_SCENE_BYTES;
+    assert_eq!((m.pending.len(), dropped), (fits, 400 - fits));
+    assert_eq!(m.pending.bytes(), fits * MAX_SCENE_BYTES);
+    // The ones kept are the nearest the view centre; rendering one frees its bytes.
+    let mut kept = Vec::new();
+    while !m.pending.is_empty() {
+        m.pending.pump(|d| {
+            kept.push(d.key);
+            Duration::ZERO
+        });
+    }
+    // As near as the `fits`th nearest tile (ties at that distance in any order).
+    let dist = |k: &Key| (2 * k.x - 19).pow(2) + (2 * k.y - 19).pow(2);
+    let cut = dist(&by_distance[fits - 1]);
+    assert!(kept.iter().all(|k| dist(k) <= cut), "{kept:?}");
+    assert_eq!(m.pending.bytes(), 0);
+    // A scene over the whole budget is dropped on arrival.
+    let mut dropped = 0;
+    let plan = m.cache.plan();
+    let key = by_distance[0];
+    m.pending
+        .push(done(1, key, 0), MAX_PENDING_BYTES + 1, plan, |_| {
+            dropped += 1
+        });
+    assert_eq!((m.pending.len(), dropped), (0, 1));
+}
+
+#[test]
+fn byte_bound_drops_are_acknowledged_and_rendered_again() {
+    let mut m = Model::new();
+    // The worker sends 20 of the largest scenes a frame; the budget holds 8.
+    m.scene_bytes = MAX_SCENE_BYTES;
+    let view = m.view(0);
+    for _ in 0..40 {
+        m.frame(view);
+        assert!(m.pending.bytes() <= MAX_PENDING_BYTES);
+    }
+    // Every tile came, though most first arrived over the budget and were dropped.
+    let wanted = tiles::wanted(&m.cache, view, m.tab.doc.instance, m.tab.page, 0);
+    assert!(wanted.is_empty(), "{} tiles never came back", wanted.len());
+    assert!(
+        m.rendered.len() > 60,
+        "some were dropped and rendered again"
+    );
 }

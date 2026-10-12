@@ -11,11 +11,12 @@ use std::fmt;
 
 use vello_cpu::PaintType;
 use vello_cpu::filter_effects::{Filter, FilterPrimitive};
-use vello_cpu::kurbo::{Affine, BezPath, Rect};
+use vello_cpu::kurbo::{Affine, BezPath, Rect, Shape};
 use vello_cpu::peniko::{Fill, GradientKind};
 use vello_gpu::Scene;
 
 use crate::Viewport;
+use crate::gpu_bytes::SceneBytes;
 use crate::record::Canvas;
 use crate::replay::Recording;
 
@@ -39,6 +40,9 @@ pub enum GpuUnsupported {
     /// More than [`MAX_LAYERS`] layers in the tile (`vello_gpu`'s scheduler gives up, with a
     /// panic, on extreme scenes; its filter data texture has a fixed size).
     Layers,
+    /// The scene would keep more memory than the caller allows
+    /// ([`Recording::gpu_scene_within`]).
+    TooBig,
 }
 
 impl fmt::Display for GpuUnsupported {
@@ -49,6 +53,7 @@ impl fmt::Display for GpuUnsupported {
             GpuUnsupported::FilterGraph => "filter not supported on the GPU",
             GpuUnsupported::FilterReach => "filter reaches too far for the GPU",
             GpuUnsupported::Layers => "too many layers for the GPU",
+            GpuUnsupported::TooBig => "too big a scene for the GPU",
         })
     }
 }
@@ -81,6 +86,28 @@ impl Recording {
         viewport: &Viewport,
         max_texture: u16,
     ) -> Option<Result<(Scene, usize), GpuUnsupported>> {
+        self.build(viewport, max_texture, None)
+            .map(|r| r.map(|(scene, fills, _)| (scene, fills)))
+    }
+
+    /// Like [`Recording::gpu_scene`], but refuses ([`GpuUnsupported::TooBig`]) a scene that
+    /// would keep more than `max_bytes` (a conservative estimate made before building it, see
+    /// `gpu_bytes.rs`), and returns the estimate with the scene and its fill count.
+    pub fn gpu_scene_within(
+        &self,
+        viewport: &Viewport,
+        max_texture: u16,
+        max_bytes: usize,
+    ) -> Option<Result<(Scene, usize, usize), GpuUnsupported>> {
+        self.build(viewport, max_texture, Some(max_bytes))
+    }
+
+    fn build(
+        &self,
+        viewport: &Viewport,
+        max_texture: u16,
+        max_bytes: Option<usize>,
+    ) -> Option<Result<(Scene, usize, usize), GpuUnsupported>> {
         let (window, shift) = self.place(viewport)?;
         let (w, h) = (viewport.width.max(1), viewport.height.max(1));
         let mut scan = Scan {
@@ -89,10 +116,16 @@ impl Recording {
             viewports: vec![(f64::from(w), f64::from(h))],
             max: f64::from(max_texture),
             unsupported: None,
+            bytes: max_bytes.map(|_| SceneBytes::default()),
+            view: Rect::new(0.0, 0.0, f64::from(w), f64::from(h)),
         };
         self.rec.replay(&mut scan, window, shift);
         if let Some(why) = scan.unsupported {
             return Some(Err(why));
+        }
+        let bytes = scan.bytes.as_ref().map_or(0, SceneBytes::total);
+        if max_bytes.is_some_and(|max| bytes > max) {
+            return Some(Err(GpuUnsupported::TooBig));
         }
         let mut scene = Scene::new(w, h);
         if let Some(bg) = viewport.background {
@@ -100,7 +133,7 @@ impl Recording {
             scene.fill_rect(&Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
         }
         let fills = self.rec.replay(&mut scene, window, shift);
-        Some(Ok((scene, fills)))
+        Some(Ok((scene, fills, bytes)))
     }
 }
 
@@ -114,6 +147,10 @@ struct Scan {
     /// Largest intermediate texture side.
     max: f64,
     unsupported: Option<GpuUnsupported>,
+    /// The scene's memory estimate, when asked for.
+    bytes: Option<SceneBytes>,
+    /// The scene's viewport, in pixels.
+    view: Rect,
 }
 
 impl Scan {
@@ -172,6 +209,9 @@ impl Canvas for Scan {
         self.transform = t;
     }
     fn set_paint(&mut self, paint: PaintType) {
+        if let Some(b) = &mut self.bytes {
+            b.set_paint(&paint);
+        }
         match paint {
             PaintType::Image(_) => self.refuse(GpuUnsupported::Image),
             PaintType::Gradient(g) if matches!(g.kind, GradientKind::Sweep(_)) => {
@@ -182,17 +222,38 @@ impl Canvas for Scan {
     }
     fn set_paint_transform(&mut self, _: Affine) {}
     fn set_fill_rule(&mut self, _: Fill) {}
-    fn fill_path(&mut self, _: &BezPath) {}
-    fn fill_rect(&mut self, _: &Rect) {}
-    fn push_clip_layer(&mut self, _: &BezPath) {
+    fn fill_path(&mut self, path: &BezPath) {
+        if let Some(b) = &mut self.bytes {
+            b.fill(path, self.transform, self.view);
+        }
+    }
+    fn fill_rect(&mut self, rect: &Rect) {
+        if let Some(b) = &mut self.bytes {
+            b.fill(&rect.to_path(0.1), self.transform, self.view);
+        }
+    }
+    fn push_clip_layer(&mut self, path: &BezPath) {
+        if let Some(b) = &mut self.bytes {
+            b.layer(Some(path), self.transform, self.view);
+        }
         self.layer(self.viewport());
     }
-    fn push_clip_path(&mut self, _: &BezPath) {}
+    fn push_clip_path(&mut self, path: &BezPath) {
+        if let Some(b) = &mut self.bytes {
+            b.layer(Some(path), self.transform, self.view);
+        }
+    }
     fn pop_clip(&mut self) {}
     fn push_opacity_layer(&mut self, _: f32) {
+        if let Some(b) = &mut self.bytes {
+            b.layer(None, self.transform, self.view);
+        }
         self.layer(self.viewport());
     }
     fn push_filter_layer(&mut self, filter: Filter, _: f64) {
+        if let Some(b) = &mut self.bytes {
+            b.layer(None, self.transform, self.view);
+        }
         let size = if supported_filter(&filter) {
             self.fit_filter(&filter)
         } else {

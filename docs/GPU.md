@@ -187,7 +187,7 @@ patched egui-wgpu that bounds the surface before configuring it.
   | No wgpu render state | yes |
   | Device `max_texture_dimension_2d` < 4096 (`GPU_LAYER_TEXTURE`); this is the Known limit's planned CPU canvas on desktop | yes |
   | No recording (over its size limit or the work budget, or not covering the tile) | yes |
-  | `gpu_scene` refuses (`GpuUnsupported`: images, angular gradients, filter graphs, filter reach, layers) | yes |
+  | `gpu_scene` refuses (`GpuUnsupported`: images, angular gradients, filter graphs, filter reach, layers; in the browser also scenes over 8 MiB, `TooBig`) | yes |
   | `vello_gpu` render `Err`, or a wgpu validation or out-of-memory error scope fires | yes |
   | Device lost (wgpu callback), or a panic inside `vello_gpu` (caught): the GPU stays off for the session | yes |
 
@@ -217,7 +217,19 @@ patched egui-wgpu that bounds the surface before configuring it.
   `MAX_PENDING` (64; a plan is at most 63 tiles in the browser). A dropped scene is
   acknowledged to the worker like a received tile, so asking for it again renders it again
   (fix 1 of the L4 review: the first version kept every scene in an unbounded FIFO, so after
-  quick pans the screen waited behind hundreds of stale scenes). The tile counts as received only when rendered, so the worker does not
+  quick pans the screen waited behind hundreds of stale scenes).
+- Scene memory (fix 2 of the L4 review: 16 queued scenes of a 1,000-ellipse page held about
+  160 MiB): `vello_gpu::Scene` has no size accessor (its strip storage, recorder and paints are
+  `pub(crate)`), so the support scan estimates what the scene will keep before it is built
+  (`crates/render/src/gpu_bytes.rs`: strips and alphas per outline tile, the strip generator's
+  line and tile buffers, recorder entries, gradient encodings; doubled for `Vec` growth).
+  Measured against the live heap of built scenes: 1.9–5 × the real size, never below it.
+  `Recording::gpu_scene_within` refuses a scene over the caller's limit
+  (`GpuUnsupported::TooBig`); the browser worker uses 8 MiB (`MAX_SCENE_BYTES`), so such a tile
+  is drawn on the CPU and counted. The main thread's queue keeps at most 64 MiB of scenes
+  (`MAX_PENDING_BYTES`) as well as 64 scenes, checked when each scene arrives: over either, the
+  scenes farthest from the view are dropped and acknowledged as above. The desktop still
+  renders every scene at once on the worker and does not limit its size. The tile counts as received only when rendered, so the worker does not
   skip it meanwhile; the UI keeps repainting while scenes wait. One `vello_gpu::Renderer` on
   the main thread, created at the first tile (shader compile on the main thread, once).
 - WebGL2: `vello_gpu`'s wgpu path runs on wgpu's GL backend unchanged. It needs no compute

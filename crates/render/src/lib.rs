@@ -8,6 +8,8 @@ mod focus;
 pub mod geom;
 #[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(feature = "gpu")]
+mod gpu_bytes;
 pub mod images;
 mod layout;
 mod network;
