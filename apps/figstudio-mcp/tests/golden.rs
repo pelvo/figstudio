@@ -10,7 +10,9 @@ use rmcp::{
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 
-const FIXTURES: [&str; 7] = [
+/// The 7 public fixtures, plus the synthetic FigJam board that `golden_figjam.rs` writes
+/// (no public FigJam fixture exists). Relative paths: the output matches across worktrees.
+const FIXTURES: [&str; 8] = [
     "broken_images",
     "corners",
     "noise_and_grain",
@@ -18,7 +20,17 @@ const FIXTURES: [&str; 7] = [
     "stacks_wrap",
     "structure",
     "vector",
+    "figjam-golden",
 ];
+
+/// Where the FigJam board lives for a stem: the golden board, or a public fixture.
+fn fixture_rel(stem: &str) -> String {
+    if stem == "figjam-golden" {
+        format!("../../apps/figstudio-mcp/{stem}.fig")
+    } else {
+        format!("../../tests/fixtures/{stem}.fig")
+    }
+}
 
 /// Every `(tag, id)` pair of the XML reply, in document order.
 fn tagged_ids(xml: &str) -> Vec<(String, String)> {
@@ -65,7 +77,7 @@ async fn golden_record() {
     // Relative registration: the paths in the output match across worktrees.
     let paths: Vec<PathBuf> = FIXTURES
         .iter()
-        .map(|stem| PathBuf::from(format!("../../tests/fixtures/{stem}.fig")))
+        .map(|stem| PathBuf::from(fixture_rel(stem)))
         .collect();
     let (a, b) = tokio::io::duplex(1 << 24);
     let server = FigstudioServer::new(paths, true).with_assets(Assets::Inline);
@@ -179,15 +191,20 @@ async fn golden_record() {
         }
 
         // First five frames, then pages, as PNG asset requests.
-        let mut asset_ids: Vec<String> =
-            frames.iter().chain(pages.iter()).take(5).cloned().collect();
-        asset_ids.dedup();
+        let asset_ids: Vec<String> = frames.iter().chain(pages.iter()).take(5).cloned().collect();
         let assets = call(
             "download_assets",
             json!({"fileKey": key, "nodeIds": asset_ids}),
         )
         .await;
         step("download_assets", &assets);
+        // Original bytes of the image fills under the same nodes (not a render).
+        let original = call(
+            "download_assets",
+            json!({"fileKey": key, "nodeIds": asset_ids, "original": true}),
+        )
+        .await;
+        step("download_assets-original", &original);
         step(
             "search_design_system",
             &call(
@@ -200,9 +217,24 @@ async fn golden_record() {
             "get_libraries",
             &call("get_libraries", json!({"fileKey": key})).await,
         );
+        // The board is section 9:1 on the FigJam file; public fixtures record the page list.
+        let board = if stem == "figjam-golden" {
+            json!("9:1")
+        } else {
+            json!(null)
+        };
         step(
             "get_figjam",
-            &call("get_figjam", json!({"fileKey": key})).await,
+            &call("get_figjam", json!({"fileKey": key, "nodeId": board})).await,
+        );
+        // Small PNG per FigJam node (images count on the FigJam board only; the rest show none).
+        step(
+            "get_figjam-images",
+            &call(
+                "get_figjam",
+                json!({"fileKey": key, "nodeId": board, "includeImages": true, "imageScale": 0.25}),
+            )
+            .await,
         );
         if let Some(component) = &component {
             let ctx = call(

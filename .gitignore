@@ -2,3 +2,5 @@ target/
 web/dist/
 # Code Connect sidecar locks created by reads (0-byte), see figstudio-mcp codeconnect/sidecar.rs
 tests/fixtures/*.codeconnect.json.lock
+apps/figstudio-mcp/*.codeconnect.json.lock
+apps/figstudio-mcp/figjam-golden.fig

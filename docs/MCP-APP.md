@@ -96,10 +96,21 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
   not in the tools.
 - **Gate:** G-check, and G-golden against HEAD is empty.
 - **Prove:** change one character in a description in `tools/metadata.rs`; the diff must show it.
-- **Status:** done (commit `e5dfd1d`). Harness `apps/figstudio-mcp/tests/golden.rs` + `scripts/mcp-golden.sh`.
-  Run: `scripts/mcp-golden.sh HEAD` (exit 0 = identical, 156 records). Determinism: 3 same-tree runs and 2 script runs
-  identical. Mutation: a description char shows in `00-tools-list.json`; an output char shows in 7 `invalid-get_metadata`
-  records. Not recorded: `add_code_connect_map` (writes a sidecar). Not verified: cross-machine byte equality.
+- **Status:** done. Harness `apps/figstudio-mcp/tests/golden.rs`, FigJam board `tests/golden_figjam.rs`, script
+  `scripts/mcp-golden.sh`. Run `scripts/mcp-golden.sh HEAD` (exit 0 = identical, 197 records; logs in `target/golden-*.log`).
+  - **Recorded:** tools/list, prompts, whoami, list_files; per fixture: metadata, screenshots, design context, variable
+    defs, `download_assets` (png and `original=true`), search, libraries, `get_figjam` (plain and `includeImages`),
+    Code Connect context and map, and one `x:y` invalid id per node-taking tool. The 8th file is the synthetic FigJam
+    board `apps/figstudio-mcp/figjam-golden.fig` (git-ignored, written by `golden_figjam.rs` before each run).
+  - **Not recorded, by design:** `add_code_connect_map` (writes a sidecar next to the fixture).
+  - **Determinism:** repeated runs on the same tree are identical; the board's bytes are identical across runs.
+  - **Mutation proofs:** a tool description (tools/list); an output text (7 invalid-get_metadata records); the FigJam
+    section status (both `get_figjam` records); the original-image MIME label (`original=true` records). Each diff
+    showed the change and was reverted.
+  - **Known gaps the golden shows:** `get_figjam` prints no text for the code block (the reader reads `sourceCode`, which
+    is not a schema field; the schema stores code text in `textData`). A fix will show as a golden diff. The harness always
+    passes an explicit `imageScale`, so a change to `DEFAULT_IMAGE_SCALE` is not recorded.
+  - **Not verified:** cross-machine byte equality; non-macOS.
 
 ## L1: `crates/mcp-core` seed with node IDs and links (M, Sonnet)
 

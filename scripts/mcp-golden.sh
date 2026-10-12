@@ -5,7 +5,9 @@
 #   scripts/mcp-golden.sh <base-rev>       e.g. scripts/mcp-golden.sh HEAD
 #
 # The base is a temporary worktree under target/golden-base. The working tree is this
-# checkout. Both record into target/golden-{base,head}. Needs FIGSTUDIO_TOOLCHAIN (default 1.99.0).
+# checkout. Each side first writes its synthetic FigJam board (git-ignored), then records
+# into target/golden-{base,head}-out, with the cargo output in target/golden-{base,head}.log.
+# Needs FIGSTUDIO_TOOLCHAIN (default 1.99.0).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -18,14 +20,20 @@ head_out="$root/target/golden-head-out"
 
 cleanup() {
   git worktree remove --force "$base_tree" 2>/dev/null || true
+  rm -rf "$base_tree"
 }
 trap cleanup EXIT
 
+# run_golden <tree> <out-dir> <log>: write the FigJam board, then record every tool's reply.
 run_golden() {
-  local dir="$1" out="$2"
+  local dir="$1" out="$2" log="$3"
   rm -rf "$out"
-  (cd "$dir" && FIGSTUDIO_GOLDEN_DIR="$out" cargo +"$tc" test --release \
-    -p figstudio-mcp --test golden -- --ignored >/dev/null)
+  (
+    cd "$dir"
+    cargo +"$tc" test --release -p figstudio-mcp --test golden_figjam -- --ignored
+    FIGSTUDIO_GOLDEN_DIR="$out" cargo +"$tc" test --release \
+      -p figstudio-mcp --test golden -- --ignored
+  ) 2>&1 | tee "$log" >/dev/null
 }
 
 step() { printf '\n== %s\n' "$*"; }
@@ -36,11 +44,12 @@ step "base worktree at $rev"
 git worktree add --detach "$base_tree" "$rev" >/dev/null
 # The base tree may lack the harness (older rev): copy it in so both sides run the same test.
 cp "$root/apps/figstudio-mcp/tests/golden.rs" "$base_tree/apps/figstudio-mcp/tests/golden.rs"
+cp "$root/apps/figstudio-mcp/tests/golden_figjam.rs" "$base_tree/apps/figstudio-mcp/tests/golden_figjam.rs"
 
 step "record base ($rev)"
-run_golden "$base_tree" "$base_out"
+run_golden "$base_tree" "$base_out" "$root/target/golden-base.log"
 step "record working tree"
-run_golden "$root" "$head_out"
+run_golden "$root" "$head_out" "$root/target/golden-head.log"
 
 step "diff -r base working tree"
 if diff -r "$base_out" "$head_out"; then
