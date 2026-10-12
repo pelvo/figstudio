@@ -184,7 +184,7 @@ fn synthetic_attributes_text_escaping_and_instance_expansion() {
 
 #[test]
 fn output_is_capped_by_bytes_and_marks_truncation() {
-    // Short elements: the 80 KB byte budget ends the output long before the 5000-node cap.
+    // Short elements: the 24 kB byte budget ends the output long before the 5000-node cap.
     let mut doc = document();
     let root = Guid(9, 1);
     let mut nodes = doc.nodes.clone();
@@ -194,7 +194,7 @@ fn output_is_capped_by_bytes_and_marks_truncation() {
     }
     doc.set_nodes(nodes).unwrap();
     let xml = text(&metadata(&doc, Some("9:1"), None));
-    assert!(xml.len() <= 80_000, "{} bytes", xml.len());
+    assert!(xml.len() <= 24_000, "{} bytes", xml.len());
     let tags = elements(&xml);
     assert!(tags.len() > 1 && tags.len() < 5001, "{}", tags.len());
     assert_eq!(tags[0].1["truncated"], "true");
@@ -222,7 +222,7 @@ fn deeply_nested_subtrees_are_bounded_without_recursion() {
     doc.set_nodes(nodes).unwrap();
     let xml = text(&metadata(&doc, Some("9:1"), None));
     let tags = elements(&xml);
-    assert!(xml.len() <= 80_000, "{} bytes", xml.len());
+    assert!(xml.len() <= 24_000, "{} bytes", xml.len());
     assert!(tags.len() > 1 && tags.len() < 5001, "{}", tags.len());
     assert_eq!(tags[0].1["truncated"], "true");
 }
@@ -310,4 +310,27 @@ async fn check_metadata_protocol() {
     }
     client.cancel().await.unwrap();
     task.await.unwrap().unwrap();
+}
+
+#[test]
+fn the_byte_budget_is_configurable_and_the_default_is_24k() {
+    use figstudio_mcp::tools::metadata::{DEFAULT_OUTPUT_BYTES, metadata_within};
+    assert_eq!(DEFAULT_OUTPUT_BYTES, 24_000);
+    let mut doc = document();
+    let root = Guid(9, 1);
+    let mut nodes = doc.nodes.clone();
+    nodes.push(node(root, Guid(0, 1), "FRAME", "root"));
+    for index in 2..=2000 {
+        nodes.push(node(Guid(9, index), root, "FRAME", "child"));
+    }
+    doc.set_nodes(nodes).unwrap();
+    let tight = text(&metadata_within(&doc, Some("9:1"), None, 6_000));
+    assert!(tight.len() <= 6_000, "{} bytes", tight.len());
+    assert_eq!(elements(&tight)[0].1["truncated"], "true");
+    let wide = text(&metadata_within(&doc, Some("9:1"), None, 60_000));
+    assert!(
+        wide.len() > 24_000 && wide.len() <= 60_000,
+        "{} bytes",
+        wide.len()
+    );
 }

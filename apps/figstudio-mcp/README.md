@@ -24,7 +24,7 @@ Rust 1.95 or newer (see `AGENTS.md`). No Figma app or network is needed to run i
 ## Run
 
 ```
-figstudio-mcp [--http[=ADDR]] [--no-system-fonts] [--assets-dir DIR | --assets inline] FILE.fig...
+figstudio-mcp [--http[=ADDR]] [--no-system-fonts] [--assets-dir DIR | --assets inline] [--max-output-bytes N] FILE.fig...
 ```
 
 | Flag | Meaning |
@@ -35,6 +35,7 @@ figstudio-mcp [--http[=ADDR]] [--no-system-fonts] [--assets-dir DIR | --assets i
 | `--no-system-fonts` | Do not use installed fonts when a text layer has no stored glyph outlines. |
 | `--assets-dir DIR` | Where `get_design_context` writes its PNG assets. Default `./figma-assets`, resolved against the current directory. |
 | `--assets inline` | Return those assets as image content instead of files. Cannot be combined with `--assets-dir`. |
+| `--max-output-bytes N` | Byte cap of the text from `get_metadata`, `get_design_context` and `get_figjam` (default 24000, accepted 4000–100000). Claude Code delivered 20,166- and 25,810-character replies and rejected 44,674 and 74,213 characters, so the default stays under the delivered sizes. Raising it risks a rejected reply. |
 | `--version`, `--help` | As usual. |
 
 ### stdio
@@ -135,10 +136,10 @@ client should expect to be different.
 |---|---|---|---|
 | `whoami` | none | `{mode:"offline", server, files}` | Stub: no account. |
 | `list_files` | none | `{files:[{key,path,pages}]}` | Not in the official server. `pages` is null until the file is first opened. |
-| `get_metadata` | `nodeId?`, `fileKey?`, `depth?` | Sparse XML: `id name x y width height`, parent-relative, rotation in degrees (counter-clockwise positive). No `nodeId` lists the pages. | Instances expand with overrides applied (`I…;…` ids, `componentId`). Max 5000 elements and 80 kB of XML (`truncated="true"` when cut; call again with a child `nodeId` or a smaller `depth`). Text cut at 200 characters plus `…`. An XML comment counts instances that could not be expanded. |
+| `get_metadata` | `nodeId?`, `fileKey?`, `depth?` | Sparse XML: `id name x y width height`, parent-relative, rotation in degrees (counter-clockwise positive). No `nodeId` lists the pages. | Instances expand with overrides applied (`I…;…` ids, `componentId`). Max 5000 elements and 24 kB of XML by default (`--max-output-bytes`) (`truncated="true"` when cut; call again with a child `nodeId` or a smaller `depth`). Text cut at 200 characters plus `…`. An XML comment counts instances that could not be expanded. |
 | `get_screenshot` | `nodeId`, `fileKey?`, `scale?` | PNG image plus a text line `WxH px, scale S` and an `approximations:` line | `scale` 0.01–4 (default 1); longest side capped at 4096 px. Cropped to the node's own box, so shadows and strokes outside it are cut. Transparent background (pages use the page colour). An instance path renders that node alone, as laid out inside its instance; ancestor masks and clips are not applied. |
 | `get_variable_defs` | `nodeId`, `fileKey?` | Flat JSON map `name → value` of the variables and styles used under the node | All modes (extra modes as `name (Mode)`), aliases resolved, instances walked with overrides. Reads effective node data only, not component property storage. Colours `#RRGGBB(AA)`. |
-| `get_design_context` | `nodeId`, `fileKey?`, `clientFrameworks?`, `clientLanguages?`, `maxNodes?` | React + Tailwind JSX (`data-node-id`, `data-name` on every element), agent instructions, an asset list and an `approximations:` line | Always React + Tailwind; the client hints are only echoed. No shader runtime. Vectors, boolean operations and image-filled leaves become PNG `<img>` assets at scale 2. Caps: `maxNodes` default 1000, at most 5000; 80 000 bytes of code; 30 assets; 4 MB of inline images. Past a cap the output is cut with a note: call `get_metadata`, then this tool on children. |
+| `get_design_context` | `nodeId`, `fileKey?`, `clientFrameworks?`, `clientLanguages?`, `maxNodes?` | React + Tailwind JSX (`data-node-id`, `data-name` on every element), agent instructions, an asset list and an `approximations:` line | Always React + Tailwind; the client hints are only echoed. No shader runtime. Vectors, boolean operations and image-filled leaves become PNG `<img>` assets at scale 2. Caps: `maxNodes` default 1000, at most 5000; 24 000 bytes of code by default (`--max-output-bytes`); 30 assets; 4 MB of inline images. Past a cap the output is cut with a note: call `get_metadata`, then this tool on children. |
 | `download_assets` | `nodeIds` (1–20), `fileKey?`, `format?` (`png`\|`jpg`), `scale?`, `original?` | One text line plus one image per node. With `original=true`, the stored bytes of the image fills inside each node. | No SVG or PDF. JPG (quality 90) is flattened onto white. Max 20 originals per call, each image once. One node failing does not fail the call. |
 | `get_figjam` | `nodeId?`, `fileKey?`, `depth?`, `includeImages?`, `imageScale?` | `get_metadata` XML plus FigJam details: sticky text and colour, shape text, connector ends, section status, table and code-block text, widget and stamp names | The renderer does not draw FigJam kinds yet: `includeImages` shows them as plain boxes (max 20 images, `imageScale` 0.01–0.5, default 0.25), and an XML comment counts those kinds. Field shapes come from the schema, not a real FigJam file. |
 | `get_context_for_code_connect` | `nodeId`, `fileKey?` | JSON: component properties, variants (component sets), nested instances | Component, component set, instance or instance path. Property lists capped at 100; unknown property types are kept as strings. |

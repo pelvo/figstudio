@@ -1,12 +1,16 @@
 //! The page list (`get_metadata` with no nodeId).
-use super::{ELEMENT_MAX_BYTES, MAX_ELEMENTS, MAX_XML_BYTES, node::clean_xml};
+use super::{ELEMENT_MAX_BYTES, MAX_ELEMENTS, node::clean_xml};
 use figstudio_fig::Document;
 use quick_xml::{
     Writer,
     events::{BytesStart, BytesText, Event},
 };
 
-pub(super) fn write(doc: &Document, writer: &mut Writer<Vec<u8>>) -> std::io::Result<()> {
+pub(super) fn write(
+    doc: &Document,
+    writer: &mut Writer<Vec<u8>>,
+    max_bytes: usize,
+) -> std::io::Result<()> {
     let visible: Vec<_> = doc
         .pages
         .iter()
@@ -21,7 +25,7 @@ pub(super) fn write(doc: &Document, writer: &mut Writer<Vec<u8>>) -> std::io::Re
     let mut body = Writer::new(Vec::new());
     let mut written = 0;
     for node in visible.iter().take(MAX_ELEMENTS) {
-        if body.get_ref().len() + ELEMENT_MAX_BYTES + 32 > MAX_XML_BYTES {
+        if body.get_ref().len() + ELEMENT_MAX_BYTES + 32 > max_bytes {
             break;
         }
         let mut tag = BytesStart::new("canvas");

@@ -1,6 +1,6 @@
 //! Writing resolved instance content into the metadata body.
 use super::{
-    ELEMENT_MAX_BYTES, MAX_XML_BYTES,
+    ELEMENT_MAX_BYTES,
     figjam::Extras,
     node::{tag_name, write_node},
 };
@@ -26,13 +26,15 @@ pub(super) struct Out {
     pub(super) definitions: Option<Arc<Definitions>>,
     /// FigJam attributes, text and counters; `None` for plain `get_metadata`.
     pub(super) figjam: Option<Extras>,
+    /// The output byte budget (see `DEFAULT_OUTPUT_BYTES`).
+    pub(super) max_bytes: usize,
 }
 
 impl Out {
     /// Whether another element (and the closing tags still owed) fits in the byte budget.
     /// An element can be up to [`ELEMENT_MAX_BYTES`], so the check leaves that much room.
     pub(super) fn has_room(&self) -> bool {
-        self.body.get_ref().len() + self.close_reserve + ELEMENT_MAX_BYTES <= MAX_XML_BYTES
+        self.body.get_ref().len() + self.close_reserve + ELEMENT_MAX_BYTES <= self.max_bytes
     }
 
     /// The resolved content of `instance` down to `max_level`, at most `max_nodes` nodes.

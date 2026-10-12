@@ -1,6 +1,6 @@
 //! Writes the collected layers as nested JSX elements.
 use super::walk::{Item, Layers};
-use super::{Assets, Classes, MAX_CODE_BYTES, Notes, Options, assets, layout, paint, style, text};
+use super::{Assets, Classes, Notes, Options, assets, layout, paint, style, text};
 use figstudio_fig::{Document, Val, tokens::Tokens};
 use html_escape::encode_double_quoted_attribute as attr;
 
@@ -34,13 +34,18 @@ pub(super) struct Writer<'a> {
     pub(super) inline_bytes: usize,
 }
 
-pub(super) fn write(doc: &Document, layers: &Layers<'_>, options: &Options) -> Output {
+pub(super) fn write(
+    doc: &Document,
+    layers: &Layers<'_>,
+    options: &Options,
+    max_code: usize,
+) -> Output {
     let mut w = Writer {
         doc,
         options,
         tokens: Tokens::new(doc),
         out: Output::default(),
-        limit: MAX_CODE_BYTES,
+        limit: max_code,
         inline_bytes: 0,
     };
     // Open elements: (level, index into items, closing tag).
@@ -65,7 +70,7 @@ pub(super) fn write(doc: &Document, layers: &Layers<'_>, options: &Options) -> O
         let parent = open.last().map(|(_, i, _)| &*items[*i].data);
         let children = items.get(index + 1).is_some_and(|n| n.level > item.level);
         let before = w.out.code.len();
-        w.limit = MAX_CODE_BYTES.saturating_sub(closing);
+        w.limit = max_code.saturating_sub(closing);
         let tag = w.element(item, parent, children, open.len());
         let close = tag.map_or(0, |tag| close_len(open.len(), tag));
         // The element (escaping included) and every closing tag it leaves pending must fit.

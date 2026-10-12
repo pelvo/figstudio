@@ -1,7 +1,11 @@
 use clap::Parser;
 use figstudio_mcp::{FigstudioServer, serve_http, tools::design::Assets};
 use rmcp::ServiceExt;
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, ops::RangeInclusive, path::PathBuf};
+
+/// Accepted `--max-output-bytes`: 4 kB (one element and its closing tags always fit) to
+/// 100 kB (the largest size any measured client accepted was 74 kB).
+const MAX_OUTPUT_BYTES_RANGE: RangeInclusive<u64> = 4_000..=100_000;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Offline MCP server for local Figma files")]
@@ -18,6 +22,16 @@ struct Args {
     /// `inline`: return assets as image content instead of writing files.
     #[arg(long, value_parser = ["inline"])]
     assets: Option<String>,
+    /// Byte cap of get_metadata, get_design_context and get_figjam text (default 24000).
+    /// Claude Code drops replies above about 25k tokens; keep this under that.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = figstudio_mcp::tools::metadata::DEFAULT_OUTPUT_BYTES,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new()
+            .range(MAX_OUTPUT_BYTES_RANGE)
+    )]
+    max_output_bytes: usize,
     #[arg(required = true, value_name = "FILE.fig")]
     files: Vec<PathBuf>,
 }
@@ -39,7 +53,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         (None, Some(dir)) => Assets::dir(dir),
         (None, None) => Assets::default(),
     };
-    let server = FigstudioServer::new(args.files, args.no_system_fonts).with_assets(assets);
+    let server = FigstudioServer::new(args.files, args.no_system_fonts)
+        .with_assets(assets)
+        .with_max_output_bytes(args.max_output_bytes);
     if let Some(addr) = args.http {
         if !addr.ip().is_loopback() {
             eprintln!("warning: non-loopback bind; rmcp rejects non-loopback Host headers");
@@ -128,5 +144,21 @@ mod tests {
                 .http
                 .is_none()
         );
+    }
+
+    #[test]
+    fn max_output_bytes_defaults_to_24k_and_is_range_checked() {
+        let args = Args::try_parse_from(["figstudio-mcp", "a.fig"]).unwrap();
+        assert_eq!(args.max_output_bytes, 24_000);
+        let args = Args::try_parse_from(["figstudio-mcp", "--max-output-bytes", "60000", "a.fig"])
+            .unwrap();
+        assert_eq!(args.max_output_bytes, 60_000);
+        for bad in ["3999", "100001", "x"] {
+            assert!(
+                Args::try_parse_from(["figstudio-mcp", "--max-output-bytes", bad, "a.fig"])
+                    .is_err(),
+                "{bad}"
+            );
+        }
     }
 }

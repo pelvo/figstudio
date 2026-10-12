@@ -283,6 +283,19 @@ fn caps_truncate_with_a_note_pointing_to_get_metadata() {
     );
     let text = texts(&result);
     assert!(text[0].len() < MAX_CODE_BYTES + 1_000, "{}", text[0].len());
+    // The server's --max-output-bytes replaces the default cap.
+    let small = design_context(
+        &doc,
+        "0:1",
+        &Options {
+            max_nodes: Some(5_000),
+            max_code_bytes: Some(6_000),
+            ..inline()
+        },
+    );
+    let text = texts(&small);
+    assert!(text[0].len() <= 6_000, "{}", text[0].len());
+    assert!(text[1].contains("TRUNCATED"));
     assert!(
         text[0].trim_end().ends_with("</div>"),
         "closed after the cut"

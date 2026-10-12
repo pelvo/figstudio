@@ -43,15 +43,16 @@ pub(crate) struct MetadataInput {
 #[tool_router(router = metadata_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Get sparse XML metadata: node IDs, names, types, parent-relative positions and sizes. Rotation is degrees, counter-clockwise positive (Figma convention). Call without nodeId for visible pages. Canvas/document elements omit geometry; unsized nodes omit dimensions. Instances list their component's children with overrides applied, with ids like I<instance>;<child> that every tool accepts; componentId names the main component. depth limits children. Output caps at 5000 nodes and 80 kB: truncated=\"true\" on <metadata> or <pages> marks omitted nodes, and then call again with a child nodeId or a smaller depth. Text caps at 200 characters plus an ellipsis when cut. Use get_design_context for implementation details when available."
+        description = "Get sparse XML metadata: node IDs, names, types, parent-relative positions and sizes. Rotation is degrees, counter-clockwise positive (Figma convention). Call without nodeId for visible pages. Canvas/document elements omit geometry; unsized nodes omit dimensions. Instances list their component's children with overrides applied, with ids like I<instance>;<child> that every tool accepts; componentId names the main component. depth limits children. Output caps at 5000 nodes and 24 kB (the server's --max-output-bytes): truncated=\"true\" on <metadata> or <pages> marks omitted nodes, and then call again with a child nodeId or a smaller depth. Text caps at 200 characters plus an ellipsis when cut. Use get_design_context for implementation details when available."
     )]
     async fn get_metadata(&self, Parameters(input): Parameters<MetadataInput>) -> CallToolResult {
         let document = match self.files().open(input.file_key.as_deref()).await {
             Ok(document) => document,
             Err(error) => return tool_error(error),
         };
+        let max_bytes = self.max_output_bytes();
         match tokio::task::spawn_blocking(move || {
-            metadata(&document, input.node_id.as_deref(), input.depth)
+            metadata_within(&document, input.node_id.as_deref(), input.depth, max_bytes)
         })
         .await
         {
@@ -63,7 +64,17 @@ impl FigstudioServer {
 
 /// Return a page list or bounded subtree as XML; invalid IDs include the page list.
 pub fn metadata(doc: &Document, node_id: Option<&str>, depth: Option<u32>) -> CallToolResult {
-    match run(doc, node_id, depth, None) {
+    metadata_within(doc, node_id, depth, DEFAULT_OUTPUT_BYTES)
+}
+
+/// [`metadata`] with an explicit output byte budget (`--max-output-bytes`).
+pub fn metadata_within(
+    doc: &Document,
+    node_id: Option<&str>,
+    depth: Option<u32>,
+    max_bytes: usize,
+) -> CallToolResult {
+    match run(doc, node_id, depth, None, max_bytes) {
         Ok((xml, _)) => CallToolResult::success(vec![ContentBlock::text(xml)]),
         Err(result) => result,
     }
@@ -76,6 +87,7 @@ pub(crate) fn run(
     node_id: Option<&str>,
     depth: Option<u32>,
     extras: Option<Extras>,
+    max_bytes: usize,
 ) -> Result<(String, Option<Extras>), CallToolResult> {
     let root = match node_id {
         None => None,
@@ -85,7 +97,7 @@ pub(crate) fn run(
             _ => return Err(unknown(doc)),
         },
     };
-    match xml(doc, root, depth, extras) {
+    match xml(doc, root, depth, extras, max_bytes) {
         Ok(Some(out)) => Ok(out),
         Ok(None) => Err(unknown(doc)),
         Err(error) => Err(CallToolResult::error(vec![ContentBlock::text(format!(
@@ -95,7 +107,7 @@ pub(crate) fn run(
 }
 
 fn unknown(doc: &Document) -> CallToolResult {
-    let pages = xml(doc, None, None, None)
+    let pages = xml(doc, None, None, None, DEFAULT_OUTPUT_BYTES)
         .map(|out| out.map(|(xml, _)| xml).unwrap_or_default())
         .unwrap_or_else(|error| error.to_string());
     CallToolResult::error(vec![ContentBlock::text(format!(
@@ -112,9 +124,12 @@ enum Root {
 // Bounds node output and stack memory even for deeply nested or very wide documents.
 const MAX_ELEMENTS: usize = 5_000;
 const MAX_TEXT_CHARS: usize = 200;
-/// Output bytes, closing tags included. Claude Code rejects tool results over about 25k
-/// tokens, so an agent that gets this cut calls again with a child nodeId or a smaller depth.
-pub const MAX_XML_BYTES: usize = 80_000;
+/// Default output bytes, closing tags included. Claude Code's inline limit is about 25k
+/// tokens: a 20,166-char reply was delivered and a 25,810-char one too, while 44,674 and
+/// 74,213 chars were rejected. The default stays under the lower of those measured
+/// delivered sizes; `--max-output-bytes` raises or lowers it. A cut agent calls again with
+/// a child nodeId or a smaller depth.
+pub const DEFAULT_OUTPUT_BYTES: usize = 24_000;
 /// Upper bound on one element's bytes (name and text are capped, so this is generous).
 const ELEMENT_MAX_BYTES: usize = 1_024;
 
@@ -131,11 +146,12 @@ fn xml(
     root: Option<Root>,
     depth: Option<u32>,
     figjam: Option<Extras>,
+    max_bytes: usize,
 ) -> std::io::Result<Option<XmlOut>> {
     let mut writer = Writer::new(Vec::new());
     let mut figjam = figjam;
     match root {
-        None => pages::write(doc, &mut writer)?,
+        None => pages::write(doc, &mut writer, max_bytes)?,
         Some(root) => {
             let mut out = Out {
                 body: Writer::new(Vec::new()),
@@ -145,6 +161,7 @@ fn xml(
                 skipped: 0,
                 definitions: None,
                 figjam: figjam.take(),
+                max_bytes,
             };
             let found = match root {
                 Root::Node(id) => subtree(doc, id, depth, &mut out).map(|()| true)?,

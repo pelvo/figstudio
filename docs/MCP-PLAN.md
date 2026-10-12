@@ -479,3 +479,12 @@ the documented descriptions (question 1 is closed).
   output size cap on every text tool.
 - The official tool surface changes often (37 tools at research time). Pin the names we copy
   and record the research date in the README.
+
+## 7. Second review round (PR #5, 2026-10-12)
+
+Measured in a live Claude Code 2.1.296 session against a 1.7 GB file.
+
+- **Text outputs fit the inline limit (lane 1).** Claude Code delivered 20,166 and 25,810
+  characters and rejected 44,674 and above (design) and 74,213 and above (metadata). The
+  byte caps of `get_metadata`, `get_design_context` and `get_figjam` drop from 80 000 to
+  24 000 by default, and `--max-output-bytes N` (4000–100000) overrides them.

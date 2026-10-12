@@ -22,6 +22,7 @@ use std::path::PathBuf;
 pub struct FigstudioServer {
     files: FileRegistry,
     no_system_fonts: bool,
+    max_output_bytes: usize,
     assets: tools::design::Assets,
     tool_router: ToolRouter<Self>,
     codeconnect_lock: std::sync::Arc<std::sync::Mutex<()>>,
@@ -34,6 +35,7 @@ impl FigstudioServer {
         Self {
             files: FileRegistry::new(paths),
             no_system_fonts,
+            max_output_bytes: tools::metadata::DEFAULT_OUTPUT_BYTES,
             assets: tools::design::Assets::default(),
             codeconnect_lock: Default::default(),
             prompt_router: Self::prompt_router(),
@@ -68,6 +70,18 @@ impl FigstudioServer {
     /// Whether rendering should avoid installed fonts.
     pub fn no_system_fonts(&self) -> bool {
         self.no_system_fonts
+    }
+
+    /// Set the text-output byte cap for `get_metadata`, `get_design_context` and
+    /// `get_figjam` (`--max-output-bytes`).
+    pub fn with_max_output_bytes(mut self, bytes: usize) -> Self {
+        self.max_output_bytes = bytes;
+        self
+    }
+
+    /// The text-output byte cap in effect.
+    pub fn max_output_bytes(&self) -> usize {
+        self.max_output_bytes
     }
 }
 

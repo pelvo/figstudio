@@ -166,7 +166,7 @@ fn output_stays_within_the_byte_budget_and_marks_truncation() {
     }
     doc.set_nodes(nodes).unwrap();
     let out = xml(&doc, Some("9:1"), None);
-    assert!(out.len() <= 80_000, "{} bytes", out.len());
+    assert!(out.len() <= 24_000, "{} bytes", out.len());
     assert!(
         out.starts_with("<metadata truncated=\"true\">"),
         "{}",
@@ -196,6 +196,30 @@ fn figjam_output_shares_the_byte_budget() {
         .as_str()
         .unwrap()
         .to_owned();
-    assert!(out.len() <= 80_000, "{} bytes", out.len());
+    assert!(out.len() <= 24_000, "{} bytes", out.len());
     assert!(out.contains("truncated=\"true\""));
+}
+
+#[test]
+fn the_server_byte_budget_reaches_metadata_and_design_outputs() {
+    use figstudio_mcp::tools::metadata::metadata_within;
+    let mut doc = document();
+    let mut nodes = doc.nodes.clone();
+    nodes.push(node(1, Guid(0, 1), "FRAME", "root"));
+    for index in 2..=401 {
+        nodes.push(node(index, Guid(9, 1), "FRAME", &"c".repeat(60)));
+    }
+    doc.set_nodes(nodes).unwrap();
+    let text = |budget: usize| {
+        serde_json::to_value(metadata_within(&doc, Some("9:1"), None, budget)).unwrap()["content"]
+            [0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let small = text(8_000);
+    assert!(small.len() <= 8_000, "{} bytes", small.len());
+    assert!(small.contains("truncated=\"true\""));
+    let large = text(100_000);
+    assert!(large.len() > 24_000, "{} bytes", large.len());
 }

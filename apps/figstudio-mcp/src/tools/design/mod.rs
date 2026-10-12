@@ -27,9 +27,10 @@ use walk::Target;
 
 /// Default and largest `maxNodes`.
 pub const MAX_NODES: (usize, usize) = (1_000, 5_000);
-/// Code beyond this many bytes is cut at a layer boundary, with a note. Claude Code rejects
-/// tool results over about 25k tokens, so this stays well under that.
-pub const MAX_CODE_BYTES: usize = 80_000;
+/// Default code bytes before a cut at a layer boundary, with a note. Claude Code's inline
+/// limit is about 25k tokens: 25,810 chars were delivered, 44,674 were rejected. This stays
+/// under the delivered size; `--max-output-bytes` overrides it.
+pub const MAX_CODE_BYTES: usize = 24_000;
 /// Rendered assets per call; further vectors and images stay placeholders.
 pub const MAX_ASSETS: usize = 30;
 /// Base64 bytes of inline images per reply; further assets stay placeholders.
@@ -65,12 +66,14 @@ pub struct Options {
     pub assets: Assets,
     /// How assets are rendered: fonts, lazily opened images.
     pub rendering: Rendering,
+    /// Code byte cap; `None` is [`MAX_CODE_BYTES`].
+    pub max_code_bytes: Option<usize>,
 }
 
 #[tool_router(router = design_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Get React + Tailwind reference code for a local node (data-node-id and data-name on every element), then instructions for the agent and the rendered assets. Auto-layout becomes flex, other children absolute; fills, gradients, strokes, radii, shadows, blurs, opacity, blend modes, typography and style runs are carried over; bound colour variables become var(--name,fallback). Vectors, boolean operations and image-filled leaves become <img> PNG assets rendered locally (written to the server's assets directory, or inline images). Instances show their resolved content with overrides; nodeId may be an instance path (I1:2;3:4). Large trees are cut (maxNodes, 80 kB code cap, 30 assets, 4 MB of inline images) with a note: use get_metadata for the outline, then call this on children."
+        description = "Get React + Tailwind reference code for a local node (data-node-id and data-name on every element), then instructions for the agent and the rendered assets. Auto-layout becomes flex, other children absolute; fills, gradients, strokes, radii, shadows, blurs, opacity, blend modes, typography and style runs are carried over; bound colour variables become var(--name,fallback). Vectors, boolean operations and image-filled leaves become <img> PNG assets rendered locally (written to the server's assets directory, or inline images). Instances show their resolved content with overrides; nodeId may be an instance path (I1:2;3:4). Large trees are cut (maxNodes, 24 kB code cap by default (--max-output-bytes), 30 assets, 4 MB of inline images) with a note: use get_metadata for the outline, then call this on children."
     )]
     async fn get_design_context(
         &self,
@@ -95,6 +98,7 @@ impl FigstudioServer {
             max_nodes: input.max_nodes,
             assets: self.assets().clone(),
             rendering,
+            max_code_bytes: Some(self.max_output_bytes()),
         };
         match tokio::task::spawn_blocking(move || {
             design_context(&document, &input.node_id, &options)
@@ -135,7 +139,12 @@ pub fn design_context(doc: &Document, node_id: &str, options: &Options) -> CallT
             root.id()
         ));
     };
-    let out = jsx::write(doc, &layers, options);
+    let out = jsx::write(
+        doc,
+        &layers,
+        options,
+        options.max_code_bytes.unwrap_or(MAX_CODE_BYTES),
+    );
     let mut notes = out.notes;
     if layers.skipped_instances > 0 {
         notes.count("instances not expanded", layers.skipped_instances);

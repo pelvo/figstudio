@@ -397,6 +397,7 @@ fn image_payload_budget_leaves_out_pictures_with_a_note() {
         None,
         &Rendering::default(),
         raw,
+        24_000,
     );
     assert!(images(&tight) < 7, "{}", images(&tight));
     assert!(images(&tight) >= 1);

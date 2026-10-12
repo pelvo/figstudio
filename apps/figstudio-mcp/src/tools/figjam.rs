@@ -59,14 +59,17 @@ impl FigstudioServer {
             Ok(rendering) => rendering,
             Err(error) => return tool_error(error),
         };
+        let max_bytes = self.max_output_bytes();
         match tokio::task::spawn_blocking(move || {
-            figjam(
+            figjam_within(
                 &document,
                 input.node_id.as_deref(),
                 input.depth,
                 input.include_images.unwrap_or(false),
                 input.image_scale,
                 &rendering,
+                crate::tools::assets::MAX_PAYLOAD_BYTES,
+                max_bytes,
             )
         })
         .await
@@ -94,10 +97,12 @@ pub fn figjam(
         image_scale,
         rendering,
         crate::tools::assets::MAX_PAYLOAD_BYTES,
+        crate::tools::metadata::DEFAULT_OUTPUT_BYTES,
     )
 }
 
-/// [`figjam`] with an explicit image payload budget in bytes (before base64).
+/// [`figjam`] with explicit image payload and XML output budgets in bytes (before base64).
+#[expect(clippy::too_many_arguments, reason = "mirrors the MCP tool inputs")]
 pub fn figjam_within(
     doc: &Document,
     node_id: Option<&str>,
@@ -106,6 +111,7 @@ pub fn figjam_within(
     image_scale: Option<f64>,
     rendering: &Rendering,
     max_payload: usize,
+    max_bytes: usize,
 ) -> CallToolResult {
     let scale = image_scale.unwrap_or(DEFAULT_IMAGE_SCALE);
     if !(0.01..=MAX_IMAGE_SCALE).contains(&scale) {
@@ -113,7 +119,7 @@ pub fn figjam_within(
             "imageScale must be between 0.01 and 0.5",
         )]);
     }
-    let (xml, extras) = match run(doc, node_id, depth, Some(Extras::default())) {
+    let (xml, extras) = match run(doc, node_id, depth, Some(Extras::default()), max_bytes) {
         Ok((xml, extras)) => (xml, extras.unwrap_or_default()),
         Err(result) => return result,
     };
