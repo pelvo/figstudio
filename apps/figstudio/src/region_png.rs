@@ -240,10 +240,10 @@ fn finish(ctx: &egui::Context, done: Done) -> (String, bool) {
     }
     let image = egui::ColorImage::from_rgba_premultiplied([done.width, done.height], &done.rgba);
     ctx.copy_image(image);
-    let mut text = message(done.width, done.height, &done.gaps);
+    let text = message(done.width, done.height, &done.gaps);
     // egui-winit only logs a failed image copy (some Wayland setups cannot copy images).
     #[cfg(not(target_arch = "wasm32"))]
-    text.push_str("\nIf pasting gives nothing, this system cannot copy images.");
+    let text = text + "\nIf pasting gives nothing, this system cannot copy images.";
     (text, false)
 }
 

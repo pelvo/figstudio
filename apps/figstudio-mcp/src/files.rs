@@ -245,6 +245,27 @@ impl Files {
         }
     }
 
+    /// The document `key` selects with its file key and path, all from one look at the
+    /// app's tabs: a tab swapped between separate `open`/`key`/`path` calls could mix files.
+    ///
+    /// # Errors
+    /// Returns an error for a bad file key or a file that does not decode.
+    pub async fn open_picked(
+        &self,
+        key: Option<&str>,
+    ) -> Result<(Arc<Document>, String, PathBuf), McpError> {
+        match self {
+            Self::Registry(files) => {
+                Ok((files.open(key).await?, files.key(key)?, files.path(key)?))
+            }
+            Self::Live(live) => {
+                let picked = live.pick(key)?;
+                let tab = picked.tab();
+                Ok((tab.doc.clone(), picked.key.clone(), tab.path.clone()))
+            }
+        }
+    }
+
     /// The files with their page counts (`None` until opened, standalone).
     pub async fn list(&self) -> Vec<FileInfo> {
         match self {

@@ -119,12 +119,8 @@ impl FigstudioServer {
 
     async fn codeconnect_map(&self, input: MapInput, add: Option<Mapping>) -> CallToolResult {
         let key = self.file_for(input.file_key.as_deref(), input.node_id.as_deref());
-        let path = match self.files().path(key.as_deref()) {
-            Ok(path) => path,
-            Err(error) => return tool_error(error),
-        };
-        let doc = match self.files().open(key.as_deref()).await {
-            Ok(doc) => doc,
+        let (doc, _, path) = match self.files().open_picked(key.as_deref()).await {
+            Ok(picked) => picked,
             Err(error) => return tool_error(error),
         };
         let lock = self.codeconnect_lock.clone();

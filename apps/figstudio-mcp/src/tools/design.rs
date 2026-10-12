@@ -42,9 +42,9 @@ impl FigstudioServer {
             Err(error) => return tool_error(error),
         };
         let key = key.as_deref();
-        let (document, file_key) = match (self.files().open(key).await, self.files().key(key)) {
-            (Ok(document), Ok(file_key)) => (document, file_key),
-            (Err(error), _) | (_, Err(error)) => return tool_error(error),
+        let (document, file_key, _) = match self.files().open_picked(key).await {
+            Ok(picked) => picked,
+            Err(error) => return tool_error(error),
         };
         let rendering = match self
             .files()
