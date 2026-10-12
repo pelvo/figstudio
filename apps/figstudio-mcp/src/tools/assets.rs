@@ -26,7 +26,12 @@ pub const MAX_NODES: usize = 20;
 /// Most original images one call returns, so a page of photos cannot flood the reply.
 pub const MAX_ORIGINALS: usize = 20;
 /// Raw bytes (before base64) of images one call may return, rendered and originals together.
-pub const MAX_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
+/// Claude Code disconnects a stdio server that writes more than 16 MB without a JSON-RPC line
+/// break; 10 MiB raw is about 13.3 MiB of base64 plus JSON, under that.
+pub const MAX_PAYLOAD_BYTES: usize = 10 * 1024 * 1024;
+/// Raw bytes of one image. The Claude API accepts 5 MB of base64 per image (here 7.5 MiB raw,
+/// about 10 MB base64); a larger image is reported as omitted with its size.
+pub const MAX_IMAGE_BYTES: usize = 7 * 1024 * 1024 + 512 * 1024;
 const JPEG_QUALITY: u8 = 90;
 
 /// Output format of a rendered asset.
@@ -187,11 +192,19 @@ impl Payload {
         }
     }
 
-    /// The text of an item that did not fit.
+    /// The text of an item that did not fit the reply's budget.
     pub(crate) fn omitted(id: &str) -> String {
         format!(
             "{id}: omitted, the reply holds at most {} MB of image data",
             MAX_PAYLOAD_BYTES / (1024 * 1024)
+        )
+    }
+
+    /// The text of an image over [`MAX_IMAGE_BYTES`].
+    pub(crate) fn too_large(id: &str, bytes: usize) -> String {
+        format!(
+            "{id}: omitted, image of {bytes} bytes is over the {} MB per-image limit",
+            MAX_IMAGE_BYTES / (1024 * 1024)
         )
     }
 }
@@ -241,6 +254,9 @@ fn rendered(
             (jpeg(pixmap.data_as_u8_slice(), w, h)?, "image/jpeg")
         }
     };
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(Payload::too_large(id, bytes.len()));
+    }
     if !payload.take(bytes.len()) {
         return Err(Payload::omitted(id));
     }
@@ -287,6 +303,7 @@ fn original_images(
     }
     let mut content = vec![];
     let (mut missing, mut omitted, mut repeated) = (0, 0, 0);
+    let mut too_large = Vec::new();
     for hash in &hashes {
         if budget.sent.contains(hash) {
             repeated += 1;
@@ -297,6 +314,13 @@ fn original_images(
         } else if let Some(entry) = doc.lazy_images.get(hash) {
             // The directory's size, checked before reading so a huge image is never loaded.
             let size = usize::try_from(entry.size).unwrap_or(usize::MAX);
+            if size > MAX_IMAGE_BYTES {
+                too_large.push(format!(
+                    "{id}: image {hash} omitted, {size} bytes is over the {} MB per-image limit",
+                    MAX_IMAGE_BYTES / (1024 * 1024)
+                ));
+                continue;
+            }
             if budget.originals == 0 || !budget.payload.fits(size) {
                 omitted += 1;
                 continue;
@@ -312,6 +336,14 @@ fn original_images(
             missing += 1;
             continue;
         };
+        if bytes.len() > MAX_IMAGE_BYTES {
+            too_large.push(format!(
+                "{id}: image {hash} omitted, {} bytes is over the {} MB per-image limit",
+                bytes.len(),
+                MAX_IMAGE_BYTES / (1024 * 1024)
+            ));
+            continue;
+        }
         if budget.originals == 0 || !budget.payload.take(bytes.len()) {
             omitted += 1;
             continue;
@@ -335,6 +367,9 @@ fn original_images(
     }
     if missing == hashes.len() {
         return Err(format!("{missing} image(s) not stored in the file"));
+    }
+    for line in too_large {
+        content.push(ContentBlock::text(line));
     }
     if missing + omitted + repeated > 0 {
         content.push(ContentBlock::text(format!(

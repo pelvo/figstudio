@@ -491,3 +491,43 @@ fn nodes_whose_images_are_not_stored_fail_and_mixed_calls_stay_ok() {
     assert_eq!(blobs(&mixed).len(), 1);
     assert!(texts(&mixed).iter().any(|l| l.starts_with("1:3: error:")));
 }
+
+#[test]
+fn an_image_over_the_per_image_cap_is_reported_with_its_size_not_sent() {
+    use figstudio_mcp::tools::assets::{MAX_IMAGE_BYTES, MAX_PAYLOAD_BYTES};
+    // One stdio line must stay under 16 MB: 10 MiB raw is about 13.3 MiB of base64.
+    const _: () = assert!(MAX_PAYLOAD_BYTES < 16 * 1024 * 1024);
+    const _: () = assert!(MAX_IMAGE_BYTES <= MAX_PAYLOAD_BYTES);
+    let mut doc = fixture("structure");
+    let big = [9u8; 20];
+    doc.images.insert(hex(&big), vec![1u8; MAX_IMAGE_BYTES + 1]);
+    let small = store(&mut doc, 8);
+    let page = Guid(0, 1);
+    plain(
+        &mut doc,
+        vec![
+            layer(1, page, "FRAME", None),
+            layer(20, Guid(9, 1), "RECTANGLE", Some(big)),
+            layer(21, Guid(9, 1), "RECTANGLE", Some(small)),
+        ],
+    );
+    let result = download_within(
+        &doc,
+        &ids(&["9:1"]),
+        AssetFormat::Png,
+        None,
+        true,
+        &Rendering::default(),
+        MAX_PAYLOAD_BYTES,
+    );
+    let lines = texts(&result);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(&format!("{} bytes", MAX_IMAGE_BYTES + 1))
+                && l.contains("per-image limit")),
+        "{lines:?}"
+    );
+    // The small image still comes back; the big one is never base64-encoded into the reply.
+    assert_eq!(blobs(&result).len(), 1, "{lines:?}");
+}

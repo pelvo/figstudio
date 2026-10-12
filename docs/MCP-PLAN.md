@@ -399,7 +399,7 @@ capture), connector geometry beyond `startX/startY/endX/endY` for loose ends, ta
 L8 second pass. Extra attribute values go through `clean_xml` like text (NUL, other control
 characters and U+FFFE/U+FFFF); a test parses the output with quick-xml's reader. A connector end
 with only `position` emits `startX/startY` or `endX/endY`. HIGHLIGHT and SECTION_OVERLAY are
-counted in the not-drawn comment. `includeImages` shares the 32 MB payload budget with
+counted in the not-drawn comment. `includeImages` shares the 10 MiB payload budget with
 `download_assets` (`figjam_within`).
 
 **L9: Code Connect and design system (local).** [x] Complete. `get_context_for_code_connect` (property
@@ -481,6 +481,13 @@ the documented descriptions (question 1 is closed).
   and record the research date in the README.
 
 ## 7. Second review round (PR #5, 2026-10-12)
+
+- **Replies stay under the stdio line limit (lane 2).** Claude Code disconnects a stdio
+  server that writes more than 16 MB without a JSON-RPC line break. A 32 MiB raw reply
+  became about 43 MiB of base64 on one line. `MAX_PAYLOAD_BYTES` is now 10 MiB raw
+  (about 13.3 MiB base64 plus JSON) and `MAX_IMAGE_BYTES` 7.5 MiB raw (the Claude API's
+  per-image 5 MB base64 limit, about 10 MB here). Over-cap images are reported with their
+  size and not read or encoded.
 
 Measured in a live Claude Code 2.1.296 session against a 1.7 GB file.
 
