@@ -1,0 +1,16 @@
+[package]
+name = "figstudio-mcp-core"
+description = "Node IDs, figstudio:// links and errors shared by the MCP server and the app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+figstudio-fig = { workspace = true }
+url = { workspace = true }
+percent-encoding = { workspace = true }
+
+[lints]
+workspace = true

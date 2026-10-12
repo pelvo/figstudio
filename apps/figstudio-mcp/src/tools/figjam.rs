@@ -48,13 +48,14 @@ impl FigstudioServer {
         description = "Get a FigJam board as sparse XML (same shape as get_metadata) with FigJam details: sticky text and colour, shape-with-text shape and text, connector start/end node ids and magnets, section status, table cell and code block text, widget and stamp names. Text caps at 200 characters. includeImages=true adds a small PNG per sticky/shape/section/table/code block/widget/stamp (max 20, imageScale up to 0.5). FigJam kinds are not drawn by the renderer yet: images show them as plain boxes, and an XML comment counts those kinds."
     )]
     async fn get_figjam(&self, Parameters(input): Parameters<FigjamInput>) -> CallToolResult {
-        let document = match self.files().open(input.file_key.as_deref()).await {
+        let key = self.file_for(input.file_key.as_deref(), input.node_id.as_deref());
+        let document = match self.files().open(key.as_deref()).await {
             Ok(document) => document,
             Err(error) => return tool_error(error),
         };
         let rendering = match self
             .files()
-            .rendering(input.file_key.as_deref(), !self.no_system_fonts())
+            .rendering(key.as_deref(), !self.no_system_fonts())
         {
             Ok(rendering) => rendering,
             Err(error) => return tool_error(error),

@@ -1,6 +1,7 @@
 //! Offline MCP access to registered local Figma documents.
 /// Canonical local input and loading errors.
 pub mod error;
+mod file_for;
 /// Lazy registered file cache.
 pub mod files;
 /// Accepted Figma node ID formats.

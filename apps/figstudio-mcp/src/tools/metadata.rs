@@ -46,7 +46,8 @@ impl FigstudioServer {
         description = "Get sparse XML metadata: node IDs, names, types, parent-relative positions and sizes. Rotation is degrees, counter-clockwise positive (Figma convention). Call without nodeId for visible pages. Canvas/document elements omit geometry; unsized nodes omit dimensions. Instances list their component's children with overrides applied, with ids like I<instance>;<child> that every tool accepts; componentId names the main component. depth limits children. Output caps at 5000 nodes and 24 kB (the server's --max-output-bytes): truncated=\"true\" on <metadata> or <pages> marks omitted nodes, and then call again with a child nodeId or a smaller depth. Text caps at 200 characters plus an ellipsis when cut. Use get_design_context for implementation details when available."
     )]
     async fn get_metadata(&self, Parameters(input): Parameters<MetadataInput>) -> CallToolResult {
-        let document = match self.files().open(input.file_key.as_deref()).await {
+        let key = self.file_for(input.file_key.as_deref(), input.node_id.as_deref());
+        let document = match self.files().open(key.as_deref()).await {
             Ok(document) => document,
             Err(error) => return tool_error(error),
         };

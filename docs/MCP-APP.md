@@ -151,6 +151,18 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
   - A figma.com URL with an unmatched key still works for a single file.
 - **Prove:** drop the percent-encoding, and the space round trip fails; skip `file_for`, and the two-file test fails.
 - **Gate:** G-check, G-wasm (new check.sh step), G-golden empty against L0.
+- **Status:** done. `crates/mcp-core` (`error.rs`, `link.rs`, `node_id.rs`), adapter `apps/figstudio-mcp/src/file_for.rs`,
+  tests `crates/mcp-core/tests/link.rs` and `apps/figstudio-mcp/tests/links.rs`, wasm step in `scripts/check.sh`.
+  G-golden against 72083b7: identical (197 records).
+  - **Grammar:** `figstudio://<percent-encoded key>?node-id=<id>` or `?page=<a-b>&rect=x,y,w,h`. Exactly one of the two
+    forms; any other parameter, path, userinfo or port is `InvalidLink`. `node-id` is `1-42`, `1:42` or `I1-2;3-4`. figma.com
+    (and www): `/design|file|board/<key>/<slug>?node-id=…`; other query parameters are ignored, and a URL without a
+    file part gives `file: None`. Other hosts and schemes are `InvalidLink`.
+  - **File rule (`file_for`):** explicit `fileKey` > `figstudio://` key (passed on as is, so an unknown key is the usual
+    file-key tool error) > figma.com `<key>` equal to a stem > `<slug>` equal to a stem with spaces turned into `-` >
+    `None` (today's rule). Multi-node `download_assets` uses its first node ID. `get_code_connect_map` /
+    `add_code_connect_map` use `nodeId` too.
+  - **Region links:** `format_region_link` returns `Result` (a rect that rounds to w or h = 0 is refused).
 
 ## L2: right-click Copy in Layers, canvas and Properties (M, Sonnet; Haiku workable)
 

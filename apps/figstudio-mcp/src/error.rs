@@ -1,3 +1,4 @@
+use figstudio_mcp_core::CoreError;
 use std::{backtrace::Backtrace, fmt};
 
 /// An invalid request, failed document load, or failed token extraction task.
@@ -9,33 +10,18 @@ pub struct McpError {
 
 #[derive(Debug)]
 enum Kind {
-    InvalidNodeId,
-    FileKey,
-    Open(figstudio_fig::FigError),
+    Core(CoreError),
     LoadTask(tokio::task::JoinError),
     TokenTask(tokio::task::JoinError),
 }
 
 impl McpError {
-    pub(crate) fn invalid_node_id() -> Self {
-        Self {
-            kind: Kind::InvalidNodeId,
-            backtrace: Backtrace::capture(),
-        }
-    }
-
     pub(crate) fn file_key() -> Self {
-        Self {
-            kind: Kind::FileKey,
-            backtrace: Backtrace::capture(),
-        }
+        CoreError::file_key().into()
     }
 
     pub(crate) fn open(cause: figstudio_fig::FigError) -> Self {
-        Self {
-            kind: Kind::Open(cause),
-            backtrace: Backtrace::capture(),
-        }
+        CoreError::open(cause).into()
     }
 
     pub(crate) fn load_task(cause: tokio::task::JoinError) -> Self {
@@ -54,12 +40,12 @@ impl McpError {
 
     /// Whether this error describes an invalid node ID.
     pub fn is_invalid_node_id(&self) -> bool {
-        matches!(self.kind, Kind::InvalidNodeId)
+        matches!(&self.kind, Kind::Core(error) if error.is_invalid_node_id())
     }
 
     /// Whether loading a local document failed.
     pub fn is_open(&self) -> bool {
-        matches!(self.kind, Kind::Open(_))
+        matches!(&self.kind, Kind::Core(error) if error.is_open())
     }
 
     /// Return the captured diagnostic backtrace.
@@ -71,11 +57,7 @@ impl McpError {
 impl fmt::Display for McpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            Kind::InvalidNodeId => f.write_str("invalid node ID"),
-            Kind::FileKey => {
-                f.write_str("fileKey is missing, unknown, or ambiguous; use a listed full path")
-            }
-            Kind::Open(cause) => write!(f, "could not open local .fig file: {cause}"),
+            Kind::Core(error) => error.fmt(f),
             Kind::LoadTask(_) => f.write_str("document loading task failed"),
             Kind::TokenTask(_) => f.write_str("token extraction task failed"),
         }
@@ -85,9 +67,17 @@ impl fmt::Display for McpError {
 impl std::error::Error for McpError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.kind {
-            Kind::Open(cause) => Some(cause),
+            Kind::Core(error) => std::error::Error::source(error),
             Kind::LoadTask(cause) | Kind::TokenTask(cause) => Some(cause),
-            _ => None,
+        }
+    }
+}
+
+impl From<CoreError> for McpError {
+    fn from(error: CoreError) -> Self {
+        Self {
+            kind: Kind::Core(error),
+            backtrace: Backtrace::capture(),
         }
     }
 }

@@ -75,13 +75,18 @@ impl FigstudioServer {
         description = "Download up to 20 nodes as PNG or JPG images (format, scale 0.01 to 4; longest side capped at 2048 px without scale, 4096 px with it). JPG has no transparency: nodes are flattened onto white, pages keep their page background. With original=true the call returns the source files of the image fills inside each node (up to 12 per call, each once) with their detected MIME type instead of a render. Each node gets a text line; a node that fails is reported there and does not fail the call. Instance paths (I1:2;3:4) are accepted. SVG and PDF export are not available offline."
     )]
     async fn download_assets(&self, Parameters(input): Parameters<AssetsInput>) -> CallToolResult {
-        let document = match self.files().open(input.file_key.as_deref()).await {
+        // A link in the first node ID picks the file for the whole call.
+        let key = self.file_for(
+            input.file_key.as_deref(),
+            input.node_ids.first().map(String::as_str),
+        );
+        let document = match self.files().open(key.as_deref()).await {
             Ok(document) => document,
             Err(error) => return tool_error(error),
         };
         let rendering = match self
             .files()
-            .rendering(input.file_key.as_deref(), !self.no_system_fonts())
+            .rendering(key.as_deref(), !self.no_system_fonts())
         {
             Ok(rendering) => rendering,
             Err(error) => return tool_error(error),

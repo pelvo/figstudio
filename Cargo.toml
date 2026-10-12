@@ -13,6 +13,7 @@ rust-version = "1.95"
 tempfile = "3.23"
 figstudio-fig = { path = "crates/fig" }
 figstudio-render = { path = "crates/render" }
+figstudio-mcp-core = { path = "crates/mcp-core" }
 kiwi-schema = "0.2.1"
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 ruzstd = "0.9"
@@ -40,6 +41,7 @@ schemars = "1"
 quick-xml = "0.41"
 clap = { version = "4", features = ["derive"] }
 url = "2"
+percent-encoding = "2.3"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
 tokio-util = "0.7"
 base64 = "0.23"

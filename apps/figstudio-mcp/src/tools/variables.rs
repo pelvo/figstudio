@@ -39,7 +39,8 @@ impl FigstudioServer {
         &self,
         Parameters(input): Parameters<VariablesInput>,
     ) -> CallToolResult {
-        let doc = match self.files().open(input.file_key.as_deref()).await {
+        let key = self.file_for(input.file_key.as_deref(), Some(&input.node_id));
+        let doc = match self.files().open(key.as_deref()).await {
             Ok(doc) => doc,
             Err(error) => return tool_error(error),
         };

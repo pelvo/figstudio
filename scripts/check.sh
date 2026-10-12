@@ -42,6 +42,13 @@ cargo $TC test --release -p figstudio-render --features gpu
 step "release build"
 cargo $TC build --release --workspace
 
+step "mcp-core for wasm32"
+if rustup target list --installed $TC_FLAG 2>/dev/null | grep -qx wasm32-unknown-unknown; then
+  cargo $TC build -p figstudio-mcp-core --no-default-features --target wasm32-unknown-unknown
+else
+  echo "skipped: run 'rustup target add wasm32-unknown-unknown $TC_FLAG' first"
+fi
+
 if [ "${1:-}" = "--cross" ]; then
   step "macOS check (aarch64-apple-darwin)"
   if rustup target list --installed $TC_FLAG 2>/dev/null | grep -qx aarch64-apple-darwin; then

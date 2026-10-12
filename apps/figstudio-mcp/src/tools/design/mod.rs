@@ -79,7 +79,8 @@ impl FigstudioServer {
         &self,
         Parameters(input): Parameters<DesignInput>,
     ) -> CallToolResult {
-        let key = input.file_key.as_deref();
+        let key = self.file_for(input.file_key.as_deref(), Some(&input.node_id));
+        let key = key.as_deref();
         let rendering = self.files().rendering(key, !self.no_system_fonts());
         let (document, file_key, rendering) = match (
             self.files().open(key).await,
@@ -127,7 +128,7 @@ pub fn design_context(doc: &Document, node_id: &str, options: &Options) -> CallT
             ));
         }
         Ok(NodeId::InstancePath(path)) => Target::Path(path),
-        Err(error) => return tool_error(error),
+        Err(error) => return tool_error(error.into()),
     };
     let limit = options
         .max_nodes
