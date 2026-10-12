@@ -68,28 +68,6 @@ impl<G> Drawn<G> {
     }
 }
 
-/// The browser's tile drawer until the GPU canvas reaches it (T20 L4): every tile on the CPU.
-#[cfg(target_arch = "wasm32")]
-#[derive(Debug, Default)]
-pub struct TileGpu;
-
-/// No GPU tiles in the browser yet.
-#[cfg(target_arch = "wasm32")]
-pub type GpuTexture = std::convert::Infallible;
-
-#[cfg(target_arch = "wasm32")]
-impl TileGpu {
-    pub fn draw(
-        &mut self,
-        recordings: &mut Recordings,
-        renderer: &mut Renderer,
-        job: &RenderJob,
-        key: &Key,
-    ) -> Drawn<GpuTexture> {
-        recordings.draw_with(renderer, job, key, |_, _| None)
-    }
-}
-
 fn bytes(e: &Entry) -> usize {
     e.rec.as_ref().map_or(0, Recording::bytes)
 }

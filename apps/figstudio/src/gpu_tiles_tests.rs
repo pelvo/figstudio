@@ -6,9 +6,12 @@ use std::sync::Mutex;
 use figstudio_render::Stats;
 
 use super::*;
-use crate::gpu_registry::Free;
+use crate::gpu_common::MIN_TEXTURE;
+use crate::gpu_registry::{Free, NativeTexture};
 use crate::recordings::Pixels;
 use crate::tile_cache::Cache;
+use crate::tiles::TEXTURE;
+use figstudio_render::GpuUnsupported;
 
 #[test]
 fn the_env_var_and_the_device_choose_the_renderer() {

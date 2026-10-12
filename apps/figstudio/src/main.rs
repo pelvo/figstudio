@@ -2,10 +2,14 @@
 
 mod canvas;
 mod gpu;
-#[cfg(not(target_arch = "wasm32"))]
+mod gpu_common;
 mod gpu_registry;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod gpu_scenes;
 #[cfg(not(target_arch = "wasm32"))]
 mod gpu_tiles;
+#[cfg(target_arch = "wasm32")]
+mod gpu_tiles_web;
 mod labels;
 mod panels;
 mod recordings;
@@ -135,11 +139,12 @@ impl App {
             (Workers::with_gpu(&cc.egui_ctx, gpu), label, tiles)
         };
         #[cfg(target_arch = "wasm32")]
-        let (workers, renderer, tiles) = (
-            Workers::new(&cc.egui_ctx),
-            String::from("CPU"),
-            tiles_view::Tiles::default(),
-        );
+        let (workers, renderer, tiles) = {
+            let mut tiles = tiles_view::Tiles::default();
+            let (gpu, web_gpu, label) = gpu_tiles_web::start(cc.wgpu_render_state.as_ref());
+            tiles.gpu = web_gpu;
+            (Workers::with_gpu(&cc.egui_ctx, gpu), label, tiles)
+        };
         let mut app = App {
             workers,
             renderer,
@@ -357,6 +362,8 @@ impl App {
                 }
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        self.tiles.pump_gpu(&mut self.tabs);
         #[cfg(not(target_arch = "wasm32"))]
         while let Ok(done) = self.workers.export_rx.try_recv() {
             match done.result {
@@ -701,7 +708,7 @@ impl App {
                 r#"{{"tabs":{},"loading":{},"page":{},"pages":{},"zoom":{},"drawn":{},"#,
                 r#""culled":{},"images_loading":{},"images_missing":{},"render_ms":{:.1},"#,
                 r#""image_cache_bytes":{},"images_arrived":{},"busy":{},"errors":{},"#,
-                r#""cjk_font":"{:?}"}}"#
+                r#""cjk_font":"{:?}","renderer":"{}","gpu_fallback_tiles":{}}}"#
             ),
             self.tabs.len(),
             self.loading.len(),
@@ -718,6 +725,9 @@ impl App {
             self.workers.busy(),
             self.toasts.iter().filter(|t| t.error).count(),
             self.web.font_state,
+            // A fixed name ("GPU (WebGPU)", "CPU"): no device or driver names.
+            self.renderer,
+            s.map_or(0, |s| s.gpu_fallback_tiles),
         )
     }
 
@@ -1014,7 +1024,7 @@ impl App {
         }
         // Browser workers cannot wake the UI (see worker.rs), so poll while they work.
         #[cfg(target_arch = "wasm32")]
-        if self.workers.busy() {
+        if self.workers.busy() || self.tiles.gpu_busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }

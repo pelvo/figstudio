@@ -24,10 +24,10 @@ use figstudio_render::images::{ImageRequest, Images};
 use figstudio_render::{Renderer, Stats};
 use web_time::{Duration, Instant};
 
+#[cfg(target_arch = "wasm32")]
+use crate::gpu_scenes::{GpuTexture, TileGpu};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::gpu_tiles::{GpuTexture, TileGpu};
-#[cfg(target_arch = "wasm32")]
-use crate::recordings::{GpuTexture, TileGpu};
 use crate::recordings::{Pixels, Recordings};
 use crate::source::Source;
 use crate::tile_queue::{Msg, Queue};
@@ -261,10 +261,7 @@ pub struct Workers {
 
 impl Workers {
     /// Workers drawing every canvas tile on the CPU.
-    #[cfg_attr(
-        all(not(test), not(target_arch = "wasm32")),
-        expect(dead_code, reason = "the desktop app passes its GPU")
-    )]
+    #[cfg_attr(not(test), expect(dead_code, reason = "the app passes its GPU"))]
     pub fn new(ctx: &egui::Context) -> Self {
         Self::with_gpu(ctx, TileGpu::default())
     }

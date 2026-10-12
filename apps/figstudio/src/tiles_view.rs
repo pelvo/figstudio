@@ -26,15 +26,13 @@ pub struct Tile {
 
 enum Texture {
     Cpu(egui::TextureHandle),
-    #[cfg(not(target_arch = "wasm32"))]
-    Gpu(crate::gpu_tiles::NativeTexture),
+    Gpu(crate::gpu_registry::NativeTexture),
 }
 
 impl Texture {
     fn id(&self) -> egui::TextureId {
         match self {
             Texture::Cpu(t) => t.id(),
-            #[cfg(not(target_arch = "wasm32"))]
             Texture::Gpu(t) => t.id,
         }
     }
@@ -55,13 +53,15 @@ pub struct Tiles {
     /// Registers GPU tiles with egui (desktop with the GPU canvas).
     #[cfg(not(target_arch = "wasm32"))]
     pub gpu: Option<crate::gpu_tiles::Registry>,
+    /// Renders the worker's scenes on the main thread (browser with the GPU canvas).
+    #[cfg(target_arch = "wasm32")]
+    pub gpu: Option<crate::gpu_tiles_web::WebGpu>,
 }
 
 impl Default for Tiles {
     fn default() -> Self {
         Tiles {
             cache: Cache::new(BUDGET_BYTES / TILE_BYTES),
-            #[cfg(not(target_arch = "wasm32"))]
             gpu: None,
         }
     }
@@ -71,32 +71,66 @@ impl Tiles {
     /// Drops the tiles of a closed document.
     pub fn forget(&mut self, doc: u64) {
         self.cache.retain(|k| k.doc != doc);
+        #[cfg(target_arch = "wasm32")]
+        if let Some(gpu) = &mut self.gpu {
+            gpu.forget(doc);
+        }
+    }
+
+    /// Scenes wait for the main thread (browser): keep repainting.
+    #[cfg(target_arch = "wasm32")]
+    pub fn gpu_busy(&self) -> bool {
+        self.gpu
+            .as_ref()
+            .is_some_and(crate::gpu_tiles_web::WebGpu::busy)
+    }
+
+    /// Renders this frame's share of the scenes from the worker (browser) and stores them; a
+    /// tile whose GPU work failed is not stored, so it is asked for again (on the CPU).
+    #[cfg(target_arch = "wasm32")]
+    pub fn pump_gpu(&mut self, tabs: &mut [Tab]) {
+        let Some(gpu) = &mut self.gpu else {
+            return;
+        };
+        let failed = gpu.take_failed();
+        self.cache.retain(|k| !failed.contains(k));
+        let cache = &mut self.cache;
+        gpu.pump(|done, texture| {
+            let Some(tab) = tabs.iter_mut().find(|t| t.id == done.tab) else {
+                return;
+            };
+            received(tab, &done);
+            if let Some(texture) = texture {
+                store(cache, &done, Texture::Gpu(texture));
+            }
+        });
     }
 
     /// Uploads a finished tile and stores it.
     pub fn accept(&mut self, ctx: &egui::Context, tab: &mut Tab, done: RenderDone) {
-        tab.tile_requests.retain(|k| *k != done.key);
-        tab.tiles_received.push((done.key, done.images));
-        let texture = match done.pixels {
+        #[cfg(target_arch = "wasm32")]
+        if let (Pixels::Gpu(_), Some(gpu)) = (&done.pixels, &mut self.gpu) {
+            // Still requested and not received until the main thread renders it.
+            gpu.push(done);
+            return;
+        }
+        received(tab, &done);
+        let texture = match &done.pixels {
             Pixels::Cpu { size, rgba } => {
-                let image = egui::ColorImage::from_rgba_premultiplied(size, &rgba);
+                let image = egui::ColorImage::from_rgba_premultiplied(*size, rgba);
                 Texture::Cpu(ctx.load_texture("tile", image, egui::TextureOptions::LINEAR))
             }
             #[cfg(not(target_arch = "wasm32"))]
             Pixels::Gpu(texture) => match &self.gpu {
-                Some(registry) => Texture::Gpu(registry.register(texture)),
+                Some(registry) => Texture::Gpu(registry.register(texture.clone())),
                 // Not reached: GPU tiles come only from workers given the registry's device.
                 None => return,
             },
+            // Not reached: scenes come only from workers given the main thread's renderer.
             #[cfg(target_arch = "wasm32")]
-            Pixels::Gpu(never) => match never {},
+            Pixels::Gpu(_) => return,
         };
-        let images = (done.stats.images_loading > 0).then_some(done.images);
-        let tile = Tile {
-            texture,
-            elapsed: done.elapsed,
-        };
-        self.cache.insert(done.key, tile, done.stats, images);
+        store(&mut self.cache, &done, texture);
     }
 
     /// Paints the cached tiles of the tab's view onto `rect` (best fallback under missing
@@ -175,4 +209,20 @@ impl Tiles {
             Vec::new()
         };
     }
+}
+
+/// The UI has the tile: no longer requested, and the worker hears it was received.
+fn received(tab: &mut Tab, done: &RenderDone) {
+    tab.tile_requests.retain(|k| *k != done.key);
+    tab.tiles_received.push((done.key, done.images));
+}
+
+/// Stores `done`'s tile, drawn as `texture` (its pixels are not used).
+fn store(cache: &mut Cache<Tile>, done: &RenderDone, texture: Texture) {
+    let images = (done.stats.images_loading > 0).then_some(done.images);
+    let tile = Tile {
+        texture,
+        elapsed: done.elapsed,
+    };
+    cache.insert(done.key, tile, done.stats.clone(), images);
 }

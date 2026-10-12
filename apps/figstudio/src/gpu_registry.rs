@@ -1,5 +1,5 @@
-//! GPU tiles registered with eframe's egui renderer (desktop): each finished tile texture gets
-//! an egui id on the UI thread, freed with its texture when the tile cache drops the tile.
+//! GPU tiles registered with eframe's egui renderer: each finished tile texture gets an egui
+//! id on the UI thread, freed with its texture when the tile cache drops the tile.
 
 use std::sync::Arc;
 
@@ -7,7 +7,11 @@ use eframe::egui_wgpu::RenderState;
 use eframe::wgpu;
 
 /// Frees a registered tile from egui's renderer.
+#[cfg(not(target_arch = "wasm32"))]
 pub type Free = Arc<dyn Fn(egui::TextureId) + Send + Sync>;
+/// Frees a registered tile from egui's renderer (wgpu objects are not `Send` in the browser).
+#[cfg(target_arch = "wasm32")]
+pub type Free = std::rc::Rc<dyn Fn(egui::TextureId)>;
 
 /// A GPU tile registered with egui; dropping it (the tile cache evicts it) frees its egui id
 /// and its texture.
@@ -41,14 +45,18 @@ impl Registry {
     pub fn new(state: &RenderState) -> Self {
         let renderer = state.renderer.clone();
         let weak = Arc::downgrade(&renderer);
+        let free = move |id| {
+            if let Some(r) = weak.upgrade() {
+                r.write().free_texture(&id);
+            }
+        };
         Registry {
             device: state.device.clone(),
             renderer,
-            free: Arc::new(move |id| {
-                if let Some(r) = weak.upgrade() {
-                    r.write().free_texture(&id);
-                }
-            }),
+            #[cfg(not(target_arch = "wasm32"))]
+            free: Arc::new(free),
+            #[cfg(target_arch = "wasm32")]
+            free: std::rc::Rc::new(free),
         }
     }
 
