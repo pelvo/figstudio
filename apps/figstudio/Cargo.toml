@@ -30,6 +30,8 @@ image = { workspace = true }
 # mcp_host tests: an MCP client over HTTP against the hosted server.
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 serde_json = { workspace = true }
+# Headless UI tests (ui_tests.rs): the real App driven without a window, GPU or display.
+egui_kittest = { version = "0.36", default-features = false, features = ["eframe"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # parallel: page recordings replayed per tile (recordings.rs), as in the browser build.

@@ -31,6 +31,12 @@ impl Marquee {
     pub fn clear(&mut self) {
         *self = Marquee::default();
     }
+
+    /// The rectangle in page coordinates, for the UI tests.
+    #[cfg(test)]
+    pub fn rect(&self) -> Option<Rect> {
+        self.rect
+    }
 }
 
 /// The rectangle between two page points, whichever way the drag went. `None` if a point is

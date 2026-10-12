@@ -208,6 +208,7 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
   - **Proved:** truncate `text` to 400 (caught), break the link format (caught by 3 tests), drop the multi-line name
     flattening (caught), list Copy text for non-text nodes (caught). Each reverted.
   - **Gates:** G-check passed, G-web exit 0, G-golden identical (197 records), PII scan clean for this lane.
+  - **GUI now driven headlessly** (`apps/figstudio/src/ui_tests.rs`, egui_kittest, see `docs/TESTING.md` section 7b): the right-click on a node opens Copy name / node ID / link / for agent / as PNG, and Copy link and Copy for agent put the exact text on egui's clipboard output. Still not covered: the real OS clipboard and paste into an editor/Preview, a real window manager and window focus.
   - **Not verified:** a real right-click in the window (Computer Use did not bind the app); paste into an editor; the
     web build's clipboard (`ctx.copy_text` on web was not exercised).
 
@@ -261,6 +262,7 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
     logged by egui-winit. Web: if there is no secure context or `ClipboardItem`, the PNG is downloaded instead.
   - **Proved:** reverse the BFS order, ignore `visible`, drop the budget, drop the pixel cap, drop side/pixel clamps,
     swap the drag rect for a non-normalising one: each caught, reverted.
+  - **GUI now driven headlessly** (`apps/figstudio/src/ui_tests.rs`, egui_kittest, see `docs/TESTING.md` section 7b): a primary drag draws the marquee, a right-click inside it offers Copy region / Copy region as PNG (text starts with the `figstudio://…?page=…&rect=…` link and lists nodes; the PNG reaches the clipboard output as an image), a right-click outside opens the node menu. Still not covered: the real OS clipboard and paste into an editor/Preview, a real window manager and window focus.
   - **Not verified:** a real drag and right-click in the window; paste into Preview; the web clipboard and the
     download fallback in a browser; Safari's refusal after the gesture expires (cannot be detected up front).
 
@@ -460,8 +462,10 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
   `list_open_tabs` + `reveal_node` + `get_selection` + port closed after toggle off), 11 mutations caught. Manual:
   curl session against the release app (temporary env hook, not committed): list, selection, design context without
   nodeId, reveal (selection moved), tab closed during 4×30 concurrent `get_screenshot` calls (no hang, server and app
-  up); toggle off at launch: no listener on 3845. Not verified: clicking the menu toggle (no UI automation access to
-  the window), `claude mcp add`, visual fit after reveal. Binary: 15.9 MB → 23.2 MB release (feature on); off = unchanged.
+  up); toggle off at launch: no listener on 3845. Not verified: `claude mcp add`, visual fit after reveal.
+  **Menu toggle now covered** by `ui_mcp_tests.rs` (egui_kittest): View menu item unchecked at launch, checking it shows
+  `MCP 127.0.0.1:<port>/mcp` in the status bar, the port answers and `list_open_tabs` sees the tab, unchecking removes the label and
+  closes the port. Binary: 15.9 MB → 23.2 MB release (feature on); off = unchanged.
   Seen on the standalone server too (not L8): several concurrent calls on **one** session over curl appeared to stall.
   The L8 review could not reproduce it (2 and 4 concurrent calls on one session all answered); rmcp answers with an
   SSE stream, so a curl without `--max-time` can keep reading after the call finished. Open as a separate note, not

@@ -30,6 +30,8 @@ mod tile_cache;
 mod tile_queue;
 mod tiles;
 mod tiles_view;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod ui_tests;
 #[cfg(target_arch = "wasm32")]
 mod web;
 mod worker;
