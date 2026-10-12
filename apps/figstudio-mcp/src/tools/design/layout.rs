@@ -140,10 +140,17 @@ pub(super) fn container(
         .num("stackSpacing")
         .filter(|g| g.is_finite() && *g != 0.0);
     let counter = data.num("stackCounterSpacing").filter(|g| g.is_finite());
-    if data.text("stackWrap") == Some("WRAP") {
+    let wrap = data.text("stackWrap") == Some("WRAP");
+    if wrap {
         out.push("flex-wrap");
+        // Lines of a wrapped stack align as a group: `stackCounterAlignContent` AUTO (the
+        // default) packs them at the start, SPACE_BETWEEN spreads them across the cross axis.
+        match data.text("stackCounterAlignContent") {
+            Some("SPACE_BETWEEN") => out.push("content-between"),
+            _ => out.push("content-start"),
+        }
     }
-    match (data.text("stackWrap") == Some("WRAP"), counter) {
+    match (wrap, counter) {
         (true, Some(c)) => {
             let (main, cross) = if mode == "VERTICAL" {
                 ("y", "x")

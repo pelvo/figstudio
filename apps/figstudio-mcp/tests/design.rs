@@ -102,7 +102,7 @@ fn absolute_children_rotation_and_wrapped_stacks() {
     assert!(!code(&doc, "9:1").contains("hidden"));
     let unset = code(&doc, "9:5");
     assert!(
-        unset.contains("flex flex-wrap gap-[3px] items-start"),
+        unset.contains("flex flex-wrap content-start gap-[3px] items-start"),
         "NaN counter spacing is unset: {unset}"
     );
     let out = code(&doc, "9:1");
@@ -115,7 +115,7 @@ fn absolute_children_rotation_and_wrapped_stacks() {
     assert!(out.contains(r#"className="absolute left-[4px] top-[6px] origin-top-left rotate-[90deg] w-[10px] h-[10px]""#), "{out}");
     let wrap = code(&doc, "9:3");
     assert!(
-        wrap.contains("flex flex-col flex-wrap gap-y-[2px] gap-x-[6px] items-start"),
+        wrap.contains("flex flex-col flex-wrap content-start gap-y-[2px] gap-x-[6px] items-start"),
         "{wrap}"
     );
 }
@@ -256,4 +256,45 @@ fn strokes_radii_shadows_blurs_opacity_and_blend() {
     assert!(code(&doc, "9:2").contains("rounded-tl-[4px] rounded-br-[8px]"));
     assert!(notes(&doc, "9:2").contains("approximations: 1 stroke alignments approximated"));
     assert!(!notes(&doc, "9:1").contains("approximations"));
+}
+
+#[test]
+fn wrapped_stacks_align_their_lines_with_align_content() {
+    use figstudio_fig::Document;
+    use figstudio_mcp::tools::design::{Assets, Options, design_context};
+    use figstudio_mcp::tools::rendering::Rendering;
+    // The public fixture: node 1:2 is a 280x195 horizontal wrap frame of eight 40x40 children.
+    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/stacks_wrap.fig");
+    let doc = Document::open(fixture).unwrap();
+    let options = Options {
+        file_key: "stacks_wrap".into(),
+        assets: Assets::Inline,
+        rendering: Rendering::default(),
+        ..Default::default()
+    };
+    let out = texts(&design_context(&doc, "1:2", &options)).remove(0);
+    let frame = out
+        .lines()
+        .find(|l| l.contains("data-node-id=\"1:2\""))
+        .unwrap();
+    assert!(frame.contains("flex-wrap content-start"), "{frame}");
+    // A built wrap frame whose lines spread: stackCounterAlignContent SPACE_BETWEEN.
+    let spread = node(
+        7,
+        PAGE,
+        "FRAME",
+        "spread",
+        &[
+            ("stackMode", e("HORIZONTAL")),
+            ("stackWrap", e("WRAP")),
+            ("stackCounterAlignContent", e("SPACE_BETWEEN")),
+            ("stackSpacing", f(3.0)),
+            ("stackCounterSpacing", f(6.0)),
+        ],
+    );
+    let doc = doc_with(vec![spread]);
+    let code = code(&doc, "9:7");
+    assert!(code.contains("flex flex-wrap content-between"), "{code}");
+    assert!(!code.contains("content-start"), "{code}");
 }

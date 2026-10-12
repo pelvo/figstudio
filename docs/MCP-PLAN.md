@@ -500,4 +500,8 @@ Measured in a live Claude Code 2.1.296 session against a 1.7 GB file.
   `render_node` (get_screenshot, download_assets, get_figjam) caps the longest side at 2048 px
   when `scale` is omitted and keeps 4096 px for an explicit `scale`. Design assets
   (`layer_shot`, fixed scale) keep 4096 px.
+- **Wrapped auto-layout aligns its lines (lane 4).** `get_design_context` now sets
+  `content-start` on every `stackWrap = WRAP` frame, and `content-between` when
+  `stackCounterAlignContent` is `SPACE_BETWEEN` (schema: `AUTO = 0`, `SPACE_BETWEEN = 1`).
+  Before, the wrapped lines had no align-content, so the browser default stretched them.
 
