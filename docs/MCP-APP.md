@@ -289,6 +289,11 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
 - **Core deps added:** `serde`, `serde_json`, `quick-xml`. `schemars` and `rmcp` stay out.
 - **Gate:** G-check, G-wasm, G-golden empty against L3's commit, and the MCP tests unchanged and green. Note the change
   in line counts in the commit body.
+- **Status:** done. Core: `output.rs` (`Output`, `Block`, `text_first`), `metadata.rs` + `metadata/{figjam,node,pages,resolved}`,
+  `figjam.rs` (`board`: XML, pictured ids, validated scale), `design_system.rs`, `variables.rs` + `variables/format.rs`,
+  `codeconnect_context.rs`; deps `serde_json`, `quick-xml`. Adapter: `tools::to_call(Output)` and old-signature wrappers.
+  **Deviation:** `get_figjam`'s picture loop stays in the adapter (needs `Rendering`/`screenshot`, which move in L5);
+  `Block::Blob` is defined but unused until L5. Sidecars and `persist_file` stay in the adapter as specified.
 
 ## L5: Phase 1b, move the rendering tools to core (L, Sonnet)
 
