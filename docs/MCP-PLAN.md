@@ -291,6 +291,19 @@ before/after; thumb sheet viewed; new tests on built documents and on structure.
 instances 1:38/1:45, each proven by a mutation; `scripts/check.sh` passed.
 Not verified: private and large files (output size and time of fully expanded pages), live
 clients, instance-child screenshots under ancestor masks or clips (they are not applied).
+PR #5 review fix (uniform scale): children of an instance with
+`symbolData.uniformScaleFactor` were listed at the component's size and offset while
+`get_screenshot` drew them scaled. The renderer's scale step moved into `fig::resolve`
+(`uniform_scale`, `scale_inherited`, `Overrides::outer_scale`/`scale`, `Resolved::scale`); the
+renderer and `Overrides::resolve` both call it, so `get_metadata` and `get_design_context`
+report scaled x/y/width/height and stroke weights (nested scales multiply; a value an
+override states is scaled only by the instances outside its owner). Padding, gap, radii and
+text-style lengths stay stored values, as the renderer draws them; design context counts
+`lengths kept unscaled in scaled instances`. Verified: `tests/instance_scale.rs` (metadata =
+screenshot size at scales 1 and 0.5, nested x1.5·x2, owner-stated size, constraint-resized
+instance unchanged, design-context classes), each proven failing by a mutation; 28 fixture
+renders byte-identical before/after. Not verified: private files, Figma's own scaling of
+padding/gap/radius/font size.
 
 **L6: `get_design_context`.** Node → JSX + Tailwind:
 - frames with auto-layout become `flex`, with gap, padding, alignment and grow;

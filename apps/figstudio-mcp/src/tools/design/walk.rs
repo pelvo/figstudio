@@ -30,6 +30,9 @@ pub(super) struct Item<'d> {
     pub(super) target: Target,
     pub(super) kind: &'d str,
     pub(super) data: Cow<'d, Val>,
+    /// Uniform scale of the enclosing instances, already applied to position, size, strokes
+    /// and glyphs (`resolve::scale_inherited`); 1 outside instances.
+    pub(super) scale: f64,
 }
 
 /// The collected layers and what could not be collected.
@@ -69,6 +72,7 @@ pub(super) fn collect<'d>(doc: &'d Document, root: &Target, limit: usize) -> Opt
                     target: Target::Node(id),
                     kind: &node.kind,
                     data: with_component(doc, &node.kind, Cow::Borrowed(&node.data)),
+                    scale: 1.0,
                 });
                 if node.kind == "INSTANCE" {
                     let left = limit - layers.items.len();
@@ -96,6 +100,7 @@ impl<'d> Layers<'d> {
                 target: Target::Path(node.path),
                 kind,
                 data: with_component(doc, kind, Cow::Owned(node.data)),
+                scale: node.scale,
             });
         }
     }

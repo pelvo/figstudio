@@ -7,7 +7,7 @@ use figstudio_fig::{Guid, Val};
 use vello_cpu::kurbo::{Affine, Rect};
 
 use crate::geom::{affine, size, transformed_bounds};
-use crate::{Ctx, absolute_transform_with_budget, uniform_scale, visible};
+use crate::{Ctx, absolute_transform_with_budget, visible};
 
 impl Ctx<'_> {
     /// Walks from the instance down to the node at `path` the way `draw_instance` and
@@ -43,7 +43,6 @@ impl Ctx<'_> {
                     return None;
                 }
                 self.overrides.enter(symbol, &parent_data, &parent_path);
-                self.instance_scales.push(uniform_scale(&parent_data));
                 (parent_path.clone(), None)
             } else {
                 // As in `draw_children`: frames are not part of override paths, and a resized

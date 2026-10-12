@@ -115,6 +115,11 @@ impl Writer<'_> {
         depth: usize,
     ) -> Option<&'static str> {
         let data = &*item.data;
+        if item.scale != 1.0 && layout::keeps_stored_lengths(data) {
+            self.out
+                .notes
+                .add("lengths kept unscaled in scaled instances");
+        }
         let fills = paint::paints(data, "fillPaints", &self.tokens);
         let image = fills.iter().any(|p| p.text("type") == Some("IMAGE"));
         let head = format!(
