@@ -2,6 +2,8 @@
 //!
 //! No async runtime and no I/O: this crate builds for `wasm32-unknown-unknown`.
 
+/// PNG, JPEG or original image bytes of nodes.
+pub mod assets;
 /// Local Code Connect component context.
 pub mod codeconnect_context;
 /// Local component, style and variable search.

@@ -1,11 +1,7 @@
 //! `get_figjam`: `get_metadata` XML plus FigJam details, with optional small screenshots.
 use crate::{
     FigstudioServer,
-    tools::{
-        assets::{self, Payload},
-        rendering::Rendering,
-        to_call, tool_error,
-    },
+    tools::{assets::Payload, rendering::Rendering, to_call, tool_error},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use figstudio_fig::Document;
@@ -133,7 +129,7 @@ pub fn figjam_within(
             )));
         }
     }
-    CallToolResult::success(assets::text_first(content))
+    CallToolResult::success(text_first(content))
 }
 
 /// A text line and PNG for one node, or only a line when it cannot be rendered or no longer
@@ -163,4 +159,12 @@ fn picture(
             "{id}: PNG encoding failed: {error}"
         ))],
     }
+}
+
+/// The same items with every text block before every image.
+fn text_first(content: Vec<ContentBlock>) -> Vec<ContentBlock> {
+    let (mut text, media): (Vec<_>, Vec<_>) =
+        content.into_iter().partition(|c| c.as_text().is_some());
+    text.extend(media);
+    text
 }
