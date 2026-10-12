@@ -42,6 +42,9 @@ fn the_env_var_and_the_device_choose_the_renderer() {
     );
     assert_eq!(choose(Some(" GPU "), big, soft), Choice::Gpu);
     assert_eq!(label(choose(None, big, soft), None), "CPU");
+    // The whole canvas is on the CPU by design there: its tiles are not fallbacks.
+    assert!(!Fallback::Cpu(CpuWhy::Software).counted());
+    assert!(Fallback::Cpu(CpuWhy::SmallTextures).counted());
     for kind in [
         DeviceType::Other,
         DeviceType::IntegratedGpu,

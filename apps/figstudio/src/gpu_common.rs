@@ -91,9 +91,10 @@ pub enum Fallback {
 }
 
 impl Fallback {
-    /// Counted in `Stats::gpu_fallback_tiles`: every tile the GPU was wanted for.
+    /// Counted in `Stats::gpu_fallback_tiles`: every tile the GPU was wanted for. Not when the
+    /// CPU was asked for, or chosen for a software adapter: the whole canvas is on the CPU then.
     pub fn counted(self) -> bool {
-        self != Fallback::Cpu(CpuWhy::Asked)
+        !matches!(self, Fallback::Cpu(CpuWhy::Asked | CpuWhy::Software))
     }
 }
 
