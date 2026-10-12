@@ -1205,6 +1205,7 @@ impl Ctx<'_> {
                 Some(a)
                     if ring.is_none()
                         && (is_box_shape(kind)
+                            || kind == "TEXT"
                             || (kind == "VECTOR" && closed_network(data, &self.doc.blobs))) =>
                 {
                     align_clip(fill_paths, a == "OUTSIDE")
@@ -1213,7 +1214,7 @@ impl Ctx<'_> {
             };
             // shortcut: open vectors and other vector-like kinds draw stored inside/outside
             // strokes unclipped (counted); clip them too when a case needs it.
-            if align.is_some() && aligned.is_none() && ring.is_none() && kind != "TEXT" {
+            if align.is_some() && aligned.is_none() && ring.is_none() {
                 self.stats.approximated_strokes += 1;
             }
             if let Some((clip, rule)) = &aligned {

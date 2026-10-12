@@ -179,3 +179,52 @@ fn open_vector_strokes_are_left_unclipped() {
         "an open path has no inside, so the stored band is drawn whole"
     );
 }
+
+/// Text with one 20-unit square glyph at (20,20) and a stored 4-unit centred band around it,
+/// the way Figma stores a 2-unit inside stroke on text.
+#[test]
+fn stored_inside_text_stroke_is_clipped_to_the_glyphs() {
+    let mut text = node(2, 1, "TEXT");
+    text.data.set("fillPaints", paint(0.0, 0.0, 1.0));
+    text.data.set("strokePaints", paint(1.0, 0.0, 0.0));
+    text.data.set("strokeWeight", Val::Float(2.0));
+    text.data.set("strokeAlign", Val::Str("INSIDE".into()));
+    let mut doc = document(vec![node(1, 0, "CANVAS"), text]);
+    let (glyph, band) = (doc.blobs.len() as i64, doc.blobs.len() as i64 + 1);
+    let mut g = Vec::new();
+    rect_cmds(&mut g, 0.0, 0.0, 1.0, 1.0);
+    let mut b = Vec::new();
+    rect_cmds(&mut b, 18.0, 18.0, 42.0, 42.0);
+    rect_cmds(&mut b, 22.0, 22.0, 38.0, 38.0);
+    doc.blobs.extend([g, b]);
+    let mut nodes = doc.nodes.clone();
+    let data = &mut nodes.iter_mut().find(|n| n.id == id(2)).unwrap().data;
+    // Glyph outlines are y-up from the baseline: baseline y 40 covers y 20..40.
+    let glyphs = obj(&[(
+        "glyphs",
+        Val::Arr(vec![obj(&[
+            ("commandsBlob", Val::Int(glyph)),
+            ("fontSize", Val::Float(20.0)),
+            ("position", size(20.0, 40.0)),
+        ])]),
+    )]);
+    data.set("derivedTextData", glyphs);
+    data.set(
+        "strokeGeometry",
+        Val::Arr(vec![obj(&[
+            ("commandsBlob", Val::Int(band)),
+            ("windingRule", Val::Str("ODD".into())),
+        ])]),
+    );
+    doc.set_nodes(nodes).unwrap();
+    let px = pixels(&doc);
+
+    assert!(
+        red(&px, 20, 30) && red(&px, 21, 30),
+        "band inside the glyph"
+    );
+    assert!(
+        !red(&px, 18, 30) && !red(&px, 19, 30),
+        "nothing outside the glyph"
+    );
+}

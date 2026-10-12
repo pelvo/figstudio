@@ -548,3 +548,8 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   grepped against the code; two wrong statements fixed. check.sh passed (see the commit). Not verified: a live client
   session, GitHub rendering of the README.
 - 2026-10-12 — Headless GUI tests: `egui_kittest` 0.36 (dev-dep, `eframe` feature) drives the real app in `cargo test` (`ui_tests.rs`, `ui_copy_tests.rs`, `ui_mcp_tests.rs`, 8 tests): View-menu MCP toggle (status label, port, `list_open_tabs`, port closed), node right-click Copy menu, marquee Copy region / PNG, click-select, Hand-tool pan. 10 mutations seen failing. Not verified: real OS clipboard/paste, real window manager.
+- 2026-10-12 — Text with an inside/outside stroke: stored `strokeGeometry` (a centred band of twice the
+  weight) is now clipped to the glyph outlines like box shapes, instead of drawn unclipped, which
+  made thin grey text look bold and smeared. Test `stored_inside_text_stroke_is_clipped_to_the_glyphs`
+  (seen failing without the fix). check.sh passed; checked against a private file render.
+  Not verified: outside text strokes on a real file.
