@@ -462,3 +462,12 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   reads lazy originals after a size check against the budget. `tests/lazy.rs` proven by mutations;
   CLI render of 7 fixtures at 0.25 and 1 byte-identical to 407102c; foreground `scripts/check.sh`:
   all checks passed. Not verified: a real >256 MiB file, the wasm UI (`web.rs` unchanged).
+- 2026-10-12 PR #5 review round 2 (figstudio-mcp): five lanes, one commit each. Text caps
+  24 000 with `--max-output-bytes` (37c13f3); download_assets 10 MiB reply and 7.5 MiB per
+  image (12624bf); default screenshots 2048 px (81e9dad); wrapped auto-layout
+  `content-start`/`content-between` (d644547); sidecar cross-process lock (849d195). Each
+  behaviour change proven by a test that fails with the change removed; foreground
+  `scripts/check.sh` all checks passed before each commit. Not verified: a live Claude Code
+  session against the 1.7 GB file (the reviewer's measurements are the evidence for the
+  limits); the sidecar lock on network filesystems; the wasm UI (unchanged).
+
