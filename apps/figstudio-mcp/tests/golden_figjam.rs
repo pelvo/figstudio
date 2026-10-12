@@ -63,8 +63,8 @@ fn endpoint(id: u32, magnet: &'static str) -> Val {
     ])
 }
 
-/// One of each FigJam kind under section 9:1 on the first page, with an image fill on the
-/// sticky so `includeImages=true` has something to render.
+/// One of each FigJam kind under section 9:1 on the first page; `includeImages=true` renders
+/// each of them.
 fn board() -> Document {
     let mut doc = Document::open(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/structure.fig"),
@@ -108,7 +108,7 @@ fn board() -> Document {
             5,
             section,
             "CODE_BLOCK",
-            // The schema stores code text in textData; `sourceCode` is not a NodeChange field.
+            // The fixtures' schema has no `sourceCode` field (newer Figma schemas do): text in textData.
             &[
                 ("textData", text_data("let x = 1 < 2;")),
                 ("codeBlockLanguage", Val::Enum("RUST")),

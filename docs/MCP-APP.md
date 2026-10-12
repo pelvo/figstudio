@@ -107,9 +107,11 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
   - **Mutation proofs:** a tool description (tools/list); an output text (7 invalid-get_metadata records); the FigJam
     section status (both `get_figjam` records); the original-image MIME label (`original=true` records). Each diff
     showed the change and was reverted.
-  - **Known gaps the golden shows:** `get_figjam` prints no text for the code block (the reader reads `sourceCode`, which
-    is not a schema field; the schema stores code text in `textData`). A fix will show as a golden diff. The harness always
-    passes an explicit `imageScale`, so a change to `DEFAULT_IMAGE_SCALE` is not recorded.
+  - **Known gaps the golden shows:** `get_figjam` prints no text for the code block. The reader reads `sourceCode`;
+    the fixtures' embedded schema has no such field (their code text is in `textData.characters`), but newer Figma
+    schemas do have `sourceCode`. Check a real modern FigJam file before changing the reader: a fix should read
+    `sourceCode` **or** `textData.characters`, not one alone. A fix will show as a golden diff. The harness always passes
+    an explicit `imageScale`, so a change to `DEFAULT_IMAGE_SCALE` is not recorded.
   - **Not verified:** cross-machine byte equality; non-macOS.
 
 ## L1: `crates/mcp-core` seed with node IDs and links (M, Sonnet)
