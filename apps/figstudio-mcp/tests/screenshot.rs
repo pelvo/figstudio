@@ -168,14 +168,14 @@ fn zero_size_and_hidden_nodes_are_errors() {
 }
 
 #[test]
-fn longest_side_is_capped_at_4096_and_the_scale_is_honest() {
+fn explicit_scale_keeps_the_4096_cap_and_the_scale_is_honest() {
     let doc = with_frames(vec![frame(Guid(9, 1), 20_000.0, 100.0, true)]);
     let (w, h) = png_size(&shot(&doc, "9:1", Some(4.0)));
     assert!(w <= 4096 && w > 4000 && h < 100, "{w}x{h}");
     // Past 409 600 units the cap needs a scale below the renderer's old 0.01 floor.
     for width in [409_600.0, 500_000.0, 2_000_000.0] {
         let doc = with_frames(vec![frame(Guid(9, 1), width, 100.0, true)]);
-        let result = shot(&doc, "9:1", None);
+        let result = shot(&doc, "9:1", Some(1.0));
         let (w, h) = png_size(&result);
         assert!(w <= 4096 && w > 4000 && h >= 1, "{width}: {w}x{h}");
         let scale = reported_scale(&text(&result));
@@ -184,6 +184,27 @@ fn longest_side_is_capped_at_4096_and_the_scale_is_honest() {
             "{width}: scale {scale} gives {w} px"
         );
     }
+}
+
+#[test]
+fn omitted_scale_caps_the_longest_side_at_2048() {
+    // A 3000-unit frame at the default scale 1 would be 3000 px; the default cap is 2048.
+    let doc = with_frames(vec![frame(Guid(9, 1), 3_000.0, 100.0, true)]);
+    let result = shot(&doc, "9:1", None);
+    let (w, h) = png_size(&result);
+    assert!(w <= 2048 && w > 2000 && h < 100, "{w}x{h}");
+    let scale = reported_scale(&text(&result));
+    assert!(
+        (scale * 3_000.0 - f64::from(w)).abs() <= 0.001 * f64::from(w),
+        "scale {scale} gives {w} px"
+    );
+    // The same frame with an explicit scale 1 keeps all 3000 px (under the 4096 hard cap).
+    let (w, _) = png_size(&shot(&doc, "9:1", Some(1.0)));
+    assert_eq!(w, 3_000);
+    // A default-scale request far past the cap stays at 2048 px in both dimensions.
+    let big = with_frames(vec![frame(Guid(9, 1), 20_000.0, 100.0, true)]);
+    let (w, _) = png_size(&shot(&big, "9:1", None));
+    assert!(w <= 2048 && w > 2000, "{w}");
 }
 
 #[test]

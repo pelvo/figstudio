@@ -55,7 +55,8 @@ pub(crate) struct AssetsInput {
     file_key: Option<String>,
     /// `png` (default) or `jpg`.
     format: Option<AssetFormat>,
-    /// Pixels per design unit, 0.01 to 4 (default 1). The longest side is capped at 4096 px.
+    /// Pixels per design unit, 0.01 to 4 (default 1). Without it the longest side is capped at
+    /// 2048 px; with it, at 4096 px.
     scale: Option<f64>,
     /// Return the original bytes of the image fills inside each node instead of a render.
     original: Option<bool>,
@@ -64,7 +65,7 @@ pub(crate) struct AssetsInput {
 #[tool_router(router = assets_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Download up to 20 nodes as PNG or JPG images (format, scale 0.01 to 4, longest side capped at 4096 px). JPG has no transparency: nodes are flattened onto white, pages keep their page background. With original=true the call returns the source files of the image fills inside each node (up to 20 per call, each once) with their detected MIME type instead of a render. Each node gets a text line; a node that fails is reported there and does not fail the call. Instance paths (I1:2;3:4) are accepted. SVG and PDF export are not available offline."
+        description = "Download up to 20 nodes as PNG or JPG images (format, scale 0.01 to 4; longest side capped at 2048 px without scale, 4096 px with it). JPG has no transparency: nodes are flattened onto white, pages keep their page background. With original=true the call returns the source files of the image fills inside each node (up to 20 per call, each once) with their detected MIME type instead of a render. Each node gets a text line; a node that fails is reported there and does not fail the call. Instance paths (I1:2;3:4) are accepted. SVG and PDF export are not available offline."
     )]
     async fn download_assets(&self, Parameters(input): Parameters<AssetsInput>) -> CallToolResult {
         let document = match self.files().open(input.file_key.as_deref()).await {

@@ -495,3 +495,9 @@ Measured in a live Claude Code 2.1.296 session against a 1.7 GB file.
   characters and rejected 44,674 and above (design) and 74,213 and above (metadata). The
   byte caps of `get_metadata`, `get_design_context` and `get_figjam` drop from 80 000 to
   24 000 by default, and `--max-output-bytes N` (4000–100000) overrides them.
+- **Default screenshots fit the image limits (lane 3).** A 4096 px PNG measured 3.1–3.7 MB,
+  close to the 5 MB base64 limit of Bedrock and Vertex, and Claude downscales above 1568 px.
+  `render_node` (get_screenshot, download_assets, get_figjam) caps the longest side at 2048 px
+  when `scale` is omitted and keeps 4096 px for an explicit `scale`. Design assets
+  (`layer_shot`, fixed scale) keep 4096 px.
+
