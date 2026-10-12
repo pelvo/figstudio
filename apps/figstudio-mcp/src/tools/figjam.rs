@@ -3,14 +3,14 @@ use crate::{
     FigstudioServer,
     tools::{
         assets::{self, Payload},
-        metadata::{figjam::Extras, run},
         rendering::Rendering,
         screenshot::render_node,
-        tool_error,
+        to_call, tool_error,
     },
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use figstudio_fig::Document;
+use figstudio_mcp_core::figjam::{Board, board};
 use rmcp::{
     handler::server::wrapper::Parameters,
     model::{CallToolResult, ContentBlock},
@@ -19,11 +19,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// Most screenshots one call returns.
-pub const MAX_IMAGES: usize = 20;
-/// Largest `scale` for those screenshots; they are previews, not exports.
-pub const MAX_IMAGE_SCALE: f64 = 0.5;
-const DEFAULT_IMAGE_SCALE: f64 = 0.25;
+pub use figstudio_mcp_core::figjam::{MAX_IMAGE_SCALE, MAX_IMAGES};
 
 /// Inputs for a FigJam board listing.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -114,23 +110,21 @@ pub fn figjam_within(
     max_payload: usize,
     max_bytes: usize,
 ) -> CallToolResult {
-    let scale = image_scale.unwrap_or(DEFAULT_IMAGE_SCALE);
-    if !(0.01..=MAX_IMAGE_SCALE).contains(&scale) {
-        return CallToolResult::error(vec![ContentBlock::text(
-            "imageScale must be between 0.01 and 0.5",
-        )]);
-    }
-    let (xml, extras) = match run(doc, node_id, depth, Some(Extras::default()), max_bytes) {
-        Ok((xml, extras)) => (xml, extras.unwrap_or_default()),
-        Err(result) => return result,
+    let Board {
+        xml,
+        pictured,
+        scale,
+    } = match board(doc, node_id, depth, image_scale, max_bytes) {
+        Ok(board) => board,
+        Err(output) => return to_call(output),
     };
     let mut content = vec![ContentBlock::text(xml)];
     if include_images {
         let mut payload = Payload::new(max_payload);
-        for id in extras.pictured.iter().take(MAX_IMAGES) {
+        for id in pictured.iter().take(MAX_IMAGES) {
             content.extend(picture(doc, id, scale, rendering, &mut payload));
         }
-        let skipped = extras.pictured.len().saturating_sub(MAX_IMAGES);
+        let skipped = pictured.len().saturating_sub(MAX_IMAGES);
         if skipped > 0 {
             content.push(ContentBlock::text(format!(
                 "{skipped} more node(s) not pictured (limit {MAX_IMAGES})"

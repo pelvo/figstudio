@@ -2,8 +2,8 @@
 //! Field names come from the Kiwi schema (`STICKY`, `CONNECTOR`, … are schema-only in the
 //! public fixtures); a field that is absent is left out.
 use super::node::capped;
+use crate::variables::format::color;
 use figstudio_fig::Val;
-use figstudio_mcp_core::variables::format::color;
 use std::collections::BTreeMap;
 
 /// Kinds the renderer draws as a plain box with no text or shape, or not at all.

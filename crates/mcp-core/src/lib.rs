@@ -8,8 +8,12 @@ pub mod codeconnect_context;
 pub mod design_system;
 /// Errors for node IDs, file keys, links and loading a document.
 pub mod error;
+/// FigJam boards as metadata XML.
+pub mod figjam;
 /// `figstudio://` and figma.com links.
 pub mod link;
+/// Sparse XML page lists and node subtrees.
+pub mod metadata;
 /// Accepted Figma node ID formats.
 pub mod node_id;
 /// Tool replies without an SDK type.
