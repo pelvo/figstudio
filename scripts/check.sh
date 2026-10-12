@@ -38,6 +38,8 @@ step "tests"
 cargo $TC test --release --workspace
 # `gpu` includes `parallel`: the replay tests plus the GPU-vs-CPU tile tests.
 cargo $TC test --release -p figstudio-render --features gpu
+# mcp-core as the app and the browser use it: no files, no system fonts.
+cargo $TC test --release -p figstudio-mcp-core --no-default-features
 
 step "release build"
 cargo $TC build --release --workspace
