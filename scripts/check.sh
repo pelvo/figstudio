@@ -31,10 +31,13 @@ step "clippy"
 cargo $TC clippy --release --workspace --all-targets -- -D warnings
 # The browser build's strip renderer (feature off on desktop).
 cargo $TC clippy --release -p figstudio-render --features parallel --all-targets -- -D warnings
+# GPU tile replay (vello_gpu; the app wires it). Its pixel tests skip without a GPU adapter.
+cargo $TC clippy --release -p figstudio-render --features gpu --all-targets -- -D warnings
 
 step "tests"
 cargo $TC test --release --workspace
-cargo $TC test --release -p figstudio-render --features parallel
+# `gpu` includes `parallel`: the replay tests plus the GPU-vs-CPU tile tests.
+cargo $TC test --release -p figstudio-render --features gpu
 
 step "release build"
 cargo $TC build --release --workspace

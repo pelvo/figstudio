@@ -911,3 +911,26 @@ fn truncated_text_without_stored_glyphs_is_counted() {
         s.text_missing + s.text_system_fonts
     );
 }
+
+#[test]
+fn stats_max_with_keeps_the_larger_count_of_every_field() {
+    let mut a = Stats {
+        nodes: 5,
+        culled: 1,
+        ..Stats::default()
+    };
+    let b = Stats {
+        nodes: 3,
+        culled: 4,
+        approximated_paints: 2,
+        ..Stats::default()
+    };
+    a.max_with(&b);
+    let want = Stats {
+        nodes: 5,
+        culled: 4,
+        approximated_paints: 2,
+        ..Stats::default()
+    };
+    assert_eq!(a, want);
+}

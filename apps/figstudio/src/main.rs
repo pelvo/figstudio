@@ -1,12 +1,28 @@
 //! figstudio — desktop and browser app for Figma `.fig` local copies.
 
 mod canvas;
+mod gpu;
+mod gpu_common;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod gpu_credits;
+mod gpu_registry;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod gpu_scenes;
+#[cfg(not(target_arch = "wasm32"))]
+mod gpu_tiles;
+#[cfg(target_arch = "wasm32")]
+mod gpu_tiles_web;
 mod labels;
 mod panels;
+mod recordings;
 mod source;
 mod state;
 mod tab;
 mod theme;
+mod tile_cache;
+mod tile_queue;
+mod tiles;
+mod tiles_view;
 #[cfg(target_arch = "wasm32")]
 mod web;
 mod worker;
@@ -22,9 +38,10 @@ use worker::{Loaded, Workers};
 const APP_NAME: &str = "figstudio";
 
 #[cfg(not(target_arch = "wasm32"))]
-fn main() -> eframe::Result {
+fn main() -> std::process::ExitCode {
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)
             .with_app_id(APP_NAME)
@@ -33,11 +50,20 @@ fn main() -> eframe::Result {
             .with_drag_and_drop(true),
         ..Default::default()
     };
-    eframe::run_native(
+    options.wgpu_options.wgpu_setup = gpu::setup();
+    let run = eframe::run_native(
         APP_NAME,
         options,
         Box::new(move |cc| Ok(Box::new(App::new(cc, files)))),
-    )
+    );
+    // No usable GPU adapter (or no window) ends here: say why instead of a bare Debug dump.
+    match run {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{APP_NAME}: could not start the window: {err}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 /// Renders `root` for export, reading every image it needs at full sharpness.
@@ -70,6 +96,7 @@ struct Toast {
 
 struct App {
     workers: Workers,
+    tiles: tiles_view::Tiles,
     render_worker_lost: bool,
     tabs: Vec<Tab>,
     active: usize,
@@ -89,15 +116,42 @@ struct App {
     profile: bool,
     #[cfg(target_arch = "wasm32")]
     web: web::Inbox,
+    /// The window size cap last sent (`gpu::cap_window`).
+    #[cfg(not(target_arch = "wasm32"))]
+    window_cap: Option<f32>,
+    /// What draws the canvas tiles ("GPU (Metal)", "CPU"), for the status bar.
+    renderer: String,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
         theme::install_fonts(&cc.egui_ctx);
-        let workers = Workers::new(&cc.egui_ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        let (workers, renderer, tiles) = {
+            let mut tiles = tiles_view::Tiles::default();
+            let state = cc.wgpu_render_state.as_ref();
+            let env = std::env::var("FIGSTUDIO_RENDERER").ok();
+            let side = state.map(|s| s.device.limits().max_texture_dimension_2d);
+            let kind = state.map(|s| s.adapter.get_info().device_type);
+            let choice = gpu_tiles::choose(env.as_deref(), side, kind);
+            let backend = state.map(|s| s.adapter.get_info().backend);
+            tiles.gpu = state.map(gpu_tiles::Registry::new);
+            let gpu = gpu_tiles::TileGpu::new(choice, state);
+            let label = gpu_tiles::label(choice, backend);
+            (Workers::with_gpu(&cc.egui_ctx, gpu), label, tiles)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let (workers, renderer, tiles) = {
+            let mut tiles = tiles_view::Tiles::default();
+            let (gpu, web_gpu, label) = gpu_tiles_web::start(cc.wgpu_render_state.as_ref());
+            tiles.gpu = web_gpu;
+            (Workers::with_gpu(&cc.egui_ctx, gpu), label, tiles)
+        };
         let mut app = App {
             workers,
+            renderer,
+            tiles,
             render_worker_lost: false,
             tabs: Vec::new(),
             active: 0,
@@ -114,6 +168,8 @@ impl App {
             profile: std::env::var_os("FIGSTUDIO_PROFILE").is_some(),
             #[cfg(target_arch = "wasm32")]
             web: web::Inbox::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            window_cap: None,
         };
         for f in files {
             app.open(f);
@@ -178,9 +234,11 @@ impl App {
     fn close(&mut self, i: usize) {
         if i < self.tabs.len() {
             let closed = self.tabs.remove(i);
+            self.workers.close_tab(closed.id);
             let instance = closed.doc.instance;
             if !self.tabs.iter().any(|t| t.doc.instance == instance) {
-                self.workers.images().forget_document(instance);
+                self.workers.close_document(instance);
+                self.tiles.forget(instance);
             }
             if self.active >= self.tabs.len() {
                 self.active = self.tabs.len().saturating_sub(1);
@@ -296,7 +354,7 @@ impl App {
             match classify(self.workers.render_rx.try_recv()) {
                 Poll::Msg(done) => {
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == done.tab) {
-                        canvas::accept(ctx, tab, done);
+                        self.tiles.accept(ctx, tab, done);
                     }
                 }
                 Poll::Empty => break,
@@ -307,6 +365,8 @@ impl App {
                 }
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        self.tiles.pump_gpu(&mut self.tabs);
         #[cfg(not(target_arch = "wasm32"))]
         while let Ok(done) = self.workers.export_rx.try_recv() {
             match done.result {
@@ -651,7 +711,7 @@ impl App {
                 r#"{{"tabs":{},"loading":{},"page":{},"pages":{},"zoom":{},"drawn":{},"#,
                 r#""culled":{},"images_loading":{},"images_missing":{},"render_ms":{:.1},"#,
                 r#""image_cache_bytes":{},"images_arrived":{},"busy":{},"errors":{},"#,
-                r#""cjk_font":"{:?}"}}"#
+                r#""cjk_font":"{:?}","renderer":"{}","gpu_fallback_tiles":{}}}"#
             ),
             self.tabs.len(),
             self.loading.len(),
@@ -668,6 +728,9 @@ impl App {
             self.workers.busy(),
             self.toasts.iter().filter(|t| t.error).count(),
             self.web.font_state,
+            // A fixed name ("GPU (WebGPU)", "CPU"): no device or driver names.
+            self.renderer,
+            s.map_or(0, |s| s.gpu_fallback_tiles),
         )
     }
 
@@ -678,6 +741,13 @@ impl App {
                 return;
             };
             ui.label(format!("{:.0}%", tab.view.zoom * 100.0));
+            ui.separator();
+            let cpu_tiles = match tab.stats.gpu_fallback_tiles {
+                0 => String::new(),
+                n => format!(" · {n} tiles on the CPU"),
+            };
+            ui.label(RichText::new(format!("{}{cpu_tiles}", self.renderer)).color(theme::TEXT_DIM))
+                .on_hover_text("What draws the canvas (FIGSTUDIO_RENDERER=cpu|gpu). Tiles on the CPU use something the GPU path cannot draw yet.");
             ui.separator();
             if let Some(p) = self.cursor {
                 ui.label(RichText::new(format!("{:.0}, {:.0}", p.x, p.y)).color(theme::TEXT_DIM));
@@ -789,8 +859,13 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let started = web_time::Instant::now();
         self.frame_ui(ui);
+        #[cfg(not(target_arch = "wasm32"))]
+        gpu::cap_window(ui.ctx(), &mut self.window_cap);
         #[cfg(target_arch = "wasm32")]
-        web::publish_status(&self.status_json());
+        {
+            web::cap_canvas(ui.ctx().input(|i| i.max_texture_side));
+            web::publish_status(&self.status_json());
+        }
         if self.profile {
             let tab = self.tabs.get(self.active);
             eprintln!(
@@ -912,7 +987,16 @@ impl App {
                         );
                     });
                 }
-                Some(tab) => cursor = canvas::show(ui, tab, &mut self.workers, tool, space_held),
+                Some(tab) => {
+                    cursor = canvas::show(
+                        ui,
+                        tab,
+                        &mut self.workers,
+                        &mut self.tiles,
+                        tool,
+                        space_held,
+                    )
+                }
                 None => open_clicked = empty_state(ui),
             }
         });
@@ -943,7 +1027,7 @@ impl App {
         }
         // Browser workers cannot wake the UI (see worker.rs), so poll while they work.
         #[cfg(target_arch = "wasm32")]
-        if self.workers.busy() {
+        if self.workers.busy() || self.tiles.gpu_busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }

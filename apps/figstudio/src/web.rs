@@ -37,10 +37,19 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
     // After eframe's hook (installed by `new`). eframe stops drawing after any panic, so the
     // page shows the error itself (`figstudioFatal`, polled by index.html).
     crate::worker::install_panic_flag();
+    CANVAS.with(|c| *c.borrow_mut() = Some((canvas.clone(), 0.0)));
     runner
         .start(
             canvas,
-            eframe::WebOptions::default(),
+            // WebGPU first, WebGL2 when the browser lacks it (egui-wgpu's default backends).
+            {
+                let mut options = eframe::WebOptions {
+                    renderer: eframe::Renderer::Wgpu,
+                    ..Default::default()
+                };
+                options.wgpu_options.wgpu_setup = crate::gpu::setup();
+                options
+            },
             Box::new(|cc| Ok(Box::new(crate::App::new(cc, Vec::new())))),
         )
         .await
@@ -81,6 +90,45 @@ enum FileRequest {
     },
     /// Nothing uses the file any more (its tab and renders are gone).
     Close(u32),
+}
+
+thread_local! {
+    /// The app's canvas and the CSS size cap last applied to it (`cap_canvas`).
+    static CANVAS: RefCell<Option<(web_sys::HtmlCanvasElement, f32)>> = const { RefCell::new(None) };
+}
+
+/// Keeps the canvas backing store within the GPU's `max_side`: eframe sizes it to the CSS box
+/// times the device pixel ratio (eframe 0.36 `web/events.rs` `ResizeObserverContext`, and the
+/// DPR-change handler) and configures the surface at that size; wgpu panics above the limit.
+/// A CSS max-width/height stops the box from growing past the limit; the direct clamp covers
+/// a DPR change, where eframe rescales the backing store before the next resize. Called every
+/// frame, before eframe paints.
+pub fn cap_canvas(max_side: usize) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    #[expect(clippy::cast_possible_truncation, reason = "a pixel ratio")]
+    let dpr = window.device_pixel_ratio() as f32;
+    let max_css = crate::gpu::max_points(max_side, dpr);
+    CANVAS.with(|c| {
+        let mut c = c.borrow_mut();
+        let Some((canvas, applied)) = c.as_mut() else {
+            return;
+        };
+        if *applied != max_css {
+            let style = canvas.style();
+            let _ = style.set_property("max-width", &format!("{max_css}px"));
+            let _ = style.set_property("max-height", &format!("{max_css}px"));
+            *applied = max_css;
+        }
+        let max_px = u32::try_from(max_side).unwrap_or(u32::MAX);
+        if canvas.width() > max_px {
+            canvas.set_width(max_px);
+        }
+        if canvas.height() > max_px {
+            canvas.set_height(max_px);
+        }
+    });
 }
 
 thread_local! {

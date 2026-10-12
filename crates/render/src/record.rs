@@ -5,9 +5,7 @@
 use vello_cpu::PaintType;
 use vello_cpu::RenderContext;
 use vello_cpu::filter_effects::Filter;
-#[cfg(feature = "parallel")]
-use vello_cpu::kurbo::Rect;
-use vello_cpu::kurbo::{Affine, BezPath};
+use vello_cpu::kurbo::{Affine, BezPath, Rect};
 use vello_cpu::peniko::Fill;
 
 /// The drawing calls the renderer makes (a subset of `RenderContext`).
@@ -17,6 +15,11 @@ pub(crate) trait Canvas {
     fn set_paint_transform(&mut self, t: Affine);
     fn set_fill_rule(&mut self, rule: Fill);
     fn fill_path(&mut self, path: &BezPath);
+    #[cfg_attr(
+        not(feature = "parallel"),
+        expect(dead_code, reason = "only replays call it through the trait")
+    )]
+    fn fill_rect(&mut self, rect: &Rect);
     fn push_clip_layer(&mut self, path: &BezPath);
     /// A clip without a layer (cheaper); undone by [`Canvas::pop_clip`], nested like layers.
     fn push_clip_path(&mut self, path: &BezPath);
@@ -25,6 +28,10 @@ pub(crate) trait Canvas {
     /// `reach`: how far (in local units) the filter can move or spread what is drawn in it.
     fn push_filter_layer(&mut self, filter: Filter, reach: f64);
     fn pop_layer(&mut self);
+    /// True once a recording is over its size limit: the walk stops (its output is discarded).
+    fn full(&self) -> bool {
+        false
+    }
 }
 
 impl Canvas for RenderContext {
@@ -42,6 +49,9 @@ impl Canvas for RenderContext {
     }
     fn fill_path(&mut self, path: &BezPath) {
         RenderContext::fill_path(self, path);
+    }
+    fn fill_rect(&mut self, rect: &Rect) {
+        RenderContext::fill_rect(self, rect);
     }
     fn push_clip_layer(&mut self, path: &BezPath) {
         RenderContext::push_clip_layer(self, path);
@@ -89,6 +99,33 @@ enum Cmd {
     PopClip,
 }
 
+#[cfg(feature = "parallel")]
+fn path_bytes(p: &BezPath) -> usize {
+    // A clone's vector has exactly the elements' length as capacity.
+    size_of_val(p.elements())
+}
+
+#[cfg(feature = "parallel")]
+impl Cmd {
+    /// Heap bytes this command owns (conservative). Image pixels are shared with the image
+    /// cache and not counted.
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Cmd::Fill(p, _) | Cmd::Push(Layer::Clip(p) | Layer::ClipPath(p), _, _) => path_bytes(p),
+            Cmd::Paint(PaintType::Gradient(g)) => {
+                g.stops.capacity() * size_of::<vello_cpu::peniko::ColorStop>()
+            }
+            // The graph is shared (`Arc`), but each push makes its own: count its primitives.
+            Cmd::Push(Layer::Filter(f), _, _) => {
+                size_of_val(&*f.graph)
+                    + f.graph.primitives.capacity()
+                        * size_of::<vello_cpu::filter_effects::FilterPrimitive>()
+            }
+            _ => 0,
+        }
+    }
+}
+
 /// Commands recorded in output pixel coordinates, with the output area each fill and layer
 /// can change, so a replay can skip what lies outside its strip.
 #[cfg(feature = "parallel")]
@@ -98,6 +135,10 @@ pub(crate) struct Recorder {
     /// Open layers: index of the `Push`, its contents' area so far, and the filter reach in
     /// output pixels that its contents are spread by (summed over enclosing filters).
     open: Vec<(usize, Rect, f64)>,
+    /// Estimated bytes held by `cmds`, and the most allowed; over it, everything is dropped.
+    bytes: usize,
+    limit: usize,
+    over: bool,
 }
 
 /// An empty area (`union` with it gives the other rectangle).
@@ -122,11 +163,47 @@ fn union(a: Rect, b: Rect) -> Rect {
 #[cfg(feature = "parallel")]
 impl Recorder {
     pub(crate) fn new() -> Self {
+        Self::with_limit(usize::MAX)
+    }
+
+    /// A recorder that gives up (see [`Recorder::over`]) past about `limit` bytes.
+    pub(crate) fn with_limit(limit: usize) -> Self {
         Recorder {
             cmds: Vec::new(),
             transform: Affine::IDENTITY,
             open: Vec::new(),
+            bytes: 0,
+            limit,
+            over: false,
         }
+    }
+
+    /// The recording passed its limit and holds nothing.
+    pub(crate) fn over(&self) -> bool {
+        self.over
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Appends `cmd` unless that passes the limit (checked before it is kept).
+    fn add(&mut self, cmd: Cmd) {
+        if self.over {
+            return;
+        }
+        // The command, its vector slot once grown (up to twice its size), and what it owns.
+        self.bytes = self
+            .bytes
+            .saturating_add(2 * size_of::<Cmd>())
+            .saturating_add(cmd.heap_bytes());
+        if self.bytes > self.limit {
+            self.over = true;
+            self.cmds = Vec::new();
+            self.open = Vec::new();
+            return;
+        }
+        self.cmds.push(cmd);
     }
 
     fn reach(&self) -> f64 {
@@ -145,21 +222,21 @@ impl Recorder {
         area
     }
 
-    pub(crate) fn fill_rect(&mut self, rect: &Rect) {
-        let area = self.touched(*rect);
-        self.cmds.push(Cmd::FillRect(*rect, area));
-    }
-
     fn push(&mut self, layer: Layer, reach: f64) {
-        self.open.push((self.cmds.len(), NOTHING, reach));
-        self.cmds.push(Cmd::Push(layer, NOTHING, 0));
+        let at = self.cmds.len();
+        self.add(Cmd::Push(layer, NOTHING, 0));
+        if !self.over {
+            self.open.push((at, NOTHING, reach));
+        }
     }
 
-    /// Replays every command that can change output rows `y0..y1` into `rc`, shifted so row
-    /// `y0` is the context's first row.
-    pub(crate) fn replay(&self, rc: &mut RenderContext, y0: f64, y1: f64) {
-        let shift = Affine::translate((0.0, -y0));
-        let hits = |r: &Rect| r.y1 > y0 && r.y0 < y1;
+    /// Replays into `rc` (a CPU context, the GPU scene or the GPU support scan of `gpu.rs`)
+    /// every command that can change the recorded pixels `window`, each transform preceded by
+    /// `shift` (recorded pixels to `rc` pixels). Returns how many fills were replayed.
+    pub(crate) fn replay(&self, rc: &mut impl Canvas, window: Rect, shift: Affine) -> usize {
+        let hits =
+            |r: &Rect| r.x1 > window.x0 && r.x0 < window.x1 && r.y1 > window.y0 && r.y0 < window.y1;
+        let mut fills = 0;
         let mut i = 0;
         while i < self.cmds.len() {
             match &self.cmds[i] {
@@ -170,11 +247,13 @@ impl Recorder {
                 Cmd::Fill(path, area) => {
                     if hits(area) {
                         rc.fill_path(path);
+                        fills += 1;
                     }
                 }
                 Cmd::FillRect(rect, area) => {
                     if hits(area) {
                         rc.fill_rect(rect);
+                        fills += 1;
                     }
                 }
                 Cmd::Push(layer, area, end) => {
@@ -188,7 +267,7 @@ impl Recorder {
                         Layer::Clip(p) => rc.push_clip_layer(p),
                         Layer::ClipPath(p) => rc.push_clip_path(p),
                         Layer::Opacity(o) => rc.push_opacity_layer(*o),
-                        Layer::Filter(f) => rc.push_filter_layer(f.clone()),
+                        Layer::Filter(f) => rc.push_filter_layer(f.clone(), 0.0),
                     }
                 }
                 Cmd::Pop => rc.pop_layer(),
@@ -196,6 +275,7 @@ impl Recorder {
             }
             i += 1;
         }
+        fills
     }
 }
 
@@ -203,20 +283,24 @@ impl Recorder {
 impl Canvas for Recorder {
     fn set_transform(&mut self, t: Affine) {
         self.transform = t;
-        self.cmds.push(Cmd::Transform(t));
+        self.add(Cmd::Transform(t));
     }
     fn set_paint(&mut self, paint: PaintType) {
-        self.cmds.push(Cmd::Paint(paint));
+        self.add(Cmd::Paint(paint));
     }
     fn set_paint_transform(&mut self, t: Affine) {
-        self.cmds.push(Cmd::PaintTransform(t));
+        self.add(Cmd::PaintTransform(t));
     }
     fn set_fill_rule(&mut self, rule: Fill) {
-        self.cmds.push(Cmd::FillRule(rule));
+        self.add(Cmd::FillRule(rule));
     }
     fn fill_path(&mut self, path: &BezPath) {
         let area = self.touched(path.control_box());
-        self.cmds.push(Cmd::Fill(path.clone(), area));
+        self.add(Cmd::Fill(path.clone(), area));
+    }
+    fn fill_rect(&mut self, rect: &Rect) {
+        let area = self.touched(*rect);
+        self.add(Cmd::FillRect(*rect, area));
     }
     fn push_clip_layer(&mut self, path: &BezPath) {
         let r = self.reach();
@@ -240,6 +324,9 @@ impl Canvas for Recorder {
     fn pop_layer(&mut self) {
         self.close(Cmd::Pop);
     }
+    fn full(&self) -> bool {
+        self.over
+    }
 }
 
 #[cfg(feature = "parallel")]
@@ -250,7 +337,10 @@ impl Recorder {
             return;
         };
         let end = self.cmds.len();
-        self.cmds.push(pop);
+        self.add(pop);
+        if self.over {
+            return;
+        }
         if let Cmd::Push(_, a, e) = &mut self.cmds[at] {
             *a = area;
             *e = end;

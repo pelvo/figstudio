@@ -90,6 +90,9 @@ struct Inner {
     slots: HashMap<String, BTreeMap<u8, Slot>>,
     failed: HashSet<String>,
     in_flight: HashSet<(String, u8)>,
+    /// Closed documents (`Document::instance`, see [`cache_key`]): nothing is stored, marked
+    /// failed or requested for them, checked under the lock so a late reader cannot race.
+    closed: HashSet<u64>,
     bytes: usize,
     budget: usize,
     frame: u64,
@@ -120,6 +123,17 @@ impl Default for Images {
     }
 }
 
+impl Inner {
+    /// Whether `key` (from [`cache_key`]) belongs to a closed document.
+    fn is_closed(&self, key: &str) -> bool {
+        !self.closed.is_empty()
+            && key
+                .split_once('/')
+                .and_then(|(hex, _)| u64::from_str_radix(hex, 16).ok())
+                .is_some_and(|instance| self.closed.contains(&instance))
+    }
+}
+
 impl Images {
     /// A cache holding at most `budget` bytes of pixels (more only while one frame needs it).
     pub fn new(budget: usize) -> Self {
@@ -128,6 +142,7 @@ impl Images {
                 slots: HashMap::new(),
                 failed: HashSet::new(),
                 in_flight: HashSet::new(),
+                closed: HashSet::new(),
                 bytes: 0,
                 budget,
                 frame: 0,
@@ -177,16 +192,25 @@ impl Images {
     /// Marks `hash` at `level` as requested; false if it already was (or cannot be read).
     pub(crate) fn begin_request(&self, hash: &str, level: u8) -> bool {
         let mut inner = self.lock();
-        !inner.failed.contains(hash) && inner.in_flight.insert((hash.to_string(), level))
+        !inner.is_closed(hash)
+            && !inner.failed.contains(hash)
+            && inner.in_flight.insert((hash.to_string(), level))
     }
 
     /// Decodes `bytes` for `level` and stores the result. Returns false when the bytes are
     /// not a readable image; it is then treated as missing. Decoding happens outside the lock,
     /// so call it from any thread.
     pub fn insert_encoded(&self, hash: &str, bytes: &[u8], level: u8) -> bool {
-        let decoded = decode(bytes, level);
+        self.insert_decoded(hash, level, decode(bytes, level))
+    }
+
+    /// Stores an image decoded by [`decode`] (`None`: not readable).
+    fn insert_decoded(&self, hash: &str, level: u8, decoded: Option<Decoded>) -> bool {
         let mut inner = self.lock();
         inner.in_flight.remove(&(hash.to_string(), level));
+        if inner.is_closed(hash) {
+            return false;
+        }
         match decoded {
             Some(image) => {
                 inner.insert(hash, level, image);
@@ -200,11 +224,19 @@ impl Images {
         }
     }
 
+    /// A request will not be answered (its document closed): forget it without marking the
+    /// image missing.
+    pub fn abandon(&self, hash: &str, level: u8) {
+        self.lock().in_flight.remove(&(hash.to_string(), level));
+    }
+
     /// The bytes for a request could not be read: treat the image as missing.
     pub fn fail(&self, hash: &str, level: u8) {
         let mut inner = self.lock();
         inner.in_flight.remove(&(hash.to_string(), level));
-        inner.failed.insert(hash.to_string());
+        if !inner.is_closed(hash) {
+            inner.failed.insert(hash.to_string());
+        }
     }
 
     /// Drops every image of document `instance` (see [`cache_key`]), e.g. when its last tab
@@ -223,6 +255,14 @@ impl Images {
         inner.failed.retain(|key| !key.starts_with(&prefix));
         inner.bytes -= freed;
         self.0.bytes.store(inner.bytes, Ordering::Relaxed);
+    }
+
+    /// Closes document `instance` for good: drops its images like
+    /// [`Images::forget_document`], and from then on stores nothing for it, even from a read
+    /// or decode that started before (the check and the insert share the lock).
+    pub fn close_document(&self, instance: u64) {
+        self.lock().closed.insert(instance);
+        self.forget_document(instance);
     }
 
     /// Bytes of pixels held. Takes no lock.
@@ -410,6 +450,52 @@ mod tests {
         assert_eq!(images.bytes(), 8 * 8 * 4, "only document a is left");
         assert!(images.get("a1/h", 0).is_none() && !images.has_failed("a1/bad"));
         assert!(images.get("a/h", 0).is_some());
+    }
+
+    #[test]
+    fn a_document_closed_between_decode_and_insert_stores_nothing() {
+        let images = Images::default();
+        let bytes = png(8, 8);
+        // A reader decoded the image (outside the lock), then the document closed.
+        let decoded = decode(&bytes, 0);
+        assert!(decoded.is_some());
+        images.begin_request("b2/h", 0);
+        images.close_document(0xb2);
+        images.insert_decoded("b2/h", 0, decoded);
+        assert_eq!(images.bytes(), 0, "a closed document's image was stored");
+        assert!(images.get("b2/h", 0).is_none() && images.in_flight() == 0);
+        // Unreadable bytes or a failed read leave no entry either, and nothing is requested.
+        images.insert_encoded("b2/junk", b"junk", 0);
+        images.fail("b2/gone", 0);
+        assert!(!images.has_failed("b2/junk") && !images.has_failed("b2/gone"));
+        assert!(
+            !images.begin_request("b2/new", 0),
+            "a closed document requested an image"
+        );
+        // Other documents are unaffected.
+        images.insert_encoded("b3/h", &bytes, 0);
+        assert!(images.get("b3/h", 0).is_some());
+    }
+
+    #[test]
+    fn a_close_racing_a_decode_on_another_thread_never_leaves_the_image() {
+        // The decode runs outside the lock on the reader thread; the close lands between the
+        // decode and the insert (held there by the barrier), the order the race needs.
+        let images = Images::default();
+        let bytes = png(64, 64);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (reader, gate) = (images.clone(), barrier.clone());
+        let t = std::thread::spawn(move || {
+            let decoded = decode(&bytes, 0);
+            gate.wait(); // decoded; let the close run
+            gate.wait(); // closed
+            reader.insert_decoded("c4/h", 0, decoded)
+        });
+        barrier.wait();
+        images.close_document(0xc4);
+        barrier.wait();
+        assert!(!t.join().unwrap(), "the insert reported success");
+        assert_eq!(images.bytes(), 0, "a closed document's image was stored");
     }
 
     #[test]

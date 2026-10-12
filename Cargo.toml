@@ -26,6 +26,10 @@ egui = "0.36"
 rfd = "0.17"
 libc = "0.2"
 rayon = "1.12"
+# GPU tiles (feature `gpu` of figstudio-render). Same vello_common 0.3 and wgpu 30 as the rest.
+vello_gpu = { version = "0.3.0", default-features = false, features = ["wgpu", "std"] }
+wgpu = "30"
+pollster = "0.4"
 web-time = "1.1"
 rmcp = { version = "~3.5.0", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "net", "signal"] }

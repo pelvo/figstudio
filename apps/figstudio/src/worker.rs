@@ -19,37 +19,46 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use figstudio_fig::{Document, Guid};
+use figstudio_render::color::{AlphaColor, Srgb};
 use figstudio_render::images::{ImageRequest, Images};
-use figstudio_render::{Renderer, Stats, Viewport};
+use figstudio_render::{Renderer, Stats};
 use web_time::{Duration, Instant};
 
+#[cfg(target_arch = "wasm32")]
+use crate::gpu_scenes::{GpuTexture, TileGpu};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::gpu_tiles::{GpuTexture, TileGpu};
+use crate::recordings::{Pixels, Recordings};
 use crate::source::Source;
-use crate::tab::View;
+use crate::tile_queue::{Msg, Queue};
+use crate::tiles;
 
 /// Image reads running at once (each holds the compressed bytes and the decoded copy).
 const READERS: usize = 4;
 
+/// A batch of tiles to render for one tab, nearest the view centre first. A newer batch for
+/// the same tab replaces the tiles of this one not rendered yet (they left the view).
 pub struct RenderJob {
     pub tab: u64,
-    pub generation: u64,
     pub doc: Arc<Document>,
     /// Where unread images come from (lazily opened documents).
     pub source: Option<Source>,
     pub root: Guid,
-    pub viewport: Viewport,
-    /// Echoed back so the frame can be placed correctly after the view has moved on.
-    pub view: View,
-    pub size_points: egui::Vec2,
+    pub background: Option<AlphaColor<Srgb>>,
+    /// `Workers::images_arrived` when requested, echoed back (see `tiles::Entry::images`).
+    pub images: u64,
+    pub tiles: VecDeque<tiles::Key>,
+    /// Tiles (and their `images`) the UI received since its last batch, so the worker
+    /// stops skipping them: a received tile asked for again was evicted and is rendered.
+    pub received: Vec<(tiles::Key, u64)>,
 }
 
+/// One rendered tile.
 pub struct RenderDone {
     pub tab: u64,
-    pub generation: u64,
-    pub root: Guid,
-    pub view: View,
-    pub size_points: egui::Vec2,
-    pub size: [usize; 2],
-    pub rgba_premultiplied: Vec<u8>,
+    pub key: tiles::Key,
+    pub images: u64,
+    pub pixels: Pixels<GpuTexture>,
     pub stats: Stats,
     pub elapsed: Duration,
 }
@@ -120,7 +129,7 @@ fn spawn(f: impl FnOnce() + Send + 'static) {
 }
 
 /// Waits for the next job. Desktop blocks on the channel; the browser polls (module docs).
-fn next_job(jobs: &Receiver<RenderJob>) -> Option<RenderJob> {
+fn next_job(jobs: &Receiver<Msg>) -> Option<Msg> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         jobs.recv().ok()
@@ -148,17 +157,6 @@ fn next_job(jobs: &Receiver<RenderJob>) -> Option<RenderJob> {
     }
 }
 
-fn draw(renderer: &mut Renderer, job: &RenderJob) -> figstudio_render::Frame {
-    #[cfg(target_arch = "wasm32")]
-    {
-        renderer.render_parallel(&job.doc, job.root, &job.viewport)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        renderer.render(&job.doc, job.root, &job.viewport)
-    }
-}
-
 /// Images waiting to be read, newest request first, with at most [`READERS`] reading.
 struct ImageQueue {
     pending: Mutex<(VecDeque<(ImageRequest, Source)>, usize)>,
@@ -169,6 +167,25 @@ struct ImageQueue {
 }
 
 impl ImageQueue {
+    /// Stops reading and storing images of `instance` and drops those already stored. The
+    /// image cache refuses anything for it from now on (`Images::close_document`), so a read
+    /// or render still running cannot store it back.
+    fn close(&self, instance: u64) {
+        self.images.close_document(instance);
+        let prefix = format!("{instance:x}/");
+        let mut q = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = q.0.len();
+        q.0.retain(|(want, _)| {
+            let keep = !want.key.starts_with(&prefix);
+            if !keep {
+                self.images.abandon(&want.key, want.level);
+            }
+            keep
+        });
+        self.in_flight
+            .fetch_sub(before - q.0.len(), Ordering::Relaxed);
+    }
+
     fn push(self: &Arc<Self>, wanted: Vec<ImageRequest>, source: &Source) {
         {
             let mut q = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
@@ -198,6 +215,7 @@ impl ImageQueue {
             let this = self.clone();
             spawn(move || {
                 let (want, source) = next;
+                // A document closed meanwhile gets nothing stored (checked under the cache lock).
                 match source.read(&want.entry) {
                     Ok(bytes) => {
                         this.images.insert_encoded(&want.key, &bytes, want.level);
@@ -225,7 +243,7 @@ pub struct ExportDone {
 }
 
 pub struct Workers {
-    render_tx: Option<Sender<RenderJob>>,
+    render_tx: Option<Sender<Msg>>,
     pub render_rx: Receiver<RenderDone>,
     load_tx: Sender<Loaded>,
     pub load_rx: Receiver<Loaded>,
@@ -242,8 +260,15 @@ pub struct Workers {
 }
 
 impl Workers {
+    /// Workers drawing every canvas tile on the CPU.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the app passes its GPU"))]
     pub fn new(ctx: &egui::Context) -> Self {
-        let (render_tx, jobs) = channel::<RenderJob>();
+        Self::with_gpu(ctx, TileGpu::default())
+    }
+
+    /// Workers whose render thread draws canvas tiles with `gpu` where it can.
+    pub fn with_gpu(ctx: &egui::Context, mut gpu: TileGpu) -> Self {
+        let (render_tx, jobs) = channel::<Msg>();
         let (done_tx, render_rx) = channel();
         let waker = Waker::new(ctx);
         let in_flight = Arc::new(AtomicUsize::new(0));
@@ -259,26 +284,39 @@ impl Workers {
         let images = queue.clone();
         let render_loop = move || {
             let mut renderer = Renderer::with_images(images.images.clone());
-            let mut queue: Vec<RenderJob> = Vec::new();
+            let mut recordings = Recordings::default();
+            let mut queue = Queue::default();
             loop {
-                if queue.is_empty() {
+                let first = if queue.is_empty() {
                     match next_job(&jobs) {
-                        Some(job) => queue.push(job),
+                        Some(msg) => Some(msg),
                         None => break,
                     }
+                } else {
+                    None
+                };
+                let arrived = first
+                    .into_iter()
+                    .chain(std::iter::from_fn(|| jobs.try_recv().ok()));
+                for msg in arrived {
+                    if let Msg::Forget { doc } = msg {
+                        recordings.forget(doc);
+                        continue;
+                    }
+                    count.fetch_sub(queue.take(msg), Ordering::Relaxed);
                 }
-                // Only the newest request per tab matters; drop older ones still queued.
-                while let Ok(newer) = jobs.try_recv() {
-                    let before = queue.len();
-                    queue.retain(|j| j.tab != newer.tab);
-                    count.fetch_sub(before - queue.len(), Ordering::Relaxed);
-                    queue.push(newer);
+                if queue.is_empty() {
+                    continue;
                 }
-                let job = queue.remove(0);
+                let Some((job, key)) = queue.next() else {
+                    count.fetch_sub(1, Ordering::Relaxed);
+                    continue;
+                };
                 let start = Instant::now();
-                let mut frame = draw(&mut renderer, &job);
+                let drawn = gpu.draw(&mut recordings, &mut renderer, job, &key);
                 let elapsed = start.elapsed();
-                let wanted = std::mem::take(&mut frame.wanted);
+                let (pixels, stats, wanted) = drawn.into_parts();
+                // A document closed while drawing stores and requests nothing (`Images`).
                 if !wanted.is_empty() {
                     match &job.source {
                         Some(source) => images.push(wanted, source),
@@ -287,23 +325,20 @@ impl Workers {
                             .for_each(|w| images.images.fail(&w.key, w.level)),
                     }
                 }
-                let size = [
-                    usize::from(frame.pixmap.width()),
-                    usize::from(frame.pixmap.height()),
-                ];
                 let done = RenderDone {
                     tab: job.tab,
-                    generation: job.generation,
-                    root: job.root,
-                    view: job.view,
-                    size_points: job.size_points,
-                    size,
-                    rgba_premultiplied: frame.pixmap.data_as_u8_slice().to_vec(),
-                    stats: frame.stats,
+                    key,
+                    images: job.images,
+                    pixels,
+                    stats,
                     elapsed,
                 };
+                let (tab, images) = (job.tab, job.images);
+                // Sent before `in_flight` drops, so the browser UI polls until it arrives.
                 let sent = done_tx.send(done);
-                count.fetch_sub(1, Ordering::Relaxed);
+                if queue.sent(tab, key, images) {
+                    count.fetch_sub(1, Ordering::Relaxed);
+                }
                 if sent.is_err() {
                     break;
                 }
@@ -382,13 +417,29 @@ impl Workers {
         if self
             .render_tx
             .as_ref()
-            .is_none_or(|tx| tx.send(job).is_err())
+            .is_none_or(|tx| tx.send(Msg::Batch(job)).is_err())
         {
             self.in_flight.fetch_sub(1, Ordering::Relaxed);
             self.render_tx = None;
             return Err("render worker is unavailable");
         }
         Ok(())
+    }
+
+    /// A tab closed: its queued tiles are dropped (the tile being drawn may still finish).
+    pub fn close_tab(&self, tab: u64) {
+        if let Some(tx) = &self.render_tx {
+            let _ = tx.send(Msg::Close { tab });
+        }
+    }
+
+    /// The last tab of document `instance` closed: drops its images, its queued image reads,
+    /// and anything a render or read still running would store for it.
+    pub fn close_document(&self, instance: u64) {
+        self.queue.close(instance);
+        if let Some(tx) = &self.render_tx {
+            let _ = tx.send(Msg::Forget { doc: instance });
+        }
     }
 
     /// Counts images read so far; when it changes, views showing placeholders render again.
@@ -617,3 +668,7 @@ mod export_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "worker_close_tests.rs"]
+mod close_tests;

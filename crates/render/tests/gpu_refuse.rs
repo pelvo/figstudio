@@ -1,0 +1,176 @@
+//! Tiles `vello_gpu` cannot draw are refused before a scene is built (feature `gpu`): the
+//! scan needs no GPU; the checks against the GPU itself skip without an adapter.
+#![cfg(feature = "gpu")]
+mod common;
+mod gpu_support;
+use common::*;
+use figstudio_render::{GPU_LAYER_TEXTURE, GpuUnsupported};
+use gpu_support::Gpu;
+use gpu_support::docs::*;
+
+/// Refusals need no GPU: the scan runs before any scene is built.
+#[test]
+fn unsupported_tiles_are_refused_before_encoding() {
+    let doc = open("structure");
+    let rec = record(&doc, doc.pages[0], 1.0);
+    let b = figstudio_render::content_bounds(&doc, doc.pages[0]).unwrap();
+    let images = (-1..=2)
+        .flat_map(|y| (-1..=2).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            (
+                x + (b.x0 / TILE).floor() as i32,
+                y + (b.y0 / TILE).floor() as i32,
+            )
+        })
+        .filter(|&(x, y)| {
+            rec.gpu_scene(&tile(1.0, x, y), GPU_LAYER_TEXTURE)
+                .unwrap()
+                .err()
+                == Some(GpuUnsupported::Image)
+        })
+        .count();
+    assert!(images > 0, "a tile with an image paint");
+    // A blur reaching 3 x 1000 px: its layer would not fit the GPU's intermediate textures.
+    let blurred = feature_doc("layer blur 2000");
+    let rec = record(&blurred, id(1), 1.0);
+    let got = rec
+        .gpu_scene(&tile(1.0, 0, 0), GPU_LAYER_TEXTURE)
+        .unwrap()
+        .err();
+    assert_eq!(got, Some(GpuUnsupported::FilterReach));
+    // The same blur at a smaller zoom fits.
+    let rec = record(&blurred, id(1), 0.125);
+    assert!(
+        rec.gpu_scene(&tile(0.125, 0, 0), GPU_LAYER_TEXTURE)
+            .unwrap()
+            .is_ok()
+    );
+    // Another zoom is refused like `Recording::render` refuses it.
+    assert!(rec.gpu_scene(&tile(1.0, 0, 0), GPU_LAYER_TEXTURE).is_none());
+    // An angular gradient's seam differs on the GPU (start against end colour).
+    let rec = record(&feature_doc("angular gradient"), id(1), 1.0);
+    let got = rec
+        .gpu_scene(&tile(1.0, 0, 0), GPU_LAYER_TEXTURE)
+        .unwrap()
+        .err();
+    assert_eq!(got, Some(GpuUnsupported::SweepGradient));
+}
+
+/// Each nested filter grows `vello_gpu`'s intermediate viewport by its padding: one radius-300
+/// blur fits a 516 px tile (about 2.3k px against 4096), eight nested ones do not (vello_gpu
+/// returns `IntermediateTextureError::TooLarge` on Metal). They are refused before a scene is
+/// built.
+#[test]
+fn nested_filters_that_outgrow_gpu_intermediates_are_refused() {
+    let rec = record(&nested_blurs(300.0), id(1), 1.0);
+    let got = rec
+        .gpu_scene(&tile(1.0, 0, 0), GPU_LAYER_TEXTURE)
+        .unwrap()
+        .err();
+    assert_eq!(got, Some(GpuUnsupported::FilterReach));
+    // One such blur alone fits.
+    let rec = record(&nested_blurs_n(300.0, 1), id(1), 1.0);
+    assert!(
+        rec.gpu_scene(&tile(1.0, 0, 0), GPU_LAYER_TEXTURE)
+            .unwrap()
+            .is_ok()
+    );
+    // Small nested blurs fit, and the GPU draws them (when there is one).
+    let rec = record(&nested_blurs(8.0), id(1), 1.0);
+    assert!(
+        rec.gpu_scene(&tile(1.0, 0, 0), GPU_LAYER_TEXTURE)
+            .unwrap()
+            .is_ok()
+    );
+    if let Some(mut gpu) = Gpu::new() {
+        let d = compare(&mut gpu, &rec, &tile(1.0, 0, 0)).unwrap();
+        assert!(d.ink && d.max <= FILTER.0, "nested blurs: max {}", d.max);
+    }
+}
+
+/// The scan is conservative about `vello_gpu`'s own sizing: across the limit, every tile it
+/// accepts renders. It sizes a filter layer as its whole grown viewport, not its content, so it
+/// refuses earlier than the GPU fails (measured on Metal: radius 150 against 300).
+#[test]
+fn every_tile_the_scan_accepts_renders_on_the_gpu() {
+    let Some(mut gpu) = Gpu::new() else { return };
+    let max = gpu.max_texture();
+    let mut first_refused = None;
+    let mut first_failed = None;
+    for radius in (4..=28).map(|r| f64::from(r) * 25.0) {
+        let rec = record(&nested_blurs(radius), id(1), 1.0);
+        let vp = tile(1.0, 0, 0);
+        let refused = rec.gpu_scene(&vp, max).unwrap().is_err();
+        let (scene, _) = rec.gpu_scene(&vp, u16::MAX).unwrap().unwrap();
+        let failed = gpu.render(&scene).is_err();
+        assert!(
+            refused || !failed,
+            "radius {radius}: accepted but the GPU failed"
+        );
+        first_refused = first_refused.or(refused.then_some(radius));
+        first_failed = first_failed.or(failed.then_some(radius));
+    }
+    eprintln!("first refused {first_refused:?}, first failed {first_failed:?}");
+    assert!(first_failed.is_some(), "the sweep reaches the GPU limit");
+    assert!(
+        first_refused <= first_failed,
+        "refused no later than it fails"
+    );
+}
+
+/// `gpu_scene_within` offers its estimate before building the scene and refuses it when the
+/// caller does not admit it; the estimate grows with the content.
+#[test]
+fn scenes_the_caller_does_not_admit_are_refused() {
+    let doc = open("vector");
+    let rec = record(&doc, doc.pages[0], 1.0);
+    let b = figstudio_render::content_bounds(&doc, doc.pages[0]).unwrap();
+    let (x, y) = ((b.x0 / TILE).floor() as i32, (b.y0 / TILE).floor() as i32);
+    let vp = tile(1.0, x, y);
+    let within =
+        |vp, max: usize| rec.gpu_scene_within(vp, GPU_LAYER_TEXTURE, |b| (b <= max).then_some(b));
+    let (_, fills, bytes) = within(&vp, usize::MAX).unwrap().unwrap();
+    assert!(fills > 0 && bytes > 0, "{fills} fills, {bytes} bytes");
+    let refused = within(&vp, bytes - 1).unwrap();
+    assert_eq!(refused.err(), Some(GpuUnsupported::TooBig));
+    assert!(within(&vp, bytes).unwrap().is_ok());
+    // An empty tile far from the content costs only its background.
+    let (_, _, little) = within(&tile(1.0, x - 20, y - 20), usize::MAX)
+        .unwrap()
+        .unwrap();
+    assert!(little < bytes, "{little} >= {bytes}");
+}
+
+/// Filters widen `vello_gpu`'s strip viewport, which the estimate does not cover (a review
+/// found 400 ellipses under a radius-350 blur estimated at 3.6 MB, built at 12.6 MB), so a
+/// size-bounded scene refuses any filter layer, small or large, before asking the caller.
+/// `gpu_scene` (desktop, unbounded) still draws small blurs.
+#[test]
+fn size_bounded_scenes_refuse_every_filter() {
+    for (blurred, radius) in [
+        (ellipses_under_blur(400, 350.0), 350.0),
+        (nested_blurs_n(8.0, 1), 8.0),
+    ] {
+        let rec = record(&blurred, id(1), 1.0);
+        let mut asked = false;
+        let got = rec
+            .gpu_scene_within(&tile(1.0, 0, 0), GPU_LAYER_TEXTURE, |b| {
+                asked = true;
+                Some(b)
+            })
+            .unwrap()
+            .err();
+        assert_eq!(got, Some(GpuUnsupported::Filtered), "radius {radius}");
+        assert!(
+            !asked,
+            "radius {radius}: refused before the estimate is offered"
+        );
+    }
+    let small = record(&nested_blurs_n(8.0, 1), id(1), 1.0);
+    assert!(
+        small
+            .gpu_scene(&tile(1.0, 0, 0), GPU_LAYER_TEXTURE)
+            .unwrap()
+            .is_ok()
+    );
+}

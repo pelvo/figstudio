@@ -6,11 +6,19 @@ mod connector;
 mod effects;
 mod focus;
 pub mod geom;
+#[cfg(feature = "gpu")]
+mod gpu;
+#[cfg(feature = "gpu")]
+mod gpu_bytes;
+#[cfg(feature = "gpu")]
+mod gpu_scan;
 pub mod images;
 mod layout;
 mod network;
 pub mod paint;
 mod record;
+#[cfg(feature = "parallel")]
+mod replay;
 mod stroke;
 mod text;
 mod variables;
@@ -34,6 +42,10 @@ use crate::geom::{
 use crate::images::{ImageRequest, Images};
 use crate::record::Canvas;
 
+#[cfg(feature = "gpu")]
+pub use gpu::{GPU_LAYER_TEXTURE, GpuUnsupported, MAX_LAYERS};
+#[cfg(feature = "parallel")]
+pub use replay::Recording;
 pub use vello_cpu::{color, kurbo};
 
 /// Total attempted-work units per render. The real large-file page render used 12,418 work
@@ -80,6 +92,78 @@ pub struct Stats {
     pub depth_skipped: usize,
     pub preparation_skipped: usize,
     pub attempted_work: usize,
+    /// Tiles drawn by walking the page again because their page's recording was over its
+    /// size limit or work budget (set by the app; renders here never set it).
+    pub unrecorded_tiles: usize,
+    /// Tiles drawn on the CPU because `vello_gpu` cannot draw something in them (feature
+    /// `gpu`, `GpuUnsupported`; set by the app).
+    pub gpu_fallback_tiles: usize,
+}
+
+impl Stats {
+    /// Keeps the larger count of every field: a summary of several tiles of one view. Each
+    /// count is a lower bound for the view (the largest of any one tile; layers in different
+    /// tiles are not added up), and any gap on any tile stays non-zero.
+    pub fn max_with(&mut self, other: &Stats) {
+        let Stats {
+            nodes,
+            instances,
+            text_stored_glyphs,
+            text_system_fonts,
+            text_missing,
+            text_truncation_ignored,
+            missing_images,
+            images_loading,
+            missing_symbols,
+            masks,
+            shadows,
+            inner_shadows,
+            approximated_effects,
+            blurs,
+            skipped_effects,
+            unsupported_paints,
+            approximated_blends,
+            approximated_paints,
+            approximated_strokes,
+            approximated_instance_ink,
+            culled,
+            budget_exhausted,
+            depth_skipped,
+            preparation_skipped,
+            attempted_work,
+            unrecorded_tiles,
+            gpu_fallback_tiles,
+        } = other;
+        self.nodes = self.nodes.max(*nodes);
+        self.instances = self.instances.max(*instances);
+        self.text_stored_glyphs = self.text_stored_glyphs.max(*text_stored_glyphs);
+        self.text_system_fonts = self.text_system_fonts.max(*text_system_fonts);
+        self.text_missing = self.text_missing.max(*text_missing);
+        self.text_truncation_ignored = self.text_truncation_ignored.max(*text_truncation_ignored);
+        self.missing_images = self.missing_images.max(*missing_images);
+        self.images_loading = self.images_loading.max(*images_loading);
+        self.missing_symbols = self.missing_symbols.max(*missing_symbols);
+        self.masks = self.masks.max(*masks);
+        self.shadows = self.shadows.max(*shadows);
+        self.inner_shadows = self.inner_shadows.max(*inner_shadows);
+        self.approximated_effects = self.approximated_effects.max(*approximated_effects);
+        self.blurs = self.blurs.max(*blurs);
+        self.skipped_effects = self.skipped_effects.max(*skipped_effects);
+        self.unsupported_paints = self.unsupported_paints.max(*unsupported_paints);
+        self.approximated_blends = self.approximated_blends.max(*approximated_blends);
+        self.approximated_paints = self.approximated_paints.max(*approximated_paints);
+        self.approximated_strokes = self.approximated_strokes.max(*approximated_strokes);
+        self.approximated_instance_ink = self
+            .approximated_instance_ink
+            .max(*approximated_instance_ink);
+        self.culled = self.culled.max(*culled);
+        self.budget_exhausted = self.budget_exhausted.max(*budget_exhausted);
+        self.depth_skipped = self.depth_skipped.max(*depth_skipped);
+        self.preparation_skipped = self.preparation_skipped.max(*preparation_skipped);
+        self.attempted_work = self.attempted_work.max(*attempted_work);
+        self.unrecorded_tiles = self.unrecorded_tiles.max(*unrecorded_tiles);
+        self.gpu_fallback_tiles = self.gpu_fallback_tiles.max(*gpu_fallback_tiles);
+    }
 }
 
 impl fmt::Display for Stats {
@@ -113,7 +197,12 @@ impl fmt::Display for Stats {
         note(self.culled, "off screen")?;
         note(self.budget_exhausted, "layers skipped (work budget)")?;
         note(self.depth_skipped, "layers skipped (depth)")?;
-        note(self.preparation_skipped, "bounds omitted (budget)")
+        note(self.preparation_skipped, "bounds omitted (budget)")?;
+        note(self.unrecorded_tiles, "tiles not recorded")?;
+        note(
+            self.gpu_fallback_tiles,
+            "tiles drawn on the CPU (GPU unsupported)",
+        )
     }
 }
 
@@ -199,6 +288,9 @@ struct Ctx<'a> {
     exhausted: bool,
     /// Output area in pixels, for culling.
     screen: Rect,
+    /// How far (output pixels) the open filter layers of enclosing nodes spread what is drawn
+    /// now: culling grows each node by it, so a blur still reaching the output keeps it.
+    inherited_reach: f64,
 }
 
 impl Renderer {
@@ -380,7 +472,8 @@ impl Renderer {
                 // At most the output height, which is a u16.
                 let sh = u16::try_from(y1 - y0).unwrap_or(u16::MAX);
                 let mut rc = RenderContext::new_with(w, sh, RenderSettings::default());
-                rec.replay(&mut rc, f64::from(y0), f64::from(y1));
+                let rows = Rect::new(0.0, f64::from(y0), f64::from(w), f64::from(y1));
+                rec.replay(&mut rc, rows, Affine::translate((0.0, -f64::from(y0))));
                 rc.flush();
                 let mut part = Pixmap::new(w, sh);
                 rc.render(&mut part, &mut Resources::new());
@@ -486,6 +579,7 @@ impl Renderer {
             depth: 0,
             exhausted: false,
             screen,
+            inherited_reach: 0.0,
         }
     }
     pub fn render_fit(
@@ -813,7 +907,8 @@ impl Ctx<'_> {
             return false;
         }
         let m = overhang(kind, data, w, h);
-        let b = transformed_bounds(world, Rect::new(-m, -m, w + m, h + m));
+        let r = self.inherited_reach;
+        let b = transformed_bounds(world, Rect::new(-m, -m, w + m, h + m)).inflate(r, r);
         if !b.overlaps(self.screen) {
             return true;
         }
@@ -959,6 +1054,7 @@ impl Ctx<'_> {
         let mut shadows = Vec::new();
         let mut layers = 0;
         let mut shadow_layers = 0;
+        let outer_reach = self.inherited_reach;
         let silhouette = casts
             && effects::approximate_silhouette(
                 data,
@@ -1014,6 +1110,7 @@ impl Ctx<'_> {
             self.rc.set_transform(world);
             self.rc
                 .push_filter_layer(Filter::from_primitive(primitive), effect_reach(effect));
+            self.inherited_reach += effect_reach(effect) * paint::linear_scale(world);
             layers += 1;
         }
         let opacity = data.num("opacity").unwrap_or(1.0).clamp(0.0, 1.0);
@@ -1073,6 +1170,7 @@ impl Ctx<'_> {
         for _ in 0..layers {
             self.rc.pop_layer();
         }
+        self.inherited_reach = outer_reach;
         self.depth -= 1;
     }
 
@@ -1307,6 +1405,10 @@ impl Ctx<'_> {
     }
 
     fn charge_work(&mut self) -> bool {
+        // A recording over its size limit is thrown away: stop walking, count nothing.
+        if self.rc.full() {
+            return false;
+        }
         if self.exhausted || self.work_left == 0 {
             self.exhausted = true;
             self.stats.budget_exhausted += 1;
