@@ -12,26 +12,26 @@ use figstudio_render::{GPU_LAYER_TEXTURE, Recording, Renderer, Viewport};
 use web_time::Duration;
 
 use crate::gpu_common::{CpuWhy, Fallback, guarded};
+pub use crate::gpu_credits::{Credits, Reservation};
 use crate::recordings::{Drawn, Recordings};
 use crate::tiles::{Key, Range};
 use crate::worker::{RenderDone, RenderJob};
 
-/// A GPU tile on its way to the main thread: its scene, rendered there, and an upper bound of
-/// the memory it keeps (`Recording::gpu_scene_within`).
+/// A GPU tile on its way to the main thread: its scene, rendered there, and the reservation of
+/// the memory it keeps (`Recording::gpu_scene_within`'s estimate), released with the scene.
 #[derive(Debug)]
-#[cfg_attr(
-    all(test, not(target_arch = "wasm32")),
-    expect(dead_code, reason = "the browser renders the scene")
-)]
 pub struct GpuTexture {
+    #[cfg_attr(
+        all(test, not(target_arch = "wasm32")),
+        expect(dead_code, reason = "the browser renders the scene")
+    )]
     pub scene: vello_gpu::Scene,
-    pub bytes: usize,
+    /// Held only to be released when the scene is dropped.
+    pub _bytes: Reservation,
 }
 
-/// Largest scene the worker sends; a bigger one is drawn on the CPU (counted).
+/// Largest scene the worker builds; a bigger one is drawn on the CPU (counted).
 pub const MAX_SCENE_BYTES: usize = 8 << 20;
-/// Most bytes of scenes waiting for the main thread; the farthest from the view go first.
-pub const MAX_PENDING_BYTES: usize = 64 << 20;
 
 /// Most GPU tiles the main thread renders in one frame.
 pub const TILES_PER_FRAME: usize = 4;
@@ -47,23 +47,27 @@ pub struct TileGpu {
     /// Set by the main thread when the device is lost or a render failed: the rest of the
     /// session draws on the CPU.
     lost: Arc<AtomicBool>,
+    /// Bytes of scenes alive, shared with the main thread (which drops them).
+    credits: Credits,
 }
 
 impl Default for TileGpu {
     /// The CPU, as asked (tests and `?renderer=cpu`).
     fn default() -> Self {
-        TileGpu::new(Err(CpuWhy::Asked), Arc::default())
+        TileGpu::new(Err(CpuWhy::Asked), Arc::default(), Credits::default())
     }
 }
 
 impl TileGpu {
     /// Scenes for a device whose largest texture is `max_texture` (or the CPU, `why`);
-    /// `lost` is shared with the main thread's renderer.
-    pub fn new(gpu: Result<u32, CpuWhy>, lost: Arc<AtomicBool>) -> Self {
+    /// `lost` is shared with the main thread's renderer; each scene reserves its bytes in
+    /// `credits` before it is built (no room: the tile is drawn on the CPU, counted).
+    pub fn new(gpu: Result<u32, CpuWhy>, lost: Arc<AtomicBool>, credits: Credits) -> Self {
         let side = |s: u32| u16::try_from(s).unwrap_or(u16::MAX).min(GPU_LAYER_TEXTURE);
         TileGpu {
             gpu: gpu.map(side),
             lost,
+            credits,
         }
     }
 
@@ -87,10 +91,18 @@ impl TileGpu {
             return Err(Fallback::Lost);
         }
         guarded(&self.lost, || {
-            match rec.map(|r| r.gpu_scene_within(viewport, max_texture, MAX_SCENE_BYTES)) {
+            let admit = |b: usize| {
+                (b <= MAX_SCENE_BYTES)
+                    .then(|| self.credits.reserve(b))
+                    .flatten()
+            };
+            match rec.map(|r| r.gpu_scene_within(viewport, max_texture, admit)) {
                 None | Some(None) => Err(Fallback::NoRecording),
                 Some(Some(Err(why))) => Err(Fallback::Unsupported(why)),
-                Some(Some(Ok((scene, _, bytes)))) => Ok(GpuTexture { scene, bytes }),
+                Some(Some(Ok((scene, _, bytes)))) => Ok(GpuTexture {
+                    scene,
+                    _bytes: bytes,
+                }),
             }
         })
     }
@@ -109,24 +121,40 @@ pub fn asked_renderer(search: &str) -> Option<String> {
 /// tile cache (63 tiles in the browser, `tiles::plan`), so the current view always fits.
 pub const MAX_PENDING: usize = 64;
 
-/// Scenes waiting for the main thread, rendered a few per frame, each with its byte estimate.
-/// Pruned every frame to the current plan, nearest its centre first, and kept within
-/// [`MAX_PENDING`] scenes and [`MAX_PENDING_BYTES`] at all times (a scene arriving over either
-/// bound drops the farthest ones), so a view that moved on leaves nothing queued. Every scene
-/// dropped is handed back to the caller, which must acknowledge it to the worker as not
-/// delivered (`tiles_view::received`), or the worker would skip that tile when it is asked for
-/// again (`tile_queue::Queue`).
-#[derive(Default)]
-pub struct Pending {
-    queue: VecDeque<(RenderDone, usize)>,
-    bytes: usize,
+/// Scenes waiting for the main thread, rendered a few per frame. Pruned every frame to the
+/// current plan, nearest its centre first, and kept within [`MAX_PENDING`] scenes at all times
+/// (a scene arriving over it drops the farthest ones), so a view that moved on leaves nothing
+/// queued. Their memory is bounded by the byte credits each scene holds (`gpu_credits.rs`),
+/// released when it is rendered or dropped. Every scene dropped is handed back to the caller,
+/// which must acknowledge it to the worker as not delivered (`tiles_view::received`), or the
+/// worker would skip that tile when it is asked for again (`tile_queue::Queue`).
+pub struct Pending<T = RenderDone> {
+    queue: VecDeque<T>,
 }
 
-impl std::fmt::Debug for Pending {
+/// A queued tile's key.
+pub trait Keyed {
+    fn key(&self) -> Key;
+}
+
+impl Keyed for RenderDone {
+    fn key(&self) -> Key {
+        self.key
+    }
+}
+
+impl<T> Default for Pending<T> {
+    fn default() -> Self {
+        Pending {
+            queue: VecDeque::new(),
+        }
+    }
+}
+
+impl<T> std::fmt::Debug for Pending<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pending")
             .field("len", &self.queue.len())
-            .field("bytes", &self.bytes)
             .finish_non_exhaustive()
     }
 }
@@ -134,19 +162,12 @@ impl std::fmt::Debug for Pending {
 /// The plan scenes are kept for: the last frame's document, page and tiles (ring included).
 pub type Plan = Option<(u64, Guid, Range)>;
 
-impl Pending {
-    /// Queues `item`, which keeps `bytes`; over a bound, drops the scenes farthest from `plan`
-    /// (possibly `item` itself) and hands them to `dropped`.
-    pub fn push(
-        &mut self,
-        item: RenderDone,
-        bytes: usize,
-        plan: Plan,
-        dropped: impl FnMut(RenderDone),
-    ) {
-        self.queue.push_back((item, bytes));
-        self.bytes += bytes;
-        if self.queue.len() > MAX_PENDING || self.bytes > MAX_PENDING_BYTES {
+impl<T: Keyed> Pending<T> {
+    /// Queues `item`; over [`MAX_PENDING`], drops the scenes farthest from `plan` (possibly
+    /// `item` itself) and hands them to `dropped`.
+    pub fn push(&mut self, item: T, plan: Plan, dropped: impl FnMut(T)) {
+        self.queue.push_back(item);
+        if self.queue.len() > MAX_PENDING {
             self.prune(plan, dropped);
         }
     }
@@ -156,28 +177,22 @@ impl Pending {
         self.queue.len()
     }
 
-    #[cfg(test)]
-    pub fn bytes(&self) -> usize {
-        self.bytes
-    }
-
+    #[cfg_attr(
+        all(test, not(target_arch = "wasm32")),
+        expect(dead_code, reason = "the browser repaints while scenes wait")
+    )]
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
     /// Drops the scenes of a closed document (its tab and worker history are gone).
-    #[cfg_attr(
-        all(test, not(target_arch = "wasm32")),
-        expect(dead_code, reason = "the browser forgets closed documents")
-    )]
     pub fn forget(&mut self, doc: u64) {
-        self.queue.retain(|(d, _)| d.key.doc != doc);
-        self.bytes = self.queue.iter().map(|(_, b)| b).sum();
+        self.queue.retain(|d| d.key().doc != doc);
     }
 
-    /// Keeps the scenes of `plan`, nearest its centre first, within [`MAX_PENDING`] and
-    /// [`MAX_PENDING_BYTES`]; hands every other one to `dropped`.
-    pub fn prune(&mut self, plan: Plan, mut dropped: impl FnMut(RenderDone)) {
+    /// Keeps the scenes of `plan`, nearest its centre first, at most [`MAX_PENDING`]; hands
+    /// every other one to `dropped`.
+    pub fn prune(&mut self, plan: Plan, mut dropped: impl FnMut(T)) {
         let rank = |k: &Key| {
             let (doc, page, range) = plan?;
             if k.doc != doc || k.page != page || !range.contains(k) {
@@ -190,19 +205,16 @@ impl Pending {
         };
         let mut kept = Vec::with_capacity(self.queue.len());
         for item in self.queue.drain(..) {
-            match rank(&item.0.key) {
+            match rank(&item.key()) {
                 Some(r) => kept.push((r, item)),
-                None => dropped(item.0),
+                None => dropped(item),
             }
         }
         // Stable: equally near scenes keep their arrival order.
         kept.sort_by(|a, b| a.0.total_cmp(&b.0));
-        self.bytes = 0;
-        for (_, (item, bytes)) in kept {
-            let fits = self.queue.len() < MAX_PENDING && self.bytes + bytes <= MAX_PENDING_BYTES;
-            if fits {
-                self.bytes += bytes;
-                self.queue.push_back((item, bytes));
+        for (_, item) in kept {
+            if self.queue.len() < MAX_PENDING {
+                self.queue.push_back(item);
             } else {
                 dropped(item);
             }
@@ -212,16 +224,15 @@ impl Pending {
     /// Hands items to `render`, which returns the time it took, until [`TILES_PER_FRAME`]
     /// were rendered or [`TIME_PER_FRAME`] was spent. At least one goes per frame, so a slow
     /// tile (the first one compiles the shaders) cannot stall the queue.
-    pub fn pump(&mut self, mut render: impl FnMut(RenderDone) -> Duration) {
+    pub fn pump(&mut self, mut render: impl FnMut(T) -> Duration) {
         let mut spent = Duration::ZERO;
         for _ in 0..TILES_PER_FRAME {
             if spent >= TIME_PER_FRAME {
                 break;
             }
-            let Some((item, bytes)) = self.queue.pop_front() else {
+            let Some(item) = self.queue.pop_front() else {
                 break;
             };
-            self.bytes -= bytes;
             spent += render(item);
         }
     }

@@ -10,6 +10,8 @@ pub mod geom;
 mod gpu;
 #[cfg(feature = "gpu")]
 mod gpu_bytes;
+#[cfg(feature = "gpu")]
+mod gpu_scan;
 pub mod images;
 mod layout;
 mod network;

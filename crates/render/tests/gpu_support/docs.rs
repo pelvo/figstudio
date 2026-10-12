@@ -203,3 +203,36 @@ pub fn nested_blurs_n(radius: f64, count: u32) -> Document {
     }
     document(nodes)
 }
+
+/// `n` 100 px ellipses inside one frame with a layer blur of `radius`, all around the first
+/// tile.
+pub fn ellipses_under_blur(n: u32, radius: f64) -> Document {
+    let mut frame = node(2, 1, "FRAME");
+    frame.data.set("size", size(500.0, 500.0));
+    frame.data.set(
+        "effects",
+        Val::Arr(vec![obj(&[
+            ("type", Val::Str("LAYER_BLUR".into())),
+            ("visible", Val::Bool(true)),
+            ("radius", Val::Float(radius)),
+        ])]),
+    );
+    let mut nodes = vec![node(1, 0, "CANVAS"), frame];
+    for i in 0..n {
+        let mut e = node(i + 3, 2, "ELLIPSE");
+        e.data.set("size", size(100.0, 100.0));
+        let (x, y) = (f64::from(i * 37 % 400), f64::from(i * 53 % 400));
+        e.data.set(
+            "transform",
+            obj(&[
+                ("m00", Val::Float(1.0)),
+                ("m11", Val::Float(1.0)),
+                ("m02", Val::Float(x)),
+                ("m12", Val::Float(y)),
+            ]),
+        );
+        e.data.set("fillPaints", paint(0.5, 0.2, 0.2));
+        nodes.push(e);
+    }
+    document(nodes)
+}

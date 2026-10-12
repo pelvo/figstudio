@@ -3,6 +3,8 @@
 mod canvas;
 mod gpu;
 mod gpu_common;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod gpu_credits;
 mod gpu_registry;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod gpu_scenes;

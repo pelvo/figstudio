@@ -118,34 +118,59 @@ fn every_tile_the_scan_accepts_renders_on_the_gpu() {
     );
 }
 
-/// `gpu_scene_within` refuses a scene over the caller's byte limit before building it, and
-/// returns its estimate, which grows with the content.
+/// `gpu_scene_within` offers its estimate before building the scene and refuses it when the
+/// caller does not admit it; the estimate grows with the content.
 #[test]
-fn scenes_over_the_byte_limit_are_refused() {
+fn scenes_the_caller_does_not_admit_are_refused() {
     let doc = open("vector");
     let rec = record(&doc, doc.pages[0], 1.0);
     let b = figstudio_render::content_bounds(&doc, doc.pages[0]).unwrap();
     let (x, y) = ((b.x0 / TILE).floor() as i32, (b.y0 / TILE).floor() as i32);
     let vp = tile(1.0, x, y);
-    let (_, fills, bytes) = rec
-        .gpu_scene_within(&vp, GPU_LAYER_TEXTURE, usize::MAX)
-        .unwrap()
-        .unwrap();
+    let within =
+        |vp, max: usize| rec.gpu_scene_within(vp, GPU_LAYER_TEXTURE, |b| (b <= max).then_some(b));
+    let (_, fills, bytes) = within(&vp, usize::MAX).unwrap().unwrap();
     assert!(fills > 0 && bytes > 0, "{fills} fills, {bytes} bytes");
-    let refused = rec
-        .gpu_scene_within(&vp, GPU_LAYER_TEXTURE, bytes - 1)
-        .unwrap();
+    let refused = within(&vp, bytes - 1).unwrap();
     assert_eq!(refused.err(), Some(GpuUnsupported::TooBig));
-    assert!(
-        rec.gpu_scene_within(&vp, GPU_LAYER_TEXTURE, bytes)
-            .unwrap()
-            .is_ok()
-    );
+    assert!(within(&vp, bytes).unwrap().is_ok());
     // An empty tile far from the content costs only its background.
-    let empty = tile(1.0, x - 20, y - 20);
-    let (_, _, little) = rec
-        .gpu_scene_within(&empty, GPU_LAYER_TEXTURE, usize::MAX)
+    let (_, _, little) = within(&tile(1.0, x - 20, y - 20), usize::MAX)
         .unwrap()
         .unwrap();
     assert!(little < bytes, "{little} >= {bytes}");
+}
+
+/// Filters widen `vello_gpu`'s strip viewport, which the estimate does not cover (a review
+/// found 400 ellipses under a radius-350 blur estimated at 3.6 MB, built at 12.6 MB), so a
+/// size-bounded scene refuses any filter layer, small or large, before asking the caller.
+/// `gpu_scene` (desktop, unbounded) still draws small blurs.
+#[test]
+fn size_bounded_scenes_refuse_every_filter() {
+    for (blurred, radius) in [
+        (ellipses_under_blur(400, 350.0), 350.0),
+        (nested_blurs_n(8.0, 1), 8.0),
+    ] {
+        let rec = record(&blurred, id(1), 1.0);
+        let mut asked = false;
+        let got = rec
+            .gpu_scene_within(&tile(1.0, 0, 0), GPU_LAYER_TEXTURE, |b| {
+                asked = true;
+                Some(b)
+            })
+            .unwrap()
+            .err();
+        assert_eq!(got, Some(GpuUnsupported::Filtered), "radius {radius}");
+        assert!(
+            !asked,
+            "radius {radius}: refused before the estimate is offered"
+        );
+    }
+    let small = record(&nested_blurs_n(8.0, 1), id(1), 1.0);
+    assert!(
+        small
+            .gpu_scene(&tile(1.0, 0, 0), GPU_LAYER_TEXTURE)
+            .unwrap()
+            .is_ok()
+    );
 }

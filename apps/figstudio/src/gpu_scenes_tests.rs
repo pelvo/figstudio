@@ -101,7 +101,7 @@ fn draw_one(
 #[test]
 fn the_worker_builds_scenes_and_counts_every_unwanted_cpu_tile() {
     let lost = Arc::new(AtomicBool::new(false));
-    let mut gpu = TileGpu::new(Ok(8192), lost.clone());
+    let mut gpu = TileGpu::new(Ok(8192), lost.clone(), Credits::default());
     assert_eq!(
         draw(&mut gpu, "vector"),
         None,
@@ -115,9 +115,13 @@ fn the_worker_builds_scenes_and_counts_every_unwanted_cpu_tile() {
     lost.store(true, Ordering::Release);
     assert_eq!(draw(&mut gpu, "vector"), Some(1));
     // No device, or textures too small: counted. Asking for the CPU: not counted.
-    let mut none = TileGpu::new(Err(CpuWhy::NoDevice), Arc::default());
+    let mut none = TileGpu::new(Err(CpuWhy::NoDevice), Arc::default(), Credits::default());
     assert_eq!(draw(&mut none, "vector"), Some(1));
-    let mut small = TileGpu::new(Err(CpuWhy::SmallTextures), Arc::default());
+    let mut small = TileGpu::new(
+        Err(CpuWhy::SmallTextures),
+        Arc::default(),
+        Credits::default(),
+    );
     assert_eq!(draw(&mut small, "vector"), Some(1));
     assert_eq!(draw(&mut TileGpu::default(), "vector"), Some(0));
 }
@@ -183,17 +187,23 @@ fn ellipses(n: u32, side: f64) -> Arc<figstudio_fig::Document> {
     Arc::new(doc)
 }
 
-/// The scene the worker sends for tile (0, 0) of `doc`, or the tile's fallback count.
-fn scene_of(doc: &Arc<figstudio_fig::Document>) -> Result<usize, usize> {
+/// The tile `(x, y)` of `doc` (page `Guid(99, 1)`) drawn by `gpu`: the scene it sends, or the
+/// tile's fallback count.
+fn scene_at(
+    gpu: &mut TileGpu,
+    doc: &Arc<figstudio_fig::Document>,
+    tab: u64,
+    x: i32,
+) -> Result<GpuTexture, usize> {
     let key = Key {
         doc: doc.instance,
         page: figstudio_fig::Guid(99, 1),
         level: 0,
-        x: 0,
+        x,
         y: 0,
     };
     let job = RenderJob {
-        tab: 1,
+        tab,
         doc: doc.clone(),
         source: None,
         root: key.page,
@@ -204,24 +214,69 @@ fn scene_of(doc: &Arc<figstudio_fig::Document>) -> Result<usize, usize> {
     };
     let mut renderer = Renderer::new();
     renderer.system_fonts = false;
-    let mut gpu = TileGpu::new(Ok(8192), Arc::default());
     let drawn = gpu.draw(&mut Recordings::default(), &mut renderer, &job, &key);
     match drawn.into_parts() {
-        (Pixels::Gpu(t), ..) => Ok(t.bytes),
+        (Pixels::Gpu(t), ..) => Ok(t),
         (Pixels::Cpu { .. }, stats, _) => Err(stats.gpu_fallback_tiles),
     }
 }
 
+fn gpu_with(credits: &Credits) -> TileGpu {
+    TileGpu::new(Ok(8192), Arc::default(), credits.clone())
+}
+
 #[test]
-fn an_oversized_scene_falls_back_counted_and_sent_scenes_carry_their_size() {
-    // 1,000 small ellipses: a scene of a few MiB, sent with its estimate.
-    let small = scene_of(&ellipses(1000, 40.0));
-    assert!(
-        small.is_ok_and(|b| b > 1 << 20 && b <= MAX_SCENE_BYTES),
-        "{small:?}"
-    );
+fn an_oversized_scene_falls_back_counted_and_sent_scenes_hold_their_bytes() {
+    let credits = Credits::default();
+    let mut gpu = gpu_with(&credits);
+    // 1,000 small ellipses: a scene of a few MiB, holding its estimate until dropped.
+    let small = scene_at(&mut gpu, &ellipses(1000, 40.0), 1, 0).unwrap();
+    let held = small._bytes.bytes();
+    assert!(held > 1 << 20 && held <= MAX_SCENE_BYTES, "{held}");
+    assert_eq!(credits.used(), held);
+    drop(small);
+    assert_eq!(credits.used(), 0, "a dropped scene gives its bytes back");
     // 1,000 large overlapping ellipses: over the per-scene limit, drawn on the CPU, counted.
-    assert_eq!(scene_of(&ellipses(1000, 500.0)), Err(1));
+    assert_eq!(
+        scene_at(&mut gpu, &ellipses(1000, 500.0), 1, 0).err(),
+        Some(1)
+    );
+    assert_eq!(credits.used(), 0);
+}
+
+/// The worker keeps building while the main thread draws no frame (scenes pile up in the
+/// channel): two tabs' tiles reserve credits until the budget is spent, then the rest are drawn
+/// on the CPU, counted; closing a tab (its scenes dropped) or rendering gives the bytes back.
+#[test]
+fn scenes_alive_never_exceed_the_byte_budget() {
+    let credits = Credits::default();
+    let mut gpu = gpu_with(&credits);
+    let (one, two) = (ellipses(1000, 40.0), ellipses(1000, 40.0));
+    // The channel: everything the worker sent, unread.
+    let mut channel: Vec<(u64, Result<GpuTexture, usize>)> = Vec::new();
+    for _ in 0..20 {
+        for (tab, doc) in [(1, &one), (2, &two)] {
+            channel.push((tab, scene_at(&mut gpu, doc, tab, 0)));
+            assert!(
+                credits.used() <= crate::gpu_credits::BUDGET,
+                "{}",
+                credits.used()
+            );
+        }
+    }
+    let sent = channel.iter().filter(|(_, r)| r.is_ok()).count();
+    let refused = channel.iter().filter(|(_, r)| matches!(r, Err(1))).count();
+    assert!(
+        sent > 0 && refused > 0,
+        "{sent} scenes, {refused} on the CPU"
+    );
+    // Tab 1 closes: its scenes are dropped with it.
+    let before = credits.used();
+    channel.retain(|(tab, _)| *tab != 1);
+    assert!(credits.used() < before);
+    // The main thread renders the rest: every byte comes back.
+    channel.clear();
+    assert_eq!(credits.used(), 0);
 }
 
 #[path = "gpu_scenes_queue_tests.rs"]

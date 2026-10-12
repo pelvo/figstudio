@@ -15,7 +15,7 @@ use web_time::Instant;
 
 use crate::gpu_common::{Choice, CpuWhy, Vello, choose, label};
 use crate::gpu_registry::{NativeTexture, Registry};
-use crate::gpu_scenes::{Pending, Plan, TileGpu, asked_renderer};
+use crate::gpu_scenes::{Credits, Pending, Plan, TileGpu, asked_renderer};
 use crate::recordings::Pixels;
 use crate::tiles::Key;
 use crate::worker::RenderDone;
@@ -35,7 +35,7 @@ pub fn start(state: Option<&RenderState>) -> (TileGpu, Option<WebGpu>, String) {
             Choice::Cpu(why) => why,
             Choice::Gpu => CpuWhy::NoDevice,
         };
-        return (TileGpu::new(Err(why), lost), None, name);
+        return (TileGpu::new(Err(why), lost, Credits::default()), None, name);
     };
     let flag = lost.clone();
     state
@@ -50,7 +50,11 @@ pub fn start(state: Option<&RenderState>) -> (TileGpu, Option<WebGpu>, String) {
         pending: Pending::default(),
         failed: Rc::default(),
     };
-    (TileGpu::new(Ok(side), lost), Some(gpu), name)
+    (
+        TileGpu::new(Ok(side), lost, Credits::default()),
+        Some(gpu),
+        name,
+    )
 }
 
 /// Renders the worker's scenes on the main thread, a bounded number per frame.
@@ -77,11 +81,7 @@ impl WebGpu {
     /// Queues a tile whose pixels are a scene, within the queue's bounds: scenes over them,
     /// the farthest from `plan`, go to `dropped` (to be acknowledged as not delivered).
     pub fn push(&mut self, done: RenderDone, plan: Plan, dropped: impl FnMut(RenderDone)) {
-        let bytes = match &done.pixels {
-            Pixels::Gpu(t) => t.bytes,
-            Pixels::Cpu { rgba, .. } => rgba.len(),
-        };
-        self.pending.push(done, bytes, plan, dropped);
+        self.pending.push(done, plan, dropped);
     }
 
     /// Scenes are waiting (the UI keeps repainting until they are drawn).

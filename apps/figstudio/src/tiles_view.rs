@@ -13,7 +13,8 @@ use crate::worker::{RenderDone, RenderJob, Workers};
 /// Budget for the tiles kept as textures (resident cache, gutters included): 256 MiB native,
 /// 128 MiB in the browser. Tiles still being rendered or uploaded are not counted: at most
 /// one batch per tab (half the cache) is queued in the worker, plus, in the browser, at most
-/// `gpu_scenes::MAX_PENDING` scenes (`MAX_PENDING_BYTES`) waiting for the main thread.
+/// `gpu_scenes::MAX_PENDING` scenes waiting for the main thread, all scenes alive within
+/// `gpu_credits::BUDGET` bytes.
 #[cfg(not(target_arch = "wasm32"))]
 const BUDGET_BYTES: usize = 256 << 20;
 #[cfg(target_arch = "wasm32")]
