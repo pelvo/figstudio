@@ -281,3 +281,22 @@ fn scenes_alive_never_exceed_the_byte_budget() {
 
 #[path = "gpu_scenes_queue_tests.rs"]
 mod queue;
+
+/// An empty tile still keeps buffers and its background fill, so it reserves credits too: with
+/// no budget left, empty tiles go to the CPU instead of piling up unaccounted.
+#[test]
+fn empty_scenes_reserve_credits_too() {
+    let empty = ellipses(0, 40.0);
+    let credits = Credits::default();
+    let mut gpu = gpu_with(&credits);
+    let scene = scene_at(&mut gpu, &empty, 1, 0).expect("an empty tile is a GPU scene");
+    assert!(scene._bytes.bytes() > 0, "an empty scene reserves bytes");
+    drop(scene);
+    assert_eq!(credits.used(), 0);
+    let none = Credits::new(0);
+    let mut gpu = gpu_with(&none);
+    for tab in 1..=2 {
+        assert_eq!(scene_at(&mut gpu, &empty, tab, 0).err(), Some(1));
+    }
+    assert_eq!(none.used(), 0);
+}

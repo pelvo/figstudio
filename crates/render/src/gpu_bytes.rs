@@ -36,6 +36,9 @@ const PER_TILE: f64 = 24.0;
 const PER_DRAW: f64 = 128.0;
 /// Growth slack: the scene's `Vec`s double when full, so up to twice their length is kept.
 const CAPACITY: f64 = 2.0;
+/// What every scene keeps even when it draws nothing: its buffers, recorder and the viewport
+/// background fill (an empty 516 px tile measured 2,630 heap bytes; rounded up, then doubled).
+const PER_SCENE: f64 = 4096.0;
 
 /// The running estimate (see the module docs).
 #[derive(Debug, Default)]
@@ -50,7 +53,7 @@ pub(crate) struct SceneBytes {
 impl SceneBytes {
     /// The estimate, in bytes.
     pub(crate) fn total(&self) -> usize {
-        let total = CAPACITY * (self.kept + self.largest_path);
+        let total = CAPACITY * (PER_SCENE + self.kept + self.largest_path);
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
