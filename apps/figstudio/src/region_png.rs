@@ -10,17 +10,14 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use figstudio_fig::{Document, Guid};
 use figstudio_render::images::{ImageRequest, Images};
-use figstudio_render::kurbo::Affine;
-use figstudio_render::{Renderer, Stats, Viewport, node_bounds, page_background};
+use figstudio_render::{Renderer, Stats, node_bounds};
 
 use crate::source::Source;
 use crate::tab::Tab;
 use crate::worker::Workers;
 
-/// Longest side of a copied image, in pixels.
-pub const MAX_SIDE: f64 = 4096.0;
-/// Most pixels in a copied image.
-pub const MAX_PIXELS: f64 = 16_000_000.0;
+use figstudio_mcp_core::region_shot::plan;
+
 /// A node is copied at this scale (the 2x export), within the caps.
 const NODE_SCALE: f64 = 2.0;
 
@@ -35,42 +32,6 @@ pub enum Job {
     },
     /// One node, at 2x.
     Node(Guid),
-}
-
-/// The output scale and pixel size of an `w` × `h` area drawn at `scale`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Plan {
-    pub scale: f64,
-    pub width: u16,
-    pub height: u16,
-}
-
-/// `scale` stepped down until the image fits [`MAX_SIDE`] and [`MAX_PIXELS`]. `None` for an area
-/// or scale that is not a positive finite number.
-pub fn plan(w: f64, h: f64, scale: f64) -> Option<Plan> {
-    let ok = |v: f64| v.is_finite() && v > 0.0;
-    if !(ok(w) && ok(h) && ok(scale)) {
-        return None;
-    }
-    let mut s = scale
-        .max(0.01)
-        .min(MAX_SIDE / w)
-        .min(MAX_SIDE / h)
-        .min((MAX_PIXELS / (w * h)).sqrt());
-    let px = |v: f64, s: f64| (v * s - 1e-6).ceil().max(1.0);
-    // Rounding up a side can tip the total over the cap by a sliver: shrink until it fits.
-    for _ in 0..200 {
-        let (pw, ph) = (px(w, s), px(h, s));
-        if pw <= MAX_SIDE && ph <= MAX_SIDE && pw * ph <= MAX_PIXELS {
-            return Some(Plan {
-                scale: s,
-                width: pw as u16,
-                height: ph as u16,
-            });
-        }
-        s *= 0.999;
-    }
-    None
 }
 
 /// A finished render.
@@ -132,14 +93,9 @@ pub fn render(
 ) -> Result<Done, String> {
     let (frame, name) = match job {
         Job::Region { page, rect, zoom } => {
-            let p = plan(rect[2], rect[3], f64::from(zoom))
-                .ok_or("Region is too small to copy as an image")?;
-            let viewport = Viewport {
-                width: p.width,
-                height: p.height,
-                transform: Affine::scale(p.scale) * Affine::translate((-rect[0], -rect[1])),
-                background: Some(page_background(doc, page)),
-            };
+            let (viewport, _) =
+                figstudio_mcp_core::region_shot::viewport(doc, page, rect, f64::from(zoom))
+                    .ok_or("Region is too small to copy as an image")?;
             let read = |want: &ImageRequest| source.and_then(|s| s.read(&want.entry).ok());
             let frame = Renderer::with_images(images).render_complete(doc, page, &viewport, read);
             (frame, "region".to_string())

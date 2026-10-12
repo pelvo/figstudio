@@ -14,7 +14,8 @@ pub use figstudio_mcp_core::screenshot::{DEFAULT_SIDE_PX, MAX_SIDE_PX, SCALE_RAN
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ScreenshotInput {
-    /// Node ID or Figma URL with `node-id`.
+    /// Node ID, Figma URL with `node-id`, or a `figstudio://<fileKey>?page=<id>&rect=x,y,w,h`
+    /// region link, which renders that part of the page.
     node_id: String,
     /// Registered file stem or full path; optional for a single file.
     file_key: Option<String>,
@@ -26,7 +27,7 @@ pub(crate) struct ScreenshotInput {
 #[tool_router(router = screenshot_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Render a node to a PNG image. Pages (canvases) are drawn on the page background colour; every other node on a transparent background. scale defaults to 1 (0.01 to 4) and the longest side is then capped at 2048 px; an explicit scale is capped at 4096 px. The output is cropped to the node's own box (no padding), so shadows and strokes outside it are cut off. The text reply lists what was approximated or not drawn. An instance path (I1:2;3:4) renders that node alone (no siblings, no ancestor clips) as laid out inside its instance."
+        description = "Render a node to a PNG image. Pages (canvases) are drawn on the page background colour; every other node on a transparent background. scale defaults to 1 (0.01 to 4) and the longest side is then capped at 2048 px; an explicit scale is capped at 4096 px. The output is cropped to the node's own box (no padding), so shadows and strokes outside it are cut off. The text reply lists what was approximated or not drawn. An instance path (I1:2;3:4) renders that node alone (no siblings, no ancestor clips) as laid out inside its instance. A figstudio region link (figstudio://<fileKey>?page=0-1&rect=x,y,w,h) in nodeId renders that rectangle of the page on the page background, with the same scale and size caps."
     )]
     async fn get_screenshot(
         &self,

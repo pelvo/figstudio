@@ -28,6 +28,10 @@ pub mod node_id;
 pub mod output;
 /// The nodes a page rectangle touches.
 pub mod region;
+/// PNG renders of a page rectangle.
+pub mod region_shot;
+/// `get_nodes_in_region`: the nodes a page rectangle touches, as JSON.
+pub mod region_tool;
 /// Render settings and lazily read images.
 pub mod rendering;
 /// PNG renders of one node.

@@ -43,6 +43,7 @@ impl FigstudioServer {
             tool_router: Self::tool_router()
                 + Self::metadata_router()
                 + Self::screenshot_router()
+                + Self::region_router()
                 + Self::variables_router()
                 + Self::design_router()
                 + Self::assets_router()
@@ -92,7 +93,7 @@ impl ServerHandler for FigstudioServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().enable_prompts().build())
             .with_server_info(Implementation::new("figstudio-mcp", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Offline access to local .fig files only. fileKey is optional for one file; otherwise use its stem or listed full path. nodeId accepts 1:2, 1-2, Figma URLs with node-id, and instance paths I1:2;3:4 (nodes inside an instance, with overrides applied). Writes go only to Code Connect sidecars and get_design_context asset files; the .fig is never changed. Cloud tools are unavailable.")
+            .with_instructions("Offline access to local .fig files only. fileKey is optional for one file; otherwise use its stem or listed full path. nodeId accepts 1:2, 1-2, Figma URLs with node-id, figstudio://<fileKey>?node-id=1-2 links, and instance paths I1:2;3:4 (nodes inside an instance, with overrides applied). A figstudio://<fileKey>?page=0-1&rect=x,y,w,h region link (from the app's Copy region) works in get_screenshot, which draws that part of the page, and in get_nodes_in_region, which lists the nodes in it. Writes go only to Code Connect sidecars and get_design_context asset files; the .fig is never changed. Cloud tools are unavailable.")
     }
 }
 

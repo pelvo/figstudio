@@ -3,6 +3,7 @@
 use figstudio_fig::Document;
 
 use super::*;
+use figstudio_mcp_core::region_shot::{MAX_PIXELS, MAX_SIDE, Plan};
 
 const STRUCTURE: &[u8] = include_bytes!("../../../tests/fixtures/structure.fig");
 

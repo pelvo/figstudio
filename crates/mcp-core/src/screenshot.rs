@@ -31,7 +31,7 @@ pub fn screenshot(
     scale: Option<f64>,
     rendering: &Rendering,
 ) -> Output {
-    let shot = match render_node(doc, node_id, scale, rendering) {
+    let shot = match render_target(doc, node_id, scale, rendering) {
         Ok(shot) => shot,
         Err(message) => return Output::fault(message),
     };
@@ -43,6 +43,23 @@ pub fn screenshot(
         ]),
         Err(error) => Output::fault(format!("PNG encoding failed: {error}")),
     }
+}
+
+/// A region link (`figstudio://<key>?page=…&rect=…`) renders that part of the page; anything
+/// else is a node, as in [`render_node`].
+fn render_target(
+    doc: &Document,
+    target: &str,
+    scale: Option<f64>,
+    rendering: &Rendering,
+) -> Result<Shot, String> {
+    if target.starts_with("figstudio://")
+        && let Ok(link) = crate::link::parse_link(target)
+        && let (Some(page), Some(rect)) = (link.page, link.rect)
+    {
+        return crate::region_shot::region_shot(doc, page, rect, scale, rendering);
+    }
+    render_node(doc, target, scale, rendering)
 }
 
 /// A finished render of one node: pixels plus what the renderer reported.

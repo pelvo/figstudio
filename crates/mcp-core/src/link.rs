@@ -168,16 +168,23 @@ fn param(url: &Url, name: &str) -> Result<Option<String>, CoreError> {
 }
 
 fn parse_rect(input: &str) -> Result<[f64; 4], CoreError> {
-    let bad = CoreError::invalid_link;
     let parts = input
         .split(',')
-        .map(|part| part.parse::<f64>().map_err(|_| bad()))
+        .map(|part| part.parse::<f64>().map_err(|_| CoreError::invalid_link()))
         .collect::<Result<Vec<_>, _>>()?;
-    let rect: [f64; 4] = parts.try_into().map_err(|_| bad())?;
+    validate_rect(parts.try_into().map_err(|_| CoreError::invalid_link())?)
+}
+
+/// `rect` (`[x, y, w, h]`) when it is 4 finite numbers with `w`, `h` > 0 and `|v|` ≤ 1e7, the
+/// rule a region link follows.
+///
+/// # Errors
+/// [`CoreError`] (invalid link) for any other rect.
+pub fn validate_rect(rect: [f64; 4]) -> Result<[f64; 4], CoreError> {
     let valid = rect.iter().all(|v| v.is_finite() && v.abs() <= MAX_COORD)
         && rect[2] > 0.0
         && rect[3] > 0.0;
-    valid.then_some(rect).ok_or_else(bad)
+    valid.then_some(rect).ok_or_else(CoreError::invalid_link)
 }
 
 /// Two decimals without trailing zeros; never `-0`.

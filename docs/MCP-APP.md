@@ -335,6 +335,13 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
   - A region screenshot of a fixture page has the expected pixel size.
   - A bad rect is a tool error, not a protocol error.
   - Node list order and limit.
+- **Status:** done. Core: `region_shot.rs` (`plan`, `plan_within`, `viewport`, `viewport_within`, `region_shot`; the app's
+  `region_png` now calls these, so the link and the Copy-region PNG share one crop), `region_tool.rs`
+  (`nodes_in_region`, `resolve`), `link::validate_rect`; `screenshot` sends a `figstudio://` region link to `region_shot`.
+  Adapter: `tools/region.rs` (schema + `spawn_blocking`). Caps: region image ≤ 4096 px per side and 16 MP; without `scale`
+  the longest side is 2048 px (as for nodes); `get_nodes_in_region` `limit` 1–500 (default 50), walk budget 200 000 nodes.
+  Tests: `crates/mcp-core/tests/region_shot.rs`, `apps/figstudio-mcp/tests/region.rs`.
+
 - **Gate:** G-check, G-wasm.
 
 ## L7: live mode in `figstudio-mcp`, with no app yet (L, Opus or Sonnet-high)
