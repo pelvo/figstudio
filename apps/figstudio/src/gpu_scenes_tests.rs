@@ -1,5 +1,4 @@
-//! The browser GPU canvas without a device: the `?renderer=` query, the renderer choice, the
-//! fallback counts of scenes built on the worker. The main thread's queue: `gpu_scenes_queue_tests.rs`.
+//! The browser GPU canvas without a device: query, renderer choice, worker scene fallbacks.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -282,8 +281,7 @@ fn scenes_alive_never_exceed_the_byte_budget() {
 #[path = "gpu_scenes_queue_tests.rs"]
 mod queue;
 
-/// An empty tile still keeps buffers and its background fill, so it reserves credits too: with
-/// no budget left, empty tiles go to the CPU instead of piling up unaccounted.
+/// An empty tile keeps buffers and a background fill, so it reserves credits too.
 #[test]
 fn empty_scenes_reserve_credits_too() {
     let empty = ellipses(0, 40.0);
@@ -297,6 +295,6 @@ fn empty_scenes_reserve_credits_too() {
     let mut gpu = gpu_with(&none);
     for tab in 1..=2 {
         assert_eq!(scene_at(&mut gpu, &empty, tab, 0).err(), Some(1));
+        assert_eq!(none.used(), 0);
     }
-    assert_eq!(none.used(), 0);
 }
