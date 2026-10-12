@@ -9,6 +9,8 @@ pub mod design;
 pub mod design_system;
 /// FigJam boards as metadata XML with FigJam details.
 pub mod figjam;
+/// Live-mode tools: open tabs, selection, reveal.
+pub mod live;
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
 /// The nodes a page rectangle touches.
@@ -31,8 +33,12 @@ use serde_json::json;
 impl FigstudioServer {
     #[tool(description = "Identify this offline server and its registered local files")]
     fn whoami(&self) -> CallToolResult {
+        let mode = match self.files {
+            crate::files::Files::Registry(_) => "offline",
+            crate::files::Files::Live(_) => "live",
+        };
         CallToolResult::structured(
-            json!({"mode": "offline", "server": "figstudio-mcp", "files": self.files.keys()}),
+            json!({"mode": mode, "server": "figstudio-mcp", "files": self.files.keys()}),
         )
     }
 

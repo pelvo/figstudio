@@ -389,6 +389,16 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
   - The app path reuses `serve_http` (`lib.rs:99`), so it gets the same checks.
 - **Gate:** G-check, G-golden (standalone) changes only where expected (tool list, nodeId schema); the commit body
   lists them.
+- **Status:** done. `src/live.rs`: `Snapshot`, `TabInfo`, `Command::Reveal`, `LiveFiles::new(snapshot, commands, wake)`,
+  `REVEAL_TIMEOUT` (5 s); `src/files.rs`: `enum Files { Registry, Live }` with `open`/`key`/`path`/`rendering`/`list`/`keys`
+  (`rendering` now also takes the opened `&Document`, which picks the live per-instance cache) and the shared
+  `find`/`stem` key rule. `FigstudioServer::live(Arc<LiveFiles>, no_system_fonts)` adds `src/tools/live.rs`
+  (`list_open_tabs`, `get_selection`, `reveal_node`) and appends a live paragraph to the instructions; `whoami` says
+  `mode: "live"`. `FigstudioServer::target` resolves file + node once per call (live: the picked tab's key, so a tab switch
+  mid-call cannot mix tabs). `bind_first`, `default_http_addrs`, `HTTP_PORTS` are public for L8. Extra messages: live with no
+  tabs "no file is open in the app", nothing selected "nodeId is required: nothing is selected in this tab", live tools
+  standalone are not registered. Tests: `tests/live.rs` (9), `tests/stdio.rs` (+2 port tests, instructions text),
+  `tests/http.rs` (no CORS header on any reply incl. preflight).
 
 ## L8: the app hosts the server (L, Opus or Sonnet-high)
 

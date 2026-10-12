@@ -14,8 +14,9 @@ pub use core::{Assets, MAX_ASSETS, MAX_CODE_BYTES, MAX_INLINE_BYTES, MAX_NODES, 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DesignInput {
-    /// Node ID, instance path (I1:2;3:4) or Figma URL with node-id.
-    node_id: String,
+    /// Node ID, instance path (I1:2;3:4) or Figma URL with node-id. Required, except in the
+    /// app's live mode, where it defaults to the selection.
+    node_id: Option<String>,
     /// Registered file stem or full path; optional for a single file.
     file_key: Option<String>,
     /// The project's frameworks, for example "React" or "Vue"; echoed in the instructions.
@@ -35,18 +36,22 @@ impl FigstudioServer {
         &self,
         Parameters(input): Parameters<DesignInput>,
     ) -> CallToolResult {
-        let key = self.file_for(input.file_key.as_deref(), Some(&input.node_id));
+        let key = self.file_for(input.file_key.as_deref(), input.node_id.as_deref());
+        let (key, node_id) = match self.target(key, input.node_id) {
+            Ok(target) => target,
+            Err(error) => return tool_error(error),
+        };
         let key = key.as_deref();
-        let rendering = self.files().rendering(key, !self.no_system_fonts());
-        let (document, file_key, rendering) = match (
-            self.files().open(key).await,
-            self.files().key(key),
-            rendering,
-        ) {
-            (Ok(document), Ok(file_key), Ok(rendering)) => (document, file_key, rendering),
-            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
-                return tool_error(error);
-            }
+        let (document, file_key) = match (self.files().open(key).await, self.files().key(key)) {
+            (Ok(document), Ok(file_key)) => (document, file_key),
+            (Err(error), _) | (_, Err(error)) => return tool_error(error),
+        };
+        let rendering = match self
+            .files()
+            .rendering(key, &document, !self.no_system_fonts())
+        {
+            Ok(rendering) => rendering,
+            Err(error) => return tool_error(error),
         };
         let options = Options {
             file_key,
@@ -57,10 +62,8 @@ impl FigstudioServer {
             rendering,
             max_code_bytes: Some(self.max_output_bytes()),
         };
-        match tokio::task::spawn_blocking(move || {
-            design_context(&document, &input.node_id, &options)
-        })
-        .await
+        match tokio::task::spawn_blocking(move || design_context(&document, &node_id, &options))
+            .await
         {
             Ok(result) => result,
             Err(error) => tool_error(crate::error::McpError::load_task(error)),

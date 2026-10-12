@@ -39,13 +39,14 @@ impl FigstudioServer {
             Ok(document) => document,
             Err(error) => return tool_error(error),
         };
-        let rendering = match self
-            .files()
-            .rendering(key.as_deref(), !self.no_system_fonts())
-        {
-            Ok(rendering) => rendering,
-            Err(error) => return tool_error(error),
-        };
+        let rendering =
+            match self
+                .files()
+                .rendering(key.as_deref(), &document, !self.no_system_fonts())
+            {
+                Ok(rendering) => rendering,
+                Err(error) => return tool_error(error),
+            };
         let max_bytes = self.max_output_bytes();
         match tokio::task::spawn_blocking(move || {
             figjam_within(

@@ -13,6 +13,12 @@ enum Kind {
     Core(CoreError),
     LoadTask(tokio::task::JoinError),
     TokenTask(tokio::task::JoinError),
+    /// No nodeId and no selection to default to.
+    NodeIdRequired {
+        live: bool,
+    },
+    /// The app side of live mode: no open tab, a closed tab, or no reply.
+    App(String),
 }
 
 impl McpError {
@@ -34,6 +40,21 @@ impl McpError {
     pub(crate) fn token_task(cause: tokio::task::JoinError) -> Self {
         Self {
             kind: Kind::TokenTask(cause),
+            backtrace: Backtrace::capture(),
+        }
+    }
+
+    pub(crate) fn node_id_required(live: bool) -> Self {
+        Self::new(Kind::NodeIdRequired { live })
+    }
+
+    pub(crate) fn app(message: impl Into<String>) -> Self {
+        Self::new(Kind::App(message.into()))
+    }
+
+    fn new(kind: Kind) -> Self {
+        Self {
+            kind,
             backtrace: Backtrace::capture(),
         }
     }
@@ -60,6 +81,11 @@ impl fmt::Display for McpError {
             Kind::Core(error) => error.fmt(f),
             Kind::LoadTask(_) => f.write_str("document loading task failed"),
             Kind::TokenTask(_) => f.write_str("token extraction task failed"),
+            Kind::NodeIdRequired { live: false } => f.write_str("nodeId is required"),
+            Kind::NodeIdRequired { live: true } => {
+                f.write_str("nodeId is required: nothing is selected in this tab")
+            }
+            Kind::App(message) => f.write_str(message),
         }
     }
 }
@@ -69,6 +95,7 @@ impl std::error::Error for McpError {
         match &self.kind {
             Kind::Core(error) => std::error::Error::source(error),
             Kind::LoadTask(cause) | Kind::TokenTask(cause) => Some(cause),
+            Kind::NodeIdRequired { .. } | Kind::App(_) => None,
         }
     }
 }

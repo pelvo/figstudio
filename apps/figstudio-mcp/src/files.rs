@@ -1,12 +1,15 @@
-use crate::{error::McpError, tools::rendering::Rendering};
+use crate::{error::McpError, live::LiveFiles, tools::rendering::Rendering};
 use figstudio_fig::{Document, LAZY_ABOVE};
 use figstudio_render::images::Images;
 use serde::Serialize;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::sync::OnceCell;
 
 /// Decoded-image bytes each registered file may keep between calls.
-const IMAGE_CACHE_BYTES: usize = 256 * 1024 * 1024;
+pub(crate) const IMAGE_CACHE_BYTES: usize = 256 * 1024 * 1024;
 
 struct FileEntry {
     key: String,
@@ -53,11 +56,7 @@ impl FileRegistry {
                 paths
                     .into_iter()
                     .map(|path| FileEntry {
-                        key: path
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned(),
+                        key: stem(&path),
                         rendering: Rendering::new(path.clone(), Images::new(IMAGE_CACHE_BYTES)),
                         path,
                         document: Arc::new(OnceCell::new()),
@@ -83,21 +82,7 @@ impl FileRegistry {
     fn resolve(&self, key: Option<&str>) -> Result<&FileEntry, McpError> {
         match key {
             None if self.files.len() == 1 => Ok(&self.files[0]),
-            Some(key) => {
-                // Full paths disambiguate files with the same stem.
-                if let Some(file) = self.files.iter().find(|file| {
-                    file.path.as_os_str() == key
-                        || std::path::absolute(&file.path).is_ok_and(|path| path.as_os_str() == key)
-                }) {
-                    return Ok(file);
-                }
-                let mut matches = self.files.iter().filter(|file| file.key == key);
-                let file = matches.next().ok_or_else(McpError::file_key)?;
-                if matches.next().is_some() {
-                    return Err(McpError::file_key());
-                }
-                Ok(file)
-            }
+            Some(key) => find(&self.files, key, |file| &file.path),
             _ => Err(McpError::file_key()),
         }
     }
@@ -163,78 +148,111 @@ impl FileRegistry {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// A file's key: its stem.
+pub(crate) fn stem(path: &Path) -> String {
+    path.file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
 
-    #[tokio::test]
-    async fn list_does_not_wait_for_a_pending_load() {
-        let files = FileRegistry::new(vec![PathBuf::from("structure.fig")]);
-        let cell = files.files[0].document.clone();
-        let mut pending =
-            Box::pin(cell.get_or_try_init(std::future::pending::<Result<Arc<Document>, McpError>>));
-        assert!(futures_util::poll!(&mut pending).is_pending());
-        let listed = tokio::time::timeout(std::time::Duration::from_millis(100), files.list())
-            .await
-            .expect("list blocked on loading");
-        assert_eq!(listed[0].pages, None);
+/// The entry `key` names: one whose path is `key` (as given or absolute), else the only entry
+/// whose stem is `key`. Full paths disambiguate files with the same stem.
+pub(crate) fn find<'a, T>(
+    entries: &'a [T],
+    key: &str,
+    path: impl Fn(&T) -> &Path,
+) -> Result<&'a T, McpError> {
+    if let Some(entry) = entries.iter().find(|entry| {
+        let path = path(entry);
+        path.as_os_str() == key
+            || std::path::absolute(path).is_ok_and(|path| path.as_os_str() == key)
+    }) {
+        return Ok(entry);
+    }
+    let mut matches = entries.iter().filter(|entry| stem(path(entry)) == key);
+    let entry = matches.next().ok_or_else(McpError::file_key)?;
+    if matches.next().is_some() {
+        return Err(McpError::file_key());
+    }
+    Ok(entry)
+}
+
+/// Where the tools find documents: registered files (standalone) or the app's open tabs.
+#[derive(Clone, Debug)]
+pub enum Files {
+    /// Files named on the command line, opened on demand.
+    Registry(FileRegistry),
+    /// The tabs the app publishes; a missing `fileKey` means the active tab.
+    Live(Arc<LiveFiles>),
+}
+
+impl Files {
+    /// File keys: registered stems, or the open tabs' keys.
+    pub fn keys(&self) -> Vec<String> {
+        match self {
+            Self::Registry(files) => files.keys(),
+            Self::Live(live) => live.keys(),
+        }
     }
 
-    #[tokio::test]
-    async fn cancelled_open_still_populates_the_cache() {
-        let fixture =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/structure.fig");
-        let files = FileRegistry::new(vec![fixture]);
-        let cell = files.files[0].document.clone();
-        let mut blocked =
-            Box::pin(cell.get_or_try_init(std::future::pending::<Result<Arc<Document>, McpError>>));
-        assert!(futures_util::poll!(&mut blocked).is_pending());
-        let mut open = Box::pin(files.open(None));
-        assert!(futures_util::poll!(&mut open).is_pending());
-        drop(open);
-        drop(blocked);
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while files.list().await[0].pages.is_none() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("cancelled request discarded its load");
-        let cached = cell.get().unwrap();
-        assert!(Arc::ptr_eq(cached, &files.open(None).await.unwrap()));
+    /// The key of the file `key` selects.
+    ///
+    /// # Errors
+    /// Returns an error for a missing, unknown or ambiguous file key.
+    pub fn key(&self, key: Option<&str>) -> Result<String, McpError> {
+        match self {
+            Self::Registry(files) => files.key(key),
+            Self::Live(live) => live.key(key),
+        }
     }
 
-    #[test]
-    fn resolves_single_and_multiple_files() {
-        let one = FileRegistry::new(vec![PathBuf::from("structure.fig")]);
-        assert_eq!(one.resolve(None).unwrap().key, "structure");
-        assert!(one.resolve(Some("unknown")).is_err());
-        let two = FileRegistry::new(vec![
-            PathBuf::from("structure.fig"),
-            PathBuf::from("vector.fig"),
-        ]);
-        assert!(two.resolve(None).is_err());
-        assert_eq!(
-            two.resolve(Some("vector")).unwrap().path,
-            PathBuf::from("vector.fig")
-        );
-        assert_eq!(two.resolve(Some("structure.fig")).unwrap().key, "structure");
-        assert!(two.resolve(Some("unknown")).is_err());
-        let absolute = std::path::absolute("vector.fig").unwrap();
-        assert_eq!(two.resolve(absolute.to_str()).unwrap().key, "vector");
+    /// The path of the file `key` selects.
+    ///
+    /// # Errors
+    /// Returns an error for a missing, unknown or ambiguous file key.
+    pub fn path(&self, key: Option<&str>) -> Result<PathBuf, McpError> {
+        match self {
+            Self::Registry(files) => files.path(key),
+            Self::Live(live) => live.path(key),
+        }
     }
 
-    #[test]
-    fn duplicate_stems_require_paths() {
-        let files = FileRegistry::new(vec![
-            PathBuf::from("a/example.fig"),
-            PathBuf::from("b/example.fig"),
-        ]);
-        assert!(files.resolve(Some("example")).is_err());
-        assert_eq!(
-            files.resolve(Some("b/example.fig")).unwrap().path,
-            PathBuf::from("b/example.fig")
-        );
-        assert!(FileRegistry::new(vec![]).resolve(None).is_err());
+    /// How to render `doc`, which [`Files::open`] returned for `key`.
+    ///
+    /// # Errors
+    /// Returns an error for a missing, unknown or ambiguous file key (standalone).
+    pub fn rendering(
+        &self,
+        key: Option<&str>,
+        doc: &Document,
+        system_fonts: bool,
+    ) -> Result<Rendering, McpError> {
+        match self {
+            Self::Registry(files) => files.rendering(key, system_fonts),
+            Self::Live(live) => Ok(live.rendering(doc, system_fonts)),
+        }
+    }
+
+    /// The document `key` selects. Live documents are the app's own, shared by `Arc`.
+    ///
+    /// # Errors
+    /// Returns an error for a bad file key or a file that does not decode.
+    pub async fn open(&self, key: Option<&str>) -> Result<Arc<Document>, McpError> {
+        match self {
+            Self::Registry(files) => files.open(key).await,
+            Self::Live(live) => live.open(key),
+        }
+    }
+
+    /// The files with their page counts (`None` until opened, standalone).
+    pub async fn list(&self) -> Vec<FileInfo> {
+        match self {
+            Self::Registry(files) => files.list().await,
+            Self::Live(live) => live.list(),
+        }
     }
 }
+
+#[cfg(test)]
+mod tests;

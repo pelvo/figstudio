@@ -2,26 +2,32 @@
 /// Canonical local input and loading errors.
 pub mod error;
 mod file_for;
-/// Lazy registered file cache.
+/// Lazy registered file cache, or the app's open tabs.
 pub mod files;
+/// Live mode: the app's open tabs and selection.
+pub mod live;
 /// Accepted Figma node ID formats.
 pub mod node_id;
 mod prompts;
 pub mod tools;
 
-use files::FileRegistry;
+use files::{FileRegistry, Files};
 use rmcp::{
     ServerHandler,
     handler::server::router::{prompt::PromptRouter, tool::ToolRouter},
     model::{Implementation, ServerCapabilities, ServerConfig},
     prompt_handler, tool_handler,
 };
-use std::path::PathBuf;
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+};
 
 /// A cloneable handler sharing the lazy file registry across HTTP sessions.
 #[derive(Clone, Debug)]
 pub struct FigstudioServer {
-    files: FileRegistry,
+    files: Files,
     no_system_fonts: bool,
     max_output_bytes: usize,
     assets: tools::design::Assets,
@@ -33,8 +39,20 @@ pub struct FigstudioServer {
 impl FigstudioServer {
     /// Create a handler without decoding registered files.
     pub fn new(paths: Vec<PathBuf>, no_system_fonts: bool) -> Self {
+        Self::with_files(Files::Registry(FileRegistry::new(paths)), no_system_fonts)
+    }
+
+    /// Serve the app's open tabs: a missing `fileKey` is the active tab, a missing `nodeId`
+    /// its selection, and `list_open_tabs`, `get_selection` and `reveal_node` are added.
+    pub fn live(files: Arc<live::LiveFiles>, no_system_fonts: bool) -> Self {
+        let mut server = Self::with_files(Files::Live(files), no_system_fonts);
+        server.tool_router += Self::live_router();
+        server
+    }
+
+    fn with_files(files: Files, no_system_fonts: bool) -> Self {
         Self {
-            files: FileRegistry::new(paths),
+            files,
             no_system_fonts,
             max_output_bytes: tools::metadata::DEFAULT_OUTPUT_BYTES,
             assets: tools::design::Assets::default(),
@@ -65,7 +83,7 @@ impl FigstudioServer {
     }
 
     /// Return the registry shared by all sessions.
-    pub fn files(&self) -> &FileRegistry {
+    pub fn files(&self) -> &Files {
         &self.files
     }
 
@@ -87,13 +105,56 @@ impl FigstudioServer {
     }
 }
 
+const INSTRUCTIONS: &str = "Offline access to local .fig files only. fileKey is optional for one file; otherwise use its stem or listed full path. nodeId accepts 1:2, 1-2, Figma URLs with node-id, figstudio://<fileKey>?node-id=1-2 links, and instance paths I1:2;3:4 (nodes inside an instance, with overrides applied). A figstudio://<fileKey>?page=0-1&rect=x,y,w,h region link (from the app's Copy region) works in get_screenshot, which draws that part of the page, and in get_nodes_in_region, which lists the nodes in it. Writes go only to Code Connect sidecars and get_design_context asset files; the .fig is never changed. Cloud tools are unavailable.";
+
+const LIVE_INSTRUCTIONS: &str = " Live mode: the files are the figstudio app's open tabs. A missing fileKey means the active tab; a missing nodeId means its selection. list_open_tabs lists the tabs, get_selection describes the selected node, reveal_node selects a node in the app and shows it.";
+
+/// The ports a bare `--http` and the app try, in order: 3845, then 3846 to 3855.
+pub const HTTP_PORTS: std::ops::RangeInclusive<u16> = 3845..=3855;
+
+/// `127.0.0.1` on each of [`HTTP_PORTS`].
+pub fn default_http_addrs() -> Vec<SocketAddr> {
+    HTTP_PORTS
+        .map(|port| SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+        .collect()
+}
+
+/// Bind the first address of `candidates` that is free.
+///
+/// # Errors
+/// The last bind error when none is free; `InvalidInput` when `candidates` is empty.
+pub async fn bind_first(
+    candidates: impl IntoIterator<Item = SocketAddr>,
+) -> std::io::Result<tokio::net::TcpListener> {
+    let mut last = std::io::Error::new(std::io::ErrorKind::InvalidInput, "no address to bind");
+    for addr in candidates {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => return Ok(listener),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
+}
+
 #[tool_handler(router = self.tool_router)]
 #[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for FigstudioServer {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().enable_prompts().build())
-            .with_server_info(Implementation::new("figstudio-mcp", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Offline access to local .fig files only. fileKey is optional for one file; otherwise use its stem or listed full path. nodeId accepts 1:2, 1-2, Figma URLs with node-id, figstudio://<fileKey>?node-id=1-2 links, and instance paths I1:2;3:4 (nodes inside an instance, with overrides applied). A figstudio://<fileKey>?page=0-1&rect=x,y,w,h region link (from the app's Copy region) works in get_screenshot, which draws that part of the page, and in get_nodes_in_region, which lists the nodes in it. Writes go only to Code Connect sidecars and get_design_context asset files; the .fig is never changed. Cloud tools are unavailable.")
+        let mut instructions = INSTRUCTIONS.to_owned();
+        if let Files::Live(_) = self.files {
+            instructions.push_str(LIVE_INSTRUCTIONS);
+        }
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+        .with_server_info(Implementation::new(
+            "figstudio-mcp",
+            env!("CARGO_PKG_VERSION"),
+        ))
+        .with_instructions(instructions)
     }
 }
 

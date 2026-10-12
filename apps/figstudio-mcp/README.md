@@ -30,8 +30,8 @@ figstudio-mcp [--http[=ADDR]] [--no-system-fonts] [--assets-dir DIR | --assets i
 | Flag | Meaning |
 |---|---|
 | `FILE.fig...` | One or more files (required). They open lazily on first use and stay cached. |
-| `--http` | Serve Streamable HTTP on `127.0.0.1:3845`, path `/mcp`. Without it, the server talks over stdio. |
-| `--http=ADDR` | Same, on a custom address, for example `--http=127.0.0.1:4567`. The `=` is required, so `--http FILE.fig` is not read as an address. |
+| `--http` | Serve Streamable HTTP on `127.0.0.1:3845`, path `/mcp`; when 3845 is busy, the first free port of 3846–3855 (the chosen address is printed to stderr). Without it, the server talks over stdio. |
+| `--http=ADDR` | Same, on exactly this address, for example `--http=127.0.0.1:4567`; a busy address is an error, never another port. The `=` is required, so `--http FILE.fig` is not read as an address. |
 | `--no-system-fonts` | Do not use installed fonts when a text layer has no stored glyph outlines. |
 | `--assets-dir DIR` | Where `get_design_context` writes its PNG assets. Default `./figma-assets`, resolved against the current directory. |
 | `--assets inline` | Return those assets as image content instead of files. Cannot be combined with `--assets-dir`. |
@@ -155,7 +155,11 @@ design-system rules file, plus the file's token summary and component list (name
 200 characters). It writes no files.
 
 Tool errors (bad id, unknown file, missing node) come back as results with
-`isError: true`, not as protocol failures.
+`isError: true`, not as protocol failures. `nodeId` is optional in the schemas of
+`get_screenshot`, `get_variable_defs`, `get_design_context` and `get_context_for_code_connect`
+(and `nodeIds` of `download_assets`) because the app's live mode fills it in from the
+selection; this server, run on its own, answers a call without it with the tool error
+`nodeId is required` (`download_assets`: `nodeIds must hold 1 to 20 ids`).
 
 ## Not replicated
 

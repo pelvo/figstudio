@@ -15,8 +15,9 @@ pub use figstudio_mcp_core::screenshot::{DEFAULT_SIDE_PX, MAX_SIDE_PX, SCALE_RAN
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ScreenshotInput {
     /// Node ID, Figma URL with `node-id`, or a `figstudio://<fileKey>?page=<id>&rect=x,y,w,h`
-    /// region link, which renders that part of the page.
-    node_id: String,
+    /// region link, which renders that part of the page. Required, except in the app's live
+    /// mode, where it defaults to the selection.
+    node_id: Option<String>,
     /// Registered file stem or full path; optional for a single file.
     file_key: Option<String>,
     /// Pixels per design unit, 0.01 to 4. Without it the scale is 1 and the longest side is
@@ -33,20 +34,25 @@ impl FigstudioServer {
         &self,
         Parameters(input): Parameters<ScreenshotInput>,
     ) -> CallToolResult {
-        let key = self.file_for(input.file_key.as_deref(), Some(&input.node_id));
+        let key = self.file_for(input.file_key.as_deref(), input.node_id.as_deref());
+        let (key, node_id) = match self.target(key, input.node_id) {
+            Ok(target) => target,
+            Err(error) => return tool_error(error),
+        };
         let document = match self.files().open(key.as_deref()).await {
             Ok(document) => document,
             Err(error) => return tool_error(error),
         };
-        let rendering = match self
-            .files()
-            .rendering(key.as_deref(), !self.no_system_fonts())
-        {
-            Ok(rendering) => rendering,
-            Err(error) => return tool_error(error),
-        };
+        let rendering =
+            match self
+                .files()
+                .rendering(key.as_deref(), &document, !self.no_system_fonts())
+            {
+                Ok(rendering) => rendering,
+                Err(error) => return tool_error(error),
+            };
         match tokio::task::spawn_blocking(move || {
-            screenshot(&document, &input.node_id, input.scale, &rendering)
+            screenshot(&document, &node_id, input.scale, &rendering)
         })
         .await
         {
