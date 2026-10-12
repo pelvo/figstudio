@@ -4,13 +4,15 @@ use crate::{
     tools::{
         assets::{self, Payload},
         rendering::Rendering,
-        screenshot::render_node,
         to_call, tool_error,
     },
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use figstudio_fig::Document;
-use figstudio_mcp_core::figjam::{Board, board};
+use figstudio_mcp_core::{
+    figjam::{Board, board},
+    screenshot::render_node,
+};
 use rmcp::{
     handler::server::wrapper::Parameters,
     model::{CallToolResult, ContentBlock},

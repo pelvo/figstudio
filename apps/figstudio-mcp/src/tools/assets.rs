@@ -1,14 +1,11 @@
 //! `download_assets`: PNG or JPEG renders of nodes, or the original bytes of their images.
 use crate::{
     FigstudioServer,
-    tools::{
-        rendering::Rendering,
-        screenshot::{SCALE_RANGE, render_node},
-        tool_error,
-    },
+    tools::{rendering::Rendering, screenshot::SCALE_RANGE, tool_error},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use figstudio_fig::Document;
+use figstudio_mcp_core::screenshot::render_node;
 use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
 use rmcp::{
     handler::server::wrapper::Parameters,

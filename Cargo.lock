@@ -1161,11 +1161,15 @@ dependencies = [
 name = "figstudio-mcp-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "figstudio-fig",
  "figstudio-render",
+ "html-escape",
+ "image",
  "percent-encoding",
  "quick-xml",
  "serde_json",
+ "tempfile",
  "url",
 ]
 

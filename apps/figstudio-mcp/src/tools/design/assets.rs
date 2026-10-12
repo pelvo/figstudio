@@ -2,7 +2,7 @@
 use super::jsx::Writer;
 use super::walk::Target;
 use super::{MAX_ASSETS, MAX_INLINE_BYTES};
-use crate::tools::screenshot::{Root, layer_shot};
+use figstudio_mcp_core::screenshot::{Root, approximations, layer_shot};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -91,7 +91,7 @@ pub(super) fn render(w: &mut Writer<'_>, target: &Target, name: String) -> bool 
         w.out.notes.add("assets not rendered (empty or hidden)");
         return false;
     };
-    let approximated = !crate::tools::screenshot::approximations(&shot.frame.stats).is_empty();
+    let approximated = !approximations(&shot.frame.stats).is_empty();
     let Ok(png) = shot.frame.pixmap.into_png() else {
         w.out.notes.add("assets not rendered (empty or hidden)");
         return false;

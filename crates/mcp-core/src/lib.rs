@@ -20,6 +20,10 @@ pub mod node_id;
 pub mod output;
 /// The nodes a page rectangle touches.
 pub mod region;
+/// Render settings and lazily read images.
+pub mod rendering;
+/// PNG renders of one node.
+pub mod screenshot;
 /// Used style and variable definitions of a subtree.
 pub mod variables;
 
