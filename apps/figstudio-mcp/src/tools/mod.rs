@@ -18,7 +18,11 @@ pub mod screenshot;
 /// Used variable and style definitions.
 pub mod variables;
 use crate::FigstudioServer;
-use rmcp::{model::CallToolResult, tool, tool_router};
+use figstudio_mcp_core::output::{Block, Output};
+use rmcp::{
+    model::{CallToolResult, ContentBlock, ResourceContents},
+    tool, tool_router,
+};
 use serde_json::json;
 
 #[tool_router(vis = "pub(crate)")]
@@ -62,4 +66,28 @@ pub(crate) fn persist_file(
 /// Map a local document/input error to a tool result, not a protocol failure.
 pub fn tool_error(error: crate::error::McpError) -> CallToolResult {
     CallToolResult::error(vec![rmcp::model::ContentBlock::text(error.to_string())])
+}
+
+/// Map a core [`Output`] to the protocol result; content blocks keep their order.
+pub fn to_call(output: Output) -> CallToolResult {
+    let content = output
+        .content
+        .into_iter()
+        .map(|block| match block {
+            Block::Text(text) => ContentBlock::text(text),
+            Block::Image { data_b64, mime } => ContentBlock::image(data_b64, mime),
+            Block::Blob {
+                data_b64,
+                uri,
+                mime,
+            } => ContentBlock::resource(ResourceContents::blob(data_b64, uri).with_mime_type(mime)),
+        })
+        .collect();
+    let mut result = if output.is_error {
+        CallToolResult::error(content)
+    } else {
+        CallToolResult::success(content)
+    };
+    result.structured_content = output.structured;
+    result
 }

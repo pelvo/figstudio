@@ -1164,6 +1164,8 @@ dependencies = [
  "figstudio-fig",
  "figstudio-render",
  "percent-encoding",
+ "quick-xml",
+ "serde_json",
  "url",
 ]
 

@@ -1,10 +1,10 @@
 //! Colours, gradients and bound colour variables as CSS values for Tailwind arbitrary classes.
 use super::{Notes, num};
-use crate::tools::variables::format::color as hex;
 use figstudio_fig::{
     Val,
     tokens::{Tokens, Value},
 };
+use figstudio_mcp_core::variables::format::color as hex;
 use figstudio_render::{geom::affine, kurbo::Point};
 
 /// The visible paints of `key` (`fillPaints`/`strokePaints`), from an attached style when
