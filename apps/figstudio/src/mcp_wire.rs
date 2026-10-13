@@ -40,6 +40,45 @@ pub(crate) fn token_from_fragment(hash: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
+/// Which open file backs each tab, so the bridge streams the bytes the tab shows. Keyed by tab
+/// id, not file name: two files may share a name. Generic so native tests need no browser `File`.
+pub(crate) struct Uploads<T> {
+    /// Picked files not yet bound to a tab (the tab id exists only after its load).
+    pending: Vec<(std::path::PathBuf, T)>,
+    by_tab: std::collections::HashMap<u64, T>,
+}
+
+impl<T: Clone> Uploads<T> {
+    pub fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+            by_tab: std::collections::HashMap::new(),
+        }
+    }
+
+    /// A file was picked under `name`; a newer pick of the same name replaces the pending one.
+    pub fn pick(&mut self, name: std::path::PathBuf, file: T) {
+        self.pending.retain(|(n, _)| *n != name);
+        self.pending.push((name, file));
+    }
+
+    /// Tab `tab` was opened from `name`: it takes the pending file of that name, if any.
+    pub fn bind(&mut self, name: &std::path::Path, tab: u64) {
+        if let Some(i) = self.pending.iter().position(|(n, _)| n == name) {
+            let (_, file) = self.pending.remove(i);
+            self.by_tab.insert(tab, file);
+        }
+    }
+
+    pub fn get(&self, tab: u64) -> Option<T> {
+        self.by_tab.get(&tab).cloned()
+    }
+
+    pub fn forget(&mut self, tab: u64) {
+        self.by_tab.remove(&tab);
+    }
+}
+
 /// `(offset, length)` slices covering `size` bytes.
 pub(crate) fn chunk_ranges(size: u64) -> impl Iterator<Item = (u64, u64)> {
     (0..size.div_ceil(CHUNK)).map(move |i| (i * CHUNK, CHUNK.min(size - i * CHUNK)))

@@ -395,6 +395,8 @@ impl App {
                     let _ = cjk;
                     let id = self.next_id;
                     self.next_id += 1;
+                    #[cfg(target_arch = "wasm32")]
+                    web::bind_upload(&path, id);
                     self.tabs.push(Tab::new(id, path, doc, source, elapsed));
                     self.active = self.tabs.len() - 1;
                 }

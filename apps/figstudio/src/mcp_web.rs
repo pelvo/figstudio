@@ -240,11 +240,8 @@ impl McpHost {
             .copied()
             .collect();
         for id in closed {
-            if let Some(path) = self.names.remove(&id) {
-                if !self.names.values().any(|p| *p == path) {
-                    crate::web::forget_upload(&path);
-                }
-            }
+            self.names.remove(&id);
+            crate::web::forget_upload(id);
             self.shared.cancelled.borrow_mut().insert(id);
             if self.ready.remove(&id) || self.uploading == Some(id) {
                 let _ = send(ws, &ClientMessage::Close { tab: id });
@@ -262,7 +259,7 @@ impl McpHost {
             .iter()
             .find(|t| !self.ready.contains(&t.id) && !self.failed.contains(&t.id));
         let Some(tab) = next else { return };
-        let Some(file) = crate::web::upload_file(&tab.path) else {
+        let Some(file) = crate::web::upload_file(tab.id) else {
             self.failed.insert(tab.id);
             return;
         };
