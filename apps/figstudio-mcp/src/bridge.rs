@@ -61,23 +61,19 @@ impl Bridge {
     }
 }
 
-/// Serve browser bridge and MCP on the same bound loopback listener.
+/// Serve browser bridge and MCP on the same bound listener. `/mcp` follows `access`; `/bridge`
+/// is guarded by its Origin allowlist and pairing token whatever the bind.
 ///
 /// # Errors
-/// Returns HTTP listener errors. Remote listeners are rejected.
+/// Returns HTTP listener errors.
 pub async fn serve_bridge(
     listener: tokio::net::TcpListener,
     config: BridgeConfig,
     no_system_fonts: bool,
     max_output_bytes: usize,
     shutdown: CancellationToken,
+    access: crate::access::HttpAccess,
 ) -> std::io::Result<()> {
-    if !listener.local_addr()?.ip().is_loopback() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "bridge requires loopback",
-        ));
-    }
     let snapshot = Arc::new(RwLock::new(Arc::new(Snapshot::default())));
     let (tx, rx) = std::sync::mpsc::channel();
     let wake = Arc::new(tokio::sync::Notify::new());
@@ -106,6 +102,7 @@ pub async fn serve_bridge(
             .with_max_output_bytes(max_output_bytes),
         shutdown,
         router,
+        access,
     )
     .await
 }

@@ -24,7 +24,14 @@ impl BridgeTest {
             origins: vec!["http://localhost:8765".into()],
             max_upload_bytes: cap,
         };
-        let task = tokio::spawn(serve_bridge(listener, config, true, 24000, stop.clone()));
+        let task = tokio::spawn(serve_bridge(
+            listener,
+            config,
+            true,
+            24000,
+            stop.clone(),
+            figstudio_mcp::access::HttpAccess::loopback(),
+        ));
         Self { addr, stop, task }
     }
     pub async fn socket(&self, token: &str) -> Socket {

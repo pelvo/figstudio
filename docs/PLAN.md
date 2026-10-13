@@ -216,7 +216,8 @@ requester confirms it runs.
       in a real window and browser, paste into Preview or an editor
 - [x] Web app + MCP bridge (`docs/WEB-MCP-PLAN.md`, L1–L4): `figstudio-mcp --bridge`, the browser tab pairs over a
       token-guarded WebSocket and uploads its files; automated end-to-end check `tests/bridge_cli.rs`
-- [ ] Web bridge, open: manual runs in a real browser (local :8765, figstudio.vtz.io in Chrome and Safari)
+- [x] Remote agents (WEB-MCP-PLAN L5): `--http=ADDR` non-loopback needs a bearer token + Host allowlist, app "Allow remote agents"
+- [ ] Web bridge and remote agents, open: a real Tailscale/SSH-tunnel session; manual runs in a real browser (local :8765, figstudio.vtz.io in Chrome and Safari)
 - [ ] Open (task board M1–M6): `get_motion_context`, SVG export, ancestor masks on instance-child
       screenshots, nested-instance override visibility in `original=true`, live-client check,
       real FigJam and motion files
@@ -569,3 +570,4 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   README section. Tests: protocol, bridge, shared view state, pure client helpers, and a binary-level
   end-to-end (`bridge_cli.rs`), each seen failing under a mutation. check.sh --web passed. Not verified: a
   real browser session (see WEB-MCP-PLAN.md L4 TODOs).
+- 2026-10-13 — Web MCP L5: opt-in remote agents (bearer token via `subtle`, Host allowlist, wildcard refused without a flag, app checkbox, README Tailscale + SSH `-R` tunnel). `tests/remote.rs` and unit tests seen failing under mutations; check.sh passed. Not verified: a session from another machine.

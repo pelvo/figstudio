@@ -168,7 +168,15 @@ Manual TODOs (not run; no browser available to the worker):
 Editing/writing through MCP, remote (non-loopback) agents, multiple simultaneous browser
 tabs, Cloudflare-side MCP.
 
-## L5 — remote agents (opt-in, token-guarded)
+## L5 — remote agents (opt-in, token-guarded) — complete
+
+Done: `access.rs` (`HttpAccess`, `subtle` constant-time compare, axum middleware on `/mcp` only),
+`serve_http_with`, `serve_bridge(.., access)`, `--allow-host`, `--allow-any-interface`, app checkbox +
+Copy token, README "Remote agents", `tests/remote.rs`. Deviations: the bridge no longer refuses a
+non-loopback listener (it now follows the same access rules; `/bridge` is still Origin+pairing-token
+guarded); the old "non-loopback bind warning" is replaced by the token banner and its stderr test by
+`remote.rs`; the app has a specific-address field and never offers a wildcard. Not verified: a real
+Tailscale or SSH-tunnel session from another machine.
 
 Use case: figstudio (desktop or web + bridge) runs on the user's PC; the coding agent runs on
 another machine (SSH box) and reaches it over Tailscale. The SSH `-R 3845:127.0.0.1:3845`

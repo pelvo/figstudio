@@ -9,9 +9,10 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, PoisonError, RwLock};
 
 use egui::RichText;
+use figstudio_mcp::access::HttpAccess;
 use figstudio_mcp::live::{Command, LiveFiles, Snapshot, TabInfo};
 use figstudio_mcp::tools::design::Assets;
-use figstudio_mcp::{FigstudioServer, bind_first, default_http_addrs, serve_http};
+use figstudio_mcp::{FigstudioServer, bind_first, default_http_addrs, serve_http_with};
 use tokio_util::sync::CancellationToken;
 
 use crate::mcp_state::{Key, key, reveal, viewport};
@@ -26,6 +27,12 @@ pub struct McpHost {
     pub on: bool,
     /// Tried in order; the first free one is used (127.0.0.1:3845, then 3846 to 3855).
     addrs: Vec<SocketAddr>,
+    /// "Allow remote agents": listen on `remote_addr` with a bearer token. Never saved.
+    pub remote: bool,
+    /// A specific address of this computer, for example its Tailscale IP with a port.
+    pub remote_addr: String,
+    /// A start-up problem found in `sync`, returned as a toast by the next `frame`.
+    problem: Option<String>,
     running: Option<Running>,
 }
 
@@ -34,6 +41,9 @@ impl Default for McpHost {
         Self {
             on: false,
             addrs: default_http_addrs(),
+            remote: false,
+            remote_addr: String::new(),
+            problem: None,
             running: None,
         }
     }
@@ -48,15 +58,44 @@ struct Running {
     events: Receiver<Event>,
     /// What the published snapshot was built from.
     last_key: Option<Key>,
+    /// The bearer token of a remote bind, for the Copy button.
+    token: Option<String>,
 }
 
 impl McpHost {
     pub fn menu(&mut self, ui: &mut egui::Ui) {
         ui.checkbox(&mut self.on, "Agent access (MCP server)")
             .on_hover_text(
-                "Lets MCP clients on this computer read the open tabs and select nodes. \
-             Loopback only; off at every launch.",
+                "Lets MCP clients read the open tabs and select nodes. Loopback only \
+             unless 'Allow remote agents' is on; off at every launch.",
             );
+        ui.add_enabled_ui(!self.on, |ui| {
+            ui.checkbox(&mut self.remote, "Allow remote agents")
+                .on_hover_text(
+                    "Listen on the address below instead of loopback. Clients must send the \
+                 bearer token shown in the status bar. Plain HTTP: use Tailscale or an SSH tunnel.",
+                );
+            if self.remote {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.remote_addr).hint_text("100.x.y.z:3845"),
+                );
+            }
+        });
+    }
+
+    /// Where to listen and who may connect, from the menu settings.
+    fn plan(&self) -> Result<(Vec<SocketAddr>, HttpAccess), String> {
+        if !self.remote {
+            return Ok((self.addrs.clone(), HttpAccess::loopback()));
+        }
+        let addr: SocketAddr = self.remote_addr.trim().parse().map_err(|_| {
+            "Enter this computer's address and port, like 100.x.y.z:3845".to_owned()
+        })?;
+        if addr.ip().is_unspecified() {
+            return Err("Enter one specific address, not 0.0.0.0 or ::".to_owned());
+        }
+        let access = HttpAccess::for_bind(addr, &[], false).map_err(|e| e.to_string())?;
+        Ok((vec![addr], access))
     }
 
     pub fn status(&self, ui: &mut egui::Ui) {
@@ -65,13 +104,24 @@ impl McpHost {
             .addr
             .map_or_else(|| "MCP starting…".to_owned(), |a| format!("MCP {a}/mcp"));
         ui.label(RichText::new(text).color(theme::TEXT_DIM))
-            .on_hover_text("Loopback only. Point your MCP client here.");
+            .on_hover_text("Point your MCP client here.");
+        if let Some(token) = &running.token
+            && ui
+                .small_button("Copy token")
+                .on_hover_text("Send it as 'Authorization: Bearer <token>'.")
+                .clicked()
+        {
+            ui.ctx().copy_text(token.clone());
+        }
         ui.separator();
     }
 
     /// Start of each frame: answer the server's requests (`reveal_node`). Returns an error
     /// to show as a toast when the server could not start or stopped.
     pub fn frame(&mut self, tabs: &mut [Tab], active: &mut usize) -> Option<String> {
+        if let Some(problem) = self.problem.take() {
+            return Some(problem);
+        }
         let running = self.running.as_mut()?;
         if let Err(error) = running.poll_events() {
             self.stop();
@@ -86,7 +136,13 @@ impl McpHost {
     /// the tools see changed.
     pub fn sync(&mut self, ctx: &egui::Context, tabs: &[Tab], active: usize) {
         match (self.on, self.running.is_some()) {
-            (true, false) => self.running = Some(start(ctx, self.addrs.clone())),
+            (true, false) => match self.plan() {
+                Ok((addrs, access)) => self.running = Some(start(ctx, addrs, access)),
+                Err(problem) => {
+                    self.on = false;
+                    self.problem = Some(problem);
+                }
+            },
             (false, true) => self.stop(),
             _ => {}
         }
@@ -159,7 +215,7 @@ fn snapshot(tabs: &[Tab], active: usize) -> Snapshot {
     }
 }
 
-fn start(ctx: &egui::Context, addrs: Vec<SocketAddr>) -> Running {
+fn start(ctx: &egui::Context, addrs: Vec<SocketAddr>, access: HttpAccess) -> Running {
     let snapshot = Arc::new(RwLock::new(Arc::new(Snapshot::default())));
     let (commands, inbox) = mpsc::channel();
     let (events, news) = mpsc::channel();
@@ -167,11 +223,12 @@ fn start(ctx: &egui::Context, addrs: Vec<SocketAddr>) -> Running {
     let wake_ctx = ctx.clone();
     let wake = Arc::new(move || wake_ctx.request_repaint());
     let files = Arc::new(LiveFiles::new(snapshot.clone(), commands, wake));
+    let bearer = access.token().map(str::to_owned);
     let (token, ctx, failed) = (cancel.clone(), ctx.clone(), events.clone());
     let spawned = std::thread::Builder::new()
         .name("mcp".into())
         .spawn(move || {
-            if let Err(error) = serve(addrs, files, token, &events, &ctx) {
+            if let Err(error) = serve(addrs, files, access, token, &events, &ctx) {
                 let _ = events.send(Err(error));
                 ctx.request_repaint();
             }
@@ -187,6 +244,7 @@ fn start(ctx: &egui::Context, addrs: Vec<SocketAddr>) -> Running {
         commands: inbox,
         events: news,
         last_key: None,
+        token: bearer,
     }
 }
 
@@ -194,6 +252,7 @@ fn start(ctx: &egui::Context, addrs: Vec<SocketAddr>) -> Running {
 fn serve(
     addrs: Vec<SocketAddr>,
     files: Arc<LiveFiles>,
+    access: HttpAccess,
     cancel: CancellationToken,
     events: &Sender<Event>,
     ctx: &egui::Context,
@@ -216,7 +275,7 @@ fn serve(
         ctx.request_repaint();
         // Inline assets: the app's working directory is arbitrary, so it writes no files.
         let server = FigstudioServer::live(files, false).with_assets(Assets::Inline);
-        serve_http(listener, server, cancel)
+        serve_http_with(listener, server, cancel, access)
             .await
             .context("The MCP server stopped")
     });

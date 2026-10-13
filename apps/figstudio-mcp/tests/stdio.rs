@@ -37,29 +37,6 @@ async fn stdout_contains_only_one_initialize_reply() {
     assert_eq!(reply["result"]["serverInfo"]["name"], "figstudio-mcp");
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn non_loopback_http_warns() {
-    use tokio::io::{AsyncBufReadExt, BufReader};
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
-        .args(["--http=0.0.0.0:0"])
-        .arg(fixture())
-        // The warning is program output: even RUST_LOG=off must not hide it.
-        .env("RUST_LOG", "off")
-        .kill_on_drop(true)
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
-    let warning = tokio::time::timeout(std::time::Duration::from_secs(10), lines.next_line())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert!(warning.contains("non-loopback Host headers"));
-    child.kill().await.unwrap();
-}
-
 async fn stderr_line(args: &[String]) -> (tokio::process::Child, String) {
     stderr_line_with_env(args, &[]).await
 }

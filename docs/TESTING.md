@@ -281,7 +281,11 @@ FigJam and most design-context mappings; the fixtures have no variables or FigJa
 **Protocol tests**
 - `stdio.rs` spawns the real binary (`CARGO_BIN_EXE_figstudio-mcp`), writes JSON-RPC lines
   to stdin and checks stdout: only protocol lines, one `initialize` reply, a tool listing and
-  calls, SIGTERM shutdown, and the non-loopback `--http` warning on stderr.
+  calls and SIGTERM shutdown.
+- `remote.rs` (remote agents): loopback needs no token; a non-loopback bind returns 401 for a
+  missing, wrong, same-length-wrong, longer or shorter token and 200 for the right one (plus an
+  rmcp client with the token); `Host` allowlist; wildcard bind refused; the binary prints a
+  token only for a remote bind. `access.rs` unit tests cover the rules and that `Debug` hides the token.
 - `http.rs` starts the server on port 0 and sends plain POSTs (reqwest). One test per protocol
   version (2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28): `initialize`, `tools/list`,
   `whoami`, an unknown tool, and a non-loopback `Host` that must be refused.

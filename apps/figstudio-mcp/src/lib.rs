@@ -1,4 +1,6 @@
 //! Offline MCP access to registered local Figma documents.
+/// Who may reach `/mcp`: loopback, or a token-guarded remote bind.
+pub mod access;
 /// Local browser bridge transport.
 pub mod bridge;
 mod bridge_upload;
@@ -197,7 +199,17 @@ pub async fn serve_http(
     server: FigstudioServer,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> std::io::Result<()> {
-    serve_http_router(listener, server, shutdown, axum::Router::new()).await
+    serve_http_with(listener, server, shutdown, access::HttpAccess::loopback()).await
+}
+
+/// [`serve_http`] with explicit access rules: extra `Host` names and a bearer token.
+pub async fn serve_http_with(
+    listener: tokio::net::TcpListener,
+    server: FigstudioServer,
+    shutdown: tokio_util::sync::CancellationToken,
+    access: access::HttpAccess,
+) -> std::io::Result<()> {
+    serve_http_router(listener, server, shutdown, axum::Router::new(), access).await
 }
 
 pub(crate) async fn serve_http_router(
@@ -205,6 +217,7 @@ pub(crate) async fn serve_http_router(
     server: FigstudioServer,
     shutdown: tokio_util::sync::CancellationToken,
     extra: axum::Router,
+    access: access::HttpAccess,
 ) -> std::io::Result<()> {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -214,6 +227,7 @@ pub(crate) async fn serve_http_router(
             move || Ok(server.clone()),
             Default::default(),
             StreamableHttpServerConfig::default()
+                .with_allowed_hosts(access.hosts().iter().cloned())
                 .with_allowed_origins([
                     "http://localhost:*",
                     "http://127.0.0.1:*",
@@ -222,7 +236,15 @@ pub(crate) async fn serve_http_router(
                 .enforce_origin_validation()
                 .with_cancellation_token(shutdown.clone()),
         );
-    axum::serve(listener, extra.nest_service("/mcp", service))
+    let mut mcp = axum::Router::new().nest_service("/mcp", service);
+    if let Some(token) = access.token_arc() {
+        // Only /mcp: /bridge has its own Origin and pairing-token checks.
+        mcp = mcp.layer(axum::middleware::from_fn_with_state(
+            token,
+            access::require_bearer,
+        ));
+    }
+    axum::serve(listener, extra.merge(mcp))
         .with_graceful_shutdown(shutdown.cancelled_owned())
         .await
 }

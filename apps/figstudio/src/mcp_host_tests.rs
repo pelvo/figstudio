@@ -27,7 +27,7 @@ fn host(addrs: Vec<SocketAddr>) -> McpHost {
     McpHost {
         on: true,
         addrs,
-        running: None,
+        ..Default::default()
     }
 }
 
@@ -86,6 +86,7 @@ fn reveal_selects_and_fits_or_answers_tab_closed() {
         commands: inbox,
         events: news,
         last_key: None,
+        token: None,
     };
     let mut tabs = vec![tab(1, "structure.fig"), tab(2, "structure.fig")];
     let mut active = 0;
@@ -217,5 +218,42 @@ fn an_http_client_lists_tabs_and_reveals_a_node() {
             "the port is still open after stop"
         );
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn remote_agents_are_off_by_default_and_a_remote_plan_carries_a_token() {
+    let mut host = McpHost {
+        remote_addr: "100.64.0.1:3845".into(),
+        ..Default::default()
+    };
+    let (addrs, access) = host.plan().unwrap();
+    assert_eq!(addrs, default_http_addrs(), "toggle off keeps loopback");
+    assert!(access.token().is_none());
+    host.remote = true;
+    let (addrs, access) = host.plan().unwrap();
+    assert_eq!(addrs, vec!["100.64.0.1:3845".parse().unwrap()]);
+    assert_eq!(access.token().map(str::len), Some(64));
+}
+
+#[test]
+fn a_bad_remote_address_turns_the_toggle_off_with_a_message() {
+    for bad in ["", "tailscale", "100.64.0.1", "0.0.0.0:3845", "[::]:3845"] {
+        let mut host = McpHost {
+            on: true,
+            remote: true,
+            remote_addr: bad.into(),
+            ..Default::default()
+        };
+        host.sync(&egui::Context::default(), &[], 0);
+        assert!(!host.on && host.running.is_none(), "{bad}");
+        let error = host
+            .frame(&mut [], &mut 0)
+            .unwrap_or_else(|| panic!("no message for {bad:?}"));
+        assert!(
+            error.contains("address") && !error.contains("--"),
+            "{error}"
+        );
+        assert_eq!(host.frame(&mut [], &mut 0), None, "reported once");
     }
 }
