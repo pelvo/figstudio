@@ -300,3 +300,19 @@ fn truncated_fig_fails_with_a_one_line_message() {
     assert_eq!(stderr.trim_end().lines().count(), 1, "{stderr}");
     assert!(stderr.starts_with("figstudio-cli: "), "{stderr}");
 }
+
+#[test]
+fn missing_file_names_its_cause_once() {
+    let dir = TempDir::new();
+    let missing = dir.file("absent.fig");
+
+    let output = cli(&["info", missing.to_str().unwrap()]);
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    // The context, the decoder's message, then the OS cause, and the cause not repeated.
+    assert!(
+        stderr.starts_with("figstudio-cli: open document: cannot read file: "),
+        "{stderr}"
+    );
+    assert_eq!(stderr.matches("(os error").count(), 1, "{stderr}");
+}
