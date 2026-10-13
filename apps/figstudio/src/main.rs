@@ -48,6 +48,7 @@ const APP_NAME: &str = "figstudio";
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> std::process::ExitCode {
+    init_tracing();
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     let mut options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -69,7 +70,7 @@ fn main() -> std::process::ExitCode {
     match run {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("{APP_NAME}: could not start the window: {err}");
+            tracing::error!("{APP_NAME}: could not start the window: {err}");
             std::process::ExitCode::FAILURE
         }
     }
@@ -91,6 +92,27 @@ fn export_frame(
         None,
         |want| source.and_then(|s| s.read(&want.entry).ok()),
     )
+}
+
+/// Logs go to stderr; stdout stays free for data. The default level is `warn`, `RUST_LOG`
+/// overrides it. `FIGSTUDIO_PROFILE` also turns on the app's own `info` lines (the frame timings).
+#[cfg(not(target_arch = "wasm32"))]
+fn init_tracing() {
+    use std::io::IsTerminal;
+    use tracing_subscriber::filter::{EnvFilter, LevelFilter};
+    let mut filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::WARN.into())
+        .from_env_lossy();
+    if std::env::var_os("FIGSTUDIO_PROFILE").is_some()
+        && let Ok(directive) = "figstudio=info".parse()
+    {
+        filter = filter.add_directive(directive);
+    }
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_env_filter(filter)
+        .init();
 }
 
 /// The browser starts the app from JavaScript (`web::start`) once the thread pool is up.
@@ -889,7 +911,7 @@ impl eframe::App for App {
         }
         if self.profile {
             let tab = self.tabs.get(self.active);
-            eprintln!(
+            tracing::info!(
                 "profile ui {:.1} ms; last render {:.1} ms, {} drawn, {} culled",
                 started.elapsed().as_secs_f64() * 1000.0,
                 tab.map_or(0.0, |t| t.render_time.as_secs_f64() * 1000.0),
