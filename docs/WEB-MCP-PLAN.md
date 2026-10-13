@@ -253,3 +253,28 @@ and show that message). Put the message choice in `mcp_wire.rs` (pure) with a un
   case-insensitively (RFC 7235). Unit test in `access.rs`.
 
 Out of scope: a headless-browser smoke test (suggested by the reviewer; needs CI browser infra).
+
+## Fix round 2 (cross-family review of F1–F6)
+
+- R1 major — F2 still wrong for pick→pick→bind: `Uploads::pick` replaces a pending same-name
+  entry before the first load binds. Bind the `File` to the load itself (a pick sequence id
+  carried through `Picked`/`Loaded` into `bind`), not by name at load completion. Unit test
+  for pick A, pick B, bind A → A's file.
+- R2 major — F3 extra loopback listener is IPv4-only (`bridge.rs:~103`): for a V6 bind also
+  listen on `[::1]:port`. Test with an IPv6 bind if the host has one; skip visibly otherwise.
+- R3 minor — clear pending entries when an open fails; forget a closed tab's `File` even if it
+  never started uploading.
+- R4 minor — print the pairing banner only after both listeners are bound.
+- R5 minor — the first listener error ends the bridge (`try_join!`/select + cancel), not at
+  Ctrl-C.
+- R6 minor — keep the F5 timeout closure in `Conn` and drop it with the connection (no
+  `forget`).
+- R7 minor — JS error text: also read a string `message` property (DOMException) via
+  `js_sys::Reflect::get` before the fallback.
+- R8 minor — move the welcomed/close-code message choice into `mcp_wire` with a test; print a
+  visible skip line when the F3 test has no LAN address.
+- R9 privacy — the deploy domain must not appear in the repo (main keeps web/wrangler.jsonc
+  ignored for this reason). Remove it from `DEFAULT_ORIGINS` (keep only the local :8765
+  origins), from the banner and from all docs. The deployed site is allowed with
+  `--allow-origin https://<your-deploy-domain>`, and the banner prints a `Web:` line for each
+  extra https origin given. Docs use the placeholder `<your-deploy-domain>`.
