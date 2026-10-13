@@ -43,7 +43,10 @@ widely used and maintained. Add them to `[workspace.dependencies]`.
 3. **No panics on bad input.** Error messages that users or tests see keep their text, or
    the tests are updated on purpose.
 4. **Default level `warn`.** Normal runs print what they print today. Use `RUST_LOG=debug`
-   to see more.
+   to see more. For the MCP server, use targeted filters such as
+   `RUST_LOG=figstudio_mcp=debug,figstudio_fig=debug`: rmcp is capped at info unless `rmcp`
+   is named in `RUST_LOG`, because it logs full requests and responses. The `listening on`
+   line is plain stderr output, not a log line, so `RUST_LOG` does not hide it.
 5. **Rendering stays as fast as it is.** No spans in per-node or per-path hot loops. Spans go
    on decode, page render, tile batch and MCP tool call.
 
