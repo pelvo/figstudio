@@ -1,5 +1,6 @@
 //! `download_assets`: PNG or JPEG renders of nodes, or the original bytes of their images.
 use crate::{
+    error::CoreError,
     output::{Block, Output, text_first},
     rendering::Rendering,
     screenshot::{SCALE_RANGE, render_node},
@@ -90,9 +91,9 @@ pub fn download_within(
         };
         match outcome {
             Ok(items) => content.extend(items),
-            Err(message) => {
+            Err(error) => {
                 failed += 1;
-                content.push(Block::text(format!("{id}: error: {message}")));
+                content.push(Block::text(format!("{id}: error: {error}")));
             }
         }
     }
@@ -173,18 +174,16 @@ fn rendered(
     scale: Option<f64>,
     rendering: &Rendering,
     payload: &mut Payload,
-) -> Result<Vec<Block>, String> {
+) -> Result<Vec<Block>, CoreError> {
     if payload.is_full() {
-        return Err(Payload::omitted(id));
+        return Err(CoreError::limit(Payload::omitted(id)));
     }
     let shot = render_node(doc, id, scale, rendering)?;
     let mut text = format!("{id}: {}", shot.describe());
     let pixmap = shot.frame.pixmap;
     let (bytes, mime) = match format {
         AssetFormat::Png => (
-            pixmap
-                .into_png()
-                .map_err(|e| format!("PNG encoding failed: {e}"))?,
+            pixmap.into_png().map_err(|e| CoreError::encode("PNG", e))?,
             "image/png",
         ),
         AssetFormat::Jpg => {
@@ -194,10 +193,10 @@ fn rendered(
         }
     };
     if bytes.len() > MAX_IMAGE_BYTES {
-        return Err(Payload::too_large(id, bytes.len()));
+        return Err(CoreError::limit(Payload::too_large(id, bytes.len())));
     }
     if !payload.take(bytes.len()) {
-        return Err(Payload::omitted(id));
+        return Err(CoreError::limit(Payload::omitted(id)));
     }
     Ok(vec![
         Block::text(text),
@@ -206,7 +205,7 @@ fn rendered(
 }
 
 /// JPEG of premultiplied RGBA8 `pixels` composited over white.
-fn jpeg(pixels: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+fn jpeg(pixels: &[u8], width: u32, height: u32) -> Result<Vec<u8>, CoreError> {
     let rgb: Vec<u8> = pixels
         .as_chunks::<4>()
         .0
@@ -223,6 +222,6 @@ fn jpeg(pixels: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY)
         .encode(&rgb, width, height, ExtendedColorType::Rgb8)
-        .map_err(|e| format!("JPEG encoding failed: {e}"))?;
+        .map_err(|e| CoreError::encode("JPEG", e))?;
     Ok(out)
 }

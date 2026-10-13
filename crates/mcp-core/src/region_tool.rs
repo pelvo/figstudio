@@ -1,5 +1,6 @@
 //! `get_nodes_in_region`: the nodes of a page that a rectangle touches, as JSON.
 use crate::{
+    error::CoreError,
     link::{parse_link, validate_rect},
     node_id::parse_guid,
     output::Output,
@@ -21,22 +22,28 @@ pub fn resolve(
     region: Option<&str>,
     page: Option<&str>,
     rect: Option<[f64; 4]>,
-) -> Result<(Guid, [f64; 4]), String> {
+) -> Result<(Guid, [f64; 4]), CoreError> {
     match (region, page, rect) {
         (Some(link), None, None) => match parse_link(link) {
             Ok(l) => l.page.zip(l.rect).ok_or_else(not_a_region),
             Err(_) => Err(not_a_region()),
         },
         (None, Some(page), Some(rect)) => {
-            let page = parse_guid(page).map_err(|_| format!("invalid page ID {page:?}"))?;
-            Ok((page, validate_rect(rect).map_err(|_| BAD_RECT.to_string())?))
+            let page = parse_guid(page)
+                .map_err(|_| CoreError::input(format!("invalid page ID {page:?}")))?;
+            Ok((
+                page,
+                validate_rect(rect).map_err(|_| CoreError::input(BAD_RECT))?,
+            ))
         }
-        _ => Err("give either region (a figstudio region link) or page and rect".into()),
+        _ => Err(CoreError::input(
+            "give either region (a figstudio region link) or page and rect",
+        )),
     }
 }
 
-fn not_a_region() -> String {
-    "region must be a figstudio://<fileKey>?page=<id>&rect=x,y,w,h link".into()
+fn not_a_region() -> CoreError {
+    CoreError::input("region must be a figstudio://<fileKey>?page=<id>&rect=x,y,w,h link")
 }
 
 /// The nodes of the region as `{page, rect, nodes: [{nodeId, name, kind}], total, truncated}`,
@@ -50,7 +57,7 @@ pub fn nodes_in_region(
 ) -> Output {
     let (page, rect) = match resolve(region, page, rect) {
         Ok(found) => found,
-        Err(message) => return Output::fault(message),
+        Err(error) => return Output::fault(error.to_string()),
     };
     if doc.node(page).is_none_or(|n| n.kind != "CANVAS") {
         return Output::fault(format!("page {page} does not exist in this file"));
