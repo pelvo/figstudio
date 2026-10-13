@@ -118,6 +118,18 @@ pub(crate) fn reveal_wire(
     reveal(tabs, active, tab, node)
 }
 
+/// How long a new socket may take to say `welcome` before the tab gives up.
+#[cfg(target_arch = "wasm32")]
+pub(crate) const CONNECT_TIMEOUT_MS: i32 = 8_000;
+
+/// The toast when the socket never got a `welcome`: a 1006 close, or the timeout. Browsers
+/// cause both without a bridge message: Chromium's Local Network Access check, and Safari
+/// blocking https -> ws:// as mixed content.
+pub(crate) fn connect_failed_message() -> &'static str {
+    "Could not connect to the MCP bridge. Is `figstudio-mcp --bridge` running? Allow local \
+     network access for this site, or use http://127.0.0.1:8765 (Safari blocks https -> ws://)."
+}
+
 /// Why the bridge closed the socket, in words for a toast.
 pub(crate) fn close_reason(code: u16) -> &'static str {
     match code {

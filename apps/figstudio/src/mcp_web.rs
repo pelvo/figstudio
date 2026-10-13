@@ -15,7 +15,10 @@ use web_sys::{CloseEvent, MessageEvent, WebSocket};
 
 use crate::mcp_state::{Key, key};
 use crate::mcp_upload::{Event, Shared, send, upload};
-use crate::mcp_wire::{close_reason, reveal_wire, state_message, token_from_fragment, upload_name};
+use crate::mcp_wire::{
+    CONNECT_TIMEOUT_MS, close_reason, connect_failed_message, reveal_wire, state_message,
+    token_from_fragment, upload_name,
+};
 use crate::tab::Tab;
 use crate::theme;
 
@@ -145,6 +148,15 @@ impl McpHost {
                 self.conn.as_mut()?.welcomed = true;
                 None
             }
+            Event::ConnectTimeout(generation) => {
+                let waiting = self.generation == generation
+                    && self.conn.as_ref().is_some_and(|c| !c.welcomed);
+                if !waiting {
+                    return None;
+                }
+                self.stop();
+                Some(connect_failed_message().to_owned())
+            }
             Event::Server(ServerMessage::Error { message, tab }) => {
                 // Only upload failures name a tab; other errors leave the tabs alone.
                 if let Some(tab) = tab {
@@ -173,8 +185,7 @@ impl McpHost {
                 Some(if welcomed || code != 1006 {
                     close_reason(code).to_owned()
                 } else {
-                    "Could not connect to the MCP bridge. Is `figstudio-mcp --bridge` running?"
-                        .to_owned()
+                    connect_failed_message().to_owned()
                 })
             }
             Event::Uploaded { generation, .. } if generation != self.generation => None,
@@ -308,6 +319,19 @@ impl McpHost {
         ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
         ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
         ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+        // A socket that never says `welcome` (Local Network Access, mixed content) closes
+        // with no message of its own: give up after a while.
+        let (s, c, generation) = (self.shared.clone(), ctx.clone(), self.generation);
+        let give_up = Closure::<dyn FnMut()>::once(move || {
+            push(&s, &c, Event::ConnectTimeout(generation));
+        });
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                give_up.as_ref().unchecked_ref(),
+                CONNECT_TIMEOUT_MS,
+            );
+        }
+        give_up.forget();
         self.reset_link();
         self.shared.events.borrow_mut().clear();
         self.conn = Some(Conn {

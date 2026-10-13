@@ -83,6 +83,14 @@ fn close_codes_name_the_cause() {
 }
 
 #[test]
+fn a_failed_connect_names_local_network_access_and_the_https_limit() {
+    let message = connect_failed_message();
+    assert!(message.contains("local network access"), "{message}");
+    assert!(message.contains("https -> ws://"), "{message}");
+    assert!(message.contains("figstudio-mcp --bridge"), "{message}");
+}
+
+#[test]
 fn upload_names_never_carry_separators_or_overlong_text() {
     assert_eq!(upload_name("a.fig"), "a.fig");
     assert_eq!(upload_name("a/b\\c:d.fig"), "a_b_c_d.fig");
