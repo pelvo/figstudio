@@ -310,8 +310,8 @@ impl App {
                 .workers
                 .run_export(self.web.exports_tx.clone(), move || {
                     let png = export_frame(images, &doc, source.as_ref(), root, scale)
-                        .ok_or_else(|| "nothing to export".to_string())
-                        .and_then(|frame| frame.pixmap.into_png().map_err(|e| e.to_string()));
+                        .ok_or_else(|| anyhow::anyhow!("nothing to export"))
+                        .and_then(|frame| frame.pixmap.into_png().map_err(anyhow::Error::from));
                     (file, png)
                 });
             match started {
@@ -462,7 +462,14 @@ impl App {
                 }
                 Err(e) => {
                     self.web.font_state = web::FontState::Failed;
-                    self.toast(ctx, format!("Could not load the CJK font: {e}"), true);
+                    self.toast(
+                        ctx,
+                        format!(
+                            "Could not load the CJK font: {}",
+                            figstudio_fig::one_line(e.as_ref())
+                        ),
+                        true,
+                    );
                 }
             }
         }
@@ -493,7 +500,7 @@ impl App {
         while let Ok((name, png)) = self.web.exports.try_recv() {
             match png.and_then(|png| web::download(&name, "image/png", &png)) {
                 Ok(()) => self.toast(ctx, format!("Exported {name}"), false),
-                Err(e) => self.toast(ctx, e, true),
+                Err(e) => self.toast(ctx, figstudio_fig::one_line(e.as_ref()), true),
             }
         }
     }

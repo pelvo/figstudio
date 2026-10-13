@@ -236,7 +236,7 @@ fn finish(ctx: &egui::Context, done: Done) -> (String, bool) {
                 format!("This browser cannot copy images here; downloaded {file}"),
                 false,
             ),
-            Some(Err(e)) => (e, true),
+            Some(Err(e)) => (figstudio_fig::one_line(e.as_ref()), true),
             None => ("Could not make the image".into(), true),
         };
     }
