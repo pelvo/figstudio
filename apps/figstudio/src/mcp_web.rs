@@ -184,6 +184,8 @@ impl McpHost {
                 if let Some(tab) = tab {
                     self.ready.remove(&tab);
                     self.failed.insert(tab);
+                    // Stop a running upload: the bridge drops its remaining frames anyway.
+                    self.shared.cancelled.borrow_mut().insert(tab);
                     self.last_key = None;
                 }
                 Some(format!("MCP bridge: {message}"))
@@ -217,7 +219,8 @@ impl McpHost {
                         None
                     }
                     Err(error) => {
-                        self.failed.insert(tab);
+                        // Already failed: the bridge's error was shown and cancelled this upload.
+                        let reported = !self.failed.insert(tab);
                         // The bridge may hold a partial file for this tab: tell it to drop it.
                         // A tab that was closed already got `close` from `drop_closed`.
                         if self.names.contains_key(&tab)
@@ -225,8 +228,7 @@ impl McpHost {
                         {
                             let _ = send(&conn.ws, &ClientMessage::Close { tab });
                         }
-                        self.names
-                            .contains_key(&tab)
+                        (self.names.contains_key(&tab) && !reported)
                             .then(|| format!("MCP upload failed: {error}"))
                     }
                 }

@@ -92,6 +92,9 @@ async fn run(
             if ws.ready_state() != WebSocket::OPEN {
                 return Err("bridge disconnected".into());
             }
+            if shared.cancelled.borrow().contains(&tab) {
+                return Err("upload cancelled".into());
+            }
             nap(20).await;
         }
         let bytes = crate::web::read_slice(file, at, len, CHUNK as usize).await?;
