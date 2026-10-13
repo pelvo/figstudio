@@ -448,8 +448,8 @@ fmt layer on **stderr** (browser: `tracing-web`, the console) with default level
 `RUST_LOG=debug figstudio-cli info file.fig` shows more; `figstudio-mcp` defaults to
 `warn,figstudio_mcp=info`. For the MCP server, prefer targeted filters such as
 `RUST_LOG=figstudio_mcp=debug,figstudio_fig=debug`. rmcp is capped at info unless `rmcp` is
-named in `RUST_LOG`, because it logs full requests and responses (`figstudio_mcp::cap_rmcp_logs`,
-used by the server and by the app that hosts it). The `listening on` line and the non-loopback
+named in `RUST_LOG`, because it logs full requests and responses (`figstudio_mcp::rmcp_cap`,
+a second filter layer that can only lower rmcp, used by the server and by the app that hosts it). The `listening on` line and the non-loopback
 warning are plain stderr output, not log lines. stdout stays data (CLI output, MCP stdio). Never log
 names, text, colours, hashes, node ids or paths: log counts, sizes and kinds.
 Errors: libraries return their own structs (`FigError`, `CoreError`) built with `thiserror`,

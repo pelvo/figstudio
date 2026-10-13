@@ -3,7 +3,7 @@ use clap::Parser;
 use figstudio_mcp::{FigstudioServer, serve_http, tools::design::Assets};
 use rmcp::ServiceExt;
 use std::{net::SocketAddr, ops::RangeInclusive, path::PathBuf};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 /// Accepted `--max-output-bytes`: 4 kB (one element and its closing tags always fit) to
 /// 100 kB (the largest size any measured client accepted was 74 kB).
@@ -63,16 +63,15 @@ impl std::str::FromStr for Http {
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn,figstudio_mcp=info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(figstudio_mcp::cap_rmcp_logs(
-            filter,
-            std::env::var("RUST_LOG").ok().as_deref(),
-        ))
+    let cap = figstudio_mcp::rmcp_cap(std::env::var("RUST_LOG").ok().as_deref());
+    let fmt = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .with_level(false)
         .with_target(false)
-        .without_time()
+        .without_time();
+    tracing_subscriber::registry()
+        .with(fmt.with_filter(filter).with_filter(cap))
         .init();
 }
 

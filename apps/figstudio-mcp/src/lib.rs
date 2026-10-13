@@ -214,16 +214,17 @@ pub async fn serve_http(
         .await
 }
 
-/// Caps rmcp at `info` unless `spec` (the `RUST_LOG` value) names it: rmcp's `debug` and
-/// `trace` events carry full requests and responses (tool arguments, layer names, text). Used
-/// by the standalone server and by the app that hosts it.
-pub fn cap_rmcp_logs(
-    filter: tracing_subscriber::EnvFilter,
-    spec: Option<&str>,
-) -> tracing_subscriber::EnvFilter {
-    let names_rmcp = spec.is_some_and(|spec| spec.contains("rmcp"));
-    match "rmcp=info".parse() {
-        Ok(directive) if !names_rmcp => filter.add_directive(directive),
-        _ => filter,
+/// A filter that keeps rmcp at `info` or quieter unless `spec` (the `RUST_LOG` value) names
+/// rmcp: rmcp's `debug` and `trace` events carry full requests and responses (tool arguments,
+/// layer names, text). Add it as a separate layer next to the `EnvFilter`: layered filters
+/// only ever lower a level, so rmcp `info` stays off when `RUST_LOG` is unset, `warn` or `off`.
+/// Used by the standalone server and by the app that hosts it.
+pub fn rmcp_cap(spec: Option<&str>) -> tracing_subscriber::filter::Targets {
+    use tracing_subscriber::filter::{LevelFilter, Targets};
+    let all = Targets::new().with_default(LevelFilter::TRACE);
+    if spec.is_some_and(|spec| spec.contains("rmcp")) {
+        all
+    } else {
+        all.with_target("rmcp", LevelFilter::INFO)
     }
 }
