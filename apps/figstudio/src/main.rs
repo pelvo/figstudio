@@ -370,15 +370,17 @@ impl App {
                     doc,
                     source,
                     elapsed,
-                    needs_cjk,
+                    cjk,
                 } => {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
-                    if needs_cjk {
-                        self.web.load_cjk_font(ctx);
+                    match cjk {
+                        theme::CjkNeed::None => {}
+                        theme::CjkNeed::HangulOnly => self.web.load_hangul_font(ctx),
+                        theme::CjkNeed::Any => self.web.load_cjk_font(ctx),
                     }
                     #[cfg(not(target_arch = "wasm32"))]
-                    let _ = needs_cjk;
+                    let _ = cjk;
                     let id = self.next_id;
                     self.next_id += 1;
                     self.tabs.push(Tab::new(id, path, doc, source, elapsed));

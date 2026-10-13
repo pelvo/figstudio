@@ -5,6 +5,8 @@
 # Arch: noto-fonts-cjk; macOS: brew install --cask font-noto-sans-cjk).
 # FIGSTUDIO_CJK_FONT overrides the collection path: NotoSansCJK-Regular.ttc
 # uses faces 0..4; NotoSansCJK.ttc (all weights) uses Regular faces 25..29.
+# It must be a .ttc collection; each output's face name is checked, so a wrong
+# source fails the build instead of shipping one face under five names.
 # Missing font or tool: warn and write nothing. Cache: $CARGO_TARGET_DIR/web-font.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -25,10 +27,18 @@ subset=$(command -v pyftsubset || true)
 if [ -z "$subset" ] && [ -x "$HOME/.local/bin/pyftsubset" ]; then
   subset=$HOME/.local/bin/pyftsubset
 fi
+# fontTools' own Python (pyftsubset may be a pipx/uv tool, not the system python3).
+py=$(sed -n '1s/^#! *//p' "$subset" 2>/dev/null || true)
+if [ -z "$py" ] || ! "$py" -c 'import fontTools' 2>/dev/null; then py=python3; fi
 if [ ! -f "$src" ] || [ -z "$subset" ]; then
   echo "web-font: no Noto Sans CJK or no pyftsubset; CJK names will show as boxes" >&2
   exit 0
 fi
+case "$src" in
+  *.ttc) ;;
+  *) echo "web-font: $src is not a .ttc collection; need all five Noto Sans CJK faces" >&2
+     exit 1 ;;
+esac
 base=0
 if [ "$(basename "$src")" = NotoSansCJK.ttc ]; then base=25; fi
 cache=${CARGO_TARGET_DIR:-target}/web-font
@@ -51,6 +61,15 @@ for variant in jp sc tc hk kr; do
     "$subset" "$src" --font-number="$index" --unicodes="$ranges" \
       --layout-features='' --no-hinting --name-IDs='*' --name-languages='*' \
       --output-file="$font.part"
+    want="Noto Sans CJK $(printf %s "$variant" | tr a-z A-Z)"
+    # Full name (name ID 4) must match exactly: a Thin or Bold face shares the family name.
+    got=$("$py" -c 'import sys; from fontTools.ttLib import TTFont
+print(TTFont(sys.argv[1])["name"].getDebugName(4))' "$font.part")
+    if [ "$got" != "$want" ]; then
+      echo "web-font: face $index of $src is not $want" >&2
+      rm -f "$font.part"
+      exit 1
+    fi
     mv "$font.part" "$font"
     printf '%s\n' "$src" >"$font.source"
   fi

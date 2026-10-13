@@ -434,12 +434,27 @@ impl Inbox {
         if self.font_variant == variant {
             return;
         }
-        self.font_variant = variant;
         if let Some(storage) =
             web_sys::window().and_then(|window| window.local_storage().ok().flatten())
         {
             let _ = storage.set_item(CJK_STORAGE_KEY, variant.code());
         }
+        self.use_cjk_font(variant, ctx);
+    }
+
+    /// A file whose only CJK is Hangul: only KR draws it, so use KR for this session
+    /// (not saved; the menu choice still wins next time).
+    pub fn load_hangul_font(&mut self, ctx: &egui::Context) {
+        self.use_cjk_font(Variant::Kr, ctx);
+        self.load_cjk_font(ctx);
+    }
+
+    /// Switches the variant; a font already loaded or loading is fetched again.
+    fn use_cjk_font(&mut self, variant: Variant, ctx: &egui::Context) {
+        if self.font_variant == variant {
+            return;
+        }
+        self.font_variant = variant;
         if self.font_state != FontState::NotNeeded {
             self.font_state = FontState::NotNeeded;
             self.load_cjk_font(ctx);
