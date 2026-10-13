@@ -258,3 +258,45 @@ fn resave_and_synth_outputs_reopen_with_expected_content() {
     assert!(info.contains("1. Page 1"), "{info}");
     assert!(info.contains("2. Stress page 2"), "{info}");
 }
+
+#[test]
+fn trace_logging_goes_to_stderr_only_and_leaks_no_document_names() {
+    let plain = cli(&["info", FIXTURE]);
+    let traced = Command::new(env!("CARGO_BIN_EXE_figstudio-cli"))
+        .args(["info", FIXTURE])
+        .env("RUST_LOG", "trace")
+        .output()
+        .unwrap();
+    assert_eq!(traced.status.code(), Some(0), "{}", text(&traced.stderr));
+    assert_eq!(plain.stdout, traced.stdout, "stdout must be data only");
+
+    let stderr = text(&traced.stderr);
+    assert!(!stderr.is_empty(), "RUST_LOG=trace should log something");
+    let doc = Document::open(FIXTURE).unwrap();
+    let names: Vec<&str> = doc
+        .nodes
+        .iter()
+        .map(|n| n.name.as_str())
+        .filter(|n| n.len() >= 4)
+        .collect();
+    assert!(!names.is_empty());
+    for name in names {
+        assert!(!stderr.contains(name), "stderr leaks {name:?}:\n{stderr}");
+    }
+}
+
+#[test]
+fn truncated_fig_fails_with_a_one_line_message() {
+    let dir = TempDir::new();
+    let mut bytes = fs::read(FIXTURE).unwrap();
+    bytes.truncate(bytes.len() / 2);
+    let truncated = dir.file("truncated.fig");
+    fs::write(&truncated, bytes).unwrap();
+
+    let output = cli(&["info", truncated.to_str().unwrap()]);
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(output.stdout.is_empty());
+    assert_eq!(stderr.trim_end().lines().count(), 1, "{stderr}");
+    assert!(stderr.starts_with("figstudio-cli: "), "{stderr}");
+}

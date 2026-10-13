@@ -137,7 +137,7 @@ fn image_kind(bytes: &[u8]) -> &'static str {
     }
 }
 
-pub fn run(file: &Path) -> Result<(), String> {
+pub fn run(file: &Path) -> anyhow::Result<()> {
     // Panic messages could carry document data; report the location only.
     std::panic::set_hook(Box::new(|info| {
         let at = info
@@ -165,11 +165,11 @@ pub fn run(file: &Path) -> Result<(), String> {
     let t = Instant::now();
     let mut bytes = Vec::new();
     figstudio_fig::read_limited_file(file, &mut bytes)
-        .map_err(|_| "cannot read the file (unavailable or too large)".to_string())?;
+        .map_err(|_| anyhow::anyhow!("cannot read the file (unavailable or too large)"))?;
     let read_time = t.elapsed();
     let t = Instant::now();
     let doc = Document::from_bytes(&bytes)
-        .map_err(|_| "cannot open the file (invalid or unsupported .fig data)".to_string())?;
+        .map_err(|_| anyhow::anyhow!("cannot open the file (invalid or unsupported .fig data)"))?;
     let decode_time = t.elapsed();
     let opened_memory = peak_memory_mb();
     let container = if bytes.starts_with(b"PK") {
