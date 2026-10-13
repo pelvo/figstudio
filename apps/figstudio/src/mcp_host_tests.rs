@@ -107,8 +107,11 @@ fn reveal_selects_and_fits_or_answers_tab_closed() {
         })
         .unwrap();
     running.drain(&mut tabs, &mut active);
-    assert_eq!(ok.try_recv().unwrap(), Ok(()));
-    assert_eq!(closed.try_recv().unwrap(), Err("tab closed".to_owned()));
+    ok.try_recv().unwrap().unwrap();
+    assert_eq!(
+        closed.try_recv().unwrap().unwrap_err().to_string(),
+        "tab closed"
+    );
     assert_eq!(active, 1);
     assert_eq!(tabs[1].selection, Some(node));
     assert_eq!(tabs[1].fit_node, Some(node));

@@ -58,7 +58,7 @@ pub enum Command {
         /// A document node of that tab.
         node: Guid,
         /// `Ok`, or why it could not be done (such as "tab closed").
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
     },
 }
 
@@ -221,7 +221,7 @@ impl LiveFiles {
         (self.wake)();
         match tokio::time::timeout(REVEAL_TIMEOUT, answer).await {
             Ok(Ok(Ok(()))) => Ok(()),
-            Ok(Ok(Err(message))) => Err(McpError::app(message)),
+            Ok(Ok(Err(e))) => Err(McpError::app(figstudio_fig::one_line(e.as_ref()))),
             Ok(Err(_)) | Err(_) => Err(no_reply()),
         }
     }

@@ -220,7 +220,10 @@ impl ImageQueue {
                     Ok(bytes) => {
                         this.images.insert_encoded(&want.key, &bytes, want.level);
                     }
-                    Err(_) => this.images.fail(&want.key, want.level),
+                    Err(e) => {
+                        tracing::debug!(error = %figstudio_fig::one_line(e.as_ref()), "image read failed");
+                        this.images.fail(&want.key, want.level);
+                    }
                 }
                 this.pending
                     .lock()
@@ -239,7 +242,7 @@ impl ImageQueue {
 #[cfg(not(target_arch = "wasm32"))]
 pub struct ExportDone {
     pub path: PathBuf,
-    pub result: Result<(), String>,
+    pub result: anyhow::Result<()>,
 }
 
 pub struct Workers {
@@ -403,8 +406,7 @@ impl Workers {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 export_png_with(images, &doc, source.as_ref(), root, scale, &path)
             }))
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("export worker panicked")))
-            .map_err(|e| figstudio_fig::one_line(e.as_ref()));
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("export worker panicked")));
             drop(_release);
             let _ = tx.send(ExportDone { path, result });
             waker.wake();

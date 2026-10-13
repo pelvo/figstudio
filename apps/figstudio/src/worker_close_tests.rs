@@ -9,10 +9,10 @@ use crate::source::ImageSource;
 struct Gate(Mutex<Receiver<Vec<u8>>>, SyncSender<()>);
 
 impl ImageSource for Gate {
-    fn read(&self, _: &figstudio_fig::archive::Entry) -> Result<Vec<u8>, String> {
+    fn read(&self, _: &figstudio_fig::archive::Entry) -> anyhow::Result<Vec<u8>> {
         let _ = self.1.send(());
         let rx = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        rx.recv().map_err(|e| e.to_string())
+        Ok(rx.recv()?)
     }
 }
 
