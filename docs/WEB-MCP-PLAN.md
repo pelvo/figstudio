@@ -202,3 +202,54 @@ tunnel stays the zero-config option and needs none of this; document it in the R
   Host rejected; `0.0.0.0` refused without the flag; app toggle keeps loopback when off.
   Prove each by breaking the code once.
 - Gate: `scripts/check.sh`. Docs: README "Remote agents" (Tailscale + SSH tunnel), PLAN.md.
+
+## PR #16 review fixes (reviewer tested in a real browser at `0770896`)
+
+All findings were reproduced by the reviewer; none are false positives. Fix in this order,
+one commit per group, `scripts/check.sh` (+ `--web` for app changes) before each commit.
+
+### F1 — blocker: uploads fail in the threads build (`apps/figstudio/src/mcp_upload.rs:~99`)
+`ws.send_with_u8_array(&bytes)` passes a view of shared Wasm memory; `WebSocket.send` rejects
+shared views. Copy into a fresh non-shared `js_sys::Uint8Array::new_with_length` +
+`copy_from`, then `send_with_array_buffer(&chunk.buffer())` (reviewer's probe: 31 KB and
+300 MiB uploads arrived byte-identical). No native test can catch this; say so in the commit.
+
+### F2 — major: two files with the same name (`apps/figstudio/src/web.rs:~333`)
+`UPLOADS` is keyed by file name, so picking two different `same.fig` files at once shows the
+first in the tab but uploads the second. Key the kept `File` by tab (or carry it with the
+opened document into the tab) so the bridge always gets the bytes the tab shows; reconnect
+re-uploads use the same lookup. Smallest change that makes tab ↔ File one-to-one; extract the
+mapping into a pure helper with a native unit test if practical.
+
+### F3 — remote bind breaks pairing (`apps/figstudio-mcp/src/main.rs:~162`)
+`--bridge --http=<tailscale-ip>:PORT` listens only on that IP, so the browser on the same PC
+(default `ws://127.0.0.1:3845/bridge`) is refused and the printed links cannot pair. The
+browser and bridge are always on the same PC; only the agent is remote. When the bind is
+non-loopback and not unspecified, also listen on `127.0.0.1:<same port>` serving `/bridge`
+(and loopback-only `/mcp`). Print the `ws://` bridge URL in the banner. Integration test:
+`--bridge --http=<non-loopback>` pairs on `ws://127.0.0.1:<port>/bridge`.
+
+### F4 — `0.0.0.0` + token still 403 by Host (`apps/figstudio-mcp/src/access.rs:~76`)
+With an unspecified bind no address is in the Host allowlist, so LAN/Tailscale IPs get 403
+even with the right token. Do not enumerate interfaces (needs a new crate); when the bind is
+unspecified and `--allow-host` is empty, print a banner line saying clients must use a name or
+IP passed with `--allow-host`, and say the same in the README Remote agents section.
+
+### F5 — misleading connect error / no timeout (`apps/figstudio/src/mcp_web.rs:~176`)
+On an https page Chromium's Local Network Access check closes with 1006 and the app says the
+bridge isn't running; WebKit blocks as mixed content and fires no `close`. Change the 1006
+message to also mention allowing local network access / that Safari blocks https → ws://
+(use `http://127.0.0.1:8765` or Chrome). Add a connect timeout (8 s without `welcome` → close
+and show that message). Put the message choice in `mcp_wire.rs` (pure) with a unit test.
+
+### F6 — minors
+- Upload error toasts print the whole JS stack (`format!("{e:?}")` on `JsValue`): show only the
+  error message (`js_sys::Error` message or `as_string`), via a small helper.
+- A client-side upload failure leaves a 0-byte in-progress upload on the bridge: send
+  `close {tab}` (or the existing cancel path) when an upload fails in the tab; bridge test that
+  `close` during an upload drops it.
+- `#mcp=` is read only at startup: listen for `hashchange` and reconnect with the new token.
+- `Authorization: bearer <token>` (lowercase scheme) → 401: match the scheme
+  case-insensitively (RFC 7235). Unit test in `access.rs`.
+
+Out of scope: a headless-browser smoke test (suggested by the reviewer; needs CI browser infra).
