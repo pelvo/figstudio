@@ -6,6 +6,7 @@
 
 pub mod archive;
 mod doc;
+mod error;
 mod open;
 mod read;
 pub mod resolve;

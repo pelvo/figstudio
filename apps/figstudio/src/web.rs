@@ -168,7 +168,7 @@ async fn read_range_max(
     max: usize,
 ) -> Result<Vec<u8>, String> {
     let js = |e: JsValue| format!("{e:?}");
-    let (at, end) = archive::checked_range(at, len, max).map_err(|e| e.0)?;
+    let (at, end) = archive::checked_range(at, len, max).map_err(|e| e.to_string())?;
     let blob = file
         .slice_with_f64_and_f64(at as f64, end as f64)
         .map_err(js)?;
@@ -186,7 +186,7 @@ async fn read_range_max(
 /// with [`Entry::decode`], never the main thread.
 async fn read_raw(file: &web_sys::File, entry: &Entry) -> Result<Vec<u8>, String> {
     let header = read_range(file, entry.header_offset, archive::LOCAL_HEADER_LEN).await?;
-    let start = entry.data_start(&header).map_err(|e| e.0)?;
+    let start = entry.data_start(&header).map_err(|e| e.to_string())?;
     read_range(file, start, entry.compressed_size).await
 }
 
@@ -228,7 +228,7 @@ async fn open_lazy(file: web_sys::File) -> Picked {
     };
     let entries = match entries {
         Ok(e) => e,
-        Err(FigError(e)) => return fail(e),
+        Err(e) => return fail(e.to_string()),
     };
     let mut eager = HashMap::new();
     for e in entries
@@ -303,7 +303,9 @@ impl ImageSource for WebSource {
         let mut nap = 2;
         loop {
             match answer.try_recv() {
-                Ok(result) => return result.and_then(|raw| entry.decode(raw).map_err(|e| e.0)),
+                Ok(result) => {
+                    return result.and_then(|raw| entry.decode(raw).map_err(|e| e.to_string()));
+                }
                 Err(TryRecvError::Empty) => {
                     if rayon::yield_now() == Some(rayon::Yield::Executed) {
                         nap = 2;

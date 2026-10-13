@@ -42,7 +42,7 @@ pub struct Entry {
 }
 
 fn err<T>(msg: impl Into<String>) -> Result<T, FigError> {
-    Err(FigError(msg.into()))
+    Err(FigError::malformed(msg))
 }
 
 fn u16_at(b: &[u8], at: usize) -> Option<u16> {
@@ -62,8 +62,8 @@ fn u64_at(b: &[u8], at: usize) -> Option<u64> {
 pub fn central_directory(tail: &[u8], file_len: u64) -> Result<(u64, u64), FigError> {
     let tail_start = file_len
         .checked_sub(tail.len() as u64)
-        .ok_or_else(|| FigError("tail longer than the file".into()))?;
-    let bad = || FigError("not a readable .fig archive: no end of central directory".into());
+        .ok_or_else(|| FigError::malformed("tail longer than the file"))?;
+    let bad = || FigError::malformed("not a readable .fig archive: no end of central directory");
     // The record is 22 bytes plus a comment; search backwards for a signature whose comment
     // length reaches exactly to the end.
     let at = (0..=tail.len().saturating_sub(22))
@@ -89,7 +89,7 @@ pub fn central_directory(tail: &[u8], file_len: u64) -> Result<(u64, u64), FigEr
                 .checked_sub(tail_start)
                 .and_then(|r| usize::try_from(r).ok())
                 .filter(|&r| r + 56 <= tail.len())
-                .ok_or_else(|| FigError("zip64 record outside the end of the file".into()))?;
+                .ok_or_else(|| FigError::malformed("zip64 record outside the end of the file"))?;
             if u32_at(tail, rel) != Some(ZIP64_EOCD) {
                 return Err(bad());
             }
@@ -105,7 +105,7 @@ pub fn central_directory(tail: &[u8], file_len: u64) -> Result<(u64, u64), FigEr
 
 /// Lists the entries of a central directory (the bytes [`central_directory`] located).
 pub fn entries(cd: &[u8]) -> Result<Vec<Entry>, FigError> {
-    let bad = |what: &str| FigError(format!("bad central directory: {what}"));
+    let bad = |what: &str| FigError::malformed(format!("bad central directory: {what}"));
     let mut out = Vec::new();
     let mut at = 0;
     while at + 46 <= cd.len() {
@@ -173,7 +173,9 @@ impl Entry {
         let extra = u64::from(u16_at(local_header, 28).unwrap_or(0));
         self.header_offset
             .checked_add(LOCAL_HEADER_LEN + name + extra)
-            .ok_or_else(|| FigError(format!("bad local header offset for {}", self.name)))
+            .ok_or_else(|| {
+                FigError::malformed(format!("bad local header offset for {}", self.name))
+            })
     }
 
     /// Decompresses the entry's data (`compressed_size` bytes from [`Entry::data_start`]).
@@ -189,9 +191,12 @@ impl Entry {
                 flate2::read::DeflateDecoder::new(data.as_slice())
                     .take(limit as u64 + 1)
                     .read_to_end(&mut out)
-                    .map_err(|e| FigError(format!("cannot inflate {}: {e}", self.name)))?;
+                    .map_err(|e| FigError::io(format!("cannot inflate {}", self.name), e))?;
                 if out.len() > limit {
-                    return err(format!("{} inflates past its declared size", self.name));
+                    return Err(FigError::limit(format!(
+                        "{} inflates past its declared size",
+                        self.name
+                    )));
                 }
                 Ok(out)
             }
@@ -204,16 +209,16 @@ impl Entry {
 /// overflow. Returns `(at, end)`. Every range reader (desktop and browser) goes through this.
 pub fn checked_range(at: u64, len: u64, max: usize) -> Result<(u64, u64), FigError> {
     if !usize::try_from(len).is_ok_and(|l| l <= max) {
-        return err("archive entry too large");
+        return Err(FigError::limit("archive entry too large"));
     }
     let end = at
         .checked_add(len)
-        .ok_or_else(|| FigError("archive range out of bounds".into()))?;
+        .ok_or_else(|| FigError::malformed("archive range out of bounds"))?;
     Ok((at, end))
 }
 
 fn read_range(r: &mut (impl Read + Seek), at: u64, len: u64) -> Result<Vec<u8>, FigError> {
-    let io = |e: std::io::Error| FigError(format!("cannot read the file: {e}"));
+    let io = |e: std::io::Error| FigError::io("cannot read the file", e);
     let (at, end) = checked_range(at, len, crate::doc::MAX_CHUNK_BYTES)?;
     r.seek(SeekFrom::Start(at)).map_err(io)?;
     let mut buf = vec![0; (end - at) as usize];
