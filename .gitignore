@@ -4,3 +4,6 @@ web/dist/
 tests/fixtures/*.codeconnect.json.lock
 apps/figstudio-mcp/*.codeconnect.json.lock
 apps/figstudio-mcp/figjam-golden.fig
+# Cloudflare tooling state (wrangler, cf CLI)
+.wrangler/
+.cloudflare/
