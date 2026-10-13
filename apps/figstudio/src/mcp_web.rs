@@ -57,8 +57,6 @@ pub struct McpHost {
     uploading: Option<u64>,
     /// Bumped per connection so a stale upload task's report is ignored.
     generation: u32,
-    /// The tab whose `end` was sent last: a bridge `error` right after is about its file.
-    just_uploaded: Option<u64>,
     last_key: Option<Key>,
     /// Toasts raised outside `frame` (shown by the next `frame`).
     notices: Vec<String>,
@@ -79,7 +77,6 @@ impl Default for McpHost {
             failed: HashSet::new(),
             uploading: None,
             generation: 0,
-            just_uploaded: None,
             last_key: None,
             notices: Vec::new(),
         }
@@ -148,8 +145,9 @@ impl McpHost {
                 self.conn.as_mut()?.welcomed = true;
                 None
             }
-            Event::Server(ServerMessage::Error { message }) => {
-                if let Some(tab) = self.just_uploaded.take() {
+            Event::Server(ServerMessage::Error { message, tab }) => {
+                // Only upload failures name a tab; other errors leave the tabs alone.
+                if let Some(tab) = tab {
                     self.ready.remove(&tab);
                     self.failed.insert(tab);
                     self.last_key = None;
@@ -183,9 +181,9 @@ impl McpHost {
             Event::Uploaded { tab, result, .. } => {
                 self.uploading = None;
                 match result {
+                    Ok(()) if self.failed.contains(&tab) => None,
                     Ok(()) => {
                         self.ready.insert(tab);
-                        self.just_uploaded = Some(tab);
                         self.last_key = None;
                         None
                     }
@@ -205,7 +203,6 @@ impl McpHost {
         self.ready.clear();
         self.failed.clear();
         self.uploading = None;
-        self.just_uploaded = None;
         self.last_key = None;
         self.shared.progress.set(None);
         self.shared.cancelled.borrow_mut().clear();
@@ -270,7 +267,6 @@ impl McpHost {
             return;
         };
         self.uploading = Some(tab.id);
-        self.just_uploaded = None;
         let name = upload_name(&tab.title());
         wasm_bindgen_futures::spawn_local(upload(
             ws.clone(),

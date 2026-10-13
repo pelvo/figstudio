@@ -69,6 +69,9 @@ impl Session {
         });
         Ok(())
     }
+    pub fn uploading(&self) -> Option<u64> {
+        self.upload.as_ref().map(|upload| upload.tab)
+    }
     pub async fn bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
         let upload = self.upload.as_mut().ok_or("binary frame without upload")?;
         if bytes.len() as u64 > upload.expected.saturating_sub(upload.received) {

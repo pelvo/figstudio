@@ -46,8 +46,13 @@ pub enum ClientMessage {
 pub enum ServerMessage {
     /// Authentication succeeded.
     Welcome { version: u32 },
-    /// A rejected message or upload (contains no file content).
-    Error { message: String },
+    /// A rejected message or upload (contains no file content). `tab` names the upload that
+    /// failed, so the browser stops reporting it; absent for other errors and older bridges.
+    Error {
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab: Option<u64>,
+    },
     /// Select and fit a node in a browser tab.
     Reveal { id: u64, tab: u64, node: String },
 }

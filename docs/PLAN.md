@@ -571,3 +571,4 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   end-to-end (`bridge_cli.rs`), each seen failing under a mutation. check.sh --web passed. Not verified: a
   real browser session (see WEB-MCP-PLAN.md L4 TODOs).
 - 2026-10-13 — Web MCP L5: opt-in remote agents (bearer token via `subtle`, Host allowlist, wildcard refused without a flag, app checkbox, README Tailscale + SSH `-R` tunnel). `tests/remote.rs` and unit tests seen failing under mutations; check.sh passed. Not verified: a session from another machine.
+- 2026-10-13 — Web MCP review fixes: constant-time pairing-token compare, `error {tab}` names the failed upload (the tab drops it by id), 1 s bound on bridge sends so a stalled peer cannot block re-pairing; tests for hello timeout, error tab, stalled peer, remote `--bridge` bearer, each seen failing under a mutation. Not verified: a real browser session.

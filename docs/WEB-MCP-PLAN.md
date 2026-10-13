@@ -37,7 +37,7 @@ JSON text frames (`serde_json`) plus binary frames for file bytes. Types live in
 | tab → bridge | `state {tabs: [{tab, page, selection, viewport}], active}` | Sent when the desktop-style `Key` changes |
 | tab → bridge | `close {tab}` | Tab closed |
 | tab → bridge | `reply {id, error?}` | Answer to a reveal |
-| bridge → tab | `welcome {version}` / `error {message}` | |
+| bridge → tab | `welcome {version}` / `error {message, tab?}` | `tab` names a failed upload (`open`/chunk/`end`); the tab drops only that one |
 | bridge → tab | `reveal {id, tab, node}` | From `Command::Reveal`; bridge replies to rmcp on `reply` or 5 s timeout (`REVEAL_TIMEOUT`) |
 
 Bridge writes each upload to a per-session temp dir (`tempfile`) as `<name>.fig` and decodes

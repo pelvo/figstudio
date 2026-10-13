@@ -42,7 +42,28 @@ fn every_frame_roundtrips() {
     });
     roundtrip(ServerMessage::Error {
         message: "invalid upload".into(),
+        tab: None,
     });
+    roundtrip(ServerMessage::Error {
+        message: "invalid fig file".into(),
+        tab: Some(7),
+    });
+    // Older bridges omit `tab`; the field stays off the wire when unset.
+    assert_eq!(
+        serde_json::from_str::<ServerMessage>(r#"{"type":"error","message":"x"}"#).unwrap(),
+        ServerMessage::Error {
+            message: "x".into(),
+            tab: None
+        }
+    );
+    assert!(
+        !serde_json::to_string(&ServerMessage::Error {
+            message: "x".into(),
+            tab: None
+        })
+        .unwrap()
+        .contains("tab")
+    );
     roundtrip(ServerMessage::Reveal {
         id: 9,
         tab: 7,

@@ -34,14 +34,18 @@ impl BridgeTest {
         ));
         Self { addr, stop, task }
     }
-    pub async fn socket(&self, token: &str) -> Socket {
+    /// A paired-origin socket that has not said hello yet.
+    pub async fn connect(&self) -> Socket {
         let mut request = format!("ws://{}/bridge", self.addr)
             .into_client_request()
             .unwrap();
         request
             .headers_mut()
             .insert("Origin", "http://localhost:8765".parse().unwrap());
-        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        tokio_tungstenite::connect_async(request).await.unwrap().0
+    }
+    pub async fn socket(&self, token: &str) -> Socket {
+        let mut socket = self.connect().await;
         send(
             &mut socket,
             ClientMessage::Hello {

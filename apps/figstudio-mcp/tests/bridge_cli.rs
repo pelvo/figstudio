@@ -94,3 +94,43 @@ async fn call(
         .await
         .unwrap()
 }
+
+/// L5: a non-loopback `--bridge` serves `/mcp` only with the printed bearer token.
+#[tokio::test]
+async fn a_remote_bridge_requires_the_bearer_token_on_mcp() {
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
+        .args(["--bridge", "--http=0.0.0.0:0", "--allow-any-interface"])
+        .args(["--allow-host", "box.example.ts.net", "--no-system-fonts"])
+        .kill_on_drop(true)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let (mut bearer, mut port) = (None, None);
+    let wait = std::time::Duration::from_secs(20);
+    while let Ok(Ok(Some(line))) = tokio::time::timeout(wait, lines.next_line()).await {
+        if let Some(token) = line.strip_prefix("Remote access: Authorization: Bearer ") {
+            bearer = Some(token.to_owned());
+        } else if let Some(url) = line.strip_prefix("MCP: http://0.0.0.0:") {
+            port = url.strip_suffix("/mcp").map(str::to_owned);
+            break;
+        }
+    }
+    let (bearer, port) = (bearer.expect("bearer line"), port.expect("MCP line"));
+    let initialize = async |auth: Option<String>| {
+        let mut request = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{port}/mcp"))
+            .header("Host", "box.example.ts.net")
+            .header("Accept", "application/json, text/event-stream")
+            .json(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}));
+        if let Some(auth) = auth {
+            request = request.header("Authorization", auth);
+        }
+        request.send().await.unwrap().status()
+    };
+    assert_eq!(initialize(None).await, 401);
+    assert_eq!(initialize(Some("Bearer wrong".into())).await, 401);
+    assert_eq!(initialize(Some(format!("Bearer {bearer}"))).await, 200);
+    child.kill().await.unwrap();
+}

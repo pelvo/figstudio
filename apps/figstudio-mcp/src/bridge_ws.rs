@@ -15,9 +15,13 @@ use figstudio_mcp_core::bridge::{ClientMessage, PROTOCOL_VERSION, ServerMessage,
 use std::{
     collections::HashMap,
     sync::{Arc, PoisonError},
-    time::Instant,
+    time::{Duration, Instant},
 };
+use subtle::ConstantTimeEq;
 use tokio::sync::oneshot;
+
+/// A peer that stops reading must not hold the session (and the `owner` lock) forever.
+const SEND_TIMEOUT: Duration = Duration::from_secs(1);
 use tokio_util::sync::CancellationToken;
 
 pub(crate) async fn upgrade(
@@ -45,18 +49,20 @@ pub(crate) async fn upgrade(
 }
 async fn send(socket: &mut WebSocket, message: ServerMessage) -> Result<(), ()> {
     let text = serde_json::to_string(&message).map_err(|_| ())?;
-    socket
-        .send(Message::Text(text.into()))
-        .await
-        .map_err(|_| ())
+    bounded(socket, Message::Text(text.into())).await
+}
+async fn bounded(socket: &mut WebSocket, message: Message) -> Result<(), ()> {
+    match tokio::time::timeout(SEND_TIMEOUT, socket.send(message)).await {
+        Ok(Ok(())) => Ok(()),
+        _ => Err(()),
+    }
 }
 async fn close(socket: &mut WebSocket, code: u16) {
-    let _ = socket
-        .send(Message::Close(Some(CloseFrame {
-            code,
-            reason: "bridge authentication failed".into(),
-        })))
-        .await;
+    let frame = CloseFrame {
+        code,
+        reason: "bridge authentication failed".into(),
+    };
+    let _ = bounded(socket, Message::Close(Some(frame))).await;
 }
 struct Pending {
     reply: oneshot::Sender<anyhow::Result<()>>,
@@ -77,7 +83,7 @@ async fn session(mut socket: WebSocket, bridge: Arc<Bridge>) {
             return;
         }
     };
-    if token != bridge.config.token {
+    if !bool::from(token.as_bytes().ct_eq(bridge.config.token.as_bytes())) {
         close(&mut socket, 4401).await;
         return;
     }
@@ -124,8 +130,8 @@ async fn session(mut socket: WebSocket, bridge: Arc<Bridge>) {
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => { let _ = socket.send(Message::Close(None)).await; break; }
-            _ = bridge.shutdown.cancelled() => { let _ = socket.send(Message::Close(None)).await; break; }
+            _ = cancel.cancelled() => { let _ = bounded(&mut socket, Message::Close(None)).await; break; }
+            _ = bridge.shutdown.cancelled() => { let _ = bounded(&mut socket, Message::Close(None)).await; break; }
             _ = bridge.wake.notified() => {
                 loop {
                     let command = bridge.commands.lock().unwrap_or_else(PoisonError::into_inner).try_recv();
@@ -140,10 +146,12 @@ async fn session(mut socket: WebSocket, bridge: Arc<Bridge>) {
             }
             _ = tick.tick() => { pending.retain(|_, request| !request.reply.is_closed() && request.started.elapsed() < REVEAL_TIMEOUT); }
             frame = socket.recv() => {
+                // The upload a failure is about, so the browser drops that tab by id.
+                let mut failed_tab = None;
                 let result = match frame {
                     Some(Ok(Message::Text(text))) => match serde_json::from_str::<ClientMessage>(&text) {
-                        Ok(ClientMessage::Open { tab, name, size }) => session.open(tab, name, size, bridge.config.max_upload_bytes).await,
-                        Ok(ClientMessage::End { tab }) => session.end(tab).await,
+                        Ok(ClientMessage::Open { tab, name, size }) => { failed_tab = Some(tab); session.open(tab, name, size, bridge.config.max_upload_bytes).await }
+                        Ok(ClientMessage::End { tab }) => { failed_tab = Some(tab); session.end(tab).await }
                         Ok(ClientMessage::State { tabs, active }) => session.state(tabs, active),
                         Ok(ClientMessage::Close { tab }) => { session.close(tab).await; Ok(()) },
                         Ok(ClientMessage::Reply { id, error }) => {
@@ -152,13 +160,13 @@ async fn session(mut socket: WebSocket, bridge: Arc<Bridge>) {
                         }
                         _ => Err("invalid bridge message".into()),
                     },
-                    Some(Ok(Message::Binary(bytes))) => session.bytes(&bytes).await,
-                    Some(Ok(Message::Ping(bytes))) => { if socket.send(Message::Pong(bytes)).await.is_err() { break; } continue; },
+                    Some(Ok(Message::Binary(bytes))) => { failed_tab = session.uploading(); session.bytes(&bytes).await }
+                    Some(Ok(Message::Ping(bytes))) => { if bounded(&mut socket, Message::Pong(bytes)).await.is_err() { break; } continue; },
                     Some(Ok(Message::Pong(_))) => continue,
                     _ => break,
                 };
                 if let Err(message) = result
-                    && send(&mut socket, ServerMessage::Error { message }).await.is_err() { break; }
+                    && send(&mut socket, ServerMessage::Error { message, tab: failed_tab }).await.is_err() { break; }
                 bridge.publish(session.snapshot.clone());
             }
         }

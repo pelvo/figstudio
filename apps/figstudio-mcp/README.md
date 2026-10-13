@@ -76,7 +76,7 @@ MCP)…** and press Connect. The status bar shows `MCP connected`.
 
 | Flag | Meaning |
 |---|---|
-| `--bridge` | Bridge mode; no `FILE.fig` needed. Loopback only. `--http=ADDR` picks the address (default 3845, then 3846–3855). |
+| `--bridge` | Bridge mode; no `FILE.fig` needed. Default loopback; non-loopback needs the bearer token (see [Remote agents](#remote-agents)). `--http=ADDR` picks the address (default 3845, then 3846–3855). |
 | `--allow-origin URL` | Another exact browser origin allowed to pair. Default: `https://figstudio.vtz.io`, `http://127.0.0.1:8765`, `http://localhost:8765`. |
 | `--max-upload-bytes N` | Largest upload (default 2 GiB); over it the bridge answers with an error and drops the file. |
 
