@@ -193,7 +193,7 @@ impl Entry {
                     .read_to_end(&mut out)
                     .map_err(|e| FigError::io(format!("cannot inflate {}", self.name), e))?;
                 if out.len() > limit {
-                    return Err(FigError::limit(format!(
+                    return Err(FigError::malformed(format!(
                         "{} inflates past its declared size",
                         self.name
                     )));
