@@ -111,14 +111,13 @@ fn init_tracing() {
     use tracing_subscriber::prelude::*;
     let fmt = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
-        .with_ansi(std::io::stderr().is_terminal())
-        .with_filter(filter);
+        .with_ansi(std::io::stderr().is_terminal());
     // The hosted MCP server's rmcp dumps requests and responses at debug: cap it.
     #[cfg(feature = "mcp")]
-    let fmt = fmt.with_filter(figstudio_mcp::rmcp_cap(
-        std::env::var("RUST_LOG").ok().as_deref(),
-    ));
-    tracing_subscriber::registry().with(fmt).init();
+    let filter = figstudio_mcp::cap_rmcp(filter, std::env::var("RUST_LOG").ok().as_deref());
+    tracing_subscriber::registry()
+        .with(fmt.with_filter(filter))
+        .init();
 }
 
 /// The browser starts the app from JavaScript (`web::start`) once the thread pool is up.

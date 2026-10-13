@@ -63,7 +63,6 @@ impl std::str::FromStr for Http {
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn,figstudio_mcp=info"));
-    let cap = figstudio_mcp::rmcp_cap(std::env::var("RUST_LOG").ok().as_deref());
     let fmt = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
         .with_ansi(false)
@@ -71,7 +70,10 @@ fn init_tracing() {
         .with_target(false)
         .without_time();
     tracing_subscriber::registry()
-        .with(fmt.with_filter(filter).with_filter(cap))
+        .with(fmt.with_filter(figstudio_mcp::cap_rmcp(
+            filter,
+            std::env::var("RUST_LOG").ok().as_deref(),
+        )))
         .init();
 }
 
