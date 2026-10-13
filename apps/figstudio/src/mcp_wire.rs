@@ -149,8 +149,11 @@ pub(crate) fn js_error_text(error: &wasm_bindgen::JsValue) -> String {
     if let Some(error) = error.dyn_ref::<js_sys::Error>() {
         return String::from(error.message());
     }
-    error
-        .as_string()
+    // A DOMException is not a `js_sys::Error` but has a string `message`.
+    js_sys::Reflect::get(error, &"message".into())
+        .ok()
+        .and_then(|m| m.as_string())
+        .or_else(|| error.as_string())
         .unwrap_or_else(|| "browser error".to_owned())
 }
 
@@ -164,6 +167,16 @@ pub(crate) const CONNECT_TIMEOUT_MS: i32 = 8_000;
 pub(crate) fn connect_failed_message() -> &'static str {
     "Could not connect to the MCP bridge. Is `figstudio-mcp --bridge` running? Allow local \
      network access for this site, or use http://127.0.0.1:8765 (Safari blocks https -> ws://)."
+}
+
+/// The toast for a socket that closed with `code`: a close after `welcome` or with a code the
+/// bridge chose is reported as such; a 1006 before any `welcome` is a blocked connection.
+pub(crate) fn closed_message(welcomed: bool, code: u16) -> &'static str {
+    if welcomed || code != 1006 {
+        close_reason(code)
+    } else {
+        connect_failed_message()
+    }
 }
 
 /// Why the bridge closed the socket, in words for a toast.

@@ -17,8 +17,8 @@ use web_sys::{CloseEvent, MessageEvent, WebSocket};
 use crate::mcp_state::{Key, key};
 use crate::mcp_upload::{Event, Shared, send, upload};
 use crate::mcp_wire::{
-    CONNECT_TIMEOUT_MS, close_reason, connect_failed_message, reveal_wire, state_message,
-    token_from_fragment, upload_name,
+    CONNECT_TIMEOUT_MS, close_reason, closed_message, connect_failed_message, reveal_wire,
+    state_message, token_from_fragment, upload_name,
 };
 use crate::tab::Tab;
 use crate::theme;
@@ -34,6 +34,8 @@ struct Conn {
         Closure<dyn FnMut(CloseEvent)>,
         Closure<dyn FnMut(web_sys::Event)>,
     ),
+    /// The connect timeout: cleared and dropped with the connection, never leaked.
+    timeout: Option<(i32, Closure<dyn FnMut()>)>,
 }
 
 impl Drop for Conn {
@@ -42,6 +44,9 @@ impl Drop for Conn {
         self.ws.set_onclose(None);
         self.ws.set_onopen(None);
         let _ = self.ws.close();
+        if let (Some((id, _)), Some(window)) = (&self.timeout, web_sys::window()) {
+            window.clear_timeout_with_handle(*id);
+        }
     }
 }
 
@@ -199,11 +204,7 @@ impl McpHost {
             Event::Closed(code) => {
                 let welcomed = self.conn.take().is_some_and(|c| c.welcomed);
                 self.reset_link();
-                Some(if welcomed || code != 1006 {
-                    close_reason(code).to_owned()
-                } else {
-                    connect_failed_message().to_owned()
-                })
+                Some(closed_message(welcomed, code).to_owned())
             }
             Event::Uploaded { generation, .. } if generation != self.generation => None,
             Event::Uploaded { tab, result, .. } => {
@@ -356,19 +357,21 @@ impl McpHost {
         let give_up = Closure::<dyn FnMut()>::once(move || {
             push(&s, &c, Event::ConnectTimeout(generation));
         });
-        if let Some(window) = web_sys::window() {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                give_up.as_ref().unchecked_ref(),
-                CONNECT_TIMEOUT_MS,
-            );
-        }
-        give_up.forget();
+        let timer = web_sys::window().and_then(|window| {
+            window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    give_up.as_ref().unchecked_ref(),
+                    CONNECT_TIMEOUT_MS,
+                )
+                .ok()
+        });
         self.reset_link();
         self.shared.events.borrow_mut().clear();
         self.conn = Some(Conn {
             ws,
             welcomed: false,
             _handlers: (on_message, on_close, on_open),
+            timeout: timer.map(|id| (id, give_up)),
         });
         Ok(())
     }

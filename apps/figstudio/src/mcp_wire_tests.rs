@@ -148,3 +148,10 @@ fn a_failed_load_releases_its_file() {
     uploads.bind(&name, 1);
     assert_eq!(uploads.get(1), None);
 }
+
+#[test]
+fn a_close_before_welcome_with_1006_is_a_blocked_connection() {
+    assert_eq!(closed_message(false, 1006), connect_failed_message());
+    assert_eq!(closed_message(true, 1006), close_reason(1006));
+    assert_eq!(closed_message(false, 4401), close_reason(4401));
+}
