@@ -135,27 +135,30 @@ async fn a_remote_bridge_requires_the_bearer_token_on_mcp() {
     child.kill().await.unwrap();
 }
 
-/// A non-loopback IPv4 address of this machine, found without sending a packet (the OS picks
-/// the source address for a route). `None` on a machine with no network: the test then skips.
-fn lan_address() -> Option<std::net::Ipv4Addr> {
-    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("192.0.2.1:9").ok()?;
-    match socket.local_addr().ok()?.ip() {
-        std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip),
-        _ => None,
-    }
+/// A non-loopback address of this machine in the given family, found without sending a packet
+/// (the OS picks the source address for a route). `None` on a machine without one: the test
+/// then prints a skip line.
+fn lan_address(v6: bool) -> Option<std::net::IpAddr> {
+    let (bind, route) = if v6 {
+        ("[::]:0", "[2001:db8::1]:9")
+    } else {
+        ("0.0.0.0:0", "192.0.2.1:9")
+    };
+    let socket = std::net::UdpSocket::bind(bind).ok()?;
+    socket.connect(route).ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
-/// F3: a bridge bound to a remote address still pairs the browser on this computer, which
-/// connects to `ws://127.0.0.1:<port>/bridge`.
-#[tokio::test]
-async fn a_remote_bridge_still_pairs_the_browser_on_loopback() {
-    let Some(lan) = lan_address() else {
-        eprintln!("skipped: no non-loopback IPv4 address on this machine");
-        return;
+/// Starts `--bridge` on `lan`, reads the banner and pairs a browser-like socket through
+/// `loopback` (the `Browser bridge:` address family under test).
+async fn pairs_on_loopback(lan: std::net::IpAddr, loopback: &str) {
+    let bind = match lan {
+        std::net::IpAddr::V4(ip) => format!("{ip}:0"),
+        std::net::IpAddr::V6(ip) => format!("[{ip}]:0"),
     };
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
-        .args(["--bridge", &format!("--http={lan}:0"), "--no-system-fonts"])
+        .args(["--bridge", &format!("--http={bind}"), "--no-system-fonts"])
         .args(["--allow-host", "box.example.ts.net"])
         .kill_on_drop(true)
         .stderr(std::process::Stdio::piped())
@@ -164,13 +167,14 @@ async fn a_remote_bridge_still_pairs_the_browser_on_loopback() {
     let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
     let (mut token, mut port) = (None, None);
     let wait = std::time::Duration::from_secs(20);
+    let wanted = format!("Browser bridge: ws://{loopback}:");
     while let Ok(Ok(Some(line))) = tokio::time::timeout(wait, lines.next_line()).await {
         if let Some(t) = line
             .strip_prefix("Local: ")
             .and_then(|l| l.split_once("#mcp="))
         {
             token = Some(t.1.to_owned());
-        } else if let Some(url) = line.strip_prefix("Browser bridge: ws://127.0.0.1:") {
+        } else if let Some(url) = line.strip_prefix(&wanted) {
             port = url.strip_suffix("/bridge").map(str::to_owned);
         }
         if token.is_some() && port.is_some() {
@@ -178,7 +182,7 @@ async fn a_remote_bridge_still_pairs_the_browser_on_loopback() {
         }
     }
     let (token, port) = (token.expect("token line"), port.expect("bridge line"));
-    let mut request = format!("ws://127.0.0.1:{port}/bridge")
+    let mut request = format!("ws://{loopback}:{port}/bridge")
         .into_client_request()
         .unwrap();
     request
@@ -198,4 +202,29 @@ async fn a_remote_bridge_still_pairs_the_browser_on_loopback() {
         ServerMessage::Welcome { .. }
     ));
     child.kill().await.unwrap();
+}
+
+/// F3: a bridge bound to a remote address still pairs the browser on this computer, which
+/// connects to `ws://127.0.0.1:<port>/bridge`.
+#[tokio::test]
+async fn a_remote_bridge_still_pairs_the_browser_on_loopback() {
+    let Some(lan) = lan_address(false) else {
+        eprintln!(
+            "SKIPPED a_remote_bridge_still_pairs_the_browser_on_loopback: no non-loopback IPv4 address"
+        );
+        return;
+    };
+    pairs_on_loopback(lan, "127.0.0.1").await;
+}
+
+/// R2: an IPv6 bind also listens on `[::1]`, where `localhost` may resolve first.
+#[tokio::test]
+async fn an_ipv6_remote_bridge_also_pairs_on_ipv6_loopback() {
+    let Some(lan) = lan_address(true) else {
+        eprintln!(
+            "SKIPPED an_ipv6_remote_bridge_also_pairs_on_ipv6_loopback: no non-loopback IPv6 address"
+        );
+        return;
+    };
+    pairs_on_loopback(lan, "[::1]").await;
 }

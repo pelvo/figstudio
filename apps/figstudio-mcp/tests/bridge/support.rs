@@ -29,6 +29,7 @@ impl BridgeTest {
             config,
             true,
             24000,
+            Vec::new(),
             stop.clone(),
             figstudio_mcp::access::HttpAccess::loopback(),
         ));

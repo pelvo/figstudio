@@ -157,7 +157,9 @@ async fn run() -> anyhow::Result<()> {
 }
 
 async fn run_bridge(args: &Args) -> anyhow::Result<()> {
-    use figstudio_mcp::bridge::{BridgeConfig, DEFAULT_ORIGINS, pairing_token, serve_bridge};
+    use figstudio_mcp::bridge::{
+        BridgeConfig, DEFAULT_ORIGINS, loopback_companions, pairing_token, serve_bridge,
+    };
     let listener = match args.http {
         Some(Http::Exact(addr)) => tokio::net::TcpListener::bind(addr).await?,
         _ => figstudio_mcp::bind_first(figstudio_mcp::default_http_addrs()).await?,
@@ -165,6 +167,8 @@ async fn run_bridge(args: &Args) -> anyhow::Result<()> {
     let access = access_for(&listener, &args.allow_host, args.allow_any_interface)?;
     let token = pairing_token()?;
     let addr = listener.local_addr()?;
+    // Everything is bound before the banner, so a client that reads it can connect at once.
+    let companions = loopback_companions(&listener).await?;
     eprintln!("MCP: http://{addr}/mcp");
     for line in figstudio_mcp::bridge::web_banner(&args.allow_origin, &token) {
         eprintln!("{line}");
@@ -174,6 +178,9 @@ async fn run_bridge(args: &Args) -> anyhow::Result<()> {
         "Bridge port: {} (set the web app URL if not 3845)",
         addr.port()
     );
+    for local in &companions {
+        eprintln!("Browser bridge: ws://{}/bridge", local.local_addr()?);
+    }
     let mut origins = DEFAULT_ORIGINS
         .iter()
         .map(|origin| (*origin).into())
@@ -194,6 +201,7 @@ async fn run_bridge(args: &Args) -> anyhow::Result<()> {
         },
         args.no_system_fonts,
         args.max_output_bytes,
+        companions,
         shutdown,
         access,
     )

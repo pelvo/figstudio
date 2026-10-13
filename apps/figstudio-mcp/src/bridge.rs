@@ -67,7 +67,8 @@ impl Bridge {
     }
 }
 
-/// Serve browser bridge and MCP on the same bound listener. `/mcp` follows `access`; `/bridge`
+/// Serve browser bridge and MCP on the same bound listener (and on `companions`, from
+/// [`loopback_companions`]). `/mcp` follows `access`; `/bridge`
 /// is guarded by its Origin allowlist and pairing token whatever the bind.
 ///
 /// # Errors
@@ -77,6 +78,7 @@ pub async fn serve_bridge(
     config: BridgeConfig,
     no_system_fonts: bool,
     max_output_bytes: usize,
+    companions: Vec<tokio::net::TcpListener>,
     shutdown: CancellationToken,
     access: crate::access::HttpAccess,
 ) -> std::io::Result<()> {
@@ -104,37 +106,76 @@ pub async fn serve_bridge(
     let server = FigstudioServer::live(files, no_system_fonts)
         .with_assets(crate::tools::design::Assets::Inline)
         .with_max_output_bytes(max_output_bytes);
-    // The browser runs on this computer, so a remote bind (for example a Tailscale address)
-    // also gets the loopback address the browser pairs with. Loopback `/mcp` needs no token.
-    let local = match listener.local_addr()? {
-        std::net::SocketAddr::V4(addr)
-            if !addr.ip().is_loopback() && !addr.ip().is_unspecified() =>
-        {
-            let loopback = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, addr.port()));
-            let bound = tokio::net::TcpListener::bind(loopback).await?;
-            // Printed only once listening, so a client that reads it can connect at once.
-            eprintln!("Browser bridge: ws://{loopback}/bridge");
-            Some(bound)
-        }
-        _ => None,
-    };
-    let Some(local) = local else {
-        return crate::serve_http_router(listener, server, shutdown, router, access).await;
-    };
-    let remote = crate::serve_http_router(
+    let mut servers = vec![crate::serve_http_router(
         listener,
         server.clone(),
         shutdown.clone(),
         router.clone(),
         access,
-    );
-    let loopback = crate::serve_http_router(
-        local,
-        server,
-        shutdown,
-        router,
-        crate::access::HttpAccess::loopback(),
-    );
-    let (remote, loopback) = tokio::join!(remote, loopback);
-    remote.and(loopback)
+    )];
+    for local in companions {
+        servers.push(crate::serve_http_router(
+            local,
+            server.clone(),
+            shutdown.clone(),
+            router.clone(),
+            crate::access::HttpAccess::loopback(),
+        ));
+    }
+    run_all(servers, &shutdown).await
+}
+
+/// Runs the listeners together; the first error stops the others (and cancels `shutdown`)
+/// instead of leaving a half-working bridge until Ctrl-C.
+async fn run_all(
+    servers: Vec<impl std::future::Future<Output = std::io::Result<()>>>,
+    shutdown: &CancellationToken,
+) -> std::io::Result<()> {
+    let result = futures_util::future::try_join_all(servers).await;
+    if result.is_err() {
+        shutdown.cancel();
+    }
+    result.map(|_| ())
+}
+
+/// The browser runs on this computer, so a remote bind (for example a Tailscale address) also
+/// needs loopback listeners that it pairs with: `127.0.0.1` for either family, plus `[::1]`
+/// for an IPv6 bind. Loopback `/mcp` needs no token. Bind these before printing the banner.
+///
+/// # Errors
+/// Returns the bind error of a loopback address.
+pub async fn loopback_companions(
+    listener: &tokio::net::TcpListener,
+) -> std::io::Result<Vec<tokio::net::TcpListener>> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    let addr = listener.local_addr()?;
+    if addr.ip().is_loopback() || addr.ip().is_unspecified() {
+        return Ok(Vec::new());
+    }
+    let mut wanted = vec![IpAddr::V4(Ipv4Addr::LOCALHOST)];
+    if addr.is_ipv6() {
+        wanted.push(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+    let mut bound = Vec::new();
+    for ip in wanted {
+        bound.push(tokio::net::TcpListener::bind(SocketAddr::new(ip, addr.port())).await?);
+    }
+    Ok(bound)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_first_listener_error_ends_the_others_and_cancels() {
+        let shutdown = CancellationToken::new();
+        let servers: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = _>>>> = vec![
+            Box::pin(std::future::pending()),
+            Box::pin(async { Err(std::io::Error::other("bind lost")) }),
+        ];
+        let result = run_all(servers, &shutdown).await;
+        assert!(result.is_err());
+        assert!(shutdown.is_cancelled());
+    }
 }
