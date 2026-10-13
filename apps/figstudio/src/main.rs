@@ -18,8 +18,18 @@ mod gpu_tiles;
 mod gpu_tiles_web;
 mod labels;
 mod marquee;
-#[cfg_attr(any(not(feature = "mcp"), target_arch = "wasm32"), path = "mcp_off.rs")]
+#[cfg_attr(
+    all(not(feature = "mcp"), not(target_arch = "wasm32")),
+    path = "mcp_off.rs"
+)]
+#[cfg_attr(target_arch = "wasm32", path = "mcp_web.rs")]
 mod mcp_host;
+#[cfg(any(feature = "mcp", test, target_arch = "wasm32"))]
+mod mcp_state;
+#[cfg(target_arch = "wasm32")]
+mod mcp_upload;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod mcp_wire;
 mod panels;
 mod recordings;
 mod region_copy;

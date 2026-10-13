@@ -9,12 +9,12 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, PoisonError, RwLock};
 
 use egui::RichText;
-use figstudio_fig::Guid;
 use figstudio_mcp::live::{Command, LiveFiles, Snapshot, TabInfo};
 use figstudio_mcp::tools::design::Assets;
 use figstudio_mcp::{FigstudioServer, bind_first, default_http_addrs, serve_http};
 use tokio_util::sync::CancellationToken;
 
+use crate::mcp_state::{Key, key, reveal, viewport};
 use crate::tab::Tab;
 use crate::theme;
 
@@ -48,19 +48,6 @@ struct Running {
     events: Receiver<Event>,
     /// What the published snapshot was built from.
     last_key: Option<Key>,
-}
-
-/// Tab id, document pointer, page, selection, rounded viewport.
-type TabKey = (u64, usize, Guid, Option<Guid>, Option<[i64; 4]>);
-
-/// Everything a snapshot shows, cheap to compare: tab id, document pointer, page,
-/// selection and viewport rounded to whole page units, plus the active tab id. Assumes a
-/// document is never mutated in place (edits would replace the `Arc`), so its pointer stands
-/// for its content.
-#[derive(Debug, PartialEq)]
-pub(crate) struct Key {
-    tabs: Vec<TabKey>,
-    active: Option<u64>,
 }
 
 impl McpHost {
@@ -135,15 +122,7 @@ impl Running {
     /// Answer `reveal_node`: make the tab active, select the node and fit it into view.
     fn drain(&mut self, tabs: &mut [Tab], active: &mut usize) {
         while let Ok(Command::Reveal { tab, node, reply }) = self.commands.try_recv() {
-            let result = match tabs.iter().position(|t| t.id == tab) {
-                Some(i) => {
-                    *active = i;
-                    tabs[i].select(Some(node));
-                    tabs[i].fit_node = Some(node);
-                    Ok(())
-                }
-                None => Err(anyhow::anyhow!("tab closed")),
-            };
+            let result = reveal(tabs, active, tab, node).map_err(anyhow::Error::msg);
             // The tool may have timed out and dropped its receiver; nothing to tell then.
             let _ = reply.send(result);
         }
@@ -160,33 +139,6 @@ impl Running {
             .write()
             .unwrap_or_else(PoisonError::into_inner) = snapshot;
         self.last_key = Some(key);
-    }
-}
-
-/// The visible part of the page, `[x, y, w, h]` in page units, from the last frame.
-fn viewport(tab: &Tab) -> Option<[f64; 4]> {
-    let rect = tab.canvas_rect?;
-    let min = tab.view.to_page(rect.min, rect.min);
-    let max = tab.view.to_page(rect.min, rect.max);
-    Some([min.x, min.y, max.x - min.x, max.y - min.y].map(f64::from))
-}
-
-pub(crate) fn key(tabs: &[Tab], active: usize) -> Key {
-    Key {
-        tabs: tabs
-            .iter()
-            .map(|t| {
-                let view = viewport(t).map(|v| v.map(|x| x.round() as i64));
-                (
-                    t.id,
-                    Arc::as_ptr(&t.doc) as usize,
-                    t.page,
-                    t.selection,
-                    view,
-                )
-            })
-            .collect(),
-        active: tabs.get(active).map(|t| t.id),
     }
 }
 

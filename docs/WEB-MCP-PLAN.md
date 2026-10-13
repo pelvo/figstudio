@@ -101,7 +101,16 @@ production helpers. No MCP tool implementation was changed.
   Prove each by breaking the code once (docs/TESTING.md).
 - Gate: `scripts/check.sh`.
 
-### L3 — web client (`apps/figstudio`, wasm only)
+### L3 — web client (`apps/figstudio`, wasm only) — complete
+
+Verified: `scripts/check.sh --web` passed (toolchain 1.99.0). Native tests cover the shared
+`mcp_state.rs` and the pure bridge helpers in `mcp_wire.rs` (state frame, `#mcp=` fragment,
+slicing, filename, bad reveal ids, close codes); each failed under a targeted mutation. The
+socket code (`mcp_web.rs`, `mcp_upload.rs`) only compiles for wasm and is checked by hand (L4).
+Notes: the picked `File` is kept per tab name in `web.rs` (`UPLOADS`) so any open tab can be
+streamed in 256 KiB slices (`read_slice`, back-pressure on `bufferedAmount`); only uploaded
+tabs appear in `state` frames (the bridge rejects unknown ids). Files dropped/picked as bytes
+are streamed from the same `File`. `serde_json` is added to the wasm deps for the frames.
 - Extract from `mcp_host.rs` into a shared, cfg-free `mcp_state.rs`: `Key`/`key()` and the
   reveal logic (select node, switch tab, fit view). Desktop behaviour byte-identical; existing
   `ui_mcp_tests.rs` must stay green.

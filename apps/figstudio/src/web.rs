@@ -198,6 +198,33 @@ fn drop_file(id: u32) {
     FILES.with(|f| f.borrow_mut().1.remove(&id));
 }
 
+thread_local! {
+    /// The `File` behind each open tab name, so the MCP bridge can stream it (mcp_upload.rs).
+    static UPLOADS: RefCell<HashMap<PathBuf, web_sys::File>> = RefCell::new(HashMap::new());
+}
+
+/// The picked file for a tab named `name`, if it was opened here.
+pub fn upload_file(name: &std::path::Path) -> Option<web_sys::File> {
+    UPLOADS.with(|u| u.borrow().get(name).cloned())
+}
+
+/// The tab named `name` is closed; release its `File` handle.
+pub fn forget_upload(name: &std::path::Path) {
+    UPLOADS.with(|u| u.borrow_mut().remove(name));
+}
+
+/// One upload slice: `len` bytes at `at` (at most `max`).
+pub async fn read_slice(
+    file: &web_sys::File,
+    at: u64,
+    len: u64,
+    max: usize,
+) -> Result<Vec<u8>, String> {
+    read_range_max(file, at, len, max)
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+
 /// Reads `len` bytes at `at`, at most an archive chunk (main thread; async, so the UI keeps
 /// running).
 async fn read_range(file: &web_sys::File, at: u64, len: u64) -> anyhow::Result<Vec<u8>> {
@@ -303,6 +330,7 @@ async fn open_lazy(file: web_sys::File) -> Picked {
 /// Opens a file the user chose: big archives lazily, the rest by reading them.
 async fn open_file(file: web_sys::File) -> Picked {
     let name = PathBuf::from(file.name());
+    UPLOADS.with(|u| u.borrow_mut().insert(name.clone(), file.clone()));
     if file.size() as u64 > LAZY_ABOVE {
         let mut magic = read_range(&file, 0, 2).await.unwrap_or_default();
         magic.truncate(2);

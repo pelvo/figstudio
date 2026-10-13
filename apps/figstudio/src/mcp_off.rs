@@ -1,5 +1,5 @@
-//! Agent access when the `mcp` feature is off, and in the browser: no menu item, no thread,
-//! no socket. Same API as `mcp_host.rs`.
+//! Agent access when the `mcp` feature is off (desktop): no menu item, no thread, no socket.
+//! Same API as `mcp_host.rs`.
 use crate::tab::Tab;
 
 #[derive(Default)]
