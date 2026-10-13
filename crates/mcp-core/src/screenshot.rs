@@ -1,5 +1,6 @@
 //! `get_screenshot`: a PNG render of one node, drawn by the figstudio renderer.
 use crate::{
+    error::CoreError,
     node_id::{NodeId, parse_node_id},
     output::{Block, Output},
     rendering::Rendering,
@@ -33,7 +34,7 @@ pub fn screenshot(
 ) -> Output {
     let shot = match render_target(doc, node_id, scale, rendering) {
         Ok(shot) => shot,
-        Err(message) => return Output::fault(message),
+        Err(error) => return Output::fault(error.to_string()),
     };
     let text = shot.describe();
     match shot.frame.pixmap.into_png() {
@@ -41,7 +42,7 @@ pub fn screenshot(
             Block::image(STANDARD.encode(png), "image/png"),
             Block::text(text),
         ]),
-        Err(error) => Output::fault(format!("PNG encoding failed: {error}")),
+        Err(error) => Output::fault(CoreError::encode("PNG", error).to_string()),
     }
 }
 
@@ -52,7 +53,7 @@ fn render_target(
     target: &str,
     scale: Option<f64>,
     rendering: &Rendering,
-) -> Result<Shot, String> {
+) -> Result<Shot, CoreError> {
     if target.starts_with("figstudio://")
         && let Ok(link) = crate::link::parse_link(target)
         && let (Some(page), Some(rect)) = (link.page, link.rect)
@@ -93,7 +94,7 @@ pub fn render_node(
     node_id: &str,
     scale: Option<f64>,
     rendering: &Rendering,
-) -> Result<Shot, String> {
+) -> Result<Shot, CoreError> {
     // An omitted scale gets the smaller side cap; an explicit one keeps the 4096 px cap.
     let max_side = if scale.is_some() {
         MAX_SIDE_PX
@@ -102,33 +103,39 @@ pub fn render_node(
     };
     let scale = scale.unwrap_or(1.0);
     if !SCALE_RANGE.contains(&scale) {
-        return Err("scale must be between 0.01 and 4".into());
+        return Err(CoreError::input("scale must be between 0.01 and 4"));
     }
     let id = match parse_node_id(node_id) {
         Ok(NodeId::Node(id)) => id,
         Ok(NodeId::InstancePath(path)) => {
             return instance_child(doc, &path, scale, max_side, rendering);
         }
-        Err(error) => return Err(error.to_string()),
+        Err(error) => return Err(error),
     };
     let Some(node) = doc.node(id) else {
-        return Err(format!("node {id} does not exist in this file"));
+        return Err(CoreError::input(format!(
+            "node {id} does not exist in this file"
+        )));
     };
     if node.kind == "DOCUMENT" {
-        return Err("pick a page or a layer, not the document".into());
+        return Err(CoreError::input("pick a page or a layer, not the document"));
     }
     let Some(page) = doc.page_of(id) else {
-        return Err(format!("node {id} is not on a page"));
+        return Err(CoreError::input(format!("node {id} is not on a page")));
     };
     let is_page = node.kind == "CANVAS";
     let size = |axis: &str| node.data.get("size").and_then(|s| s.num(axis));
     if !is_page && size("x").unwrap_or(0.0) <= 0.0 && size("y").unwrap_or(0.0) <= 0.0 {
-        return Err(format!("node {id} has zero size, nothing to render"));
+        return Err(CoreError::render(format!(
+            "node {id} has zero size, nothing to render"
+        )));
     }
     // `content_bounds` is a culling margin, not ink: it only tells hidden nodes apart and
     // gives a page (which has no size) its extent. Other nodes are cropped to their own box.
     let Some(content) = content_bounds(doc, id) else {
-        return Err(format!("node {id} is hidden or has nothing visible"));
+        return Err(CoreError::render(format!(
+            "node {id} is hidden or has nothing visible"
+        )));
     };
     let bounds = if is_page {
         content
@@ -161,15 +168,19 @@ fn instance_child(
     scale: f64,
     max_side: f64,
     rendering: &Rendering,
-) -> Result<Shot, String> {
+) -> Result<Shot, CoreError> {
     if let Err(error) = resolve_path(doc, path) {
-        return Err(format!("{path}: {error}"));
+        return Err(CoreError::resolve(path, error));
     }
     let Some(bounds) = Renderer::new().path_bounds(doc, path) else {
-        return Err(format!("node {path} is hidden or has nothing visible"));
+        return Err(CoreError::render(format!(
+            "node {path} is hidden or has nothing visible"
+        )));
     };
     if bounds.width() <= 0.0 && bounds.height() <= 0.0 {
-        return Err(format!("node {path} has zero size, nothing to render"));
+        return Err(CoreError::render(format!(
+            "node {path} has zero size, nothing to render"
+        )));
     }
     render(
         doc,
@@ -189,12 +200,12 @@ pub fn layer_shot(
     root: Root<'_>,
     scale: f64,
     rendering: &Rendering,
-) -> Result<Shot, String> {
+) -> Result<Shot, CoreError> {
     let bounds = match root {
         Root::Node(id) => node_bounds(doc, id),
         Root::Path(path) => Renderer::new().path_bounds(doc, path),
     }
-    .ok_or("hidden or nothing visible")?;
+    .ok_or_else(|| CoreError::render("hidden or nothing visible"))?;
     render(doc, root, bounds, scale, None, MAX_SIDE_PX, rendering)
 }
 
@@ -207,10 +218,10 @@ fn render(
     background: Option<figstudio_render::color::AlphaColor<figstudio_render::color::Srgb>>,
     max_side: f64,
     rendering: &Rendering,
-) -> Result<Shot, String> {
+) -> Result<Shot, CoreError> {
     let longest = bounds.width().max(bounds.height()) * scale;
     if !longest.is_finite() || longest <= 0.0 {
-        return Err("the node has no finite size to render".into());
+        return Err(CoreError::render("the node has no finite size to render"));
     }
     // Cap the longest side by lowering the scale (no floor: a huge node needs a tiny scale);
     // the epsilon keeps `ceil` from rounding the side up to 4097.

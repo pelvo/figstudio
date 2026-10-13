@@ -16,6 +16,7 @@ fs = ["dep:tempfile"]
 system-fonts = ["figstudio-render/system-fonts"]
 
 [dependencies]
+tracing.workspace = true
 figstudio-fig = { workspace = true }
 # node_bounds for the region walk; no default features, so it stays wasm-safe (no system fonts).
 figstudio-render = { workspace = true, default-features = false }

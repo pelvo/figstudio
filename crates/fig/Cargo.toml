@@ -8,6 +8,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+thiserror.workspace = true
+tracing.workspace = true
 kiwi-schema = { workspace = true }
 flate2 = { workspace = true }
 ruzstd = { workspace = true }
@@ -15,6 +17,7 @@ zip = { workspace = true }
 
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 flate2 = { workspace = true }
 ruzstd = { workspace = true }
 zip = { workspace = true }

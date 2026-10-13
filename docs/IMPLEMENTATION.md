@@ -442,6 +442,26 @@ Keep work off the UI thread. Check it with `scripts/gui-smoke.sh` and look at th
 screenshots. Things only a real desktop can check (file dialogs, Wayland, HiDPI, drag and
 drop from a file manager) must be listed as unverified in your report.
 
+### Logs and errors
+Logs use `tracing`. Libraries only call the macros; each binary installs a `tracing-subscriber`
+fmt layer on **stderr** (browser: `tracing-web`, the console) with default level `warn`.
+`RUST_LOG=debug figstudio-cli info file.fig` shows more; `figstudio-mcp` defaults to
+`warn,figstudio_mcp=info`. For the MCP server, prefer targeted filters such as
+`RUST_LOG=figstudio_mcp=debug,figstudio_fig=debug`. rmcp is capped at info unless `rmcp` is
+named in `RUST_LOG`, because it logs full requests and responses (`figstudio_mcp::cap_rmcp`,
+`EnvFilter.and(..)`: one filter that can only lower rmcp and keeps the `EnvFilter`'s level hint;
+used by the server and by the app that hosts it). The `listening on` line and the non-loopback
+warning are plain stderr output, not log lines. stdout stays data (CLI output, MCP stdio). Never log
+names, text, colours, hashes, node ids or paths: log counts, sizes and kinds.
+Errors: libraries return their own structs (`FigError`, `CoreError`) built with `thiserror`,
+and `source()` gives the real cause (`io::Error`, zip, codec). Apps use `anyhow` with
+`.context("open document")`; no paths in context. `FigError`'s message already contains its
+cause, so print an error for people with `figstudio_fig::one_line(&e)` (CLI exit message,
+app toasts), never `{:#}`, which repeats it.
+Debug spans (`RUST_LOG=debug`): `open`/`from_bytes` (bytes, node/page/image counts),
+`render_budgeted` (viewport size), the GPU tile submit, and `tool_call{tool=..}` with
+`elapsed_ms` in the MCP server. Keep spans off per-node loops.
+
 ## 4. Gotchas (all learned the hard way)
 
 - **Path blobs** can continue drawing after a close without a new move. `geom::blob_path`

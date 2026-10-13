@@ -6,6 +6,7 @@
 
 pub mod archive;
 mod doc;
+mod error;
 mod open;
 mod read;
 pub mod resolve;
@@ -17,5 +18,6 @@ pub use doc::{
     Codec, Document, FigError, MAX_ARCHIVE_INFLATED_BYTES, MAX_CHUNK_BYTES, MAX_FILE_BYTES, Node,
     read_limited_file,
 };
+pub use error::one_line;
 pub use open::LAZY_ABOVE;
 pub use val::{Guid, Obj, Val, hex, intern};

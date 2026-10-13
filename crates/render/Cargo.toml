@@ -20,6 +20,7 @@ gpu = ["parallel", "dep:vello_gpu"]
 figstudio-fig = { workspace = true }
 vello_cpu = { workspace = true }
 image = { workspace = true }
+tracing.workspace = true
 fontdb = { workspace = true, optional = true }
 ttf-parser = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }

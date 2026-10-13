@@ -220,7 +220,10 @@ impl ImageQueue {
                     Ok(bytes) => {
                         this.images.insert_encoded(&want.key, &bytes, want.level);
                     }
-                    Err(_) => this.images.fail(&want.key, want.level),
+                    Err(e) => {
+                        tracing::debug!(error = %figstudio_fig::one_line(e.as_ref()), "image read failed");
+                        this.images.fail(&want.key, want.level);
+                    }
                 }
                 this.pending
                     .lock()
@@ -239,7 +242,7 @@ impl ImageQueue {
 #[cfg(not(target_arch = "wasm32"))]
 pub struct ExportDone {
     pub path: PathBuf,
-    pub result: Result<(), String>,
+    pub result: anyhow::Result<()>,
 }
 
 pub struct Workers {
@@ -403,7 +406,7 @@ impl Workers {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 export_png_with(images, &doc, source.as_ref(), root, scale, &path)
             }))
-            .unwrap_or_else(|_| Err("export worker panicked".into()));
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("export worker panicked")));
             drop(_release);
             let _ = tx.send(ExportDone { path, result });
             waker.wake();
@@ -549,7 +552,7 @@ fn export_png(
     root: Guid,
     scale: f64,
     path: &std::path::Path,
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
     export_png_with(Images::default(), doc, None, root, scale, path)
 }
 
@@ -562,11 +565,12 @@ pub fn export_png_with(
     root: Guid,
     scale: f64,
     path: &std::path::Path,
-) -> Result<(), String> {
-    let frame = crate::export_frame(images, doc, source, root, scale)
-        .ok_or_else(|| "nothing to export".to_string())?;
-    let png = frame.pixmap.into_png().map_err(|e| e.to_string())?;
-    std::fs::write(path, png).map_err(|e| e.to_string())
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let frame =
+        crate::export_frame(images, doc, source, root, scale).context("nothing to export")?;
+    let png = frame.pixmap.into_png().context("encode the PNG")?;
+    std::fs::write(path, png).context("write the PNG")
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -664,7 +668,7 @@ mod export_tests {
         std::fs::create_dir_all(&dir).unwrap();
         // A directory where the file should be: the write must fail and say so.
         let err = export_png(&doc, doc.pages[0], 1.0, &dir).expect_err("writing onto a directory");
-        assert!(!err.is_empty());
+        assert!(format!("{err:#}").contains("write the PNG"), "{err:#}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

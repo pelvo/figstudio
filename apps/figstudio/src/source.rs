@@ -7,7 +7,7 @@ use figstudio_fig::archive::Entry;
 
 /// Reads archive entries of one open file. Blocking; call it on a worker thread.
 pub trait ImageSource: Send + Sync {
-    fn read(&self, entry: &Entry) -> Result<Vec<u8>, String>;
+    fn read(&self, entry: &Entry) -> anyhow::Result<Vec<u8>>;
 }
 
 pub type Source = Arc<dyn ImageSource>;
@@ -19,10 +19,17 @@ pub struct DiskSource {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ImageSource for DiskSource {
-    fn read(&self, entry: &Entry) -> Result<Vec<u8>, String> {
-        let mut file = std::fs::File::open(&self.path).map_err(|e| e.to_string())?;
-        figstudio_fig::archive::read_entry(&mut file, entry).map_err(|e| e.0)
+    fn read(&self, entry: &Entry) -> anyhow::Result<Vec<u8>> {
+        read_disk(&self.path, entry)
     }
+}
+
+/// The disk read behind [`DiskSource`], with each failing step named in its error.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_disk(path: &std::path::Path, entry: &Entry) -> anyhow::Result<Vec<u8>> {
+    use anyhow::Context;
+    let mut file = std::fs::File::open(path).context("open the file")?;
+    figstudio_fig::archive::read_entry(&mut file, entry).context("read an image")
 }
 
 /// Opens `path`: lazily (with a source for its images) when it is a big archive.
@@ -37,4 +44,28 @@ pub fn open_path(
         }) as Source
     });
     Ok((doc, source))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_file_keeps_its_io_cause() {
+        let source = DiskSource {
+            path: std::env::temp_dir().join("figstudio-no-such-file.fig"),
+        };
+        let entry = Entry {
+            name: "images/ab".into(),
+            method: 0,
+            compressed_size: 1,
+            size: 1,
+            header_offset: 0,
+        };
+        let error = source.read(&entry).unwrap_err();
+        assert!(
+            error.chain().any(|c| c.is::<std::io::Error>()),
+            "the io::Error was flattened: {error:?}"
+        );
+    }
 }

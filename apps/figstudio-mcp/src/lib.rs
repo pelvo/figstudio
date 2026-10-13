@@ -156,6 +156,34 @@ impl ServerHandler for FigstudioServer {
         ))
         .with_instructions(instructions)
     }
+
+    /// What `#[tool_handler]` generates, inside a debug span with the tool name (never its
+    /// arguments) and the elapsed time.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        use tracing::Instrument as _;
+        let span = tracing::debug_span!("tool_call", tool = %request.name);
+        async {
+            let started = std::time::Instant::now();
+            let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+            let result = self.tool_router.call(tcc).await;
+            tracing::debug!(
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                ok = match &result {
+                    Err(_) => false,
+                    Ok(rmcp::model::CallToolResponse::Complete(r)) => r.is_error != Some(true),
+                    Ok(_) => true,
+                },
+                "tool call finished"
+            );
+            result
+        }
+        .instrument(span)
+        .await
+    }
 }
 
 /// Serve /mcp with rmcp's default sessions and a loopback Host and Origin allowlist.
@@ -184,4 +212,30 @@ pub async fn serve_http(
     axum::serve(listener, axum::Router::new().nest_service("/mcp", service))
         .with_graceful_shutdown(shutdown.cancelled_owned())
         .await
+}
+
+/// `filter` with rmcp capped at `info` unless `spec` (the `RUST_LOG` value) names rmcp: rmcp's
+/// `debug` and `trace` events carry full requests and responses (tool arguments, layer names,
+/// text). One filter that needs both (`and`), so it only ever lowers rmcp and its level hint is
+/// the stricter of the two; two stacked `with_filter`s would OR and raise the hint to `TRACE`.
+/// Used by the standalone server and by the app that hosts it.
+pub fn cap_rmcp<S>(
+    filter: tracing_subscriber::EnvFilter,
+    spec: Option<&str>,
+) -> tracing_subscriber::filter::combinator::And<
+    tracing_subscriber::EnvFilter,
+    tracing_subscriber::filter::Targets,
+    S,
+>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    use tracing_subscriber::filter::{FilterExt, LevelFilter, Targets};
+    let all = Targets::new().with_default(LevelFilter::TRACE);
+    let cap = if spec.is_some_and(|spec| spec.contains("rmcp")) {
+        all
+    } else {
+        all.with_target("rmcp", LevelFilter::INFO)
+    };
+    filter.and(cap)
 }

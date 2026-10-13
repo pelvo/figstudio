@@ -15,7 +15,7 @@ use crate::doc::{Codec, Document, FigError};
 use crate::val::Val;
 
 fn fail<T>(msg: String) -> Result<T, FigError> {
-    Err(FigError(msg))
+    Err(FigError::malformed(msg))
 }
 
 struct Encoder<'a> {
@@ -132,7 +132,7 @@ fn narrow<T: TryFrom<i64>>(v: i64, at: &str, what: &str) -> Result<T, FigError> 
 }
 
 fn len32(n: usize, at: &str) -> Result<u32, FigError> {
-    u32::try_from(n).map_err(|_| FigError(format!("{at}: list too long")))
+    u32::try_from(n).map_err(|_| FigError::malformed(format!("{at}: list too long")))
 }
 
 fn kind(v: &Val) -> &'static str {
@@ -149,7 +149,7 @@ fn kind(v: &Val) -> &'static str {
 }
 
 fn compress(data: &[u8], codec: Codec) -> Result<Vec<u8>, FigError> {
-    let io = |e: std::io::Error| FigError(format!("compression failed: {e}"));
+    let io = |e: std::io::Error| FigError::io("compression failed", e);
     Ok(match codec {
         Codec::Deflate => {
             let mut enc =
@@ -173,7 +173,7 @@ impl Document {
     /// Encodes the Kiwi message (nodes, blobs and the other top-level fields), uncompressed.
     pub fn encode_message(&self) -> Result<Vec<u8>, FigError> {
         let schema = Schema::decode(&self.source.schema)
-            .map_err(|()| FigError("cannot decode the file schema".into()))?;
+            .map_err(|()| FigError::malformed("cannot decode the file schema"))?;
         let Some(message) = schema.def("Message") else {
             return fail("schema has no Message type".into());
         };
@@ -251,16 +251,16 @@ impl Document {
     /// `images`, so removing an entry there drops it from the file.
     pub fn to_bytes(&self) -> Result<Vec<u8>, FigError> {
         if self.source.lazy {
-            return Err(FigError(
-                "opened without its images (open_lazy), so it cannot be written".into(),
+            return Err(FigError::malformed(
+                "opened without its images (open_lazy), so it cannot be written",
             ));
         }
         let canvas = self.encode_canvas()?;
         let Some(entries) = &self.source.archive_entries else {
             return Ok(canvas);
         };
-        let zip_err = |e: zip::result::ZipError| FigError(format!("cannot write archive: {e}"));
-        let io = |e: std::io::Error| FigError(format!("cannot write archive: {e}"));
+        let zip_err = |e: zip::result::ZipError| FigError::archive("cannot write archive", e);
+        let io = |e: std::io::Error| FigError::io("cannot write archive", e);
         // Figma stores entries uncompressed; the canvas chunks are compressed already.
         let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored)
@@ -297,7 +297,7 @@ impl Document {
         let (tmp, mut file) = create_temp(path)?;
         let written = std::io::Write::write_all(&mut file, &bytes)
             .and_then(|()| file.sync_all())
-            .map_err(|e| FigError(format!("{}: {e}", tmp.display())));
+            .map_err(|e| FigError::io(tmp.display().to_string(), e));
         // Closed before the rename (Windows cannot rename an open file). On wasm `File` has no
         // `Drop`, which clippy flags there.
         #[cfg_attr(
@@ -306,7 +306,7 @@ impl Document {
         )]
         drop(file);
         let result = written.and_then(|()| {
-            std::fs::rename(&tmp, path).map_err(|e| FigError(format!("{}: {e}", path.display())))
+            std::fs::rename(&tmp, path).map_err(|e| FigError::io(path.display().to_string(), e))
         });
         if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
@@ -336,12 +336,12 @@ fn create_temp(path: &std::path::Path) -> Result<(std::path::PathBuf, std::fs::F
         {
             Ok(file) => return Ok((tmp, file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(e),
-            Err(e) => return fail(format!("{}: {e}", tmp.display())),
+            Err(e) => return Err(FigError::io(tmp.display().to_string(), e)),
         }
     }
-    fail(format!(
-        "{}: cannot create a temporary file: {}",
-        path.display(),
-        last_err.map_or_else(|| "name clash".into(), |e| e.to_string())
-    ))
+    let what = format!("{}: cannot create a temporary file", path.display());
+    Err(match last_err {
+        Some(e) => FigError::io(what, e),
+        None => FigError::malformed(format!("{what}: name clash")),
+    })
 }

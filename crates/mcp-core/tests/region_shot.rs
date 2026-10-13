@@ -110,7 +110,7 @@ fn bad_rects_scales_and_pages_are_errors_not_panics() {
         [0.0, 0.0, 2e7, 10.0],
     ] {
         let err = region_shot(&doc, PAGE, rect, None, &r).err().unwrap();
-        assert!(err.contains("rect must be"), "{rect:?}: {err}");
+        assert!(err.to_string().contains("rect must be"), "{rect:?}: {err}");
     }
     assert!(region_shot(&doc, PAGE, [0.0, 0.0, 9.0, 9.0], Some(9.0), &r).is_err());
     assert!(region_shot(&doc, Guid(99, 99), [0.0, 0.0, 9.0, 9.0], None, &r).is_err());

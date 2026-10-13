@@ -44,6 +44,8 @@ async fn non_loopback_http_warns() {
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
         .args(["--http=0.0.0.0:0"])
         .arg(fixture())
+        // The warning is program output: even RUST_LOG=off must not hide it.
+        .env("RUST_LOG", "off")
         .kill_on_drop(true)
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -59,10 +61,18 @@ async fn non_loopback_http_warns() {
 }
 
 async fn stderr_line(args: &[String]) -> (tokio::process::Child, String) {
+    stderr_line_with_env(args, &[]).await
+}
+
+async fn stderr_line_with_env(
+    args: &[String],
+    env: &[(&str, &str)],
+) -> (tokio::process::Child, String) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
         .args(args)
         .arg(fixture())
+        .envs(env.iter().copied())
         .kill_on_drop(true)
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -90,6 +100,15 @@ async fn bare_http_falls_back_to_the_next_port() {
     assert!((3846..=3855).contains(&port), "{port}");
     child.kill().await.unwrap();
     drop(held);
+}
+
+#[tokio::test]
+async fn listening_line_survives_a_quiet_rust_log() {
+    // The port line is program output: RUST_LOG=error must not hide it.
+    let (mut child, line) =
+        stderr_line_with_env(&["--http".into()], &[("RUST_LOG", "error")]).await;
+    assert!(line.starts_with("listening on http://"), "{line}");
+    child.kill().await.unwrap();
 }
 
 #[tokio::test]
@@ -227,4 +246,46 @@ async fn stdio_discovers_and_calls_tools() {
     })
     .await
     .expect("stdio protocol timed out");
+}
+
+#[tokio::test]
+async fn trace_logs_do_not_leak_requests_or_layer_names() {
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
+        .arg("--no-system-fonts")
+        .arg(fixture())
+        .env("RUST_LOG", "trace")
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let messages = [
+        json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
+            "protocolVersion":"2025-03-26", "capabilities":{}, "clientInfo":{"name":"test","version":"1"}
+        }}),
+        json!({"jsonrpc":"2.0", "method":"notifications/initialized"}),
+        json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{
+            "name":"get_metadata", "arguments":{"nodeId":"0:1"}
+        }}),
+    ];
+    let mut input = child.stdin.take().unwrap();
+    for message in messages {
+        input
+            .write_all(format!("{message}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+    drop(input);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(20), child.wait_with_output())
+        .await
+        .expect("stdio protocol timed out")
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!stderr.contains("Groups"), "layer name on stderr: {stderr}");
+    assert!(
+        !stderr.contains("arguments"),
+        "request body on stderr: {stderr}"
+    );
 }

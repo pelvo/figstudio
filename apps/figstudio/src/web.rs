@@ -33,6 +33,7 @@ pub use wasm_bindgen_rayon::init_thread_pool;
 /// decoding run on it.
 #[wasm_bindgen]
 pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
+    init_tracing();
     let runner = eframe::WebRunner::new();
     // After eframe's hook (installed by `new`). eframe stops drawing after any panic, so the
     // page shows the error itself (`figstudioFatal`, polled by index.html).
@@ -55,6 +56,21 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
         .await
 }
 
+/// Logs go to the browser console. No ANSI colours and no timestamps (the browser has no
+/// clock for them). Default level `warn`. Runs once: later calls do nothing.
+fn init_tracing() {
+    use tracing_subscriber::prelude::*;
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(tracing_web::MakeWebConsoleWriter::new())
+                .with_filter(tracing_subscriber::filter::LevelFilter::WARN),
+        )
+        .try_init();
+}
+
 /// A file the user opened: small ones as bytes, big ones still in the browser.
 pub enum Picked {
     Bytes(PathBuf, Vec<u8>),
@@ -69,7 +85,7 @@ pub enum Picked {
     Failed(String),
 }
 
-type Exported = (String, Result<Vec<u8>, String>);
+type Exported = (String, anyhow::Result<Vec<u8>>);
 
 /// The CJK font (`fonts/cjk.otf`, made by `scripts/web-font.sh`), fetched on first need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,7 +102,7 @@ enum FileRequest {
     Read {
         file: u32,
         entry: Entry,
-        reply: Sender<Result<Vec<u8>, String>>,
+        reply: Sender<anyhow::Result<Vec<u8>>>,
     },
     /// Nothing uses the file any more (its tab and renders are gone).
     Close(u32),
@@ -156,7 +172,7 @@ fn drop_file(id: u32) {
 
 /// Reads `len` bytes at `at`, at most an archive chunk (main thread; async, so the UI keeps
 /// running).
-async fn read_range(file: &web_sys::File, at: u64, len: u64) -> Result<Vec<u8>, String> {
+async fn read_range(file: &web_sys::File, at: u64, len: u64) -> anyhow::Result<Vec<u8>> {
     read_range_max(file, at, len, figstudio_fig::MAX_CHUNK_BYTES).await
 }
 
@@ -166,9 +182,9 @@ async fn read_range_max(
     at: u64,
     len: u64,
     max: usize,
-) -> Result<Vec<u8>, String> {
-    let js = |e: JsValue| format!("{e:?}");
-    let (at, end) = archive::checked_range(at, len, max).map_err(|e| e.0)?;
+) -> anyhow::Result<Vec<u8>> {
+    let js = |e: JsValue| anyhow::anyhow!("{e:?}");
+    let (at, end) = archive::checked_range(at, len, max)?;
     let blob = file
         .slice_with_f64_and_f64(at as f64, end as f64)
         .map_err(js)?;
@@ -177,23 +193,23 @@ async fn read_range_max(
         .map_err(js)?;
     let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
     if bytes.len() as u64 != len {
-        return Err("file changed or was cut short".into());
+        anyhow::bail!("file changed or was cut short");
     }
     Ok(bytes)
 }
 
 /// An entry's bytes as stored (still compressed): inflating can take long, so workers do it
 /// with [`Entry::decode`], never the main thread.
-async fn read_raw(file: &web_sys::File, entry: &Entry) -> Result<Vec<u8>, String> {
+async fn read_raw(file: &web_sys::File, entry: &Entry) -> anyhow::Result<Vec<u8>> {
     let header = read_range(file, entry.header_offset, archive::LOCAL_HEADER_LEN).await?;
-    let start = entry.data_start(&header).map_err(|e| e.0)?;
+    let start = entry.data_start(&header)?;
     read_range(file, start, entry.compressed_size).await
 }
 
 /// GETs `url` (same origin) and returns the body.
-async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let js = |e: JsValue| format!("{e:?}");
-    let window = web_sys::window().ok_or("no window")?;
+async fn fetch_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
+    let js = |e: JsValue| anyhow::anyhow!("{e:?}");
+    let window = web_sys::window().ok_or_else(|| anyhow::anyhow!("no window"))?;
     let response: web_sys::Response =
         wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url))
             .await
@@ -201,7 +217,7 @@ async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
             .dyn_into()
             .map_err(js)?;
     if !response.ok() {
-        return Err(format!("HTTP {}", response.status()));
+        anyhow::bail!("HTTP {}", response.status());
     }
     let buffer = wasm_bindgen_futures::JsFuture::from(response.array_buffer().map_err(js)?)
         .await
@@ -212,7 +228,13 @@ async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
 /// Opens a big archive without reading its images.
 async fn open_lazy(file: web_sys::File) -> Picked {
     let name = PathBuf::from(file.name());
-    let fail = |e: String| Picked::Failed(format!("Could not read {}: {e}", file.name()));
+    let fail = |e: anyhow::Error| {
+        Picked::Failed(format!(
+            "Could not read {}: {}",
+            file.name(),
+            figstudio_fig::one_line(e.as_ref())
+        ))
+    };
     let len = file.size() as u64;
     let tail_len = archive::TAIL_LEN.min(len);
     let tail = match read_range(&file, len - tail_len, tail_len).await {
@@ -228,7 +250,7 @@ async fn open_lazy(file: web_sys::File) -> Picked {
     };
     let entries = match entries {
         Ok(e) => e,
-        Err(FigError(e)) => return fail(e),
+        Err(e) => return fail(e.into()),
     };
     let mut eager = HashMap::new();
     for e in entries
@@ -263,7 +285,11 @@ async fn open_file(file: web_sys::File) -> Picked {
     // Same limit as `Document::open` on the desktop.
     match read_range_max(&file, 0, file.size() as u64, figstudio_fig::MAX_FILE_BYTES).await {
         Ok(bytes) => Picked::Bytes(name, bytes),
-        Err(e) => Picked::Failed(format!("Could not read {}: {e}", name.display())),
+        Err(e) => Picked::Failed(format!(
+            "Could not read {}: {}",
+            name.display(),
+            figstudio_fig::one_line(e.as_ref())
+        )),
     }
 }
 
@@ -289,7 +315,7 @@ impl Drop for WebSource {
 }
 
 impl ImageSource for WebSource {
-    fn read(&self, entry: &Entry) -> Result<Vec<u8>, String> {
+    fn read(&self, entry: &Entry) -> anyhow::Result<Vec<u8>> {
         let (reply, answer) = channel();
         self.requests
             .send(FileRequest::Read {
@@ -297,13 +323,15 @@ impl ImageSource for WebSource {
                 entry: entry.clone(),
                 reply,
             })
-            .map_err(|_| "app closed".to_string())?;
+            .map_err(|_| anyhow::anyhow!("app closed"))?;
         // Workers may wait; they poll rather than block so a one-thread pool keeps running.
         // The nap doubles from 2 ms to 16 ms so a slow read does not spin.
         let mut nap = 2;
         loop {
             match answer.try_recv() {
-                Ok(result) => return result.and_then(|raw| entry.decode(raw).map_err(|e| e.0)),
+                Ok(result) => {
+                    return Ok(entry.decode(result?)?);
+                }
                 Err(TryRecvError::Empty) => {
                     if rayon::yield_now() == Some(rayon::Yield::Executed) {
                         nap = 2;
@@ -312,7 +340,7 @@ impl ImageSource for WebSource {
                         nap = (nap * 2).min(16);
                     }
                 }
-                Err(TryRecvError::Disconnected) => return Err("read cancelled".into()),
+                Err(TryRecvError::Disconnected) => return Err(anyhow::anyhow!("read cancelled")),
             }
         }
     }
@@ -326,8 +354,8 @@ pub struct Inbox {
     pub exports: Receiver<Exported>,
     ranges_tx: Sender<FileRequest>,
     ranges: Receiver<FileRequest>,
-    fonts_tx: Sender<Result<Vec<u8>, String>>,
-    pub fonts: Receiver<Result<Vec<u8>, String>>,
+    fonts_tx: Sender<anyhow::Result<Vec<u8>>>,
+    pub fonts: Receiver<anyhow::Result<Vec<u8>>>,
     pub font_state: FontState,
 }
 
@@ -425,7 +453,7 @@ impl Inbox {
             wasm_bindgen_futures::spawn_local(async move {
                 let result = match file(id) {
                     Some(f) => read_raw(&f, &entry).await,
-                    None => Err("file closed".into()),
+                    None => Err(anyhow::anyhow!("file closed")),
                 };
                 let _ = reply.send(result);
                 ctx.request_repaint();
@@ -484,10 +512,10 @@ pub fn publish_status(json: &str) {
 }
 
 /// Saves `bytes` as a download named `name`.
-pub fn download(name: &str, mime: &str, bytes: &[u8]) -> Result<(), String> {
-    let js = |e: JsValue| format!("{e:?}");
+pub fn download(name: &str, mime: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    let js = |e: JsValue| anyhow::anyhow!("{e:?}");
     // Copy out of the shared Wasm memory: a Blob cannot be made from a SharedArrayBuffer view.
-    let len = u32::try_from(bytes.len()).map_err(|_| "file too large".to_string())?;
+    let len = u32::try_from(bytes.len()).map_err(|_| anyhow::anyhow!("file too large"))?;
     let array = js_sys::Uint8Array::new_with_length(len);
     array.copy_from(bytes);
     let options = web_sys::BlobPropertyBag::new();
@@ -500,12 +528,12 @@ pub fn download(name: &str, mime: &str, bytes: &[u8]) -> Result<(), String> {
     let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js)?;
     let document = web_sys::window()
         .and_then(|w| w.document())
-        .ok_or("no document")?;
+        .ok_or_else(|| anyhow::anyhow!("no document"))?;
     let a: web_sys::HtmlAnchorElement = document
         .create_element("a")
         .map_err(js)?
         .dyn_into()
-        .map_err(|_| "not an anchor".to_string())?;
+        .map_err(|_| anyhow::anyhow!("not an anchor"))?;
     a.set_href(&url);
     a.set_download(name);
     a.click();

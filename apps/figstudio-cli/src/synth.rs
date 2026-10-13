@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use anyhow::{Context, Result, anyhow, bail};
 use figstudio_fig::{Document, Guid, Node, Obj, Val};
 use figstudio_render::content_bounds;
 
@@ -40,24 +41,24 @@ fn subtree(doc: &Document, root: Guid) -> Vec<Guid> {
     out
 }
 
-pub fn synth(mut doc: Document, copies: usize, pages: usize) -> Result<Document, String> {
-    let page0 = *doc.pages.first().ok_or("source has no pages")?;
+pub fn synth(mut doc: Document, copies: usize, pages: usize) -> Result<Document> {
+    let page0 = *doc.pages.first().context("source has no pages")?;
     let source = subtree(&doc, page0);
     if source.is_empty() {
-        return Err("the first page is empty".into());
+        bail!("the first page is empty");
     }
-    let b = content_bounds(&doc, page0).ok_or("the first page has nothing visible")?;
+    let b = content_bounds(&doc, page0).context("the first page has nothing visible")?;
     let (w, h) = (b.width().max(1.0), b.height().max(1.0));
     let gap = w.max(h) * 0.1 + 40.0;
     let cols = (copies as f64).sqrt().ceil().max(1.0) as usize;
     let needed = (copies * pages).saturating_sub(1);
     if needed > (u32::MAX - FIRST_SESSION) as usize {
-        return Err("too many copies".into());
+        bail!("too many copies");
     }
 
     let mut nodes = doc.nodes.clone();
     nodes.reserve(needed * source.len() + pages);
-    let page_node = doc.node(page0).ok_or("missing page")?.clone();
+    let page_node = doc.node(page0).context("missing page")?.clone();
     let mut session = FIRST_SESSION;
     for p in 0..pages {
         let target = if p == 0 {
@@ -68,12 +69,12 @@ pub fn synth(mut doc: Document, copies: usize, pages: usize) -> Result<Document,
             let mut data = page_node.data.clone();
             data.set("guid", id.to_val());
             data.set("name", Val::Str(format!("Stress page {}", p + 1)));
-            let parent = page_node.parent.ok_or("page has no parent")?;
+            let parent = page_node.parent.context("page has no parent")?;
             data.set(
                 "parentIndex",
                 parent_val(parent, &format!("{}~{p:06}", page_node.position)),
             );
-            nodes.push(Node::from_data(data).ok_or("bad page")?);
+            nodes.push(Node::from_data(data).context("bad page")?);
             id
         };
         for k in 0..copies {
@@ -86,16 +87,17 @@ pub fn synth(mut doc: Document, copies: usize, pages: usize) -> Result<Document,
                 .iter()
                 .enumerate()
                 .map(|(i, id)| {
-                    let local = u32::try_from(i + 1).map_err(|_| "too many source nodes")?;
+                    let local =
+                        u32::try_from(i + 1).map_err(|_| anyhow!("too many source nodes"))?;
                     Ok((*id, Guid(session, local)))
                 })
-                .collect::<Result<_, String>>()?;
+                .collect::<Result<_>>()?;
             session += 1;
             for id in &source {
-                let node = doc.node(*id).ok_or("missing node")?;
+                let node = doc.node(*id).context("missing node")?;
                 let mut data = node.data.clone();
                 data.set("guid", map[id].to_val());
-                let parent = node.parent.ok_or("node has no parent")?;
+                let parent = node.parent.context("node has no parent")?;
                 let new_parent = if parent == page0 {
                     target
                 } else {
@@ -105,10 +107,10 @@ pub fn synth(mut doc: Document, copies: usize, pages: usize) -> Result<Document,
                 if parent == page0 {
                     shift(&mut data, dx, dy);
                 }
-                nodes.push(Node::from_data(data).ok_or("bad node")?);
+                nodes.push(Node::from_data(data).context("bad node")?);
             }
         }
     }
-    doc.set_nodes(nodes).map_err(|e| e.to_string())?;
+    doc.set_nodes(nodes).map_err(|e| anyhow!("{e}"))?;
     Ok(doc)
 }

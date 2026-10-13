@@ -2,6 +2,7 @@
 //! region links of `get_screenshot`. Both call [`viewport`], so a link renders the area the app
 //! showed.
 use crate::{
+    error::CoreError,
     rendering::Rendering,
     screenshot::{DEFAULT_SIDE_PX, Root, SCALE_RANGE, Shot},
 };
@@ -92,7 +93,7 @@ pub const BAD_RECT: &str =
 /// [`DEFAULT_SIDE_PX`]; an explicit one is capped by [`plan`] alone.
 ///
 /// # Errors
-/// A message when `page` is not a page of the file, `scale` is outside 0.01 to 4, or the rect
+/// A [`CoreError`] when `page` is not a page of the file, `scale` is outside 0.01 to 4, or the rect
 /// is empty or not finite.
 pub fn region_shot(
     doc: &Document,
@@ -100,23 +101,25 @@ pub fn region_shot(
     rect: [f64; 4],
     scale: Option<f64>,
     rendering: &Rendering,
-) -> Result<Shot, String> {
+) -> Result<Shot, CoreError> {
     if doc.node(page).is_none_or(|n| n.kind != "CANVAS") {
-        return Err(format!("page {page} does not exist in this file"));
+        return Err(CoreError::input(format!(
+            "page {page} does not exist in this file"
+        )));
     }
     let asked = scale.unwrap_or(1.0);
     if !SCALE_RANGE.contains(&asked) {
-        return Err("scale must be between 0.01 and 4".into());
+        return Err(CoreError::input("scale must be between 0.01 and 4"));
     }
-    let rect = crate::link::validate_rect(rect).map_err(|_| BAD_RECT.to_string())?;
+    let rect = crate::link::validate_rect(rect).map_err(|_| CoreError::input(BAD_RECT))?;
     // Like a node: without `scale` the smaller side cap applies; an explicit one gets 4096 px.
     let max_side = if scale.is_some() {
         MAX_SIDE
     } else {
         DEFAULT_SIDE_PX
     };
-    let (viewport, plan) =
-        viewport_within(doc, page, rect, asked, max_side).ok_or("the region has no size")?;
+    let (viewport, plan) = viewport_within(doc, page, rect, asked, max_side)
+        .ok_or_else(|| CoreError::render("the region has no size"))?;
     let frame = rendering.draw(doc, Root::Node(page), &viewport);
     Ok(Shot {
         frame,

@@ -1,6 +1,7 @@
 //! Original image-fill bytes inside a node, found by paint hash.
 use super::{Budget, IMAGE_CAP_LABEL, MAX_IMAGE_BYTES, MAX_ORIGINALS, PAYLOAD_LABEL};
 use crate::{
+    error::CoreError,
     node_id::{NodeId, parse_node_id},
     output::Block,
     rendering::Rendering,
@@ -72,13 +73,15 @@ fn visible_chain(doc: &Document, id: Guid) -> bool {
 }
 
 /// Image hashes drawn by `node_id` and everything inside it (instances included), without
-/// repeats. Hidden nodes, and nodes below hidden ancestors, draw nothing. `Err` is the message for a node that cannot be read.
-pub(super) fn image_hashes(doc: &Document, node_id: &str) -> Result<Vec<String>, String> {
+/// repeats. Hidden nodes, and nodes below hidden ancestors, draw nothing. `Err` describes a node that cannot be read.
+pub(super) fn image_hashes(doc: &Document, node_id: &str) -> Result<Vec<String>, CoreError> {
     let mut out = Vec::new();
-    match parse_node_id(node_id).map_err(|e| e.to_string())? {
+    match parse_node_id(node_id)? {
         NodeId::Node(root) => {
             if doc.node(root).is_none() {
-                return Err(format!("node {root} does not exist in this file"));
+                return Err(CoreError::input(format!(
+                    "node {root} does not exist in this file"
+                )));
             }
             if !visible_chain(doc, root) {
                 return Ok(out);
@@ -102,7 +105,7 @@ pub(super) fn image_hashes(doc: &Document, node_id: &str) -> Result<Vec<String>,
         NodeId::InstancePath(path) => {
             let defs = Arc::new(definitions(doc));
             let walk = walk_path(doc, &defs, &path, None, MAX_RESOLVED_NODES)
-                .map_err(|e| format!("{path}: {e}"))?;
+                .map_err(|e| CoreError::resolve(&path, e))?;
             // shortcut: frames between nested instances are judged on their stored visibility, not
             // on overrides; upgrade if a file hides only those by override.
             // The instance, its document ancestors and every nested instance on the way.
@@ -138,10 +141,10 @@ pub(super) fn original_images(
     id: &str,
     rendering: &Rendering,
     budget: &mut Budget,
-) -> Result<Vec<Block>, String> {
+) -> Result<Vec<Block>, CoreError> {
     let hashes = image_hashes(doc, id)?;
     if hashes.is_empty() {
-        return Err("no image fills inside this node".into());
+        return Err(CoreError::input("no image fills inside this node"));
     }
     let mut content = vec![];
     let (mut missing, mut omitted, mut repeated) = (0, 0, 0);
@@ -207,7 +210,9 @@ pub(super) fn original_images(
         )));
     }
     if missing == hashes.len() {
-        return Err(format!("{missing} image(s) not stored in the file"));
+        return Err(CoreError::input(format!(
+            "{missing} image(s) not stored in the file"
+        )));
     }
     for line in too_large {
         content.push(Block::text(line));

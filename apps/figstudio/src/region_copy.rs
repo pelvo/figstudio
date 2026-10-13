@@ -33,7 +33,8 @@ pub fn menu(ui: &mut egui::Ui, tab: &Tab, rect: Rect, picked: &mut Option<Item>)
 /// The text item. The text is built here, once, when the entry is clicked, not while the menu is
 /// open: walking a big page every frame would stall the canvas.
 fn text_item(tab: &Tab, rect: Rect) -> Item {
-    let text = region_text(tab, tab.page, region_array(rect)).unwrap_or_else(|e| e);
+    let text = region_text(tab, tab.page, region_array(rect))
+        .unwrap_or_else(|e| figstudio_fig::one_line(e.as_ref()));
     Item::text("Copy region", "region", text)
 }
 
@@ -42,9 +43,9 @@ fn text_item(tab: &Tab, rect: Rect) -> Item {
 ///
 /// # Errors
 /// A message for the toast when the rectangle cannot be written as a link.
-pub fn region_text(tab: &Tab, page: Guid, rect: [f64; 4]) -> Result<String, String> {
+pub fn region_text(tab: &Tab, page: Guid, rect: [f64; 4]) -> anyhow::Result<String> {
     let link = format_region_link(&copy::file_key(tab), page, rect)
-        .map_err(|_| "Region is too small to copy".to_string())?;
+        .map_err(|_| anyhow::anyhow!("Region is too small to copy"))?;
     let found = region::nodes_in(
         &tab.doc,
         page,

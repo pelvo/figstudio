@@ -3,12 +3,17 @@
 mod doctor;
 mod synth;
 
+use std::fmt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use anyhow::{Context, Result, anyhow, bail};
 use figstudio_fig::{Document, Guid};
 use figstudio_render::color::{AlphaColor, Srgb};
 use figstudio_render::{Renderer, page_background};
+use tracing::{debug, info};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::LevelFilter;
 
 const USAGE: &str = "figstudio-cli — headless tools for Figma .fig files
 
@@ -27,6 +32,18 @@ USAGE:
       Stress-test file: the first page's layers copied n times on each of n pages.
 
 Pages are numbered from 1. Node ids look like 12:34 (see `tree`).";
+
+/// Marks an error as a usage problem: `main` prints the help text and exits with 2.
+#[derive(Debug)]
+struct UsageError(String);
+
+impl fmt::Display for UsageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UsageError {}
 
 struct Args {
     command: String,
@@ -128,43 +145,34 @@ fn parse(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
     Ok(args)
 }
 
-fn pick_page(doc: &Document, wanted: Option<&str>) -> Result<Guid, String> {
+fn pick_page(doc: &Document, wanted: Option<&str>) -> Result<Guid> {
     let Some(wanted) = wanted else {
-        return doc
-            .pages
-            .first()
-            .copied()
-            .ok_or_else(|| "document has no pages".into());
+        return doc.pages.first().copied().context("document has no pages");
     };
     if let Ok(n) = wanted.parse::<usize>() {
-        return doc.pages.get(n.wrapping_sub(1)).copied().ok_or(format!(
-            "page {n} does not exist ({} pages)",
-            doc.pages.len()
-        ));
+        return doc
+            .pages
+            .get(n.wrapping_sub(1))
+            .copied()
+            .ok_or_else(|| anyhow!("page {n} does not exist ({} pages)", doc.pages.len()));
     }
     doc.pages
         .iter()
         .copied()
         .find(|id| doc.node(*id).is_some_and(|n| n.name == wanted))
-        .ok_or(format!("no page named {wanted}"))
+        .ok_or_else(|| anyhow!("no page named {wanted}"))
 }
 
-fn parse_background(
-    spec: &str,
-    doc: &Document,
-    page: Guid,
-) -> Result<Option<AlphaColor<Srgb>>, String> {
+fn parse_background(spec: &str, doc: &Document, page: Guid) -> Result<Option<AlphaColor<Srgb>>> {
     match spec {
         "page" => Ok(Some(page_background(doc, page))),
         "transparent" | "none" => Ok(None),
         hex if hex.starts_with('#') && hex.len() == 7 => {
-            let v = u32::from_str_radix(&hex[1..], 16).map_err(|_| format!("bad colour {hex}"))?;
+            let v = u32::from_str_radix(&hex[1..], 16).map_err(|_| anyhow!("bad colour {hex}"))?;
             let c = |shift: u32| ((v >> shift) & 0xff) as f32 / 255.0;
             Ok(Some(AlphaColor::new([c(16), c(8), c(0), 1.0])))
         }
-        other => Err(format!(
-            "--background must be page, transparent or #rrggbb, got {other}"
-        )),
+        other => bail!("--background must be page, transparent or #rrggbb, got {other}"),
     }
 }
 
@@ -200,12 +208,18 @@ fn print_tree(doc: &Document, id: Guid, indent: usize, depth: usize) {
     }
 }
 
-fn run(args: Args) -> Result<(), String> {
+fn run(args: Args) -> Result<()> {
     if args.command == "doctor" {
         // Opens the file itself, to time it and to keep the path out of any error.
         return doctor::run(&args.file);
     }
-    let doc = Document::open(&args.file).map_err(|e| e.to_string())?;
+    let doc = Document::open(&args.file)?;
+    debug!(
+        command = args.command.as_str(),
+        nodes = doc.nodes.len(),
+        pages = doc.pages.len(),
+        "document opened"
+    );
     match args.command.as_str() {
         "info" => {
             println!("file:     {}", args.file.display());
@@ -236,11 +250,15 @@ fn run(args: Args) -> Result<(), String> {
         "render" => {
             let (root, page) = match args.node {
                 Some(id) => {
-                    let node = doc.node(id).ok_or(format!("no node {id}"))?;
+                    let node = doc.node(id).ok_or_else(|| anyhow!("no node {id}"))?;
                     if node.kind == "DOCUMENT" {
-                        return Err("pick a page or a layer, not the document".into());
+                        bail!("pick a page or a layer, not the document");
                     }
-                    (id, doc.page_of(id).ok_or(format!("{id} is not on a page"))?)
+                    (
+                        id,
+                        doc.page_of(id)
+                            .ok_or_else(|| anyhow!("{id} is not on a page"))?,
+                    )
                 }
                 None => {
                     let page = pick_page(&doc, args.page.as_deref())?;
@@ -258,7 +276,7 @@ fn run(args: Args) -> Result<(), String> {
                     16.0 * args.scale.min(2.0),
                     background,
                 )
-                .ok_or("nothing visible to render")?;
+                .context("nothing visible to render")?;
             let out = args.out.clone().unwrap_or_else(|| {
                 let stem = args
                     .file
@@ -271,25 +289,26 @@ fn run(args: Args) -> Result<(), String> {
             let png = frame
                 .pixmap
                 .into_png()
-                .map_err(|e| format!("PNG encode failed: {e}"))?;
-            std::fs::write(&out, png).map_err(|e| format!("{}: {e}", out.display()))?;
+                .map_err(|e| anyhow!("PNG encode failed: {e}"))?;
+            std::fs::write(&out, png).map_err(|e| anyhow!("{}: {e}", out.display()))?;
+            info!(width = w, height = h, "page rendered");
             println!("{} {w}x{h}", out.display());
             println!("{}", frame.stats);
         }
         "thumbnail" => {
-            let out = args.out.ok_or("thumbnail needs -o <out.png>")?;
+            let out = args.out.context("thumbnail needs -o <out.png>")?;
             let thumb = doc
                 .thumbnail
                 .as_ref()
-                .ok_or("this file has no stored thumbnail")?;
-            std::fs::write(&out, thumb).map_err(|e| format!("{}: {e}", out.display()))?;
+                .context("this file has no stored thumbnail")?;
+            std::fs::write(&out, thumb).map_err(|e| anyhow!("{}: {e}", out.display()))?;
             println!("{}", out.display());
         }
         "resave" => {
-            let out = args.out.ok_or("resave needs -o <out.fig>")?;
-            doc.save(&out).map_err(|e| e.to_string())?;
+            let out = args.out.context("resave needs -o <out.fig>")?;
+            doc.save(&out)?;
             let again = Document::open(&out)
-                .map_err(|e| format!("written file does not read back: {e}"))?;
+                .map_err(|e| anyhow!("written file does not read back: {e}"))?;
             let same = again.nodes.len() == doc.nodes.len()
                 && again
                     .nodes
@@ -307,14 +326,15 @@ fn run(args: Args) -> Result<(), String> {
                 }
             );
             if !same {
-                return Err("round trip changed the document".into());
+                bail!("round trip changed the document");
             }
         }
         "synth" => {
-            let out = args.out.ok_or("synth needs -o <out.fig>")?;
+            let out = args.out.context("synth needs -o <out.fig>")?;
             let start = std::time::Instant::now();
-            let big = synth::synth(doc, args.copies, args.pages)?;
-            big.save(&out).map_err(|e| e.to_string())?;
+            let big =
+                synth::synth(doc, args.copies, args.pages).context("build stress document")?;
+            big.save(&out)?;
             let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             println!(
                 "{} {} nodes, {} pages, {:.1} MB, {:.1} s",
@@ -325,12 +345,25 @@ fn run(args: Args) -> Result<(), String> {
                 start.elapsed().as_secs_f64()
             );
         }
-        other => return Err(format!("unknown command {other}")),
+        other => return Err(UsageError(format!("unknown command {other}")).into()),
     }
     Ok(())
 }
 
+/// Logs go to stderr only (stdout is data). Default level is `warn`; `RUST_LOG` overrides.
+fn init_tracing() {
+    let filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::WARN.into())
+        .from_env_lossy();
+    // Ignore the error: a subscriber may already be installed, which is fine.
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(filter)
+        .try_init();
+}
+
 fn main() -> ExitCode {
+    init_tracing();
     // Usage problems (exit 2) print the help text; failures on a valid command (exit 1) do not.
     let args = match parse(std::env::args().skip(1)) {
         Ok(args) => args,
@@ -345,12 +378,15 @@ fn main() -> ExitCode {
     };
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(msg) if msg.starts_with("unknown command") => {
-            eprintln!("figstudio-cli: {msg}\n\n{USAGE}");
+        Err(e) if e.downcast_ref::<UsageError>().is_some() => {
+            eprintln!(
+                "figstudio-cli: {}\n\n{USAGE}",
+                figstudio_fig::one_line(e.as_ref())
+            );
             ExitCode::from(2)
         }
-        Err(msg) => {
-            eprintln!("figstudio-cli: {msg}");
+        Err(e) => {
+            eprintln!("figstudio-cli: {}", figstudio_fig::one_line(e.as_ref()));
             ExitCode::FAILURE
         }
     }

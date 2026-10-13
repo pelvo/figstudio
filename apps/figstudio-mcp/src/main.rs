@@ -1,7 +1,9 @@
+use anyhow::Context;
 use clap::Parser;
 use figstudio_mcp::{FigstudioServer, serve_http, tools::design::Assets};
 use rmcp::ServiceExt;
 use std::{net::SocketAddr, ops::RangeInclusive, path::PathBuf};
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 /// Accepted `--max-output-bytes`: 4 kB (one element and its closing tags always fit) to
 /// 100 kB (the largest size any measured client accepted was 74 kB).
@@ -57,17 +59,37 @@ impl std::str::FromStr for Http {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Logs go to stderr only: stdout is the MCP stdio transport. `RUST_LOG` overrides the default.
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("warn,figstudio_mcp=info"));
+    let fmt = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .with_level(false)
+        .with_target(false)
+        .without_time();
+    tracing_subscriber::registry()
+        .with(fmt.with_filter(figstudio_mcp::cap_rmcp(
+            filter,
+            std::env::var("RUST_LOG").ok().as_deref(),
+        )))
+        .init();
+}
+
+fn main() -> anyhow::Result<()> {
+    init_tracing();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?;
+        .build()
+        .context("failed to start the async runtime")?;
     let result = runtime.block_on(run());
     // Tokio's blocking stdin read cannot be cancelled when a client keeps its pipe open.
     runtime.shutdown_background();
     result
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
+async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
     let assets = match (args.assets, args.assets_dir) {
         (Some(_), _) => Assets::Inline,
@@ -81,14 +103,23 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let listener = match http {
             Http::Exact(addr) => {
                 if !addr.ip().is_loopback() {
+                    // Program output, like `listening on`: no RUST_LOG may hide it.
                     eprintln!("warning: non-loopback bind; rmcp rejects non-loopback Host headers");
                 }
-                tokio::net::TcpListener::bind(addr).await?
+                tokio::net::TcpListener::bind(addr)
+                    .await
+                    .with_context(|| format!("failed to bind {addr}"))?
             }
             Http::Default => {
-                let listener =
-                    figstudio_mcp::bind_first(figstudio_mcp::default_http_addrs()).await?;
-                eprintln!("listening on http://{}/mcp", listener.local_addr()?);
+                let listener = figstudio_mcp::bind_first(figstudio_mcp::default_http_addrs())
+                    .await
+                    .context("no free port for --http")?;
+                let addr = listener
+                    .local_addr()
+                    .context("failed to read the bound address")?;
+                // Program output, not a log line: clients read the port from it, so
+                // RUST_LOG must not hide it.
+                eprintln!("listening on http://{addr}/mcp");
                 listener
             }
         };
@@ -96,15 +127,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let cancel = shutdown.clone();
         let signal = tokio::spawn(async move {
             if let Err(error) = shutdown_signal().await {
-                eprintln!("shutdown signal error: {error}");
+                tracing::error!("shutdown signal error: {error}");
             }
             cancel.cancel();
         });
         let result = serve_http(listener, server, shutdown).await;
         signal.abort();
-        result?;
+        result.context("HTTP server failed")?;
     } else {
-        let service = server.serve(rmcp::transport::stdio()).await?;
+        let service = server
+            .serve(rmcp::transport::stdio())
+            .await
+            .context("failed to start the stdio MCP session")?;
         let cancel = service.cancellation_token();
         let mut waiting = Box::pin(service.waiting());
         tokio::select! {

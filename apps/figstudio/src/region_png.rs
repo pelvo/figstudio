@@ -6,6 +6,7 @@
 //! [`plan`]. egui's clipboard holds one item, so this copies the image only; the text is
 //! "Copy region".
 
+use anyhow::Context;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use figstudio_fig::{Document, Guid};
@@ -57,7 +58,7 @@ pub struct Done {
     pub gaps: String,
 }
 
-type Msg = Result<Done, String>;
+type Msg = anyhow::Result<Done>;
 
 /// Where finished renders arrive.
 #[derive(Debug)]
@@ -90,21 +91,22 @@ pub fn render(
     source: Option<&Source>,
     job: Job,
     want_png: bool,
-) -> Result<Done, String> {
+) -> anyhow::Result<Done> {
     let (frame, name) = match job {
         Job::Region { page, rect, zoom } => {
             let (viewport, _) =
                 figstudio_mcp_core::region_shot::viewport(doc, page, rect, f64::from(zoom))
-                    .ok_or("Region is too small to copy as an image")?;
+                    .context("Region is too small to copy as an image")?;
             let read = |want: &ImageRequest| source.and_then(|s| s.read(&want.entry).ok());
             let frame = Renderer::with_images(images).render_complete(doc, page, &viewport, read);
             (frame, "region".to_string())
         }
         Job::Node(id) => {
-            let b = node_bounds(doc, id).ok_or("Nothing to copy as an image")?;
-            let p = plan(b.width(), b.height(), NODE_SCALE).ok_or("Nothing to copy as an image")?;
+            let b = node_bounds(doc, id).context("Nothing to copy as an image")?;
+            let p =
+                plan(b.width(), b.height(), NODE_SCALE).context("Nothing to copy as an image")?;
             let frame = crate::export_frame(images, doc, source, id, p.scale)
-                .ok_or("Nothing to copy as an image")?;
+                .context("Nothing to copy as an image")?;
             (
                 frame,
                 doc.node(id).map_or("node".into(), |n| file_stem(&n.name)),
@@ -118,7 +120,7 @@ pub fn render(
     );
     let rgba = frame.pixmap.data_as_u8_slice().to_vec();
     let png = if want_png {
-        Some(frame.pixmap.into_png().map_err(|e| e.to_string())?)
+        Some(frame.pixmap.into_png()?)
     } else {
         None
     };
@@ -174,7 +176,7 @@ pub fn drive(
     while let Ok(msg) = inbox.rx.try_recv() {
         toasts.push(match msg {
             Ok(done) => finish(ctx, done),
-            Err(e) => (e, true),
+            Err(e) => (figstudio_fig::one_line(e.as_ref()), true),
         });
     }
     toasts
@@ -197,7 +199,7 @@ fn start(
         let msg = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             render(images, &doc, source.as_ref(), job, false)
         }))
-        .unwrap_or_else(|_| Err("image render panicked".into()));
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("image render panicked")));
         drop(release);
         let _ = tx.send(msg);
         ctx.request_repaint();
@@ -234,7 +236,7 @@ fn finish(ctx: &egui::Context, done: Done) -> (String, bool) {
                 format!("This browser cannot copy images here; downloaded {file}"),
                 false,
             ),
-            Some(Err(e)) => (e, true),
+            Some(Err(e)) => (figstudio_fig::one_line(e.as_ref()), true),
             None => ("Could not make the image".into(), true),
         };
     }

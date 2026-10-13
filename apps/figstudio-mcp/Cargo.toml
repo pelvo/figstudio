@@ -9,6 +9,9 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 figstudio-fig.workspace = true
 figstudio-mcp-core = { workspace = true, features = ["fs", "system-fonts"] }
 figstudio-render.workspace = true
@@ -31,3 +34,4 @@ tempfile.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 reqwest.workspace = true
 futures-util.workspace = true
+tracing-subscriber = { workspace = true, features = ["registry"] }

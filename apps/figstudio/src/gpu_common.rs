@@ -63,9 +63,7 @@ pub fn choose(
 /// `Surface::configure` or a stray validation error skips a frame instead of killing the app.
 pub fn catch_uncaptured(device: &wgpu::Device, lost: std::sync::Arc<AtomicBool>) {
     device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| {
-        // shortcut: stderr only (nothing shows in a browser console); add a console log if
-        // web users need to see it.
-        eprintln!("figstudio: wgpu error (frame skipped, canvas tiles on the CPU): {e}");
+        tracing::warn!("figstudio: wgpu error (frame skipped, canvas tiles on the CPU): {e}");
         lost.store(true, Ordering::Release);
     }));
 }

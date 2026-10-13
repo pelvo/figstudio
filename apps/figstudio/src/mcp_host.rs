@@ -19,7 +19,7 @@ use crate::tab::Tab;
 use crate::theme;
 
 /// The server thread's news: the bound address, or why it could not start or stopped.
-type Event = Result<SocketAddr, String>;
+type Event = anyhow::Result<SocketAddr>;
 
 pub struct McpHost {
     /// The View menu toggle. Never saved: every launch starts off.
@@ -89,7 +89,7 @@ impl McpHost {
         if let Err(error) = running.poll_events() {
             self.stop();
             self.on = false;
-            return Some(error);
+            return Some(figstudio_fig::one_line(error.as_ref()));
         }
         running.drain(tabs, active);
         None
@@ -122,7 +122,7 @@ impl McpHost {
 }
 
 impl Running {
-    fn poll_events(&mut self) -> Result<(), String> {
+    fn poll_events(&mut self) -> anyhow::Result<()> {
         loop {
             match self.events.try_recv() {
                 Ok(Ok(addr)) => self.addr = Some(addr),
@@ -142,7 +142,7 @@ impl Running {
                     tabs[i].fit_node = Some(node);
                     Ok(())
                 }
-                None => Err("tab closed".to_owned()),
+                None => Err(anyhow::anyhow!("tab closed")),
             };
             // The tool may have timed out and dropped its receiver; nothing to tell then.
             let _ = reply.send(result);
@@ -225,7 +225,8 @@ fn start(ctx: &egui::Context, addrs: Vec<SocketAddr>) -> Running {
             }
         });
     if let Err(error) = spawned {
-        let _ = failed.send(Err(format!("Could not start the MCP server: {error}")));
+        let error = anyhow::Error::from(error).context("Could not start the MCP server");
+        let _ = failed.send(Err(error));
     }
     Running {
         addr: None,
@@ -244,27 +245,28 @@ fn serve(
     cancel: CancellationToken,
     events: &Sender<Event>,
     ctx: &egui::Context,
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
+    use anyhow::Context;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .thread_name("mcp-worker")
         .enable_all()
         .build()
-        .map_err(|e| format!("Could not start the MCP server: {e}"))?;
+        .context("Could not start the MCP server")?;
     let result = runtime.block_on(async {
         let listener = bind_first(addrs)
             .await
-            .map_err(|e| format!("Could not start the MCP server: no free port ({e})"))?;
+            .map_err(|e| anyhow::anyhow!("Could not start the MCP server: no free port ({e})"))?;
         let addr = listener
             .local_addr()
-            .map_err(|e| format!("Could not start the MCP server: {e}"))?;
+            .context("Could not start the MCP server")?;
         let _ = events.send(Ok(addr));
         ctx.request_repaint();
         // Inline assets: the app's working directory is arbitrary, so it writes no files.
         let server = FigstudioServer::live(files, false).with_assets(Assets::Inline);
         serve_http(listener, server, cancel)
             .await
-            .map_err(|e| format!("The MCP server stopped: {e}"))
+            .context("The MCP server stopped")
     });
     // An open SSE stream must not keep this thread alive after cancel.
     runtime.shutdown_background();

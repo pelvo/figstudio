@@ -48,6 +48,7 @@ const APP_NAME: &str = "figstudio";
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> std::process::ExitCode {
+    init_tracing();
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     let mut options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -69,7 +70,7 @@ fn main() -> std::process::ExitCode {
     match run {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("{APP_NAME}: could not start the window: {err}");
+            tracing::error!("{APP_NAME}: could not start the window: {err}");
             std::process::ExitCode::FAILURE
         }
     }
@@ -91,6 +92,32 @@ fn export_frame(
         None,
         |want| source.and_then(|s| s.read(&want.entry).ok()),
     )
+}
+
+/// Logs go to stderr; stdout stays free for data. The default level is `warn`, `RUST_LOG`
+/// overrides it. `FIGSTUDIO_PROFILE` also turns on the app's own `info` lines (the frame timings).
+#[cfg(not(target_arch = "wasm32"))]
+fn init_tracing() {
+    use std::io::IsTerminal;
+    use tracing_subscriber::filter::{EnvFilter, LevelFilter};
+    let mut filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::WARN.into())
+        .from_env_lossy();
+    if std::env::var_os("FIGSTUDIO_PROFILE").is_some()
+        && let Ok(directive) = "figstudio=info".parse()
+    {
+        filter = filter.add_directive(directive);
+    }
+    use tracing_subscriber::prelude::*;
+    let fmt = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal());
+    // The hosted MCP server's rmcp dumps requests and responses at debug: cap it.
+    #[cfg(feature = "mcp")]
+    let filter = figstudio_mcp::cap_rmcp(filter, std::env::var("RUST_LOG").ok().as_deref());
+    tracing_subscriber::registry()
+        .with(fmt.with_filter(filter))
+        .init();
 }
 
 /// The browser starts the app from JavaScript (`web::start`) once the thread pool is up.
@@ -288,8 +315,8 @@ impl App {
                 .workers
                 .run_export(self.web.exports_tx.clone(), move || {
                     let png = export_frame(images, &doc, source.as_ref(), root, scale)
-                        .ok_or_else(|| "nothing to export".to_string())
-                        .and_then(|frame| frame.pixmap.into_png().map_err(|e| e.to_string()));
+                        .ok_or_else(|| anyhow::anyhow!("nothing to export"))
+                        .and_then(|frame| frame.pixmap.into_png().map_err(anyhow::Error::from));
                     (file, png)
                 });
             match started {
@@ -386,7 +413,7 @@ impl App {
         while let Ok(done) = self.workers.export_rx.try_recv() {
             match done.result {
                 Ok(()) => self.toast(ctx, format!("Exported {}", done.path.display()), false),
-                Err(e) => self.toast(ctx, e, true),
+                Err(e) => self.toast(ctx, figstudio_fig::one_line(e.as_ref()), true),
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -440,7 +467,14 @@ impl App {
                 }
                 Err(e) => {
                     self.web.font_state = web::FontState::Failed;
-                    self.toast(ctx, format!("Could not load the CJK font: {e}"), true);
+                    self.toast(
+                        ctx,
+                        format!(
+                            "Could not load the CJK font: {}",
+                            figstudio_fig::one_line(e.as_ref())
+                        ),
+                        true,
+                    );
                 }
             }
         }
@@ -471,7 +505,7 @@ impl App {
         while let Ok((name, png)) = self.web.exports.try_recv() {
             match png.and_then(|png| web::download(&name, "image/png", &png)) {
                 Ok(()) => self.toast(ctx, format!("Exported {name}"), false),
-                Err(e) => self.toast(ctx, e, true),
+                Err(e) => self.toast(ctx, figstudio_fig::one_line(e.as_ref()), true),
             }
         }
     }
@@ -889,7 +923,7 @@ impl eframe::App for App {
         }
         if self.profile {
             let tab = self.tabs.get(self.active);
-            eprintln!(
+            tracing::info!(
                 "profile ui {:.1} ms; last render {:.1} ms, {} drawn, {} culled",
                 started.elapsed().as_secs_f64() * 1000.0,
                 tab.map_or(0.0, |t| t.render_time.as_secs_f64() * 1000.0),

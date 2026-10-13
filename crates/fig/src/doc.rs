@@ -13,24 +13,15 @@ use crate::archive::{self, Entry};
 use crate::read::Reader;
 use crate::val::{Guid, Val};
 
-#[derive(Debug)]
-pub struct FigError(pub String);
-
-impl fmt::Display for FigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for FigError {}
+pub use crate::error::FigError;
 
 fn err<T>(msg: impl Into<String>) -> Result<T, FigError> {
-    Err(FigError(msg.into()))
+    Err(FigError::malformed(msg))
 }
 
 /// Reads one file using the decoder's input cap without exposing its path in the error.
 pub fn read_limited_file(path: &Path, out: &mut Vec<u8>) -> Result<(), FigError> {
-    let file = std::fs::File::open(path).map_err(|e| FigError(format!("cannot read file: {e}")))?;
+    let file = std::fs::File::open(path).map_err(|e| FigError::io("cannot read file", e))?;
     read_limited(file, MAX_FILE_BYTES, out, "file").map_err(FigError::from)
 }
 
@@ -81,9 +72,9 @@ fn read_limited(r: impl Read, limit: usize, out: &mut Vec<u8>, what: &str) -> Re
     let mut taken = r.take((limit as u64).saturating_add(1));
     taken
         .read_to_end(out)
-        .map_err(|e| ReadFail::Decode(FigError(format!("cannot read {what}: {e}"))))?;
+        .map_err(|e| ReadFail::Decode(FigError::io(format!("cannot read {what}"), e)))?;
     if out.len() > limit {
-        return Err(ReadFail::Limit(FigError(format!(
+        return Err(ReadFail::Limit(FigError::limit(format!(
             "{what} inflates past the {limit}-byte limit"
         ))));
     }
@@ -219,6 +210,7 @@ impl fmt::Debug for Document {
 }
 
 impl Document {
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn open(path: impl AsRef<Path>) -> Result<Document, FigError> {
         let mut bytes = Vec::new();
         read_limited_file(path.as_ref(), &mut bytes)?;
@@ -229,11 +221,13 @@ impl Document {
     /// [`Document::lazy_images`] and read when needed. Only the central directory, the canvas,
     /// `meta.json` and the thumbnail are read, so files of any size open in little memory.
     /// A bare canvas file (not an archive) is read whole.
+    #[tracing::instrument(level = "debug", skip_all, fields(len = tracing::field::Empty))]
     pub fn open_lazy(path: impl AsRef<Path>) -> Result<Document, FigError> {
         let path = path.as_ref();
-        let io = |e: std::io::Error| FigError(format!("cannot read file: {e}"));
+        let io = |e: std::io::Error| FigError::io("cannot read file", e);
         let mut file = std::fs::File::open(path).map_err(io)?;
         let len = file.metadata().map_err(io)?.len();
+        tracing::Span::current().record("len", len);
         let mut magic = [0u8; 2];
         file.read_exact(&mut magic).map_err(io)?;
         if &magic != b"PK" {
@@ -247,7 +241,14 @@ impl Document {
         {
             eager.insert(e.name.clone(), archive::read_entry(&mut file, e)?);
         }
-        Document::from_lazy(entries, eager)
+        let doc = Document::from_lazy(entries, eager)?;
+        tracing::debug!(
+            nodes = doc.nodes.len(),
+            pages = doc.pages.len(),
+            lazy_images = doc.lazy_images.len(),
+            "opened lazily"
+        );
+        Ok(doc)
     }
 
     /// Builds a document from an archive's entry list ([`archive::entries`]) and the contents
@@ -277,13 +278,24 @@ impl Document {
         Document::from_canvas(canvas, parts, PRODUCTION_LIMITS)
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(bytes = bytes.len()))]
     pub fn from_bytes(bytes: &[u8]) -> Result<Document, FigError> {
-        Document::from_bytes_with(bytes, PRODUCTION_LIMITS)
+        let doc = Document::from_bytes_with(bytes, PRODUCTION_LIMITS)?;
+        tracing::debug!(
+            nodes = doc.nodes.len(),
+            pages = doc.pages.len(),
+            blobs = doc.blobs.len(),
+            images = doc.images.len(),
+            "decoded document"
+        );
+        Ok(doc)
     }
 
     pub(crate) fn from_bytes_with(bytes: &[u8], limits: Limits) -> Result<Document, FigError> {
         if bytes.len() > MAX_FILE_BYTES {
-            return err(format!("input is larger than {MAX_FILE_BYTES} bytes"));
+            return Err(FigError::limit(format!(
+                "input is larger than {MAX_FILE_BYTES} bytes"
+            )));
         }
         let mut file_name = None;
         let mut images = HashMap::new();
@@ -292,13 +304,13 @@ impl Document {
         let canvas = if bytes.starts_with(b"PK") {
             let mut entries = Vec::new();
             let mut zip = zip::ZipArchive::new(Cursor::new(bytes))
-                .map_err(|e| FigError(format!("not a readable .fig archive: {e}")))?;
+                .map_err(|e| FigError::archive("not a readable .fig archive", e))?;
             let mut canvas = None;
             let mut total = 0usize;
             for i in 0..zip.len() {
                 let mut entry = zip
                     .by_index(i)
-                    .map_err(|e| FigError(format!("bad archive entry: {e}")))?;
+                    .map_err(|e| FigError::archive("bad archive entry", e))?;
                 let name = entry.name().to_string();
                 let mut data = Vec::new();
                 let remaining = limits.archive.saturating_sub(total);
@@ -306,10 +318,10 @@ impl Document {
                 // Duplicate entries count too: the total is over everything inflated.
                 total = total.saturating_add(data.len());
                 if total > limits.archive {
-                    return err(format!(
+                    return Err(FigError::limit(format!(
                         "archive inflates past the {}-byte limit",
                         limits.archive
-                    ));
+                    )));
                 }
                 if name == "canvas.fig" {
                     canvas = Some(data);
@@ -374,17 +386,18 @@ impl Document {
         }
         let (schema_bytes, schema_codec) = decompress(chunks[0], limits.chunk)?;
         let schema = Schema::decode(&schema_bytes)
-            .map_err(|()| FigError("cannot decode the file schema".into()))?;
+            .map_err(|()| FigError::malformed("cannot decode the file schema"))?;
         let message_def = schema
             .defs
             .iter()
             .position(|d| d.name == "Message" && d.kind == DefKind::Message)
-            .ok_or_else(|| FigError("schema has no Message type".into()))?;
+            .ok_or_else(|| FigError::malformed("schema has no Message type"))?;
         if let Some(field) = schema.defs[message_def].field("blobs") {
             validate_blobs_field(&schema, field)?;
         }
         let (message_bytes, message_codec) = decompress(chunks[1], limits.chunk)?;
-        let decode_err = |e: String| FigError(format!("cannot decode the document: {e}"));
+        let decode_err =
+            |e: String| FigError::malformed(format!("cannot decode the document: {e}"));
         let reader = Reader::new(&schema).map_err(decode_err)?;
         let def = &schema.defs[message_def];
         let mut bb = ByteBuffer::new(&message_bytes);
@@ -1040,7 +1053,7 @@ fn decompress(data: &[u8], limit: usize) -> Result<(Vec<u8>, Codec), FigError> {
     let mut out = Vec::new();
     if data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
         let decoder = ruzstd::decoding::StreamingDecoder::new(data)
-            .map_err(|e| FigError(format!("bad zstd chunk: {e}")))?;
+            .map_err(|e| FigError::codec("bad zstd chunk", e))?;
         read_limited(decoder, limit, &mut out, "zstd chunk")?;
         return Ok((out, Codec::Zstd));
     }
