@@ -1,6 +1,8 @@
 //! figstudio — desktop and browser app for Figma `.fig` local copies.
 
 mod canvas;
+mod copy;
+mod copy_menu;
 mod gpu;
 mod gpu_common;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -13,8 +15,13 @@ mod gpu_tiles;
 #[cfg(target_arch = "wasm32")]
 mod gpu_tiles_web;
 mod labels;
+mod marquee;
+#[cfg_attr(any(not(feature = "mcp"), target_arch = "wasm32"), path = "mcp_off.rs")]
+mod mcp_host;
 mod panels;
 mod recordings;
+mod region_copy;
+mod region_png;
 mod source;
 mod state;
 mod tab;
@@ -23,6 +30,8 @@ mod tile_cache;
 mod tile_queue;
 mod tiles;
 mod tiles_view;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod ui_tests;
 #[cfg(target_arch = "wasm32")]
 mod web;
 mod worker;
@@ -106,6 +115,8 @@ struct App {
     /// A background worker is gone; reported once so the toast does not repeat every frame.
     worker_lost: state::Once,
     toasts: Vec<Toast>,
+    /// Finished "Copy as PNG" renders (`region_png.rs`).
+    png: region_png::Inbox,
     layer_filter: String,
     /// Share of the left dock's height given to the page list (the rest is layers).
     pages_share: f32,
@@ -121,6 +132,8 @@ struct App {
     window_cap: Option<f32>,
     /// What draws the canvas tiles ("GPU (Metal)", "CPU"), for the status bar.
     renderer: String,
+    /// Agent access: the MCP server, off at every launch (`mcp_host.rs`).
+    mcp: mcp_host::McpHost,
 }
 
 impl App {
@@ -160,6 +173,7 @@ impl App {
             loading: Pending::default(),
             worker_lost: state::Once::default(),
             toasts: Vec::new(),
+            png: Default::default(),
             layer_filter: String::new(),
             pages_share: 0.55,
             show_left: true,
@@ -170,6 +184,7 @@ impl App {
             web: web::Inbox::new(),
             #[cfg(not(target_arch = "wasm32"))]
             window_cap: None,
+            mcp: Default::default(),
         };
         for f in files {
             app.open(f);
@@ -603,6 +618,7 @@ impl App {
                 ui.separator();
                 ui.checkbox(&mut self.show_left, "Layers panel");
                 ui.checkbox(&mut self.show_right, "Properties panel");
+                self.mcp.menu(ui);
             });
             ui.menu_button("Help", |ui| {
                 ui.label(
@@ -736,6 +752,7 @@ impl App {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            self.mcp.status(ui);
             let Some(tab) = self.tabs.get(self.active) else {
                 ui.label(RichText::new("No file open").color(theme::TEXT_FAINT));
                 return;
@@ -856,6 +873,10 @@ fn shifted_digit(i: &egui::InputState, digit: Key, shifted: Option<Key>) -> bool
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self) {
+        self.mcp.stop();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let started = web_time::Instant::now();
         self.frame_ui(ui);
@@ -883,6 +904,9 @@ impl App {
     fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
+        if let Some(error) = self.mcp.frame(&mut self.tabs, &mut self.active) {
+            self.toast(&ctx, error, true);
+        }
         self.shortcuts(&ctx);
         let space_held = ctx.input(|i| i.key_down(Key::Space)) && !ctx.egui_wants_keyboard_input();
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
@@ -954,7 +978,7 @@ impl App {
                 });
         }
         if has_tab && self.show_right {
-            let tab = &self.tabs[self.active];
+            let tab = &mut self.tabs[self.active];
             egui::Panel::right("properties")
                 .frame(dock)
                 .resizable(true)
@@ -968,7 +992,7 @@ impl App {
                             .strong(),
                     );
                     ui.add_space(2.0);
-                    panels::properties(ui, tab);
+                    tab.pending_copy = panels::properties(ui, tab).or(tab.pending_copy.take());
                 });
         }
 
@@ -1001,6 +1025,10 @@ impl App {
             }
         });
         self.cursor = cursor;
+        let tab = self.tabs.get_mut(self.active);
+        for (text, error) in region_png::drive(&ctx, &self.workers, &self.png, tab) {
+            self.toast(&ctx, text, error);
+        }
         if open_clicked {
             self.open_dialog(&ctx);
         }
@@ -1018,6 +1046,7 @@ impl App {
             );
         }
         self.toasts(&ctx);
+        self.mcp.sync(&ctx, &self.tabs, self.active);
         if let Some(tab) = self.tabs.get(self.active) {
             let title = format!("{} — {APP_NAME}", tab.title());
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));

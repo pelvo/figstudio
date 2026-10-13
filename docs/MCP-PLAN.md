@@ -11,13 +11,17 @@ Branch `feat/mcp`, cut from `fix/known-gaps` at `f87989d`. Research notes (untra
 ## Status (2026-10-11)
 
 Lanes L0–L12 are done and merged on `feat/mcp`; every gate ended with `all checks passed`.
-Shipped: the `figstudio-mcp` binary (stdio and Streamable HTTP), 13 tools (`whoami`,
+Shipped: the `figstudio-mcp` binary (stdio and Streamable HTTP), 14 tools (`whoami`,
 `list_files`, `get_metadata`, `get_screenshot`, `get_variable_defs`, `get_design_context`,
 `download_assets`, `get_figjam`, `get_context_for_code_connect`, `get_code_connect_map`,
 `add_code_connect_map`, `search_design_system`, `get_libraries`) and the
 `create_design_system_rules` prompt. The user doc is `apps/figstudio-mcp/README.md`.
 Note: the plan below mentions an `open_file` tool; it was not built (files are given on the
 command line).
+
+The app work (shared `crates/mcp-core`, the server inside the desktop app, right-click Copy and
+Copy region, live tools `list_open_tabs`, `get_selection`, `reveal_node`) is planned and tracked
+in `docs/MCP-APP.md`; L0–L9 are done there.
 
 Open follow-ups (task board M1–M6 in `docs/IMPLEMENTATION.md`): `get_motion_context`
 (needs a real motion file), SVG export, ancestor masks and clips on instance-child

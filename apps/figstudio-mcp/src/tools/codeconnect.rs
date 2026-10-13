@@ -1,15 +1,18 @@
 //! Local Code Connect context and sidecar mappings; never changes the document.
-mod context;
 mod sidecar;
 
-use super::tool_error;
+use super::{to_call, tool_error};
 use crate::FigstudioServer;
+use figstudio_mcp_core::codeconnect_context;
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub use context::component_context;
+/// Return schema-preserving component properties and bounded local child context.
+pub fn component_context(doc: &figstudio_fig::Document, input: &str) -> CallToolResult {
+    to_call(codeconnect_context::component_context(doc, input))
+}
 
 /// A local source binding for a component.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -26,7 +29,9 @@ pub struct Mapping {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ContextInput {
-    node_id: String,
+    /// Node ID, instance path or Figma URL. Required, except in the app's live mode, where it
+    /// defaults to the selection.
+    node_id: Option<String>,
     file_key: Option<String>,
 }
 
@@ -61,11 +66,16 @@ impl FigstudioServer {
         &self,
         Parameters(input): Parameters<ContextInput>,
     ) -> CallToolResult {
-        let doc = match self.files().open(input.file_key.as_deref()).await {
+        let key = self.file_for(input.file_key.as_deref(), input.node_id.as_deref());
+        let (key, node_id) = match self.target(key, input.node_id) {
+            Ok(target) => target,
+            Err(error) => return tool_error(error),
+        };
+        let doc = match self.files().open(key.as_deref()).await {
             Ok(doc) => doc,
             Err(error) => return tool_error(error),
         };
-        match tokio::task::spawn_blocking(move || component_context(&doc, &input.node_id)).await {
+        match tokio::task::spawn_blocking(move || component_context(&doc, &node_id)).await {
             Ok(result) => result,
             Err(error) => tool_error(crate::error::McpError::token_task(error)),
         }
@@ -108,12 +118,9 @@ impl FigstudioServer {
     }
 
     async fn codeconnect_map(&self, input: MapInput, add: Option<Mapping>) -> CallToolResult {
-        let path = match self.files().path(input.file_key.as_deref()) {
-            Ok(path) => path,
-            Err(error) => return tool_error(error),
-        };
-        let doc = match self.files().open(input.file_key.as_deref()).await {
-            Ok(doc) => doc,
+        let key = self.file_for(input.file_key.as_deref(), input.node_id.as_deref());
+        let (doc, _, path) = match self.files().open_picked(key.as_deref()).await {
+            Ok(picked) => picked,
             Err(error) => return tool_error(error),
         };
         let lock = self.codeconnect_lock.clone();

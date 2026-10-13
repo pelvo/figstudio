@@ -109,7 +109,10 @@ async fn protocol_and_fixture_style_subtrees() {
             .iter()
             .find(|t| t.name == "get_variable_defs")
             .unwrap();
-        assert_eq!(tool.input_schema["required"], json!(["nodeId"]));
+        // nodeId is optional in the schema (live mode defaults it); standalone it is still
+        // required at call time ("nodeId is required", tests/live.rs).
+        assert!(tool.input_schema.get("required").is_none());
+        assert!(tool.input_schema["properties"]["nodeId"].is_object());
         let result = client
             .call_tool(
                 CallToolRequestParams::new("get_variable_defs")

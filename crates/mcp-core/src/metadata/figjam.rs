@@ -2,7 +2,7 @@
 //! Field names come from the Kiwi schema (`STICKY`, `CONNECTOR`, … are schema-only in the
 //! public fixtures); a field that is absent is left out.
 use super::node::capped;
-use crate::tools::variables::format::color;
+use crate::variables::format::color;
 use figstudio_fig::Val;
 use std::collections::BTreeMap;
 

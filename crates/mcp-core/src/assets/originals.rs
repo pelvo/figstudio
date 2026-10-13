@@ -1,5 +1,11 @@
 //! Original image-fill bytes inside a node, found by paint hash.
-use crate::node_id::{NodeId, parse_node_id};
+use super::{Budget, IMAGE_CAP_LABEL, MAX_IMAGE_BYTES, MAX_ORIGINALS, PAYLOAD_LABEL};
+use crate::{
+    node_id::{NodeId, parse_node_id},
+    output::Block,
+    rendering::Rendering,
+};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use figstudio_fig::{
     Document, Guid, Val, hex,
     resolve::{
@@ -7,7 +13,7 @@ use figstudio_fig::{
         tree_path, walk_path,
     },
 };
-use std::{collections::HashSet, sync::Arc};
+use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
 /// Paint lists that can carry an image fill.
 const PAINT_KEYS: [&str; 2] = ["fillPaints", "strokePaints"];
@@ -122,4 +128,94 @@ pub(super) fn image_hashes(doc: &Document, node_id: &str) -> Result<Vec<String>,
         }
     }
     Ok(out)
+}
+
+/// The original files behind the image fills of `id` that this call has not sent yet, as
+/// image or blob items. Fails when the node has no image fills or none has stored bytes.
+/// Images of a lazily opened document are read from the file only once they fit the budget.
+pub(super) fn original_images(
+    doc: &Document,
+    id: &str,
+    rendering: &Rendering,
+    budget: &mut Budget,
+) -> Result<Vec<Block>, String> {
+    let hashes = image_hashes(doc, id)?;
+    if hashes.is_empty() {
+        return Err("no image fills inside this node".into());
+    }
+    let mut content = vec![];
+    let (mut missing, mut omitted, mut repeated) = (0, 0, 0);
+    let mut too_large = Vec::new();
+    for hash in &hashes {
+        if budget.sent.contains(hash) {
+            repeated += 1;
+            continue;
+        }
+        let bytes = if let Some(bytes) = doc.images.get(hash) {
+            Cow::Borrowed(bytes.as_slice())
+        } else if let Some(entry) = doc.lazy_images.get(hash) {
+            // The directory's size, checked before reading so a huge image is never loaded.
+            let size = usize::try_from(entry.size).unwrap_or(usize::MAX);
+            if size > MAX_IMAGE_BYTES {
+                too_large.push(format!(
+                    "{id}: image {hash} omitted, {size} bytes is over the {IMAGE_CAP_LABEL} per-image limit"
+                ));
+                continue;
+            }
+            if budget.originals == 0 || !budget.payload.fits(size) {
+                omitted += 1;
+                continue;
+            }
+            match rendering.read(entry) {
+                Some(bytes) => Cow::Owned(bytes),
+                None => {
+                    missing += 1;
+                    continue;
+                }
+            }
+        } else {
+            missing += 1;
+            continue;
+        };
+        if bytes.len() > MAX_IMAGE_BYTES {
+            too_large.push(format!(
+                "{id}: image {hash} omitted, {} bytes is over the {IMAGE_CAP_LABEL} per-image limit",
+                bytes.len()
+            ));
+            continue;
+        }
+        if budget.originals == 0 || !budget.payload.take(bytes.len()) {
+            omitted += 1;
+            continue;
+        }
+        budget.originals -= 1;
+        budget.sent.insert(hash.clone());
+        let data = STANDARD.encode(&bytes);
+        let mime = image::guess_format(&bytes).ok().map(|f| f.to_mime_type());
+        content.push(match mime {
+            Some(mime) => Block::image(data, mime),
+            None => Block::Blob {
+                data_b64: data,
+                uri: format!("figma-image://{hash}"),
+                mime: "application/octet-stream".into(),
+            },
+        });
+        content.push(Block::text(format!(
+            "{id}: image {hash} ({} bytes, {})",
+            bytes.len(),
+            mime.unwrap_or("unknown type")
+        )));
+    }
+    if missing == hashes.len() {
+        return Err(format!("{missing} image(s) not stored in the file"));
+    }
+    for line in too_large {
+        content.push(Block::text(line));
+    }
+    if missing + omitted + repeated > 0 {
+        content.push(Block::text(format!(
+            "{id}: {missing} image(s) not stored in the file, {omitted} omitted (limit {MAX_ORIGINALS} images and {PAYLOAD_LABEL} per call), {repeated} already returned for another node"
+        )));
+    }
+    Ok(content)
 }

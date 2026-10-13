@@ -7,6 +7,8 @@ use figstudio_render::{
     absolute_transform, color::AlphaColor, content_bounds, geom, hit_test, page_background,
 };
 
+use crate::copy_menu;
+use crate::marquee;
 use crate::tab::{Tab, View};
 use crate::theme;
 use crate::tiles_view::Tiles;
@@ -35,6 +37,17 @@ pub fn fit(tab: &mut Tab, rect: Rect) {
             Pos2::new(b.x1 as f32, b.y1 as f32),
         ),
     );
+}
+
+/// Fits node `id` into `rect`; nothing happens when it has no bounds.
+fn fit_node(tab: &mut Tab, rect: Rect, id: Guid) {
+    if let Some(b) = figstudio_render::node_bounds(&tab.doc, id) {
+        let page = Rect::from_min_max(
+            Pos2::new(b.x0 as f32, b.y0 as f32),
+            Pos2::new(b.x1 as f32, b.y1 as f32),
+        );
+        fit_rect(tab, rect, page);
+    }
 }
 
 pub fn fit_rect(tab: &mut Tab, rect: Rect, page_rect: Rect) {
@@ -67,6 +80,11 @@ pub fn show(
     if tab.fit_pending && rect.width() > 10.0 {
         fit(tab, rect);
         tab.fit_pending = false;
+    }
+    if rect.width() > 10.0
+        && let Some(id) = tab.fit_node.take()
+    {
+        fit_node(tab, rect, id);
     }
 
     // Input: pan.
@@ -120,19 +138,24 @@ pub fn show(
             Tool::Hand => {}
         }
     }
+    // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
+    // canvas nothing is selected, so no menu opens. Any tool, as the spec says.
+    if response.secondary_clicked() && !marquee::right_click(&response, tab, origin) {
+        tab.select(tab.hover);
+    }
+    marquee::update(ui, &response, tab, origin, tool == Tool::Select && !panning);
+    if tab.marquee.menu {
+        marquee::context(&response, tab);
+    } else if let Some(id) = tab.selection {
+        let mut picked = None;
+        copy_menu::on_context(&response, tab, id, &mut picked);
+        tab.pending_copy = picked.or(tab.pending_copy.take());
+    }
     if response.double_clicked()
         && tool == Tool::Select
         && let Some(sel) = tab.selection
-        && let Some(b) = figstudio_render::node_bounds(&tab.doc, sel)
     {
-        fit_rect(
-            tab,
-            rect,
-            Rect::from_min_max(
-                Pos2::new(b.x0 as f32, b.y0 as f32),
-                Pos2::new(b.x1 as f32, b.y1 as f32),
-            ),
-        );
+        fit_node(tab, rect, sel);
     }
 
     // Rendering: cached tiles now, missing ones requested (tiles_view.rs).
@@ -158,6 +181,7 @@ pub fn show(
     if let Some(sel) = tab.selection {
         outline(&painter, tab, origin, sel, Stroke::new(1.5, theme::ACCENT));
     }
+    marquee::paint(&painter, tab, origin);
 
     let cursor = match tool {
         _ if panning => egui::CursorIcon::Grab,

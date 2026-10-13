@@ -1,10 +1,12 @@
-use super::fault;
-use crate::node_id::{NodeId, parse_node_id};
+//! Local Code Connect context: component properties, variants and nested instances.
+use crate::{
+    node_id::{NodeId, parse_node_id},
+    output::Output,
+};
 use figstudio_fig::{Document, Guid, Node, Val, resolve};
-use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
-pub(super) fn component_set(doc: &Document, id: Guid) -> Option<&Node> {
+pub fn component_set(doc: &Document, id: Guid) -> Option<&Node> {
     let node = doc.node(id)?;
     let is_set =
         |node: &&Node| node.kind == "COMPONENT_SET" || node.data.flag("isStateGroup") == Some(true);
@@ -13,13 +15,13 @@ pub(super) fn component_set(doc: &Document, id: Guid) -> Option<&Node> {
         .or_else(|| node.parent.and_then(|id| doc.node(id)).filter(is_set))
 }
 
-pub(super) fn is_component(node: &Node) -> bool {
+pub fn is_component(node: &Node) -> bool {
     node.kind == "SYMBOL"
         || node.kind == "COMPONENT_SET"
         || node.data.flag("isStateGroup") == Some(true)
 }
 
-pub(super) fn component_id(doc: &Document, input: &str) -> Result<Guid, &'static str> {
+pub fn component_id(doc: &Document, input: &str) -> Result<Guid, &'static str> {
     let (id, data) = match parse_node_id(input).map_err(|_| "Invalid node ID")? {
         NodeId::Node(id) => (id, doc.node(id).ok_or("Unknown node ID")?.data.clone()),
         NodeId::InstancePath(path) => {
@@ -39,13 +41,13 @@ pub(super) fn component_id(doc: &Document, input: &str) -> Result<Guid, &'static
 }
 
 /// Return schema-preserving component properties and bounded local child context.
-pub fn component_context(doc: &Document, input: &str) -> CallToolResult {
+pub fn component_context(doc: &Document, input: &str) -> Output {
     let id = match component_id(doc, input) {
         Ok(id) => id,
-        Err(message) => return fault(message),
+        Err(message) => return Output::fault(message),
     };
     let Some(node) = doc.node(id) else {
-        return fault("Unknown component");
+        return Output::fault("Unknown component");
     };
     let set = component_set(doc, id);
     let defs = node
@@ -107,7 +109,7 @@ pub fn component_context(doc: &Document, input: &str) -> CallToolResult {
             stack.push((child, 0));
         }
     }
-    CallToolResult::structured(json!({"nodeId":id.to_string(), "componentName":node.name,
+    Output::structured(json!({"nodeId":id.to_string(), "componentName":node.name,
         "description":node.data.text("description"),
         "componentPropDefs":defs.iter().take(100).map(value).collect::<Vec<_>>(),
         "variantOptions":options, "variants":variants, "nestedInstances":nested,

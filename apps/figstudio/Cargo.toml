@@ -7,8 +7,16 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+# Agent access: the View menu can start the MCP server inside the app (mcp_host.rs). Desktop
+# only; the deps below are native-only, so the browser build never compiles them.
+default = ["mcp"]
+mcp = ["dep:figstudio-mcp", "dep:tokio", "dep:tokio-util"]
+
 [dependencies]
 figstudio-fig = { workspace = true }
+# Node IDs and figstudio:// links for the Copy menus (copy.rs), shared with the MCP server.
+figstudio-mcp-core = { workspace = true }
 egui = { workspace = true }
 web-time = { workspace = true }
 # The browser's `?renderer=cpu|gpu` query (gpu_scenes.rs); the URL crate's own parser.
@@ -17,6 +25,13 @@ form_urlencoded = "1.2"
 [dev-dependencies]
 # Only the export test decodes PNGs.
 image = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# mcp_host tests: an MCP client over HTTP against the hosted server.
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+serde_json = { workspace = true }
+# Headless UI tests (ui_tests.rs): the real App driven without a window, GPU or display.
+egui_kittest = { version = "0.36", default-features = false, features = ["eframe"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # parallel: page recordings replayed per tile (recordings.rs), as in the browser build.
@@ -31,6 +46,10 @@ pollster = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11"] }
 rfd = { workspace = true }
 fontdb = { workspace = true }
+# Feature `mcp`: the app hosts the live MCP server on loopback (same crates as figstudio-mcp).
+figstudio-mcp = { path = "../figstudio-mcp", optional = true }
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
 
 # Browser build: see scripts/web-build.sh (nightly, shared memory, Web Worker threads).
 [target.'cfg(target_arch = "wasm32")'.dependencies]

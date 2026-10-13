@@ -33,14 +33,25 @@ cargo $TC clippy --release --workspace --all-targets -- -D warnings
 cargo $TC clippy --release -p figstudio-render --features parallel --all-targets -- -D warnings
 # GPU tile replay (vello_gpu; the app wires it). Its pixel tests skip without a GPU adapter.
 cargo $TC clippy --release -p figstudio-render --features gpu --all-targets -- -D warnings
+# The app without agent access (feature `mcp` off), as the browser build compiles it.
+cargo $TC clippy --release -p figstudio --no-default-features --all-targets -- -D warnings
 
 step "tests"
 cargo $TC test --release --workspace
 # `gpu` includes `parallel`: the replay tests plus the GPU-vs-CPU tile tests.
 cargo $TC test --release -p figstudio-render --features gpu
+# mcp-core as the app and the browser use it: no files, no system fonts.
+cargo $TC test --release -p figstudio-mcp-core --no-default-features
 
 step "release build"
 cargo $TC build --release --workspace
+
+step "mcp-core for wasm32"
+if rustup target list --installed $TC_FLAG 2>/dev/null | grep -qx wasm32-unknown-unknown; then
+  cargo $TC build -p figstudio-mcp-core --no-default-features --target wasm32-unknown-unknown
+else
+  echo "skipped: run 'rustup target add wasm32-unknown-unknown $TC_FLAG' first"
+fi
 
 if [ "${1:-}" = "--cross" ]; then
   step "macOS check (aarch64-apple-darwin)"

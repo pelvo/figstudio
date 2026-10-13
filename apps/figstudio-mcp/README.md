@@ -30,13 +30,30 @@ figstudio-mcp [--http[=ADDR]] [--no-system-fonts] [--assets-dir DIR | --assets i
 | Flag | Meaning |
 |---|---|
 | `FILE.fig...` | One or more files (required). They open lazily on first use and stay cached. |
-| `--http` | Serve Streamable HTTP on `127.0.0.1:3845`, path `/mcp`. Without it, the server talks over stdio. |
-| `--http=ADDR` | Same, on a custom address, for example `--http=127.0.0.1:4567`. The `=` is required, so `--http FILE.fig` is not read as an address. |
+| `--http` | Serve Streamable HTTP on `127.0.0.1:3845`, path `/mcp`; when 3845 is busy, the first free port of 3846–3855 (the chosen address is printed to stderr). Without it, the server talks over stdio. |
+| `--http=ADDR` | Same, on exactly this address, for example `--http=127.0.0.1:4567`; a busy address is an error, never another port. The `=` is required, so `--http FILE.fig` is not read as an address. |
 | `--no-system-fonts` | Do not use installed fonts when a text layer has no stored glyph outlines. |
 | `--assets-dir DIR` | Where `get_design_context` writes its PNG assets. Default `./figma-assets`, resolved against the current directory. |
 | `--assets inline` | Return those assets as image content instead of files. Cannot be combined with `--assets-dir`. |
 | `--max-output-bytes N` | Byte cap of the text from `get_metadata`, `get_design_context` and `get_figjam` (default 24000, accepted 4000–100000). Claude Code delivered 20,166- and 25,810-character replies and rejected 44,674 and 74,213 characters, so the default stays under the delivered sizes. Raising it risks a rejected reply. |
 | `--version`, `--help` | As usual. |
+
+### Inside the figstudio app (live mode)
+
+The desktop app can host this server with the files it has open. Turn it on in **View →
+Agent access (MCP server)**. It is off at every launch and is not saved.
+
+- While it runs, the status bar shows `MCP 127.0.0.1:3845/mcp`. Point your client there.
+  The app tries 3845, then 3846–3855, and shows the address it got.
+- It is loopback only. The app has no address setting.
+- Tabs are the files: `fileKey` is the file's stem (or its full path when two open files
+  share a stem), as `list_open_tabs` shows.
+- The app serves every tool of this server, plus the three live tools (below), on the open
+  tabs. Assets come back inline, so the app writes no PNG files.
+
+```sh
+claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp
+```
 
 ### stdio
 
@@ -58,6 +75,14 @@ works unchanged.
   and `http://[::1]:*` pass, and any other origin, including `null`, gets 403. Binding to a
   non-loopback address prints a warning, and remote clients are still rejected. It is a local tool.
 - All HTTP sessions share one file cache.
+
+**Security (both servers).**
+
+- The app binds loopback only, with no address setting. `--http=ADDR` can bind another
+  address; that prints a warning, and remote clients are still refused by the `Host` check.
+- `Host` must be loopback and `Origin` (when sent) must be loopback. Anything else is 403.
+- No CORS: no reply carries `Access-Control-Allow-Origin`, and a preflight from another
+  origin is refused. A web page cannot read the server.
 
 ## Client setup
 
@@ -124,20 +149,49 @@ the same stem need the full path. A missing, unknown or ambiguous key is a tool 
 
 An instance path names a node *inside* an instance, with that instance's overrides
 applied. `get_metadata` prints such ids for the children of every instance; the other
-tools accept them. There is no "current selection" offline, so `nodeId` is always
-explicit.
+tools accept them.
+
+**Links (`figstudio://`).** The app's Copy menus put these on the clipboard. A node link
+works wherever a `nodeId` is taken, and `reveal_node` takes one too. A region link works in
+`get_screenshot` (`nodeId`) and `get_nodes_in_region` (`region`); other tools reject it:
+
+| Form | Example |
+|---|---|
+| Node | `figstudio://structure?node-id=1-42` |
+| Region | `figstudio://structure?page=0-1&rect=0,0,400,300` |
+
+- The host is the file's key, percent-encoded. A file stem such as `structure` is the usual
+  key. Exactly one of `node-id` or `page` + `rect` is allowed; `rect` is `x,y,w,h` with
+  width and height above 0.
+- A `figma.com` link (`/design`, `/file` or `/board`, host `figma.com` or `www.figma.com`)
+  also works.
+- **File choice** (`fileKey` argument first, then the link):
+  - an explicit `fileKey` wins;
+  - a `figstudio://` link names its file, and an unknown key is a tool error;
+  - a figma.com link names a file when its key equals a file's stem, or its slug equals
+    the stem with spaces turned into `-`;
+  - otherwise the link's file part is ignored and the usual rule applies: the single file,
+    or the active tab in live mode.
+
+**Selection defaults (live mode only).** In the app, a missing `nodeId` falls back to the
+node selected in the tab, for `get_design_context`, `get_screenshot`, `get_variable_defs`,
+`download_assets` (when `nodeIds` is empty) and `get_context_for_code_connect`. With nothing
+selected the reply is `nodeId is required: nothing is selected in this tab`. Standalone, a
+missing `nodeId` is `nodeId is required`. `get_metadata` with no `nodeId` still lists the
+pages.
 
 ## Tools
 
-13 tools and 1 prompt. "Official" means Figma's server; "differs offline" lists what a
-client should expect to be different.
+14 tools and 1 prompt, plus 3 live tools in the app. "Official" means Figma's server;
+"differs offline" lists what a client should expect to be different.
 
 | Tool | Inputs | Output | Differs offline / limits |
 |---|---|---|---|
 | `whoami` | none | `{mode:"offline", server, files}` | Stub: no account. |
 | `list_files` | none | `{files:[{key,path,pages}]}` | Not in the official server. `pages` is null until the file is first opened. |
 | `get_metadata` | `nodeId?`, `fileKey?`, `depth?` | Sparse XML: `id name x y width height`, parent-relative, rotation in degrees (counter-clockwise positive). No `nodeId` lists the pages. | Instances expand with overrides applied (`I…;…` ids, `componentId`). Max 5000 elements and 24 kB of XML by default (`--max-output-bytes`) (`truncated="true"` when cut; call again with a child `nodeId` or a smaller `depth`). Text cut at 200 characters plus `…`. An XML comment counts instances that could not be expanded. |
-| `get_screenshot` | `nodeId`, `fileKey?`, `scale?` | PNG image plus a text line `WxH px, scale S` and an `approximations:` line | `scale` 0.01–4 (default 1). Without `scale` the longest side is capped at 2048 px (about 1–2 MB PNGs, under Claude's 1568 px downscale threshold and the 5 MB base64 limit); with an explicit `scale` at 4096 px (3.1–3.7 MB PNGs measured). Cropped to the node's own box, so shadows and strokes outside it are cut. Transparent background (pages use the page colour). An instance path renders that node alone, as laid out inside its instance; ancestor masks and clips are not applied. |
+| `get_screenshot` | `nodeId`, `fileKey?`, `scale?` | PNG image plus a text line `WxH px, scale S` and an `approximations:` line | `scale` 0.01–4 (default 1). Without `scale` the longest side is capped at 2048 px (about 1–2 MB PNGs, under Claude's 1568 px downscale threshold and the 5 MB base64 limit); with an explicit `scale` at 4096 px (3.1–3.7 MB PNGs measured). Cropped to the node's own box, so shadows and strokes outside it are cut. Transparent background (pages use the page colour). An instance path renders that node alone, as laid out inside its instance; ancestor masks and clips are not applied. A `figstudio://…?page=…&rect=…` region link in `nodeId` renders that rectangle of the page on the page colour, with the same scale and size caps. |
+| `get_nodes_in_region` | `region?` or `page?` + `rect?`, `fileKey?`, `limit?` | JSON `{page, rect, nodes: [{nodeId, name, kind}], total, truncated}` | Visible nodes of a page whose box overlaps the rectangle, top-level first. `region` is a `figstudio://<key>?page=0-1&rect=x,y,w,h` link as the app's Copy region gives; `rect` is `[x, y, w, h]` in page units. `limit` 1–500, default 50. A bad rect, an unknown page or both forms at once is a tool error. |
 | `get_variable_defs` | `nodeId`, `fileKey?` | Flat JSON map `name → value` of the variables and styles used under the node | All modes (extra modes as `name (Mode)`), aliases resolved, instances walked with overrides. Reads effective node data only, not component property storage. Colours `#RRGGBB(AA)`. |
 | `get_design_context` | `nodeId`, `fileKey?`, `clientFrameworks?`, `clientLanguages?`, `maxNodes?` | React + Tailwind JSX (`data-node-id`, `data-name` on every element), agent instructions, an asset list and an `approximations:` line | Always React + Tailwind; the client hints are only echoed. No shader runtime. Vectors, boolean operations and image-filled leaves become PNG `<img>` assets at scale 2. Caps: `maxNodes` default 1000, at most 5000; 24 000 bytes of code by default (`--max-output-bytes`); 30 assets; 4 MB of inline images. Past a cap the output is cut with a note: call `get_metadata`, then this tool on children. |
 | `download_assets` | `nodeIds` (1–20), `fileKey?`, `format?` (`png`\|`jpg`), `scale?`, `original?` | One text line plus one image per node. With `original=true`, the stored bytes of the image fills inside each node. | No SVG or PDF. JPG (quality 90) is flattened onto white. Max 12 originals per call (`MAX_ORIGINALS`: Claude Code cuts a reply at 25k tokens and each image costs about 1.5k), each image once. A reply holds at most 10 MiB of image data (`MAX_PAYLOAD_BYTES`, the stdio line limit) and no image over 3.75 MB raw (`MAX_IMAGE_BYTES`: 5 MB of base64, the per-image limit on Bedrock and Vertex); a larger one is reported with its size and not sent. The text lines come before the images in every reply. `get_figjam` `includeImages` shares the 10 MiB budget. One node failing does not fail the call. |
@@ -147,6 +201,9 @@ client should expect to be different.
 | `add_code_connect_map` | `nodeId`, `componentName`, `source`, `label`, `snippet?`, `snippetImports?` | The stored mapping | Writes the sidecar atomically. An instance is stored under its component's id. `source` is stored, never fetched. Limits: source 4096 bytes, snippet 100 000 bytes, 100 imports of 4096 bytes. `imports` is accepted as an alias of `snippetImports`. |
 | `search_design_system` | `query`, `kinds?`, `fileKey?` | Ranked matches | This file only (no team libraries). `kinds`: `component`, `component_set`, `style`, `variable`. Exact names first; at most 100 results. |
 | `get_libraries` | `fileKey?` | Summary of this file's components, token collections, modes and styles | Local only; lists capped at 100, with totals. |
+| `list_open_tabs` *(app only)* | none | `{tabs: [{tabId, fileKey, path, title, page: {id, name}, selection, active}]}` | Lists the app's open tabs. `fileKey` is what the other tools take. |
+| `get_selection` *(app only)* | `fileKey?` | `{fileKey, tabId, page, node: {nodeId, name, kind, bounds: {x, y, width, height}}}`, or `node: null` | The selected node of a tab (default the active tab). Bounds are in page units. |
+| `reveal_node` *(app only)* | `nodeId` (or a link), `fileKey?` | One line: the node is revealed in tab N | Selects the node in the app; the tab becomes active and the view fits the node. An instance path reveals its outer instance and says so. Waits 5 s for the app; then the error "the app did not respond" (a minimised window may not run frames, so the reveal can time out). |
 
 **Prompt: `create_design_system_rules`** (`prompts/get`; optional arguments
 `clientFrameworks`, `clientLanguages`, `fileKey`, all strings). Returns guidance for a
@@ -154,7 +211,11 @@ design-system rules file, plus the file's token summary and component list (name
 200 characters). It writes no files.
 
 Tool errors (bad id, unknown file, missing node) come back as results with
-`isError: true`, not as protocol failures.
+`isError: true`, not as protocol failures. `nodeId` is optional in the schemas of
+`get_screenshot`, `get_variable_defs`, `get_design_context` and `get_context_for_code_connect`
+(and `nodeIds` of `download_assets`) because the app's live mode fills it in from the
+selection; this server, run on its own, answers a call without it with the tool error
+`nodeId is required` (`download_assets`: `nodeIds must hold 1 to 20 ids`).
 
 ## Not replicated
 

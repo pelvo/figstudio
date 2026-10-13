@@ -25,6 +25,24 @@ crates/render/src/       Document -> pixels with vello_cpu; builds for wasm with
   text.rs                stored glyph outlines; installed-font layout (feature system-fonts)
   focus.rs               render_path / path_bounds: draw one node inside an instance on its own,
                          laid out as the instance draws it (used by MCP instance-path shots)
+crates/mcp-core/src/     the MCP tool logic, with no SDK types (shared by the standalone server
+                         and the app). Features: `fs` (writes asset files, lazy reads via
+                         std::fs) and `system-fonts`; both are on by default. The wasm32 build and
+                         the browser use `--no-default-features`, where `fs` is off.
+  link.rs                figstudio:// and figma.com links: parse_link, format_node_link,
+                         format_region_link, validate_rect
+  node_id.rs             node IDs and instance paths (moved from the server)
+  error.rs               CoreError (InvalidNodeId, FileKey, Open, InvalidLink)
+  output.rs              Output and Block: the text / image split every tool reply uses
+  metadata.rs, metadata/ get_metadata and get_figjam text (figjam.rs, node.rs, pages.rs)
+  rendering.rs           Rendering: one document's renderer, with lazy image reads
+  screenshot.rs          render_node, layer_shot and the caps shared with the app's PNG export
+  region.rs              nodes_in: the nodes of a page that touch a rectangle, top-level first
+  region_shot.rs         plan / viewport / region_shot: the region crop shared by the app and MCP
+  region_tool.rs         get_nodes_in_region logic
+  design/, variables/, design_system.rs, figjam.rs, assets.rs, codeconnect_context.rs
+                         the rest of the tool logic (design/ = get_design_context)
+
 apps/figstudio-cli/src/
   main.rs                argument parsing and commands
   doctor.rs              privacy-safe structure report
@@ -276,6 +294,45 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   the status bar names the renderer ("GPU (Metal)" or "CPU"). The CLI, tests and export always
   use the CPU renderer, so their output stays reproducible.
 
+### Copy menus, marquee and region copy (`apps/figstudio`)
+
+- **Right-click menus** (`copy_menu.rs`, text in `copy.rs`): in the Layers tree, on the canvas and
+  in Properties, a node menu offers Copy name, Copy text (TEXT nodes only), Copy node ID, Copy
+  link, Copy for agent, and Copy as PNG (2x, same caps as export). The formatters are pure
+  functions in `copy.rs`, tested in `copy_tests.rs`.
+- **Marquee** (`marquee.rs`): with the Select tool, a primary drag draws a rectangle in page
+  coordinates (kept when at least 4 screen points on a side). Esc, a click or a page switch clears it.
+- **Region menu** (`region_copy.rs`): a right-click inside the marquee offers Copy region (text:
+  the `figstudio://` region link, the file and page, then up to 50 nodes, top-level first,
+  from `figstudio_mcp_core::region::nodes_in`) and Copy region as PNG.
+- **Region PNG** (`region_png.rs`): the region is rendered off the UI thread (desktop: a thread;
+  web: the worker), capped at 4096 px per side and 16 MP, then copied with `ctx.copy_image`.
+  The toast gives the size. On the desktop a failed image copy is only logged by egui-winit,
+  so the toast says so. On the web, a missing secure context or `ClipboardItem` downloads the
+  PNG instead.
+
+### MCP inside the app (`mcp_host.rs`, desktop only)
+
+- The View menu item **Agent access (MCP server)** starts the live server. It is off at every
+  launch. `mcp_off.rs` is the same API with no thread, used when the `mcp` feature is off or on
+  wasm32, so the UI code does not change.
+- **Threads.** `McpHost::start` spawns one thread named `mcp`. It runs a 2-worker tokio runtime,
+  binds the first free of 127.0.0.1:3845 to :3855 (`bind_first`), and serves `serve_http` with
+  `FigstudioServer::live`. The runtime ends with `shutdown_background`, so a stuck stdin or SSE
+  stream cannot block the app. A bind or runtime error comes back as an event, turns the toggle
+  off, and shows a toast.
+- **Snapshot (app to server).** Each frame while running, `sync` builds a `Key` from the tab ids,
+  the document pointers (`Arc<Document>`), page, selection and the viewport in whole units. It publishes a new
+  `Arc<Snapshot>` only when the key changes. The server reads the snapshot under a lock held
+  only for the `Arc` clone, so the UI thread never waits for a tool call. A call that holds an
+  old `Arc<Document>` finishes even when the tab closes.
+- **Reveal (server to app).** A `reveal_node` call sends `Command::Reveal` over a channel and
+  calls `wake` (`ctx.request_repaint`). The next `frame` drains it: the tab becomes active,
+  is selected, and gets `Tab.fit_node`. `canvas::fit_node` fits it on the next draw. The reply is
+  `Ok`, or `Err("tab closed")`. The server waits at most 5 s (`REVEAL_TIMEOUT`).
+- **Tests:** `src/mcp_host_tests.rs` (the key, reveal with a stale tab, a busy-port fallback, no
+  free port, and an HTTP client run).
+
 ### The browser app (`apps/figstudio` on wasm32)
 
 Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared memory) into
@@ -431,6 +488,7 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T4 | Virtualise the Layers panel (draw only visible rows) | `apps/figstudio/src/panels.rs` | 100k-node stress file: Layers expand-all stays under 16 ms per frame (`FIGSTUDIO_PROFILE=1`) |
 | T5 | Fit-to-page on huge pages (~0.4 s per frame today): level-of-detail or tile cache | `crates/render`, `apps/figstudio/src/canvas.rs` | 100k-node stress page pans smoothly at fit zoom; culling test still passes |
 | T6 | Inner shadow, background blur, blend modes | `crates/render/src/lib.rs` | Each drawn and tested, or still counted; thumb sheet reviewed |
+| T21 | MCP inside the app: shared `mcp-core`, embedded desktop server (off by default), right-click Copy and Copy region (issue #9); plan and lanes in `docs/MCP-APP.md` | `crates/mcp-core`, `apps/figstudio-mcp`, `apps/figstudio` | Lanes L0–L9 in `docs/MCP-APP.md` done |
 | T20 | GPU canvas with `vello_gpu` (desktop + browser) with CPU fallback; plan and lanes in `docs/GPU.md` | `crates/render`, `apps/figstudio` | Lanes L1–L5 in `docs/GPU.md` done |
 | T19 | Clear the approximation counters, one fix at a time (plan and measurements in `docs/APPROXIMATIONS.md`) | `crates/render/src` | Each row of the plan done or explained; counters re-measured and logged there |
 | T7 | Progressive blur, noise / grain / texture | `crates/render/src/lib.rs` | `noise_and_grain.fig` matches its thumbnail more closely; skipped count drops |

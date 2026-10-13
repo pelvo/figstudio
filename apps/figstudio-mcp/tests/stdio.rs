@@ -58,6 +58,52 @@ async fn non_loopback_http_warns() {
     child.kill().await.unwrap();
 }
 
+async fn stderr_line(args: &[String]) -> (tokio::process::Child, String) {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
+        .args(args)
+        .arg(fixture())
+        .kill_on_drop(true)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let line = tokio::time::timeout(std::time::Duration::from_secs(10), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_or_default();
+    (child, line)
+}
+
+#[tokio::test]
+async fn bare_http_falls_back_to_the_next_port() {
+    // Hold 3845 when it is free, so the server has to move on.
+    let held = std::net::TcpListener::bind("127.0.0.1:3845").ok();
+    let (mut child, line) = stderr_line(&["--http".into()]).await;
+    let port: u16 = line
+        .strip_prefix("listening on http://127.0.0.1:")
+        .and_then(|rest| rest.strip_suffix("/mcp"))
+        .unwrap_or_else(|| panic!("no address on stderr: {line}"))
+        .parse()
+        .unwrap();
+    assert!((3846..=3855).contains(&port), "{port}");
+    child.kill().await.unwrap();
+    drop(held);
+}
+
+#[tokio::test]
+async fn explicit_http_never_falls_back() {
+    let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = busy.local_addr().unwrap();
+    let (mut child, _) = stderr_line(&[format!("--http={addr}")]).await;
+    let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!status.success(), "bound another port instead of failing");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn stdio_sigterm_shuts_down_cleanly() {
@@ -110,9 +156,16 @@ async fn stdio_discovers_and_calls_tools() {
         let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
         let info = client.peer_info().unwrap();
         assert_eq!(info.server_info.as_ref().unwrap().name, "figstudio-mcp");
-        assert!(info.instructions.as_ref().unwrap().contains("Offline"));
+        let instructions = info.instructions.as_ref().unwrap();
+        assert!(instructions.starts_with("Offline access to local .fig files only."));
+        assert!(instructions.contains("figstudio://<fileKey>?page=0-1&rect=x,y,w,h region link"));
+        assert!(instructions.contains("get_nodes_in_region"));
+        assert!(
+            !instructions.contains("Live mode"),
+            "standalone names live mode"
+        );
         let tools = client.list_all_tools().await.unwrap();
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 14);
         for name in [
             "get_design_context",
             "whoami",

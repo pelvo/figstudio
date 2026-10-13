@@ -9,8 +9,12 @@ pub mod design;
 pub mod design_system;
 /// FigJam boards as metadata XML with FigJam details.
 pub mod figjam;
+/// Live-mode tools: open tabs, selection, reveal.
+pub mod live;
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
+/// The nodes a page rectangle touches.
+pub mod region;
 /// Render settings and lazy image reads shared by the rendering tools.
 pub mod rendering;
 /// PNG renders of nodes.
@@ -18,15 +22,23 @@ pub mod screenshot;
 /// Used variable and style definitions.
 pub mod variables;
 use crate::FigstudioServer;
-use rmcp::{model::CallToolResult, tool, tool_router};
+use figstudio_mcp_core::output::{Block, Output};
+use rmcp::{
+    model::{CallToolResult, ContentBlock, ResourceContents},
+    tool, tool_router,
+};
 use serde_json::json;
 
 #[tool_router(vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(description = "Identify this offline server and its registered local files")]
     fn whoami(&self) -> CallToolResult {
+        let mode = match self.files {
+            crate::files::Files::Registry(_) => "offline",
+            crate::files::Files::Live(_) => "live",
+        };
         CallToolResult::structured(
-            json!({"mode": "offline", "server": "figstudio-mcp", "files": self.files.keys()}),
+            json!({"mode": mode, "server": "figstudio-mcp", "files": self.files.keys()}),
         )
     }
 
@@ -38,28 +50,33 @@ impl FigstudioServer {
     }
 }
 
-/// Move a finished temporary file to `path` with `permissions`, or public read (0644 on unix)
-/// for a new file, so the result does not depend on the process umask. Replaces a link at
-/// `path` rather than following it.
-pub(crate) fn persist_file(
-    temp: tempfile::NamedTempFile,
-    path: &std::path::Path,
-    permissions: Option<std::fs::Permissions>,
-) -> std::io::Result<()> {
-    #[cfg(unix)]
-    let permissions = permissions.or_else(|| {
-        use std::os::unix::fs::PermissionsExt;
-        Some(std::fs::Permissions::from_mode(0o644))
-    });
-    if let Some(permissions) = permissions {
-        temp.as_file().set_permissions(permissions)?;
-    }
-    temp.as_file().sync_all()?;
-    temp.persist(path).map_err(|error| error.error)?;
-    Ok(())
-}
+pub(crate) use figstudio_mcp_core::fs::persist_file;
 
 /// Map a local document/input error to a tool result, not a protocol failure.
 pub fn tool_error(error: crate::error::McpError) -> CallToolResult {
     CallToolResult::error(vec![rmcp::model::ContentBlock::text(error.to_string())])
+}
+
+/// Map a core [`Output`] to the protocol result; content blocks keep their order.
+pub fn to_call(output: Output) -> CallToolResult {
+    let content = output
+        .content
+        .into_iter()
+        .map(|block| match block {
+            Block::Text(text) => ContentBlock::text(text),
+            Block::Image { data_b64, mime } => ContentBlock::image(data_b64, mime),
+            Block::Blob {
+                data_b64,
+                uri,
+                mime,
+            } => ContentBlock::resource(ResourceContents::blob(data_b64, uri).with_mime_type(mime)),
+        })
+        .collect();
+    let mut result = if output.is_error {
+        CallToolResult::error(content)
+    } else {
+        CallToolResult::success(content)
+    };
+    result.structured_content = output.structured;
+    result
 }

@@ -500,7 +500,7 @@ impl Workers {
 
     /// Takes the one export slot (desktop and browser alike: an export can hold a 1 GiB
     /// frame); it is free again when the returned value is dropped.
-    fn begin_export(&self) -> Result<ExportRelease, &'static str> {
+    pub(crate) fn begin_export(&self) -> Result<ExportRelease, &'static str> {
         self.export_busy
             .compare_exchange(
                 false,
@@ -533,7 +533,7 @@ impl Workers {
     }
 }
 
-struct ExportRelease(Arc<std::sync::atomic::AtomicBool>);
+pub(crate) struct ExportRelease(Arc<std::sync::atomic::AtomicBool>);
 
 impl Drop for ExportRelease {
     fn drop(&mut self) {

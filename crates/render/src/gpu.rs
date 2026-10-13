@@ -12,7 +12,7 @@ use std::fmt;
 use vello_cpu::PaintType;
 use vello_cpu::filter_effects::Filter;
 use vello_cpu::kurbo::{Affine, BezPath, Rect};
-use vello_cpu::peniko::Fill;
+use vello_cpu::peniko::{BlendMode, Fill};
 use vello_gpu::Scene;
 
 use crate::Viewport;
@@ -147,6 +147,9 @@ impl Canvas for Scene {
     }
     fn set_fill_rule(&mut self, rule: Fill) {
         Scene::set_fill_rule(self, rule);
+    }
+    fn set_blend_mode(&mut self, mode: BlendMode) {
+        Scene::set_blend_mode(self, mode);
     }
     fn fill_path(&mut self, path: &BezPath) {
         Scene::fill_path(self, path);

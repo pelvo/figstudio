@@ -108,7 +108,7 @@ async fn check_version(version: &str) {
             let (tools, response_session) = post(&client, &uri, &version, session.clone(), json!({"jsonrpc":"2.0", "id":2, "method":"tools/list", "params":{"_meta":meta}})).await;
             if version == ProtocolVersion::LATEST.to_string() { assert!(response_session.is_none()); }
             let tools = tools["result"]["tools"].as_array().unwrap_or_else(|| panic!("tools/list failed: {tools}"));
-            assert_eq!(tools.len(), 13);
+            assert_eq!(tools.len(), 14);
             assert!(tools.iter().any(|tool| tool["name"] == "get_design_context"));
             assert!(tools.iter().any(|tool| tool["name"] == "get_variable_defs"));
             assert!(tools.iter().any(|tool| tool["name"] == "download_assets"));
@@ -130,6 +130,7 @@ async fn check_version(version: &str) {
             .json(&json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-03-26", "capabilities":{}, "clientInfo":{"name":"test", "version":"1"}}}))
             .send().await.unwrap();
         assert_eq!(denied.status(), reqwest::StatusCode::FORBIDDEN);
+        assert!(denied.headers().get("access-control-allow-origin").is_none());
         // Origin: absent or loopback passes; a web origin or `null` is rejected.
         let init = json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-03-26", "capabilities":{}, "clientInfo":{"name":"test", "version":"1"}}});
         let origin_status = |origin: Option<&'static str>| {
@@ -141,7 +142,10 @@ async fn check_version(version: &str) {
                 if let Some(origin) = origin {
                     request = request.header("Origin", origin);
                 }
-                request.send().await.unwrap().status()
+                let response = request.send().await.unwrap();
+                // No CORS grant: a browser page must never read the reply, whatever the status.
+                assert!(response.headers().get("access-control-allow-origin").is_none(), "CORS header for {origin:?}");
+                response.status()
             }
         };
         assert_eq!(origin_status(None).await, reqwest::StatusCode::OK);
@@ -149,6 +153,9 @@ async fn check_version(version: &str) {
         assert_eq!(origin_status(Some("http://127.0.0.1:3000")).await, reqwest::StatusCode::OK);
         assert_eq!(origin_status(Some("https://evil.example")).await, reqwest::StatusCode::FORBIDDEN);
         assert_eq!(origin_status(Some("null")).await, reqwest::StatusCode::FORBIDDEN);
+        let preflight = client.request(reqwest::Method::OPTIONS, uri.as_ref()).header("Origin", "https://evil.example")
+            .header("Access-Control-Request-Method", "POST").send().await.unwrap();
+        assert!(preflight.headers().get("access-control-allow-origin").is_none(), "preflight granted CORS");
         shutdown.cancel();
         task.await.unwrap().unwrap();
     }).await.expect("HTTP protocol timed out");

@@ -10,9 +10,10 @@ const MAX_OUTPUT_BYTES_RANGE: RangeInclusive<u64> = 4_000..=100_000;
 #[derive(Debug, Parser)]
 #[command(version, about = "Offline MCP server for local Figma files")]
 struct Args {
-    /// Serve /mcp (default: 127.0.0.1:3845). Custom addresses use --http=ADDR.
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "127.0.0.1:3845")]
-    http: Option<SocketAddr>,
+    /// Serve /mcp on 127.0.0.1:3845, or the next free port up to 3855. --http=ADDR binds
+    /// exactly ADDR and never falls back.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    http: Option<Http>,
     /// Disable installed fonts for subsequent rendering tools.
     #[arg(long)]
     no_system_fonts: bool,
@@ -36,6 +37,26 @@ struct Args {
     files: Vec<PathBuf>,
 }
 
+/// Where `--http` listens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Http {
+    /// Bare `--http`: the first free one of [`figstudio_mcp::default_http_addrs`].
+    Default,
+    /// `--http=ADDR`.
+    Exact(SocketAddr),
+}
+
+impl std::str::FromStr for Http {
+    type Err = std::net::AddrParseError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty() {
+            Ok(Self::Default)
+        } else {
+            value.parse().map(Self::Exact)
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -56,11 +77,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let server = FigstudioServer::new(args.files, args.no_system_fonts)
         .with_assets(assets)
         .with_max_output_bytes(args.max_output_bytes);
-    if let Some(addr) = args.http {
-        if !addr.ip().is_loopback() {
-            eprintln!("warning: non-loopback bind; rmcp rejects non-loopback Host headers");
-        }
-        let listener = tokio::net::TcpListener::bind(addr).await?;
+    if let Some(http) = args.http {
+        let listener = match http {
+            Http::Exact(addr) => {
+                if !addr.ip().is_loopback() {
+                    eprintln!("warning: non-loopback bind; rmcp rejects non-loopback Host headers");
+                }
+                tokio::net::TcpListener::bind(addr).await?
+            }
+            Http::Default => {
+                let listener =
+                    figstudio_mcp::bind_first(figstudio_mcp::default_http_addrs()).await?;
+                eprintln!("listening on http://{}/mcp", listener.local_addr()?);
+                listener
+            }
+        };
         let shutdown = tokio_util::sync::CancellationToken::new();
         let cancel = shutdown.clone();
         let signal = tokio::spawn(async move {
@@ -111,14 +142,14 @@ mod tests {
             "--no-system-fonts",
         ])
         .unwrap();
-        assert_eq!(
-            args.http.unwrap(),
-            "127.0.0.1:3845".parse::<SocketAddr>().unwrap()
-        );
+        assert_eq!(args.http.unwrap(), Http::Default);
         assert!(args.no_system_fonts);
         let args = Args::try_parse_from(["figstudio-mcp", "--http=127.0.0.1:4567", "example.fig"])
             .unwrap();
-        assert_eq!(args.http.unwrap().port(), 4567);
+        assert_eq!(
+            args.http.unwrap(),
+            Http::Exact("127.0.0.1:4567".parse().unwrap())
+        );
         assert_eq!(args.files, vec![PathBuf::from("example.fig")]);
         assert!(Args::try_parse_from(["figstudio-mcp"]).is_err());
         let args = Args::try_parse_from(["figstudio-mcp", "--assets-dir", "out", "a.fig"]).unwrap();

@@ -1,6 +1,6 @@
 //! Colours, gradients and bound colour variables as CSS values for Tailwind arbitrary classes.
 use super::{Notes, num};
-use crate::tools::variables::format::color as hex;
+use crate::variables::format::color as hex;
 use figstudio_fig::{
     Val,
     tokens::{Tokens, Value},

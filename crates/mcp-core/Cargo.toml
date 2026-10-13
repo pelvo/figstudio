@@ -1,0 +1,32 @@
+[package]
+name = "figstudio-mcp-core"
+description = "Node IDs, links and the tool logic shared by the MCP server and the app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+# `default-features = false` is the wasm32 build: no installed fonts, no files written.
+default = ["fs", "system-fonts"]
+# `Assets::Dir` writes rendered assets; without it that mode gives an error result.
+fs = ["dep:tempfile"]
+# Draw text that has no stored glyph outlines with fonts installed on this machine.
+system-fonts = ["figstudio-render/system-fonts"]
+
+[dependencies]
+figstudio-fig = { workspace = true }
+# node_bounds for the region walk; no default features, so it stays wasm-safe (no system fonts).
+figstudio-render = { workspace = true, default-features = false }
+url = { workspace = true }
+serde_json = { workspace = true }
+quick-xml = { workspace = true }
+base64 = { workspace = true }
+image = { workspace = true }
+html-escape = { workspace = true }
+tempfile = { workspace = true, optional = true }
+percent-encoding = { workspace = true }
+
+[lints]
+workspace = true

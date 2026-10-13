@@ -116,8 +116,8 @@ substitute for a Figma-made file when the test is about matching Figma.
 - Write outputs under `std::env::temp_dir()`; do not leave files in the repo.
 
 ### App
-No unit tests yet. Keep logic that can be tested (geometry, view maths) in plain functions
-in `tab.rs` / `canvas.rs` so it can be tested without a window.
+Keep logic that can be tested (geometry, view maths) in plain functions in `tab.rs` /
+`canvas.rs`. The UI itself is driven headlessly, see section 7b.
 
 ## 5. Prove the test
 
@@ -174,6 +174,29 @@ click, zoom percentage changed in the status bar, fit restored. `GUI_SMOKE_SECON
 Manual checks only a real desktop can do (list them as unverified unless you did them):
 File → Open and Export dialogs, drag and drop from a file manager, Wayland session, HiDPI /
 Retina scaling, trackpad pinch, macOS menu and shortcuts (Cmd).
+
+## 7b. Headless UI tests (egui_kittest)
+
+`apps/figstudio/src/ui_tests.rs` (+ `ui_copy_tests.rs`, `ui_mcp_tests.rs`) run the real `App`
+on `tests/fixtures/structure.fig` inside `cargo test`: no display, X server, GPU or xdotool, on
+macOS, Linux and CI. They use `egui_kittest` (dev-dependency, `eframe` feature only; no wgpu,
+no snapshot images). `App::new` takes `eframe::CreationContext`, which kittest builds with no
+wgpu state, so tiles render on the CPU path.
+
+```sh
+cargo test -p figstudio ui_tests          # 8 tests, about 1 s
+```
+
+How to write one: `harness()` returns a `Harness<App>` with the file loaded and fitted;
+`centre_of(&h, guid)` turns a node into a screen point; `right_click`, `drag`, `click_label`
+send pointer events; `step` also collects what the frame sent to the clipboard (egui
+`OutputCommand::CopyText` / `CopyImage`), which is how tests read "copied" text. Find widgets
+with `h.get_by_label("Copy link")` (plain `ui.label`s are matched by their accesskit value, see
+`shown_addr`). Menus open a frame or two after the click: use `wait_for`, not a fixed step count.
+Tests that start the MCP server use whatever port `bind_first` gives and read it from the status bar.
+
+Cannot be covered here: the real OS clipboard (paste into an editor or Preview), a real
+window manager, native file dialogs, GPU tiles, HiDPI and trackpad gestures.
 
 ## 8. Performance
 
@@ -287,10 +310,41 @@ cargo build --release -p figstudio-mcp
   sleep 2; } | target/release/figstudio-mcp tests/fixtures/structure.fig
 ```
 
-Keep stdin open (`sleep`) until the replies arrive; closing it ends the session. Expect 13
-tools in the listing. For HTTP, run `target/release/figstudio-mcp --http tests/fixtures/structure.fig`
+Keep stdin open (`sleep`) until the replies arrive; closing it ends the session. Expect 14
+tools in the listing (the 3 live tools appear only in the app). For HTTP, run `target/release/figstudio-mcp --http tests/fixtures/structure.fig`
 and POST to `http://127.0.0.1:3845/mcp` with `Accept: application/json, text/event-stream`.
 Do not run `add_code_connect_map` against a fixture in `tests/fixtures`: it writes a sidecar
 beside the file. Copy the fixture to a temp directory first.
 
-Not covered: a live Claude Code, Cursor, VS Code or Codex client, real Ctrl-C, Windows.
+**Live mode tests** (`live.rs` and `live/support.rs`, 9 tests) use a fake snapshot built from
+the fixtures and a fake app loop that answers each `reveal_node` command. They check the
+tab lists, `get_selection`, the `nodeId` defaults from the selection, the standalone
+"nodeId is required" error, reveal (and its 5 s timeout), a snapshot replaced while a
+call runs, and `bind_first` on a busy port. `tests/http.rs` asserts that no reply carries
+`Access-Control-Allow-Origin`, including preflight.
+
+**Golden harness** (`tests/golden.rs`, `tests/golden_figjam.rs`, both `#[ignore]`d). It
+records every tool's reply for the 7 fixtures and a synthetic FigJam board, 197 records. To
+compare a change with a base revision, run `scripts/mcp-golden.sh <rev>` (for example
+`scripts/mcp-golden.sh HEAD`). It builds the base in a temporary worktree under
+`target/golden-base`, records both trees, and exits 0 only when `diff -r` is empty. Logs
+are in `target/golden-*.log`. An intended output change (a tool description or a schema)
+shows as a diff; name it in the commit message and regenerate the base.
+
+**Desktop app (`apps/figstudio`, `src/mcp_host_tests.rs`).** Five tests: the snapshot key,
+reveal with a stale tab, a busy-port fallback, no free port, and an HTTP client that lists
+tabs, reveals and selects over a real port. The HTTP test runs only with the `mcp` feature
+(the default). `check.sh` also runs clippy with `--no-default-features` for the app.
+
+**`mcp-core` without default features.** `check.sh` runs its tests with
+`--no-default-features`, as the browser app uses it (no files, no system fonts). The wasm32
+build of the same crate is a separate `check.sh` step; it is skipped with a message when the
+target is not installed.
+
+**GPU-free.** None of the MCP or copy tests needs a GPU. The app's GPU renderer tests are
+in `docs/GPU.md`. The CLI and export always render on the CPU, so the golden output does not
+depend on the GPU.
+
+Not covered: a live Claude Code, Cursor, VS Code or Codex client, real Ctrl-C, Windows, a
+real right-click or drag in the app window, paste into an editor or Preview, and the browser
+clipboard.

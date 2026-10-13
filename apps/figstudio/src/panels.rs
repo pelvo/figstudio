@@ -4,6 +4,8 @@ use egui::{Color32, RichText, Sense, Ui, vec2};
 use figstudio_fig::{Document, Guid, Node, Val};
 use figstudio_render::geom;
 
+use crate::copy::Item;
+use crate::copy_menu;
 use crate::tab::Tab;
 use crate::theme;
 
@@ -125,6 +127,9 @@ fn flat_row(ui: &mut Ui, tab: &mut Tab, node: &Node) {
     if r.hovered() {
         tab.hover = Some(node.id);
     }
+    let mut picked = None;
+    copy_menu::on_context(&r, tab, node.id, &mut picked);
+    tab.pending_copy = picked.or(tab.pending_copy.take());
 }
 
 fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize) {
@@ -199,6 +204,9 @@ fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize) {
     if response.hovered() {
         tab.hover = Some(id);
     }
+    let mut picked = None;
+    copy_menu::on_context(&response, tab, id, &mut picked);
+    tab.pending_copy = picked.or(tab.pending_copy.take());
 }
 
 fn toggle(tab: &mut Tab, id: Guid) {
@@ -207,17 +215,20 @@ fn toggle(tab: &mut Tab, id: Guid) {
     }
 }
 
-pub fn properties(ui: &mut Ui, tab: &Tab) {
+/// Returns the Copy menu item picked this frame, if any.
+pub fn properties(ui: &mut Ui, tab: &Tab) -> Option<Item> {
     let doc = &tab.doc;
     let Some(node) = tab.selection.and_then(|id| doc.node(id)) else {
         document_info(ui, tab);
-        return;
+        return None;
     };
     let d = &node.data;
+    let mut picked: Option<Item> = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.label(RichText::new(display_name(node)).strong().size(14.0));
+            let header = ui.label(RichText::new(display_name(node)).strong().size(14.0));
+            copy_menu::on_context(&header, tab, node.id, &mut picked);
             ui.label(
                 RichText::new(format!("{}  ·  {}", node.kind, node.id))
                     .color(theme::TEXT_FAINT)
@@ -286,10 +297,7 @@ pub fn properties(ui: &mut Ui, tab: &Tab) {
 
             if node.kind == "TEXT" {
                 section(ui, "Text", |ui| {
-                    if let Some(s) = d.path(&["textData", "characters"]).and_then(Val::as_str) {
-                        let preview: String = s.chars().take(400).collect();
-                        ui.label(RichText::new(preview).color(theme::TEXT_DIM));
-                    }
+                    copy_menu::text_block(ui, tab, node, &mut picked);
                     if let Some(f) = d.path(&["fontName", "family"]).and_then(Val::as_str) {
                         let style = d
                             .path(&["fontName", "style"])
@@ -325,6 +333,7 @@ pub fn properties(ui: &mut Ui, tab: &Tab) {
                 );
             }
         });
+    picked
 }
 
 fn document_info(ui: &mut Ui, tab: &Tab) {
