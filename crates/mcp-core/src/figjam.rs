@@ -127,6 +127,9 @@ fn picture(
             Block::image(STANDARD.encode(png), "image/png"),
         ],
         Ok(_) => vec![Block::text(Payload::omitted(id))],
-        Err(error) => vec![Block::text(format!("{id}: PNG encoding failed: {error}"))],
+        Err(error) => vec![Block::text(format!(
+            "{id}: {}",
+            crate::error::CoreError::encode("PNG", error)
+        ))],
     }
 }

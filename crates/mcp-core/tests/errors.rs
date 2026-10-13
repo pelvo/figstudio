@@ -17,3 +17,12 @@ fn an_unresolvable_instance_path_keeps_the_resolve_error_as_its_source() {
     assert!(cause.is::<ResolveError>());
     assert_eq!(error.to_string(), format!("I99:99;1:2: {cause}"));
 }
+
+#[test]
+fn an_encode_error_keeps_its_cause_and_the_old_text() {
+    let cause = std::io::Error::other("disk full");
+    let error = figstudio_mcp_core::CoreError::encode("PNG", cause);
+    assert_eq!(error.to_string(), "PNG encoding failed: disk full");
+    let source = error.source().expect("the encoder error is the source");
+    assert_eq!(source.to_string(), "disk full");
+}

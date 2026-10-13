@@ -42,7 +42,7 @@ pub fn screenshot(
             Block::image(STANDARD.encode(png), "image/png"),
             Block::text(text),
         ]),
-        Err(error) => Output::fault(format!("PNG encoding failed: {error}")),
+        Err(error) => Output::fault(CoreError::encode("PNG", error).to_string()),
     }
 }
 
