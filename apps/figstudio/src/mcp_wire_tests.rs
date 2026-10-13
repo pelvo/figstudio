@@ -107,14 +107,44 @@ fn upload_names_never_carry_separators_or_overlong_text() {
 fn two_files_with_one_name_stay_bound_to_their_own_tabs() {
     let mut uploads = Uploads::new();
     let name = PathBuf::from("same.fig");
-    uploads.pick(name.clone(), "first");
+    let first = uploads.pick("first");
+    uploads.start(name.clone(), first);
     uploads.bind(&name, 1);
-    // A second pick of the same name while tab 1 is open must not replace tab 1's file.
-    uploads.pick(name.clone(), "second");
+    // A second file of the same name while tab 1 is open must not replace tab 1's file.
+    let second = uploads.pick("second");
+    uploads.start(name.clone(), second);
     uploads.bind(&name, 2);
     assert_eq!(uploads.get(1), Some("first"));
     assert_eq!(uploads.get(2), Some("second"));
     uploads.forget(1);
     assert_eq!(uploads.get(1), None);
     assert_eq!(uploads.get(2), Some("second"));
+}
+
+#[test]
+fn a_second_pick_of_a_loading_name_does_not_take_the_first_load() {
+    let mut uploads = Uploads::new();
+    let name = PathBuf::from("same.fig");
+    let a = uploads.pick("A");
+    let b = uploads.pick("B");
+    // `Pending` lets A's load start and ignores B's.
+    uploads.start(name.clone(), a);
+    uploads.discard(b);
+    uploads.bind(&name, 1);
+    assert_eq!(uploads.get(1), Some("A"));
+    // B's start after the discard finds nothing, so it can never bind.
+    uploads.start(name.clone(), b);
+    uploads.bind(&name, 2);
+    assert_eq!(uploads.get(2), None);
+}
+
+#[test]
+fn a_failed_load_releases_its_file() {
+    let mut uploads = Uploads::new();
+    let name = PathBuf::from("bad.fig");
+    let a = uploads.pick("A");
+    uploads.start(name.clone(), a);
+    uploads.fail(&name);
+    uploads.bind(&name, 1);
+    assert_eq!(uploads.get(1), None);
 }

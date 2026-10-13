@@ -288,6 +288,8 @@ impl App {
     fn close(&mut self, i: usize) {
         if i < self.tabs.len() {
             let closed = self.tabs.remove(i);
+            #[cfg(target_arch = "wasm32")]
+            web::forget_upload(closed.id);
             self.workers.close_tab(closed.id);
             let instance = closed.doc.instance;
             if !self.tabs.iter().any(|t| t.doc.instance == instance) {
@@ -402,6 +404,8 @@ impl App {
                 }
                 Loaded::Err { path, message } => {
                     self.loading.finish(&path);
+                    #[cfg(target_arch = "wasm32")]
+                    web::fail_upload(&path);
                     self.toast(
                         ctx,
                         format!("Could not open {}: {message}", path.display()),
@@ -501,9 +505,12 @@ impl App {
         }
         while let Ok(picked) = self.web.files.try_recv() {
             match picked {
-                web::Picked::Bytes(path, bytes) => {
+                web::Picked::Bytes(path, bytes, pick) => {
                     if self.loading.begin(&path) {
+                        web::start_upload(&path, pick);
                         self.workers.load_bytes(path, bytes);
+                    } else {
+                        web::discard_upload(pick);
                     }
                 }
                 web::Picked::Lazy {
@@ -511,13 +518,17 @@ impl App {
                     file,
                     entries,
                     eager,
+                    pick,
                 } => {
                     // Made first: on a duplicate open, dropping it releases the `File`.
                     let source = self.web.source(file);
                     if self.loading.begin(&name) {
+                        web::start_upload(&name, pick);
                         self.workers.decode(name, move || {
                             Ok((web::decode_lazy(entries, eager)?, Some(source)))
                         });
+                    } else {
+                        web::discard_upload(pick);
                     }
                 }
                 web::Picked::Failed(e) => self.toast(ctx, e, true),

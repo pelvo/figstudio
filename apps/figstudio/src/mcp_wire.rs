@@ -40,34 +40,57 @@ pub(crate) fn token_from_fragment(hash: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-/// Which open file backs each tab, so the bridge streams the bytes the tab shows. Keyed by tab
-/// id, not file name: two files may share a name. Generic so native tests need no browser `File`.
+/// Which open file backs each tab, so the bridge streams the bytes the tab shows. A file moves
+/// picked -> loading -> bound to a tab, and is tied to its load by a pick id, not by name: two
+/// files may share a name, and picks may overlap. Generic so native tests need no browser `File`.
 pub(crate) struct Uploads<T> {
-    /// Picked files not yet bound to a tab (the tab id exists only after its load).
-    pending: Vec<(std::path::PathBuf, T)>,
+    next_pick: u32,
+    /// Read by the browser, not yet handed to a load.
+    picked: std::collections::HashMap<u32, T>,
+    /// The file of the one in-flight load of each path (`Pending` allows one per path).
+    loading: std::collections::HashMap<std::path::PathBuf, T>,
     by_tab: std::collections::HashMap<u64, T>,
 }
 
 impl<T: Clone> Uploads<T> {
     pub fn new() -> Self {
         Self {
-            pending: Vec::new(),
-            by_tab: std::collections::HashMap::new(),
+            next_pick: 0,
+            picked: Default::default(),
+            loading: Default::default(),
+            by_tab: Default::default(),
         }
     }
 
-    /// A file was picked under `name`; a newer pick of the same name replaces the pending one.
-    pub fn pick(&mut self, name: std::path::PathBuf, file: T) {
-        self.pending.retain(|(n, _)| *n != name);
-        self.pending.push((name, file));
+    /// A file was read successfully; the returned id travels with it to `start` or `discard`.
+    pub fn pick(&mut self, file: T) -> u32 {
+        self.next_pick = self.next_pick.wrapping_add(1);
+        self.picked.insert(self.next_pick, file);
+        self.next_pick
     }
 
-    /// Tab `tab` was opened from `name`: it takes the pending file of that name, if any.
+    /// The load of `name` began with picked file `pick`; that load owns the file from now on.
+    pub fn start(&mut self, name: std::path::PathBuf, pick: u32) {
+        if let Some(file) = self.picked.remove(&pick) {
+            self.loading.insert(name, file);
+        }
+    }
+
+    /// The pick was not loaded (a duplicate open was ignored): release its file.
+    pub fn discard(&mut self, pick: u32) {
+        self.picked.remove(&pick);
+    }
+
+    /// The load of `name` finished as tab `tab`.
     pub fn bind(&mut self, name: &std::path::Path, tab: u64) {
-        if let Some(i) = self.pending.iter().position(|(n, _)| n == name) {
-            let (_, file) = self.pending.remove(i);
+        if let Some(file) = self.loading.remove(name) {
             self.by_tab.insert(tab, file);
         }
+    }
+
+    /// The load of `name` failed: release its file.
+    pub fn fail(&mut self, name: &std::path::Path) {
+        self.loading.remove(name);
     }
 
     pub fn get(&self, tab: u64) -> Option<T> {

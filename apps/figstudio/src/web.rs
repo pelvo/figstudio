@@ -73,7 +73,8 @@ fn init_tracing() {
 
 /// A file the user opened: small ones as bytes, big ones still in the browser.
 pub enum Picked {
-    Bytes(PathBuf, Vec<u8>),
+    /// Name, contents and the pick id of the `File` (see `Uploads`).
+    Bytes(PathBuf, Vec<u8>, u32),
     /// Opened lazily: the parts read up front (still compressed), and an id for reading the
     /// rest.
     Lazy {
@@ -81,6 +82,7 @@ pub enum Picked {
         file: u32,
         entries: Vec<Entry>,
         eager: HashMap<String, Vec<u8>>,
+        pick: u32,
     },
     Failed(String),
 }
@@ -209,9 +211,28 @@ pub fn upload_file(tab: u64) -> Option<web_sys::File> {
     UPLOADS.with(|u| u.borrow().get(tab))
 }
 
-/// Tab `tab` was opened from the file picked as `name`: it owns that file from now on.
+fn pick_upload(file: &web_sys::File) -> u32 {
+    UPLOADS.with(|u| u.borrow_mut().pick(file.clone()))
+}
+
+/// The load of `name` began with pick `pick`.
+pub fn start_upload(name: &std::path::Path, pick: u32) {
+    UPLOADS.with(|u| u.borrow_mut().start(name.to_path_buf(), pick));
+}
+
+/// Pick `pick` is not loaded (a load of the same name is already running).
+pub fn discard_upload(pick: u32) {
+    UPLOADS.with(|u| u.borrow_mut().discard(pick));
+}
+
+/// The load of `name` finished as tab `tab`, which owns its file from now on.
 pub fn bind_upload(name: &std::path::Path, tab: u64) {
     UPLOADS.with(|u| u.borrow_mut().bind(name, tab));
+}
+
+/// The load of `name` failed; release its file.
+pub fn fail_upload(name: &std::path::Path) {
+    UPLOADS.with(|u| u.borrow_mut().fail(name));
 }
 
 /// Tab `tab` is closed; release its `File` handle.
@@ -327,6 +348,7 @@ async fn open_lazy(file: web_sys::File) -> Picked {
     }
     Picked::Lazy {
         name,
+        pick: pick_upload(&file),
         file: keep_file(file),
         entries,
         eager,
@@ -336,7 +358,6 @@ async fn open_lazy(file: web_sys::File) -> Picked {
 /// Opens a file the user chose: big archives lazily, the rest by reading them.
 async fn open_file(file: web_sys::File) -> Picked {
     let name = PathBuf::from(file.name());
-    UPLOADS.with(|u| u.borrow_mut().pick(name.clone(), file.clone()));
     if file.size() as u64 > LAZY_ABOVE {
         let mut magic = read_range(&file, 0, 2).await.unwrap_or_default();
         magic.truncate(2);
@@ -346,7 +367,7 @@ async fn open_file(file: web_sys::File) -> Picked {
     }
     // Same limit as `Document::open` on the desktop.
     match read_range_max(&file, 0, file.size() as u64, figstudio_fig::MAX_FILE_BYTES).await {
-        Ok(bytes) => Picked::Bytes(name, bytes),
+        Ok(bytes) => Picked::Bytes(name, bytes, pick_upload(&file)),
         Err(e) => Picked::Failed(format!(
             "Could not read {}: {}",
             name.display(),
