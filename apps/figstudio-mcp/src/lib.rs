@@ -1,4 +1,8 @@
 //! Offline MCP access to registered local Figma documents.
+/// Local browser bridge transport.
+pub mod bridge;
+mod bridge_upload;
+mod bridge_ws;
 /// Canonical local input and loading errors.
 pub mod error;
 mod file_for;
@@ -193,6 +197,15 @@ pub async fn serve_http(
     server: FigstudioServer,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> std::io::Result<()> {
+    serve_http_router(listener, server, shutdown, axum::Router::new()).await
+}
+
+pub(crate) async fn serve_http_router(
+    listener: tokio::net::TcpListener,
+    server: FigstudioServer,
+    shutdown: tokio_util::sync::CancellationToken,
+    extra: axum::Router,
+) -> std::io::Result<()> {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     };
@@ -209,7 +222,7 @@ pub async fn serve_http(
                 .enforce_origin_validation()
                 .with_cancellation_token(shutdown.clone()),
         );
-    axum::serve(listener, axum::Router::new().nest_service("/mcp", service))
+    axum::serve(listener, extra.nest_service("/mcp", service))
         .with_graceful_shutdown(shutdown.cancelled_owned())
         .await
 }

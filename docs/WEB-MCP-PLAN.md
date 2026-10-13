@@ -71,7 +71,18 @@ wasm target is absent (the gate skips it); the explicit nightly wasm check passe
 - Gate: `cargo test -p figstudio-mcp-core`, wasm check
   `cargo +nightly-2026-10-09 check -p figstudio-mcp-core --no-default-features --target wasm32-unknown-unknown`.
 
-### L2 — bridge server (`apps/figstudio-mcp`)
+### L2 — bridge server (`apps/figstudio-mcp`) — complete
+
+Verified: fixture upload/selection/reveal/timeout/screenshot, disconnect cleanup,
+Origin/token/version rejection, replacement, malformed JSON/files, filename traversal
+and upload bounds via real WebSocket + rmcp HTTP clients. Each of the three tests
+failed under a targeted mutation; restored tests and `scripts/check.sh` passed.
+Uploads use numbered subdirectories (preserving stems and avoiding collisions),
+1 MiB frame bounds, and a separate `bridge_upload.rs` to keep modules small.
+Bridge design assets are inline, so disconnect leaves no asset files. Ripwire
+reported structural matches for redacted Debug and snapshot assignment to existing
+unrelated Debug implementations/test helpers; these are intentional, not reusable
+production helpers. No MCP tool implementation was changed.
 - `main.rs`: `--bridge` flag; `FILE.fig` no longer required when it is set (clap
   `required_unless_present`). Prints `MCP: http://127.0.0.1:PORT/mcp` and the web URL with
   `#mcp=<token>`.

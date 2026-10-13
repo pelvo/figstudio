@@ -19,8 +19,10 @@ base64.workspace = true
 html-escape.workspace = true
 image.workspace = true
 rmcp.workspace = true
-tokio.workspace = true
-axum.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+axum = { workspace = true, features = ["ws"] }
+getrandom = "0.4"
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
@@ -35,3 +37,4 @@ rmcp = { workspace = true, features = ["client", "transport-child-process", "tra
 reqwest.workspace = true
 futures-util.workspace = true
 tracing-subscriber = { workspace = true, features = ["registry"] }
+tokio-tungstenite = "0.29"

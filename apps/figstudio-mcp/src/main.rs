@@ -35,7 +35,16 @@ struct Args {
             .range(MAX_OUTPUT_BYTES_RANGE)
     )]
     max_output_bytes: usize,
-    #[arg(required = true, value_name = "FILE.fig")]
+    /// Pair a browser with a local live MCP server (no FILE required).
+    #[arg(long, conflicts_with_all = ["files", "assets", "assets_dir"])]
+    bridge: bool,
+    /// Additional exact browser Origin allowed to pair.
+    #[arg(long, requires = "bridge")]
+    allow_origin: Vec<String>,
+    /// Maximum bytes per browser upload (default 2 GiB).
+    #[arg(long, requires = "bridge", default_value_t = figstudio_mcp::bridge::DEFAULT_MAX_UPLOAD_BYTES)]
+    max_upload_bytes: u64,
+    #[arg(required_unless_present = "bridge", value_name = "FILE.fig")]
     files: Vec<PathBuf>,
 }
 
@@ -91,6 +100,9 @@ fn main() -> anyhow::Result<()> {
 
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
+    if args.bridge {
+        return run_bridge(&args).await;
+    }
     let assets = match (args.assets, args.assets_dir) {
         (Some(_), _) => Assets::Inline,
         (None, Some(dir)) => Assets::dir(dir),
@@ -146,6 +158,52 @@ async fn run() -> anyhow::Result<()> {
             result = shutdown_signal() => { result?; cancel.cancel(); waiting.await?; }
         }
     }
+    Ok(())
+}
+
+async fn run_bridge(args: &Args) -> anyhow::Result<()> {
+    use figstudio_mcp::bridge::{BridgeConfig, DEFAULT_ORIGINS, pairing_token, serve_bridge};
+    let listener = match args.http {
+        Some(Http::Exact(addr)) => tokio::net::TcpListener::bind(addr).await?,
+        _ => figstudio_mcp::bind_first(figstudio_mcp::default_http_addrs()).await?,
+    };
+    if !listener.local_addr()?.ip().is_loopback() {
+        anyhow::bail!("bridge requires a loopback address");
+    }
+    let token = pairing_token()?;
+    let addr = listener.local_addr()?;
+    eprintln!("MCP: http://{addr}/mcp");
+    eprintln!("Web: https://figstudio.vtz.io/#mcp={token}");
+    eprintln!("Local: http://127.0.0.1:8765/#mcp={token}");
+    eprintln!(
+        "Bridge port: {} (set the web app URL if not 3845)",
+        addr.port()
+    );
+    let mut origins = DEFAULT_ORIGINS
+        .iter()
+        .map(|origin| (*origin).into())
+        .collect::<Vec<_>>();
+    origins.extend(args.allow_origin.clone());
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let cancel = shutdown.clone();
+    let signal = tokio::spawn(async move {
+        let _ = shutdown_signal().await;
+        cancel.cancel();
+    });
+    let result = serve_bridge(
+        listener,
+        BridgeConfig {
+            token,
+            origins,
+            max_upload_bytes: args.max_upload_bytes,
+        },
+        args.no_system_fonts,
+        args.max_output_bytes,
+        shutdown,
+    )
+    .await;
+    signal.abort();
+    result?;
     Ok(())
 }
 
