@@ -97,6 +97,14 @@ impl HttpAccess {
     }
 }
 
+/// Printed for an unspecified bind with no `--allow-host`: the bound address is not a name
+/// the server can know, so no LAN or Tailscale `Host` is accepted until one is named.
+pub fn wildcard_hint(addr: SocketAddr, allow_hosts: &[String]) -> Option<&'static str> {
+    (addr.ip().is_unspecified() && allow_hosts.iter().all(|h| h.is_empty())).then_some(
+        "Clients must send a Host name or IP passed with --allow-host; the bound address is not one.",
+    )
+}
+
 fn random_token() -> Result<String, AccessError> {
     crate::bridge::pairing_token().map_err(|_| AccessError("no operating-system randomness"))
 }
@@ -162,6 +170,16 @@ mod tests {
             assert!(!open.hosts().iter().any(|h| h == "0.0.0.0" || h == "::"));
         }
         assert!(HttpAccess::for_bind(addr("127.0.0.1:1"), &["x.example".into()], false).is_err());
+    }
+
+    #[test]
+    fn a_wildcard_bind_hints_at_allow_host_only_when_none_is_given() {
+        let wild = addr("0.0.0.0:3845");
+        assert!(wildcard_hint(wild, &[]).is_some());
+        assert!(wildcard_hint(wild, &["".into()]).is_some());
+        assert!(wildcard_hint(wild, &["box.example.ts.net".into()]).is_none());
+        assert!(wildcard_hint(addr("100.64.0.1:3845"), &[]).is_none());
+        assert!(wildcard_hint(addr("127.0.0.1:3845"), &[]).is_none());
     }
 
     #[test]

@@ -214,6 +214,9 @@ fn access_for(
         eprintln!("Remote access: Authorization: Bearer {token}");
         eprintln!("Plain HTTP, no TLS: use Tailscale or an SSH tunnel, not an open network.");
     }
+    if let Some(hint) = figstudio_mcp::access::wildcard_hint(addr, allow_host) {
+        eprintln!("{hint}");
+    }
     Ok(access)
 }
 

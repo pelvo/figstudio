@@ -161,3 +161,26 @@ async fn the_binary_prints_a_token_only_for_remote_binds() {
     assert!(line.starts_with("listening on http://127.0.0.1:") && !line.contains("Bearer"));
     local.kill().await.unwrap();
 }
+
+/// F4: a wildcard bind with the right token still refuses a LAN address as `Host` unless it
+/// is named with `--allow-host`; the banner tells the user so.
+#[tokio::test]
+async fn a_wildcard_bind_refuses_an_unnamed_lan_host_even_with_the_token() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let access = HttpAccess::for_bind("0.0.0.0:3845".parse().unwrap(), &[], true).unwrap();
+    let token = access.token().unwrap().to_owned();
+    let stop = CancellationToken::new();
+    let server = FigstudioServer::new(vec![fixture()], true);
+    let task_stop = stop.clone();
+    tokio::spawn(async move {
+        let _ = serve_http_with(listener, server, task_stop, access).await;
+    });
+    let auth = format!("Bearer {token}");
+    assert_eq!(
+        initialize(addr, "192.168.21.37:3845", Some(&auth)).await,
+        403
+    );
+    assert_eq!(initialize(addr, &addr.to_string(), Some(&auth)).await, 200);
+    stop.cancel();
+}
