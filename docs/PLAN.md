@@ -553,3 +553,4 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   made thin grey text look bold and smeared. Test `stored_inside_text_stroke_is_clipped_to_the_glyphs`
   (seen failing without the fix). check.sh passed; checked against a private file render.
   Not verified: outside text strokes on a real file.
+- 2026-10-12 — Outside strokes erase with the fill union (DestOut in an isolated layer), not an even-odd clip, so the band no longer shows inside overlapping glyph contours (e.g. variable-font A, K, R, 4). Inside strokes keep the NonZero clip. Test `stored_outside_text_stroke_skips_overlapping_glyph_contours` (seen failing before the fix at the overlap pixel). check.sh passed; CLI render of structure.fig works. Not verified: the look of outside text strokes on a real variable font or private file; GPU tile path only compiled and gate-tested, not pixel-compared for this case.

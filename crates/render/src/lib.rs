@@ -32,6 +32,7 @@ use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape};
+use vello_cpu::peniko::{BlendMode, Compose, Mix};
 use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
 
 use crate::effects::casts_shadow;
@@ -852,23 +853,14 @@ fn effects_reach(effects: Option<&Val>) -> f64 {
         .sum()
 }
 
-/// How far (in local units) one effect moves or spreads what it applies to.
-/// Clip for an inside (`outside == false`) or outside stroke: the fill shape, or a large
-/// rectangle minus it. `None` when the node has no fill shape to align to.
-fn align_clip(fill: &[GeomPath], outside: bool) -> Option<(BezPath, vello_cpu::peniko::Fill)> {
-    use vello_cpu::peniko::Fill;
-    let first = fill.first()?;
+/// Clip for an inside stroke: the union of the fill shape, with the first path's rule.
+/// `fill` must not be empty.
+fn inside_clip(fill: &[GeomPath]) -> (BezPath, vello_cpu::peniko::Fill) {
     let mut clip = BezPath::new();
     for g in fill {
         clip.extend(g.path.iter());
     }
-    if !outside {
-        return Some((clip, first.rule));
-    }
-    // Far enough for any stroke: reach is bounded by the stroke weight, not the shape.
-    let outer = clip.bounding_box().inflate(1.0e6, 1.0e6);
-    clip.extend(outer.path_elements(0.1));
-    Some((clip, Fill::EvenOdd))
+    (clip, fill[0].rule)
 }
 
 /// Closed box-like shapes whose fill path is the stroke-alignment boundary.
@@ -876,6 +868,7 @@ fn is_box_shape(kind: &str) -> bool {
     is_container(kind) || matches!(kind, "RECTANGLE" | "ROUNDED_RECTANGLE" | "ELLIPSE")
 }
 
+/// How far (in local units) one effect moves or spreads what it applies to.
 fn effect_reach(e: &Val) -> f64 {
     let r = f64::from(e.num("radius").unwrap_or(0.0).abs());
     let spread = f64::from(e.num("spread").unwrap_or(0.0).abs());
@@ -1200,15 +1193,17 @@ impl Ctx<'_> {
             // Figma stores inside and outside strokes as centred strokes of twice the weight
             // and clips them to the fill shape (inside) or to everything but it (outside).
             let align = data.text("strokeAlign").filter(|a| *a != "CENTER");
+            // Some(outside) when the stroke is aligned to the fill shape (see below).
             let aligned = match align {
                 // The network is only scanned when an inside/outside stroke needs it.
                 Some(a)
                     if ring.is_none()
+                        && !fill_paths.is_empty()
                         && (is_box_shape(kind)
                             || kind == "TEXT"
                             || (kind == "VECTOR" && closed_network(data, &self.doc.blobs))) =>
                 {
-                    align_clip(fill_paths, a == "OUTSIDE")
+                    Some(a == "OUTSIDE")
                 }
                 _ => None,
             };
@@ -1217,10 +1212,17 @@ impl Ctx<'_> {
             if align.is_some() && aligned.is_none() && ring.is_none() {
                 self.stats.approximated_strokes += 1;
             }
-            if let Some((clip, rule)) = &aligned {
+            if let Some(outside) = aligned {
                 self.rc.set_transform(world);
-                self.rc.set_fill_rule(*rule);
-                self.rc.push_clip_layer(clip);
+                if outside {
+                    // Isolated layer: the fills erase the band at the end (see below). An
+                    // EvenOdd clip would show it inside overlapping contours.
+                    self.rc.push_opacity_layer(1.0);
+                } else {
+                    let (clip, rule) = inside_clip(fill_paths);
+                    self.rc.set_fill_rule(rule);
+                    self.rc.push_clip_layer(&clip);
+                }
             }
             if !outlines.is_empty() {
                 self.paint_paths(data, "strokePaints", &outlines, world, w, h);
@@ -1241,6 +1243,20 @@ impl Ctx<'_> {
                     w,
                     h,
                 );
+            }
+            if aligned == Some(true) {
+                // Each fill erases the stroke under it (DestOut), so the band is kept only
+                // outside the union of the fills, whatever their winding.
+                // DestOut erases by the source alpha, so the paint must be opaque.
+                self.rc
+                    .set_paint(vello_cpu::PaintType::Solid(AlphaColor::BLACK));
+                self.rc
+                    .set_blend_mode(BlendMode::new(Mix::Normal, Compose::DestOut));
+                for g in fill_paths {
+                    self.rc.set_fill_rule(g.rule);
+                    self.rc.fill_path(&g.path);
+                }
+                self.rc.set_blend_mode(BlendMode::default());
             }
             if aligned.is_some() {
                 self.rc.pop_layer();
