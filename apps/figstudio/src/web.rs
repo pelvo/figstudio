@@ -33,6 +33,7 @@ pub use wasm_bindgen_rayon::init_thread_pool;
 /// decoding run on it.
 #[wasm_bindgen]
 pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
+    init_tracing();
     let runner = eframe::WebRunner::new();
     // After eframe's hook (installed by `new`). eframe stops drawing after any panic, so the
     // page shows the error itself (`figstudioFatal`, polled by index.html).
@@ -53,6 +54,21 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
             Box::new(|cc| Ok(Box::new(crate::App::new(cc, Vec::new())))),
         )
         .await
+}
+
+/// Logs go to the browser console. No ANSI colours and no timestamps (the browser has no
+/// clock for them). Default level `warn`. Runs once: later calls do nothing.
+fn init_tracing() {
+    use tracing_subscriber::prelude::*;
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(tracing_web::MakeWebConsoleWriter::new())
+                .with_filter(tracing_subscriber::filter::LevelFilter::WARN),
+        )
+        .try_init();
 }
 
 /// A file the user opened: small ones as bytes, big ones still in the browser.
