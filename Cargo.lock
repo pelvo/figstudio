@@ -1529,6 +1529,7 @@ dependencies = [
  "image",
  "percent-encoding",
  "quick-xml",
+ "serde",
  "serde_json",
  "tempfile",
  "tracing",
