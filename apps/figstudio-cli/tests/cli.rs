@@ -309,9 +309,9 @@ fn missing_file_names_its_cause_once() {
     let output = cli(&["info", missing.to_str().unwrap()]);
     let stderr = text(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
-    // The context, the decoder's message, then the OS cause, and the cause not repeated.
+    // The decoder's message, then the OS cause, and the cause not repeated.
     assert!(
-        stderr.starts_with("figstudio-cli: open document: cannot read file: "),
+        stderr.starts_with("figstudio-cli: cannot read file: "),
         "{stderr}"
     );
     assert_eq!(stderr.matches("(os error").count(), 1, "{stderr}");

@@ -213,7 +213,7 @@ fn run(args: Args) -> Result<()> {
         // Opens the file itself, to time it and to keep the path out of any error.
         return doctor::run(&args.file);
     }
-    let doc = Document::open(&args.file).context("open document")?;
+    let doc = Document::open(&args.file)?;
     debug!(
         command = args.command.as_str(),
         nodes = doc.nodes.len(),
@@ -265,8 +265,7 @@ fn run(args: Args) -> Result<()> {
                     (page, page)
                 }
             };
-            let background =
-                parse_background(&args.background, &doc, page).context("parse background")?;
+            let background = parse_background(&args.background, &doc, page)?;
             let mut renderer = Renderer::new();
             renderer.system_fonts = args.system_fonts;
             let frame = renderer
@@ -307,7 +306,7 @@ fn run(args: Args) -> Result<()> {
         }
         "resave" => {
             let out = args.out.context("resave needs -o <out.fig>")?;
-            doc.save(&out).context("save document")?;
+            doc.save(&out)?;
             let again = Document::open(&out)
                 .map_err(|e| anyhow!("written file does not read back: {e}"))?;
             let same = again.nodes.len() == doc.nodes.len()
@@ -335,7 +334,7 @@ fn run(args: Args) -> Result<()> {
             let start = std::time::Instant::now();
             let big =
                 synth::synth(doc, args.copies, args.pages).context("build stress document")?;
-            big.save(&out).context("save document")?;
+            big.save(&out)?;
             let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             println!(
                 "{} {} nodes, {} pages, {:.1} MB, {:.1} s",
