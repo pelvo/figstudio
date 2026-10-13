@@ -14,7 +14,6 @@ default = ["mcp"]
 mcp = ["dep:figstudio-mcp", "dep:tokio", "dep:tokio-util"]
 
 [dependencies]
-anyhow.workspace = true
 tracing.workspace = true
 figstudio-fig = { workspace = true }
 # Node IDs and figstudio:// links for the Copy menus (copy.rs), shared with the MCP server.
