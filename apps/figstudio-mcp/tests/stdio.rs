@@ -265,7 +265,7 @@ async fn trace_logs_do_not_leak_requests_or_layer_names() {
         }}),
         json!({"jsonrpc":"2.0", "method":"notifications/initialized"}),
         json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{
-            "name":"get_metadata", "arguments":{}
+            "name":"get_metadata", "arguments":{"nodeId":"0:1"}
         }}),
     ];
     let mut input = child.stdin.take().unwrap();
