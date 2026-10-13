@@ -96,7 +96,11 @@ async fn run(
         if shared.cancelled.borrow().contains(&tab) {
             return Err("upload cancelled".into());
         }
-        ws.send_with_u8_array(&bytes)
+        // A view of Wasm memory is shared, and `WebSocket.send` rejects shared views: copy
+        // the slice into a fresh buffer first.
+        let buffer = js_sys::Uint8Array::new_with_length(bytes.len() as u32);
+        buffer.copy_from(&bytes);
+        ws.send_with_array_buffer(&buffer.buffer())
             .map_err(|e| format!("{e:?}"))?;
         sent += len;
         shared.progress.set(Some((sent, size)));
