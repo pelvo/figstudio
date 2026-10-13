@@ -87,7 +87,35 @@ pub enum Picked {
 
 type Exported = (String, anyhow::Result<Vec<u8>>);
 
-/// The CJK font (`fonts/cjk.otf`, made by `scripts/web-font.sh`), fetched on first need.
+use crate::cjk::Variant;
+
+const CJK_STORAGE_KEY: &str = "figstudio.cjk_font";
+
+fn cjk_default() -> Variant {
+    let Some(window) = web_sys::window() else {
+        return Variant::Jp;
+    };
+    if let Some(variant) = window
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|storage| storage.get_item(CJK_STORAGE_KEY).ok().flatten())
+        .and_then(|code| Variant::from_code(&code))
+    {
+        return variant;
+    }
+    let navigator = window.navigator();
+    let language = navigator
+        .language()
+        .filter(|language| !language.is_empty())
+        .or_else(|| navigator.languages().get(0).as_string())
+        .unwrap_or_default();
+    crate::cjk::from_language(&language)
+}
+
+type FontResult = (Variant, anyhow::Result<Vec<u8>>);
+
+/// The selected CJK font, made by `scripts/web-font.sh`, fetched on first need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FontState {
     NotNeeded,
@@ -354,9 +382,13 @@ pub struct Inbox {
     pub exports: Receiver<Exported>,
     ranges_tx: Sender<FileRequest>,
     ranges: Receiver<FileRequest>,
-    fonts_tx: Sender<anyhow::Result<Vec<u8>>>,
-    pub fonts: Receiver<anyhow::Result<Vec<u8>>>,
+    fonts_tx: Sender<FontResult>,
+    pub fonts: Receiver<FontResult>,
     pub font_state: FontState,
+    /// The View menu choice (saved, or the browser language default).
+    pub font_choice: Variant,
+    /// A Hangul-only file is open this session, so KR is in use instead of `font_choice`.
+    pub korean_override: bool,
 }
 
 impl std::fmt::Debug for Inbox {
@@ -381,6 +413,8 @@ impl Inbox {
             fonts_tx,
             fonts,
             font_state: FontState::NotNeeded,
+            font_choice: cjk_default(),
+            korean_override: false,
         }
     }
 
@@ -392,10 +426,52 @@ impl Inbox {
         self.font_state = FontState::Loading;
         let tx = self.fonts_tx.clone();
         let ctx = ctx.clone();
+        let variant = self.font_variant();
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = tx.send(fetch_bytes("fonts/cjk.otf").await);
+            let url = format!("fonts/cjk-{}.otf", variant.code());
+            let _ = tx.send((variant, fetch_bytes(&url).await));
             ctx.request_repaint();
         });
+    }
+
+    /// The face in use: KR while a Hangul-only file asked for it, else the menu choice.
+    pub fn font_variant(&self) -> Variant {
+        if self.korean_override {
+            Variant::Kr
+        } else {
+            self.font_choice
+        }
+    }
+
+    /// A View menu pick: saved, and it ends the session's KR override.
+    pub fn select_cjk_font(&mut self, variant: Variant, ctx: &egui::Context) {
+        if let Some(storage) =
+            web_sys::window().and_then(|window| window.local_storage().ok().flatten())
+        {
+            let _ = storage.set_item(CJK_STORAGE_KEY, variant.code());
+        }
+        self.switch(ctx, |inbox| {
+            inbox.font_choice = variant;
+            inbox.korean_override = false;
+        });
+    }
+
+    /// A file whose only CJK is Hangul: only KR draws it, so use KR for this session. Not
+    /// saved; it lasts until a menu pick or a reload, and applies to every tab.
+    pub fn load_hangul_font(&mut self, ctx: &egui::Context) {
+        self.switch(ctx, |inbox| inbox.korean_override = true);
+        self.load_cjk_font(ctx);
+    }
+
+    /// Applies `change`; if that changes the face in use, a loaded or loading font is
+    /// fetched again (`poll_web` drops the result of the old one).
+    fn switch(&mut self, ctx: &egui::Context, change: impl FnOnce(&mut Self)) {
+        let before = self.font_variant();
+        change(self);
+        if self.font_variant() != before && self.font_state != FontState::NotNeeded {
+            self.font_state = FontState::NotNeeded;
+            self.load_cjk_font(ctx);
+        }
     }
 
     /// Shows the browser's file picker; chosen files arrive in `files`.

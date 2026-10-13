@@ -337,7 +337,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 
 Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared memory) into
 `web/dist`, then serve it with COOP/COEP headers (`scripts/web-build.sh --serve` locally;
-`web/_headers` on Cloudflare). `web/index.html` loads the module, starts the Rayon pool
+`web/_headers` on Cloudflare; a deploy config such as `web/wrangler.jsonc` is per machine
+and git-ignored). `web/index.html` loads the module, starts the Rayon pool
 (`initThreadPool`, one Web Worker per thread; `?threads=N` overrides) and then calls
 `start(canvas)`. Differences from the desktop:
 
@@ -364,12 +365,26 @@ Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared mem
   reads the slice asynchronously in `Inbox::serve_ranges`, called every frame.
 - No installed fonts: text without stored glyph outlines is not drawn (counted). egui's
   built-in fonts are Latin only, so when a file's name, page or layer names or text contain
-  CJK (`theme::needs_cjk`, checked on the worker that opens it) the app fetches
-  `fonts/cjk.otf` once and adds it as the last fallback (`theme::add_cjk_font`).
-  `scripts/web-font.sh` (called by `web-build.sh`) makes that file: Noto Sans CJK HK
-  Regular cut down to ~5 MB with `pyftsubset` (Latin, punctuation, kana, bopomofo,
-  full-width, the main ideograph block; no Hangul). Without Noto CJK or fontTools the
-  build skips it and CJK shows as boxes. The desktop app uses an installed CJK font
+  CJK (`theme::cjk_need`, checked on the worker that opens it) the app fetches
+  `fonts/cjk-<variant>.otf` and adds it as the last fallback (`theme::add_cjk_font`).
+  View → CJK font selects JP, SC, TC, HK or KR, remembered in localStorage under
+  `figstudio.cjk_font`; the initial choice follows the browser language (otherwise JP).
+  Switching after first need fetches and replaces the fallback; stale selections are ignored.
+  A file whose only CJK is Hangul (punctuation and full-width forms do not count; every
+  face has them) switches to KR for the session (`Inbox::korean_override`): only KR has
+  Hangul. It is not saved and applies to every tab, so Chinese and Japanese text uses the
+  Korean glyph forms until the next menu pick or reload; the menu keeps showing the saved
+  choice and says KR is in use. Any menu pick, the current one included, is saved and
+  ends the override.
+  `scripts/web-font.sh` (called by `web-build.sh`) subsets all five Noto Sans CJK Regular
+  faces with `pyftsubset` (Latin, punctuation, kana, bopomofo, full-width and the main
+  ideograph block; KR also includes Hangul). `FIGSTUDIO_CJK_FONT` overrides the Noto
+  collection path: Regular-only collections use faces 0–4, all-weight `NotoSansCJK.ttc`
+  uses 25–29. It must be a `.ttc`, and each output's full face name is checked, so a wrong
+  source fails the build. `web-build.sh` clears `dist/fonts` first, so a removed font is not
+  deployed again. Each variant is cached under `${CARGO_TARGET_DIR:-target}/web-font`.
+  Without Noto CJK or fontTools the build skips it and CJK shows as boxes.
+  The desktop app uses an installed CJK font
   (`theme::install_fonts`).
 
 ### Big files and images

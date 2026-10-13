@@ -4,3 +4,8 @@ web/dist/
 tests/fixtures/*.codeconnect.json.lock
 apps/figstudio-mcp/*.codeconnect.json.lock
 apps/figstudio-mcp/figjam-golden.fig
+# Cloudflare: tooling state (wrangler, cf CLI) and the local deploy config, which names an
+# account's domain and stays per machine.
+.wrangler/
+.cloudflare/
+web/wrangler.jsonc

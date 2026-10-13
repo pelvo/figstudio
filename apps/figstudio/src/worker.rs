@@ -69,8 +69,8 @@ pub enum Loaded {
         doc: Arc<Document>,
         source: Option<Source>,
         elapsed: Duration,
-        /// Names or text need a CJK font (the browser fetches one).
-        needs_cjk: bool,
+        /// What CJK the names or text need (the browser fetches a font for it).
+        cjk: crate::theme::CjkNeed,
     },
     Err {
         path: PathBuf,
@@ -483,7 +483,7 @@ impl Workers {
                 Ok((doc, source)) => {
                     let name = path.file_name().map(|n| n.to_string_lossy());
                     Loaded::Ok {
-                        needs_cjk: crate::theme::needs_cjk(&doc, name.as_deref().unwrap_or("")),
+                        cjk: crate::theme::cjk_need(&doc, name.as_deref().unwrap_or("")),
                         path,
                         doc: Arc::new(doc),
                         source,

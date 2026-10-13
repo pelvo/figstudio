@@ -1,6 +1,8 @@
 //! figstudio — desktop and browser app for Figma `.fig` local copies.
 
 mod canvas;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod cjk;
 mod copy;
 mod copy_menu;
 mod gpu;
@@ -368,15 +370,19 @@ impl App {
                     doc,
                     source,
                     elapsed,
-                    needs_cjk,
+                    cjk,
                 } => {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
-                    if needs_cjk {
-                        self.web.load_cjk_font(ctx);
+                    match cjk {
+                        theme::CjkNeed::None => {}
+                        theme::CjkNeed::HangulOnly => self.web.load_hangul_font(ctx),
+                        theme::CjkNeed::Shared | theme::CjkNeed::Any => {
+                            self.web.load_cjk_font(ctx);
+                        }
                     }
                     #[cfg(not(target_arch = "wasm32"))]
-                    let _ = needs_cjk;
+                    let _ = cjk;
                     let id = self.next_id;
                     self.next_id += 1;
                     self.tabs.push(Tab::new(id, path, doc, source, elapsed));
@@ -459,7 +465,10 @@ impl App {
     #[cfg(target_arch = "wasm32")]
     fn poll_web(&mut self, ctx: &egui::Context) {
         self.web.serve_ranges(ctx);
-        if let Ok(font) = self.web.fonts.try_recv() {
+        while let Ok((variant, font)) = self.web.fonts.try_recv() {
+            if variant != self.web.font_variant() {
+                continue;
+            }
             match font {
                 Ok(bytes) => {
                     theme::add_cjk_font(ctx, bytes);
@@ -652,6 +661,22 @@ impl App {
                 ui.separator();
                 ui.checkbox(&mut self.show_left, "Layers panel");
                 ui.checkbox(&mut self.show_right, "Properties panel");
+                #[cfg(target_arch = "wasm32")]
+                ui.menu_button("CJK font", |ui| {
+                    for variant in cjk::Variant::ALL {
+                        let chosen = self.web.font_choice == variant;
+                        if ui.radio(chosen, variant.label()).clicked() {
+                            self.web.select_cjk_font(variant, ui.ctx());
+                        }
+                    }
+                    if self.web.korean_override {
+                        ui.separator();
+                        ui.label(
+                            RichText::new("Korean (KR) in use: a file has only Hangul")
+                                .color(theme::TEXT_DIM),
+                        );
+                    }
+                });
                 self.mcp.menu(ui);
             });
             ui.menu_button("Help", |ui| {
@@ -761,7 +786,7 @@ impl App {
                 r#"{{"tabs":{},"loading":{},"page":{},"pages":{},"zoom":{},"drawn":{},"#,
                 r#""culled":{},"images_loading":{},"images_missing":{},"render_ms":{:.1},"#,
                 r#""image_cache_bytes":{},"images_arrived":{},"busy":{},"errors":{},"#,
-                r#""cjk_font":"{:?}","renderer":"{}","gpu_fallback_tiles":{}}}"#
+                r#""cjk_font":"{:?}","cjk_variant":"{}","renderer":"{}","gpu_fallback_tiles":{}}}"#
             ),
             self.tabs.len(),
             self.loading.len(),
@@ -778,6 +803,7 @@ impl App {
             self.workers.busy(),
             self.toasts.iter().filter(|t| t.error).count(),
             self.web.font_state,
+            self.web.font_variant().code(),
             // A fixed name ("GPU (WebGPU)", "CPU"): no device or driver names.
             self.renderer,
             s.map_or(0, |s| s.gpu_fallback_tiles),

@@ -53,53 +53,98 @@ pub fn apply(ctx: &egui::Context) {
 }
 
 /// Browser build: nothing at start-up (no installed fonts to read). A CJK font is fetched
-/// when a file needs one (`web::Inbox::load_cjk_font`, after [`needs_cjk`]).
+/// when a file needs one (`web::Inbox::load_cjk_font`, after [`cjk_need`]).
 #[cfg(target_arch = "wasm32")]
 pub fn install_fonts(_ctx: &egui::Context) {}
 
-/// Whether `c` needs a CJK font (egui's built-in fonts cover Latin, Greek and Cyrillic).
-pub fn is_cjk(c: char) -> bool {
-    matches!(c,
-        '\u{2E80}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{FE30}'..='\u{FE4F}'
-        | '\u{FF00}'..='\u{FFEF}')
+/// Hangul syllables and jamo: only the KR face of the browser's CJK fallback draws them.
+fn is_hangul(c: char) -> bool {
+    matches!(c, '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}' | '\u{AC00}'..='\u{D7AF}')
 }
 
-/// Whether anything the UI shows for this document (file name, page and layer names, text
-/// contents) has CJK characters.
-pub fn needs_cjk(doc: &figstudio_fig::Document, file_name: &str) -> bool {
-    file_name.chars().any(is_cjk)
-        || doc
-            .file_name
-            .as_deref()
-            .is_some_and(|n| n.chars().any(is_cjk))
-        || doc.nodes.iter().any(|n| {
-            n.name.chars().any(is_cjk)
-                || n.data
-                    .path(&["textData", "characters"])
-                    .and_then(figstudio_fig::Val::as_str)
-                    .is_some_and(|t| t.chars().any(is_cjk))
+/// Whether `c` needs a CJK font (egui's built-in fonts cover Latin, Greek and Cyrillic).
+pub fn is_cjk(c: char) -> bool {
+    is_hangul(c)
+        || matches!(c,
+            '\u{2E80}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{FE30}'..='\u{FE4F}'
+            | '\u{FF00}'..='\u{FFEF}')
+}
+
+/// CJK punctuation and full-width forms: every face of the browser's fallback has them, so
+/// they need a CJK font but not a particular one.
+fn is_cjk_shared(c: char) -> bool {
+    matches!(c, '\u{3000}'..='\u{303F}' | '\u{FE30}'..='\u{FE4F}' | '\u{FF00}'..='\u{FFEF}')
+}
+
+/// What the CJK fallback has to draw for a document.
+/// Ordered: a document needs the largest of what its texts need.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CjkNeed {
+    None,
+    /// Only punctuation and full-width forms, which every face has.
+    Shared,
+    /// Hangul and no kana or ideographs: only the KR face draws it.
+    HangulOnly,
+    /// Kana, bopomofo or ideographs: the chosen face.
+    Any,
+}
+
+impl CjkNeed {
+    fn add(self, text: &str) -> Self {
+        text.chars().fold(self, |need, c| {
+            need.max(if is_hangul(c) {
+                CjkNeed::HangulOnly
+            } else if is_cjk_shared(c) {
+                CjkNeed::Shared
+            } else if is_cjk(c) {
+                CjkNeed::Any
+            } else {
+                CjkNeed::None
+            })
         })
+    }
+}
+
+/// What CJK anything the UI shows for this document (file name, page and layer names, text
+/// contents) needs.
+pub fn cjk_need(doc: &figstudio_fig::Document, file_name: &str) -> CjkNeed {
+    let mut need = CjkNeed::None.add(file_name);
+    if let Some(name) = doc.file_name.as_deref() {
+        need = need.add(name);
+    }
+    for n in &doc.nodes {
+        if need == CjkNeed::Any {
+            break;
+        }
+        need = need.add(&n.name);
+        if let Some(text) = n
+            .data
+            .path(&["textData", "characters"])
+            .and_then(figstudio_fig::Val::as_str)
+        {
+            need = need.add(text);
+        }
+    }
+    need
 }
 
 /// Adds `bytes` (a CJK font) as the last fallback of every family.
 #[cfg_attr(
-    not(target_arch = "wasm32"),
+    not(any(test, target_arch = "wasm32")),
     expect(dead_code, reason = "only the browser fetches a CJK font")
 )]
 pub fn add_cjk_font(ctx: &egui::Context, bytes: Vec<u8>) {
-    use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
-    let families = [egui::FontFamily::Proportional, egui::FontFamily::Monospace]
-        .into_iter()
-        .map(|family| InsertFontFamily {
-            family,
-            priority: FontPriority::Lowest,
-        })
-        .collect();
-    ctx.add_font(FontInsert::new(
-        "cjk",
-        egui::FontData::from_owned(bytes),
-        families,
-    ));
+    // add_font ignores an existing name; set_fonts replaces it and preserves other fonts.
+    let mut fonts = ctx.fonts(|fonts| fonts.definitions().clone());
+    fonts
+        .font_data
+        .insert("cjk".into(), egui::FontData::from_owned(bytes).into());
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        let names = fonts.families.entry(family).or_default();
+        names.retain(|name| name != "cjk");
+        names.push("cjk".into());
+    }
+    ctx.set_fonts(fonts);
 }
 
 /// Adds an installed CJK-capable font as a fallback so Chinese / Japanese layer names render.
@@ -156,8 +201,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cjk_font_replaces_existing_fallback() {
+        let ctx = egui::Context::default();
+        // Nothing paints here, so clear the texture deltas (epaint asserts on unapplied ones).
+        let frame = |ctx: &egui::Context| {
+            ctx.run_ui(Default::default(), |_| {})
+                .textures_delta
+                .clear();
+        };
+        frame(&ctx);
+        let data: Vec<_> = egui::FontDefinitions::default()
+            .font_data
+            .values()
+            .cloned()
+            .collect();
+        for font in &data[..2] {
+            add_cjk_font(&ctx, font.font.to_vec());
+            frame(&ctx);
+            ctx.fonts(|fonts| {
+                let definitions = fonts.definitions();
+                assert_eq!(definitions.font_data["cjk"].font, font.font);
+                for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                    let names = &definitions.families[&family];
+                    assert_eq!(names.iter().filter(|name| *name == "cjk").count(), 1);
+                    assert_eq!(names.last().map(String::as_str), Some("cjk"));
+                }
+            });
+        }
+    }
+
+    #[test]
     fn cjk_detection() {
-        for c in ['香', 'ア', 'ㄅ', '，', '！', '「'] {
+        for c in ['香', 'ア', 'ㄅ', '，', '！', '「', '한'] {
             assert!(is_cjk(c), "{c}");
         }
         for c in ['a', 'é', 'Ж', '—', '€', '😀'] {
@@ -166,11 +241,52 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/structure.fig");
         let mut doc = figstudio_fig::Document::open(path).unwrap();
-        assert!(!needs_cjk(&doc, "structure.fig"));
-        assert!(needs_cjk(&doc, "設計.fig"), "file name");
+        assert_eq!(cjk_need(&doc, "structure.fig"), CjkNeed::None);
+        assert_eq!(cjk_need(&doc, "設計.fig"), CjkNeed::Any, "file name");
         let mut nodes = doc.nodes.clone();
         nodes[3].name = "按鈕".into();
         doc.set_nodes(nodes).unwrap();
-        assert!(needs_cjk(&doc, "structure.fig"), "layer name");
+        assert_eq!(cjk_need(&doc, "structure.fig"), CjkNeed::Any, "layer name");
+    }
+
+    #[test]
+    fn hangul_without_other_cjk_asks_for_the_korean_face() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/structure.fig");
+        let mut doc = figstudio_fig::Document::open(path).unwrap();
+        let need = |doc: &figstudio_fig::Document, name: &str| cjk_need(doc, name);
+        assert_eq!(need(&doc, "structure.fig"), CjkNeed::None);
+        assert_eq!(
+            need(&doc, "「draft」.fig"),
+            CjkNeed::Shared,
+            "punctuation only"
+        );
+        for name in [
+            "디자인.fig",
+            "ㄱ.fig",
+            "안녕。.fig",
+            "디자인！.fig",
+            "한글「텍스트」.fig",
+            "디자인\u{3000}.fig",
+        ] {
+            assert_eq!(need(&doc, name), CjkNeed::HangulOnly, "{name}");
+        }
+        assert_eq!(need(&doc, "設計.fig"), CjkNeed::Any, "ideographs");
+        let mut nodes = doc.nodes.clone();
+        nodes[3].name = "버튼".into();
+        doc.set_nodes(nodes).unwrap();
+        assert_eq!(
+            need(&doc, "structure.fig"),
+            CjkNeed::HangulOnly,
+            "layer name"
+        );
+        let mut nodes = doc.nodes.clone();
+        nodes[4].name = "按鈕".into();
+        doc.set_nodes(nodes).unwrap();
+        assert_eq!(
+            need(&doc, "structure.fig"),
+            CjkNeed::Any,
+            "ideograph after Hangul"
+        );
     }
 }
