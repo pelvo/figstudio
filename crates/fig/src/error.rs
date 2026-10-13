@@ -107,3 +107,20 @@ impl StdError for FigError {
         self.0.kind.source()
     }
 }
+
+/// An error and its causes on one line, `outer: inner: root`. A cause is left out when the
+/// message before it already ends with it: [`FigError`] (and errors that wrap it) print their
+/// cause and also return it from `source()`, so `{:#}` would show it twice.
+pub fn one_line(error: &(dyn StdError + 'static)) -> String {
+    let mut line = error.to_string();
+    let mut next = error.source();
+    while let Some(cause) = next {
+        let text = cause.to_string();
+        if !line.ends_with(text.as_str()) {
+            line.push_str(": ");
+            line.push_str(&text);
+        }
+        next = cause.source();
+    }
+    line
+}

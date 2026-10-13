@@ -20,7 +20,7 @@ pub struct DiskSource {
 #[cfg(not(target_arch = "wasm32"))]
 impl ImageSource for DiskSource {
     fn read(&self, entry: &Entry) -> Result<Vec<u8>, String> {
-        read_disk(&self.path, entry).map_err(|e| format!("{e:#}"))
+        read_disk(&self.path, entry).map_err(|e| figstudio_fig::one_line(e.as_ref()))
     }
 }
 

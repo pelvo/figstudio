@@ -363,21 +363,6 @@ fn init_tracing() {
         .try_init();
 }
 
-/// The error and its causes on one line. A cause is skipped when the message before it
-/// already ends with it (`FigError` prints its cause and also returns it from `source()`).
-fn report(e: &anyhow::Error) -> String {
-    let mut line = String::new();
-    for cause in e.chain().map(ToString::to_string) {
-        if !line.ends_with(cause.as_str()) {
-            if !line.is_empty() {
-                line.push_str(": ");
-            }
-            line.push_str(&cause);
-        }
-    }
-    line
-}
-
 fn main() -> ExitCode {
     init_tracing();
     // Usage problems (exit 2) print the help text; failures on a valid command (exit 1) do not.
@@ -395,11 +380,14 @@ fn main() -> ExitCode {
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if e.downcast_ref::<UsageError>().is_some() => {
-            eprintln!("figstudio-cli: {}\n\n{USAGE}", report(&e));
+            eprintln!(
+                "figstudio-cli: {}\n\n{USAGE}",
+                figstudio_fig::one_line(e.as_ref())
+            );
             ExitCode::from(2)
         }
         Err(e) => {
-            eprintln!("figstudio-cli: {}", report(&e));
+            eprintln!("figstudio-cli: {}", figstudio_fig::one_line(e.as_ref()));
             ExitCode::FAILURE
         }
     }

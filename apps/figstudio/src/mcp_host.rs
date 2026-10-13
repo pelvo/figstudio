@@ -89,7 +89,7 @@ impl McpHost {
         if let Err(error) = running.poll_events() {
             self.stop();
             self.on = false;
-            return Some(format!("{error:#}"));
+            return Some(figstudio_fig::one_line(error.as_ref()));
         }
         running.drain(tabs, active);
         None

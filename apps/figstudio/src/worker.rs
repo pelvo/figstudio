@@ -404,7 +404,7 @@ impl Workers {
                 export_png_with(images, &doc, source.as_ref(), root, scale, &path)
             }))
             .unwrap_or_else(|_| Err(anyhow::anyhow!("export worker panicked")))
-            .map_err(|e| format!("{e:#}"));
+            .map_err(|e| figstudio_fig::one_line(e.as_ref()));
             drop(_release);
             let _ = tx.send(ExportDone { path, result });
             waker.wake();

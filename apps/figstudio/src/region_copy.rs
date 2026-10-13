@@ -33,7 +33,8 @@ pub fn menu(ui: &mut egui::Ui, tab: &Tab, rect: Rect, picked: &mut Option<Item>)
 /// The text item. The text is built here, once, when the entry is clicked, not while the menu is
 /// open: walking a big page every frame would stall the canvas.
 fn text_item(tab: &Tab, rect: Rect) -> Item {
-    let text = region_text(tab, tab.page, region_array(rect)).unwrap_or_else(|e| format!("{e:#}"));
+    let text = region_text(tab, tab.page, region_array(rect))
+        .unwrap_or_else(|e| figstudio_fig::one_line(e.as_ref()));
     Item::text("Copy region", "region", text)
 }
 
