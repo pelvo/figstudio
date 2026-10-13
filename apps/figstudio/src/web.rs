@@ -87,7 +87,35 @@ pub enum Picked {
 
 type Exported = (String, anyhow::Result<Vec<u8>>);
 
-/// The CJK font (`fonts/cjk.otf`, made by `scripts/web-font.sh`), fetched on first need.
+use crate::cjk::Variant;
+
+const CJK_STORAGE_KEY: &str = "figstudio.cjk_font";
+
+fn cjk_default() -> Variant {
+    let Some(window) = web_sys::window() else {
+        return Variant::Jp;
+    };
+    if let Some(variant) = window
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|storage| storage.get_item(CJK_STORAGE_KEY).ok().flatten())
+        .and_then(|code| Variant::from_code(&code))
+    {
+        return variant;
+    }
+    let navigator = window.navigator();
+    let language = navigator
+        .language()
+        .filter(|language| !language.is_empty())
+        .or_else(|| navigator.languages().get(0).as_string())
+        .unwrap_or_default();
+    crate::cjk::from_language(&language)
+}
+
+type FontResult = (Variant, anyhow::Result<Vec<u8>>);
+
+/// The selected CJK font, made by `scripts/web-font.sh`, fetched on first need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FontState {
     NotNeeded,
@@ -354,9 +382,10 @@ pub struct Inbox {
     pub exports: Receiver<Exported>,
     ranges_tx: Sender<FileRequest>,
     ranges: Receiver<FileRequest>,
-    fonts_tx: Sender<anyhow::Result<Vec<u8>>>,
-    pub fonts: Receiver<anyhow::Result<Vec<u8>>>,
+    fonts_tx: Sender<FontResult>,
+    pub fonts: Receiver<FontResult>,
     pub font_state: FontState,
+    pub font_variant: Variant,
 }
 
 impl std::fmt::Debug for Inbox {
@@ -381,6 +410,7 @@ impl Inbox {
             fonts_tx,
             fonts,
             font_state: FontState::NotNeeded,
+            font_variant: cjk_default(),
         }
     }
 
@@ -392,10 +422,28 @@ impl Inbox {
         self.font_state = FontState::Loading;
         let tx = self.fonts_tx.clone();
         let ctx = ctx.clone();
+        let variant = self.font_variant;
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = tx.send(fetch_bytes("fonts/cjk.otf").await);
+            let url = format!("fonts/cjk-{}.otf", variant.code());
+            let _ = tx.send((variant, fetch_bytes(&url).await));
             ctx.request_repaint();
         });
+    }
+
+    pub fn select_cjk_font(&mut self, variant: Variant, ctx: &egui::Context) {
+        if self.font_variant == variant {
+            return;
+        }
+        self.font_variant = variant;
+        if let Some(storage) =
+            web_sys::window().and_then(|window| window.local_storage().ok().flatten())
+        {
+            let _ = storage.set_item(CJK_STORAGE_KEY, variant.code());
+        }
+        if self.font_state != FontState::NotNeeded {
+            self.font_state = FontState::NotNeeded;
+            self.load_cjk_font(ctx);
+        }
     }
 
     /// Shows the browser's file picker; chosen files arrive in `files`.

@@ -59,6 +59,10 @@ pub fn install_fonts(_ctx: &egui::Context) {}
 
 /// Whether `c` needs a CJK font (egui's built-in fonts cover Latin, Greek and Cyrillic).
 pub fn is_cjk(c: char) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    if matches!(c, '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}' | '\u{AC00}'..='\u{D7AF}') {
+        return true;
+    }
     matches!(c,
         '\u{2E80}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{FE30}'..='\u{FE4F}'
         | '\u{FF00}'..='\u{FFEF}')
@@ -83,23 +87,21 @@ pub fn needs_cjk(doc: &figstudio_fig::Document, file_name: &str) -> bool {
 
 /// Adds `bytes` (a CJK font) as the last fallback of every family.
 #[cfg_attr(
-    not(target_arch = "wasm32"),
+    not(any(test, target_arch = "wasm32")),
     expect(dead_code, reason = "only the browser fetches a CJK font")
 )]
 pub fn add_cjk_font(ctx: &egui::Context, bytes: Vec<u8>) {
-    use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
-    let families = [egui::FontFamily::Proportional, egui::FontFamily::Monospace]
-        .into_iter()
-        .map(|family| InsertFontFamily {
-            family,
-            priority: FontPriority::Lowest,
-        })
-        .collect();
-    ctx.add_font(FontInsert::new(
-        "cjk",
-        egui::FontData::from_owned(bytes),
-        families,
-    ));
+    // add_font ignores an existing name; set_fonts replaces it and preserves other fonts.
+    let mut fonts = ctx.fonts(|fonts| fonts.definitions().clone());
+    fonts
+        .font_data
+        .insert("cjk".into(), egui::FontData::from_owned(bytes).into());
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        let names = fonts.families.entry(family).or_default();
+        names.retain(|name| name != "cjk");
+        names.push("cjk".into());
+    }
+    ctx.set_fonts(fonts);
 }
 
 /// Adds an installed CJK-capable font as a fallback so Chinese / Japanese layer names render.
@@ -154,6 +156,30 @@ pub fn install_fonts(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cjk_font_replaces_existing_fallback() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let data: Vec<_> = egui::FontDefinitions::default()
+            .font_data
+            .values()
+            .cloned()
+            .collect();
+        for font in &data[..2] {
+            add_cjk_font(&ctx, font.font.to_vec());
+            let _ = ctx.run_ui(Default::default(), |_| {});
+            ctx.fonts(|fonts| {
+                let definitions = fonts.definitions();
+                assert_eq!(definitions.font_data["cjk"].font, font.font);
+                for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                    let names = &definitions.families[&family];
+                    assert_eq!(names.iter().filter(|name| *name == "cjk").count(), 1);
+                    assert_eq!(names.last().map(String::as_str), Some("cjk"));
+                }
+            });
+        }
+    }
 
     #[test]
     fn cjk_detection() {

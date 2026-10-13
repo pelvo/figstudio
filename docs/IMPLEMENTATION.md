@@ -365,11 +365,17 @@ Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared mem
 - No installed fonts: text without stored glyph outlines is not drawn (counted). egui's
   built-in fonts are Latin only, so when a file's name, page or layer names or text contain
   CJK (`theme::needs_cjk`, checked on the worker that opens it) the app fetches
-  `fonts/cjk.otf` once and adds it as the last fallback (`theme::add_cjk_font`).
-  `scripts/web-font.sh` (called by `web-build.sh`) makes that file: Noto Sans CJK HK
-  Regular cut down to ~5 MB with `pyftsubset` (Latin, punctuation, kana, bopomofo,
-  full-width, the main ideograph block; no Hangul). Without Noto CJK or fontTools the
-  build skips it and CJK shows as boxes. The desktop app uses an installed CJK font
+  `fonts/cjk-<variant>.otf` and adds it as the last fallback (`theme::add_cjk_font`).
+  View → CJK font selects JP, SC, TC, HK or KR, remembered in localStorage under
+  `figstudio.cjk_font`; the initial choice follows the browser language (otherwise JP).
+  Switching after first need fetches and replaces the fallback; stale selections are ignored.
+  `scripts/web-font.sh` (called by `web-build.sh`) subsets all five Noto Sans CJK Regular
+  faces with `pyftsubset` (Latin, punctuation, kana, bopomofo, full-width and the main
+  ideograph block; KR also includes Hangul). `FIGSTUDIO_CJK_FONT` overrides the Noto
+  collection path: Regular-only collections use faces 0–4, all-weight `NotoSansCJK.ttc`
+  uses 25–29. Each variant is cached under `${CARGO_TARGET_DIR:-target}/web-font`.
+  Without Noto CJK or fontTools the build skips it and CJK shows as boxes.
+  The desktop app uses an installed CJK font
   (`theme::install_fonts`).
 
 ### Big files and images

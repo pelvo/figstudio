@@ -1,6 +1,8 @@
 //! figstudio — desktop and browser app for Figma `.fig` local copies.
 
 mod canvas;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod cjk;
 mod copy;
 mod copy_menu;
 mod gpu;
@@ -459,7 +461,10 @@ impl App {
     #[cfg(target_arch = "wasm32")]
     fn poll_web(&mut self, ctx: &egui::Context) {
         self.web.serve_ranges(ctx);
-        if let Ok(font) = self.web.fonts.try_recv() {
+        while let Ok((variant, font)) = self.web.fonts.try_recv() {
+            if variant != self.web.font_variant {
+                continue;
+            }
             match font {
                 Ok(bytes) => {
                     theme::add_cjk_font(ctx, bytes);
@@ -652,6 +657,14 @@ impl App {
                 ui.separator();
                 ui.checkbox(&mut self.show_left, "Layers panel");
                 ui.checkbox(&mut self.show_right, "Properties panel");
+                #[cfg(target_arch = "wasm32")]
+                ui.menu_button("CJK font", |ui| {
+                    let mut selected = self.web.font_variant;
+                    for variant in cjk::Variant::ALL {
+                        ui.radio_value(&mut selected, variant, variant.label());
+                    }
+                    self.web.select_cjk_font(selected, ui.ctx());
+                });
                 self.mcp.menu(ui);
             });
             ui.menu_button("Help", |ui| {
@@ -761,7 +774,7 @@ impl App {
                 r#"{{"tabs":{},"loading":{},"page":{},"pages":{},"zoom":{},"drawn":{},"#,
                 r#""culled":{},"images_loading":{},"images_missing":{},"render_ms":{:.1},"#,
                 r#""image_cache_bytes":{},"images_arrived":{},"busy":{},"errors":{},"#,
-                r#""cjk_font":"{:?}","renderer":"{}","gpu_fallback_tiles":{}}}"#
+                r#""cjk_font":"{:?}","cjk_variant":"{}","renderer":"{}","gpu_fallback_tiles":{}}}"#
             ),
             self.tabs.len(),
             self.loading.len(),
@@ -778,6 +791,7 @@ impl App {
             self.workers.busy(),
             self.toasts.iter().filter(|t| t.error).count(),
             self.web.font_state,
+            self.web.font_variant.code(),
             // A fixed name ("GPU (WebGPU)", "CPU"): no device or driver names.
             self.renderer,
             s.map_or(0, |s| s.gpu_fallback_tiles),
