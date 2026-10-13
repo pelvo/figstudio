@@ -214,6 +214,9 @@ requester confirms it runs.
       (`list_open_tabs`, `get_selection`, `reveal_node`; nodeId defaults from the selection; `figstudio://` links)
 - [ ] MCP inside the app, open: a live client session (`claude mcp add`), clicking the toggle, the clipboard paths
       in a real window and browser, paste into Preview or an editor
+- [x] Web app + MCP bridge (`docs/WEB-MCP-PLAN.md`, L1–L4): `figstudio-mcp --bridge`, the browser tab pairs over a
+      token-guarded WebSocket and uploads its files; automated end-to-end check `tests/bridge_cli.rs`
+- [ ] Web bridge, open: manual runs in a real browser (local :8765, figstudio.vtz.io in Chrome and Safari)
 - [ ] Open (task board M1–M6): `get_motion_context`, SVG export, ancestor masks on instance-child
       screenshots, nested-instance override visibility in `original=true`, live-client check,
       real FigJam and motion files
@@ -561,3 +564,8 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-13 — Browser CJK font is now a choice: View → CJK font picks Noto Sans CJK JP, SC, TC, HK or KR (`scripts/web-font.sh` writes `fonts/cjk-<code>.otf` for each; KR adds Hangul). The default follows the browser language (JP when nothing matches) and the choice is kept in localStorage; changing it replaces the loaded font. Tests: language → variant mapping (seen failing with a broken mapping) and font replacement. check.sh passed; web-build.sh wrote all five fonts (fontTools: right face names, kana and ideographs present, Hangul only in KR). Not verified: clicking the menu in a real browser.
 - 2026-10-13 — CJK font review fixes: a file whose only CJK is Hangul switches to KR for the session (`theme::cjk_need`; test `hangul_without_other_cjk_asks_for_the_korean_face`, seen failing); `web-font.sh` refuses a non-`.ttc` override and checks every output's full face name (tried: a single-face `.otf` and wrong face indexes both fail); `web-build.sh` clears `dist/fonts` so the old `cjk.otf` is not deployed. cjk tests, native clippy and web-build passed. Not verified: full check.sh, Hangul-only file in a real browser.
 - 2026-10-13 — CJK font second review: CJK punctuation and full-width forms no longer stop a Hangul-only file from getting KR (`CjkNeed::Shared`, every face has them); the session KR override is separate from the saved menu choice (`Inbox::korean_override`), the menu shows the saved choice plus a note, and any pick (the current one too) is saved and ends the override; the font-replacement test clears texture deltas so it passes in debug builds too. `web/wrangler.jsonc` is now a local, git-ignored file (it names one account's domain). Tests: `hangul_without_other_cjk_asks_for_the_korean_face` seen failing without the punctuation rule and with a fold that stops at Hangul. theme/cjk tests (debug), native clippy and web-build passed. Not verified: full check.sh, the menu note in a real browser.
+- 2026-10-13 — Web MCP bridge L1–L4: protocol in mcp-core, `figstudio-mcp --bridge` (Origin + token checked
+  WebSocket, uploads to a temp dir), wasm client in the app (View → Agent access, `#mcp=` auto-connect),
+  README section. Tests: protocol, bridge, shared view state, pure client helpers, and a binary-level
+  end-to-end (`bridge_cli.rs`), each seen failing under a mutation. check.sh --web passed. Not verified: a
+  real browser session (see WEB-MCP-PLAN.md L4 TODOs).

@@ -127,7 +127,19 @@ are streamed from the same `File`. `serde_json` is added to the wasm deps for th
 - Tests: native unit tests for the shared `mcp_state.rs`; wasm side checked by hand (L4).
 - Gate: `scripts/check.sh` and `scripts/check.sh --web` (crates/app changed).
 
-### L4 — docs and end-to-end check
+### L4 — docs and end-to-end check — complete except manual browser runs
+
+Done: README "In the browser (bridge mode)", PLAN.md box + progress line, MCP-PLAN.md note,
+and `apps/figstudio-mcp/tests/bridge_cli.rs`: spawns the real binary with `--bridge`, parses
+the printed token and URL, pairs a WebSocket (as the browser would), uploads `structure.fig`
+and lists it through an rmcp HTTP client (fails when the printed token is wrong).
+Manual TODOs (not run; no browser available to the worker):
+- [ ] local build: `scripts/web-build.sh --serve`, open `http://127.0.0.1:8765/#mcp=<token>`,
+      open `structure.fig`, run `list_open_tabs`, select a node → `get_selection`,
+      `reveal_node` → the view jumps, `get_screenshot`.
+- [ ] `https://figstudio.vtz.io/#mcp=<token>` in Chrome (Local Network Access prompt?) and Safari
+      (mixed-content block of `ws://127.0.0.1`?). If blocked, the README already says use the local build.
+- [ ] a >256 MiB lazily opened file uploads without exhausting memory; disconnect/reconnect toasts.
 - `apps/figstudio-mcp/README.md`: "In the browser (bridge mode)" section, client config
   (`{"type":"http","url":"http://127.0.0.1:3845/mcp"}`).
 - `docs/PLAN.md` box + progress line; `docs/MCP-PLAN.md` lane note.

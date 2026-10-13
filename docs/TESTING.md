@@ -285,6 +285,10 @@ FigJam and most design-context mappings; the fixtures have no variables or FigJa
 - `http.rs` starts the server on port 0 and sends plain POSTs (reqwest). One test per protocol
   version (2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28): `initialize`, `tools/list`,
   `whoami`, an unknown tool, and a non-loopback `Host` that must be refused.
+- `bridge*.rs` (browser bridge): a tokio-tungstenite client plays the browser against
+  `serve_bridge` in process; `bridge_cli.rs` spawns the real `--bridge` binary, parses its printed
+  token and pairs a socket. The wasm client itself (`mcp_web.rs`) is checked by hand; its pure
+  helpers (`mcp_wire.rs`, `mcp_state.rs`) have native unit tests in the app crate.
 - `prompts.rs`, `files.rs` and most per-tool files use rmcp's client over an in-process duplex
   pipe against the same handler the transports use.
 

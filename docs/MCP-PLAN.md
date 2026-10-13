@@ -23,6 +23,9 @@ The app work (shared `crates/mcp-core`, the server inside the desktop app, right
 Copy region, live tools `list_open_tabs`, `get_selection`, `reveal_node`) is planned and tracked
 in `docs/MCP-APP.md`; L0–L9 are done there.
 
+The browser app reaches the same tools through a local bridge (`figstudio-mcp --bridge`);
+plan and status in `docs/WEB-MCP-PLAN.md`.
+
 Open follow-ups (task board M1–M6 in `docs/IMPLEMENTATION.md`): `get_motion_context`
 (needs a real motion file), SVG export, ancestor masks and clips on instance-child
 screenshots, nested-instance override visibility in `download_assets original=true`,

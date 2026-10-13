@@ -55,6 +55,38 @@ Agent access (MCP server)**. It is off at every launch and is not saved.
 claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp
 ```
 
+### In the browser (bridge mode)
+
+The browser app (`scripts/web-build.sh --serve`, or the deployed one) cannot host a server,
+so a small local process does: `figstudio-mcp --bridge` serves `/mcp` for your client and
+`/bridge`, a WebSocket the browser tab pairs with. The tab uploads each file it has open
+(into a temporary directory that is deleted when the tab disconnects), reports its page,
+selection and viewport, and applies `reveal_node`. All tools and the three live tools work.
+
+```sh
+figstudio-mcp --bridge          # prints the MCP URL, a pairing token and the web URL
+claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp
+```
+
+Open the printed `Local:` or `Web:` URL (`...#mcp=<token>`). The token travels in the URL
+fragment, which the page's server never sees; or paste it in **View → Agent access (local
+MCP)…** and press Connect. The status bar shows `MCP connected`.
+
+| Flag | Meaning |
+|---|---|
+| `--bridge` | Bridge mode; no `FILE.fig` needed. Loopback only. `--http=ADDR` picks the address (default 3845, then 3846–3855). |
+| `--allow-origin URL` | Another exact browser origin allowed to pair. Default: `https://figstudio.vtz.io`, `http://127.0.0.1:8765`, `http://localhost:8765`. |
+| `--max-upload-bytes N` | Largest upload (default 2 GiB); over it the bridge answers with an error and drops the file. |
+
+Security: the bridge checks the `Origin` header against the list above and the random
+pairing token (a wrong one closes the socket with 4401), so another web page cannot push
+files at it. One browser connection at a time: a newer tab replaces the older one. Logs
+show counts only, never names or contents.
+
+Not verified: whether Safari or a newer Chrome blocks an `https://` page opening
+`ws://127.0.0.1` (mixed content / Local Network Access prompt). If your browser blocks it,
+use the local `--serve` build over `http://127.0.0.1:8765`.
+
 ### stdio
 
 The default. The client starts the binary and speaks JSON-RPC lines over stdin/stdout.
