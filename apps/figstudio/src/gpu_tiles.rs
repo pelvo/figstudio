@@ -145,6 +145,7 @@ pub fn scene(
 impl Gpu {
     /// Renders `scene` into a new tile texture and submits it; wgpu validation and memory
     /// errors are caught in error scopes (on native they resolve at once).
+    #[tracing::instrument(level = "debug", skip_all, fields(tiles = 1))]
     fn render(&mut self, scene: &vello_gpu::Scene) -> Result<wgpu::Texture, Fallback> {
         let (texture, failed) = self.vello.render(&self.device, &self.queue, scene);
         match (texture, pollster::block_on(failed)) {

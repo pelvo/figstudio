@@ -17,6 +17,7 @@ zip = { workspace = true }
 
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 flate2 = { workspace = true }
 ruzstd = { workspace = true }
 zip = { workspace = true }

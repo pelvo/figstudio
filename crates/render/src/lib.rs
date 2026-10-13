@@ -393,6 +393,12 @@ impl Renderer {
         ctx.focus(path, Affine::IDENTITY, false)
     }
 
+    // Span duration is the elapsed time (no `Instant`: this crate also builds for wasm).
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(width = viewport.width, height = viewport.height)
+    )]
     fn render_budgeted(
         &mut self,
         doc: &Document,
