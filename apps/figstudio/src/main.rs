@@ -377,7 +377,9 @@ impl App {
                     match cjk {
                         theme::CjkNeed::None => {}
                         theme::CjkNeed::HangulOnly => self.web.load_hangul_font(ctx),
-                        theme::CjkNeed::Any => self.web.load_cjk_font(ctx),
+                        theme::CjkNeed::Shared | theme::CjkNeed::Any => {
+                            self.web.load_cjk_font(ctx);
+                        }
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     let _ = cjk;
@@ -464,7 +466,7 @@ impl App {
     fn poll_web(&mut self, ctx: &egui::Context) {
         self.web.serve_ranges(ctx);
         while let Ok((variant, font)) = self.web.fonts.try_recv() {
-            if variant != self.web.font_variant {
+            if variant != self.web.font_variant() {
                 continue;
             }
             match font {
@@ -661,11 +663,19 @@ impl App {
                 ui.checkbox(&mut self.show_right, "Properties panel");
                 #[cfg(target_arch = "wasm32")]
                 ui.menu_button("CJK font", |ui| {
-                    let mut selected = self.web.font_variant;
                     for variant in cjk::Variant::ALL {
-                        ui.radio_value(&mut selected, variant, variant.label());
+                        let chosen = self.web.font_choice == variant;
+                        if ui.radio(chosen, variant.label()).clicked() {
+                            self.web.select_cjk_font(variant, ui.ctx());
+                        }
                     }
-                    self.web.select_cjk_font(selected, ui.ctx());
+                    if self.web.korean_override {
+                        ui.separator();
+                        ui.label(
+                            RichText::new("Korean (KR) in use: a file has only Hangul")
+                                .color(theme::TEXT_DIM),
+                        );
+                    }
                 });
                 self.mcp.menu(ui);
             });
@@ -793,7 +803,7 @@ impl App {
             self.workers.busy(),
             self.toasts.iter().filter(|t| t.error).count(),
             self.web.font_state,
-            self.web.font_variant.code(),
+            self.web.font_variant().code(),
             // A fixed name ("GPU (WebGPU)", "CPU"): no device or driver names.
             self.renderer,
             s.map_or(0, |s| s.gpu_fallback_tiles),

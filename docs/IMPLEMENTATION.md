@@ -337,7 +337,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 
 Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared memory) into
 `web/dist`, then serve it with COOP/COEP headers (`scripts/web-build.sh --serve` locally;
-`web/_headers` on Cloudflare). `web/index.html` loads the module, starts the Rayon pool
+`web/_headers` on Cloudflare; a deploy config such as `web/wrangler.jsonc` is per machine
+and git-ignored). `web/index.html` loads the module, starts the Rayon pool
 (`initThreadPool`, one Web Worker per thread; `?threads=N` overrides) and then calls
 `start(canvas)`. Differences from the desktop:
 
@@ -369,8 +370,12 @@ Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared mem
   View → CJK font selects JP, SC, TC, HK or KR, remembered in localStorage under
   `figstudio.cjk_font`; the initial choice follows the browser language (otherwise JP).
   Switching after first need fetches and replaces the fallback; stale selections are ignored.
-  A file whose only CJK is Hangul switches to KR for the session (only KR has Hangul; not
-  saved).
+  A file whose only CJK is Hangul (punctuation and full-width forms do not count; every
+  face has them) switches to KR for the session (`Inbox::korean_override`): only KR has
+  Hangul. It is not saved and applies to every tab, so Chinese and Japanese text uses the
+  Korean glyph forms until the next menu pick or reload; the menu keeps showing the saved
+  choice and says KR is in use. Any menu pick, the current one included, is saved and
+  ends the override.
   `scripts/web-font.sh` (called by `web-build.sh`) subsets all five Noto Sans CJK Regular
   faces with `pyftsubset` (Latin, punctuation, kana, bopomofo, full-width and the main
   ideograph block; KR also includes Hangul). `FIGSTUDIO_CJK_FONT` overrides the Noto

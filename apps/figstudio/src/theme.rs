@@ -70,22 +70,37 @@ pub fn is_cjk(c: char) -> bool {
             | '\u{FF00}'..='\u{FFEF}')
 }
 
+/// CJK punctuation and full-width forms: every face of the browser's fallback has them, so
+/// they need a CJK font but not a particular one.
+fn is_cjk_shared(c: char) -> bool {
+    matches!(c, '\u{3000}'..='\u{303F}' | '\u{FE30}'..='\u{FE4F}' | '\u{FF00}'..='\u{FFEF}')
+}
+
 /// What the CJK fallback has to draw for a document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Ordered: a document needs the largest of what its texts need.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CjkNeed {
     None,
-    /// Hangul and no other CJK: only the KR face draws it.
+    /// Only punctuation and full-width forms, which every face has.
+    Shared,
+    /// Hangul and no kana or ideographs: only the KR face draws it.
     HangulOnly,
+    /// Kana, bopomofo or ideographs: the chosen face.
     Any,
 }
 
 impl CjkNeed {
     fn add(self, text: &str) -> Self {
-        text.chars().fold(self, |need, c| match need {
-            CjkNeed::Any => CjkNeed::Any,
-            _ if is_hangul(c) => CjkNeed::HangulOnly,
-            _ if is_cjk(c) => CjkNeed::Any,
-            need => need,
+        text.chars().fold(self, |need, c| {
+            need.max(if is_hangul(c) {
+                CjkNeed::HangulOnly
+            } else if is_cjk_shared(c) {
+                CjkNeed::Shared
+            } else if is_cjk(c) {
+                CjkNeed::Any
+            } else {
+                CjkNeed::None
+            })
         })
     }
 }
@@ -188,7 +203,13 @@ mod tests {
     #[test]
     fn cjk_font_replaces_existing_fallback() {
         let ctx = egui::Context::default();
-        let _ = ctx.run_ui(Default::default(), |_| {});
+        // Nothing paints here, so clear the texture deltas (epaint asserts on unapplied ones).
+        let frame = |ctx: &egui::Context| {
+            ctx.run_ui(Default::default(), |_| {})
+                .textures_delta
+                .clear();
+        };
+        frame(&ctx);
         let data: Vec<_> = egui::FontDefinitions::default()
             .font_data
             .values()
@@ -196,7 +217,7 @@ mod tests {
             .collect();
         for font in &data[..2] {
             add_cjk_font(&ctx, font.font.to_vec());
-            let _ = ctx.run_ui(Default::default(), |_| {});
+            frame(&ctx);
             ctx.fonts(|fonts| {
                 let definitions = fonts.definitions();
                 assert_eq!(definitions.font_data["cjk"].font, font.font);
@@ -233,28 +254,39 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/structure.fig");
         let mut doc = figstudio_fig::Document::open(path).unwrap();
+        let need = |doc: &figstudio_fig::Document, name: &str| cjk_need(doc, name);
+        assert_eq!(need(&doc, "structure.fig"), CjkNeed::None);
         assert_eq!(
-            cjk_need(&doc, "디자인.fig"),
-            CjkNeed::HangulOnly,
-            "file name"
+            need(&doc, "「draft」.fig"),
+            CjkNeed::Shared,
+            "punctuation only"
         );
+        for name in [
+            "디자인.fig",
+            "ㄱ.fig",
+            "안녕。.fig",
+            "디자인！.fig",
+            "한글「텍스트」.fig",
+            "디자인\u{3000}.fig",
+        ] {
+            assert_eq!(need(&doc, name), CjkNeed::HangulOnly, "{name}");
+        }
+        assert_eq!(need(&doc, "設計.fig"), CjkNeed::Any, "ideographs");
         let mut nodes = doc.nodes.clone();
         nodes[3].name = "버튼".into();
         doc.set_nodes(nodes).unwrap();
         assert_eq!(
-            cjk_need(&doc, "structure.fig"),
+            need(&doc, "structure.fig"),
             CjkNeed::HangulOnly,
             "layer name"
         );
+        let mut nodes = doc.nodes.clone();
+        nodes[4].name = "按鈕".into();
+        doc.set_nodes(nodes).unwrap();
         assert_eq!(
-            cjk_need(&doc, "設計.fig"),
+            need(&doc, "structure.fig"),
             CjkNeed::Any,
-            "Hangul and ideographs"
-        );
-        assert_eq!(
-            cjk_need(&doc, "ㄱ.fig"),
-            CjkNeed::HangulOnly,
-            "compatibility jamo"
+            "ideograph after Hangul"
         );
     }
 }
