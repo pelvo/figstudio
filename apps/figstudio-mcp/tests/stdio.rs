@@ -44,6 +44,8 @@ async fn non_loopback_http_warns() {
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
         .args(["--http=0.0.0.0:0"])
         .arg(fixture())
+        // The warning is program output: even RUST_LOG=off must not hide it.
+        .env("RUST_LOG", "off")
         .kill_on_drop(true)
         .stderr(std::process::Stdio::piped())
         .spawn()

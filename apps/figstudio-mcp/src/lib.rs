@@ -213,3 +213,17 @@ pub async fn serve_http(
         .with_graceful_shutdown(shutdown.cancelled_owned())
         .await
 }
+
+/// Caps rmcp at `info` unless `spec` (the `RUST_LOG` value) names it: rmcp's `debug` and
+/// `trace` events carry full requests and responses (tool arguments, layer names, text). Used
+/// by the standalone server and by the app that hosts it.
+pub fn cap_rmcp_logs(
+    filter: tracing_subscriber::EnvFilter,
+    spec: Option<&str>,
+) -> tracing_subscriber::EnvFilter {
+    let names_rmcp = spec.is_some_and(|spec| spec.contains("rmcp"));
+    match "rmcp=info".parse() {
+        Ok(directive) if !names_rmcp => filter.add_directive(directive),
+        _ => filter,
+    }
+}

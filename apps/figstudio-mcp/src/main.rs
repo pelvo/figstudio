@@ -63,16 +63,11 @@ impl std::str::FromStr for Http {
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn,figstudio_mcp=info"));
-    // rmcp logs full requests and responses (tool arguments, layer names) at debug and trace.
-    // A RUST_LOG that does not name rmcp caps it at info; naming rmcp opts in.
-    let names_rmcp = std::env::var("RUST_LOG").is_ok_and(|spec| spec.contains("rmcp"));
-    let filter = if std::env::var_os("RUST_LOG").is_some() && !names_rmcp {
-        filter.add_directive("rmcp=info".parse().expect("static directive"))
-    } else {
-        filter
-    };
     tracing_subscriber::fmt()
-        .with_env_filter(filter)
+        .with_env_filter(figstudio_mcp::cap_rmcp_logs(
+            filter,
+            std::env::var("RUST_LOG").ok().as_deref(),
+        ))
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .with_level(false)
@@ -107,9 +102,8 @@ async fn run() -> anyhow::Result<()> {
         let listener = match http {
             Http::Exact(addr) => {
                 if !addr.ip().is_loopback() {
-                    tracing::warn!(
-                        "warning: non-loopback bind; rmcp rejects non-loopback Host headers"
-                    );
+                    // Program output, like `listening on`: no RUST_LOG may hide it.
+                    eprintln!("warning: non-loopback bind; rmcp rejects non-loopback Host headers");
                 }
                 tokio::net::TcpListener::bind(addr)
                     .await

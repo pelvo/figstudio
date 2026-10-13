@@ -108,6 +108,8 @@ fn init_tracing() {
     {
         filter = filter.add_directive(directive);
     }
+    #[cfg(feature = "mcp")]
+    let filter = figstudio_mcp::cap_rmcp_logs(filter, std::env::var("RUST_LOG").ok().as_deref());
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(std::io::stderr().is_terminal())

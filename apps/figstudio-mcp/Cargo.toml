@@ -34,3 +34,4 @@ tempfile.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 reqwest.workspace = true
 futures-util.workspace = true
+tracing-subscriber = { workspace = true, features = ["registry"] }
