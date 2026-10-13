@@ -408,7 +408,7 @@ impl App {
         while let Ok(done) = self.workers.export_rx.try_recv() {
             match done.result {
                 Ok(()) => self.toast(ctx, format!("Exported {}", done.path.display()), false),
-                Err(e) => self.toast(ctx, e, true),
+                Err(e) => self.toast(ctx, figstudio_fig::one_line(e.as_ref()), true),
             }
         }
         #[cfg(target_arch = "wasm32")]

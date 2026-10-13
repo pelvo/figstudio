@@ -7,7 +7,7 @@ use figstudio_fig::archive::Entry;
 
 /// Reads archive entries of one open file. Blocking; call it on a worker thread.
 pub trait ImageSource: Send + Sync {
-    fn read(&self, entry: &Entry) -> Result<Vec<u8>, String>;
+    fn read(&self, entry: &Entry) -> anyhow::Result<Vec<u8>>;
 }
 
 pub type Source = Arc<dyn ImageSource>;
@@ -19,8 +19,8 @@ pub struct DiskSource {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ImageSource for DiskSource {
-    fn read(&self, entry: &Entry) -> Result<Vec<u8>, String> {
-        read_disk(&self.path, entry).map_err(|e| figstudio_fig::one_line(e.as_ref()))
+    fn read(&self, entry: &Entry) -> anyhow::Result<Vec<u8>> {
+        read_disk(&self.path, entry)
     }
 }
 
@@ -44,4 +44,28 @@ pub fn open_path(
         }) as Source
     });
     Ok((doc, source))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_file_keeps_its_io_cause() {
+        let source = DiskSource {
+            path: std::env::temp_dir().join("figstudio-no-such-file.fig"),
+        };
+        let entry = Entry {
+            name: "images/ab".into(),
+            method: 0,
+            compressed_size: 1,
+            size: 1,
+            header_offset: 0,
+        };
+        let error = source.read(&entry).unwrap_err();
+        assert!(
+            error.chain().any(|c| c.is::<std::io::Error>()),
+            "the io::Error was flattened: {error:?}"
+        );
+    }
 }

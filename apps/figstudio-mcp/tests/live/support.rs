@@ -87,7 +87,7 @@ pub async fn start(snapshot: Snapshot, answer: Answer) -> App {
                     let _ = reply.send(if open {
                         Ok(())
                     } else {
-                        Err("tab closed".into())
+                        Err(anyhow::anyhow!("tab closed"))
                     });
                 }
                 Answer::Never => kept.push(reply),

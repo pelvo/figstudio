@@ -142,7 +142,7 @@ impl Running {
                     tabs[i].fit_node = Some(node);
                     Ok(())
                 }
-                None => Err("tab closed".to_owned()),
+                None => Err(anyhow::anyhow!("tab closed")),
             };
             // The tool may have timed out and dropped its receiver; nothing to tell then.
             let _ = reply.send(result);
