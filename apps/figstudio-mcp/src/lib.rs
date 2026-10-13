@@ -172,7 +172,11 @@ impl ServerHandler for FigstudioServer {
             let result = self.tool_router.call(tcc).await;
             tracing::debug!(
                 elapsed_ms = started.elapsed().as_millis() as u64,
-                ok = result.is_ok(),
+                ok = match &result {
+                    Err(_) => false,
+                    Ok(rmcp::model::CallToolResponse::Complete(r)) => r.is_error != Some(true),
+                    Ok(_) => true,
+                },
                 "tool call finished"
             );
             result
