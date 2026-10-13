@@ -4,7 +4,7 @@
 use vello_cpu::PaintType;
 use vello_cpu::filter_effects::{Filter, FilterPrimitive};
 use vello_cpu::kurbo::{Affine, BezPath, Rect, Shape};
-use vello_cpu::peniko::{Fill, GradientKind};
+use vello_cpu::peniko::{BlendMode, Fill, GradientKind};
 
 use crate::gpu::{GpuUnsupported, MAX_LAYERS};
 use crate::gpu_bytes::SceneBytes;
@@ -128,6 +128,7 @@ impl Canvas for Scan {
     }
     fn set_paint_transform(&mut self, _: Affine) {}
     fn set_fill_rule(&mut self, _: Fill) {}
+    fn set_blend_mode(&mut self, _: BlendMode) {}
     fn fill_path(&mut self, path: &BezPath) {
         if let Some(b) = &mut self.bytes {
             b.fill(path, self.transform, self.view);

@@ -6,7 +6,7 @@ use vello_cpu::PaintType;
 use vello_cpu::RenderContext;
 use vello_cpu::filter_effects::Filter;
 use vello_cpu::kurbo::{Affine, BezPath, Rect};
-use vello_cpu::peniko::Fill;
+use vello_cpu::peniko::{BlendMode, Fill};
 
 /// The drawing calls the renderer makes (a subset of `RenderContext`).
 pub(crate) trait Canvas {
@@ -14,6 +14,8 @@ pub(crate) trait Canvas {
     fn set_paint(&mut self, paint: PaintType);
     fn set_paint_transform(&mut self, t: Affine);
     fn set_fill_rule(&mut self, rule: Fill);
+    /// The blend mode of the fills drawn after it (`set_blend_mode(BlendMode::default())` resets).
+    fn set_blend_mode(&mut self, mode: BlendMode);
     fn fill_path(&mut self, path: &BezPath);
     #[cfg_attr(
         not(feature = "parallel"),
@@ -46,6 +48,9 @@ impl Canvas for RenderContext {
     }
     fn set_fill_rule(&mut self, rule: Fill) {
         RenderContext::set_fill_rule(self, rule);
+    }
+    fn set_blend_mode(&mut self, mode: BlendMode) {
+        RenderContext::set_blend_mode(self, mode);
     }
     fn fill_path(&mut self, path: &BezPath) {
         RenderContext::fill_path(self, path);
@@ -91,6 +96,7 @@ enum Cmd {
     Paint(PaintType),
     PaintTransform(Affine),
     FillRule(Fill),
+    Blend(BlendMode),
     Fill(BezPath, Rect),
     FillRect(Rect, Rect),
     /// A layer, the output area its contents can change, and the index of its `Pop`.
@@ -244,6 +250,7 @@ impl Recorder {
                 Cmd::Paint(p) => rc.set_paint(p.clone()),
                 Cmd::PaintTransform(t) => rc.set_paint_transform(*t),
                 Cmd::FillRule(f) => rc.set_fill_rule(*f),
+                Cmd::Blend(m) => rc.set_blend_mode(*m),
                 Cmd::Fill(path, area) => {
                     if hits(area) {
                         rc.fill_path(path);
@@ -293,6 +300,9 @@ impl Canvas for Recorder {
     }
     fn set_fill_rule(&mut self, rule: Fill) {
         self.add(Cmd::FillRule(rule));
+    }
+    fn set_blend_mode(&mut self, mode: BlendMode) {
+        self.add(Cmd::Blend(mode));
     }
     fn fill_path(&mut self, path: &BezPath) {
         let area = self.touched(path.control_box());
