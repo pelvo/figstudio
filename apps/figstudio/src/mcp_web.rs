@@ -4,6 +4,7 @@
 //! The tab uploads each open file in slices, reports its view when that changes (the same
 //! `Key` the desktop uses) and applies `reveal` requests. Off until the user connects or the
 //! URL fragment carries `#mcp=<token>`; the document stays open if the bridge goes away.
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -63,12 +64,27 @@ pub struct McpHost {
     last_key: Option<Key>,
     /// Toasts raised outside `frame` (shown by the next `frame`).
     notices: Vec<String>,
+    /// A token the URL fragment gained after startup (`hashchange`); `sync` applies it.
+    new_token: Rc<RefCell<Option<String>>>,
 }
 
 impl Default for McpHost {
     fn default() -> Self {
         let hash = web_sys::window().and_then(|w| w.location().hash().ok());
         let token = hash.as_deref().and_then(token_from_fragment);
+        let new_token = Rc::<RefCell<Option<String>>>::default();
+        if let Some(window) = web_sys::window() {
+            // A new `#mcp=` (say, a fresh `figstudio-mcp --bridge` run) pairs again.
+            let (cell, w) = (new_token.clone(), window.clone());
+            let on_hash = Closure::<dyn FnMut()>::new(move || {
+                let hash = w.location().hash().ok();
+                *cell.borrow_mut() = hash.as_deref().and_then(token_from_fragment);
+            });
+            let _ = window
+                .add_event_listener_with_callback("hashchange", on_hash.as_ref().unchecked_ref());
+            // The listener lives as long as the page does.
+            on_hash.forget();
+        }
         Self {
             url: DEFAULT_URL.to_owned(),
             want_connect: token.is_some(),
@@ -82,6 +98,7 @@ impl Default for McpHost {
             generation: 0,
             last_key: None,
             notices: Vec::new(),
+            new_token,
         }
     }
 }
@@ -200,6 +217,13 @@ impl McpHost {
                     }
                     Err(error) => {
                         self.failed.insert(tab);
+                        // The bridge may hold a partial file for this tab: tell it to drop it.
+                        // A tab that was closed already got `close` from `drop_closed`.
+                        if self.names.contains_key(&tab)
+                            && let Some(conn) = &self.conn
+                        {
+                            let _ = send(&conn.ws, &ClientMessage::Close { tab });
+                        }
                         self.names
                             .contains_key(&tab)
                             .then(|| format!("MCP upload failed: {error}"))
@@ -222,6 +246,13 @@ impl McpHost {
     /// End of each frame: connect when asked, upload new tabs, tell the bridge about closed
     /// tabs and publish the view when it changed.
     pub fn sync(&mut self, ctx: &egui::Context, tabs: &[Tab], active: usize) {
+        let fragment = self.new_token.borrow_mut().take();
+        if let Some(token) = fragment.filter(|t| *t != self.token) {
+            // Drop the old socket; `connect` below resets the link state.
+            self.conn = None;
+            self.token = token;
+            self.want_connect = true;
+        }
         if std::mem::take(&mut self.want_connect) && self.conn.is_none() {
             if let Err(error) = self.connect(ctx) {
                 self.notices.push(error);

@@ -40,7 +40,8 @@ pub(crate) struct Shared {
 
 pub(crate) fn send(ws: &WebSocket, message: &ClientMessage) -> Result<(), String> {
     let text = serde_json::to_string(message).map_err(|e| e.to_string())?;
-    ws.send_with_str(&text).map_err(|e| format!("{e:?}"))
+    ws.send_with_str(&text)
+        .map_err(|e| crate::mcp_wire::js_error_text(&e))
 }
 
 async fn nap(ms: i32) {
@@ -103,7 +104,7 @@ async fn run(
         let buffer = js_sys::Uint8Array::new_with_length(bytes.len() as u32);
         buffer.copy_from(&bytes);
         ws.send_with_array_buffer(&buffer.buffer())
-            .map_err(|e| format!("{e:?}"))?;
+            .map_err(|e| crate::mcp_wire::js_error_text(&e))?;
         sent += len;
         shared.progress.set(Some((sent, size)));
         ctx.request_repaint();

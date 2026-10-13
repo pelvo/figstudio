@@ -118,6 +118,19 @@ pub(crate) fn reveal_wire(
     reveal(tabs, active, tab, node)
 }
 
+/// A browser error as one line for a toast: the message only, never the JS stack that a
+/// `{:?}` of a `JsValue` would print.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn js_error_text(error: &wasm_bindgen::JsValue) -> String {
+    use wasm_bindgen::JsCast;
+    if let Some(error) = error.dyn_ref::<js_sys::Error>() {
+        return String::from(error.message());
+    }
+    error
+        .as_string()
+        .unwrap_or_else(|| "browser error".to_owned())
+}
+
 /// How long a new socket may take to say `welcome` before the tab gives up.
 #[cfg(target_arch = "wasm32")]
 pub(crate) const CONNECT_TIMEOUT_MS: i32 = 8_000;

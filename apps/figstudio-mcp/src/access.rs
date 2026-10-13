@@ -109,6 +109,12 @@ fn random_token() -> Result<String, AccessError> {
     crate::bridge::pairing_token().map_err(|_| AccessError("no operating-system randomness"))
 }
 
+/// The credentials after the auth scheme. RFC 7235: the scheme is case-insensitive.
+fn bearer_credentials(value: &str) -> Option<&str> {
+    let (scheme, credentials) = value.split_once(' ')?;
+    scheme.eq_ignore_ascii_case("Bearer").then_some(credentials)
+}
+
 /// 401 unless `Authorization: Bearer <token>` matches, compared in constant time.
 pub(crate) async fn require_bearer(
     State(token): State<Arc<str>>,
@@ -119,7 +125,7 @@ pub(crate) async fn require_bearer(
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(bearer_credentials)
         .unwrap_or_default();
     if bool::from(given.as_bytes().ct_eq(token.as_bytes())) {
         next.run(request).await
@@ -180,6 +186,16 @@ mod tests {
         assert!(wildcard_hint(wild, &["box.example.ts.net".into()]).is_none());
         assert!(wildcard_hint(addr("100.64.0.1:3845"), &[]).is_none());
         assert!(wildcard_hint(addr("127.0.0.1:3845"), &[]).is_none());
+    }
+
+    #[test]
+    fn the_bearer_scheme_is_case_insensitive() {
+        for scheme in ["Bearer abc", "bearer abc", "BEARER abc", "bEaReR abc"] {
+            assert_eq!(bearer_credentials(scheme), Some("abc"), "{scheme}");
+        }
+        for other in ["Basic abc", "Bearerabc", "Bearer", ""] {
+            assert_eq!(bearer_credentials(other), None, "{other}");
+        }
     }
 
     #[test]

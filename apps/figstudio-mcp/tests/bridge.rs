@@ -186,3 +186,37 @@ pub async fn call(
         .await
         .unwrap()
 }
+
+/// F6: a tab that gives up on an upload sends `close`; the bridge then drops the partial file,
+/// so a later `end` for that tab finds no upload.
+#[tokio::test]
+async fn close_during_an_upload_drops_it() {
+    let bridge = BridgeTest::start(u64::MAX).await;
+    let mut socket = bridge.socket("test-pairing-secret").await;
+    assert!(matches!(
+        receive(&mut socket).await,
+        ServerMessage::Welcome { .. }
+    ));
+    let bytes = fixture();
+    send(
+        &mut socket,
+        ClientMessage::Open {
+            tab: 7,
+            name: "structure.fig".into(),
+            size: bytes.len() as u64,
+        },
+    )
+    .await;
+    socket
+        .send(Message::Binary(bytes[..1024].to_vec().into()))
+        .await
+        .unwrap();
+    send(&mut socket, ClientMessage::Close { tab: 7 }).await;
+    send(&mut socket, ClientMessage::End { tab: 7 }).await;
+    let ServerMessage::Error { message, tab } = receive(&mut socket).await else {
+        panic!("end after close must fail");
+    };
+    assert_eq!(message, "no upload in progress");
+    assert_eq!(tab, Some(7), "the error names the tab that was closed");
+    bridge.finish().await;
+}

@@ -244,7 +244,7 @@ async fn read_range_max(
     len: u64,
     max: usize,
 ) -> anyhow::Result<Vec<u8>> {
-    let js = |e: JsValue| anyhow::anyhow!("{e:?}");
+    let js = |e: JsValue| anyhow::anyhow!("{}", crate::mcp_wire::js_error_text(&e));
     let (at, end) = archive::checked_range(at, len, max)?;
     let blob = file
         .slice_with_f64_and_f64(at as f64, end as f64)
