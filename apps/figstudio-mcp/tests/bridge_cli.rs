@@ -134,3 +134,68 @@ async fn a_remote_bridge_requires_the_bearer_token_on_mcp() {
     assert_eq!(initialize(Some(format!("Bearer {bearer}"))).await, 200);
     child.kill().await.unwrap();
 }
+
+/// A non-loopback IPv4 address of this machine, found without sending a packet (the OS picks
+/// the source address for a route). `None` on a machine with no network: the test then skips.
+fn lan_address() -> Option<std::net::Ipv4Addr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("192.0.2.1:9").ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip),
+        _ => None,
+    }
+}
+
+/// F3: a bridge bound to a remote address still pairs the browser on this computer, which
+/// connects to `ws://127.0.0.1:<port>/bridge`.
+#[tokio::test]
+async fn a_remote_bridge_still_pairs_the_browser_on_loopback() {
+    let Some(lan) = lan_address() else {
+        eprintln!("skipped: no non-loopback IPv4 address on this machine");
+        return;
+    };
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
+        .args(["--bridge", &format!("--http={lan}:0"), "--no-system-fonts"])
+        .args(["--allow-host", "box.example.ts.net"])
+        .kill_on_drop(true)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let (mut token, mut port) = (None, None);
+    let wait = std::time::Duration::from_secs(20);
+    while let Ok(Ok(Some(line))) = tokio::time::timeout(wait, lines.next_line()).await {
+        if let Some(t) = line
+            .strip_prefix("Local: ")
+            .and_then(|l| l.split_once("#mcp="))
+        {
+            token = Some(t.1.to_owned());
+        } else if let Some(url) = line.strip_prefix("Browser bridge: ws://127.0.0.1:") {
+            port = url.strip_suffix("/bridge").map(str::to_owned);
+        }
+        if token.is_some() && port.is_some() {
+            break;
+        }
+    }
+    let (token, port) = (token.expect("token line"), port.expect("bridge line"));
+    let mut request = format!("ws://127.0.0.1:{port}/bridge")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("Origin", "http://localhost:8765".parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    send(
+        &mut socket,
+        ClientMessage::Hello {
+            token,
+            version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
+    assert!(matches!(
+        receive(&mut socket).await,
+        ServerMessage::Welcome { .. }
+    ));
+    child.kill().await.unwrap();
+}

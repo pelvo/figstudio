@@ -95,14 +95,40 @@ pub async fn serve_bridge(
     let router = axum::Router::new()
         .route("/bridge", axum::routing::get(crate::bridge_ws::upgrade))
         .with_state(bridge);
-    crate::serve_http_router(
+    let server = FigstudioServer::live(files, no_system_fonts)
+        .with_assets(crate::tools::design::Assets::Inline)
+        .with_max_output_bytes(max_output_bytes);
+    // The browser runs on this computer, so a remote bind (for example a Tailscale address)
+    // also gets the loopback address the browser pairs with. Loopback `/mcp` needs no token.
+    let local = match listener.local_addr()? {
+        std::net::SocketAddr::V4(addr)
+            if !addr.ip().is_loopback() && !addr.ip().is_unspecified() =>
+        {
+            let loopback = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, addr.port()));
+            let bound = tokio::net::TcpListener::bind(loopback).await?;
+            // Printed only once listening, so a client that reads it can connect at once.
+            eprintln!("Browser bridge: ws://{loopback}/bridge");
+            Some(bound)
+        }
+        _ => None,
+    };
+    let Some(local) = local else {
+        return crate::serve_http_router(listener, server, shutdown, router, access).await;
+    };
+    let remote = crate::serve_http_router(
         listener,
-        FigstudioServer::live(files, no_system_fonts)
-            .with_assets(crate::tools::design::Assets::Inline)
-            .with_max_output_bytes(max_output_bytes),
+        server.clone(),
+        shutdown.clone(),
+        router.clone(),
+        access,
+    );
+    let loopback = crate::serve_http_router(
+        local,
+        server,
         shutdown,
         router,
-        access,
-    )
-    .await
+        crate::access::HttpAccess::loopback(),
+    );
+    let (remote, loopback) = tokio::join!(remote, loopback);
+    remote.and(loopback)
 }

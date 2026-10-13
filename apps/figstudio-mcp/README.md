@@ -105,6 +105,10 @@ claude mcp add --transport http figstudio http://100.64.0.1:3845/mcp \
   --header "Authorization: Bearer <token>"
 ```
 
+A remote `--bridge` also listens on `127.0.0.1` at the same port, so the browser on your PC
+pairs with `ws://127.0.0.1:<port>/bridge` (the banner prints it). The browser never needs the
+remote address. That loopback listener serves `/mcp` without a token, as on any loopback bind.
+
 In the desktop app tick **View → Agent access → Allow remote agents**, type the address and
 port, then turn Agent access on; the status bar has a **Copy token** button. The setting is
 not saved. `0.0.0.0` and `::` are refused (`--allow-any-interface` overrides on the CLI, the
