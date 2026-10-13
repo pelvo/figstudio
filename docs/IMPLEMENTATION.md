@@ -451,8 +451,11 @@ colours, hashes, node ids or paths: log counts, sizes and kinds.
 Errors: libraries return their own structs (`FigError`, `CoreError`) built with `thiserror`,
 and `source()` gives the real cause (`io::Error`, zip, codec). Apps use `anyhow` with
 `.context("open document")`; no paths in context. `FigError`'s message already contains its
-cause, so the CLI prints the chain with `report()`, which skips the repeat.
-See `docs/LOGGING-PLAN.md` for what is still open.
+cause, so print an error for people with `figstudio_fig::one_line(&e)` (CLI exit message,
+app toasts), never `{:#}`, which repeats it.
+Debug spans (`RUST_LOG=debug`): `open`/`from_bytes` (bytes, node/page/image counts),
+`render_budgeted` (viewport size), the GPU tile submit, and `tool_call{tool=..}` with
+`elapsed_ms` in the MCP server. Keep spans off per-node loops.
 
 ## 4. Gotchas (all learned the hard way)
 
