@@ -60,7 +60,6 @@ impl std::str::FromStr for Http {
 }
 
 /// Logs go to stderr only: stdout is the MCP stdio transport. `RUST_LOG` overrides the default.
-/// The bare message format keeps the `listening on` line plain for clients that parse it.
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn,figstudio_mcp=info"));
@@ -115,7 +114,9 @@ async fn run() -> anyhow::Result<()> {
                 let addr = listener
                     .local_addr()
                     .context("failed to read the bound address")?;
-                tracing::info!("listening on http://{addr}/mcp");
+                // Program output, not a log line: clients read the port from it, so
+                // RUST_LOG must not hide it.
+                eprintln!("listening on http://{addr}/mcp");
                 listener
             }
         };

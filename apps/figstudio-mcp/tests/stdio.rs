@@ -59,10 +59,18 @@ async fn non_loopback_http_warns() {
 }
 
 async fn stderr_line(args: &[String]) -> (tokio::process::Child, String) {
+    stderr_line_with_env(args, &[]).await
+}
+
+async fn stderr_line_with_env(
+    args: &[String],
+    env: &[(&str, &str)],
+) -> (tokio::process::Child, String) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
         .args(args)
         .arg(fixture())
+        .envs(env.iter().copied())
         .kill_on_drop(true)
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -90,6 +98,15 @@ async fn bare_http_falls_back_to_the_next_port() {
     assert!((3846..=3855).contains(&port), "{port}");
     child.kill().await.unwrap();
     drop(held);
+}
+
+#[tokio::test]
+async fn listening_line_survives_a_quiet_rust_log() {
+    // The port line is program output: RUST_LOG=error must not hide it.
+    let (mut child, line) =
+        stderr_line_with_env(&["--http".into()], &[("RUST_LOG", "error")]).await;
+    assert!(line.starts_with("listening on http://"), "{line}");
+    child.kill().await.unwrap();
 }
 
 #[tokio::test]
