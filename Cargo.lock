@@ -1432,6 +1432,7 @@ checksum = "f4beca3cb2444e3304ac30843cc091f44ed58932353cd492ce740067bfce6b12"
 name = "figstudio"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "eframe",
  "egui",
  "egui_kittest",
