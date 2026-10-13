@@ -1485,6 +1485,7 @@ dependencies = [
  "ruzstd",
  "thiserror 2.0.21",
  "tracing",
+ "tracing-subscriber",
  "zip",
 ]
 
@@ -1542,6 +1543,7 @@ dependencies = [
  "image",
  "pollster 0.4.0",
  "rayon",
+ "tracing",
  "ttf-parser",
  "vello_cpu 0.3.0",
  "vello_gpu",

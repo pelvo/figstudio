@@ -156,6 +156,30 @@ impl ServerHandler for FigstudioServer {
         ))
         .with_instructions(instructions)
     }
+
+    /// What `#[tool_handler]` generates, inside a debug span with the tool name (never its
+    /// arguments) and the elapsed time.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        use tracing::Instrument as _;
+        let span = tracing::debug_span!("tool_call", tool = %request.name);
+        async {
+            let started = std::time::Instant::now();
+            let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+            let result = self.tool_router.call(tcc).await;
+            tracing::debug!(
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                ok = result.is_ok(),
+                "tool call finished"
+            );
+            result
+        }
+        .instrument(span)
+        .await
+    }
 }
 
 /// Serve /mcp with rmcp's default sessions and a loopback Host and Origin allowlist.

@@ -210,6 +210,7 @@ impl fmt::Debug for Document {
 }
 
 impl Document {
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn open(path: impl AsRef<Path>) -> Result<Document, FigError> {
         let mut bytes = Vec::new();
         read_limited_file(path.as_ref(), &mut bytes)?;
@@ -220,11 +221,13 @@ impl Document {
     /// [`Document::lazy_images`] and read when needed. Only the central directory, the canvas,
     /// `meta.json` and the thumbnail are read, so files of any size open in little memory.
     /// A bare canvas file (not an archive) is read whole.
+    #[tracing::instrument(level = "debug", skip_all, fields(len = tracing::field::Empty))]
     pub fn open_lazy(path: impl AsRef<Path>) -> Result<Document, FigError> {
         let path = path.as_ref();
         let io = |e: std::io::Error| FigError::io("cannot read file", e);
         let mut file = std::fs::File::open(path).map_err(io)?;
         let len = file.metadata().map_err(io)?.len();
+        tracing::Span::current().record("len", len);
         let mut magic = [0u8; 2];
         file.read_exact(&mut magic).map_err(io)?;
         if &magic != b"PK" {
@@ -238,7 +241,14 @@ impl Document {
         {
             eager.insert(e.name.clone(), archive::read_entry(&mut file, e)?);
         }
-        Document::from_lazy(entries, eager)
+        let doc = Document::from_lazy(entries, eager)?;
+        tracing::debug!(
+            nodes = doc.nodes.len(),
+            pages = doc.pages.len(),
+            lazy_images = doc.lazy_images.len(),
+            "opened lazily"
+        );
+        Ok(doc)
     }
 
     /// Builds a document from an archive's entry list ([`archive::entries`]) and the contents
@@ -268,8 +278,17 @@ impl Document {
         Document::from_canvas(canvas, parts, PRODUCTION_LIMITS)
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(bytes = bytes.len()))]
     pub fn from_bytes(bytes: &[u8]) -> Result<Document, FigError> {
-        Document::from_bytes_with(bytes, PRODUCTION_LIMITS)
+        let doc = Document::from_bytes_with(bytes, PRODUCTION_LIMITS)?;
+        tracing::debug!(
+            nodes = doc.nodes.len(),
+            pages = doc.pages.len(),
+            blobs = doc.blobs.len(),
+            images = doc.images.len(),
+            "decoded document"
+        );
+        Ok(doc)
     }
 
     pub(crate) fn from_bytes_with(bytes: &[u8], limits: Limits) -> Result<Document, FigError> {
