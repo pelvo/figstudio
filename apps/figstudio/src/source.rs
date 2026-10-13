@@ -21,7 +21,7 @@ pub struct DiskSource {
 impl ImageSource for DiskSource {
     fn read(&self, entry: &Entry) -> Result<Vec<u8>, String> {
         let mut file = std::fs::File::open(&self.path).map_err(|e| e.to_string())?;
-        figstudio_fig::archive::read_entry(&mut file, entry).map_err(|e| e.0)
+        figstudio_fig::archive::read_entry(&mut file, entry).map_err(|e| e.to_string())
     }
 }
 
