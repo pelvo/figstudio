@@ -1,9 +1,9 @@
 # Plan: tracing for logs, thiserror/anyhow for errors
 
-Status 2026-10-13: lanes 1-3 in PR #12; lanes 4 and 5 on `chore/tracing-lanes-4-5`.
-Still open: `Result<_, String>` in `web.rs` (wasm), `ImageSource::read`, `ExportDone::result`,
-the `live.rs` reveal reply, `crates/fig` internal `read::R`, and PNG encode failures in
-`mcp-core` `screenshot()`/`figjam.rs` not yet using `CoreError::Encode`.
+Status 2026-10-13: lanes 1-5 done (PR #12). Kept as `String` on purpose: `crates/fig`'s private
+decoder messages (`read::R`, `intern_schema`, `blob_bytes`) are fixed literals with no underlying
+cause and become `FigError::malformed` at one boundary; typing them adds code, not information.
+`figstudio-cli`'s `parse` keeps `String` (usage text, exit 2).
 
 Branch: `chore/tracing-errors` (from `origin/main`). Goal: easier debugging. Every log
 line goes through `tracing` with a level and a filter, and every error keeps its cause chain
