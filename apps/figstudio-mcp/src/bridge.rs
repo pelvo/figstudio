@@ -9,11 +9,17 @@ use tokio_util::sync::CancellationToken;
 /// Default maximum size of one uploaded file (2 GiB).
 pub const DEFAULT_MAX_UPLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Origins allowed to pair with the bridge by default.
-pub const DEFAULT_ORIGINS: [&str; 3] = [
-    "https://figstudio.vtz.io",
-    "http://127.0.0.1:8765",
-    "http://localhost:8765",
-];
+pub const DEFAULT_ORIGINS: [&str; 2] = ["http://127.0.0.1:8765", "http://localhost:8765"];
+
+/// `Web:` banner lines, one per extra https origin the user allowed with `--allow-origin`.
+#[must_use]
+pub fn web_banner(extra_origins: &[String], token: &str) -> Vec<String> {
+    extra_origins
+        .iter()
+        .filter(|origin| origin.starts_with("https://"))
+        .map(|origin| format!("Web: {}/#mcp={token}", origin.trim_end_matches('/')))
+        .collect()
+}
 
 /// Pairing configuration. Debug deliberately omits the secret token.
 #[derive(Clone)]

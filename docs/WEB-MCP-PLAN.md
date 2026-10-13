@@ -47,8 +47,8 @@ removed when the socket closes.
 ## Security
 
 - `/mcp` keeps its loopback Host/Origin allowlist (`serve_http`, unchanged).
-- `/bridge` checks `Origin` against an allowlist: default `https://figstudio.vtz.io`,
-  `http://127.0.0.1:8765`, `http://localhost:8765`; extend with `--allow-origin URL`.
+- `/bridge` checks `Origin` against an allowlist: default `http://127.0.0.1:8765`,
+  `http://localhost:8765`; add a deployed site with `--allow-origin https://<your-deploy-domain>`.
 - Pairing token: bridge prints a random token (from `getrandom`) at start. The web app takes
   it from the URL fragment `#mcp=<token>` (fragment never hits the server/logs) or a field in
   the View menu. Without it any site could push files at the bridge.
@@ -137,7 +137,7 @@ Manual TODOs (not run; no browser available to the worker):
 - [ ] local build: `scripts/web-build.sh --serve`, open `http://127.0.0.1:8765/#mcp=<token>`,
       open `structure.fig`, run `list_open_tabs`, select a node → `get_selection`,
       `reveal_node` → the view jumps, `get_screenshot`.
-- [ ] `https://figstudio.vtz.io/#mcp=<token>` in Chrome (Local Network Access prompt?) and Safari
+- [ ] `https://<your-deploy-domain>/#mcp=<token>` in Chrome (Local Network Access prompt?) and Safari
       (mixed-content block of `ws://127.0.0.1`?). If blocked, the README already says use the local build.
 - [ ] a >256 MiB lazily opened file uploads without exhausting memory; disconnect/reconnect toasts.
 - `apps/figstudio-mcp/README.md`: "In the browser (bridge mode)" section, client config
@@ -151,7 +151,7 @@ Manual TODOs (not run; no browser available to the worker):
   ```
   Open `structure.fig` in the tab, then from the client: `list_open_tabs`, select a node in
   the browser → `get_selection`, `reveal_node` → browser jumps, `get_screenshot`.
-  Repeat against `https://figstudio.vtz.io/#mcp=<token>` in Chrome and Safari.
+  Repeat against `https://<your-deploy-domain>/#mcp=<token>` in Chrome and Safari.
 
 ## Risks to check early (before L3)
 

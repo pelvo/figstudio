@@ -217,7 +217,7 @@ requester confirms it runs.
 - [x] Web app + MCP bridge (`docs/WEB-MCP-PLAN.md`, L1–L4): `figstudio-mcp --bridge`, the browser tab pairs over a
       token-guarded WebSocket and uploads its files; automated end-to-end check `tests/bridge_cli.rs`
 - [x] Remote agents (WEB-MCP-PLAN L5): `--http=ADDR` non-loopback needs a bearer token + Host allowlist, app "Allow remote agents"
-- [ ] Web bridge and remote agents, open: a real Tailscale/SSH-tunnel session; manual runs in a real browser (local :8765, figstudio.vtz.io in Chrome and Safari)
+- [ ] Web bridge and remote agents, open: a real Tailscale/SSH-tunnel session; manual runs in a real browser (local :8765, a deployed site in Chrome and Safari)
 - [ ] Open (task board M1–M6): `get_motion_context`, SVG export, ancestor masks on instance-child
       screenshots, nested-instance override visibility in `original=true`, live-client check,
       real FigJam and motion files

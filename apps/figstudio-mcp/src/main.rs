@@ -166,7 +166,9 @@ async fn run_bridge(args: &Args) -> anyhow::Result<()> {
     let token = pairing_token()?;
     let addr = listener.local_addr()?;
     eprintln!("MCP: http://{addr}/mcp");
-    eprintln!("Web: https://figstudio.vtz.io/#mcp={token}");
+    for line in figstudio_mcp::bridge::web_banner(&args.allow_origin, &token) {
+        eprintln!("{line}");
+    }
     eprintln!("Local: http://127.0.0.1:8765/#mcp={token}");
     eprintln!(
         "Bridge port: {} (set the web app URL if not 3845)",
