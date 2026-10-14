@@ -183,3 +183,62 @@ pub struct Rendering {
     headless Chromium, open `structure.fig`, connect an MCP HTTP client to `/mcp/<room>`,
     and verify `list_open_tabs`, `get_metadata`, `get_screenshot`, and `reveal_node`
     succeed with 0 `.fig` bytes uploaded.
+
+#### Lane 3 implementation notes
+
+- `web/worker.mjs` is a transport-only relay using platform Fetch, Web Crypto, JSON
+  and Cloudflare's WebSocket Hibernation APIs (no custom protocol parser or packages).
+  Static asset responses are returned untouched, including the `_headers` isolation
+  headers. Invalid room paths return 404 before a DO lookup; no room tokens are logged.
+- `McpRoom` has no storage calls. Socket attachments retain the active-tab ordering across
+  hibernation; newest connect or protocol-1 `ready` wins. Pending calls live only in memory,
+  with a 30-second deadline, socket-bound reply matching, and disconnect/send-error cleanup.
+  Requests are capped at 1 MiB (including streamed bodies), incoming frames at 8 MiB,
+  admission at 128 concurrent RPCs and 16 connected browser tabs per room.
+  Notifications/responses return 202, batches return a JSON-RPC error, and GET returns 405.
+  HTTP requests and WebSocket upgrades with a foreign Origin are refused. The room URL remains a
+  capability secret: anyone possessing it can drive the tab, so do not publish it.
+- Node 22+ tests (no installs/network): `node --test web/worker/*.test.mjs`.
+  Fake Cloudflare sockets/context exercise forwarding, routing, isolation headers, deadline,
+  disconnects, malformed/oversized messages, hibernation ordering and auto-response setup.
+  Targeted mutations disabling room validation and returning 200 for notifications each
+  made the corresponding test fail; both were restored before the full passing run.
+  Wrangler 4 dry-run bundled the Worker and confirmed both bindings (assets override used
+  test files, not a built app); no deployment occurred.
+- `web/e2e/relay.spec.mjs` is the Chromium gate for the combined Lane 1–3 build. It opens
+  the public fixture through the browser picker, reads the localStorage room, exercises
+  initialize/list_open_tabs/get_metadata/get_screenshot/reveal_node, checks PNG content
+  and selection, and inspects outgoing HTTP bodies and WebSocket frames for uploads.
+  This script is written but **not run**; Lane 2 is not present in this worktree.
+
+#### Deploy the relay
+
+The committed template is **`wrangler.jsonc` at the repository root**, separate from the
+ignored per-machine `web/wrangler.jsonc`. It uses a placeholder Worker name, no account IDs
+or domains, `web/dist` assets, and a SQLite-class migration for `McpRoom` (no storage use).
+Always select this config explicitly to avoid picking the older static-only web config.
+
+```sh
+scripts/web-build.sh
+# Set the placeholder name to your own Worker name in a local copy if needed.
+npx wrangler@4 dev --config wrangler.jsonc
+npx wrangler@4 deploy --config wrangler.jsonc
+```
+
+`web-build.sh` copies `web/_headers` into `web/dist`; do not omit it, as the Wasm threads
+need COOP/COEP/CORP. `run_worker_first: true` lets the Worker route the two relay prefixes;
+all other paths use `ASSETS.fetch`. Enable cloud Agent access in the built Lane 2 app and
+copy its MCP URL. There is no SSE endpoint, external CORS access, file upload, or database.
+
+Optional browser gate (install the official Playwright runner only in its subdirectory):
+
+```sh
+npm --prefix web/e2e install
+cd web/e2e
+npx playwright install chromium
+RELAY_BASE_URL=http://localhost:8787 npm test
+```
+
+The gate assumes the Lane 2 app connects to cloud relay on load (or that its saved Agent
+access choice enables it). Deployment, real hibernation/eviction, and the combined browser
+session have not been verified by the Node doubles.
