@@ -73,7 +73,8 @@ fn init_tracing() {
 
 /// A file the user opened: small ones as bytes, big ones still in the browser.
 pub enum Picked {
-    Bytes(PathBuf, Vec<u8>),
+    /// Name, contents and the pick id of the `File` (see `Uploads`).
+    Bytes(PathBuf, Vec<u8>, u32),
     /// Opened lazily: the parts read up front (still compressed), and an id for reading the
     /// rest.
     Lazy {
@@ -81,6 +82,7 @@ pub enum Picked {
         file: u32,
         entries: Vec<Entry>,
         eager: HashMap<String, Vec<u8>>,
+        pick: u32,
     },
     Failed(String),
 }
@@ -198,6 +200,58 @@ fn drop_file(id: u32) {
     FILES.with(|f| f.borrow_mut().1.remove(&id));
 }
 
+thread_local! {
+    /// The `File` behind each open tab, so the MCP bridge can stream it (mcp_upload.rs).
+    static UPLOADS: RefCell<crate::mcp_wire::Uploads<web_sys::File>> =
+        RefCell::new(crate::mcp_wire::Uploads::new());
+}
+
+/// The file behind tab `tab`, if it was opened here.
+pub fn upload_file(tab: u64) -> Option<web_sys::File> {
+    UPLOADS.with(|u| u.borrow().get(tab))
+}
+
+fn pick_upload(file: &web_sys::File) -> u32 {
+    UPLOADS.with(|u| u.borrow_mut().pick(file.clone()))
+}
+
+/// The load of `name` began with pick `pick`.
+pub fn start_upload(name: &std::path::Path, pick: u32) {
+    UPLOADS.with(|u| u.borrow_mut().start(name.to_path_buf(), pick));
+}
+
+/// Pick `pick` is not loaded (a load of the same name is already running).
+pub fn discard_upload(pick: u32) {
+    UPLOADS.with(|u| u.borrow_mut().discard(pick));
+}
+
+/// The load of `name` finished as tab `tab`, which owns its file from now on.
+pub fn bind_upload(name: &std::path::Path, tab: u64) {
+    UPLOADS.with(|u| u.borrow_mut().bind(name, tab));
+}
+
+/// The load of `name` failed; release its file.
+pub fn fail_upload(name: &std::path::Path) {
+    UPLOADS.with(|u| u.borrow_mut().fail(name));
+}
+
+/// Tab `tab` is closed; release its `File` handle.
+pub fn forget_upload(tab: u64) {
+    UPLOADS.with(|u| u.borrow_mut().forget(tab));
+}
+
+/// One upload slice: `len` bytes at `at` (at most `max`).
+pub async fn read_slice(
+    file: &web_sys::File,
+    at: u64,
+    len: u64,
+    max: usize,
+) -> Result<Vec<u8>, String> {
+    read_range_max(file, at, len, max)
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+
 /// Reads `len` bytes at `at`, at most an archive chunk (main thread; async, so the UI keeps
 /// running).
 async fn read_range(file: &web_sys::File, at: u64, len: u64) -> anyhow::Result<Vec<u8>> {
@@ -211,7 +265,7 @@ async fn read_range_max(
     len: u64,
     max: usize,
 ) -> anyhow::Result<Vec<u8>> {
-    let js = |e: JsValue| anyhow::anyhow!("{e:?}");
+    let js = |e: JsValue| anyhow::anyhow!("{}", crate::mcp_wire::js_error_text(&e));
     let (at, end) = archive::checked_range(at, len, max)?;
     let blob = file
         .slice_with_f64_and_f64(at as f64, end as f64)
@@ -294,6 +348,7 @@ async fn open_lazy(file: web_sys::File) -> Picked {
     }
     Picked::Lazy {
         name,
+        pick: pick_upload(&file),
         file: keep_file(file),
         entries,
         eager,
@@ -312,7 +367,7 @@ async fn open_file(file: web_sys::File) -> Picked {
     }
     // Same limit as `Document::open` on the desktop.
     match read_range_max(&file, 0, file.size() as u64, figstudio_fig::MAX_FILE_BYTES).await {
-        Ok(bytes) => Picked::Bytes(name, bytes),
+        Ok(bytes) => Picked::Bytes(name, bytes, pick_upload(&file)),
         Err(e) => Picked::Failed(format!(
             "Could not read {}: {}",
             name.display(),

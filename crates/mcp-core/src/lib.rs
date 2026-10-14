@@ -5,6 +5,8 @@
 
 /// PNG, JPEG or original image bytes of nodes.
 pub mod assets;
+/// Browser-to-loopback bridge messages.
+pub mod bridge;
 /// Local Code Connect component context.
 pub mod codeconnect_context;
 /// React + Tailwind design context with rendered assets.

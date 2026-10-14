@@ -36,6 +36,8 @@ figstudio-mcp [--http[=ADDR]] [--no-system-fonts] [--assets-dir DIR | --assets i
 | `--assets-dir DIR` | Where `get_design_context` writes its PNG assets. Default `./figma-assets`, resolved against the current directory. |
 | `--assets inline` | Return those assets as image content instead of files. Cannot be combined with `--assets-dir`. |
 | `--max-output-bytes N` | Byte cap of the text from `get_metadata`, `get_design_context` and `get_figjam` (default 24000, accepted 4000–100000). Claude Code delivered 20,166- and 25,810-character replies and rejected 44,674 and 74,213 characters, so the default stays under the delivered sizes. Raising it risks a rejected reply. |
+| `--allow-host NAME` | With a non-loopback `--http=ADDR`: another `Host` name to accept (repeatable), for example a Tailscale name. The bound IP is accepted automatically. See [Remote agents](#remote-agents). |
+| `--allow-any-interface` | Allow `--http=0.0.0.0:PORT` or `[::]:PORT`. Without it those are refused. |
 | `--version`, `--help` | As usual. |
 
 ### Inside the figstudio app (live mode)
@@ -45,7 +47,7 @@ Agent access (MCP server)**. It is off at every launch and is not saved.
 
 - While it runs, the status bar shows `MCP 127.0.0.1:3845/mcp`. Point your client there.
   The app tries 3845, then 3846–3855, and shows the address it got.
-- It is loopback only. The app has no address setting.
+- It is loopback only unless you tick **Allow remote agents** (see [Remote agents](#remote-agents)).
 - Tabs are the files: `fileKey` is the file's stem (or its full path when two open files
   share a stem), as `list_open_tabs` shows.
 - The app serves every tool of this server, plus the three live tools (below), on the open
@@ -54,6 +56,80 @@ Agent access (MCP server)**. It is off at every launch and is not saved.
 ```sh
 claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp
 ```
+
+### In the browser (bridge mode)
+
+The browser app (`scripts/web-build.sh --serve`, or the deployed one) cannot host a server,
+so a small local process does: `figstudio-mcp --bridge` serves `/mcp` for your client and
+`/bridge`, a WebSocket the browser tab pairs with. The tab uploads each file it has open
+(into a temporary directory that is deleted when the tab disconnects), reports its page,
+selection and viewport, and applies `reveal_node`. All tools and the three live tools work.
+
+```sh
+figstudio-mcp --bridge          # prints the MCP URL, a pairing token and the web URL
+claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp
+```
+
+Open the printed `Local:` or `Web:` URL (`...#mcp=<token>`). The token travels in the URL
+fragment, which the page's server never sees; or paste it in **View → Agent access (local
+MCP)…** and press Connect. The status bar shows `MCP connected`.
+
+| Flag | Meaning |
+|---|---|
+| `--bridge` | Bridge mode; no `FILE.fig` needed. Default loopback; non-loopback needs the bearer token (see [Remote agents](#remote-agents)). `--http=ADDR` picks the address (default 3845, then 3846–3855). |
+| `--allow-origin URL` | Another exact browser origin allowed to pair. Default: `http://127.0.0.1:8765`, `http://localhost:8765`. Allow a deployed site with `--allow-origin https://<your-deploy-domain>`; the banner then prints its `Web:` link. |
+| `--max-upload-bytes N` | Largest upload (default 2 GiB); over it the bridge answers with an error and drops the file. |
+
+Security: the bridge checks the `Origin` header against the list above and the random
+pairing token (a wrong one closes the socket with 4401), so another web page cannot push
+files at it. One browser connection at a time: a newer tab replaces the older one. Logs
+show counts only, never names or contents.
+
+Not verified: whether Safari or a newer Chrome blocks an `https://` page opening
+`ws://127.0.0.1` (mixed content / Local Network Access prompt). If your browser blocks it,
+use the local `--serve` build over `http://127.0.0.1:8765`.
+
+### Remote agents
+
+Use this when the coding agent runs on another machine than figstudio (for example an SSH
+box) and the app or `figstudio-mcp --bridge` runs on your PC. Nothing changes unless you ask.
+
+**Tailscale (token).** Bind your Tailscale address; the server generates a random bearer
+token each start and refuses any request without it (401, constant-time compare). `Host`
+must be the bound IP or a name you allow.
+
+```sh
+figstudio-mcp --http=100.64.0.1:3845 --allow-host mypc.tailnet.ts.net design.fig   # prints the token
+figstudio-mcp --bridge --http=100.64.0.1:3845                                      # browser bridge, same rules
+claude mcp add --transport http figstudio http://100.64.0.1:3845/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+A remote `--bridge` also listens on `127.0.0.1` at the same port, so the browser on your PC
+pairs with `ws://127.0.0.1:<port>/bridge` (the banner prints it). The browser never needs the
+remote address. That loopback listener serves `/mcp` without a token, as on any loopback bind.
+
+With `--allow-any-interface` the server accepts any address on every interface, but it cannot
+know your LAN or Tailscale addresses: a client that sends one as `Host` gets 403 even with the
+token. Name each one with `--allow-host` (for example `--allow-host 100.64.0.1` or a MagicDNS
+name). The banner prints this when no `--allow-host` is given.
+
+In the desktop app tick **View → Agent access → Allow remote agents**, type the address and
+port, then turn Agent access on; the status bar has a **Copy token** button. The setting is
+not saved. `0.0.0.0` and `::` are refused (`--allow-any-interface` overrides on the CLI, the
+app never listens on every interface). In bridge mode `/bridge` keeps its own Origin and
+pairing-token checks.
+
+**SSH tunnel (no token, nothing exposed).** Keep the default loopback bind and forward the
+port from your PC to the agent's machine:
+
+```sh
+ssh -R 3845:127.0.0.1:3845 agent-box     # run on your PC
+claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp   # run on agent-box
+```
+
+The connection is plain HTTP: Tailscale (WireGuard) encrypts it, but on any other network
+use the tunnel. TLS is not provided.
 
 ### stdio
 
@@ -70,17 +146,18 @@ works unchanged.
 - Protocol versions 2025-03-26, 2025-06-18, 2025-11-25 and 2026-07-28 are accepted (the
   SDK, `rmcp` 3.5, negotiates them).
 - The legacy 2024-11-05 HTTP+SSE-only transport is **not** supported.
-- The server only accepts loopback `Host` headers. It also checks `Origin`: requests
-  with no `Origin` (CLI and native clients) pass, `http://localhost:*`, `http://127.0.0.1:*`
-  and `http://[::1]:*` pass, and any other origin, including `null`, gets 403. Binding to a
-  non-loopback address prints a warning, and remote clients are still rejected. It is a local tool.
+- The server only accepts loopback `Host` headers (more only on a token-guarded remote bind).
+  It also checks `Origin`: requests with no `Origin` (CLI and native clients) pass,
+  `http://localhost:*`, `http://127.0.0.1:*` and `http://[::1]:*` pass, and any other origin,
+  including `null`, gets 403. It is a local tool; see [Remote agents](#remote-agents) for the opt-in exception.
 - All HTTP sessions share one file cache.
 
 **Security (both servers).**
 
-- The app binds loopback only, with no address setting. `--http=ADDR` can bind another
-  address; that prints a warning, and remote clients are still refused by the `Host` check.
-- `Host` must be loopback and `Origin` (when sent) must be loopback. Anything else is 403.
+- By default both bind loopback with no token. A non-loopback bind is opt-in and always
+  requires a bearer token (below).
+- `Host` must be loopback (or one allowed on a remote bind) and `Origin` (when sent) must be
+  loopback. Anything else is 403.
 - No CORS: no reply carries `Access-Control-Allow-Origin`, and a preflight from another
   origin is refused. A web page cannot read the server.
 
