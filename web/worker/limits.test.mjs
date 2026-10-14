@@ -48,6 +48,21 @@ test("invalid and oversized replies fail the caller rather than leaking an unrel
   }
 });
 
+test("an oversized rpc_reply fails only its call and keeps the socket", async () => {
+  const { room, tabs: [tab] } = setup();
+  const first = await forward(room, tab);
+  const second = await forward(room, tab, { ...rpc, id: 8 });
+  room.webSocketMessage(tab, JSON.stringify({
+    type: "rpc_reply", id: first.frame.id, status: 200,
+    body: { jsonrpc: "2.0", id: 7, result: { content: [{ type: "text", text: "界".repeat(3 * 1024 * 1024) }] } },
+  }));
+  await errorResponse(await first.response, 502, 7);
+  assert.equal(tab.readyState, 1, "the tab socket must stay open");
+  assert.equal(tab.closeCode, undefined);
+  reply(room, tab, second.frame);
+  assert.equal((await second.response).status, 200);
+});
+
 test("status-less Lane 2 replies default to JSON mode HTTP 200", async () => {
   const { room, tabs: [tab] } = setup();
   const { frame, response } = await forward(room, tab);

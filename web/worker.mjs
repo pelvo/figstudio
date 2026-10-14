@@ -1,5 +1,7 @@
 const ROOM = /^rm_[0-9a-f]{64}$/;
 const REQUEST_LIMIT = 1024 * 1024;
+// The tab budgets its own serialized replies at 7.5 MiB (REPLY_BUDGET in
+// apps/figstudio/src/mcp_wire.rs), so a well-formed reply stays under this cap.
 const REPLY_LIMIT = 8 * 1024 * 1024;
 const encoder = new TextEncoder();
 const owns = (body, key) => Object.hasOwn(body, key);
@@ -152,9 +154,14 @@ export class McpRoom {
   }
 
   webSocketMessage(tab, message) {
-    if (typeof message !== "string" || encoder.encode(message).byteLength > REPLY_LIMIT) {
+    if (typeof message !== "string") {
       this.failTab(tab);
       tab.close(1009, "Invalid or oversized relay frame");
+      return;
+    }
+    // A UTF-16 code unit encodes to at most 3 UTF-8 bytes, so short frames skip the encode.
+    if (message.length * 3 > REPLY_LIMIT && encoder.encode(message).byteLength > REPLY_LIMIT) {
+      this.oversized(tab, message);
       return;
     }
     let reply;
@@ -167,6 +174,8 @@ export class McpRoom {
     if (reply.type !== "rpc_reply") return;
     const entry = this.pending.get(reply.id);
     if (!entry || entry.tab !== tab) return;
+    // The reply contract lives in rpc_reply (apps/figstudio/src/mcp_wire.rs): status is
+    // always present -- 200 with a JSON-RPC object body, or 202 with a null body.
     const status = reply.status ?? 200; // Lane 2 may omit status on a successful reply.
     if (!Number.isInteger(status) || status < 200 || status > 599 || status === 204 ||
         status === 205 || status === 304 || !object(reply.body) ||
@@ -176,6 +185,23 @@ export class McpRoom {
       return;
     }
     this.finish(reply.id, Response.json(reply.body, { status }));
+  }
+
+  // One oversized rpc_reply fails only its matching call (the tab should have replaced it;
+  // see REPLY_BUDGET in apps/figstudio/src/mcp_wire.rs); any other oversized frame still
+  // fails every pending call on the socket.
+  oversized(tab, message) {
+    try {
+      const reply = JSON.parse(message);
+      const entry = object(reply) && reply.type === "rpc_reply"
+        ? this.pending.get(reply.id) : undefined;
+      if (entry?.tab === tab) {
+        this.finish(reply.id, rpcError(502, entry.rpcId, -32000, "Browser reply exceeded 8 MiB"));
+        return;
+      }
+    } catch { /* not JSON: fall through to closing the socket */ }
+    this.failTab(tab);
+    tab.close(1009, "Invalid or oversized relay frame");
   }
 
   webSocketClose(tab) {
