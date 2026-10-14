@@ -3,6 +3,19 @@
 What is tested, how to run it, how to write new tests, and how to prove that a test can
 fail. Read `AGENTS.md` first.
 
+## Browser Agent access (manual)
+
+`mcp_web.rs` is wasm-only and uses browser Window/WebSocket APIs, so desktop
+`egui_kittest` cannot instantiate it. The desktop window test covers the shared
+menu-to-window action, not the browser bridge controls. After a browser build:
+
+- View → Agent access opens the window directly (no nested bridge menu).
+- Click and type in both URL and pairing-token fields; neither closes the window.
+- Connect and Disconnect leave the window open; status reflects the connection.
+
+This browser GUI checklist remains unverified; a successful wasm build only proves
+compilation.
+
 ## Native menus (manual, desktop)
 
 Use an extra instance with public fixtures, agent access off; do not disturb a live
