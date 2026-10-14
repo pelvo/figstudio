@@ -10,8 +10,9 @@ commands from clicks and shortcuts. `menu_egui.rs` renders Linux/web menus and t
 headless/native-attach fallback. `menu_windows.rs` hosts Agent access and About.
 `menu_native.rs` attaches muda on macOS/Windows in the eframe creation closure;
 `menu_dispatch.rs` drains queued ids with repaint and synchronizes changed flags.
-macOS owns native accelerators; Windows keeps egui shortcuts (winit does not translate
-native accelerators). Context menus remain egui. Native attachment failure logs a
+macOS owns Open, Close tab and selection-export accelerators; egui retains Shift+1
+and Shift+0 (only outside text editing). Windows keeps egui shortcuts (winit does
+not translate native accelerators). Context menus remain egui. Native attachment failure logs a
 warning and keeps the drawn bar.
 
 ## 1. Map of the code

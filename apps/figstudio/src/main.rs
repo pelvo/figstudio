@@ -561,15 +561,18 @@ impl App {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        let native = self.native_shortcuts();
         let cmd = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
-        if !native && ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::O))) {
+        if !self.native_owns(menu::Action::Open)
+            && ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::O)))
+        {
             self.apply(menu::Action::Open, ctx);
         }
-        if !native && ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::W))) {
+        if !self.native_owns(menu::Action::CloseTab)
+            && ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::W)))
+        {
             self.apply(menu::Action::CloseTab, ctx);
         }
-        if !native
+        if !self.native_owns(menu::Action::ExportSelection(2.0))
             && ctx.input_mut(|i| {
                 i.consume_shortcut(&KeyboardShortcut::new(
                     Modifiers::COMMAND | Modifiers::SHIFT,
@@ -601,8 +604,8 @@ impl App {
             (h, menu::Action::SelectTool(Tool::Hand)),
             (z, menu::Action::SelectTool(Tool::Zoom)),
             (esc, menu::Action::ClearSelection),
-            (one && !native, menu::Action::ZoomFit),
-            (zero && !native, menu::Action::ActualSize),
+            (one, menu::Action::ZoomFit),
+            (zero, menu::Action::ActualSize),
             (
                 (plus || minus) && !shift,
                 menu::Action::ZoomBy(if plus { 1.25 } else { 0.8 }),
@@ -897,7 +900,7 @@ impl App {
                 .fill(fill)
                 .inner_margin(egui::Margin::symmetric(6, 2))
         };
-        if !self.has_native_menu() {
+        if self.show_drawn_menu() {
             egui::Panel::top("menu")
                 .frame(bar(theme::CHROME))
                 .show(ui, |ui| self.menu_bar(ui));

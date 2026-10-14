@@ -22,14 +22,18 @@ Use an extra instance with public fixtures, agent access off; do not disturb a l
 app or tunnel. Linux/web and headless tests retain the drawn bar. Check macOS:
 
 - App, File, View, Window and Help appear in the OS bar; the drawn bar is absent.
-- About opens the help window; Hide/Hide Others/Show All and Window Minimize/Zoom work.
+- About opens the help window from both the app and Help menus; Hide/Hide Others/
+  Show All and Window Minimize/Zoom work.
 - Open by click and Cmd+O opens exactly one picker; cancel it. Cmd+W closes one tab.
 - Export page at each scale; export selection only when selected. Cmd+Shift+E acts once.
 - No-tab and no-selection items are disabled; changing tabs updates them.
-- Shift+1 fits once and Shift+0 restores actual size; text editing does not trigger zoom.
+- Shift+1 fits once and Shift+0 restores actual size via egui (native menu labels
+  show hints only); text editing does not trigger zoom.
 - Panel checks follow state and clicks toggle once; Agent access opens its window.
 - Custom Quit / Cmd+Q closes through eframe; no orphan server is left.
 - Forced attach failure retains a usable drawn menu (build-time failure injection).
+  `menu_dispatch::tests` covers the pure attached/fallback visibility decision and
+  macOS/Windows shortcut ownership; it does not exercise OS attachment.
 
 Windows: repeat the item/state checklist; Ctrl shortcuts remain egui-owned because
 winit does not call TranslateAcceleratorW. Check Close, resize, minimize and Quit,

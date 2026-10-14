@@ -65,7 +65,7 @@ impl NativeMenu {
                 let mut group = group;
                 group
                     .children
-                    .retain(|i| !matches!(i.action, Some(Action::Quit | Action::About)));
+                    .retain(|i| !matches!(i.action, Some(Action::Quit)));
                 group
             };
             let submenu = Submenu::new(group.label, true);
@@ -193,7 +193,11 @@ fn add(parent: &Submenu, item: &Item, entries: &mut Vec<Entry>) -> muda::Result<
     let kind = if let Some(action) = item.action {
         let accelerator = accelerator(action);
         // The egui labels include textual hints; native menus render their own accelerators.
-        let label = item.label.split("   ").next().unwrap_or(item.label);
+        let label = if accelerator.is_some() {
+            item.label.split("   ").next().unwrap_or(item.label)
+        } else {
+            item.label
+        };
         if let Some(checked) = item.checked {
             let i = CheckMenuItem::new(label, item.enabled, checked, accelerator);
             parent.append(&i)?;
@@ -222,6 +226,9 @@ fn add(parent: &Submenu, item: &Item, entries: &mut Vec<Entry>) -> muda::Result<
 
 fn accelerator(action: Action) -> Option<muda::accelerator::Accelerator> {
     use muda::accelerator::{Accelerator, Code, Modifiers};
+    if cfg!(target_os = "macos") && !crate::menu_dispatch::native_owned(true, true, action) {
+        return None;
+    }
     let shortcut = action.shortcut()?;
     let code = match shortcut.logical_key {
         egui::Key::O => Code::KeyO,

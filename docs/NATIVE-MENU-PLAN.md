@@ -55,8 +55,9 @@ Each lane is one commit and passes `scripts/check.sh`.
   0.36 / winit 0.30 without GTK when default features are disabled.
 - A scratch app attached `init_for_nsapp()` in the creation closure. Cmd+O delivered
   one menu event to the egui frame via a channel plus `request_repaint()`.
-- egui observed only the O key **release**, not a press. Still skip egui handling of
-  menu-owned accelerators when attached on macOS to prevent duplicate actions.
+- egui observed only the O key **release**, not a press. Skip egui handling of
+  Open, Close tab and selection-export accelerators when attached on macOS. Keep
+  Shift+1/Shift+0 egui-owned: shifted digit native equivalents do not match reliably.
 - Custom Cmd+Q delivered a menu event; `ViewportCommand::Close` shut down the scratch
   app cleanly. No scratch code is included in the repository.
 - Existing bare-HTTP tests attempt to bind the live agent port. During these lanes
@@ -74,7 +75,12 @@ Each lane is one commit and passes `scripts/check.sh`.
   complete macOS checklist and browser GUI remain unverified. The browser release
   build passed; its pre-existing unused bridge import warning remains.
 - Lane 1 preserves existing agent/help widgets; lane 2 moves them into windows,
-  including the browser bridge controls. No widget menus remain on desktop.
+  including the browser bridge controls. Review correction removed the remaining
+  nested browser bridge popup; its URL/token controls now render directly in the
+  window. No widget menus remain.
+- Review correction retains egui Shift+1/Shift+0 outside text editing, leaves their
+  native labels as hints, and adds About to macOS Help. Ownership and drawn-bar
+  visibility rules have failing-first/mutation-proved unit coverage.
 
 ## Out of scope
 

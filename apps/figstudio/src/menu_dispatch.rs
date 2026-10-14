@@ -1,5 +1,18 @@
 //! Native frame integration, inert on platforms with the drawn menu.
-use crate::App;
+use crate::{App, menu::Action};
+
+pub(crate) fn native_owned(macos: bool, attached: bool, action: Action) -> bool {
+    macos
+        && attached
+        && matches!(
+            action,
+            Action::Open | Action::CloseTab | Action::ExportSelection(2.0)
+        )
+}
+
+fn show_drawn_bar(attached: bool) -> bool {
+    !attached
+}
 
 impl App {
     #[cfg(not(target_arch = "wasm32"))]
@@ -19,8 +32,12 @@ impl App {
         false
     }
 
-    pub(crate) fn native_shortcuts(&self) -> bool {
-        cfg!(target_os = "macos") && self.has_native_menu()
+    pub(crate) fn native_owns(&self, action: Action) -> bool {
+        native_owned(cfg!(target_os = "macos"), self.has_native_menu(), action)
+    }
+
+    pub(crate) fn show_drawn_menu(&self) -> bool {
+        show_drawn_bar(self.has_native_menu())
     }
 
     pub(crate) fn native_events(&mut self, _ctx: &egui::Context) {
@@ -39,5 +56,41 @@ impl App {
                 menu.sync(&tree);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_command_actions_are_native_owned_on_attached_macos() {
+        for action in [Action::Open, Action::CloseTab, Action::ExportSelection(2.0)] {
+            assert!(native_owned(true, true, action));
+            assert!(
+                !native_owned(true, false, action),
+                "drawn fallback owns shortcuts"
+            );
+            assert!(
+                !native_owned(false, true, action),
+                "Windows keeps egui shortcuts"
+            );
+        }
+        for action in [
+            Action::ZoomFit,
+            Action::ActualSize,
+            Action::ExportSelection(1.0),
+        ] {
+            assert!(
+                !native_owned(true, true, action),
+                "egui must retain non-command shortcuts"
+            );
+        }
+    }
+
+    #[test]
+    fn attachment_hides_the_drawn_bar_and_failure_keeps_it() {
+        assert!(show_drawn_bar(false));
+        assert!(!show_drawn_bar(true));
     }
 }
