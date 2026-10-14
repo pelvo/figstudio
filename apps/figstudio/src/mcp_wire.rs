@@ -259,13 +259,33 @@ pub(crate) fn parse_rpc(text: &str) -> Option<(String, serde_json::Value)> {
     (!id.is_empty() && body.is_object()).then_some((id, body))
 }
 
-/// The body remains JSON, never double-encoded. Notifications have no HTTP body.
+/// Serialized `rpc_reply` budget: below the relay's 8 MiB frame cap (`REPLY_LIMIT` in
+/// `web/worker.mjs`, which validates this shape) with headroom, so one oversized reply
+/// becomes an error result for its own call instead of failing every pending call.
+pub(crate) const REPLY_BUDGET: usize = 7_864_320; // 7.5 MiB
+
+/// The reply frame: `status` 200 with the parsed JSON-RPC `body`, or 202 with no body for
+/// a notification. The body remains JSON, never double-encoded. A reply whose serialized
+/// frame exceeds [`REPLY_BUDGET`] is replaced by a JSON-RPC `isError` result for the same
+/// id (the worker's validating side is `webSocketMessage` in `web/worker.mjs`).
 pub(crate) fn rpc_reply(id: &str, response: Option<&str>) -> Result<String, serde_json::Error> {
     let (status, body) = match response {
         Some(text) => (200, serde_json::from_str::<serde_json::Value>(text)?),
         None => (202, serde_json::Value::Null),
     };
-    Ok(serde_json::json!({"type":"rpc_reply", "id":id, "status":status, "body":body}).to_string())
+    let frame = serde_json::json!({"type":"rpc_reply", "id":id, "status":status, "body":body});
+    let text = frame.to_string();
+    if text.len() <= REPLY_BUDGET {
+        return Ok(text);
+    }
+    let rpc_id = frame["body"].get("id").cloned().unwrap_or(serde_json::Value::Null);
+    Ok(serde_json::json!({
+        "type":"rpc_reply", "id":id, "status":200,
+        "body":{"jsonrpc":"2.0", "id":rpc_id, "result":{
+            "content":[{"type":"text","text":format!(
+                "reply too large ({} bytes); request fewer nodes or a smaller scale", text.len())}],
+            "isError":true}}
+    }).to_string())
 }
 
 pub(crate) fn relay_ready() -> &'static str {

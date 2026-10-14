@@ -161,6 +161,32 @@ fn chunks_cover_the_file_exactly() {
 }
 
 #[test]
+fn oversized_replies_become_an_error_result_for_the_same_call() {
+    use serde_json::{Value, json};
+    // 4 MiB of CJK is 12 MiB as UTF-8 JSON: over the 7.5 MiB tab-side reply budget.
+    let big = json!({"jsonrpc":"2.0", "id":42, "result":{"content":[
+        {"type":"text","text":"界".repeat(4 * 1024 * 1024)}]}});
+    let frame = rpc_reply("req-1", Some(&big.to_string())).unwrap();
+    assert!(frame.len() <= REPLY_BUDGET, "{}", frame.len());
+    let reply: Value = serde_json::from_str(&frame).unwrap();
+    assert_eq!(reply["type"], "rpc_reply");
+    assert_eq!(reply["id"], "req-1");
+    assert_eq!(reply["status"], 200);
+    assert_eq!(reply["body"]["id"], 42);
+    assert_eq!(reply["body"]["result"]["isError"], true);
+    let text = reply["body"]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("reply too large ("), "{text}");
+    assert!(text.ends_with("request fewer nodes or a smaller scale"), "{text}");
+    // A reply inside the budget still round-trips the result unchanged.
+    let small = json!({"jsonrpc":"2.0", "id":42, "result":{"content":[]}});
+    let frame = rpc_reply("req-1", Some(&small.to_string())).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&frame).unwrap()["body"],
+        small
+    );
+}
+
+#[test]
 fn reveal_rejects_bad_ids_and_closed_tabs_without_touching_state() {
     let mut tabs = tabs();
     let mut active = 0;
