@@ -31,10 +31,10 @@ fn the_agent_window_types_an_address_and_starts_and_stops_the_server() {
     h.run_steps(3);
     h.get_by_label("Allow remote agents").click();
     h.run_steps(3);
-    let field = h
-        .query_all_by_role(egui::accesskit::Role::TextInput)
-        .last()
-        .unwrap();
+    // Found by its hint, not position: the layers panel has its own search field.
+    let field = h.get_by(|n| {
+        n.role() == egui::accesskit::Role::TextInput && n.placeholder() == Some("100.x.y.z:3845")
+    });
     // An ephemeral loopback listener exercises the remote plan without the live agent port.
     field.click();
     h.run_steps(3);
