@@ -49,6 +49,20 @@ Each lane is one commit and passes `scripts/check.sh`.
 | 4 | Windows native menu | `menu_native.rs` | `cargo check --target x86_64-pc-windows-msvc` in `check.sh --cross`; manual run on Windows |
 | 5 | Docs: PLAN, IMPLEMENTATION (menu architecture), TESTING (manual menu checklist) | docs | All checks pass |
 
+## Spike findings
+
+- muda 0.21.2 is the current release (Rust 1.90 minimum); it works with eframe
+  0.36 / winit 0.30 without GTK when default features are disabled.
+- A scratch app attached `init_for_nsapp()` in the creation closure. Cmd+O delivered
+  one menu event to the egui frame via a channel plus `request_repaint()`.
+- egui observed only the O key **release**, not a press. Still skip egui handling of
+  menu-owned accelerators when attached on macOS to prevent duplicate actions.
+- Custom Cmd+Q delivered a menu event; `ViewportCommand::Close` shut down the scratch
+  app cleanly. No scratch code is included in the repository.
+- Existing bare-HTTP tests attempt to bind the live agent port. During these lanes
+  the gate excludes those two tests and the pre-window MCP UI test; the latter is
+  replaced by ephemeral-port window coverage in lane 2. All other checks run.
+
 ## Out of scope
 
 Context menus (`copy_menu.rs`, `region_copy.rs`) stay egui. The web build keeps the egui menu.
