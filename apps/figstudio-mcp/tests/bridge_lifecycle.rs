@@ -114,19 +114,22 @@ async fn a_peer_that_stops_reading_does_not_block_the_next_pairing() {
     ));
     // Each bad frame earns a longer error reply. Never reading them fills both directions
     // until our own send stalls: the bridge is then blocked writing to us.
-    let mut stalled_send = false;
+    let mut backpressured = false;
     for _ in 0..5_000_000 {
         let frame = stalled.send(Message::Text("x".into()));
         match tokio::time::timeout(std::time::Duration::from_millis(500), frame).await {
             Ok(Ok(())) => {}
-            Ok(Err(_)) => break,
-            Err(_) => {
-                stalled_send = true;
+            // The bridge's bounded send can close the peer before our own send times out.
+            Ok(Err(_)) | Err(_) => {
+                backpressured = true;
                 break;
             }
         }
     }
-    assert!(stalled_send, "the flood never filled the socket buffers");
+    assert!(
+        backpressured,
+        "the flood never backpressured or closed the peer"
+    );
     let mut next = bridge.socket("test-pairing-secret").await;
     assert!(matches!(
         receive(&mut next).await,
