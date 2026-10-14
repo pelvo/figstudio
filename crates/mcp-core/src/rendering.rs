@@ -7,19 +7,35 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
+/// Reads decompressed archive entries, for example from a browser's byte-backed source.
+pub type EntryReader = Arc<dyn Fn(&Entry) -> Option<Vec<u8>> + Send + Sync>;
+
 /// Render settings for one registered file. Clones share the image cache.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct Rendering {
     /// Lay out text that has no stored glyph outlines with installed fonts.
     pub system_fonts: bool,
     /// The registered file, read for the images a lazily opened document did not load.
     /// `None`: those images count as missing.
     pub path: Option<PathBuf>,
+    /// Entry source; takes precedence over the path, including failed reads.
+    pub reader: Option<EntryReader>,
     /// Decoded images, shared by every render of the file.
     pub images: Images,
     /// Held while a lazy document renders: the cache's in-flight requests are shared, so two
     /// concurrent renders would each wait on images the other one reads.
     lazy_lock: Arc<Mutex<()>>,
+}
+
+impl std::fmt::Debug for Rendering {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Rendering")
+            .field("system_fonts", &self.system_fonts)
+            .field("path", &self.path)
+            .field("reader", &self.reader.as_ref().map(|_| "EntryReader"))
+            .field("images", &self.images)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Rendering {
@@ -32,9 +48,20 @@ impl Rendering {
         }
     }
 
-    /// The decompressed bytes of archive `entry` of the registered file; `None` when there
-    /// is no file or it cannot be read.
+    /// Settings that read lazy images from a byte-backed source.
+    pub fn with_reader(reader: EntryReader, images: Images) -> Self {
+        Self {
+            reader: Some(reader),
+            images,
+            ..Self::default()
+        }
+    }
+
+    /// The decompressed bytes of archive `entry`; `None` when its source cannot read it.
     pub fn read(&self, entry: &Entry) -> Option<Vec<u8>> {
+        if let Some(reader) = &self.reader {
+            return reader(entry);
+        }
         let mut file = std::fs::File::open(self.path.as_ref()?).ok()?;
         figstudio_fig::archive::read_entry(&mut file, entry).ok()
     }
