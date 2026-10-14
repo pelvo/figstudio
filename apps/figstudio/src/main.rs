@@ -31,7 +31,10 @@ mod mcp_upload;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod mcp_wire;
 mod menu;
+mod menu_dispatch;
 mod menu_egui;
+#[cfg(target_os = "macos")]
+mod menu_native;
 mod menu_windows;
 mod panels;
 mod recordings;
@@ -79,7 +82,11 @@ fn main() -> std::process::ExitCode {
     let run = eframe::run_native(
         APP_NAME,
         options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, files)))),
+        Box::new(move |cc| {
+            let mut app = App::new(cc, files);
+            app.attach_menu(cc);
+            Ok(Box::new(app))
+        }),
     );
     // No usable GPU adapter (or no window) ends here: say why instead of a bare Debug dump.
     match run {
@@ -166,6 +173,8 @@ struct App {
     show_right: bool,
     agent_window: bool,
     about_window: bool,
+    #[cfg(target_os = "macos")]
+    native_menu: Option<menu_native::NativeMenu>,
     cursor: Option<egui::Pos2>,
     /// `FIGSTUDIO_PROFILE=1` prints per-frame UI time and render times to stderr.
     profile: bool,
@@ -224,6 +233,8 @@ impl App {
             show_right: true,
             agent_window: false,
             about_window: false,
+            #[cfg(target_os = "macos")]
+            native_menu: None,
             cursor: None,
             profile: std::env::var_os("FIGSTUDIO_PROFILE").is_some(),
             #[cfg(target_arch = "wasm32")]
@@ -550,19 +561,22 @@ impl App {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        let native = self.native_shortcuts();
         let cmd = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
-        if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::O))) {
+        if !native && ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::O))) {
             self.apply(menu::Action::Open, ctx);
         }
-        if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::W))) {
+        if !native && ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::W))) {
             self.apply(menu::Action::CloseTab, ctx);
         }
-        if ctx.input_mut(|i| {
-            i.consume_shortcut(&KeyboardShortcut::new(
-                Modifiers::COMMAND | Modifiers::SHIFT,
-                Key::E,
-            ))
-        }) {
+        if !native
+            && ctx.input_mut(|i| {
+                i.consume_shortcut(&KeyboardShortcut::new(
+                    Modifiers::COMMAND | Modifiers::SHIFT,
+                    Key::E,
+                ))
+            })
+        {
             self.apply(menu::Action::ExportSelection(2.0), ctx);
         }
         let typing = ctx.egui_wants_keyboard_input();
@@ -587,8 +601,8 @@ impl App {
             (h, menu::Action::SelectTool(Tool::Hand)),
             (z, menu::Action::SelectTool(Tool::Zoom)),
             (esc, menu::Action::ClearSelection),
-            (one, menu::Action::ZoomFit),
-            (zero, menu::Action::ActualSize),
+            (one && !native, menu::Action::ZoomFit),
+            (zero && !native, menu::Action::ActualSize),
             (
                 (plus || minus) && !shift,
                 menu::Action::ZoomBy(if plus { 1.25 } else { 0.8 }),
@@ -872,6 +886,7 @@ impl App {
         if let Some(error) = self.mcp.frame(&mut self.tabs, &mut self.active) {
             self.toast(&ctx, error, true);
         }
+        self.native_events(&ctx);
         self.shortcuts(&ctx);
         self.menu_windows(&ctx);
         let space_held = ctx.input(|i| i.key_down(Key::Space)) && !ctx.egui_wants_keyboard_input();
@@ -882,9 +897,11 @@ impl App {
                 .fill(fill)
                 .inner_margin(egui::Margin::symmetric(6, 2))
         };
-        egui::Panel::top("menu")
-            .frame(bar(theme::CHROME))
-            .show(ui, |ui| self.menu_bar(ui));
+        if !self.has_native_menu() {
+            egui::Panel::top("menu")
+                .frame(bar(theme::CHROME))
+                .show(ui, |ui| self.menu_bar(ui));
+        }
         egui::Panel::top("tabs")
             .frame(egui::Frame::new().fill(theme::TAB_STRIP))
             .exact_size(28.0)

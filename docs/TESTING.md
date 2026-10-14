@@ -3,6 +3,25 @@
 What is tested, how to run it, how to write new tests, and how to prove that a test can
 fail. Read `AGENTS.md` first.
 
+## Native menus (manual, desktop)
+
+Use an extra instance with public fixtures, agent access off; do not disturb a live
+app or tunnel. Linux/web and headless tests retain the drawn bar. Check macOS:
+
+- App, File, View, Window and Help appear in the OS bar; the drawn bar is absent.
+- About opens the help window; Hide/Hide Others/Show All and Window Minimize/Zoom work.
+- Open by click and Cmd+O opens exactly one picker; cancel it. Cmd+W closes one tab.
+- Export page at each scale; export selection only when selected. Cmd+Shift+E acts once.
+- No-tab and no-selection items are disabled; changing tabs updates them.
+- Shift+1 fits once and Shift+0 restores actual size; text editing does not trigger zoom.
+- Panel checks follow state and clicks toggle once; Agent access opens its window.
+- Custom Quit / Cmd+Q closes through eframe; no orphan server is left.
+- Forced attach failure retains a usable drawn menu (build-time failure injection).
+
+Windows: repeat the item/state checklist; Ctrl shortcuts remain egui-owned because
+winit does not call TranslateAcceleratorW. Check Close, resize, minimize and Quit,
+and verify the menu does not outlive its HWND. Native behavior is not headless-tested.
+
 ## 1. The gate
 
 ```sh
