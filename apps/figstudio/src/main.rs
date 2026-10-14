@@ -668,40 +668,46 @@ impl App {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
-            ui.menu_button("View", |ui| {
-                if ui.button("Zoom to fit   ⇧1").clicked() {
-                    ui.close();
-                    if let Some(t) = self.tab() {
-                        t.fit_pending = true;
-                    }
-                }
-                if ui.button("Actual size   ⇧0").clicked() {
-                    ui.close();
-                    if let Some(t) = self.tab() {
-                        t.zoom_centre(1.0);
-                    }
-                }
-                ui.separator();
-                ui.checkbox(&mut self.show_left, "Layers panel");
-                ui.checkbox(&mut self.show_right, "Properties panel");
-                #[cfg(target_arch = "wasm32")]
-                ui.menu_button("CJK font", |ui| {
-                    for variant in cjk::Variant::ALL {
-                        let chosen = self.web.font_choice == variant;
-                        if ui.radio(chosen, variant.label()).clicked() {
-                            self.web.select_cjk_font(variant, ui.ctx());
+            // Stays open on inside clicks so the Agent access address field can be typed in;
+            // the buttons close it themselves.
+            let view = egui::containers::menu::MenuConfig::new()
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+            egui::containers::menu::MenuButton::new("View")
+                .config(view)
+                .ui(ui, |ui| {
+                    if ui.button("Zoom to fit   ⇧1").clicked() {
+                        ui.close();
+                        if let Some(t) = self.tab() {
+                            t.fit_pending = true;
                         }
                     }
-                    if self.web.korean_override {
-                        ui.separator();
-                        ui.label(
-                            RichText::new("Korean (KR) in use: a file has only Hangul")
-                                .color(theme::TEXT_DIM),
-                        );
+                    if ui.button("Actual size   ⇧0").clicked() {
+                        ui.close();
+                        if let Some(t) = self.tab() {
+                            t.zoom_centre(1.0);
+                        }
                     }
+                    ui.separator();
+                    ui.checkbox(&mut self.show_left, "Layers panel");
+                    ui.checkbox(&mut self.show_right, "Properties panel");
+                    #[cfg(target_arch = "wasm32")]
+                    ui.menu_button("CJK font", |ui| {
+                        for variant in cjk::Variant::ALL {
+                            let chosen = self.web.font_choice == variant;
+                            if ui.radio(chosen, variant.label()).clicked() {
+                                self.web.select_cjk_font(variant, ui.ctx());
+                            }
+                        }
+                        if self.web.korean_override {
+                            ui.separator();
+                            ui.label(
+                                RichText::new("Korean (KR) in use: a file has only Hangul")
+                                    .color(theme::TEXT_DIM),
+                            );
+                        }
+                    });
+                    self.mcp.menu(ui);
                 });
-                self.mcp.menu(ui);
-            });
             ui.menu_button("Help", |ui| {
                 ui.label(
                     RichText::new(format!("{APP_NAME} {}", env!("CARGO_PKG_VERSION"))).strong(),

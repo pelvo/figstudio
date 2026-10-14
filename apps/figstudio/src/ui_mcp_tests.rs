@@ -97,3 +97,31 @@ fn the_view_menu_starts_and_stops_the_mcp_server() {
         TcpStream::connect(addr).is_err().then_some(())
     });
 }
+
+#[test]
+fn clicking_the_remote_address_field_keeps_the_view_menu_open() {
+    let mut h = harness();
+    open_view(&mut h);
+    h.get_by_label("Allow remote agents").click();
+    h.run_steps(3);
+    open_view(&mut h);
+    let field = h
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .last()
+        .expect("the address field, the last text input")
+        .rect();
+    h.hover_at(field.center());
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: field.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+    h.run_steps(3);
+    assert!(
+        h.query_by_label(ITEM).is_some(),
+        "the menu closed under the address field"
+    );
+}
