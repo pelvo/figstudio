@@ -24,7 +24,7 @@ mod marquee;
 )]
 #[cfg_attr(target_arch = "wasm32", path = "mcp_web.rs")]
 mod mcp_host;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(test, target_arch = "wasm32"))]
 mod mcp_relay;
 #[cfg(any(feature = "mcp", test, target_arch = "wasm32"))]
 mod mcp_state;

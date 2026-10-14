@@ -107,18 +107,24 @@ impl McpHost {
             if matches!(done, Done::Reply { .. }) {
                 self.rpc.pending = self.rpc.pending.saturating_sub(1);
             }
-            if self.conn.is_none() || !self.relay {
-                continue;
-            }
             match done {
                 Done::Reveal {
                     generation,
                     tab,
                     node,
-                } if generation == self.generation => {
-                    let _ = crate::mcp_state::reveal(tabs, active, tab, node);
+                    ack,
+                } => {
+                    // Always answer: a worker is blocked on this ack with a bounded wait.
+                    let live = (self.conn.is_some() && self.relay).then_some(self.generation);
+                    let _ = ack.send(crate::mcp_relay::apply_reveal(
+                        live, generation, tabs, active, tab, node,
+                    ));
                 }
-                Done::Reply { generation, text } if generation == self.generation => {
+                Done::Reply { generation, text }
+                    if self.conn.is_some()
+                        && self.relay
+                        && generation == self.generation =>
+                {
                     if let Some(conn) = &self.conn {
                         let _ = conn.ws.send_with_str(&text);
                     }
