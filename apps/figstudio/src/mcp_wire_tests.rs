@@ -187,6 +187,24 @@ fn oversized_replies_become_an_error_result_for_the_same_call() {
 }
 
 #[test]
+fn rpc_reply_matches_the_worker_frame_contract() {
+    use serde_json::{Value, json};
+    // web/worker.mjs webSocketMessage validates exactly this shape: `type` rpc_reply, the
+    // envelope `id` as a string, `status` 200 with a JSON-RPC object body (or 202 with a
+    // null body for a notification). Status is never optional.
+    let reply: Value =
+        serde_json::from_str(&rpc_reply("r", Some(r#"{"jsonrpc":"2.0","id":7,"result":{}}"#)).unwrap())
+            .unwrap();
+    assert_eq!(reply["type"], "rpc_reply");
+    assert!(reply["id"].is_string());
+    assert_eq!(reply["status"], 200);
+    assert_eq!(reply["body"], json!({"jsonrpc":"2.0", "id":7, "result":{}}));
+    let notice: Value = serde_json::from_str(&rpc_reply("r", None).unwrap()).unwrap();
+    assert_eq!(notice["status"], 202);
+    assert!(notice["body"].is_null());
+}
+
+#[test]
 fn reveal_rejects_bad_ids_and_closed_tabs_without_touching_state() {
     let mut tabs = tabs();
     let mut active = 0;

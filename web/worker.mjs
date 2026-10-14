@@ -176,7 +176,7 @@ export class McpRoom {
     if (!entry || entry.tab !== tab) return;
     // The reply contract lives in rpc_reply (apps/figstudio/src/mcp_wire.rs): status is
     // always present -- 200 with a JSON-RPC object body, or 202 with a null body.
-    const status = reply.status ?? 200; // Lane 2 may omit status on a successful reply.
+    const status = reply.status;
     if (!Number.isInteger(status) || status < 200 || status > 599 || status === 204 ||
         status === 205 || status === 304 || !object(reply.body) ||
         reply.body.jsonrpc !== "2.0" || reply.body.id !== entry.rpcId ||

@@ -31,7 +31,7 @@ test("request limit is enforced for streamed bytes, not only content-length", as
 });
 
 test("invalid and oversized replies fail the caller rather than leaking an unrelated body", async () => {
-  for (const extra of [{ status: 101 }, { status: 204 }, { body: [] },
+  for (const extra of [{ status: 101 }, { status: 204 }, { status: undefined }, { body: [] },
     { body: { jsonrpc: "2.0", id: 8, result: {} } },
     { body: { jsonrpc: "2.0", id: 7, result: {}, error: {} } }]) {
     const { room, tabs: [tab] } = setup();
@@ -61,13 +61,6 @@ test("an oversized rpc_reply fails only its call and keeps the socket", async ()
   assert.equal(tab.closeCode, undefined);
   reply(room, tab, second.frame);
   assert.equal((await second.response).status, 200);
-});
-
-test("status-less Lane 2 replies default to JSON mode HTTP 200", async () => {
-  const { room, tabs: [tab] } = setup();
-  const { frame, response } = await forward(room, tab);
-  reply(room, tab, frame, { status: undefined });
-  assert.equal((await response).status, 200);
 });
 
 test("a failed send promptly fails the call", async () => {
