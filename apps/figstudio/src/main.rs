@@ -32,6 +32,7 @@ mod mcp_upload;
 mod mcp_wire;
 mod menu;
 mod menu_egui;
+mod menu_windows;
 mod panels;
 mod recordings;
 mod region_copy;
@@ -163,6 +164,8 @@ struct App {
     pages_share: f32,
     show_left: bool,
     show_right: bool,
+    agent_window: bool,
+    about_window: bool,
     cursor: Option<egui::Pos2>,
     /// `FIGSTUDIO_PROFILE=1` prints per-frame UI time and render times to stderr.
     profile: bool,
@@ -219,6 +222,8 @@ impl App {
             pages_share: 0.55,
             show_left: true,
             show_right: true,
+            agent_window: false,
+            about_window: false,
             cursor: None,
             profile: std::env::var_os("FIGSTUDIO_PROFILE").is_some(),
             #[cfg(target_arch = "wasm32")]
@@ -868,6 +873,7 @@ impl App {
             self.toast(&ctx, error, true);
         }
         self.shortcuts(&ctx);
+        self.menu_windows(&ctx);
         let space_held = ctx.input(|i| i.key_down(Key::Space)) && !ctx.egui_wants_keyboard_input();
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
 

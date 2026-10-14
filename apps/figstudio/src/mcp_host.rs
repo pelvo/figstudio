@@ -1,6 +1,6 @@
 //! Agent access: the app hosts the figstudio MCP server (live mode) on loopback.
 //!
-//! Off at every launch; the View menu toggle starts it. The server runs on its own thread
+//! Off at every launch; the Agent access window toggle starts it. The server runs on its own thread
 //! with a 2-worker tokio runtime, so the UI thread never waits on it: the snapshot it reads
 //! is swapped under a lock held only for an `Arc` store, and its `reveal_node` requests come
 //! back over a channel drained once per frame.
@@ -23,7 +23,7 @@ use crate::theme;
 type Event = anyhow::Result<SocketAddr>;
 
 pub struct McpHost {
-    /// The View menu toggle. Never saved: every launch starts off.
+    /// The window toggle. Never saved: every launch starts off.
     pub on: bool,
     /// Tried in order; the first free one is used (127.0.0.1:3845, then 3846 to 3855).
     addrs: Vec<SocketAddr>,
@@ -83,7 +83,7 @@ impl McpHost {
         });
     }
 
-    /// Where to listen and who may connect, from the menu settings.
+    /// Where to listen and who may connect, from the window settings.
     fn plan(&self) -> Result<(Vec<SocketAddr>, HttpAccess), String> {
         if !self.remote {
             return Ok((self.addrs.clone(), HttpAccess::loopback()));
@@ -113,7 +113,6 @@ impl McpHost {
         {
             ui.ctx().copy_text(token.clone());
         }
-        ui.separator();
     }
 
     /// Start of each frame: answer the server's requests (`reveal_node`). Returns an error

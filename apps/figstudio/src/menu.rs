@@ -121,11 +121,9 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
             .map(|v| Item::checked(v.label(), Action::CjkFont(v), app.web.font_choice == v))
             .collect(),
     ));
-    view.push(Item::action(
-        "Agent access (MCP server)",
-        Action::AgentAccess,
-        true,
-    ));
+    if cfg!(any(feature = "mcp", target_arch = "wasm32")) {
+        view.push(Item::action("Agent access…", Action::AgentAccess, true));
+    }
     vec![
         Item::group(
             "File",
@@ -177,7 +175,8 @@ impl App {
                     t.select(None);
                 }
             }
-            Action::AgentAccess | Action::About => {}
+            Action::AgentAccess => self.agent_window = true,
+            Action::About => self.about_window = true,
             #[cfg(target_arch = "wasm32")]
             Action::CjkFont(v) => self.web.select_cjk_font(v, ctx),
         }

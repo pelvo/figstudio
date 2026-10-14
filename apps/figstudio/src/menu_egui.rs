@@ -10,18 +10,7 @@ impl App {
         let tree = crate::menu::tree(self);
         egui::MenuBar::new().ui(ui, |ui| {
             for group in tree {
-                // The legacy agent address editor needs inside clicks not to dismiss View.
-                let config = egui::containers::menu::MenuConfig::new()
-                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-                egui::containers::menu::MenuButton::new(group.label)
-                    .config(config)
-                    .ui(ui, |ui| {
-                        if group.label == "Help" {
-                            self.help_text(ui);
-                        } else {
-                            self.menu_items(ui, &group.children);
-                        }
-                    });
+                ui.menu_button(group.label, |ui| self.menu_items(ui, &group.children));
             }
         });
     }
@@ -38,10 +27,6 @@ impl App {
                 });
                 continue;
             };
-            if action == Action::AgentAccess {
-                self.mcp.menu(ui);
-                continue;
-            }
             #[cfg(target_arch = "wasm32")]
             if let Action::CjkFont(v) = action {
                 if ui.radio(item.checked == Some(true), item.label).clicked() {
@@ -69,9 +54,7 @@ impl App {
                 ui.add_enabled(item.enabled, button).clicked()
             };
             if clicked {
-                if item.checked.is_none() {
-                    ui.close();
-                }
+                ui.close();
                 self.apply(action, ui.ctx());
             }
         }
