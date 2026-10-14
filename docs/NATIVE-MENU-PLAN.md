@@ -60,8 +60,21 @@ Each lane is one commit and passes `scripts/check.sh`.
 - Custom Cmd+Q delivered a menu event; `ViewportCommand::Close` shut down the scratch
   app cleanly. No scratch code is included in the repository.
 - Existing bare-HTTP tests attempt to bind the live agent port. During these lanes
-  the gate excludes those two tests and the pre-window MCP UI test; the latter is
-  replaced by ephemeral-port window coverage in lane 2. All other checks run.
+  the gate excludes those two tests and (lanes 0–1 only) the pre-window MCP UI test;
+  the latter is replaced by ephemeral-port window coverage in lane 2. Exclusions are
+  local-only and are not part of `scripts/check.sh`.
+
+## Implementation checks
+
+- Lanes 0–4 passed the full local gate, with the exclusions above. macOS native
+  attachment, View→Agent access, single Cmd+O picker, Cmd+W disabling exports and
+  clean Cmd+Q were observed in an extra public-fixture instance.
+- Windows target installed and `cargo check -p figstudio --target
+  x86_64-pc-windows-msvc` passed (host CPU flag warnings only). Windows runtime,
+  complete macOS checklist and browser GUI remain unverified. The browser release
+  build passed; its pre-existing unused bridge import warning remains.
+- Lane 1 preserves existing agent/help widgets; lane 2 moves them into windows,
+  including the browser bridge controls. No widget menus remain on desktop.
 
 ## Out of scope
 

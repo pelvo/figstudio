@@ -55,51 +55,43 @@ impl NativeMenu {
     pub(crate) fn attach(cc: &eframe::CreationContext<'_>, app: &App) -> anyhow::Result<Self> {
         let menu = Menu::new();
         let mut entries = vec![];
-        let app_menu = Submenu::new("figstudio", true);
-        add(
-            &app_menu,
-            &Item {
-                label: "About figstudio",
-                action: Some(Action::About),
-                enabled: true,
-                checked: None,
-                children: vec![],
-            },
-            &mut entries,
-        )?;
-        app_menu.append(&PredefinedMenuItem::separator())?;
-        app_menu.append(&PredefinedMenuItem::hide(None))?;
-        app_menu.append(&PredefinedMenuItem::hide_others(None))?;
-        app_menu.append(&PredefinedMenuItem::show_all(None))?;
-        app_menu.append(&PredefinedMenuItem::separator())?;
-        let quit = MenuItem::new("Quit figstudio", true, Some("Cmd+Q".parse()?));
-        app_menu.append(&quit)?;
-        entries.push(Entry {
-            action: Some(Action::Quit),
-            kind: Kind::Item(quit),
-            enabled: true,
-            checked: None,
-        });
-        menu.append(&app_menu)?;
-        for mut group in crate::menu::tree(app) {
-            group
-                .children
-                .retain(|i| !matches!(i.action, Some(Action::Quit | Action::About)));
+        #[cfg(target_os = "macos")]
+        macos_app_menu(&menu, &mut entries)?;
+        #[cfg(target_os = "macos")]
+        let mut help = None;
+        for group in crate::menu::tree(app) {
+            #[cfg(target_os = "macos")]
+            let group = {
+                let mut group = group;
+                group
+                    .children
+                    .retain(|i| !matches!(i.action, Some(Action::Quit | Action::About)));
+                group
+            };
             let submenu = Submenu::new(group.label, true);
             for item in &group.children {
                 add(&submenu, item, &mut entries)?;
             }
             menu.append(&submenu)?;
+            #[cfg(target_os = "macos")]
             if group.label == "Help" {
-                submenu.set_as_help_menu_for_nsapp();
+                help = Some(submenu);
             }
         }
         let window = Submenu::new("Window", true);
         window.append(&PredefinedMenuItem::minimize(None))?;
         window.append(&PredefinedMenuItem::maximize(None))?;
-        menu.insert(&window, 3)?;
-        menu.init_for_nsapp();
-        window.set_as_windows_menu_for_nsapp();
+        menu.insert(&window, if cfg!(target_os = "macos") { 3 } else { 2 })?;
+        #[cfg(target_os = "macos")]
+        {
+            menu.init_for_nsapp();
+            window.set_as_windows_menu_for_nsapp();
+            if let Some(help) = help {
+                help.set_as_help_menu_for_nsapp();
+            }
+        }
+        #[cfg(windows)]
+        attach_windows(&menu, cc)?;
         let (sender, events) = mpsc::channel();
         let ctx = cc.egui_ctx.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
@@ -127,20 +119,71 @@ impl NativeMenu {
 
     pub(crate) fn sync(&mut self, tree: &[Item]) {
         for state in tree {
-            if !state.label.is_empty() {
-                if let Some(entry) = self.items.iter_mut().find(|entry| {
-                    if state.action.is_some() {
-                        entry.action == state.action
-                    } else {
-                        matches!(&entry.kind, Kind::Group(g) if g.text() == state.label)
-                    }
-                }) {
-                    entry.sync(state);
-                }
-                self.sync(&state.children);
+            if state.label.is_empty() {
+                continue;
             }
+            let entry = self.items.iter_mut().find(|entry| {
+                if state.action.is_some() {
+                    entry.action == state.action
+                } else {
+                    matches!(&entry.kind, Kind::Group(g) if g.text() == state.label)
+                }
+            });
+            if let Some(entry) = entry {
+                entry.sync(state);
+            }
+            self.sync(&state.children);
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_menu(menu: &Menu, entries: &mut Vec<Entry>) -> anyhow::Result<()> {
+    let app_menu = Submenu::new("figstudio", true);
+    add(
+        &app_menu,
+        &Item {
+            label: "About figstudio",
+            action: Some(Action::About),
+            enabled: true,
+            checked: None,
+            children: vec![],
+        },
+        entries,
+    )?;
+    app_menu.append(&PredefinedMenuItem::separator())?;
+    app_menu.append(&PredefinedMenuItem::hide(None))?;
+    app_menu.append(&PredefinedMenuItem::hide_others(None))?;
+    app_menu.append(&PredefinedMenuItem::show_all(None))?;
+    app_menu.append(&PredefinedMenuItem::separator())?;
+    let quit = MenuItem::new("Quit figstudio", true, Some("Cmd+Q".parse()?));
+    app_menu.append(&quit)?;
+    entries.push(Entry {
+        action: Some(Action::Quit),
+        kind: Kind::Item(quit),
+        enabled: true,
+        checked: None,
+    });
+    menu.append(&app_menu)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "muda requires the live eframe HWND to attach its menu"
+)]
+fn attach_windows(menu: &Menu, cc: &eframe::CreationContext<'_>) -> anyhow::Result<()> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let RawWindowHandle::Win32(handle) = cc.window_handle()?.as_raw() else {
+        anyhow::bail!("native menu requires a Win32 window");
+    };
+    // SAFETY: eframe supplies its live HWND; attachment occurs on its UI thread and
+    // the retained Menu is dropped with App. muda handles WM_NCDESTROY cleanup.
+    unsafe {
+        menu.init_for_hwnd(handle.hwnd.get())?;
+    }
+    Ok(())
 }
 
 fn add(parent: &Submenu, item: &Item, entries: &mut Vec<Entry>) -> muda::Result<()> {
@@ -190,7 +233,11 @@ fn accelerator(action: Action) -> Option<muda::accelerator::Accelerator> {
     };
     let mut mods = Modifiers::empty();
     if shortcut.modifiers.command {
-        mods |= Modifiers::META;
+        mods |= if cfg!(target_os = "macos") {
+            Modifiers::META
+        } else {
+            Modifiers::CONTROL
+        };
     }
     if shortcut.modifiers.shift {
         mods |= Modifiers::SHIFT;

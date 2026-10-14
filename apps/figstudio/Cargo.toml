@@ -77,5 +77,8 @@ web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "CssStyleDec
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 muda = { version = "0.21.2", default-features = false }
 
+[target."cfg(windows)".dependencies]
+raw-window-handle = "0.6"
+
 [lints]
 workspace = true

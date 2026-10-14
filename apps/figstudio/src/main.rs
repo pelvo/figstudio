@@ -33,7 +33,7 @@ mod mcp_wire;
 mod menu;
 mod menu_dispatch;
 mod menu_egui;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod menu_native;
 mod menu_windows;
 mod panels;
@@ -173,7 +173,7 @@ struct App {
     show_right: bool,
     agent_window: bool,
     about_window: bool,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     native_menu: Option<menu_native::NativeMenu>,
     cursor: Option<egui::Pos2>,
     /// `FIGSTUDIO_PROFILE=1` prints per-frame UI time and render times to stderr.
@@ -233,7 +233,7 @@ impl App {
             show_right: true,
             agent_window: false,
             about_window: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             native_menu: None,
             cursor: None,
             profile: std::env::var_os("FIGSTUDIO_PROFILE").is_some(),

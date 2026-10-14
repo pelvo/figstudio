@@ -252,6 +252,10 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-14 — Shared native/drawn menu actions and Agent access/About windows shipped;
+  macOS attach/Open/Close/Quit checked with a public fixture, Windows cross-check passed.
+  Full native checklist and browser GUI not verified; two live-port tests excluded locally.
+
 - 2026-10-12 — PR #7 review (Linux, AMD): wgpu uncaptured errors are logged and turn the GPU
   tiles off instead of panicking (desktop and web); software adapters (`DeviceType::Cpu`) use the
   CPU canvas unless the GPU is asked for; GPU.md records the Linux results. Tests seen failing first.
