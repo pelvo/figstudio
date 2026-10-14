@@ -128,6 +128,32 @@ Rules: never commit a private or client file. A new fixture must be small, made 
 (or with a clear licence), and listed here. A file made with our own writer is **not** a
 substitute for a Figma-made file when the test is about matching Figma.
 
+### Browser MCP core (Lane 1)
+
+`cargo test -p figstudio-mcp-core --test wasm_rpc` exercises the SDK-free JSON-RPC
+boundary against the public `structure.fig` fixture. Repeat with `--no-default-features`
+for filesystem-free inline assets. `cargo test -p figstudio-mcp --test wasm_schema`
+compares the browser names, property names and required inputs to rmcp's actual live
+server, explicitly documenting browser omissions, and checks shared prompt text.
+
+Mutation controls for the new tests (restore source before running the gate):
+
+| Test in `crates/mcp-core/tests/wasm_rpc.rs` | Targeted mutation |
+|---|---|
+| `protocol_negotiates_and_returns_json_rpc_errors_without_notification_replies` | change initialize's protocol version |
+| `tools_dispatch_core_outputs_and_inline_png_assets` | use directory assets instead of inline PNGs |
+| `live_tab_routing_selection_and_reveal_use_the_same_snapshot` | send reveal to tab ID plus one |
+| `prompts_supply_shared_guidance_and_inventory_with_data_preferences` | remove both prescribed rules paths from shared text |
+| `byte_backed_reader_supplies_lazy_originals_and_never_falls_through` | discard successful custom entry reads |
+| `default_design_assets_are_inline_without_filesystem_support` | default to directory assets without `fs` |
+
+The native drift test fails when `search_design_system.query` is no longer required
+in the browser schema. Every control must fail at a runtime assertion, not compilation.
+These tests do not exercise a real browser Web Worker, HTTP relay or UI reveal queue;
+those belong to the later browser/relay lanes. The core reveal hook reports admission,
+not completion of a UI frame. Entry readers return decompressed bytes using the existing
+archive parser; a failed custom read does not fall through to a native path.
+
 ## 4. Writing tests
 
 ### Decoder / writer (`crates/fig/tests`)

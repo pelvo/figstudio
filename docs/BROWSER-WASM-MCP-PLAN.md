@@ -125,6 +125,7 @@ pub struct Rendering {
 ## 4. Implementation Lanes
 
 ### Lane 1 — Custom Entry Reader & Wasm JSON-RPC Dispatcher (`crates/mcp-core`)
+- [x] Complete (entry reader, dispatcher, shared prompts, schema drift and mutation gates).
 - **Files**: `crates/mcp-core/src/rendering.rs`, `crates/mcp-core/src/wasm_rpc.rs`,
   `crates/mcp-core/src/lib.rs`, `crates/mcp-core/tests/wasm_rpc.rs`.
 - **Work**:
@@ -138,6 +139,21 @@ pub struct Rendering {
   - `cargo test -p figstudio-mcp-core`
   - `cargo +nightly check -p figstudio-mcp-core --no-default-features --target wasm32-unknown-unknown`
   - Every new test in `tests/wasm_rpc.rs` seen failing under a targeted mutation.
+  - Passed with Rust 1.99.0; pinned nightly-2026-10-09 wasm32 check passed without fallback.
+    Full `scripts/check.sh` ended with `all checks passed`; seven mutation controls failed
+    at runtime assertions, then passed restored. All public-fixture thumbnail sheets inspected.
+    Browser worker IO, UI reveal completion and cloud relay remain unverified (later lanes).
+- **Browser contract**: `wasm_rpc::McpTab` holds the tab ID, display name, unique file key,
+  document, rendering source, page, selection and viewport rectangle. `McpTabEnv` provides
+  the snapshot, active tab and a reveal hook; the UI owns applying queued reveals.
+  PNG assets are inline; filesystem-free default design options also use inline assets.
+  Schemas are data in core, checked against rmcp's actual tool list and required properties.
+  `get_code_connect_map` and `add_code_connect_map` are omitted because browser tabs have
+  no sidecar binding store; `whoami` is a native installation diagnostic. Shared prompt
+  text remains byte-identical across adapters. No new dependencies or unsafe code.
+  Applied M-PUBLIC-DEBUG, M-CANONICAL-DOCS, M-INTEGRATION-TESTS and M-PANIC-IS-STOP:
+  public snapshots retain Debug; reveal documents errors; protocol/tool failures return
+  controlled results, and tests live at the transport boundary under `tests/`.
 
 ### Lane 2 — Browser Wasm Relay Client & Rayon Tool Runner (`apps/figstudio`)
 - **Files**: `apps/figstudio/src/mcp_web.rs`, `apps/figstudio/src/mcp_wire.rs`,
