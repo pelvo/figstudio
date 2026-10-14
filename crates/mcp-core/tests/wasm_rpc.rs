@@ -49,6 +49,9 @@ fn protocol_negotiates_and_returns_json_rpc_errors_without_notification_replies(
     assert!(parse["id"].is_null());
     for (method, params, code) in [
         ("missing", json!({}), -32601),
+        // A notifications/* method with an id is a request the server does not implement.
+        ("notifications/initialized", json!({}), -32601),
+        ("notifications/bogus", json!({}), -32601),
         ("tools/call", json!({}), -32602),
         ("tools/call", json!({"name":"unknown"}), -32602),
         ("ping", json!([]), -32602),

@@ -78,7 +78,8 @@ pub fn handle_request(req_json: &str, env: &dyn McpTabEnv) -> Option<String> {
         "tools/call" => tools::call(&params, env).map(output),
         "prompts/list" => Ok(crate::prompts::list()),
         "prompts/get" => tools::prompt(&params, env),
-        _ if method.starts_with("notifications/") => Ok(json!({})),
+        // Notifications have no id and already returned `None` above. A request (with an
+        // id) whose method is `notifications/*` is not a method this server implements.
         _ => return Some(error(id, -32601, "Method not found")),
     };
     Some(match result {
