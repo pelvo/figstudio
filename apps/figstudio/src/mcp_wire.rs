@@ -279,14 +279,18 @@ pub(crate) fn rpc_reply(id: &str, response: Option<&str>) -> Result<String, serd
     if text.len() <= REPLY_BUDGET {
         return Ok(text);
     }
-    let rpc_id = frame["body"].get("id").cloned().unwrap_or(serde_json::Value::Null);
+    let rpc_id = frame["body"]
+        .get("id")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     Ok(serde_json::json!({
         "type":"rpc_reply", "id":id, "status":200,
         "body":{"jsonrpc":"2.0", "id":rpc_id, "result":{
             "content":[{"type":"text","text":format!(
                 "reply too large ({} bytes); request fewer nodes or a smaller scale", text.len())}],
             "isError":true}}
-    }).to_string())
+    })
+    .to_string())
 }
 
 pub(crate) fn relay_ready() -> &'static str {

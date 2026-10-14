@@ -174,9 +174,14 @@ fn oversized_replies_become_an_error_result_for_the_same_call() {
     assert_eq!(reply["status"], 200);
     assert_eq!(reply["body"]["id"], 42);
     assert_eq!(reply["body"]["result"]["isError"], true);
-    let text = reply["body"]["result"]["content"][0]["text"].as_str().unwrap();
+    let text = reply["body"]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
     assert!(text.starts_with("reply too large ("), "{text}");
-    assert!(text.ends_with("request fewer nodes or a smaller scale"), "{text}");
+    assert!(
+        text.ends_with("request fewer nodes or a smaller scale"),
+        "{text}"
+    );
     // A reply inside the budget still round-trips the result unchanged.
     let small = json!({"jsonrpc":"2.0", "id":42, "result":{"content":[]}});
     let frame = rpc_reply("req-1", Some(&small.to_string())).unwrap();
@@ -192,9 +197,10 @@ fn rpc_reply_matches_the_worker_frame_contract() {
     // web/worker.mjs webSocketMessage validates exactly this shape: `type` rpc_reply, the
     // envelope `id` as a string, `status` 200 with a JSON-RPC object body (or 202 with a
     // null body for a notification). Status is never optional.
-    let reply: Value =
-        serde_json::from_str(&rpc_reply("r", Some(r#"{"jsonrpc":"2.0","id":7,"result":{}}"#)).unwrap())
-            .unwrap();
+    let reply: Value = serde_json::from_str(
+        &rpc_reply("r", Some(r#"{"jsonrpc":"2.0","id":7,"result":{}}"#)).unwrap(),
+    )
+    .unwrap();
     assert_eq!(reply["type"], "rpc_reply");
     assert!(reply["id"].is_string());
     assert_eq!(reply["status"], 200);

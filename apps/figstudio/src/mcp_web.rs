@@ -121,9 +121,7 @@ impl McpHost {
                     ));
                 }
                 Done::Reply { generation, text }
-                    if self.conn.is_some()
-                        && self.relay
-                        && generation == self.generation =>
+                    if self.conn.is_some() && self.relay && generation == self.generation =>
                 {
                     if let Some(conn) = &self.conn {
                         let _ = conn.ws.send_with_str(&text);

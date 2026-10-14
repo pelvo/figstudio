@@ -24,7 +24,10 @@ fn dispatch_and_apply(
     before_ui: impl FnOnce(&mut Vec<Tab>),
 ) -> Value {
     inbox.dispatch(1, "r".to_owned(), reveal_call(), tabs, 0);
-    let done = inbox.rx.recv_timeout(Duration::from_secs(5)).expect("a reveal");
+    let done = inbox
+        .rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a reveal");
     let Done::Reveal {
         generation,
         tab,
@@ -38,10 +41,17 @@ fn dispatch_and_apply(
     before_ui(tabs);
     let result = apply_reveal(live, generation, tabs, &mut 0, tab, node);
     ack.send(result).unwrap();
-    let Done::Reply { text, .. } = inbox.rx.recv_timeout(Duration::from_secs(5)).expect("a reply")
+    let Done::Reply {
+        generation: reply_generation,
+        text,
+    } = inbox
+        .rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a reply")
     else {
         panic!("not a reply");
     };
+    assert_eq!(reply_generation, 1);
     serde_json::from_str::<Value>(&text).unwrap()["body"].clone()
 }
 
