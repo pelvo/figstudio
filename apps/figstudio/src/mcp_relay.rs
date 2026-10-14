@@ -90,7 +90,15 @@ impl McpTabEnv for Snapshot {
                     "the browser tab did not apply the reveal within 2 s",
                 ));
             }
-            std::thread::sleep(ACK_POLL);
+            // Run queued pool work while waiting, as web.rs does: with one pool thread a
+            // bare sleep would stall renders for the whole ack window.
+            #[cfg(target_arch = "wasm32")]
+            let ran = rayon::yield_now() == Some(rayon::Yield::Executed);
+            #[cfg(not(target_arch = "wasm32"))]
+            let ran = false;
+            if !ran {
+                std::thread::sleep(ACK_POLL);
+            }
         }
     }
 }
