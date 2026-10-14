@@ -8,9 +8,10 @@ use figstudio_mcp_core::{
 };
 use std::sync::{
     Arc,
-    mpsc::{Receiver, Sender, channel},
+    mpsc::{Receiver, Sender, TryRecvError, channel},
 };
 use std::time::Duration;
+use web_time::Instant;
 
 #[derive(Debug)]
 pub(crate) enum Done {
@@ -29,8 +30,11 @@ pub(crate) enum Done {
 
 /// How long a worker waits for the UI to apply a reveal before failing the call. Blocking
 /// is safe here: this runs on the Rayon pool, never the UI thread, and the UI frame loop
-/// keeps polling the inbox while replies are pending.
+/// keeps polling the inbox while replies are pending. The wait polls because std's
+/// `Instant` (and so `recv_timeout`) is unsupported on wasm32; `web_time` and
+/// `thread::sleep` work on the pool workers (as `worker.rs` already relies on).
 const REVEAL_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+const ACK_POLL: Duration = Duration::from_millis(4);
 
 #[derive(Debug)]
 pub(crate) struct Inbox {
@@ -72,14 +76,21 @@ impl McpTabEnv for Snapshot {
                 ack,
             })
             .map_err(|_| CoreError::input("Browser UI disconnected"))?;
-        match done.recv_timeout(self.ack_timeout) {
-            Ok(result) => result.map_err(CoreError::input),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(CoreError::input(
-                "the browser tab did not apply the reveal within 2 s",
-            )),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                Err(CoreError::input("Browser UI disconnected"))
+        let deadline = Instant::now() + self.ack_timeout;
+        loop {
+            match done.try_recv() {
+                Ok(result) => return result.map_err(CoreError::input),
+                Err(TryRecvError::Disconnected) => {
+                    return Err(CoreError::input("Browser UI disconnected"));
+                }
+                Err(TryRecvError::Empty) => {}
             }
+            if Instant::now() >= deadline {
+                return Err(CoreError::input(
+                    "the browser tab did not apply the reveal within 2 s",
+                ));
+            }
+            std::thread::sleep(ACK_POLL);
         }
     }
 }
