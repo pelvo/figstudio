@@ -105,6 +105,53 @@ test("close and error fail only that socket's pending calls", async () => {
   }
 });
 
+test("the last tab to say ready takes the calls", async () => {
+  const first = new Tab(1);
+  const second = new Tab(1);
+  const { room } = setup([first, second]);
+  const ready = JSON.stringify({ type: "ready", protocol: 1 });
+  room.webSocketMessage(first, ready);
+  const toFirst = await forward(room, first);
+  reply(room, first, toFirst.frame);
+  await toFirst.response;
+  // The second tab readied later: it now handles calls, the first one no longer does.
+  room.webSocketMessage(second, ready);
+  const delivered = new Promise((resolve) => { second.notify = resolve; });
+  const response = room.fetch(post());
+  const winner = await Promise.race([
+    delivered.then(() => "second"),
+    new Promise((resolve) => setTimeout(() => resolve("nobody"), 250)),
+  ]);
+  assert.equal(winner, "second", "the call must go to the newest ready tab");
+  assert.equal(first.sent.length, 1, "the first tab must not receive new calls");
+  const frame = await delivered;
+  reply(room, second, frame);
+  assert.equal((await response).status, 200);
+});
+
+test("the 16-tab cap counts only open sockets", async (t) => {
+  // Half the sockets are mid-close (readyState 0): they do not count, as with activeTab.
+  const tabs = Array.from({ length: 16 }, (_, i) => {
+    const tab = new Tab();
+    tab.readyState = i % 2;
+    return tab;
+  });
+  const { room } = setup(tabs);
+  const server = new tabs[0].constructor(0);
+  const client = {};
+  t.mock.method(globalThis, "WebSocketPair", function () { return { 0: client, 1: server }; });
+  const NativeResponse = globalThis.Response;
+  t.mock.method(globalThis, "Response", function (body, init) {
+    if (init?.status === 101) return { status: 101, webSocket: init.webSocket };
+    return new NativeResponse(body, init);
+  });
+  const response = room.connect(new Request(endpoint.replace("/mcp/", "/bridge/"), {
+    headers: { Upgrade: "websocket" },
+  }));
+  assert.equal(response.status, 101);
+  t.mock.restoreAll();
+});
+
 test("hibernated socket attachments preserve active order and ping auto-response", async () => {
   const older = new Tab(2);
   const newer = new Tab(5);

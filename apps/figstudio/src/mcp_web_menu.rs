@@ -13,6 +13,7 @@ impl McpHost {
         if self.relay {
             ui.label("MCP tools run in this browser; files are not uploaded.");
             ui.label("The MCP URL grants access to open files. Keep it private.");
+            ui.label("Calls go to the browser tab that connected or changed most recently.");
             if ui.button("Copy MCP URL").clicked()
                 && let Some((_, url)) = room::urls(&self.room)
             {
