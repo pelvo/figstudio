@@ -32,9 +32,11 @@ Cloudflare Worker + Durable Object `McpRoom` (idFromName(room_token))
    │  WSS https://<deploy-domain>/bridge/<room_token> (same-origin, works in Safari/Chrome/iPad)
    ▼
 Browser Tab (Rust Wasm)
-   ├─ Read-only tools (`get_metadata`, `get_design_context`, `get_screenshot`,
-   │  `get_variable_defs`, `get_figjam`, `get_nodes_in_region`, `get_node_images`,
-   │  `search_design_system`, `get_code_connect_map`, …)
+   ├─ Read-only tools (native parity: `get_metadata`, `get_design_context`,
+   │  `get_screenshot`, `get_variable_defs`, `get_figjam`, `get_nodes_in_region`,
+   │  `search_design_system`, `download_assets`, `get_libraries`,
+   │  `get_context_for_code_connect`, …; `get_code_connect_map`/`add_code_connect_map`
+   │  and `whoami` are native-only)
    │    ──► run on Rayon worker against `Arc<Document>` + `WebSource` + shared `Images`
    └─ Live UI tools (`list_open_tabs`, `get_selection`, `reveal_node`)
         ──► read/update `McpHost` state & set `tab.fit_node` / `tab.selection`
@@ -50,9 +52,9 @@ Browser Tab (Rust Wasm)
   `https://<your-deploy-domain>/mcp/rm_<64 hex chars>`
 - That capability URL is both the user/room identifier and the 256-bit secret. Different
   users (or different browser profiles) never share a room.
-- If a user opens multiple tabs in the same browser, the newest connected tab (or the tab
-  most recently focused) becomes the active executor for that room, or tabs can be
-  aggregated by tab ID.
+- If a user opens multiple tabs in the same browser, the last tab to send `ready` (on
+  connect, and again whenever its tabs or selection change) is the active executor for
+  that room: calls go to the browser tab that connected or changed most recently.
 - The existing local `ws://127.0.0.1:3845/bridge` mode (`figstudio-mcp --bridge`) remains
   available as an offline option.
 
@@ -72,9 +74,9 @@ Same-origin WebSocket: `wss://<deploy-domain>/bridge/<room_token>`
 
 | Direction | Frame (JSON text) | Purpose |
 |---|---|---|
-| tab -> DO | `{"type":"ready","protocol":1,"tab_title":"..."}` | Sent on open and when tabs/selection change |
+| tab -> DO | `{"type":"ready","protocol":1}` | Sent on open and when tabs/selection change; no tab title, so the relay never learns document names |
 | DO -> tab | `{"type":"rpc","id":"<req_uuid>","body":<JSON-RPC request>}` | Forwarded from `POST /mcp/<room_token>` |
-| tab -> DO | `{"type":"rpc_reply","id":"<req_uuid>","status":200,"body":<JSON-RPC response>}` | Tool/initialize/list result from Wasm |
+| tab -> DO | `{"type":"rpc_reply","id":"<req_uuid>","status":200,"body":<JSON-RPC response>}` | Tool/initialize/list result from Wasm; `body` is a JSON value (an object with status 200, or `null` with status 202 for a notification) |
 | tab <-> DO | WebSocket auto-response ping/pong (`setWebSocketAutoResponse`) | Keeps socket alive without waking the hibernating DO |
 
 ### MCP JSON-RPC Methods Handled in Wasm (`crates/mcp-core/src/wasm_rpc.rs`)
@@ -117,7 +119,7 @@ pub struct Rendering {
   `tab.source` (`WebSource::read`), and `tools/call` runs on the Rayon pool
   (`rayon::spawn`) where `WebSource::read` already blocks on the main-thread `Blob.slice()`
   channel.
-- Result: `get_screenshot`, `get_design_context` (with inline assets) and `get_node_images`
+- Result: `get_screenshot`, `get_design_context` (with inline assets) and `download_assets`
   render lazy 1.7 GB `.fig` files in the browser with zero code duplication.
 
 ---
@@ -170,8 +172,9 @@ pub struct Rendering {
      - Snapshot the open `Tab`s (`id`, `path` stem, `Arc<Document>`, `Option<Source>`,
        `page`, `selection`, `viewport`).
      - Spawn `wasm_rpc::handle_request` on the Rayon pool so `WebSource::read` can fetch
-       lazy image slices without blocking the main UI thread; apply any `reveal_node`
-       command on the next UI frame; send `{"type":"rpc_reply","id":...,"body":...}` back.
+       lazy image slices without blocking the main UI thread; a `reveal_node` command
+       waits (bounded) for the next UI frame to apply it; send
+       `{"type":"rpc_reply","id":...,"status":200|202,"body":<JSON value>}` back.
 - **Gate**:
   - `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh --web`
   - Unit tests in `mcp_wire_tests.rs` for room token validation, URL derivation, and RPC
@@ -183,14 +186,16 @@ pub struct Rendering {
   fragment selects the unchanged local pairing/upload mode; the window also offers both
   modes, Copy MCP URL, Regenerate room token and mode-specific connection text.
 - `getrandom` 0.3's `wasm_js` backend uses Web Crypto (a non-shared JS buffer in the
-  threaded build), with `hex` encoding. Rooms are validated before storage reuse;
+  threaded build); the token is hex-formatted without a crate. Rooms are validated before
+  storage reuse;
   entropy/storage failure is reported rather than falling back to a predictable token.
   The MCP URL is a capability secret; regeneration disconnects the old browser socket.
 - Socket callbacks, room persistence, UI controls and bridge events are split into small
   modules. `mcp_relay.rs` snapshots documents and source Arcs, reads images only on Rayon,
   uses an independent rendering cache to avoid canvas in-flight requests, and returns
   replies/reveal commands through a polled channel. Connection generations discard stale
-  replies and reveals. Duplicate display-name stems get tab-id suffixes, never local paths.
+  replies and fail stale reveals with an error. Duplicate display-name stems get tab-id
+  suffixes, never local paths.
 - Relay `ready` frames contain only type/protocol, on open and view-state changes (the
   worker picks the last ready socket). Replies contain JSON values, including 202/null
   for a dispatcher notification; the worker normally acknowledges notifications itself.
@@ -258,6 +263,8 @@ pub struct Rendering {
 - `McpRoom` has no storage calls. Socket attachments retain the active-tab ordering across
   hibernation; newest connect or protocol-1 `ready` wins. Pending calls live only in memory,
   with a 30-second deadline, socket-bound reply matching, and disconnect/send-error cleanup.
+  An eviction (or any isolate restart) drops those in-flight calls: the client sees its own
+  request timeout and should retry the call.
   Requests are capped at 1 MiB (including streamed bodies), incoming frames at 8 MiB,
   admission at 128 concurrent RPCs and 16 connected browser tabs per room.
   Notifications/responses return 202, batches return a JSON-RPC error, and GET returns 405.
@@ -294,6 +301,13 @@ npx wrangler@4 deploy --config wrangler.jsonc
 need COOP/COEP/CORP. `run_worker_first: true` lets the Worker route the two relay prefixes;
 all other paths use `ASSETS.fetch`. Enable cloud Agent access in the built Lane 2 app and
 copy its MCP URL. There is no SSE endpoint, external CORS access, file upload, or database.
+
+Behind Cloudflare Access, the Access application must cover both `/mcp/*` and `/bridge/*`.
+MCP clients send a service token's `CF-Access-Client-Id` and `CF-Access-Client-Secret`
+headers, allowed by a Service Auth policy; the browser tab reaches the same-origin
+WebSocket with its Access session cookie. A missing policy shows up as a 302 redirect to
+the Access login page instead of a JSON-RPC reply. (Doc-only note: there is no runtime
+Access check in this repo.)
 
 Optional browser gate (install the official Playwright runner only in its subdirectory):
 
