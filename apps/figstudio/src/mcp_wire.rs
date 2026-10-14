@@ -188,6 +188,90 @@ pub(crate) fn close_reason(code: u16) -> &'static str {
     }
 }
 
+/// Browser paths are just display names, so duplicate stems need a stable tab-id suffix.
+pub(crate) fn relay_keys(tabs: &[Tab]) -> Vec<String> {
+    let stems: Vec<_> = tabs
+        .iter()
+        .map(|tab| {
+            tab.path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("untitled")
+        })
+        .collect();
+    let mut used = HashSet::new();
+    stems
+        .iter()
+        .zip(tabs)
+        .map(|(stem, tab)| {
+            let mut key = (*stem).to_owned();
+            if stems.iter().filter(|other| *other == stem).count() > 1 {
+                key.push_str(&format!("~{}", tab.id));
+            }
+            while !used.insert(key.clone()) {
+                key.push_str(&format!("~{}", tab.id));
+            }
+            key
+        })
+        .collect()
+}
+
+/// Room URLs are bearer capabilities: exactly 256 bits of lower-case hex.
+pub(crate) fn valid_room(room: &str) -> bool {
+    room.len() == 67
+        && room.starts_with("rm_")
+        && room[3..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub(crate) fn new_room() -> Result<String, getrandom::Error> {
+    let mut bytes = [0; 32];
+    getrandom::fill(&mut bytes)?;
+    Ok(format!("rm_{}", hex::encode(bytes)))
+}
+
+/// Location supplies the authority (including a development port), not a file name.
+pub(crate) fn relay_urls(protocol: &str, host: &str, room: &str) -> Option<(String, String)> {
+    let ws = match protocol {
+        "https:" => "wss",
+        "http:" => "ws",
+        _ => return None,
+    };
+    if host.is_empty() || !valid_room(room) {
+        return None;
+    }
+    Some((
+        format!("{ws}://{host}/bridge/{room}"),
+        format!("{protocol}//{host}/mcp/{room}"),
+    ))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "type")]
+pub(crate) enum RelayFrame {
+    #[serde(rename = "rpc")]
+    Rpc { id: String, body: serde_json::Value },
+}
+
+pub(crate) fn parse_rpc(text: &str) -> Option<(String, serde_json::Value)> {
+    let RelayFrame::Rpc { id, body } = serde_json::from_str(text).ok()?;
+    (!id.is_empty() && body.is_object()).then_some((id, body))
+}
+
+/// The body remains JSON, never double-encoded. Notifications have no HTTP body.
+pub(crate) fn rpc_reply(id: &str, response: Option<&str>) -> Result<String, serde_json::Error> {
+    let (status, body) = match response {
+        Some(text) => (200, serde_json::from_str::<serde_json::Value>(text)?),
+        None => (202, serde_json::Value::Null),
+    };
+    Ok(serde_json::json!({"type":"rpc_reply", "id":id, "status":status, "body":body}).to_string())
+}
+
+pub(crate) fn relay_ready() -> &'static str {
+    r#"{"type":"ready","protocol":1}"#
+}
+
 #[cfg(test)]
 #[path = "mcp_wire_tests.rs"]
 mod tests;

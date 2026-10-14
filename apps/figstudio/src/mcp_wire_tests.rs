@@ -12,6 +12,110 @@ fn tabs() -> Vec<Tab> {
 }
 
 #[test]
+fn relay_keys_are_unique_without_exposing_paths() {
+    let mut tabs = tabs();
+    tabs[0].path = PathBuf::from("folder-a/design.fig");
+    tabs[1].path = PathBuf::from("folder-b/design.fig");
+    assert_eq!(relay_keys(&tabs), ["design~7", "design~9"]);
+    tabs.reverse();
+    assert_eq!(relay_keys(&tabs), ["design~9", "design~7"]);
+    tabs[0].path = PathBuf::from("other.fig");
+    assert_eq!(relay_keys(&tabs), ["other", "design"]);
+}
+
+#[test]
+fn relay_room_generation_and_validation() {
+    let first = new_room().unwrap();
+    let second = new_room().unwrap();
+    assert!(valid_room(&first));
+    assert!(valid_room(&second));
+    assert_ne!(first, second);
+    for bad in [
+        "",
+        "rm_",
+        &format!("rm_{}", "a".repeat(63)),
+        &format!("rm_{}", "a".repeat(65)),
+        &format!("rm_{}", "G".repeat(64)),
+        &format!("xx_{}", "a".repeat(64)),
+        &format!("rm_{}", "é".repeat(32)),
+    ] {
+        assert!(!valid_room(bad), "{bad}");
+    }
+}
+
+#[test]
+fn relay_urls_follow_page_scheme_and_authority() {
+    let room = format!("rm_{}", "a".repeat(64));
+    for (protocol, ws) in [("https:", "wss"), ("http:", "ws")] {
+        assert_eq!(
+            relay_urls(protocol, "localhost:8787", &room),
+            Some((
+                format!("{ws}://localhost:8787/bridge/{room}"),
+                format!("{protocol}//localhost:8787/mcp/{room}")
+            ))
+        );
+    }
+    assert_eq!(relay_urls("file:", "localhost", &room), None);
+    assert_eq!(relay_urls("https:", "", &room), None);
+    assert_eq!(relay_urls("https:", "localhost", "bad"), None);
+}
+
+#[test]
+fn relay_rpc_round_trips_json_and_notifications() {
+    use serde_json::{Value, json};
+    let request = json!({"jsonrpc":"2.0", "id":7, "method":"ping"});
+    let frame = json!({"type":"rpc", "id":"request-1", "body":request});
+    let (id, body) = parse_rpc(&frame.to_string()).unwrap();
+    assert_eq!(body, request);
+    let response = json!({"jsonrpc":"2.0", "id":7, "result":{}});
+    let reply: Value =
+        serde_json::from_str(&rpc_reply(&id, Some(&response.to_string())).unwrap()).unwrap();
+    assert_eq!(
+        reply,
+        json!({"type":"rpc_reply", "id":"request-1", "status":200, "body":response})
+    );
+    let reply: Value = serde_json::from_str(&rpc_reply(&id, None).unwrap()).unwrap();
+    assert_eq!(
+        reply,
+        json!({"type":"rpc_reply", "id":"request-1", "status":202, "body":null})
+    );
+    assert!(rpc_reply(&id, Some("bad JSON")).is_err());
+    assert_eq!(
+        serde_json::from_str::<Value>(relay_ready()).unwrap(),
+        json!({"type":"ready","protocol":1})
+    );
+}
+
+#[test]
+fn relay_rpc_rejects_malformed_envelopes() {
+    for frame in [
+        "not JSON",
+        "null",
+        "[]",
+        r#"{"type":"rpc","body":{}}"#,
+        r#"{"type":"rpc","id":1,"body":{}}"#,
+        r#"{"type":"rpc","id":"","body":{}}"#,
+        r#"{"type":"rpc","id":"r","body":null}"#,
+        r#"{"type":"rpc","id":"r","body":"{}"}"#,
+        r#"{"type":"other","id":"r","body":{}}"#,
+    ] {
+        assert!(parse_rpc(frame).is_none(), "{frame}");
+    }
+}
+
+#[test]
+fn relay_reveal_applies_selection_fit_and_active_tab() {
+    let mut tabs = tabs();
+    let node = tabs[1].page;
+    let mut active = 0;
+    crate::mcp_state::reveal(&mut tabs, &mut active, 9, node).unwrap();
+    assert_eq!(active, 1);
+    assert_eq!(tabs[1].selection, Some(node));
+    assert_eq!(tabs[1].fit_node, Some(node));
+    assert_eq!(tabs[0].selection, None);
+}
+
+#[test]
 fn state_lists_only_received_tabs_with_wire_ids() {
     let mut tabs = tabs();
     tabs[0].select(Some(Guid(1, 25)));

@@ -17,6 +17,10 @@ const MAX_BUFFERED: u32 = 4 * 1024 * 1024;
 /// What socket callbacks and upload tasks tell the host; drained once per frame.
 pub(crate) enum Event {
     Opened,
+    Rpc {
+        id: String,
+        body: serde_json::Value,
+    },
     /// No `welcome` in time for connection `generation` (the host ignores a stale one).
     ConnectTimeout(u32),
     Server(ServerMessage),

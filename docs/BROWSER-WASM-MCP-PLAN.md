@@ -177,6 +177,55 @@ pub struct Rendering {
   - Unit tests in `mcp_wire_tests.rs` for room token validation, URL derivation, and RPC
     envelope round-trip.
 
+#### Lane 2 implementation notes
+
+- Browser Agent access defaults to a same-origin relay on HTTP(S). A legacy `#mcp=`
+  fragment selects the unchanged local pairing/upload mode; the window also offers both
+  modes, Copy MCP URL, Regenerate room token and mode-specific connection text.
+- `getrandom` 0.3's `wasm_js` backend uses Web Crypto (a non-shared JS buffer in the
+  threaded build), with `hex` encoding. Rooms are validated before storage reuse;
+  entropy/storage failure is reported rather than falling back to a predictable token.
+  The MCP URL is a capability secret; regeneration disconnects the old browser socket.
+- Socket callbacks, room persistence, UI controls and bridge events are split into small
+  modules. `mcp_relay.rs` snapshots documents and source Arcs, reads images only on Rayon,
+  uses an independent rendering cache to avoid canvas in-flight requests, and returns
+  replies/reveal commands through a polled channel. Connection generations discard stale
+  replies and reveals. Duplicate display-name stems get tab-id suffixes, never local paths.
+- Relay `ready` frames contain only type/protocol, on open and view-state changes (the
+  worker picks the last ready socket). Replies contain JSON values, including 202/null
+  for a dispatcher notification; the worker normally acknowledges notifications itself.
+- Native helper tests cover rooms, URL schemes, envelopes/replies, malformed frames,
+  duplicate file keys and selection/fit/active-tab reveal behavior. The existing 17 Node
+  relay contract tests passed. Validation results and browser limits are recorded below
+  with the final verification below.
+- Final `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh --web` passed (fmt, clippy,
+  native tests, release workspace build, wasm core build and threaded browser build),
+  ending `all checks passed`. Every changed/new app source module is below 300 lines.
+- Chromium Playwright relay gate passed against local Wrangler 4 on port 8791 (8787 was
+  occupied). It exercised initialize, live tabs, metadata, PNG screenshot and reveal/selection,
+  and inspected outgoing HTTP/WebSocket traffic to confirm no fixture upload. Initial attempts
+  required installing the matching Playwright Chromium; no deployment was performed.
+  Additional browser checks passed: Web-Crypto room generation on the threaded isolated
+  build, room stability across reload and regeneration of a malformed localStorage value;
+  a legacy pairing fragment does not connect to the relay, and denied localStorage neither
+  crashes the app nor opens an insecure fallback connection.
+  The maintained two-test e2e suite passed against the final gate build. Suppressing room
+  storage reads in the generated JS made its persistence test fail; the artifact was restored
+  and both e2e tests passed again. No generated artifacts were committed.
+- Not verified: deployed Cloudflare hibernation/eviction, Safari or Firefox, a real local
+  bridge upload after the module split, lazy-image reads from a large private file, or
+  disconnect/reconnect during a long-running RPC. Optional CJK web font tooling was absent
+  (the build warns that CJK names may show as boxes). Static ripwire contract inspection
+  found no reveal signature changes; its quality scan flags channel-initializer boilerplate
+  duplication and unresolved trait/test reachability, not a substitute for the passing gate.
+- Mutation proof: eight targeted changes each failed the focused test (duplicate-key
+  suffix removed, room length loosened, entropy shortened to 31 bytes, https downgraded
+  to ws, response body stringified, notification status changed to 200, envelope validation
+  bypassed, reveal fit command dropped). All mutations were restored; all 17 client helper
+  tests then passed. Guidelines applied: M-BALANCED-MODULES, M-MODULE-DOCS,
+  M-ERRORS-CANONICAL-STRUCTS (existing CoreError), M-APP-ERROR (existing source anyhow),
+  M-PUBLIC-DEBUG on the new transport/job types.
+
 ### Lane 3 — Cloudflare Worker + Hibernating Durable Object (`web/worker.mjs`)
 - **Files**: `web/worker.mjs` (or repo-external deploy worker in `figstudio-deploy`),
   `apps/figstudio-mcp/tests/relay_e2e.rs`.
@@ -225,7 +274,7 @@ pub struct Rendering {
   the public fixture through the browser picker, reads the localStorage room, exercises
   initialize/list_open_tabs/get_metadata/get_screenshot/reveal_node, checks PNG content
   and selection, and inspects outgoing HTTP bodies and WebSocket frames for uploads.
-  This script is written but **not run**; Lane 2 is not present in this worktree.
+  Lane 2 validation results are recorded with its implementation notes above.
 
 #### Deploy the relay
 
@@ -255,6 +304,6 @@ npx playwright install chromium
 RELAY_BASE_URL=http://localhost:8787 npm test
 ```
 
-The gate assumes the Lane 2 app connects to cloud relay on load (or that its saved Agent
-access choice enables it). Deployment, real hibernation/eviction, and the combined browser
-session have not been verified by the Node doubles.
+The Lane 2 app connects to cloud relay on HTTP(S) load unless a local pairing fragment is
+present. Set `RELAY_BASE_URL` if 8787 is occupied. Deployment and real hibernation/eviction
+are not verified by the Node doubles or the local Chromium gate.
