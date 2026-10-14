@@ -9,3 +9,8 @@ apps/figstudio-mcp/figjam-golden.fig
 .wrangler/
 .cloudflare/
 web/wrangler.jsonc
+# Relay tooling and optional Playwright artifacts.
+.pi/tasks/
+node_modules/
+web/e2e/test-results/
+web/e2e/playwright-report/
