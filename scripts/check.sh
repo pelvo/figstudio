@@ -2,7 +2,7 @@
 # The local gate. Run it before every commit; all steps must pass.
 #
 #   scripts/check.sh            fmt, clippy (-D warnings), tests, release build
-#   scripts/check.sh --cross    also `cargo check` for macOS (aarch64-apple-darwin)
+#   scripts/check.sh --cross    also `cargo check` for macOS and Windows
 #   scripts/check.sh --web      also build the browser app (scripts/web-build.sh; nightly)
 #
 # Toolchain: not pinned. egui 0.36 needs Rust 1.95+. If your default toolchain is older,
@@ -59,6 +59,12 @@ if [ "${1:-}" = "--cross" ]; then
     cargo $TC check --release --workspace --target aarch64-apple-darwin
   else
     echo "skipped: run 'rustup target add aarch64-apple-darwin $TC_FLAG' first"
+  fi
+  step "Windows check (x86_64-pc-windows-msvc)"
+  if rustup target list --installed $TC_FLAG 2>/dev/null | grep -qx x86_64-pc-windows-msvc; then
+    cargo $TC check -p figstudio --target x86_64-pc-windows-msvc
+  else
+    echo "skipped: run 'rustup target add x86_64-pc-windows-msvc $TC_FLAG' first"
   fi
 fi
 

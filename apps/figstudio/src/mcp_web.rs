@@ -110,24 +110,21 @@ impl Default for McpHost {
 
 impl McpHost {
     pub fn menu(&mut self, ui: &mut egui::Ui) {
-        ui.menu_button("Agent access (local MCP)…", |ui| {
-            ui.label("Pairs this tab with `figstudio-mcp --bridge` on this computer.");
-            ui.add(egui::TextEdit::singleline(&mut self.url).hint_text(DEFAULT_URL));
-            ui.add(
-                egui::TextEdit::singleline(&mut self.token)
-                    .password(true)
-                    .hint_text("pairing token"),
-            );
-            if self.conn.is_none() {
-                if ui.button("Connect").clicked() {
-                    self.want_connect = true;
-                    ui.close();
-                }
-            } else if ui.button("Disconnect").clicked() {
-                self.stop();
-                ui.close();
+        // Called inside the Agent access window, never inside a popup menu.
+        ui.label("Pairs this tab with `figstudio-mcp --bridge` on this computer.");
+        ui.add(egui::TextEdit::singleline(&mut self.url).hint_text(DEFAULT_URL));
+        ui.add(
+            egui::TextEdit::singleline(&mut self.token)
+                .password(true)
+                .hint_text("pairing token"),
+        );
+        if self.conn.is_none() {
+            if ui.button("Connect").clicked() {
+                self.want_connect = true;
             }
-        });
+        } else if ui.button("Disconnect").clicked() {
+            self.stop();
+        }
     }
 
     pub fn status(&self, ui: &mut egui::Ui) {

@@ -1,48 +1,9 @@
-//! View menu → Agent access: the toggle starts and stops the hosted server.
-use std::net::{SocketAddr, TcpStream};
-
-use egui_kittest::kittest::NodeT;
+//! Agent access window: entering an address, starting and stopping the hosted server.
+use super::*;
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use rmcp::transport::StreamableHttpClientTransport;
-
-use super::*;
-
-const ITEM: &str = "Agent access (MCP server)";
-const STATUS: &str = "MCP 127.0.0.1";
-
-/// Whether the menu item is checked (a click closes the menu, so this opens it again).
-fn checked(h: &mut Harness<'_, App>) -> bool {
-    open_view(h);
-    h.get_by_label(ITEM).accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
-}
-
-/// Opens the View menu (it takes a few frames to appear) unless it is open already.
-fn open_view(h: &mut Harness<'_, App>) {
-    if h.query_by_label(ITEM).is_none() {
-        h.get_by_label("View").click();
-        wait_for(h, "the View menu", |h| h.query_by_label(ITEM).map(|_| ()));
-    }
-}
-
-/// Opens View and clicks the checkbox.
-fn toggle(h: &mut Harness<'_, App>) {
-    open_view(h);
-    h.get_by_label(ITEM).click();
-    h.run_steps(3);
-}
-
-/// The address the status bar shows, once the server has bound its port.
-fn shown_addr(h: &Harness<'_, App>) -> Option<SocketAddr> {
-    let node = h.query_by_label_contains(STATUS)?;
-    // A plain egui label is exposed as the node's value.
-    let label = node.value()?;
-    label
-        .strip_prefix("MCP ")?
-        .strip_suffix("/mcp")?
-        .parse()
-        .ok()
-}
+use std::net::{SocketAddr, TcpStream};
 
 fn wait_for<T>(
     h: &mut Harness<'_, App>,
@@ -61,19 +22,42 @@ fn wait_for<T>(
 }
 
 #[test]
-fn the_view_menu_starts_and_stops_the_mcp_server() {
+fn the_agent_window_types_an_address_and_starts_and_stops_the_server() {
     let mut h = harness();
-    assert!(h.query_by_label_contains(STATUS).is_none(), "off at launch");
-    open_view(&mut h);
-    assert!(!checked(&mut h), "unchecked at launch");
-
-    toggle(&mut h);
-    assert!(checked(&mut h));
-    let addr = wait_for(&mut h, "the MCP address in the status bar", shown_addr);
-    assert!(addr.ip().is_loopback());
-    assert!(TcpStream::connect(addr).is_ok(), "the port answers");
-
-    // The hosted server sees the tab the UI opened.
+    assert!(!h.state().mcp.on, "off at launch");
+    h.get_by_label("View").click();
+    h.run_steps(3);
+    h.get_by_label("Agent access…").click();
+    h.run_steps(3);
+    h.get_by_label("Allow remote agents").click();
+    h.run_steps(3);
+    // Found by its hint, not position: the layers panel has its own search field.
+    let field = h.get_by(|n| {
+        n.role() == egui::accesskit::Role::TextInput && n.placeholder() == Some("100.x.y.z:3845")
+    });
+    // An ephemeral loopback listener exercises the remote plan without the live agent port.
+    field.click();
+    h.run_steps(3);
+    h.event(egui::Event::Text("127.0.0.1:0".into()));
+    h.run_steps(3);
+    assert_eq!(h.state().mcp.remote_addr, "127.0.0.1:0");
+    assert!(
+        h.query_by_label("Agent access (MCP server)").is_some(),
+        "editing stays in the window"
+    );
+    h.get_by_label("Agent access (MCP server)").click();
+    h.run_steps(3);
+    let addr: SocketAddr = wait_for(&mut h, "server address", |h| {
+        h.query_all_by_label_contains("MCP 127.0.0.1")
+            .next()?
+            .value()?
+            .strip_prefix("MCP ")?
+            .strip_suffix("/mcp")?
+            .parse()
+            .ok()
+    });
+    assert_ne!(addr.port(), 3845);
+    assert!(TcpStream::connect(addr).is_ok());
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let client = runtime.block_on(async {
         let transport = StreamableHttpClientTransport::from_uri(format!("http://{addr}/mcp"));
@@ -87,13 +71,23 @@ fn the_view_menu_starts_and_stops_the_mcp_server() {
         "structure"
     );
     runtime.block_on(client.cancel()).unwrap();
-
-    toggle(&mut h);
-    assert!(!checked(&mut h));
-    wait_for(&mut h, "the status label to go", |h| {
-        h.query_by_label_contains(STATUS).is_none().then_some(())
-    });
-    wait_for(&mut h, "the port to close", |_| {
+    h.get_by_label("Agent access (MCP server)").click();
+    h.run_steps(3);
+    assert!(!h.state().mcp.on);
+    wait_for(&mut h, "port close", |_| {
         TcpStream::connect(addr).is_err().then_some(())
     });
+}
+
+#[test]
+fn help_opens_the_about_window() {
+    let mut h = harness();
+    h.get_by_label("Help").click();
+    h.run_steps(3);
+    h.get_by_label("About figstudio").click();
+    h.run_steps(3);
+    assert!(
+        h.query_by_label("Opens Figma .fig local copies offline.")
+            .is_some()
+    );
 }

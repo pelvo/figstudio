@@ -74,5 +74,11 @@ js-sys = "0.3"
 serde_json = { workspace = true }
 web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "File", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "Location", "Navigator", "Response", "Storage", "Url", "Window", "WebSocket", "MessageEvent", "CloseEvent", "Event"] }
 
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+muda = { version = "0.21.2", default-features = false }
+
+[target."cfg(windows)".dependencies]
+raw-window-handle = "0.6"
+
 [lints]
 workspace = true

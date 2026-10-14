@@ -3,6 +3,18 @@
 How figstudio is built, how data flows through it, how to add things, and what is left to
 do. Read `AGENTS.md` first. Testing is in `docs/TESTING.md`; status is in `docs/PLAN.md`.
 
+## Native and drawn menus
+
+`apps/figstudio/src/menu.rs` defines menu state and `Action`; `App::apply` handles
+commands from clicks and shortcuts. `menu_egui.rs` renders Linux/web menus and the
+headless/native-attach fallback. `menu_windows.rs` hosts Agent access and About.
+`menu_native.rs` attaches muda on macOS/Windows in the eframe creation closure;
+`menu_dispatch.rs` drains queued ids with repaint and synchronizes changed flags.
+macOS owns Open, Close tab and selection-export accelerators; egui retains Shift+1
+and Shift+0 (only outside text editing). Windows keeps egui shortcuts (winit does
+not translate native accelerators). Context menus remain egui. Native attachment failure logs a
+warning and keeps the drawn bar.
+
 ## 1. Map of the code
 
 ```
