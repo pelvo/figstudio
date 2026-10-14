@@ -228,7 +228,8 @@ pub(crate) fn valid_room(room: &str) -> bool {
 pub(crate) fn new_room() -> Result<String, getrandom::Error> {
     let mut bytes = [0; 32];
     getrandom::fill(&mut bytes)?;
-    Ok(format!("rm_{}", hex::encode(bytes)))
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("rm_{hex}"))
 }
 
 /// Location supplies the authority (including a development port), not a file name.

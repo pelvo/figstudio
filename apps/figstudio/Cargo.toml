@@ -23,9 +23,6 @@ egui = { workspace = true }
 web-time = { workspace = true }
 # The browser's `?renderer=cpu|gpu` query (gpu_scenes.rs); the URL crate's own parser.
 form_urlencoded = "1.2"
-# OS entropy on native; Web Crypto on wasm, never a pseudorandom room capability.
-getrandom = { version = "0.3.4", features = ["wasm_js"] }
-hex = "0.4"
 serde = { workspace = true }
 
 [dev-dependencies]
@@ -36,6 +33,9 @@ image = { workspace = true }
 # mcp_host tests: an MCP client over HTTP against the hosted server.
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 serde_json = { workspace = true }
+# mcp_wire tests only: room tokens from OS entropy; the shipped desktop binary does not
+# compile mcp_wire (it is test- and wasm-only).
+getrandom = "0.3.4"
 # Headless UI tests (ui_tests.rs): the real App driven without a window, GPU or display.
 egui_kittest = { version = "0.36", default-features = false, features = ["eframe"] }
 
@@ -62,6 +62,8 @@ tokio-util = { workspace = true, optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tracing-web.workspace = true
 tracing-subscriber.workspace = true
+# Room tokens via Web Crypto (getrandom's wasm_js backend), never a pseudorandom capability.
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
 # gpu: tile scenes built on the render worker, rendered on the main thread (gpu_tiles_web.rs).
 figstudio-render = { path = "../../crates/render", default-features = false, features = ["parallel", "gpu"] }
 vello_gpu = { workspace = true }
