@@ -30,6 +30,8 @@ mod mcp_state;
 mod mcp_upload;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod mcp_wire;
+mod menu;
+mod menu_egui;
 mod panels;
 mod recordings;
 mod region_copy;
@@ -545,10 +547,10 @@ impl App {
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let cmd = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
         if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::O))) {
-            self.open_dialog(ctx);
+            self.apply(menu::Action::Open, ctx);
         }
         if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::W))) {
-            self.close(self.active);
+            self.apply(menu::Action::CloseTab, ctx);
         }
         if ctx.input_mut(|i| {
             i.consume_shortcut(&KeyboardShortcut::new(
@@ -556,7 +558,7 @@ impl App {
                 Key::E,
             ))
         }) {
-            self.export_png(ctx, true, 2.0);
+            self.apply(menu::Action::ExportSelection(2.0), ctx);
         }
         let typing = ctx.egui_wants_keyboard_input();
         if typing {
@@ -575,153 +577,22 @@ impl App {
                 i.modifiers.shift,
             )
         });
-        if v {
-            self.tool = Tool::Select;
+        for (pressed, action) in [
+            (v, menu::Action::SelectTool(Tool::Select)),
+            (h, menu::Action::SelectTool(Tool::Hand)),
+            (z, menu::Action::SelectTool(Tool::Zoom)),
+            (esc, menu::Action::ClearSelection),
+            (one, menu::Action::ZoomFit),
+            (zero, menu::Action::ActualSize),
+            (
+                (plus || minus) && !shift,
+                menu::Action::ZoomBy(if plus { 1.25 } else { 0.8 }),
+            ),
+        ] {
+            if pressed {
+                self.apply(action, ctx);
+            }
         }
-        if h {
-            self.tool = Tool::Hand;
-        }
-        if z {
-            self.tool = Tool::Zoom;
-        }
-        let Some(tab) = self.tab() else { return };
-        if esc {
-            tab.select(None);
-        }
-        if one {
-            tab.fit_pending = true;
-        }
-        if zero {
-            tab.zoom_centre(1.0);
-        }
-        if (plus || minus) && !shift {
-            let f = if plus { 1.25 } else { 0.8 };
-            tab.zoom_centre(tab.view.zoom * f);
-        }
-    }
-
-    fn menu_bar(&mut self, ui: &mut egui::Ui) {
-        egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
-                if ui
-                    .add(
-                        egui::Button::new("Open…").shortcut_text(
-                            ui.ctx().format_shortcut(&KeyboardShortcut::new(
-                                Modifiers::COMMAND,
-                                Key::O,
-                            )),
-                        ),
-                    )
-                    .clicked()
-                {
-                    ui.close();
-                    let ctx = ui.ctx().clone();
-                    self.open_dialog(&ctx);
-                }
-                let has_tab = !self.tabs.is_empty();
-                let mut export = None;
-                ui.add_enabled_ui(has_tab, |ui| {
-                    ui.menu_button("Export page as PNG", |ui| {
-                        for scale in [1.0, 2.0, 3.0] {
-                            if ui.button(format!("@{scale:.0}x…")).clicked() {
-                                ui.close();
-                                export = Some((false, scale));
-                            }
-                        }
-                    });
-                });
-                let has_sel = self
-                    .tabs
-                    .get(self.active)
-                    .is_some_and(|t| t.selection.is_some());
-                ui.add_enabled_ui(has_sel, |ui| {
-                    ui.menu_button("Export selection as PNG", |ui| {
-                        for scale in [1.0, 2.0, 3.0] {
-                            let mut b = egui::Button::new(format!("@{scale:.0}x…"));
-                            if scale == 2.0 {
-                                b = b.shortcut_text(ui.ctx().format_shortcut(
-                                    &KeyboardShortcut::new(
-                                        Modifiers::COMMAND | Modifiers::SHIFT,
-                                        Key::E,
-                                    ),
-                                ));
-                            }
-                            if ui.add(b).clicked() {
-                                ui.close();
-                                export = Some((true, scale));
-                            }
-                        }
-                    });
-                });
-                if let Some((selection_only, scale)) = export {
-                    self.export_png(ui.ctx(), selection_only, scale);
-                }
-                ui.separator();
-                if ui
-                    .add_enabled(has_tab, egui::Button::new("Close tab"))
-                    .clicked()
-                {
-                    ui.close();
-                    self.close(self.active);
-                }
-                if ui.button("Quit").clicked() {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            });
-            // Stays open on inside clicks so the Agent access address field can be typed in;
-            // the buttons close it themselves.
-            let view = egui::containers::menu::MenuConfig::new()
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-            egui::containers::menu::MenuButton::new("View")
-                .config(view)
-                .ui(ui, |ui| {
-                    if ui.button("Zoom to fit   ⇧1").clicked() {
-                        ui.close();
-                        if let Some(t) = self.tab() {
-                            t.fit_pending = true;
-                        }
-                    }
-                    if ui.button("Actual size   ⇧0").clicked() {
-                        ui.close();
-                        if let Some(t) = self.tab() {
-                            t.zoom_centre(1.0);
-                        }
-                    }
-                    ui.separator();
-                    ui.checkbox(&mut self.show_left, "Layers panel");
-                    ui.checkbox(&mut self.show_right, "Properties panel");
-                    #[cfg(target_arch = "wasm32")]
-                    ui.menu_button("CJK font", |ui| {
-                        for variant in cjk::Variant::ALL {
-                            let chosen = self.web.font_choice == variant;
-                            if ui.radio(chosen, variant.label()).clicked() {
-                                self.web.select_cjk_font(variant, ui.ctx());
-                            }
-                        }
-                        if self.web.korean_override {
-                            ui.separator();
-                            ui.label(
-                                RichText::new("Korean (KR) in use: a file has only Hangul")
-                                    .color(theme::TEXT_DIM),
-                            );
-                        }
-                    });
-                    self.mcp.menu(ui);
-                });
-            ui.menu_button("Help", |ui| {
-                ui.label(
-                    RichText::new(format!("{APP_NAME} {}", env!("CARGO_PKG_VERSION"))).strong(),
-                );
-                ui.label("Opens Figma .fig local copies offline.");
-                ui.label(
-                    RichText::new("V select · H hand · Z zoom · Space drag to pan")
-                        .color(theme::TEXT_DIM),
-                );
-                ui.label(
-                    RichText::new("Ctrl+scroll or pinch to zoom · ⇧1 fit").color(theme::TEXT_DIM),
-                );
-            });
-        });
     }
 
     fn tool_strip(&mut self, ui: &mut egui::Ui) {
