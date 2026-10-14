@@ -6,6 +6,27 @@ import { fileURLToPath } from "node:url";
 const baseURL = process.env.RELAY_BASE_URL ?? "http://localhost:8787";
 const fixture = fileURLToPath(new URL("../../tests/fixtures/structure.fig", import.meta.url));
 
+test("room capability persists and recovers malformed storage", async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const open = async () => {
+    await page.goto(`${baseURL}/?renderer=cpu&threads=2`);
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("figstudio.mcp.room")), {
+      timeout: 60_000,
+    }).toMatch(/^rm_[0-9a-f]{64}$/);
+    const room = await page.evaluate(() => localStorage.getItem("figstudio.mcp.room"));
+    // A real RPC, not just an allocated canvas, proves app and relay initialization.
+    await expect.poll(async () => (await request.post(`${baseURL}/mcp/${room}`, {
+      data: { jsonrpc: "2.0", id: 1, method: "ping" },
+    })).status(), { timeout: 60_000 }).toBe(200);
+    expect(await page.evaluate(() => crossOriginIsolated)).toBe(true);
+    return room;
+  };
+  const room = await open();
+  expect(await open()).toBe(room);
+  await page.evaluate(() => localStorage.setItem("figstudio.mcp.room", "malformed"));
+  expect(await open()).not.toBe(room);
+});
+
 test("browser executes MCP tools without uploading the local fig", async ({ page, request }) => {
   test.setTimeout(180_000);
   const bytes = await readFile(fixture);
