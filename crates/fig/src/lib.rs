@@ -12,6 +12,7 @@ mod read;
 pub mod resolve;
 pub mod tokens;
 mod val;
+mod val_serde;
 mod write;
 
 pub use doc::{

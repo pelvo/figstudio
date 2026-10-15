@@ -170,7 +170,9 @@ impl PartialEq for Val {
 }
 
 /// Node identifier: `sessionID:localID`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct Guid(pub u32, pub u32);
 
 impl fmt::Display for Guid {

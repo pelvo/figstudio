@@ -13,6 +13,7 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 figstudio-fig.workspace = true
+figstudio-diff.workspace = true
 figstudio-mcp-core = { workspace = true, features = ["fs", "system-fonts"] }
 figstudio-render.workspace = true
 base64.workspace = true
@@ -35,6 +36,7 @@ tokio-util.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]
+zip = { workspace = true }
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 reqwest.workspace = true
 futures-util.workspace = true

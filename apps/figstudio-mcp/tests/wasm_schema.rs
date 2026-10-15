@@ -37,7 +37,16 @@ async fn browser_tools_match_native_names_properties_and_required_arguments() {
     let browser = tool_list();
     // Sidecar/cloud operations have no source binding store in the browser. whoami is a
     // native installation diagnostic, not document inspection.
-    let omitted = ["get_code_connect_map", "add_code_connect_map", "whoami"];
+    // compare_files/compare_page are also native only: figstudio-diff renders through the
+    // native renderer, which the wasm32 browser build must not link. Exact native
+    // compare schemas are asserted in tests/stdio.rs and tests/http.rs.
+    let omitted = [
+        "get_code_connect_map",
+        "add_code_connect_map",
+        "whoami",
+        "compare_files",
+        "compare_page",
+    ];
     for tool in &browser {
         let name = tool["name"].as_str().unwrap();
         let other = native

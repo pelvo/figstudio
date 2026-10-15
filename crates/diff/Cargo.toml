@@ -1,0 +1,19 @@
+[package]
+name = "figstudio-diff"
+description = "Structural comparison of Figma local copies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+figstudio-fig.workspace = true
+figstudio-render = { workspace = true, default-features = false }
+image.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+html-escape.workspace = true
+
+[lints]
+workspace = true

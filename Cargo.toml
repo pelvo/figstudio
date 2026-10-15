@@ -12,6 +12,7 @@ rust-version = "1.95"
 [workspace.dependencies]
 tempfile = "3.23"
 figstudio-fig = { path = "crates/fig" }
+figstudio-diff = { path = "crates/diff" }
 figstudio-render = { path = "crates/render" }
 figstudio-mcp-core = { path = "crates/mcp-core", default-features = false }
 kiwi-schema = "0.2.1"

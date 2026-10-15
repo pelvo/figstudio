@@ -73,7 +73,8 @@ impl FigstudioServer {
                 + Self::assets_router()
                 + Self::figjam_router()
                 + Self::codeconnect_router()
-                + Self::design_system_router(),
+                + Self::design_system_router()
+                + Self::compare_router(),
         }
     }
 
@@ -111,7 +112,7 @@ impl FigstudioServer {
     }
 }
 
-const INSTRUCTIONS: &str = "Offline access to local .fig files only. fileKey is optional for one file; otherwise use its stem or listed full path. nodeId accepts 1:2, 1-2, Figma URLs with node-id, figstudio://<fileKey>?node-id=1-2 links, and instance paths I1:2;3:4 (nodes inside an instance, with overrides applied). A figstudio://<fileKey>?page=0-1&rect=x,y,w,h region link (from the app's Copy region) works in get_screenshot, which draws that part of the page, and in get_nodes_in_region, which lists the nodes in it. Writes go only to Code Connect sidecars and get_design_context asset files; the .fig is never changed. Cloud tools are unavailable.";
+const INSTRUCTIONS: &str = "Offline access to local .fig files only. fileKey is optional for one file; otherwise use its stem or listed full path. nodeId accepts 1:2, 1-2, Figma URLs with node-id, figstudio://<fileKey>?node-id=1-2 links, and instance paths I1:2;3:4 (nodes inside an instance, with overrides applied). A figstudio://<fileKey>?page=0-1&rect=x,y,w,h region link (from the app's Copy region) works in get_screenshot, which draws that part of the page, and in get_nodes_in_region, which lists the nodes in it. Writes go only to Code Connect sidecars, get_design_context asset files and compare_files report artifacts; the .fig is never changed. Cloud tools are unavailable.";
 
 const LIVE_INSTRUCTIONS: &str = " Live mode: the files are the figstudio app's open tabs. A missing fileKey means the active tab; a missing nodeId means its selection. list_open_tabs lists the tabs, get_selection describes the selected node, reveal_node selects a node in the app and shows it.";
 

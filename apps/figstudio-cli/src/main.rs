@@ -1,5 +1,6 @@
 //! Headless figstudio: inspect `.fig` files and render pages or nodes to PNG.
 
+mod compare;
 mod doctor;
 mod synth;
 
@@ -30,6 +31,9 @@ USAGE:
       Read and write the file back unchanged (tests the .fig writer).
   figstudio-cli synth <file.fig> -o <out.fig> [--copies <n>] [--pages <n>]
       Stress-test file: the first page's layers copied n times on each of n pages.
+  figstudio-cli compare <old.fig> <new.fig> -o <dir> [--scale <x>] [--no-render]
+                        [--json-only] [--no-system-fonts]
+      Version report: report.json, report.html and per-page PNGs under <dir>/render.
 
 Pages are numbered from 1. Node ids look like 12:34 (see `tree`).";
 
@@ -48,6 +52,7 @@ impl std::error::Error for UsageError {}
 struct Args {
     command: String,
     file: PathBuf,
+    file2: Option<PathBuf>,
     out: Option<PathBuf>,
     page: Option<String>,
     node: Option<Guid>,
@@ -57,6 +62,8 @@ struct Args {
     system_fonts: bool,
     copies: usize,
     pages: usize,
+    no_render: bool,
+    json_only: bool,
 }
 
 fn command_error(command: &str, has_output: bool) -> Option<String> {
@@ -68,6 +75,7 @@ fn command_error(command: &str, has_output: bool) -> Option<String> {
         "doctor",
         "resave",
         "synth",
+        "compare",
     ]
     .contains(&command)
     {
@@ -77,11 +85,25 @@ fn command_error(command: &str, has_output: bool) -> Option<String> {
         ("thumbnail", false) => Some("thumbnail needs -o <out.png>".into()),
         ("resave", false) => Some("resave needs -o <out.fig>".into()),
         ("synth", false) => Some("synth needs -o <out.fig>".into()),
+        ("compare", false) => Some("compare needs -o <dir>".into()),
         _ => None,
     }
 }
 
-fn parse(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
+/// `compare` runs on private files: its argument errors are fixed text and echo no user value.
+fn parse(raw: impl Iterator<Item = String>) -> Result<Args, String> {
+    let raw: Vec<String> = raw.collect();
+    let compare = raw.first().is_some_and(|c| c == "compare");
+    parse_args(raw.into_iter()).map_err(|e| {
+        if compare {
+            "invalid compare arguments".into()
+        } else {
+            e
+        }
+    })
+}
+
+fn parse_args(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
     let command = raw.next().ok_or("missing command")?;
     if command == "-h" || command == "--help" || command == "help" {
         return Err(String::new());
@@ -89,6 +111,7 @@ fn parse(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut args = Args {
         command,
         file: PathBuf::new(),
+        file2: None,
         out: None,
         page: None,
         node: None,
@@ -98,6 +121,8 @@ fn parse(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         system_fonts: true,
         copies: 100,
         pages: 1,
+        no_render: false,
+        json_only: false,
     };
     let mut file = None;
     while let Some(a) = raw.next() {
@@ -135,13 +160,21 @@ fn parse(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 }
             }
             "--no-system-fonts" => args.system_fonts = false,
+            "--no-render" => args.no_render = true,
+            "--json-only" => args.json_only = true,
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             path if file.is_none() => file = Some(PathBuf::from(path)),
+            path if args.command == "compare" && args.file2.is_none() => {
+                args.file2 = Some(PathBuf::from(path))
+            }
             extra => return Err(format!("unexpected argument {extra}")),
         }
     }
     command_error(&args.command, args.out.is_some()).map_or(Ok(()), Err)?;
     args.file = file.ok_or("missing .fig file")?;
+    if args.command == "compare" && args.file2.is_none() {
+        return Err("compare needs two files: <old.fig> <new.fig>".into());
+    }
     Ok(args)
 }
 
@@ -212,6 +245,20 @@ fn run(args: Args) -> Result<()> {
     if args.command == "doctor" {
         // Opens the file itself, to time it and to keep the path out of any error.
         return doctor::run(&args.file);
+    }
+    if args.command == "compare" {
+        // -o is checked by the parser; this keeps every compare path out of the shared open.
+        let out = args.out.clone().context("compare needs -o <dir>")?;
+        let new_file = args.file2.as_deref().unwrap_or(&args.file);
+        return compare::run(
+            &args.file,
+            new_file,
+            &out,
+            args.scale,
+            args.system_fonts,
+            !args.no_render,
+            !args.json_only,
+        );
     }
     let doc = Document::open(&args.file)?;
     debug!(

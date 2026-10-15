@@ -3,6 +3,8 @@
 pub mod assets;
 /// Local Code Connect context and mappings.
 pub mod codeconnect;
+/// Structural comparison of two registered files.
+pub mod compare;
 /// React + Tailwind design context with rendered assets.
 pub mod design;
 /// Local component and token discovery.
