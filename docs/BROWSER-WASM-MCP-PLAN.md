@@ -43,15 +43,21 @@ Browser Tab (Rust Wasm)
 ```
 
 ### Multi-User & Multi-Tab Isolation
-- On first load, the browser generates a 256-bit random `room_token` (`rm_<64 hex chars>`)
-  and stores it in `localStorage["figstudio.mcp.room"]` (with a **Regenerate** button in
-  `View -> Agent access`).
+- On first load, the browser generates a 256-bit random `executor` secret (`ex_<64 hex
+  chars>`) and stores **only** it, in `localStorage["figstudio.mcp.executor.v2"]`. The
+  caller `room_token` (`rm_<64 hex>`) is never stored: it is derived as
+  `SHA-256("figstudio/room/v1" || 0x00 || <32 raw executor bytes>)` (see the security
+  round below). **Regenerate** rotates the whole pair (saved before disconnecting).
 - Each `room_token` maps to its own isolated Durable Object instance
   `env.MCP_ROOMS.idFromName(room_token)`.
 - The user clicks **Copy MCP URL** in the browser menu, getting:
-  `https://<your-deploy-domain>/mcp/rm_<64 hex chars>`
-- That capability URL is both the user/room identifier and the 256-bit secret. Different
-  users (or different browser profiles) never share a room.
+  `https://<your-deploy-domain>/mcp/rm_<64 hex chars>` (caller-only, unchanged format).
+  **Copy room link** yields `https://<host>/#room=<derived>&exec=ex_<hex>` — that link
+  carries executor authority, not just the caller capability.
+- Different users (or different browser profiles) never share a room. A legacy
+  `figstudio.mcp.room` value is migrated once: a NEW pair is minted and saved first, the
+  legacy key is deleted after the save, and a one-time toast tells the user to copy the
+  new MCP URL once (the old room link stops working).
 - If a user opens multiple tabs in the same browser, the last tab to send `ready` (on
   connect, and again whenever its tabs or selection change) is the active executor for
   that room: calls go to the browser tab that connected or changed most recently.
@@ -77,7 +83,7 @@ Same-origin WebSocket: `wss://<deploy-domain>/bridge/<room_token>`
 | tab -> DO | `{"type":"ready","protocol":1}` | Sent on open and when tabs/selection change; no tab title, so the relay never learns document names |
 | DO -> tab | `{"type":"rpc","id":"<req_uuid>","body":<JSON-RPC request>}` | Forwarded from `POST /mcp/<room_token>` |
 | tab -> DO | `{"type":"rpc_reply","id":"<req_uuid>","status":200,"body":<JSON-RPC response>}` | Tool/initialize/list result from Wasm; `body` is a JSON value (an object with status 200, or `null` with status 202 for a notification) |
-| tab <-> DO | WebSocket auto-response ping/pong (`setWebSocketAutoResponse`) | Keeps socket alive without waking the hibernating DO |
+| tab <-> DO | Keepalive `ping`/`pong` (auto-response) | The tab sends `ping` every 30 s; the runtime auto-responds `pong` (`setWebSocketAutoResponse`) without waking the hibernating DO, keeping NAT/proxy mappings alive and surfacing a silently dropped connection as a close |
 
 ### MCP JSON-RPC Methods Handled in Wasm (`crates/mcp-core/src/wasm_rpc.rs`)
 Because `rmcp` depends on `tokio` and is native-only, `crates/mcp-core` gains a small,
@@ -193,7 +199,9 @@ pub struct Rendering {
 - Socket callbacks, room persistence, UI controls and bridge events are split into small
   modules. `mcp_relay.rs` snapshots documents and source Arcs, reads images only on Rayon,
   uses an independent rendering cache to avoid canvas in-flight requests, and returns
-  replies/reveal commands through a polled channel. Connection generations discard stale
+  replies/reveal commands through a polled channel. The UI must claim a reveal before it
+  mutates, so one whose worker already expired (and told the caller it failed) is never
+  applied late. Connection generations discard stale
   replies and fail stale reveals with an error. Duplicate display-name stems get tab-id
   suffixes, never local paths.
 - Relay `ready` frames contain only type/protocol, on open and view-state changes (the
@@ -293,7 +301,11 @@ pub struct Rendering {
   An eviction (or any isolate restart) drops those in-flight calls: the client sees its own
   request timeout and should retry the call.
   Requests are capped at 1 MiB (including streamed bodies), incoming frames at 8 MiB,
-  admission at 128 concurrent RPCs and 16 connected browser tabs per room.
+  admission at 128 concurrent RPCs and 16 connected browser tabs per room. The tab
+  bounds its own in-flight jobs at 8 and answers the rest with a busy error (503, the
+  worker's own busy shape), so a burst the worker admitted cannot stack renders on the
+  Rayon pool the canvas shares; a job the worker timed out (504) still runs to completion,
+  and stopping it needs a cancel path through the render pipeline (not built).
   Notifications/responses return 202, batches return a JSON-RPC error, and GET returns 405.
   HTTP requests and WebSocket upgrades with a foreign Origin are refused. The room URL remains a
   capability secret: anyone possessing it can drive the tab, so do not publish it.
@@ -305,10 +317,58 @@ pub struct Rendering {
   Wrangler 4 dry-run bundled the Worker and confirmed both bindings (assets override used
   test files, not a built app); no deployment occurred.
 - `web/e2e/relay.spec.mjs` is the Chromium gate for the combined Lane 1–3 build. It opens
-  the public fixture through the browser picker, reads the localStorage room, exercises
+  the public fixture through the browser picker, reads the stored executor and derives
+  its room in the page (WebCrypto), exercises
   initialize/list_open_tabs/get_metadata/get_screenshot/reveal_node, checks PNG content
   and selection, and inspects outgoing HTTP bodies and WebSocket frames for uploads.
   Lane 2 validation results are recorded with its implementation notes above.
+
+#### Executor credentials and room derivation (security round, branch `feat/browser-wasm-mcp-relay`)
+
+Approved design, split across two writers; this section records the shipped contract.
+
+- **Derivation** (one contract, three implementations — Rust `mcp_pair.rs`, JS
+  `web/executor-auth.mjs`, and the e2e page helper): the caller room is
+  `rm_ + hex(SHA-256(ASCII "figstudio/room/v1" || 0x00 || <32 raw executor bytes>))`.
+  The executor is a separate 256-bit getrandom value, stored as `ex_` + hex in
+  `figstudio.mcp.executor.v2`; only the executor is persisted, the room is always
+  re-derived. Rust uses RustCrypto `sha2` (synchronous, wasm-safe); JS uses WebCrypto.
+  Fixed vectors (`ex_` + 64 zeros → `rm_f387ed88…7525`) are asserted on both sides.
+- **Migration**: a legacy `figstudio.mcp.room` (caller-only) is never adopted as an
+  executor. On load with no v2 value and a legacy key present, a NEW pair is minted,
+  saved first, the legacy key deleted only after the save, and a one-time toast tells
+  the user the old link died and to copy the new MCP URL once. A corrupt v2 value is
+  replaced visibly; storage failures adopt and delete nothing.
+- **Bridge proof (before the Durable Object)**: the tab's relay WebSocket offers exactly
+  two subprotocols, `figstudio-exec-v1` and the raw executor hex — the secret is never
+  in a URL path, query, log or error. `web/executor-auth.mjs` (`checkBridgeUpgrade`)
+  checks a `/bridge/<room>` upgrade for the WebSocket upgrade, a present same-origin
+  `Origin`, exactly those two protocols, and that the derived room matches the path,
+  before the outer Worker names or fetches the Durable Object (`idFromName`/`get` are
+  never reached for an unproved bridge). The Durable Object re-verifies the same proof
+  itself (one SHA-256) in `connect` — it never trusts a header that merely claims the
+  outer Worker already checked, because such a header is forgeable — and the `101`
+  echoes only the constant marker `figstudio-exec-v1` (never the offered hex) as the
+  selected subprotocol. A socket is not an executor until it sends `ready`: attachments
+  start `{ready:false, order}` and become `{ready:true, order}` on the `ready` frame,
+  so a restored (hibernated) attachment without `ready:true` — including one stored by
+  an earlier deploy — never receives calls. The local bridge WebSocket is unchanged.
+- **Apply / join**: `Apply` accepts a bare `ex_…` or a complete matching
+  `#room=…&exec=…` link only; the caller MCP URL or a bare `rm_…` is rejected with a
+  message that never echoes the input. A fragment stages BOTH keys as a proposal only
+  when they validate against each other, and strips both keys from the URL immediately
+  — valid, mixed or invalid — keeping unrelated keys such as `#mcp=`. The same pair
+  never prompts. Joining/rotating replaces the room, so users must copy the new caller
+  URL once; the consent dialog says the link grants executor authority.
+- **Residual risk — request cost before the DO (no false promise)**: the executor proof
+  authenticates the tab and now gates `/bridge/*` before the Durable Object exists, but
+  it does not stop traffic. Anyone can still send POSTs to well-formed `/mcp/<rm_…>`
+  names (that side's only credential is the room id, so nothing else can be checked)
+  and mint their own pairs, and each such request costs a Worker request and a Durable
+  Object invocation even when nothing answers. A public
+  deployment needs Cloudflare Access in front of `/mcp/*` and `/bridge/*` and/or rate
+  limiting (WAF rules, per-IP limits); without those, the relay is open to unauthenticated
+  request-spending. Not verified here: a live Access deployment.
 
 #### Deploy the relay
 
@@ -346,7 +406,7 @@ RELAY_BASE_URL=http://localhost:8787 npm test
 ```
 
 The Lane 2 app connects to cloud relay on HTTP(S) load unless a local pairing fragment is
-present; a `#room=` link only proposes joining another browser's room (a confirmation
-dialog gates it). Set `RELAY_BASE_URL` if
+present; a `#room=…&exec=…` link only proposes joining another browser's room (a
+confirmation dialog gates it, and both secret keys leave the URL immediately). Set `RELAY_BASE_URL` if
 8787 is occupied. Deployment and real hibernation/eviction
 are not verified by the Node doubles or the local Chromium gate.

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import worker from "../worker.mjs";
-import { roomToken, endpoint, rpc, post, Tab, setup, forward, reply, errorResponse } from "./test-support.mjs";
+import { roomToken, endpoint, rpc, post, Tab, setup, forward, reply, errorResponse,
+  upgrade, bridgeRoom, bridgeUrl, executorHex } from "./test-support.mjs";
+import { EXEC_PROTOCOL } from "../executor-auth.mjs";
 
 test("rooms are validated before DO lookup, and valid rooms are isolated", async () => {
   const seen = [];
@@ -9,15 +11,44 @@ test("rooms are validated before DO lookup, and valid rooms are isolated", async
     idFromName(name) { seen.push(name); return name; },
     get(id) { return { fetch: () => new Response(id) }; },
   } };
-  for (const path of ["/mcp", "/bridge/", "/mcp/rm_short", `/bridge/${roomToken.toUpperCase()}`,
-    `/mcp/${roomToken}/extra`, `/mcp/${roomToken}%2f`]) {
+  for (const path of ["/mcp", "/bridge/", "/mcp/rm_short", `/bridge/${bridgeRoom.toUpperCase()}`,
+    `/mcp/${bridgeRoom}/extra`, `/mcp/${bridgeRoom}%2f`]) {
     assert.equal((await worker.fetch(new Request(`https://relay.example${path}`), env)).status, 404);
   }
   assert.deepEqual(seen, []);
   for (const token of [roomToken, `rm_${"b".repeat(64)}`]) {
-    assert.equal(await (await worker.fetch(new Request(`https://relay.example/bridge/${token}`), env)).text(), token);
+    assert.equal(await (await worker.fetch(new Request(`https://relay.example/mcp/${token}`), env)).text(), token);
   }
-  assert.equal(seen.length, 2);
+  assert.deepEqual(seen, [roomToken, `rm_${"b".repeat(64)}`]);
+});
+
+test("the bridge names a Durable Object only behind a valid executor proof", async () => {
+  const seen = [];
+  const env = { MCP_ROOMS: {
+    idFromName(name) { seen.push(name); return name; },
+    get(id) { return { fetch: () => new Response(id) }; },
+  } };
+  // Caller-only possession of the room (the MCP URL) is refused before any Durable
+  // Object is named: no proof, a forged Origin alone, a marker without a secret, or a
+  // well-formed secret that derives to a different room.
+  for (const request of [
+    upgrade(bridgeRoom, { Origin: "" }),
+    upgrade(bridgeRoom, { "Sec-WebSocket-Protocol": "" }),
+    upgrade(bridgeRoom, { "Sec-WebSocket-Protocol": EXEC_PROTOCOL }),
+    upgrade(bridgeRoom, { "Sec-WebSocket-Protocol": `${EXEC_PROTOCOL}, ${"c".repeat(64)}` }),
+    upgrade(roomToken),
+  ]) {
+    const response = await worker.fetch(request, env);
+    assert.equal(response.status, 403, request.url);
+    const message = await response.clone().text();
+    assert.ok(!message.includes(executorHex), "the refusal must not echo the executor");
+  }
+  assert.deepEqual(seen, []);
+  // The correct proof reaches the Durable Object named by the derived room.
+  const response = await worker.fetch(upgrade(), env);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), bridgeRoom);
+  assert.deepEqual(seen, [bridgeRoom]);
 });
 
 test("static pass-through keeps isolation headers and original request", async () => {
@@ -105,6 +136,30 @@ test("close and error fail only that socket's pending calls", async () => {
   }
 });
 
+test("an eviction drops in-flight calls: the revived isolate ignores the late reply", async (t) => {
+  // Hard eviction: the isolate — its `pending` map and timers — is gone, and the same
+  // sockets are reattached to a fresh constructor. The caller's connection died with
+  // the isolate; the late `rpc_reply` finds no pending entry and must not revive it.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const tab = new Tab(1);
+  const { room } = setup([tab]);
+  const { frame, response } = await forward(room, tab);
+  let settled = false;
+  response.then(() => { settled = true; });
+  const { room: revived } = setup([tab]);
+  reply(revived, tab, frame);
+  await Promise.resolve();
+  assert.equal(settled, false, "a reply to a new isolate cannot resolve the old call");
+  // In a real eviction even this timer is cancelled with the isolate; firing it here
+  // shows the caller never gets a resolution from the reply alone.
+  t.mock.timers.tick(30_000);
+  await errorResponse(await response, 504, 7);
+  // The revived isolate still serves new calls on the same socket.
+  const fresh = await forward(revived, tab, { ...rpc, id: 11 });
+  reply(revived, tab, fresh.frame);
+  assert.equal((await fresh.response).status, 200);
+});
+
 test("the last tab to say ready takes the calls", async () => {
   const first = new Tab(1);
   const second = new Tab(1);
@@ -142,13 +197,13 @@ test("the 16-tab cap counts only open sockets", async (t) => {
   t.mock.method(globalThis, "WebSocketPair", function () { return { 0: client, 1: server }; });
   const NativeResponse = globalThis.Response;
   t.mock.method(globalThis, "Response", function (body, init) {
-    if (init?.status === 101) return { status: 101, webSocket: init.webSocket };
+    if (init?.status === 101) return { status: 101, webSocket: init.webSocket, headers: init.headers };
     return new NativeResponse(body, init);
   });
-  const response = room.connect(new Request(endpoint.replace("/mcp/", "/bridge/"), {
-    headers: { Upgrade: "websocket" },
-  }));
+  const response = await room.connect(upgrade());
   assert.equal(response.status, 101);
+  // The 101 echoes only the constant marker, never the offered executor hex.
+  assert.deepEqual(response.headers, { "Sec-WebSocket-Protocol": EXEC_PROTOCOL });
   t.mock.restoreAll();
 });
 
@@ -165,4 +220,33 @@ test("hibernated socket attachments preserve active order and ping auto-response
   const second = await forward(revived, older);
   reply(revived, older, second.frame);
   await second.response;
+});
+
+test("a socket without a ready attachment is never the executor", async () => {
+  // Restored shapes: an attachment from before this protocol (no `ready` key) and a
+  // connected-but-not-ready socket. Neither receives calls until it says `ready`.
+  const stale = new Tab(9);
+  stale.attachment = { order: 9 };
+  const unready = new Tab(1);
+  unready.attachment = { ready: false, order: 1 };
+  const { room } = setup([stale, unready]);
+  await errorResponse(await room.fetch(post()), 503, 7);
+  room.webSocketMessage(unready, JSON.stringify({ type: "ready", protocol: 1 }));
+  const { frame, response } = await forward(room, unready);
+  reply(room, unready, frame);
+  assert.equal((await response).status, 200);
+});
+
+test("an accepted socket proves the executor again at the Durable Object", async () => {
+  // The outer Worker already checked the proof; the Durable Object must not trust that
+  // on anyone's say-so (a forgeable header), so it re-verifies before accepting.
+  const { room } = setup([]);
+  for (const request of [
+    upgrade(bridgeRoom, { Origin: "https://foreign.example" }),
+    upgrade(bridgeRoom, { "Sec-WebSocket-Protocol": `${EXEC_PROTOCOL}, ${"c".repeat(64)}` }),
+  ]) {
+    const response = await room.fetch(request);
+    assert.equal(response.status, 403, request.url);
+  }
+  assert.equal((await room.fetch(new Request(bridgeUrl()))).status, 426);
 });

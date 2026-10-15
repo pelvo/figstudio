@@ -1,6 +1,7 @@
 //! Pure helpers for the browser bridge client (`mcp_web.rs`): what the tab tells the local
 //! MCP process, and how it reads what comes back. No browser types, so native tests cover it.
 use std::collections::HashSet;
+use std::time::Duration;
 
 use figstudio_mcp_core::bridge::{ClientMessage, TabState, guid_string, parse_guid};
 
@@ -34,6 +35,7 @@ pub(crate) fn state_message(tabs: &[Tab], active: usize, ready: &HashSet<u64>) -
 }
 
 /// `#mcp=<token>` from `location.hash`; the fragment never reaches a server or its logs.
+/// The `#room=`/`#exec=` pair keys are parsed and stripped in `mcp_pair.rs`/`mcp_join.rs`.
 pub(crate) fn token_from_fragment(hash: &str) -> Option<String> {
     form_urlencoded::parse(hash.trim_start_matches('#').as_bytes())
         .find(|(key, value)| key == "mcp" && !value.is_empty())
@@ -225,14 +227,8 @@ pub(crate) fn valid_room(room: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-pub(crate) fn new_room() -> Result<String, getrandom::Error> {
-    let mut bytes = [0; 32];
-    getrandom::fill(&mut bytes)?;
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    Ok(format!("rm_{hex}"))
-}
-
 /// Location supplies the authority (including a development port), not a file name.
+/// The caller URL keeps its format; the room in it is now derived (mcp_pair.rs).
 pub(crate) fn relay_urls(protocol: &str, host: &str, room: &str) -> Option<(String, String)> {
     let ws = match protocol {
         "https:" => "wss",
@@ -246,43 +242,6 @@ pub(crate) fn relay_urls(protocol: &str, host: &str, room: &str) -> Option<(Stri
         format!("{ws}://{host}/bridge/{room}"),
         format!("{protocol}//{host}/mcp/{room}"),
     ))
-}
-
-/// The `#room=` fragment key, parsed like `#mcp=`: both keys may appear together, and the
-/// value must be a valid room or the link is ignored.
-pub(crate) fn room_from_fragment(fragment: &str) -> Option<String> {
-    let fragment = fragment
-        .rsplit_once('#')
-        .map_or(fragment, |(_, after)| after);
-    form_urlencoded::parse(fragment.as_bytes())
-        .find(|(key, value)| key == "room" && valid_room(value))
-        .map(|(_, value)| value.into_owned())
-}
-
-/// A room as typed or pasted: a bare token, an MCP URL (`…/mcp/rm_…`) or a room link
-/// (`https://<host>/#room=rm_…`). Near misses (wrong length, case or prefix, trailing
-/// path or query) are rejected so applying an invalid entry changes nothing.
-pub(crate) fn room_token_from_input(input: &str) -> Option<String> {
-    let input = input.trim();
-    if let Some(room) = room_from_fragment(input) {
-        return Some(room);
-    }
-    // Everything after the last `/mcp/` must be the bare token: no fragment, query or
-    // extra path segments.
-    let candidate = match input.rsplit_once("/mcp/") {
-        Some((_, rest)) if !rest.contains(['#', '?']) => rest,
-        _ => input,
-    };
-    valid_room(candidate).then(|| candidate.to_owned())
-}
-
-/// The shareable join link; opening it applies `#room=` and clears the fragment.
-pub(crate) fn room_link(protocol: &str, host: &str, room: &str) -> Option<String> {
-    match protocol {
-        "https:" | "http:" => (),
-        _ => return None,
-    }
-    (!host.is_empty() && valid_room(room)).then(|| format!("{protocol}//{host}/#room={room}"))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -332,6 +291,37 @@ pub(crate) fn rpc_reply(id: &str, response: Option<&str>) -> Result<String, serd
 
 pub(crate) fn relay_ready() -> &'static str {
     r#"{"type":"ready","protocol":1}"#
+}
+
+/// The reply when the dispatcher's output could not be encoded as a frame: still a frame
+/// the relay validates (`webSocketMessage` matches `body.id` against the caller's id), so
+/// it carries the caller's id — a null id would come back as an invalid-reply 502.
+pub(crate) fn encode_failed_reply(id: &str, rpc_id: &serde_json::Value) -> String {
+    serde_json::json!({"type":"rpc_reply", "id":id, "status":500,
+        "body":{"jsonrpc":"2.0", "id":rpc_id,
+            "error":{"code":-32603,"message":"Could not encode MCP reply"}}})
+    .to_string()
+}
+
+/// The reply when the tab refuses a call because its in-flight job queue is full: the
+/// worker's own busy shape (status 503, `-32000`), so a caller retries both refusals the
+/// same way (see `MAX_INFLIGHT` in `mcp_relay.rs`).
+pub(crate) fn busy_reply(id: &str, rpc_id: &serde_json::Value) -> String {
+    serde_json::json!({"type":"rpc_reply", "id":id, "status":503,
+        "body":{"jsonrpc":"2.0", "id":rpc_id,
+            "error":{"code":-32000,"message":"Relay is busy; retry later"}}})
+    .to_string()
+}
+
+/// Relay keepalive cadence: the socket is otherwise silent while no tools run, and a NAT
+/// or proxy can drop it silently (the status bar then still says connected). The tab
+/// pings; the DO's auto-response answers without waking (`web/worker.mjs`).
+pub(crate) const PING_EVERY: Duration = Duration::from_secs(30);
+
+/// Whether a relay keepalive `ping` is due, given the time since the last one (`None`
+/// right after connecting). Pure, so native tests pin the cadence.
+pub(crate) fn ping_due(elapsed_since_last: Option<Duration>) -> bool {
+    elapsed_since_last.is_none_or(|elapsed| elapsed >= PING_EVERY)
 }
 
 #[cfg(test)]

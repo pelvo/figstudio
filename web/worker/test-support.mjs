@@ -1,6 +1,7 @@
 import { webcrypto } from "node:crypto";
 import assert from "node:assert/strict";
 import { McpRoom } from "../worker.mjs";
+import { deriveRoom, EXEC_PROTOCOL } from "../executor-auth.mjs";
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 globalThis.WebSocketPair = class {};
@@ -10,6 +11,20 @@ globalThis.WebSocketRequestResponsePair = class {
 
 export const roomToken = `rm_${"a".repeat(64)}`;
 export const endpoint = `https://relay.example/mcp/${roomToken}`;
+// The bridge's shared vector (see executor-auth.test.mjs / mcp_pair_tests.rs): the room
+// a real executor derives, so bridge tests prove the subprotocol proof, not a bare room.
+export const executorHex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+export const bridgeRoom = await deriveRoom(executorHex);
+export const bridgeUrl = (room = bridgeRoom) => `https://relay.example/bridge/${room}`;
+export const upgrade = (room = bridgeRoom, headers = {}) => new Request(bridgeUrl(room), {
+  method: "GET",
+  headers: {
+    Upgrade: "websocket",
+    Origin: "https://relay.example",
+    "Sec-WebSocket-Protocol": `${EXEC_PROTOCOL}, ${executorHex}`,
+    ...headers,
+  },
+});
 export const rpc = { jsonrpc: "2.0", id: 7, method: "initialize", params: {} };
 export const post = (body = rpc) => new Request(endpoint, {
   method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" },
@@ -17,7 +32,9 @@ export const post = (body = rpc) => new Request(endpoint, {
 
 export class Tab {
   constructor(order = 1) {
-    this.attachment = { order };
+    // A socket that already said `ready` (the shape `webSocketMessage` stores); tests
+    // that need the pre-ready shape set `attachment` explicitly.
+    this.attachment = { ready: true, order };
     this.readyState = 1;
     this.sent = [];
   }

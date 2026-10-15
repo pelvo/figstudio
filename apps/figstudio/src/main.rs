@@ -30,6 +30,8 @@ mod mcp_join;
 #[path = "mcp_join_dialog_tests.rs"]
 mod mcp_join_dialog_tests;
 #[cfg(any(test, target_arch = "wasm32"))]
+mod mcp_pair;
+#[cfg(any(test, target_arch = "wasm32"))]
 mod mcp_relay;
 #[cfg(any(feature = "mcp", test, target_arch = "wasm32"))]
 mod mcp_state;

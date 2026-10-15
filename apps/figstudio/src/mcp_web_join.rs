@@ -35,9 +35,9 @@ impl McpHost {
         match reply {
             Some(JoinReply::Join) => {
                 // The same contract as `Apply` in the menu: a room is only adopted once
-                // its token could be saved.
-                match room::save(proposal.room()) {
-                    Ok(()) => self.adopt(proposal.into_room()),
+                // its executor could be saved.
+                match room::save(proposal.pair()) {
+                    Ok(()) => self.adopt(proposal.into_pair()),
                     Err(error) => self.notices.push(error),
                 }
                 self.proposal = None;
@@ -48,10 +48,10 @@ impl McpHost {
         }
     }
 
-    /// Make `room` this tab's room and reconnect the relay to it.
-    pub(super) fn adopt(&mut self, room: String) {
+    /// Make `pair` this tab's credential and reconnect the relay to its room.
+    pub(super) fn adopt(&mut self, pair: ExecutorPair) {
         self.stop();
-        self.room = room;
+        self.pair = Some(pair);
         self.relay = true;
         self.want_connect = true;
     }

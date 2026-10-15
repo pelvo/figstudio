@@ -1,3 +1,5 @@
+import { checkBridgeUpgrade, EXEC_PROTOCOL } from "./executor-auth.mjs";
+
 const ROOM = /^rm_[0-9a-f]{64}$/;
 const REQUEST_LIMIT = 1024 * 1024;
 // The tab budgets its own serialized replies at 7.5 MiB (REPLY_BUDGET in
@@ -25,6 +27,15 @@ export default {
     const target = route(request);
     if (!target) return env.ASSETS.fetch(request);
     if (target.invalid) return new Response("Not found", { status: 404 });
+    // The bridge is the executor capability: prove the executor secret before the room
+    // names a Durable Object, so a caller that only knows the room (the MCP URL) cannot
+    // create or reach one. `/mcp/<room>` stays caller-only — that side's secret is the
+    // room id itself.
+    if (target.kind === "bridge") {
+      const proof = await checkBridgeUpgrade(request);
+      if (!proof.ok) return new Response(proof.message, { status: proof.status });
+      return env.MCP_ROOMS.get(env.MCP_ROOMS.idFromName(proof.room)).fetch(request);
+    }
     return env.MCP_ROOMS.get(env.MCP_ROOMS.idFromName(target.room)).fetch(request);
   },
 };
@@ -58,15 +69,20 @@ export class McpRoom {
   constructor(ctx) {
     this.ctx = ctx;
     this.pending = new Map();
-    // No storage: an eviction drops in-flight requests; the 30 s deadline bounds them.
+    // No storage: a hard eviction tears down the isolate with its timers and pending
+    // map, so those callers' connections drop (they see no 504 from this deadline); the
+    // 30 s deadline bounds only the requests that survive in this isolate.
     this.order = Math.max(0, ...ctx.getWebSockets("tab").map((ws) =>
       ws.deserializeAttachment()?.order ?? 0));
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
   activeTab() {
+    // Only sockets that said `ready`: a connected-but-silent client (or a hibernated
+    // socket restored from an old or not-yet-ready attachment) never takes the executor
+    // role, so an admitted-but-unproved tab cannot receive the next RPC.
     return this.ctx.getWebSockets("tab")
-      .filter((ws) => ws.readyState === 1)
+      .filter((ws) => ws.readyState === 1 && ws.deserializeAttachment()?.ready === true)
       .sort((a, b) => (b.deserializeAttachment()?.order ?? 0) -
         (a.deserializeAttachment()?.order ?? 0))[0];
   }
@@ -124,17 +140,25 @@ export class McpRoom {
     });
   }
 
-  connect(request) {
-    if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-      return new Response("Use a WebSocket upgrade", { status: 426 });
-    }
+  async connect(request) {
+    // Defense in depth: the outer Worker proved this upgrade, but the Durable Object
+    // re-verifies the same proof itself (one SHA-256) rather than trusting any header
+    // that merely claims the check already happened — such a header is forgeable.
+    const proof = await checkBridgeUpgrade(request);
+    if (!proof.ok) return new Response(proof.message, { status: proof.status });
     if (this.ctx.getWebSockets("tab").filter((ws) => ws.readyState === 1).length >= 16) {
       return new Response("Too many browser tabs connected", { status: 503 });
     }
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server, ["tab"]);
-    server.serializeAttachment({ order: ++this.order });
-    return new Response(null, { status: 101, webSocket: client });
+    server.serializeAttachment({ ready: false, order: ++this.order });
+    // Echo only the constant marker — never the offered executor hex — so clients that
+    // expect the selected subprotocol to be answered see the handshake complete.
+    return new Response(null, {
+      status: 101,
+      webSocket: client,
+      headers: { "Sec-WebSocket-Protocol": EXEC_PROTOCOL },
+    });
   }
 
   finish(id, response) {
@@ -168,23 +192,31 @@ export class McpRoom {
     try { reply = JSON.parse(message); } catch { return; }
     if (!object(reply)) return;
     if (reply.type === "ready" && reply.protocol === 1) {
-      tab.serializeAttachment({ order: ++this.order });
+      tab.serializeAttachment({ ready: true, order: ++this.order });
       return;
     }
     if (reply.type !== "rpc_reply") return;
     const entry = this.pending.get(reply.id);
     if (!entry || entry.tab !== tab) return;
     // The reply contract lives in rpc_reply (apps/figstudio/src/mcp_wire.rs): status is
-    // always present -- 200 with a JSON-RPC object body, or 202 with a null body.
+    // always present -- 200 (or any status) with a JSON-RPC object body whose id matches
+    // the caller's, or 202 with a null body for a notification. A null-body 202 is the
+    // only frame without the caller's id, so it is accepted on status alone.
     const status = reply.status;
     if (!Number.isInteger(status) || status < 200 || status > 599 || status === 204 ||
-        status === 205 || status === 304 || !object(reply.body) ||
-        reply.body.jsonrpc !== "2.0" || reply.body.id !== entry.rpcId ||
-        (owns(reply.body, "result") === owns(reply.body, "error"))) {
+        status === 205 || status === 304 ||
+        (status === 202 ? reply.body !== null
+          : !object(reply.body) || reply.body.jsonrpc !== "2.0" ||
+            reply.body.id !== entry.rpcId ||
+            (owns(reply.body, "result") === owns(reply.body, "error")))) {
       this.finish(reply.id, rpcError(502, entry.rpcId, -32000, "Invalid browser reply"));
       return;
     }
-    this.finish(reply.id, Response.json(reply.body, { status }));
+    // A 202/null frame is the notification ack: the caller gets the same body-less 202
+    // the direct path returns, not a literal JSON `null` body.
+    this.finish(reply.id, status === 202
+      ? new Response(null, { status: 202 })
+      : Response.json(reply.body, { status }));
   }
 
   // One oversized rpc_reply fails only its matching call (the tab should have replaced it;

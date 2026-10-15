@@ -6,25 +6,76 @@ import { fileURLToPath } from "node:url";
 const baseURL = process.env.RELAY_BASE_URL ?? "http://localhost:8787";
 const fixture = fileURLToPath(new URL("../../tests/fixtures/structure.fig", import.meta.url));
 
-test("room capability persists and recovers malformed storage", async ({ page, request }) => {
+// The stored credential is the executor (`figstudio.mcp.executor.v2`, `ex_` + 64 hex);
+// the caller room is derived from it — SHA-256 over "figstudio/room/v1", a zero byte,
+// then the 32 raw executor bytes (same contract as web/executor-auth.mjs and
+// apps/figstudio/src/mcp_pair.rs). Deriving it in the page also proves the derivation
+// the app connects with.
+const derivation = `(() => {
+  const domain = new TextEncoder().encode("figstudio/room/v1");
+  const derive = async (bytes) => {
+    const pre = new Uint8Array(domain.length + 1 + bytes.length);
+    pre.set(domain); pre[domain.length] = 0; pre.set(bytes, domain.length + 1);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", pre));
+    return "rm_" + [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+  };
+  const read = async () => {
+    const executor = localStorage.getItem("figstudio.mcp.executor.v2");
+    if (!/^ex_[0-9a-f]{64}$/.test(executor)) return null;
+    const bytes = Uint8Array.from(executor.slice(3).match(/../g), (h) => parseInt(h, 16));
+    return { executor, room: await derive(bytes) };
+  };
+  return { derive, read };
+})()`;
+
+// `{ executor, room }` of the stored pair, derived in the page; `null` until stored.
+const mcp = (page) => page.evaluate(`(${derivation}).read()`);
+
+// A fresh executor pair minted in the page (for joining a room this browser never owned).
+const mint = (page) => page.evaluate(`(async () => {
+  const { derive } = ${derivation};
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return { executor: "ex_" + hex, room: await derive(bytes) };
+})()`);
+
+test("executor capability persists, migrates the legacy room and recovers malformed storage", async ({
+  page, request,
+}) => {
   test.setTimeout(180_000);
   const open = async () => {
     await page.goto(`${baseURL}/?renderer=cpu&threads=2`);
-    await expect.poll(() => page.evaluate(() => localStorage.getItem("figstudio.mcp.room")), {
-      timeout: 60_000,
-    }).toMatch(/^rm_[0-9a-f]{64}$/);
-    const room = await page.evaluate(() => localStorage.getItem("figstudio.mcp.room"));
+    await expect.poll(() => mcp(page), { timeout: 60_000 }).toBeTruthy();
+    const stored = await mcp(page);
+    expect(stored.executor).toMatch(/^ex_[0-9a-f]{64}$/);
+    expect(stored.room).toMatch(/^rm_[0-9a-f]{64}$/);
     // A real RPC, not just an allocated canvas, proves app and relay initialization.
-    await expect.poll(async () => (await request.post(`${baseURL}/mcp/${room}`, {
+    await expect.poll(async () => (await request.post(`${baseURL}/mcp/${stored.room}`, {
       data: { jsonrpc: "2.0", id: 1, method: "ping" },
     })).status(), { timeout: 60_000 }).toBe(200);
     expect(await page.evaluate(() => crossOriginIsolated)).toBe(true);
-    return room;
+    return stored;
   };
-  const room = await open();
-  expect(await open()).toBe(room);
-  await page.evaluate(() => localStorage.setItem("figstudio.mcp.room", "malformed"));
-  expect(await open()).not.toBe(room);
+  const first = await open();
+  expect((await open()).executor).toBe(first.executor);
+
+  // A legacy caller-only room (`figstudio.mcp.room`) never becomes the credential: with
+  // only it stored, a NEW executor pair is minted and saved, and the legacy key deleted.
+  const legacyRoom = `rm_${"1".repeat(64)}`;
+  await page.evaluate((room) => {
+    localStorage.removeItem("figstudio.mcp.executor.v2");
+    localStorage.setItem("figstudio.mcp.room", room);
+  }, legacyRoom);
+  const migrated = await open();
+  expect(migrated.executor).not.toBe(first.executor);
+  expect(migrated.room).not.toBe(legacyRoom);
+  expect(await page.evaluate(() => localStorage.getItem("figstudio.mcp.room"))).toBeNull();
+
+  // A malformed stored executor is visibly replaced, never silently kept.
+  await page.evaluate(() => localStorage.setItem("figstudio.mcp.executor.v2", "malformed"));
+  const recovered = await open();
+  expect(recovered.executor).not.toBe(migrated.executor);
+  expect(recovered.executor).toMatch(/^ex_[0-9a-f]{64}$/);
 });
 
 test("browser executes MCP tools without uploading the local fig", async ({ page, request }) => {
@@ -65,10 +116,8 @@ test("browser executes MCP tools without uploading the local fig", async ({ page
 
   await page.goto(baseURL);
   await expect(page.locator("#figstudio")).toBeVisible();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("figstudio.mcp.room")), {
-    timeout: 60_000,
-  }).toMatch(/^rm_[0-9a-f]{64}$/);
-  const room = await page.evaluate(() => localStorage.getItem("figstudio.mcp.room"));
+  await expect.poll(() => mcp(page), { timeout: 60_000 }).toBeTruthy();
+  const { room } = await mcp(page);
   const url = `${baseURL}/mcp/${room}`;
   let nextId = 1;
   const call = async (method, params) => {
@@ -131,7 +180,7 @@ test("browser executes MCP tools without uploading the local fig", async ({ page
   expect(violations).toEqual([]);
 });
 
-test("a #room= link asks before joining; the joined tab becomes the executor", async ({
+test("a #room=&exec= link asks before joining; the joined tab becomes the executor", async ({
   page, browser, request,
 }) => {
   test.setTimeout(480_000);
@@ -143,7 +192,7 @@ test("a #room= link asks before joining; the joined tab becomes the executor", a
   // One initialized client per room, returning the structured tool results.
   const client = async (room) => {
     const post = (body) => request.post(`${baseURL}/mcp/${room}`, {
-      data: body, headers: { Accept: "application/json, text-event-stream" },
+      data: body, headers: { Accept: "application/json, text/event-stream" },
     });
     expect((await post({
       jsonrpc: "2.0", id: 0, method: "initialize",
@@ -175,21 +224,30 @@ test("a #room= link asks before joining; the joined tab becomes the executor", a
     await target.waitForTimeout(250);
     await target.keyboard.press("Enter");
   };
+  const pairLink = ({ room, executor }) => `#room=${room}&exec=${executor}`;
+  const stored = (target) => target.evaluate(() =>
+    localStorage.getItem("figstudio.mcp.executor.v2"));
 
   // Browser A owns a room and keeps one document open in it.
   page.on("pageerror", (error) => console.log("[A] page error:", String(error).slice(0, 200)));
   await page.goto(baseURL);
   await page.locator("#figstudio").click();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("figstudio.mcp.room")), {
-    timeout: 60_000,
-  }).toMatch(/^rm_[0-9a-f]{64}$/);
-  const room = await page.evaluate(() => localStorage.getItem("figstudio.mcp.room"));
+  await expect.poll(() => mcp(page), { timeout: 60_000 }).toBeTruthy();
+  const own = await mcp(page);
   await openDoc(page, fixture);
-  const list = await client(room);
+  const list = await client(own.room);
   await expect.poll(async () => (await list("list_open_tabs", {})).tabs.length, {
     timeout: 60_000,
   }).toBe(1);
   const firstKey = (await list("list_open_tabs", {})).tabs[0].fileKey;
+
+  // The browser's own complete link is a no-op: the pair is already in use (no proposal),
+  // and both secret keys still leave the address bar immediately.
+  await page.goto(`${baseURL}/${pairLink(own)}`);
+  await expect.poll(() => page.url()).not.toContain("room=");
+  await expect.poll(() => page.url()).not.toContain("exec=");
+  expect(await stored(page)).toBe(own.executor);
+  await expect.poll(async () => await status(own.room), { timeout: 60_000 }).toBe(200);
 
   // A second browser (fresh storage, like another device) opens the room link.
   const other = await browser.newContext();
@@ -197,36 +255,38 @@ test("a #room= link asks before joining; the joined tab becomes the executor", a
   const sockets = [];
   second.on("websocket", (socket) => sockets.push(socket.url()));
   second.on("pageerror", (error) => console.log("[second] page error:", String(error).slice(0, 200)));
-  await second.goto(`${baseURL}/#room=${room}`);
+  await second.goto(`${baseURL}/${pairLink(own)}`);
   await second.locator("#figstudio").click();
 
-  // Nothing joins without consent: the browser boots into its OWN generated room, never the
-  // linked one …
-  let own = null;
+  // Nothing joins without consent: the browser boots into its OWN generated pair, never
+  // the linked one …
+  let secondOwn = null;
   await expect.poll(async () => {
-    own = await second.evaluate(() => localStorage.getItem("figstudio.mcp.room"));
-    return own !== null && own !== room && /^rm_[0-9a-f]{64}$/.test(own);
+    secondOwn = await mcp(second);
+    return secondOwn !== null && secondOwn.executor !== own.executor;
   }, { timeout: 60_000 }).toBeTruthy();
+  expect(secondOwn.room).not.toBe(own.room);
   // … the capability has already left the address bar, before any decision …
-  await expect.poll(() => second.url()).not.toContain(room);
+  await expect.poll(() => second.url()).not.toContain(own.executor);
+  await expect.poll(() => second.url()).not.toContain(own.room);
   // … and nothing connected to it.
-  expect(sockets.filter((url) => url.includes(`/bridge/${room}`))).toEqual([]);
+  expect(sockets.filter((url) => url.includes(`/bridge/${own.room}`))).toEqual([]);
 
-  // Declining keeps the old room, storage and connection: only the ask goes away.
+  // Declining keeps the old pair, storage and connection: only the ask goes away.
   await second.keyboard.press("Escape");
-  expect(await second.evaluate(() => localStorage.getItem("figstudio.mcp.room"))).toBe(own);
-  expect(sockets.filter((url) => url.includes(`/bridge/${room}`))).toEqual([]);
-  await expect.poll(async () => await status(own), { timeout: 60_000 }).toBe(200);
+  expect(await stored(second)).toBe(secondOwn.executor);
+  expect(sockets.filter((url) => url.includes(`/bridge/${own.room}`))).toEqual([]);
+  await expect.poll(async () => await status(secondOwn.room), { timeout: 60_000 }).toBe(200);
 
   // The link returns at runtime (hashchange) and is accepted: only now does anything join.
-  await second.evaluate((token) => { location.hash = `#room=${token}`; }, room);
-  await expect.poll(() => second.url()).not.toContain(room);
+  await second.evaluate((link) => { location.hash = link; }, pairLink(own));
+  await expect.poll(() => second.url()).not.toContain(own.executor);
   await approve(second);
-  await expect.poll(() => second.evaluate(() => localStorage.getItem("figstudio.mcp.room")), {
-    timeout: 60_000,
-  }).toBe(room);
-  expect(sockets.some((url) => url.includes(`/bridge/${room}`))).toBe(true);
-  await expect.poll(async () => await status(room), { timeout: 60_000 }).toBe(200);
+  await expect.poll(() => stored(second), { timeout: 60_000 }).toBe(own.executor);
+  // The join saves first; the reconnect happens on a later frame, so poll for the socket.
+  await expect.poll(() => sockets.some((url) => url.includes(`/bridge/${own.room}`)))
+    .toBe(true);
+  await expect.poll(async () => await status(own.room), { timeout: 60_000 }).toBe(200);
 
   // The second tab is the executor: the room now answers with its document, not A's.
   await openDoc(second, otherFixture);
@@ -235,33 +295,76 @@ test("a #room= link asks before joining; the joined tab becomes the executor", a
     return tabs.length === 1 && tabs[0].fileKey !== firstKey ? tabs[0].fileKey : false;
   }, { timeout: 60_000 }).toBeTruthy();
 
-  // Another runtime link joins a third room; the newly joined room answers right away.
-  const third = `rm_${"2".repeat(64)}`;
-  await second.evaluate((token) => { location.hash = `#room=${token}`; }, third);
-  await expect.poll(() => second.url()).not.toContain(third);
+  // Another runtime link joins a third room — a freshly minted pair, joined by its
+  // complete link; the newly joined room answers right away.
+  const third = await mint(second);
+  await second.evaluate((link) => { location.hash = link; }, pairLink(third));
+  await expect.poll(() => second.url()).not.toContain(third.executor);
   await approve(second);
-  await expect.poll(() => second.evaluate(() => localStorage.getItem("figstudio.mcp.room")), {
-    timeout: 60_000,
-  }).toBe(third);
-  await expect.poll(async () => await status(third), { timeout: 60_000 }).toBe(200);
-  const listThird = await client(third);
+  await expect.poll(() => stored(second), { timeout: 60_000 }).toBe(third.executor);
+  await expect.poll(async () => await status(third.room), { timeout: 60_000 }).toBe(200);
+  const listThird = await client(third.room);
   await expect.poll(async () => (await listThird("list_open_tabs", {})).tabs.length, {
     timeout: 60_000,
   }).toBe(1);
 
-  // A changed `#mcp=` pairing wins over a `#room=` link, and the room key is still stripped.
-  const stray = `rm_${"3".repeat(64)}`;
-  await second.evaluate((token) => { location.hash = `#room=${token}&mcp=pairing-secret`; }, stray);
-  await expect.poll(() => second.url()).not.toContain(stray);
-  expect(second.url()).toContain("#mcp=");
-  // No dialog was staged: approving nothing changes no room.
-  await approve(second);
-  expect(await second.evaluate(() => localStorage.getItem("figstudio.mcp.room"))).toBe(third);
-
-  // An invalid room value is consumed but never proposed.
-  await second.evaluate(() => { location.hash = "#room=rm_short"; });
+  // A caller-only possession — the room without its executor — is consumed by the
+  // fragment parser but never proposes: there is nothing to join with.
+  await second.evaluate((room) => { location.hash = `#room=${room}`; }, third.room);
   await expect.poll(() => second.url()).not.toContain("room=");
   await approve(second);
-  expect(await second.evaluate(() => localStorage.getItem("figstudio.mcp.room"))).toBe(third);
+  expect(await stored(second)).toBe(third.executor);
+
+  // A changed `#mcp=` pairing wins over a pair link, and both secret keys are stripped.
+  const stray = await mint(second);
+  await second.evaluate((link) => { location.hash = `${link}&mcp=pairing-secret`; }, pairLink(stray));
+  await expect.poll(() => second.url()).not.toContain("room=");
+  await expect.poll(() => second.url()).not.toContain("exec=");
+  expect(second.url()).toContain("#mcp=");
+  // No dialog was staged: approving nothing changes no pair.
+  await approve(second);
+  expect(await stored(second)).toBe(third.executor);
+
+  // Invalid values are consumed but never proposed.
+  await second.evaluate(() => { location.hash = "#room=rm_short&exec=ex_short"; });
+  await expect.poll(() => second.url()).not.toContain("room=");
+  await approve(second);
+  expect(await stored(second)).toBe(third.executor);
   await other.close();
+});
+
+test("the bridge upgrade needs the executor proof, not the caller room", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto(`${baseURL}/?renderer=cpu&threads=2`);
+  await expect.poll(() => mcp(page), { timeout: 60_000 }).toBeTruthy();
+  const { room, executor } = await mcp(page);
+  // In the page the Origin is right by construction, so this pins the one gate the
+  // Origin is not: possession of the caller room alone (the MCP URL) must not open the
+  // bridge, while the two-subprotocol proof must.
+  const attempt = (protocols) => page.evaluate(async ({ room, protocols }) => {
+    const url = `${location.origin.replace("http", "ws")}/bridge/${room}`;
+    return await new Promise((resolve) => {
+      let settled = false;
+      const done = (outcome) => { if (!settled) { settled = true; resolve(outcome); } };
+      const ws = protocols ? new WebSocket(url, protocols) : new WebSocket(url);
+      ws.onopen = () => { done("open"); ws.close(); };
+      ws.onerror = () => done("error");
+      ws.onclose = () => done("error");
+      setTimeout(() => done("timeout"), 10_000);
+    });
+  }, { room, protocols: protocols ?? null });
+  expect(await attempt(null)).toBe("error");
+  expect(await attempt(["figstudio-exec-v1"])).toBe("error");
+  expect(await attempt(["figstudio-exec-v1", "0".repeat(64)])).toBe("error");
+  // The selected subprotocol is the constant marker, never the executor hex.
+  const opened = await page.evaluate(async ({ room, protocols }) => {
+    const url = `${location.origin.replace("http", "ws")}/bridge/${room}`;
+    return await new Promise((resolve, reject) => {
+      const ws = new WebSocket(url, protocols);
+      ws.onopen = () => { resolve(ws.protocol); ws.close(); };
+      ws.onerror = () => reject(new Error("proof refused"));
+      setTimeout(() => reject(new Error("timeout")), 10_000);
+    });
+  }, { room, protocols: ["figstudio-exec-v1", executor.slice(3)] });
+  expect(opened).toBe("figstudio-exec-v1");
 });

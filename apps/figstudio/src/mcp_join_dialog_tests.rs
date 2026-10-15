@@ -5,6 +5,9 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
 use crate::mcp_join::{JoinReply, RoomProposal, join_dialog};
+use crate::mcp_pair::ExecutorPair;
+
+const EXECUTOR: &str = "ex_000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
 struct Ask {
     proposal: Option<RoomProposal>,
@@ -30,7 +33,9 @@ fn harness() -> Harness<'static, Ask> {
     Harness::builder()
         .with_size(egui::vec2(360.0, 180.0))
         .build_eframe(|_| Ask {
-            proposal: Some(RoomProposal::new(format!("rm_{}9", "1".repeat(63)))),
+            proposal: Some(RoomProposal::new(
+                ExecutorPair::from_executor(EXECUTOR).unwrap(),
+            )),
             replies: Vec::new(),
             escape_after: Vec::new(),
         })
@@ -90,9 +95,12 @@ fn clicking_joins() {
 fn the_screen_shows_the_masked_room_never_the_capability() {
     let mut h = harness();
     h.run_steps(3);
-    let room = format!("rm_{}9", "1".repeat(63));
-    let masked = RoomProposal::new(room.clone()).masked();
+    let room = ExecutorPair::from_executor(EXECUTOR).unwrap().room();
+    let masked = RoomProposal::new(ExecutorPair::from_executor(EXECUTOR).unwrap()).masked();
     assert!(h.query_all_by_label_contains(&masked).count() > 0);
     assert_eq!(h.query_all_by_label_contains(&room).count(), 0);
     assert_eq!(h.query_all_by_label_contains(&room[3..40]).count(), 0);
+    assert_eq!(h.query_all_by_label_contains(EXECUTOR).count(), 0);
+    // The warning names what the link really grants: executor authority.
+    assert!(h.query_all_by_label_contains("executor authority").count() > 0);
 }

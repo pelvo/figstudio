@@ -7,8 +7,10 @@ use std::rc::Rc;
 use egui::RichText;
 use figstudio_mcp_core::bridge::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
 use web_sys::WebSocket;
+use web_time::Instant;
 
-use crate::mcp_join::{Link, RoomProposal, parse_link, proposed_room};
+use crate::mcp_join::{Link, RoomProposal, parse_link, proposed_pair};
+use crate::mcp_pair::ExecutorPair;
 use crate::mcp_state::{Key, key};
 use crate::mcp_upload::{Event, Shared, send, upload};
 use crate::mcp_wire::{
@@ -33,7 +35,8 @@ use socket::Conn;
 
 pub struct McpHost {
     relay: bool,
-    room: String,
+    /// The executor credential; `None` until storage yields or accepts one.
+    pair: Option<ExecutorPair>,
     rpc: crate::mcp_relay::Inbox,
     url: String,
     token: String,
@@ -59,6 +62,8 @@ pub struct McpHost {
     proposal: Option<RoomProposal>,
     /// The `Use room token` field; applied by `Apply` in the menu.
     room_input: String,
+    /// When the last relay keepalive `ping` was sent (see `sync`).
+    last_ping: Option<Instant>,
 }
 
 impl Default for McpHost {
@@ -73,14 +78,18 @@ impl Default for McpHost {
         }
         let mut notices: Vec<String> = Vec::new();
         let loaded = room::load();
-        notices.extend(loaded.as_ref().err().cloned());
-        let room = loaded.unwrap_or_default();
-        // A link names a room to propose, not to use; `room` above stays this tab's own.
-        let proposal = proposed_room(link.room, link.token.is_some(), &room).map(RoomProposal::new);
-        let relay = link.token.is_none() && room::urls(&room).is_some();
+        notices.extend(loaded.notices);
+        let pair = loaded.pair;
+        // A link names a room to propose, not to use; the pair above stays this tab's own.
+        let proposal =
+            proposed_pair(link.pair, link.token.is_some(), pair.as_ref()).map(RoomProposal::new);
+        let relay = link.token.is_none()
+            && pair
+                .as_ref()
+                .is_some_and(|p| room::urls(&p.room()).is_some());
         Self {
             relay,
-            room,
+            pair,
             rpc: Default::default(),
             url: DEFAULT_URL.to_owned(),
             want_connect: relay || link.token.is_some(),
@@ -97,6 +106,7 @@ impl Default for McpHost {
             link: link_cell,
             proposal,
             room_input: String::new(),
+            last_ping: None,
         }
     }
 }
@@ -116,12 +126,19 @@ impl McpHost {
                     tab,
                     node,
                     ack,
+                    claim,
                 } => {
+                    // Claim before touching state: a worker that already expired this
+                    // reveal answered the caller with a tool error, so a late frame must
+                    // not apply it after that (see `claim_reveal`).
+                    let result = if crate::mcp_relay::claim_reveal(&claim) {
+                        let live = (self.conn.is_some() && self.relay).then_some(self.generation);
+                        crate::mcp_relay::apply_reveal(live, generation, tabs, active, tab, node)
+                    } else {
+                        Err("the reveal expired before the UI applied it".to_owned())
+                    };
                     // Always answer: a worker is blocked on this ack with a bounded wait.
-                    let live = (self.conn.is_some() && self.relay).then_some(self.generation);
-                    let _ = ack.send(crate::mcp_relay::apply_reveal(
-                        live, generation, tabs, active, tab, node,
-                    ));
+                    let _ = ack.send(result);
                 }
                 Done::Reply { generation, text }
                     if self.conn.is_some() && self.relay && generation == self.generation =>
@@ -148,6 +165,7 @@ impl McpHost {
         self.failed.clear();
         self.uploading = None;
         self.last_key = None;
+        self.last_ping = None;
         self.shared.progress.set(None);
         self.shared.cancelled.borrow_mut().clear();
     }
@@ -179,8 +197,8 @@ impl McpHost {
                 self.relay = false;
                 self.want_connect = true;
                 self.proposal = None;
-            } else if let Some(room) = proposed_room(change.room, pairing, &self.room) {
-                self.proposal = Some(RoomProposal::new(room));
+            } else if let Some(pair) = proposed_pair(change.pair, pairing, self.pair.as_ref()) {
+                self.proposal = Some(RoomProposal::new(pair));
                 // The ask was staged at frame end; without this, an idle page never paints it.
                 ctx.request_repaint();
             }
@@ -204,6 +222,16 @@ impl McpHost {
             if self.last_key.as_ref() != Some(&key) {
                 let _ = ws.send_with_str(crate::mcp_wire::relay_ready());
                 self.last_key = Some(key);
+            }
+            // Otherwise the relay socket can sit silent for a whole session: a NAT or
+            // proxy can drop it silently, and the status bar keeps saying connected until
+            // a call fails. The DO answers `ping` without waking, so the repaint cadence
+            // sends one — and the cadence stops with the connection (no timer to clean up).
+            ctx.request_repaint_after(crate::mcp_wire::PING_EVERY);
+            if crate::mcp_wire::ping_due(self.last_ping.map(|sent| sent.elapsed())) {
+                if ws.send_with_str("ping").is_ok() {
+                    self.last_ping = Some(Instant::now());
+                }
             }
             return;
         }
@@ -266,18 +294,30 @@ impl McpHost {
         if !self.relay && self.token.is_empty() {
             return Err("Enter the pairing token printed by figstudio-mcp --bridge".to_owned());
         }
+        if self.relay && self.pair.is_none() {
+            return Err("No MCP executor token yet; Apply one or Regenerate".to_owned());
+        }
         self.generation = self.generation.wrapping_add(1);
         self.reset_link();
         self.shared.events.borrow_mut().clear();
         let url = if self.relay {
-            room::urls(&self.room)
+            let pair = self
+                .pair
+                .as_ref()
+                .ok_or_else(|| "No MCP executor token".to_owned())?;
+            room::urls(&pair.room())
                 .ok_or_else(|| "Cloud relay needs an HTTP(S) page".to_owned())?
                 .0
         } else {
             self.url.clone()
         };
+        let protocols = self
+            .relay
+            .then(|| self.pair.as_ref().map(|pair| pair.subprotocols()))
+            .flatten();
         self.conn = Some(Conn::open(
             &url,
+            protocols,
             self.relay,
             self.generation,
             &self.shared,

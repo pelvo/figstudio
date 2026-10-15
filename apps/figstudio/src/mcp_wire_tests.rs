@@ -24,12 +24,9 @@ fn relay_keys_are_unique_without_exposing_paths() {
 }
 
 #[test]
-fn relay_room_generation_and_validation() {
-    let first = new_room().unwrap();
-    let second = new_room().unwrap();
-    assert!(valid_room(&first));
-    assert!(valid_room(&second));
-    assert_ne!(first, second);
+fn room_validation_and_urls() {
+    let room = format!("rm_{}", "a".repeat(64));
+    assert!(valid_room(&room));
     for bad in [
         "",
         "rm_",
@@ -41,11 +38,6 @@ fn relay_room_generation_and_validation() {
     ] {
         assert!(!valid_room(bad), "{bad}");
     }
-}
-
-#[test]
-fn relay_urls_follow_page_scheme_and_authority() {
-    let room = format!("rm_{}", "a".repeat(64));
     for (protocol, ws) in [("https:", "wss"), ("http:", "ws")] {
         assert_eq!(
             relay_urls(protocol, "localhost:8787", &room),
@@ -148,86 +140,6 @@ fn fragment_token_is_read_without_leaking_other_keys() {
 }
 
 #[test]
-fn room_fragment_parses_alongside_the_pairing_key() {
-    let room = format!("rm_{}", "b".repeat(64));
-    assert_eq!(
-        room_from_fragment(&format!("#room={room}")),
-        Some(room.clone())
-    );
-    // Both keys may appear together; each parser reads only its own key.
-    let both = format!("#mcp=abc123&room={room}");
-    assert_eq!(room_from_fragment(&both), Some(room.clone()));
-    assert_eq!(token_from_fragment(&both), Some("abc123".into()));
-    // A full room link carries the fragment after the last `#`.
-    assert_eq!(
-        room_from_fragment(&format!("https://example.com/?renderer=cpu#room={room}")),
-        Some(room.clone())
-    );
-    for none in [
-        "",
-        "#",
-        "#room=",
-        &format!("#room={}", "B".repeat(64)),
-        "#rooms=rm_",
-        "#mcp=abc123",
-    ] {
-        assert_eq!(room_from_fragment(none), None, "{none}");
-    }
-}
-
-#[test]
-fn room_inputs_accept_three_forms_and_reject_near_misses() {
-    let room = format!("rm_{}", "a".repeat(64));
-    for good in [
-        room.as_str(),
-        &format!(" {room} "),
-        &format!("https://example.com/mcp/{room}"),
-        &format!("http://localhost:8787/mcp/{room}"),
-        &format!("https://example.com/#room={room}"),
-    ] {
-        assert_eq!(room_token_from_input(good), Some(room.clone()), "{good}");
-    }
-    for bad in [
-        "",
-        "   ",
-        "rm_",
-        &format!("RM_{}", "a".repeat(64)),
-        &format!("rm_{}", "A".repeat(64)),
-        &format!("rm_{}", "a".repeat(63)),
-        &format!("rm_{}", "a".repeat(65)),
-        &format!("xx_{}", "a".repeat(64)),
-        &format!("https://example.com/mcp/{room}/extra"),
-        &format!("https://example.com/mcp/{room}?q=1"),
-        &format!("https://example.com/mcp/{room}#x"),
-        &format!("https://example.com/bridge/{room}"),
-        &format!("https://example.com/#room={}", "A".repeat(64)),
-        "https://example.com/#mcp=abc123",
-    ] {
-        assert_eq!(room_token_from_input(bad), None, "{bad}");
-    }
-}
-
-#[test]
-fn room_link_round_trips_through_the_fragment_parsers() {
-    let room = format!("rm_{}", "c".repeat(64));
-    assert_eq!(
-        room_link("https:", "figstudio.example", &room),
-        Some(format!("https://figstudio.example/#room={room}"))
-    );
-    assert_eq!(
-        room_link("http:", "localhost:8787", &room),
-        Some(format!("http://localhost:8787/#room={room}"))
-    );
-    // A link built here joins the room it was made from, by either parser.
-    let link = room_link("https:", "figstudio.example", &room).unwrap();
-    assert_eq!(room_from_fragment(&link), Some(room.clone()));
-    assert_eq!(room_token_from_input(&link), Some(room.clone()));
-    assert_eq!(room_link("file:", "localhost", &room), None);
-    assert_eq!(room_link("https:", "", &room), None);
-    assert_eq!(room_link("https:", "figstudio.example", "bad"), None);
-}
-
-#[test]
 fn chunks_cover_the_file_exactly() {
     assert_eq!(chunk_ranges(0).count(), 0);
     assert_eq!(chunk_ranges(1).collect::<Vec<_>>(), [(0, 1)]);
@@ -288,6 +200,45 @@ fn rpc_reply_matches_the_worker_frame_contract() {
     let notice: Value = serde_json::from_str(&rpc_reply("r", None).unwrap()).unwrap();
     assert_eq!(notice["status"], 202);
     assert!(notice["body"].is_null());
+}
+
+#[test]
+fn encode_failure_and_busy_replies_carry_the_callers_id_for_the_worker_match() {
+    use serde_json::{Value, json};
+    // web/worker.mjs matches reply.body.id against the forwarded request id; the old
+    // encode-failure fallback sent a null id, which the worker answers as a 502
+    // "Invalid browser reply" instead of the intended error.
+    for (frame, status, message) in [
+        (
+            encode_failed_reply("r", &json!(7)),
+            500,
+            "Could not encode MCP reply",
+        ),
+        (
+            busy_reply("r", &json!(7)),
+            503,
+            "Relay is busy; retry later",
+        ),
+    ] {
+        let frame: Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(frame["type"], "rpc_reply");
+        assert_eq!(frame["id"], "r");
+        assert_eq!(frame["status"], status);
+        assert_eq!(frame["body"]["jsonrpc"], "2.0");
+        assert_eq!(frame["body"]["id"], 7);
+        assert_eq!(frame["body"]["error"]["message"], message);
+        assert!(frame["body"].get("result").is_none());
+    }
+}
+
+#[test]
+fn relay_pings_are_due_on_connect_then_only_after_the_interval() {
+    assert!(
+        ping_due(None),
+        "the first ping validates the socket right away"
+    );
+    assert!(!ping_due(Some(Duration::from_secs(29))));
+    assert!(ping_due(Some(PING_EVERY)));
 }
 
 #[test]

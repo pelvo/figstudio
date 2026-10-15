@@ -9,7 +9,13 @@ impl McpHost {
     ) -> Option<String> {
         match event {
             Event::Rpc { id, body } => {
-                self.rpc.dispatch(self.generation, id, body, tabs, *active);
+                // A refused call is answered immediately (the worker would otherwise hold
+                // it for the full 30 s); an accepted one replies from the pool.
+                if let Some(busy) = self.rpc.dispatch(self.generation, id, body, tabs, *active)
+                    && let Some(conn) = self.conn.as_ref().filter(|c| c.welcomed)
+                {
+                    let _ = conn.ws.send_with_str(&busy);
+                }
                 None
             }
             Event::Opened => {

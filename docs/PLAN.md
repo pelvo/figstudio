@@ -616,3 +616,61 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   the deploy itself (owner decides; the production 404 stands until a redeploy from a
   font-ready machine), and the app's own lazy fetch when a CJK-named file is open
   (unchanged code).
+- 2026-10-15 — PR18 threads-only relay fixes: the worker accepts the 202/null
+  notification frame `rpc_reply` builds (was a 502 "Invalid browser reply"; the new
+  worker test round-trips it, seen failing 502 !== 202, and pins that only 202 may have
+  a null body), and the encode-failure fallback now carries the caller's id
+  (`encode_failed_reply`; the old inline frame sent `id: null`, which the worker's
+  `body.id` match can never accept). A reveal whose worker already expired is no longer
+  applied by a late UI frame: the UI must win an atomic claim (pending -> claimed)
+  before `apply_reveal` mutates, and the worker expires only unclaimed reveals — a
+  claimed one reports its real outcome even past the deadline (native test seen failing
+  `Some(Guid(1,25)) != None` before the fix). The tab bounds in-flight relay jobs at 8
+  and answers the rest with the worker's own busy shape (503; native test seen failing
+  `9 != 8` replies), so a burst or 30 s-timeout retries cannot stack renders on the
+  shared Rayon pool; stopping a render whose call already 504'd remains open
+  architecture (needs a cancel path the render loop checks, worker- or tab-initiated).
+  The relay tab now sends a 30 s keepalive `ping` driven by the repaint cadence (the
+  DO auto-response only ever answered pings nothing sent; plan doc corrected), and the
+  worker comment no longer claims the 30 s deadline bounds eviction-dropped requests —
+  a hard eviction cancels the timers with the isolate, which a new Node test pins
+  (revived isolate ignores the late reply; a fresh call still works). Focused checks:
+  `node --test web/worker/` 22 pass; `cargo +1.99.0 test -p figstudio` 164 pass;
+  clippy -D warnings (release, default and no-default-features), fmt and a wasm32
+  check of the touched app code pass (verified in an isolated worktree at 3084f07 plus
+  these changes, because executor-auth work was landing concurrently in the shared
+  tree). Not verified: the full `scripts/check.sh --web` gate, the browser e2e (pings
+  are already tolerated by the spec), real Cloudflare eviction/keepalive behavior.
+- 2026-10-16 — PR18 integration: the executor credential is wired into the Worker. The
+  outer Worker now routes `/bridge/*` through `checkBridgeUpgrade`
+  (`web/executor-auth.mjs`) before `idFromName`/`get`, so a caller that only knows the
+  room (the MCP URL) can no longer create or reach a Durable Object through the bridge;
+  the Durable Object re-verifies the same proof itself (one SHA-256; it never trusts a
+  header claiming the outer Worker already checked, which would be forgeable) and its
+  101 echoes only the constant `figstudio-exec-v1` marker as the selected subprotocol —
+  never the offered executor hex. A socket is no longer the executor on connect:
+  attachments start `{ready:false, order}` and only the `ready` frame stores
+  `{ready:true, order}` (a restored hibernated attachment without `ready` — including
+  one written by an earlier deploy — is ineligible), so an admitted-but-silent client
+  cannot take the executor role. The forwarded 202/null notification ack now returns the
+  same body-less 202 as the direct path (was a literal JSON `null` body). New gates,
+  each seen failing before its fix: worker-level proof-before-DO (403 with no
+  `idFromName` for missing proof, forged Origin, marker-only, or a mismatched secret),
+  DO-level re-verification, ready-gating (503 before `ready`, restore-ineligible), and
+  a Chromium e2e proving the caller room alone cannot open the bridge while the
+  two-subprotocol proof can (`web/e2e/relay.spec.mjs`; the e2e also needed two spec
+  fixes: `expect.poll(...).toBeTruthy()` resolves with undefined, so values are re-read
+  after the poll, and the post-join socket assertion became a poll — the join saves
+  before the reconnect frame). `sha2` 0.10 (RustCrypto) is the new dependency for the
+  in-app room derivation: trusted, maintained, synchronous and wasm-safe where a
+  hand-rolled SHA-256 would be review burden (ground rule 12). Residual, reported not
+  solved: the proof stops caller impersonation, but anyone can still POST to well-formed
+  `/mcp/<rm_…>` names or mint their own pairs and spend Worker requests and Durable
+  Object invocations; a public deployment needs Cloudflare Access over `/mcp/*` and
+  `/bridge/*` and/or rate limits (documented in `docs/BROWSER-WASM-MCP-PLAN.md`, no
+  false safe-public claim), and an in-flight render whose call already 504'd still runs
+  to completion (cancellation remains open architecture). Gates: focused
+  `cargo +1.99.0 test -p figstudio` 168 pass; `node --test web/worker/` 29 pass;
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh --web` all checks passed (CJK fonts
+  present, no opt-out); Chromium e2e 4/4 against `wrangler@4 dev` (workerd) on :8793.
+  Not verified: a live deploy, Access policies, real Cloudflare eviction.

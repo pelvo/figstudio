@@ -12,16 +12,20 @@ impl McpHost {
         }
         if self.relay {
             ui.label("MCP tools run in this browser; files are not uploaded.");
-            ui.label("Anyone with this link can reach the files open in this browser.");
+            ui.label("Anyone with the MCP URL can call the tools; the room link also");
+            ui.label("grants executor authority over the documents open in this browser.");
             ui.label("Calls go to the browser tab that connected or changed most recently.");
             ui.horizontal(|ui| {
+                let room = self.pair.as_ref().map(|p| p.room());
                 if ui.button("Copy MCP URL").clicked()
-                    && let Some((_, url)) = room::urls(&self.room)
+                    && let Some(room) = &room
+                    && let Some((_, url)) = room::urls(room)
                 {
                     ui.ctx().copy_text(url);
                 }
                 if ui.button("Copy room link").clicked()
-                    && let Some(link) = room::link(&self.room)
+                    && let Some(pair) = &self.pair
+                    && let Some(link) = room::link(pair)
                 {
                     ui.ctx().copy_text(link);
                 }
@@ -30,13 +34,13 @@ impl McpHost {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.room_input)
                         .password(true)
-                        .hint_text("room token, link or MCP URL"),
+                        .hint_text("executor token or room link"),
                 );
                 if ui.button("Apply").clicked() {
                     match room::join(&self.room_input) {
-                        Ok(room) => {
+                        Ok(pair) => {
                             // Typing or pasting a token here is already consent.
-                            self.adopt(room);
+                            self.adopt(pair);
                             self.room_input.clear();
                         }
                         // An invalid entry changes nothing.
@@ -45,12 +49,10 @@ impl McpHost {
                 }
             });
             if ui.button("Regenerate room token").clicked() {
+                // Saved before the old connection is dropped (`regenerate` persists first):
+                // a storage failure keeps the current room working.
                 match room::regenerate() {
-                    Ok(room) => {
-                        self.stop();
-                        self.room = room;
-                        self.want_connect = true;
-                    }
+                    Ok(pair) => self.adopt(pair),
                     Err(error) => self.notices.push(error),
                 }
             }

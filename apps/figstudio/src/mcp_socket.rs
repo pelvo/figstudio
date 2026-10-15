@@ -30,14 +30,29 @@ impl Drop for Conn {
 }
 
 impl Conn {
+    /// Open the socket. The relay bridge offers exactly two subprotocols — the constant
+    /// marker and the raw executor hex (`ExecutorPair::subprotocols`) — so the executor
+    /// secret travels only in the WebSocket handshake, never in a URL. The local bridge
+    /// (`protocols` is `None`) is unchanged.
     pub fn open(
         url: &str,
+        protocols: Option<[String; 2]>,
         relay: bool,
         generation: u32,
         shared: &Rc<Shared>,
         ctx: &egui::Context,
     ) -> Result<Self, String> {
-        let ws = WebSocket::new(url).map_err(|_| "Not a valid WebSocket address".to_owned())?;
+        let ws = match protocols {
+            Some([marker, executor]) => WebSocket::new_with_str_sequence(
+                url,
+                &js_sys::Array::of2(
+                    &wasm_bindgen::JsValue::from(marker.as_str()),
+                    &wasm_bindgen::JsValue::from(executor.as_str()),
+                ),
+            ),
+            None => WebSocket::new(url),
+        }
+        .map_err(|_| "Not a valid WebSocket address".to_owned())?;
         let push = |shared: &Rc<Shared>, ctx: &egui::Context, event: Event| {
             shared.events.borrow_mut().push_back(event);
             ctx.request_repaint();

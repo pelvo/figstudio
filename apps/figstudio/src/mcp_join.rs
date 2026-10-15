@@ -1,16 +1,17 @@
 //! Joining another browser's agent-access room by link: what the URL fragment proposes,
 //! and the one confirmation that gates it. Pure (no browser types) so native tests cover
 //! the security-relevant decisions; `mcp_web.rs` only wires them to the browser.
-use crate::mcp_wire::{room_from_fragment, token_from_fragment};
+use crate::mcp_pair::{ExecutorPair, pair_from_fragment};
+use crate::mcp_wire::token_from_fragment;
 
 /// What the URL fragment said, at startup or on a `hashchange`.
 #[derive(Default, Debug, PartialEq, Eq)]
 pub(crate) struct Link {
     /// A pairing token for the local bridge (`#mcp=`).
     pub token: Option<String>,
-    /// A valid room named by a link (`#room=`); not yet trusted.
-    pub room: Option<String>,
-    /// The fragment without its `room` key, when there was one to consume.
+    /// A valid room/executor pair named by a link (`#room=…&exec=…`); not yet trusted.
+    pub pair: Option<ExecutorPair>,
+    /// The fragment without its `room` and `exec` keys, when there was one to consume.
     pub stripped: Option<String>,
 }
 
@@ -20,25 +21,26 @@ pub(crate) fn parse_link(fragment: Option<&str>) -> Link {
     };
     Link {
         token: token_from_fragment(fragment),
-        room: room_from_fragment(fragment),
-        stripped: strip_room_key(fragment),
+        pair: pair_from_fragment(fragment),
+        stripped: strip_secret_keys(fragment),
     }
 }
 
-/// The fragment without its `room` key — consumed the moment it is read, whatever else
-/// the fragment says — keeping unrelated keys such as a `#mcp=` pairing. `None` when
-/// there is no `room` key. The result is a whole fragment (with `#`) or empty.
-pub(crate) fn strip_room_key(fragment: &str) -> Option<String> {
+/// The fragment without its `room` and `exec` keys — consumed the moment they are read,
+/// whatever else the fragment says and whether the pair was even valid — keeping unrelated
+/// keys such as a `#mcp=` pairing. `None` when there was no `room` or `exec` key at all.
+/// The result is a whole fragment (with `#`) or empty.
+pub(crate) fn strip_secret_keys(fragment: &str) -> Option<String> {
     let fragment = fragment
         .rsplit_once('#')
         .map_or(fragment, |(_, after)| after);
     let pairs = form_urlencoded::parse(fragment.as_bytes());
-    if !pairs.clone().any(|(key, _)| key == "room") {
+    if !pairs.clone().any(|(key, _)| key == "room" || key == "exec") {
         return None;
     }
     let mut kept = form_urlencoded::Serializer::new(String::new());
     for (key, value) in pairs {
-        if key != "room" {
+        if key != "room" && key != "exec" {
             kept.append_pair(&key, &value);
         }
     }
@@ -52,42 +54,38 @@ pub(crate) fn strip_room_key(fragment: &str) -> Option<String> {
 
 /// What a parsed link means for joining. Deliberate precedence: a pairing being applied
 /// wins (the user chose the local bridge), an unchanged `#mcp=` key does not, and a link
-/// naming the room already in use asks nothing.
-pub(crate) fn proposed_room(
-    link: Option<String>,
+/// naming the pair already in use asks nothing (the same pair cannot re-prompt).
+pub(crate) fn proposed_pair(
+    link: Option<ExecutorPair>,
     pairing_applies: bool,
-    current: &str,
-) -> Option<String> {
+    current: Option<&ExecutorPair>,
+) -> Option<ExecutorPair> {
     link.filter(|_| !pairing_applies)
-        .filter(|room| room != current)
+        .filter(|pair| Some(pair) != current)
 }
 
 /// A room named by a link, not yet trusted: nothing saves, connects or echoes it until
 /// the user accepts.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RoomProposal(String);
+pub(crate) struct RoomProposal(ExecutorPair);
 
 impl RoomProposal {
-    pub(crate) fn new(room: String) -> Self {
-        debug_assert!(crate::mcp_wire::valid_room(&room));
-        Self(room)
+    pub(crate) fn new(pair: ExecutorPair) -> Self {
+        Self(pair)
     }
 
-    pub(crate) fn room(&self) -> &str {
+    pub(crate) fn pair(&self) -> &ExecutorPair {
         &self.0
     }
 
-    pub(crate) fn into_room(self) -> String {
+    pub(crate) fn into_pair(self) -> ExecutorPair {
         self.0
     }
 
-    /// Enough of the token to recognize the room, never the whole capability.
+    /// Enough of the room to recognize it, never the whole capability.
     pub(crate) fn masked(&self) -> String {
-        format!(
-            "{}…{}",
-            &self.0[..9],
-            &self.0[self.0.len().saturating_sub(4)..]
-        )
+        let room = self.0.room();
+        format!("{}…{}", &room[..9], &room[room.len().saturating_sub(4)..])
     }
 }
 
@@ -104,8 +102,9 @@ pub(crate) enum JoinReply {
 pub(crate) fn join_dialog(ui: &mut egui::Ui, proposal: &RoomProposal) -> Option<JoinReply> {
     ui.label("A link asks this browser to join another agent-access room.");
     ui.label(format!(
-        "Room {} would replace this browser's own room. Anyone holding that link could \
-             then reach the documents open here.",
+        "That link grants executor authority: anyone holding it can run the MCP tools \
+             on the documents open here. Room {} would replace this browser's own room, so \
+             copy the new MCP URL once after joining.",
         proposal.masked()
     ));
     ui.add_space(6.0);

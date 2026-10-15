@@ -23,6 +23,9 @@ egui = { workspace = true }
 web-time = { workspace = true }
 # The browser's `?renderer=cpu|gpu` query (gpu_scenes.rs); the URL crate's own parser.
 form_urlencoded = "1.2"
+# The caller room is derived from the executor secret (mcp_pair.rs): RustCrypto's SHA-256,
+# trusted crate, synchronous on native and Wasm (no Web Crypto bridge needed).
+sha2 = "0.10"
 serde = { workspace = true }
 
 [dev-dependencies]
@@ -33,8 +36,8 @@ image = { workspace = true }
 # mcp_host tests: an MCP client over HTTP against the hosted server.
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 serde_json = { workspace = true }
-# mcp_wire tests only: room tokens from OS entropy; the shipped desktop binary does not
-# compile mcp_wire (it is test- and wasm-only).
+# mcp_pair (executor entropy) is test- and wasm-only; the shipped desktop binary does
+# not compile it, so this stays a dev-dependency on native.
 getrandom = "0.3.4"
 # Headless UI tests (ui_tests.rs): the real App driven without a window, GPU or display.
 egui_kittest = { version = "0.36", default-features = false, features = ["eframe"] }
