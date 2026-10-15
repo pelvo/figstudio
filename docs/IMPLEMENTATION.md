@@ -400,7 +400,8 @@ and git-ignored). `web/index.html` loads the module, starts the Rayon pool
   uses 25–29. It must be a `.ttc`, and each output's full face name is checked, so a wrong
   source fails the build. `web-build.sh` clears `dist/fonts` first, so a removed font is not
   deployed again. Each variant is cached under `${CARGO_TARGET_DIR:-target}/web-font`.
-  Without Noto CJK or fontTools the build skips it and CJK shows as boxes.
+  Without Noto CJK or fontTools the build fails (a deploy without the fonts shows CJK as
+  boxes); `FIGSTUDIO_ALLOW_MISSING_CJK=1` opts out for a local dev build.
   The desktop app uses an installed CJK font
   (`theme::install_fonts`).
 

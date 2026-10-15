@@ -7,7 +7,9 @@
 # uses faces 0..4; NotoSansCJK.ttc (all weights) uses Regular faces 25..29.
 # It must be a .ttc collection; each output's face name is checked, so a wrong
 # source fails the build instead of shipping one face under five names.
-# Missing font or tool: warn and write nothing. Cache: $CARGO_TARGET_DIR/web-font.
+# Missing font or tool fails the build (a deploy without these fonts shows CJK
+# names as boxes); FIGSTUDIO_ALLOW_MISSING_CJK=1 opts out for a local dev build.
+# Cache: $CARGO_TARGET_DIR/web-font.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out=${1:?usage: scripts/web-font.sh <out-dir>}
@@ -31,8 +33,18 @@ fi
 py=$(sed -n '1s/^#! *//p' "$subset" 2>/dev/null || true)
 if [ -z "$py" ] || ! "$py" -c 'import fontTools' 2>/dev/null; then py=python3; fi
 if [ ! -f "$src" ] || [ -z "$subset" ]; then
-  echo "web-font: no Noto Sans CJK or no pyftsubset; CJK names will show as boxes" >&2
-  exit 0
+  if [ "${FIGSTUDIO_ALLOW_MISSING_CJK:-0}" = "1" ]; then
+    echo "web-font: no Noto Sans CJK or no pyftsubset; CJK names will show as boxes" \
+      "(allowed by FIGSTUDIO_ALLOW_MISSING_CJK=1)" >&2
+    exit 0
+  fi
+  echo "web-font: no Noto Sans CJK or no pyftsubset; CJK names would show as boxes," \
+    "so the build fails" >&2
+  echo "web-font: install them (Debian: fonts-noto-cjk, Arch: noto-fonts-cjk," \
+    "macOS: brew install --cask font-noto-sans-cjk; and fontTools: 'uv tool" \
+    "install fonttools'), or set FIGSTUDIO_ALLOW_MISSING_CJK=1 for a local dev" \
+    "build without CJK names" >&2
+  exit 1
 fi
 case "$src" in
   *.ttc) ;;
