@@ -47,18 +47,19 @@ pub(super) fn link(room: &str) -> Option<String> {
     room_link(&location.protocol().ok()?, &location.host().ok()?, room)
 }
 
-/// Remove a consumed `#room=` fragment from the address bar and the history entry, so
-/// the token is not left behind in a copied URL. `replaceState` fires no `hashchange`.
-pub(super) fn clear_fragment() {
+/// Replace the fragment in the address bar and the history entry (a `#room=` key that
+/// was just consumed), so the capability is not left behind in a copied URL.
+/// `replaceState` fires no `hashchange`.
+pub(super) fn replace_fragment(fragment: &str) {
     let Some(window) = web_sys::window() else {
         return;
     };
     let location = window.location();
-    // An empty URL would keep the fragment; path plus query is this URL without it.
     let url = format!(
-        "{}{}",
+        "{}{}{}",
         location.pathname().unwrap_or_default(),
-        location.search().unwrap_or_default()
+        location.search().unwrap_or_default(),
+        fragment
     );
     if let Ok(history) = window.history() {
         let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url));

@@ -10,6 +10,8 @@ impl McpHost {
 
     pub fn status(&self, _ui: &mut egui::Ui) {}
 
+    pub fn confirm(&mut self, _ctx: &egui::Context) {}
+
     pub fn frame(&mut self, _tabs: &mut [Tab], _active: &mut usize) -> Option<String> {
         None
     }

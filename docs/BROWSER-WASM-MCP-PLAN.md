@@ -220,18 +220,28 @@ pub struct Rendering {
 - Room joining: View -> Agent access gained **Copy room link** (`https://<host>/#room=…`)
   and **Use room token** (accepts a bare `rm_…` token, an MCP URL or a room link; invalid
   input toasts and changes nothing; valid input saves to localStorage and reconnects the
-  relay, the same path as Regenerate). Opening `#room=…` joins on startup and on
-  `hashchange`; the fragment is parsed like the legacy `#mcp=` key (both may appear
-  together, and `#mcp=` still wins) and is consumed with `history.replaceState` so the
-  token leaves the address bar, the history and copied URLs. Tokens are never logged or
-  echoed in errors. The pure helpers (`room_from_fragment`, `room_token_from_input`,
-  `room_link`) live in `mcp_wire.rs` with native tests; five targeted mutations (fragment
-  validation dropped, extra path segments after `/mcp/` accepted, room-link branch
-  dropped, link built without `#`, uppercase hex accepted) each failed a test before
-  restore. `web/e2e/relay.spec.mjs` gained a third test: a second browser context joins
-  by link (same stored token, fragment removed, relay ping 200) and a runtime
-  `hashchange` join switches rooms and clears the fragment; all three e2e tests passed
-  against Wrangler 4 on port 8791.
+  relay, the same path as Regenerate, and the field is password-masked). A `#room=` link
+  never joins silently: at startup and on `hashchange` it only *proposes* — a dialog
+  (`mcp_join.rs`) shows the masked room, says joining grants access to the documents
+  open in this browser, and offers `Stay in this room` (default, Escape) or `Join that`
+  `room` (click, or Tab + Enter). Nothing is saved, connected or echoed before that
+  answer; declining changes nothing. The `#room=` key is consumed with
+  `history.replaceState` the moment it is read (other fragment keys survive), so the
+  token leaves the address bar, history and copied URLs even when a `#mcp=` pairing wins
+  over the link (a changed `#mcp=` still pairs; an unchanged one is stale and the link
+  still proposes). A link naming the room already in use asks nothing. The domain rules
+  live in one place (`proposed_room`, `parse_link`, `strip_room_key`, `RoomProposal`)
+  with native tests, plus egui_kittest tests for the dialog (Enter alone stays, Escape
+  is consumed, the screen never shows the whole capability). Five more targeted
+  mutations (masking dropped, precedence dropped, strip dropped, Enter-default flipped,
+  decline joins anyway) each failed a focused test before restore; the pre-fix build
+  failed the new e2e (silent join: storage + a bridge WebSocket to the linked room with
+  no consent). `web/e2e/relay.spec.mjs`'s third test now proves: own room kept before
+  consent, no `/bridge/<room>` socket before consent, decline keeps storage/connection,
+  approve joins, the **second** tab becomes executor (a different fixture answers
+  `list_open_tabs`), a runtime `hashchange` to a third room answers ping, mixed keys
+  follow the precedence above, and an invalid `#room=` value stages nothing. All three
+  e2e tests passed against Wrangler on 8791 (also on the final gate build).
 - Not verified: deployed Cloudflare hibernation/eviction, Safari or Firefox, a real local
   bridge upload after the module split, lazy-image reads from a large private file, or
   disconnect/reconnect during a long-running RPC. The menu's Use room token field itself
@@ -336,6 +346,7 @@ RELAY_BASE_URL=http://localhost:8787 npm test
 ```
 
 The Lane 2 app connects to cloud relay on HTTP(S) load unless a local pairing fragment is
-present; a `#room=` link joins another browser's room instead. Set `RELAY_BASE_URL` if
+present; a `#room=` link only proposes joining another browser's room (a confirmation
+dialog gates it). Set `RELAY_BASE_URL` if
 8787 is occupied. Deployment and real hibernation/eviction
 are not verified by the Node doubles or the local Chromium gate.

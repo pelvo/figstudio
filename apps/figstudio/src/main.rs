@@ -24,6 +24,11 @@ mod marquee;
 )]
 #[cfg_attr(target_arch = "wasm32", path = "mcp_web.rs")]
 mod mcp_host;
+#[cfg(any(target_arch = "wasm32", test))]
+mod mcp_join;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "mcp_join_dialog_tests.rs"]
+mod mcp_join_dialog_tests;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod mcp_relay;
 #[cfg(any(feature = "mcp", test, target_arch = "wasm32"))]
@@ -892,6 +897,8 @@ impl App {
             self.toast(&ctx, error, true);
         }
         self.native_events(&ctx);
+        // Ahead of the shortcuts: the dialog's Escape must be consumed first.
+        self.mcp.confirm(&ctx);
         self.shortcuts(&ctx);
         self.menu_windows(&ctx);
         let space_held = ctx.input(|i| i.key_down(Key::Space)) && !ctx.egui_wants_keyboard_input();

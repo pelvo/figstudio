@@ -131,35 +131,137 @@ test("browser executes MCP tools without uploading the local fig", async ({ page
   expect(violations).toEqual([]);
 });
 
-test("a #room= link joins that room and the fragment is consumed", async ({ page, browser, request }) => {
-  test.setTimeout(180_000);
-  // A first browser owns a room.
-  await page.goto(`${baseURL}/?renderer=cpu&threads=2`);
+test("a #room= link asks before joining; the joined tab becomes the executor", async ({
+  page, browser, request,
+}) => {
+  test.setTimeout(480_000);
+  const otherFixture = fileURLToPath(new URL("../../tests/fixtures/vector.fig", import.meta.url));
+  const status = async (room) =>
+    (await request.post(`${baseURL}/mcp/${room}`, {
+      data: { jsonrpc: "2.0", id: 1, method: "ping" },
+    })).status();
+  // One initialized client per room, returning the structured tool results.
+  const client = async (room) => {
+    const post = (body) => request.post(`${baseURL}/mcp/${room}`, {
+      data: body, headers: { Accept: "application/json, text-event-stream" },
+    });
+    expect((await post({
+      jsonrpc: "2.0", id: 0, method: "initialize",
+      params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "relay-e2e", version: "1" } },
+    })).status()).toBe(200);
+    let next = 0;
+    return async (name, args = {}) => {
+      const result = (await (await post({
+        jsonrpc: "2.0", id: ++next, method: "tools/call", params: { name, arguments: args },
+      })).json());
+      expect(result.error).toBeUndefined();
+      return result.result.structuredContent ?? JSON.parse(result.result.content[0].text);
+    };
+  };
+  const openDoc = async (target, file) => {
+    // egui needs the canvas focused right before the shortcut (the app's focus can drift).
+    await target.locator("#figstudio").click();
+    const chooser = target.waitForEvent("filechooser");
+    await target.keyboard.press(process.platform === "darwin" ? "Meta+o" : "Control+o");
+    await (await chooser).setFiles(file);
+  };
+  // Keyboard-only interaction with the confirmation dialog: Tab reaches Join, Enter picks
+  // it. The waits let the dialog paint and take focus first (the app repaints at ≥4 Hz
+  // while a proposal is pending).
+  const approve = async (target) => {
+    await target.locator("#figstudio").click();
+    await target.waitForTimeout(600);
+    await target.keyboard.press("Tab");
+    await target.waitForTimeout(250);
+    await target.keyboard.press("Enter");
+  };
+
+  // Browser A owns a room and keeps one document open in it.
+  page.on("pageerror", (error) => console.log("[A] page error:", String(error).slice(0, 200)));
+  await page.goto(baseURL);
+  await page.locator("#figstudio").click();
   await expect.poll(() => page.evaluate(() => localStorage.getItem("figstudio.mcp.room")), {
     timeout: 60_000,
   }).toMatch(/^rm_[0-9a-f]{64}$/);
   const room = await page.evaluate(() => localStorage.getItem("figstudio.mcp.room"));
+  await openDoc(page, fixture);
+  const list = await client(room);
+  await expect.poll(async () => (await list("list_open_tabs", {})).tabs.length, {
+    timeout: 60_000,
+  }).toBe(1);
+  const firstKey = (await list("list_open_tabs", {})).tabs[0].fileKey;
 
-  // A second browser joins by opening the room link (fresh storage, like another device).
+  // A second browser (fresh storage, like another device) opens the room link.
   const other = await browser.newContext();
   const second = await other.newPage();
-  await second.goto(`${baseURL}/?renderer=cpu&threads=2#room=${room}`);
+  const sockets = [];
+  second.on("websocket", (socket) => sockets.push(socket.url()));
+  second.on("pageerror", (error) => console.log("[second] page error:", String(error).slice(0, 200)));
+  await second.goto(`${baseURL}/#room=${room}`);
+  await second.locator("#figstudio").click();
+
+  // Nothing joins without consent: the browser boots into its OWN generated room, never the
+  // linked one …
+  let own = null;
+  await expect.poll(async () => {
+    own = await second.evaluate(() => localStorage.getItem("figstudio.mcp.room"));
+    return own !== null && own !== room && /^rm_[0-9a-f]{64}$/.test(own);
+  }, { timeout: 60_000 }).toBeTruthy();
+  // … the capability has already left the address bar, before any decision …
+  await expect.poll(() => second.url()).not.toContain(room);
+  // … and nothing connected to it.
+  expect(sockets.filter((url) => url.includes(`/bridge/${room}`))).toEqual([]);
+
+  // Declining keeps the old room, storage and connection: only the ask goes away.
+  await second.keyboard.press("Escape");
+  expect(await second.evaluate(() => localStorage.getItem("figstudio.mcp.room"))).toBe(own);
+  expect(sockets.filter((url) => url.includes(`/bridge/${room}`))).toEqual([]);
+  await expect.poll(async () => await status(own), { timeout: 60_000 }).toBe(200);
+
+  // The link returns at runtime (hashchange) and is accepted: only now does anything join.
+  await second.evaluate((token) => { location.hash = `#room=${token}`; }, room);
+  await expect.poll(() => second.url()).not.toContain(room);
+  await approve(second);
   await expect.poll(() => second.evaluate(() => localStorage.getItem("figstudio.mcp.room")), {
     timeout: 60_000,
   }).toBe(room);
-  // The token does not stay in the address bar, the history or a copied URL.
-  await expect.poll(() => second.url()).not.toContain("#");
-  // The join really reconnected the relay.
-  await expect.poll(async () => (await request.post(`${baseURL}/mcp/${room}`, {
-    data: { jsonrpc: "2.0", id: 1, method: "ping" },
-  })).status(), { timeout: 60_000 }).toBe(200);
+  expect(sockets.some((url) => url.includes(`/bridge/${room}`))).toBe(true);
+  await expect.poll(async () => await status(room), { timeout: 60_000 }).toBe(200);
 
-  // A fragment gained after startup (hashchange) joins the same way.
-  const linked = `rm_${"1".repeat(64)}`;
-  await second.evaluate((token) => { location.hash = `#room=${token}`; }, linked);
+  // The second tab is the executor: the room now answers with its document, not A's.
+  await openDoc(second, otherFixture);
+  await expect.poll(async () => {
+    const tabs = (await list("list_open_tabs", {})).tabs;
+    return tabs.length === 1 && tabs[0].fileKey !== firstKey ? tabs[0].fileKey : false;
+  }, { timeout: 60_000 }).toBeTruthy();
+
+  // Another runtime link joins a third room; the newly joined room answers right away.
+  const third = `rm_${"2".repeat(64)}`;
+  await second.evaluate((token) => { location.hash = `#room=${token}`; }, third);
+  await expect.poll(() => second.url()).not.toContain(third);
+  await approve(second);
   await expect.poll(() => second.evaluate(() => localStorage.getItem("figstudio.mcp.room")), {
     timeout: 60_000,
-  }).toBe(linked);
-  await expect.poll(() => second.url()).not.toContain("#");
+  }).toBe(third);
+  await expect.poll(async () => await status(third), { timeout: 60_000 }).toBe(200);
+  const listThird = await client(third);
+  await expect.poll(async () => (await listThird("list_open_tabs", {})).tabs.length, {
+    timeout: 60_000,
+  }).toBe(1);
+
+  // A changed `#mcp=` pairing wins over a `#room=` link, and the room key is still stripped.
+  const stray = `rm_${"3".repeat(64)}`;
+  await second.evaluate((token) => { location.hash = `#room=${token}&mcp=pairing-secret`; }, stray);
+  await expect.poll(() => second.url()).not.toContain(stray);
+  expect(second.url()).toContain("#mcp=");
+  // No dialog was staged: approving nothing changes no room.
+  await approve(second);
+  expect(await second.evaluate(() => localStorage.getItem("figstudio.mcp.room"))).toBe(third);
+
+  // An invalid room value is consumed but never proposed.
+  await second.evaluate(() => { location.hash = "#room=rm_short"; });
+  await expect.poll(() => second.url()).not.toContain("room=");
+  await approve(second);
+  expect(await second.evaluate(() => localStorage.getItem("figstudio.mcp.room"))).toBe(third);
   await other.close();
 });

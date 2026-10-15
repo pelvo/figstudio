@@ -29,15 +29,14 @@ impl McpHost {
             ui.horizontal(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.room_input)
+                        .password(true)
                         .hint_text("room token, link or MCP URL"),
                 );
                 if ui.button("Apply").clicked() {
                     match room::join(&self.room_input) {
                         Ok(room) => {
-                            self.stop();
-                            self.room = room;
-                            self.relay = true;
-                            self.want_connect = true;
+                            // Typing or pasting a token here is already consent.
+                            self.adopt(room);
                             self.room_input.clear();
                         }
                         // An invalid entry changes nothing.

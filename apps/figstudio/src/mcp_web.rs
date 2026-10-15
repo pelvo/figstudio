@@ -6,14 +6,13 @@ use std::rc::Rc;
 
 use egui::RichText;
 use figstudio_mcp_core::bridge::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
-use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::WebSocket;
 
+use crate::mcp_join::{Link, RoomProposal, parse_link, proposed_room};
 use crate::mcp_state::{Key, key};
 use crate::mcp_upload::{Event, Shared, send, upload};
 use crate::mcp_wire::{
-    closed_message, connect_failed_message, reveal_wire, room_from_fragment, state_message,
-    token_from_fragment, upload_name,
+    closed_message, connect_failed_message, reveal_wire, state_message, upload_name,
 };
 use crate::tab::Tab;
 use crate::theme;
@@ -22,6 +21,8 @@ const DEFAULT_URL: &str = "ws://127.0.0.1:3845/bridge";
 
 #[path = "mcp_web_events.rs"]
 mod events;
+#[path = "mcp_web_join.rs"]
+mod join;
 #[path = "mcp_web_menu.rs"]
 mod menu;
 #[path = "mcp_room.rs"]
@@ -52,63 +53,38 @@ pub struct McpHost {
     last_key: Option<Key>,
     /// Toasts raised outside `frame` (shown by the next `frame`).
     notices: Vec<String>,
-    /// A token the URL fragment gained after startup (`hashchange`); `sync` applies it.
-    new_token: Rc<RefCell<Option<String>>>,
-    /// A room a `#room=` fragment named after startup; `sync` applies it.
-    new_room: Rc<RefCell<Option<String>>>,
-    /// The `Use room token` field; applied by `join_room` in the menu.
+    /// The fragment as last seen by `hashchange`; `sync` reads it every frame.
+    link: Rc<RefCell<Option<Link>>>,
+    /// A linked room waiting for the user's answer; never saved or connected before it.
+    proposal: Option<RoomProposal>,
+    /// The `Use room token` field; applied by `Apply` in the menu.
     room_input: String,
 }
 
 impl Default for McpHost {
     fn default() -> Self {
         let hash = web_sys::window().and_then(|w| w.location().hash().ok());
-        let token = hash.as_deref().and_then(token_from_fragment);
-        let new_token = Rc::<RefCell<Option<String>>>::default();
-        let new_room = Rc::<RefCell<Option<String>>>::default();
-        if let Some(window) = web_sys::window() {
-            // A new `#mcp=` (say, a fresh `figstudio-mcp --bridge` run) pairs again, and a
-            // new `#room=` joins another browser's room.
-            let (token_cell, room_cell, w) = (new_token.clone(), new_room.clone(), window.clone());
-            let on_hash = Closure::<dyn FnMut()>::new(move || {
-                let hash = w.location().hash().ok();
-                *token_cell.borrow_mut() = hash.as_deref().and_then(token_from_fragment);
-                *room_cell.borrow_mut() = hash.as_deref().and_then(room_from_fragment);
-            });
-            let _ = window
-                .add_event_listener_with_callback("hashchange", on_hash.as_ref().unchecked_ref());
-            // The listener lives as long as the page does.
-            on_hash.forget();
+        let link = parse_link(hash.as_deref());
+        let link_cell = Rc::<RefCell<Option<Link>>>::default();
+        join::watch_fragment(link_cell.clone());
+        // A `#room=` key is consumed the moment it is read, whatever else the fragment says.
+        if let Some(stripped) = &link.stripped {
+            room::replace_fragment(stripped);
         }
         let mut notices: Vec<String> = Vec::new();
-        // A `#room=` link joins that room; a legacy `#mcp=` pairing fragment wins over it.
-        let linked_room = token
-            .is_none()
-            .then(|| hash.as_deref().and_then(room_from_fragment))
-            .flatten();
-        let room = match linked_room {
-            Some(room) => {
-                // The join applies even when persistence is denied; the notice says so.
-                if let Err(error) = room::save(&room) {
-                    notices.push(error);
-                }
-                room::clear_fragment();
-                room
-            }
-            None => {
-                let loaded = room::load();
-                notices.extend(loaded.as_ref().err().cloned());
-                loaded.unwrap_or_default()
-            }
-        };
-        let relay = token.is_none() && room::urls(&room).is_some();
+        let loaded = room::load();
+        notices.extend(loaded.as_ref().err().cloned());
+        let room = loaded.unwrap_or_default();
+        // A link names a room to propose, not to use; `room` above stays this tab's own.
+        let proposal = proposed_room(link.room, link.token.is_some(), &room).map(RoomProposal::new);
+        let relay = link.token.is_none() && room::urls(&room).is_some();
         Self {
             relay,
             room,
             rpc: Default::default(),
             url: DEFAULT_URL.to_owned(),
-            want_connect: relay || token.is_some(),
-            token: token.unwrap_or_default(),
+            want_connect: relay || link.token.is_some(),
+            token: link.token.unwrap_or_default(),
             conn: None,
             shared: Rc::default(),
             names: HashMap::new(),
@@ -118,8 +94,8 @@ impl Default for McpHost {
             generation: 0,
             last_key: None,
             notices,
-            new_token,
-            new_room,
+            link: link_cell,
+            proposal,
             room_input: String::new(),
         }
     }
@@ -184,28 +160,29 @@ impl McpHost {
         if self.rpc.pending > 0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
-        let fragment = self.new_token.borrow_mut().take();
-        let linked = self.new_room.borrow_mut().take();
-        if let Some(token) = fragment.as_deref().filter(|t| *t != self.token) {
-            // Drop the old socket; `connect` below resets the link state.
-            self.conn = None;
-            self.token = token.to_owned();
-            self.relay = false;
-            self.want_connect = true;
-        } else if fragment.is_none()
-            && let Some(room) = linked
-        {
-            // The link joins that room here; consume the fragment so the token does not
-            // stay in the address bar, the history or a copied URL.
-            room::clear_fragment();
-            if room != self.room {
-                if let Err(error) = room::save(&room) {
-                    self.notices.push(error);
-                }
+        let change = self.link.borrow_mut().take();
+        if let Some(change) = change {
+            // A `#room=` key is consumed the moment it is read, whatever else it said.
+            if let Some(stripped) = &change.stripped {
+                room::replace_fragment(stripped);
+            }
+            let pairing = change
+                .token
+                .as_deref()
+                .filter(|token| *token != self.token)
+                .is_some();
+            if let Some(token) = change.token.filter(|token| *token != self.token) {
+                // A fresh `#mcp=` pairing (say, a new `figstudio-mcp --bridge` run) moves
+                // this tab to the local bridge; a pending link is dropped.
                 self.conn = None;
-                self.room = room;
-                self.relay = true;
+                self.token = token;
+                self.relay = false;
                 self.want_connect = true;
+                self.proposal = None;
+            } else if let Some(room) = proposed_room(change.room, pairing, &self.room) {
+                self.proposal = Some(RoomProposal::new(room));
+                // The ask was staged at frame end; without this, an idle page never paints it.
+                ctx.request_repaint();
             }
         }
         if std::mem::take(&mut self.want_connect) && self.conn.is_none() {
