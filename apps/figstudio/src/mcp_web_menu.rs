@@ -12,13 +12,39 @@ impl McpHost {
         }
         if self.relay {
             ui.label("MCP tools run in this browser; files are not uploaded.");
-            ui.label("The MCP URL grants access to open files. Keep it private.");
+            ui.label("Anyone with this link can reach the files open in this browser.");
             ui.label("Calls go to the browser tab that connected or changed most recently.");
-            if ui.button("Copy MCP URL").clicked()
-                && let Some((_, url)) = room::urls(&self.room)
-            {
-                ui.ctx().copy_text(url);
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Copy MCP URL").clicked()
+                    && let Some((_, url)) = room::urls(&self.room)
+                {
+                    ui.ctx().copy_text(url);
+                }
+                if ui.button("Copy room link").clicked()
+                    && let Some(link) = room::link(&self.room)
+                {
+                    ui.ctx().copy_text(link);
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.room_input)
+                        .hint_text("room token, link or MCP URL"),
+                );
+                if ui.button("Apply").clicked() {
+                    match room::join(&self.room_input) {
+                        Ok(room) => {
+                            self.stop();
+                            self.room = room;
+                            self.relay = true;
+                            self.want_connect = true;
+                            self.room_input.clear();
+                        }
+                        // An invalid entry changes nothing.
+                        Err(error) => self.notices.push(error),
+                    }
+                }
+            });
             if ui.button("Regenerate room token").clicked() {
                 match room::regenerate() {
                     Ok(room) => {

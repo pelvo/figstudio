@@ -12,8 +12,8 @@ use web_sys::WebSocket;
 use crate::mcp_state::{Key, key};
 use crate::mcp_upload::{Event, Shared, send, upload};
 use crate::mcp_wire::{
-    closed_message, connect_failed_message, reveal_wire, state_message, token_from_fragment,
-    upload_name,
+    closed_message, connect_failed_message, reveal_wire, room_from_fragment, state_message,
+    token_from_fragment, upload_name,
 };
 use crate::tab::Tab;
 use crate::theme;
@@ -54,6 +54,10 @@ pub struct McpHost {
     notices: Vec<String>,
     /// A token the URL fragment gained after startup (`hashchange`); `sync` applies it.
     new_token: Rc<RefCell<Option<String>>>,
+    /// A room a `#room=` fragment named after startup; `sync` applies it.
+    new_room: Rc<RefCell<Option<String>>>,
+    /// The `Use room token` field; applied by `join_room` in the menu.
+    room_input: String,
 }
 
 impl Default for McpHost {
@@ -61,21 +65,42 @@ impl Default for McpHost {
         let hash = web_sys::window().and_then(|w| w.location().hash().ok());
         let token = hash.as_deref().and_then(token_from_fragment);
         let new_token = Rc::<RefCell<Option<String>>>::default();
+        let new_room = Rc::<RefCell<Option<String>>>::default();
         if let Some(window) = web_sys::window() {
-            // A new `#mcp=` (say, a fresh `figstudio-mcp --bridge` run) pairs again.
-            let (cell, w) = (new_token.clone(), window.clone());
+            // A new `#mcp=` (say, a fresh `figstudio-mcp --bridge` run) pairs again, and a
+            // new `#room=` joins another browser's room.
+            let (token_cell, room_cell, w) = (new_token.clone(), new_room.clone(), window.clone());
             let on_hash = Closure::<dyn FnMut()>::new(move || {
                 let hash = w.location().hash().ok();
-                *cell.borrow_mut() = hash.as_deref().and_then(token_from_fragment);
+                *token_cell.borrow_mut() = hash.as_deref().and_then(token_from_fragment);
+                *room_cell.borrow_mut() = hash.as_deref().and_then(room_from_fragment);
             });
             let _ = window
                 .add_event_listener_with_callback("hashchange", on_hash.as_ref().unchecked_ref());
             // The listener lives as long as the page does.
             on_hash.forget();
         }
-        let loaded_room = room::load();
-        let notices = loaded_room.as_ref().err().cloned().into_iter().collect();
-        let room = loaded_room.unwrap_or_default();
+        let mut notices: Vec<String> = Vec::new();
+        // A `#room=` link joins that room; a legacy `#mcp=` pairing fragment wins over it.
+        let linked_room = token
+            .is_none()
+            .then(|| hash.as_deref().and_then(room_from_fragment))
+            .flatten();
+        let room = match linked_room {
+            Some(room) => {
+                // The join applies even when persistence is denied; the notice says so.
+                if let Err(error) = room::save(&room) {
+                    notices.push(error);
+                }
+                room::clear_fragment();
+                room
+            }
+            None => {
+                let loaded = room::load();
+                notices.extend(loaded.as_ref().err().cloned());
+                loaded.unwrap_or_default()
+            }
+        };
         let relay = token.is_none() && room::urls(&room).is_some();
         Self {
             relay,
@@ -94,6 +119,8 @@ impl Default for McpHost {
             last_key: None,
             notices,
             new_token,
+            new_room,
+            room_input: String::new(),
         }
     }
 }
@@ -158,12 +185,28 @@ impl McpHost {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
         let fragment = self.new_token.borrow_mut().take();
-        if let Some(token) = fragment.filter(|t| *t != self.token) {
+        let linked = self.new_room.borrow_mut().take();
+        if let Some(token) = fragment.as_deref().filter(|t| *t != self.token) {
             // Drop the old socket; `connect` below resets the link state.
             self.conn = None;
-            self.token = token;
+            self.token = token.to_owned();
             self.relay = false;
             self.want_connect = true;
+        } else if fragment.is_none()
+            && let Some(room) = linked
+        {
+            // The link joins that room here; consume the fragment so the token does not
+            // stay in the address bar, the history or a copied URL.
+            room::clear_fragment();
+            if room != self.room {
+                if let Err(error) = room::save(&room) {
+                    self.notices.push(error);
+                }
+                self.conn = None;
+                self.room = room;
+                self.relay = true;
+                self.want_connect = true;
+            }
         }
         if std::mem::take(&mut self.want_connect) && self.conn.is_none() {
             if let Err(error) = self.connect(ctx) {

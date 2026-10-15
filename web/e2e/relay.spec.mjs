@@ -130,3 +130,36 @@ test("browser executes MCP tools without uploading the local fig", async ({ page
   expect(bodies.length).toBeGreaterThan(0);
   expect(violations).toEqual([]);
 });
+
+test("a #room= link joins that room and the fragment is consumed", async ({ page, browser, request }) => {
+  test.setTimeout(180_000);
+  // A first browser owns a room.
+  await page.goto(`${baseURL}/?renderer=cpu&threads=2`);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("figstudio.mcp.room")), {
+    timeout: 60_000,
+  }).toMatch(/^rm_[0-9a-f]{64}$/);
+  const room = await page.evaluate(() => localStorage.getItem("figstudio.mcp.room"));
+
+  // A second browser joins by opening the room link (fresh storage, like another device).
+  const other = await browser.newContext();
+  const second = await other.newPage();
+  await second.goto(`${baseURL}/?renderer=cpu&threads=2#room=${room}`);
+  await expect.poll(() => second.evaluate(() => localStorage.getItem("figstudio.mcp.room")), {
+    timeout: 60_000,
+  }).toBe(room);
+  // The token does not stay in the address bar, the history or a copied URL.
+  await expect.poll(() => second.url()).not.toContain("#");
+  // The join really reconnected the relay.
+  await expect.poll(async () => (await request.post(`${baseURL}/mcp/${room}`, {
+    data: { jsonrpc: "2.0", id: 1, method: "ping" },
+  })).status(), { timeout: 60_000 }).toBe(200);
+
+  // A fragment gained after startup (hashchange) joins the same way.
+  const linked = `rm_${"1".repeat(64)}`;
+  await second.evaluate((token) => { location.hash = `#room=${token}`; }, linked);
+  await expect.poll(() => second.evaluate(() => localStorage.getItem("figstudio.mcp.room")), {
+    timeout: 60_000,
+  }).toBe(linked);
+  await expect.poll(() => second.url()).not.toContain("#");
+  await other.close();
+});

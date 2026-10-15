@@ -248,6 +248,43 @@ pub(crate) fn relay_urls(protocol: &str, host: &str, room: &str) -> Option<(Stri
     ))
 }
 
+/// The `#room=` fragment key, parsed like `#mcp=`: both keys may appear together, and the
+/// value must be a valid room or the link is ignored.
+pub(crate) fn room_from_fragment(fragment: &str) -> Option<String> {
+    let fragment = fragment
+        .rsplit_once('#')
+        .map_or(fragment, |(_, after)| after);
+    form_urlencoded::parse(fragment.as_bytes())
+        .find(|(key, value)| key == "room" && valid_room(value))
+        .map(|(_, value)| value.into_owned())
+}
+
+/// A room as typed or pasted: a bare token, an MCP URL (`…/mcp/rm_…`) or a room link
+/// (`https://<host>/#room=rm_…`). Near misses (wrong length, case or prefix, trailing
+/// path or query) are rejected so applying an invalid entry changes nothing.
+pub(crate) fn room_token_from_input(input: &str) -> Option<String> {
+    let input = input.trim();
+    if let Some(room) = room_from_fragment(input) {
+        return Some(room);
+    }
+    // Everything after the last `/mcp/` must be the bare token: no fragment, query or
+    // extra path segments.
+    let candidate = match input.rsplit_once("/mcp/") {
+        Some((_, rest)) if !rest.contains(['#', '?']) => rest,
+        _ => input,
+    };
+    valid_room(candidate).then(|| candidate.to_owned())
+}
+
+/// The shareable join link; opening it applies `#room=` and clears the fragment.
+pub(crate) fn room_link(protocol: &str, host: &str, room: &str) -> Option<String> {
+    match protocol {
+        "https:" | "http:" => (),
+        _ => return None,
+    }
+    (!host.is_empty() && valid_room(room)).then(|| format!("{protocol}//{host}/#room={room}"))
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(tag = "type")]
 pub(crate) enum RelayFrame {

@@ -217,9 +217,26 @@ pub struct Rendering {
   The maintained two-test e2e suite passed against the final gate build. Suppressing room
   storage reads in the generated JS made its persistence test fail; the artifact was restored
   and both e2e tests passed again. No generated artifacts were committed.
+- Room joining: View -> Agent access gained **Copy room link** (`https://<host>/#room=…`)
+  and **Use room token** (accepts a bare `rm_…` token, an MCP URL or a room link; invalid
+  input toasts and changes nothing; valid input saves to localStorage and reconnects the
+  relay, the same path as Regenerate). Opening `#room=…` joins on startup and on
+  `hashchange`; the fragment is parsed like the legacy `#mcp=` key (both may appear
+  together, and `#mcp=` still wins) and is consumed with `history.replaceState` so the
+  token leaves the address bar, the history and copied URLs. Tokens are never logged or
+  echoed in errors. The pure helpers (`room_from_fragment`, `room_token_from_input`,
+  `room_link`) live in `mcp_wire.rs` with native tests; five targeted mutations (fragment
+  validation dropped, extra path segments after `/mcp/` accepted, room-link branch
+  dropped, link built without `#`, uppercase hex accepted) each failed a test before
+  restore. `web/e2e/relay.spec.mjs` gained a third test: a second browser context joins
+  by link (same stored token, fragment removed, relay ping 200) and a runtime
+  `hashchange` join switches rooms and clears the fragment; all three e2e tests passed
+  against Wrangler 4 on port 8791.
 - Not verified: deployed Cloudflare hibernation/eviction, Safari or Firefox, a real local
   bridge upload after the module split, lazy-image reads from a large private file, or
-  disconnect/reconnect during a long-running RPC. Optional CJK web font tooling was absent
+  disconnect/reconnect during a long-running RPC. The menu's Use room token field itself
+  was not e2e-driven (egui interaction; its parsing and persistence are covered natively
+  and the fragment path is covered in e2e). Optional CJK web font tooling was absent
   (the build warns that CJK names may show as boxes). Static ripwire contract inspection
   found no reveal signature changes; its quality scan flags channel-initializer boilerplate
   duplication and unresolved trait/test reachability, not a substitute for the passing gate.
@@ -319,5 +336,6 @@ RELAY_BASE_URL=http://localhost:8787 npm test
 ```
 
 The Lane 2 app connects to cloud relay on HTTP(S) load unless a local pairing fragment is
-present. Set `RELAY_BASE_URL` if 8787 is occupied. Deployment and real hibernation/eviction
+present; a `#room=` link joins another browser's room instead. Set `RELAY_BASE_URL` if
+8787 is occupied. Deployment and real hibernation/eviction
 are not verified by the Node doubles or the local Chromium gate.
