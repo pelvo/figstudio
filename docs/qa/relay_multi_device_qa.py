@@ -26,7 +26,10 @@ def derive_room(ex_hex: str) -> str:
 
 def post(room, body, timeout=40):
     req = urllib.request.Request(f"{BASE}/mcp/{room}", data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"}, method="POST")
+                                 headers={"Content-Type": "application/json",
+                                          # Cloudflare answers the default Python-urllib UA with error 1010.
+                                          "User-Agent": "figstudio-relay-qa/1"},
+                                 method="POST")
     t0 = time.monotonic()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -166,4 +169,5 @@ async def main():
     print(f"\n{len(results) - len(fails)}/{len(results)} expectations matched")
     return 1 if fails else 0
 
-sys.exit(asyncio.run(main()))
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))

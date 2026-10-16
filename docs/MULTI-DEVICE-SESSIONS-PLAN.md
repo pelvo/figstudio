@@ -19,7 +19,8 @@ picks one, instead of "the newest `ready` wins".
 |---|---|
 | `node --test web/worker/` | 33 / 33 pass |
 | `cargo +1.99.0 test --release -p figstudio mcp_` | 59 / 59 pass |
-| Live Durable Object run (below) | 13 / 13 scenarios behave as the code says |
+| Local workerd run (1.2) | 13 / 13 scenarios behave as the code says |
+| Real Cloudflare run (1.3) | 13 / 13 identical, plus hibernation and redeploy checks |
 
 ### 1.2 Live run against workerd
 
@@ -51,11 +52,40 @@ can see who answered. The script is `docs/qa/relay_multi_device_qa.py`.
 
 The app reconnects once on its own after a proven connection drops
 (`apps/figstudio/src/mcp_web.rs:251`) and sends `ready` on connect, so S6b happens without
-the user touching the idle machine: a Wi-Fi blip at the office is enough. A Worker deploy
-does the same to every machine at once, because Cloudflare disconnects all WebSockets on
-a code update; whichever machine reconnects last becomes the target.
+the user touching the idle machine: a Wi-Fi blip at the office is enough. (A Worker
+deploy did **not** trigger this in the real-Cloudflare run below: the hibernated sockets
+stayed open across deploys.)
 
-### 1.3 Findings
+### 1.3 Real Cloudflare run
+
+A throwaway Worker (`figstudio-relay-qa-tmp` on `workers.dev`, same code as `786d11c`)
+was deployed for this QA and deleted afterwards (the URL then returned 404). The
+production origin and its Access application were not touched. A QA-only entry wrapped
+`McpRoom` to log one line per construction, read with `wrangler tail`, so the run could
+see when the object was re-created.
+
+| # | Scenario | Observed |
+|---|---|---|
+| C1 | S0–S10 above | 13 / 13 identical to workerd (S8: 0.52 s) |
+| C2 | Two executors `ready`, idle 75 s, then a call | object re-constructed with 2 sockets restored; the call went to the newest `ready` (home), as before the idle; a later office `ready` took over normally |
+| C3 | Same with 15 s idle | re-constructed after the idle as well; routing unchanged |
+| C4 | Redeploy (variable-only change) while the object hibernates | both sockets stayed open for 150 s; the next event constructed the object on the **new** version with both sockets |
+| C5 | Redeploy with a code change while the object hibernates | same as C4; the call after the deploy went to the newest `ready` |
+| C6 | Redeploy while a call is in flight (object awake) | the object kept running the **old** version, the held call completed normally, the socket stayed open, and the next call was still served by the old version |
+
+Reproduce with `docs/qa/qa-entry.mjs` (deploy command in its header),
+`docs/qa/relay_hibernation_qa.py` (C2–C5, `IDLE`/`HOLD` seconds) and
+`docs/qa/relay_deploy_inflight_qa.py` (C6), then delete the Worker.
+
+Observations, not guarantees: one run, one location (NRT), wrangler 4.83.0. Cloudflare's
+WebSocket guide says code updates disconnect all WebSockets; with the Hibernation API
+this run saw no disconnect on deploy, so the plan does not rely on either behaviour.
+
+The default Python `urllib` User-Agent got Cloudflare error 1010 on `workers.dev`; the QA
+script now sends its own User-Agent. MCP clients with unusual User-Agents may meet the
+same account-level bot rules.
+
+### 1.4 Findings
 
 - **F1 — silent target switch (S2b, S3).** `activeTab()` (`web/worker.mjs:91`) picks the
   socket with the highest `order`, and every `ready` bumps it (`web/worker.mjs:222`).
@@ -71,12 +101,13 @@ a code update; whichever machine reconnects last becomes the target.
 - **F6 — the 16-socket cap is per room**, so it is shared by every machine. Fine today;
   list it in the session output so it is visible.
 
-### 1.4 Not verified
+### 1.5 Not verified
 
-- Hibernation and eviction on real Cloudflare (local workerd only).
-- The deployment itself: the deployed origin sits behind Cloudflare Access, so an
-  unauthenticated `POST /mcp/<room>` is redirected to the Access login (302). No service
-  token was used for this QA.
+- Eviction (as opposed to hibernation) on real Cloudflare: it could not be forced. The
+  Node test `an eviction drops in-flight calls` remains the only evidence.
+- The production deployment: it sits behind Cloudflare Access, so an unauthenticated
+  `POST /mcp/<room>` is redirected to the Access login (302). No service token was used;
+  the real-Cloudflare run used a separate throwaway Worker.
 - The browser app end to end (Playwright e2e needs a built app; not run here), Safari, and
   background-tab throttling.
 
