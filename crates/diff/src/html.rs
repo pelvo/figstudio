@@ -45,7 +45,7 @@ pub fn render_html(report: &DiffReport) -> String {
     } else {
         "incomplete"
     };
-    let _ = write!(out, "<p>Coverage: {coverage}</p><ul>");
+    let _ = write!(out, "<p>Stored-change coverage: {coverage}</p><ul>");
     for note in &report.truncated {
         let _ = write!(out, "<li>{}</li>", escape(note));
     }
@@ -73,6 +73,10 @@ pub fn render_html(report: &DiffReport) -> String {
         if let Some(render) = &page.render {
             render_links(&mut out, render);
             render_measures(&mut out, render);
+        }
+        if !page.moved_out.is_empty() {
+            let ids: Vec<_> = page.moved_out.iter().map(ToString::to_string).collect();
+            let _ = write!(out, "<p>Moved out: {}</p>", ids.join(", "));
         }
         references(&mut out, "Added", &page.added);
         references(&mut out, "Removed", &page.removed);
@@ -128,7 +132,7 @@ fn references(out: &mut String, heading: &str, nodes: &[NodeRef]) {
     for node in nodes {
         let _ = write!(
             out,
-            "<li>{} ({}) — {} descendants<small>{}</small></li>",
+            "<li>{} ({}) — {} (subtree size incl. movers)<small>{}</small></li>",
             escape(&node.name),
             escape(&node.kind),
             node.descendants,
@@ -158,7 +162,17 @@ fn changed(out: &mut String, node: &NodeDiff) {
             escape(&moved.new_position)
         );
     }
-    properties(out, &node.changes);
+    properties(
+        out,
+        node.changes.iter().filter(|change| {
+            node.text.as_ref().is_none_or(|text| {
+                !text
+                    .runs
+                    .iter()
+                    .any(|run| run.changes.iter().any(|c| c.field == change.field))
+            })
+        }),
+    );
     if let Some(text) = &node.text {
         let _ = write!(
             out,
@@ -174,7 +188,7 @@ fn changed(out: &mut String, node: &NodeDiff) {
     out.push_str("</li>");
 }
 
-fn properties(out: &mut String, changes: &[PropertyChange]) {
+fn properties<'a>(out: &mut String, changes: impl IntoIterator<Item = &'a PropertyChange>) {
     out.push_str("<ul>");
     for change in changes {
         let _ = write!(

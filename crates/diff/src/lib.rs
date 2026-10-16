@@ -55,6 +55,12 @@ pub fn diff_documents(old: &Document, new: &Document) -> DiffReport {
                 }
                 affected.extend(old_pages.get(&id).copied());
                 affected.extend(new_pages.get(&id).copied());
+                if moved.is_some()
+                    && old_pages.get(&id) != new_pages.get(&id)
+                    && let Some(&slot) = old_pages.get(&id).and_then(|page| slots.get(page))
+                {
+                    pages[slot].moved_out.push(id);
+                }
                 summary.nodes_changed += 1;
                 summary.nodes_moved += usize::from(moved.is_some());
                 summary.properties_changed += changes.len();
@@ -126,6 +132,7 @@ pub fn diff_documents(old: &Document, new: &Document) -> DiffReport {
         page.added.sort_by_key(|n| rank(n.id, &b));
         page.removed.sort_by_key(|n| rank(n.id, &a));
         page.changed.sort_by_key(|n| rank(n.id, &b));
+        page.moved_out.sort_by_key(|&id| rank(id, &a));
     }
     pages.retain(|p| p.status != PageStatus::Unchanged);
     DiffReport {

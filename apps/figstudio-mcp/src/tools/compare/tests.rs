@@ -1,7 +1,8 @@
 use super::*;
+use crate::tools::design::Assets;
 use figstudio_fig::{Node, Obj, Val};
 
-fn node(id: u32, parent: Option<u32>, kind: &str, name: &str) -> Node {
+pub(super) fn node(id: u32, parent: Option<u32>, kind: &str, name: &str) -> Node {
     let mut data = Val::Obj(Obj::from([
         ("guid", Guid(0, id).to_val()),
         ("type", Val::Str(kind.into())),
@@ -19,7 +20,7 @@ fn node(id: u32, parent: Option<u32>, kind: &str, name: &str) -> Node {
     Node::from_data(data).unwrap()
 }
 
-fn document(children: Vec<Node>) -> Document {
+pub(super) fn document(children: Vec<Node>) -> Document {
     let mut doc = Document::from_bytes(include_bytes!(
         "../../../../../tests/fixtures/structure.fig"
     ))
@@ -88,11 +89,20 @@ fn summary_caps_inline_pages_at_the_bound() {
 fn page_json_returns_the_changed_page_only() {
     let (old, new) = changed_pair();
     let page = page_json(&old, &new, Guid(0, 1)).expect("changed page");
-    assert_eq!(page["status"], "Changed");
+    assert_eq!(page["status"], "changed");
+    assert_eq!(page["truncated"], false);
     assert_eq!(page["changed"].as_array().unwrap().len(), 1);
     assert_eq!(page["id"], "0:1");
     assert_eq!(page["changed"][0]["id"], "0:2");
     assert!(page_json(&old, &new, Guid(0, 999)).is_none());
+}
+
+#[test]
+fn page_json_stringifies_moved_out_ids() {
+    use serde_json::json;
+    let mut value = json!({"id": [0, 1], "moved_out": [[0, 2]]});
+    stringify_guids(&mut value);
+    assert_eq!(value["moved_out"][0], "0:2");
 }
 
 #[test]

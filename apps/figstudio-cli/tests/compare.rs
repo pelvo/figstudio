@@ -155,7 +155,7 @@ fn identical_pair_reports_an_empty_diff_and_both_artifacts() {
     assert_eq!(
         stdout,
         format!(
-            "pages changed 0, nodes added 0, removed 0, changed 0, moved 0\n{}/\n",
+            "pages added 0, removed 0, changed 0, nodes added 0, removed 0, changed 0, moved 0\n{}/\n",
             out.display()
         )
     );
@@ -178,7 +178,7 @@ fn modified_pair_reports_counts_pngs_and_no_names() {
     ]));
     assert_eq!(
         stdout.lines().next().unwrap(),
-        "pages changed 1, nodes added 0, removed 0, changed 1, moved 0"
+        "pages added 0, removed 0, changed 1, nodes added 0, removed 0, changed 1, moved 0"
     );
     assert!(stdout.contains(out.display().to_string().as_str()));
     // Counts only: no layer names, file names or image keys on stdout.

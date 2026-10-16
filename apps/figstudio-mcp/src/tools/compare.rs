@@ -1,20 +1,16 @@
-//! `compare_files` / `compare_page`: structural diff of two registered files.
-//!
-//! Decision: native only. `figstudio-diff` depends on `figstudio-render`
-//! (native renderer), so it must not enter `figstudio-mcp-core` and break the
-//! wasm32 no-default-features browser build. The browser schema test therefore
-//! lists both tools as explained native omissions.
+//! Native-only compare tools: the renderer must stay out of wasm mcp-core.
+//! The browser schema test records both tools as explained omissions.
 
+mod artifacts;
 mod summary;
 
-#[cfg(test)]
-use crate::tools::design::Assets;
 use crate::{
     FigstudioServer,
     error::McpError,
     node_id::{NodeId, parse_node_id},
     tools::tool_error,
 };
+use artifacts::artifact_dir;
 use figstudio_diff::{
     DiffReport, RenderImages, RenderOpts, attach_render_diffs_with_sink, diff_documents,
     render_html,
@@ -26,7 +22,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;
-use summary::{artifact_dir, page_json, summarize};
+use summary::{page_json, stringify_guids, summarize};
 
 /// Page entries returned inline by `compare_files`; the rest stay in `report.json`.
 pub const MAX_INLINE_PAGES: usize = 100;
@@ -62,7 +58,7 @@ pub(crate) struct ComparePageInput {
 #[tool_router(router = compare_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Compare two registered local files: writes report.json and report.html (plus before/after/diff PNGs when includeRender is true) under the server assets directory, and returns counts, artifact paths and at most 100 page entries (id, status, added/removed/changed counts). Use compare_page for one page's full detail. Rendering is off by default and capped by the diff crate."
+        description = "Compare two registered local files: writes report.json and report.html (plus before/after/diff PNGs when includeRender is true) under the server assets directory, and returns counts, artifact paths and at most 100 page entries (id, status, added/removed/changed counts). Use compare_page for bounded single-page detail. Rendering is off by default and capped by the diff crate."
     )]
     async fn compare_files(
         &self,
@@ -96,7 +92,9 @@ impl FigstudioServer {
         let dir = match artifact_dir(self.assets()) {
             Ok(dir) => dir,
             Err(_) => {
-                return CallToolResult::error(vec![rmcp::model::ContentBlock::text(WRITE_ERROR)]);
+                return CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                    "artifact directory unavailable",
+                )]);
             }
         };
         let old_label = file_label(&old_path);
@@ -125,7 +123,7 @@ impl FigstudioServer {
     }
 
     #[tool(
-        description = "Return one page's full node-level diff (added, removed, changed nodes with property changes) for two registered local files, re-running the comparison. pageId is a page GUID such as 0:1. The report is not cached; use the report.json from compare_files for bulk detail."
+        description = "Return one page's node-level diff for two registered local files, re-running the comparison. Inline JSON is capped at 64 KiB by omitting whole entries, with per-list Total/Omitted counts and a truncated boolean. pageId is a page GUID such as 0:1. The report is not cached; use the report.json from compare_files for bulk detail."
     )]
     async fn compare_page(
         &self,
@@ -169,10 +167,7 @@ fn load_error(error: McpError, fixed: &'static str) -> CallToolResult {
     }
 }
 
-/// Diff, optionally render, write `report.json`/`report.html`, and summarize.
-///
-/// Errors are fixed strings: decoder or filesystem details must never echo
-/// node names, text or paths into a tool error.
+/// Write reports and summarize; errors never echo file content or paths.
 #[expect(clippy::too_many_arguments)]
 fn compare_and_write(
     old: &Document,
@@ -272,8 +267,7 @@ fn render_pages(
     Ok(())
 }
 
-/// Writes one page's PNGs under `dir/render/`; the GUID u32s are the only
-/// caller-controlled name parts.
+/// Writes PNGs under `dir/render/`, named only by GUID u32s.
 fn write_page(dir: &Path, id: Guid, images: &RenderImages) -> Result<[Option<String>; 3], ()> {
     let base = format!("render/{}-{}-", id.0, id.1);
     let put = |suffix: &str, bytes: &Option<Vec<u8>>| -> Result<Option<String>, ()> {
@@ -291,7 +285,6 @@ fn write_page(dir: &Path, id: Guid, images: &RenderImages) -> Result<[Option<Str
     ])
 }
 
-/// The file name only, as in the CLI: enough to tell versions apart.
 fn file_label(path: &Path) -> String {
     path.file_name().map_or_else(
         || "(unnamed)".into(),
@@ -299,5 +292,7 @@ fn file_label(path: &Path) -> String {
     )
 }
 
+#[cfg(test)]
+mod review_tests;
 #[cfg(test)]
 mod tests;

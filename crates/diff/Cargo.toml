@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 figstudio-fig.workspace = true
-figstudio-render = { workspace = true, default-features = false }
+figstudio-render = { workspace = true, default-features = false, features = ["system-fonts"] }
 image.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }

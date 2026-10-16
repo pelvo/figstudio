@@ -50,8 +50,14 @@ pub fn run(
     }
     let s = &report.summary;
     println!(
-        "pages changed {}, nodes added {}, removed {}, changed {}, moved {}",
-        s.pages_changed, s.nodes_added, s.nodes_removed, s.nodes_changed, s.nodes_moved
+        "pages added {}, removed {}, changed {}, nodes added {}, removed {}, changed {}, moved {}",
+        s.pages_added,
+        s.pages_removed,
+        s.pages_changed,
+        s.nodes_added,
+        s.nodes_removed,
+        s.nodes_changed,
+        s.nodes_moved
     );
     println!("{}/", out.display());
     Ok(())

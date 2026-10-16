@@ -39,6 +39,7 @@ pub(crate) fn pages(old: &Document, new: &Document) -> Vec<PageDiff> {
                 added: Vec::new(),
                 removed: Vec::new(),
                 changed: Vec::new(),
+                moved_out: Vec::new(),
                 render: None,
             }
         })

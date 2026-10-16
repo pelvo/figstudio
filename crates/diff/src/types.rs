@@ -50,6 +50,9 @@ pub struct PageDiff {
     pub added: Vec<NodeRef>,
     pub removed: Vec<NodeRef>,
     pub changed: Vec<NodeDiff>,
+    /// Cross-page movers whose detailed row is on their destination page.
+    #[serde(default)]
+    pub moved_out: Vec<Guid>,
     /// Optional render lane result; PNG links are set by the caller.
     pub render: Option<RenderDiff>,
 }

@@ -83,7 +83,7 @@ fn html_has_page_sections_counts_absence_and_text_rows() {
         "Changed",
         "Nodes: 1 added, 1 removed, 1 changed, 0 moved",
         "Properties: 2",
-        "Coverage: complete",
+        "Stored-change coverage: complete",
         "textData.characters: (absent)",
         "Text:",
         "layer-3",
@@ -95,7 +95,7 @@ fn html_has_page_sections_counts_absence_and_text_rows() {
     report.complete = false;
     report.truncated.push("Ungrouped changes".into());
     let html = render_html(&report);
-    assert!(html.contains("Coverage: incomplete"));
+    assert!(html.contains("Stored-change coverage: incomplete"));
     assert!(html.contains("Ungrouped changes"));
 }
 

@@ -1,13 +1,9 @@
-//! Bounded inline summary JSON and artifact-directory naming for the compare
-//! tools. Kept beside `compare.rs` to keep both under ~300 lines.
+//! Bounded inline summary JSON for the compare tools.
 
 use super::MAX_INLINE_PAGES;
 use figstudio_diff::{DiffReport, PageDiff, PageStatus};
 use figstudio_fig::{Document, Guid};
 use serde_json::{Value, json};
-use std::path::PathBuf;
-
-use crate::tools::design::Assets;
 
 /// Bounded inline summary: counts plus at most [`MAX_INLINE_PAGES`] page
 /// entries; the full detail stays in `report.json` on disk.
@@ -88,41 +84,46 @@ fn truncated(name: &str) -> (String, bool) {
     (format!("{}~", &name[..end]), true)
 }
 
-/// One page's full `PageDiff` JSON, or `None` when the page is unchanged or
-/// unknown to the comparison. The `id` becomes the same `session:local`
+/// One page's bounded `PageDiff` JSON, or `None` for an unchanged/unknown page.
+/// Whole entries are omitted above 64 KiB with totals and omitted counts.
+/// The `id` becomes the same `session:local`
 /// string the summarize pages list and `compare_page`'s pageId input use.
 pub fn page_json(old: &Document, new: &Document, id: Guid) -> Option<Value> {
     let report = figstudio_diff::diff_documents(old, new);
-    let mut value = report
-        .pages
-        .iter()
-        .find(|page| page.id == id)
-        .and_then(|page| serde_json::to_value(page).ok())?;
+    let page = report.pages.iter().find(|page| page.id == id)?;
+    let mut value = serde_json::to_value(page).ok()?;
+    value["status"] = status_label(page.status).into();
     stringify_guids(&mut value);
+    bound_page(&mut value);
     Some(value)
 }
 
-/// MCP compare output only: every Guid as `session:local`. Disk `report.json`
-/// keeps the crate's native `[u32,u32]` shape.
-fn stringify_guids(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for (key, child) in map.iter_mut() {
-                if matches!(key.as_str(), "id" | "old_parent" | "new_parent")
-                    && let Some(s) = guid_string(child)
-                {
-                    *child = Value::String(s);
-                    continue;
-                }
-                stringify_guids(child);
-            }
+/// Rewrite schema GUIDs only, never arbitrary stored property values.
+pub(super) fn stringify_guids(value: &mut Value) {
+    stringify_guid(&mut value["id"]);
+    if let Some(moved_out) = value["moved_out"].as_array_mut() {
+        for id in moved_out {
+            stringify_guid(id);
         }
-        Value::Array(items) => {
-            for item in items {
-                stringify_guids(item);
-            }
+    }
+    for field in ["added", "removed", "changed"] {
+        let Some(nodes) = value[field].as_array_mut() else {
+            continue;
+        };
+        for node in nodes {
+            stringify_guid(&mut node["id"]);
+            let Some(moved) = node.get_mut("moved").filter(|v| v.is_object()) else {
+                continue;
+            };
+            stringify_guid(&mut moved["old_parent"]);
+            stringify_guid(&mut moved["new_parent"]);
         }
-        _ => {}
+    }
+}
+
+fn stringify_guid(value: &mut Value) {
+    if let Some(id) = guid_string(value) {
+        *value = Value::String(id);
     }
 }
 
@@ -134,21 +135,58 @@ fn guid_string(value: &Value) -> Option<String> {
     Some(format!("{}:{}", pair[0].as_u64()?, pair[1].as_u64()?))
 }
 
-/// A fresh, request-isolated report directory under the compare root.
-///
-/// The unique `compare-…` name means a symlink planted at any predictable
-/// path (including the old `<old>-vs-<new>` name) is never followed, and two
-/// requests — even for the same pair — never share a directory. The dir is
-/// kept (`keep()`), not deleted on drop, because the tool returns its paths
-/// and the client reads the artifacts after the response.
-pub fn artifact_dir(assets: &Assets) -> std::io::Result<PathBuf> {
-    let root = match assets {
-        Assets::Dir(dir) => dir.join("compare"),
-        Assets::Inline => std::env::temp_dir().join("figstudio-compare"),
-    };
-    std::fs::create_dir_all(&root)?;
-    Ok(tempfile::Builder::new()
-        .prefix("compare-")
-        .tempdir_in(&root)?
-        .keep())
+/// Trim whole entries from the byte-longest list; disk artifacts remain full.
+fn bound_page(value: &mut Value) {
+    const LIMIT: usize = 65_536;
+    let fields = ["added", "removed", "changed", "moved_out"];
+    value["truncated"] = false.into();
+    let mut lengths: Vec<Vec<usize>> = fields
+        .iter()
+        .map(|field| {
+            let items = value[field].as_array().expect("page list");
+            items
+                .iter()
+                .map(|item| serde_json::to_vec(item).expect("JSON value").len())
+                .collect()
+        })
+        .collect();
+    for (field, sizes) in fields.iter().zip(&lengths) {
+        value[format!("{field}Total")] = sizes.len().into();
+        value[format!("{field}Omitted")] = 0.into();
+    }
+    let mut bytes = serde_json::to_vec(value).expect("JSON value").len();
+    if bytes <= LIMIT {
+        return;
+    }
+    value["truncated"] = true.into();
+    // Bound page metadata too: a name alone can exceed the inline budget.
+    for field in ["old_name", "new_name"] {
+        if let Some(name) = value[field].as_str() {
+            value[field] = truncated(name).0.into();
+        }
+    }
+    bytes = serde_json::to_vec(value).expect("JSON value").len();
+    let mut totals: Vec<usize> = lengths
+        .iter()
+        .map(|sizes| sizes.iter().sum::<usize>() + sizes.len().saturating_sub(1))
+        .collect();
+    while bytes > LIMIT {
+        let Some(index) = (0..fields.len())
+            .filter(|&i| !lengths[i].is_empty())
+            .max_by_key(|&i| totals[i])
+        else {
+            break;
+        };
+        let size = lengths[index].pop().expect("nonempty list");
+        let removed = size + usize::from(!lengths[index].is_empty());
+        value[fields[index]]
+            .as_array_mut()
+            .expect("page list")
+            .pop();
+        let key = format!("{}Omitted", fields[index]);
+        let old = value[&key].as_u64().expect("omitted count");
+        value[&key] = (old + 1).into();
+        bytes = bytes - removed + (old + 1).to_string().len() - old.to_string().len();
+        totals[index] -= removed;
+    }
 }

@@ -133,7 +133,7 @@ async fn compare_files_and_page_round_trip() {
     let page = page.structured_content.unwrap();
     assert_eq!(page["id"], summary["pages"][0]["id"]);
     // Concrete detail: first page has 10 added nodes; first is a VECTOR root.
-    assert_eq!(page["status"], "Changed");
+    assert_eq!(page["status"], "changed");
     let added = page["added"].as_array().unwrap();
     assert_eq!(added.len(), 10);
     assert_eq!(added[0]["id"], "2051:16");

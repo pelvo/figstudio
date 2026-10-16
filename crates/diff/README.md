@@ -14,6 +14,8 @@ builds a self-contained escaped HTML report. Neither writes files or renders pix
   nodes, not page or document containers. Moves count as changed nodes too.
 - Changes are flat within each page; there is no children field. A cross-page
   move appears once on its destination page and marks both pages changed.
+  The source page's additive `moved_out` IDs explain its change without counting
+  those nodes twice.
 - Every stored differing leaf is retained, except redundant `parentIndex*` rows
   when a node has a `Move`; those rows are excluded from property counts.
   Arrays use dotted numeric indices. Container type changes and empty containers
@@ -36,9 +38,10 @@ while the canonical property deltas preserve absence.
 
 `FileMeta.path_label` is empty because `Document` has no source path. Its
 `file_name` is a document title, not a basename. Page counts include internal
-pages. `PageDiff.render` holds optional relative PNG links only; render statistics
-and pixel comparison land in Phase 3. It defaults to None, with no render-crate
-dependency. Existing workspace `serde`/`serde_json` implement JSON and derives;
+pages. `PageDiff.render` defaults to None; the optional render lane populates PNG
+links, pixel measures and renderer statistics. The crate depends on
+`figstudio-render` with `system-fonts` enabled (other default features disabled).
+Existing workspace `serde`/`serde_json` implement JSON and derives;
 `html-escape` handles user text without hand-rolled encoding.
 
 Public types derive `Debug` (M-PUBLIC-DEBUG), and integration tests exercise
@@ -55,8 +58,9 @@ integer arrays: deserialization normalizes these to `Val::Str` and `Val::Arr`.
 Round-trip equality therefore holds for the JSON-native subset, not every `Val`.
 Numeric equality in structural comparison is unchanged. The diff dependency enables
 serde_json's `float_roundtrip` parser for bit-exact finite f64 decoding; other serde
-consumers need the same feature if they require that guarantee. NaN/infinity serialization
-returns an error (never null); HTML retains a visible debug representation.
+consumers need the same feature if they require that guarantee. NaN/infinity serialize
+as `$float_bits` objects preserving their IEEE-754 bits (never null). HTML uses the
+same JSON serialization, escaped for display, rather than a Debug representation.
 `null` is reserved for absent optional fields; it is not a valid `Val`.
 Object deserialization rejects duplicate keys and observes the process-wide
 schema identifier count/byte budget before interning keys.
