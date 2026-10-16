@@ -385,21 +385,7 @@ test("a relay socket whose keepalives go unanswered is closed by the page", asyn
       frame++;
       callback(time);
     });
-    window.relayPaint = { paintedFrame: 0, atClose: null };
-    // Headless Chromium may fall back to WebGL2; count either renderer's output.
-    for (const [prototype, method] of [
-      [GPUQueue.prototype, "submit"],
-      [WebGL2RenderingContext.prototype, "drawElements"],
-      [WebGL2RenderingContext.prototype, "drawArrays"],
-      [WebGL2RenderingContext.prototype, "drawElementsInstanced"],
-      [WebGL2RenderingContext.prototype, "drawArraysInstanced"],
-    ]) {
-      const original = prototype[method];
-      prototype[method] = function (...args) {
-        window.relayPaint.paintedFrame = frame;
-        return original.apply(this, args);
-      };
-    }
+    window.relayPaint = { paintedFrame: 0, atClose: null, renderers: 0 };
     const close = WebSocket.prototype.close;
     WebSocket.prototype.close = function (...args) {
       if (this.url.includes("/bridge/")) {
@@ -407,6 +393,25 @@ test("a relay socket whose keepalives go unanswered is closed by the page", asyn
       }
       return close.apply(this, args);
     };
+    // Headless Chromium may fall back to WebGL2; count either renderer's output. A
+    // missing interface is skipped so it cannot abort the script before the close hook.
+    const gpu = globalThis.GPUQueue?.prototype;
+    const gl = globalThis.WebGL2RenderingContext?.prototype;
+    for (const [prototype, method] of [
+      [gpu, "submit"],
+      [gl, "drawElements"],
+      [gl, "drawArrays"],
+      [gl, "drawElementsInstanced"],
+      [gl, "drawArraysInstanced"],
+    ]) {
+      if (!prototype?.[method]) continue;
+      window.relayPaint.renderers++;
+      const original = prototype[method];
+      prototype[method] = function (...args) {
+        window.relayPaint.paintedFrame = frame;
+        return original.apply(this, args);
+      };
+    }
   });
   const sockets = [];
   let closedByPage = false;
@@ -441,6 +446,8 @@ test("a relay socket whose keepalives go unanswered is closed by the page", asyn
     .toBe(true);
   // Status is drawn before sync detects the loss. The real Wasm UI must paint
   // another frame to remove Connected and consume its notice, without user input.
+  expect(await page.evaluate(() => window.relayPaint.renderers), "no draw hook installed")
+    .toBeGreaterThan(0);
   await expect.poll(() => page.evaluate(() => {
     const { paintedFrame, atClose } = window.relayPaint;
     return atClose !== null && atClose > 0 && paintedFrame > atClose;
