@@ -22,7 +22,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;
-use summary::{page_json, stringify_guids, summarize};
+use summary::{page_json, summarize};
+#[cfg(test)]
+use summary::stringify_guids;
 
 /// Page entries returned inline by `compare_files`; the rest stay in `report.json`.
 pub const MAX_INLINE_PAGES: usize = 100;
