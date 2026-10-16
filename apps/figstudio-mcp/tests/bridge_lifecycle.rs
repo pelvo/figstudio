@@ -104,8 +104,12 @@ async fn a_failed_decode_names_its_tab() {
     bridge.finish().await;
 }
 
+// What this proves is boundedness, not that our send is the one that stalls: a peer that
+// floods without reading fills both directions until either our own send times out or the
+// bridge's bounded send drops us. Either way the stalled peer stops delaying the bridge,
+// and the very next pairing still reaches Welcome.
 #[tokio::test]
-async fn a_peer_that_stops_reading_does_not_block_the_next_pairing() {
+async fn a_stalled_peer_is_bounded_and_the_next_pairing_still_works() {
     let bridge = BridgeTest::start(1024).await;
     let mut stalled = bridge.socket("test-pairing-secret").await;
     assert!(matches!(
@@ -113,20 +117,23 @@ async fn a_peer_that_stops_reading_does_not_block_the_next_pairing() {
         ServerMessage::Welcome { .. }
     ));
     // Each bad frame earns a longer error reply. Never reading them fills both directions
-    // until our own send stalls: the bridge is then blocked writing to us.
-    let mut stalled_send = false;
+    // until either our own send stalls or the bridge drops us (whichever comes first).
+    let mut backpressured = false;
     for _ in 0..5_000_000 {
         let frame = stalled.send(Message::Text("x".into()));
         match tokio::time::timeout(std::time::Duration::from_millis(500), frame).await {
             Ok(Ok(())) => {}
-            Ok(Err(_)) => break,
-            Err(_) => {
-                stalled_send = true;
+            // The bridge's bounded send can close the peer before our own send times out.
+            Ok(Err(_)) | Err(_) => {
+                backpressured = true;
                 break;
             }
         }
     }
-    assert!(stalled_send, "the flood never filled the socket buffers");
+    assert!(
+        backpressured,
+        "the flood never backpressured or closed the peer"
+    );
     let mut next = bridge.socket("test-pairing-secret").await;
     assert!(matches!(
         receive(&mut next).await,

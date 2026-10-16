@@ -15,9 +15,16 @@ pub enum Assets {
 }
 
 impl Default for Assets {
-    /// `./figma-assets`, resolved against the current directory.
+    /// `./figma-assets` with filesystem support; inline PNGs otherwise.
     fn default() -> Self {
-        Self::dir(PathBuf::from("figma-assets"))
+        #[cfg(feature = "fs")]
+        {
+            Self::dir(PathBuf::from("figma-assets"))
+        }
+        #[cfg(not(feature = "fs"))]
+        {
+            Self::Inline
+        }
     }
 }
 

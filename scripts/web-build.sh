@@ -43,10 +43,12 @@ wasm-bindgen --target web --no-typescript --out-dir "$OUT" \
   "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/figstudio.wasm"
 cp web/index.html web/_headers "$OUT"/
 # CJK font, fetched by the app only when a file has CJK names (see scripts/web-font.sh).
-# Cleared first so a removed or renamed font is not deployed again.
+# Cleared first so a removed or renamed font is not deployed again. web-font.sh fails
+# without the Noto CJK collection or fontTools unless FIGSTUDIO_ALLOW_MISSING_CJK=1
+# opts out for a local dev build, so a deploy cannot silently lose the fonts.
 rm -rf "$OUT/fonts"
 scripts/web-font.sh "$OUT/fonts"
-# The fonts dir exists only when web-font.sh found a CJK font; ls of a missing dir fails here.
+# The fonts dir is absent only after that explicit opt-out; ls of a missing dir fails here.
 listed=("$OUT")
 if [ -d "$OUT/fonts" ]; then listed+=("$OUT/fonts"); fi
 ls -l "${listed[@]}" | awk 'NF>5 {printf "%10d  %s\n", $5, $9}'

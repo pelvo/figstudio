@@ -63,6 +63,9 @@ struct Running {
 }
 
 impl McpHost {
+    /// Browser-only (a linked-room proposal); the native server has no links to confirm.
+    pub fn confirm(&mut self, _ctx: &egui::Context) {}
+
     pub fn menu(&mut self, ui: &mut egui::Ui) {
         ui.checkbox(&mut self.on, "Agent access (MCP server)")
             .on_hover_text(

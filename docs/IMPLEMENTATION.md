@@ -40,14 +40,19 @@ crates/render/src/       Document -> pixels with vello_cpu; builds for wasm with
 crates/mcp-core/src/     the MCP tool logic, with no SDK types (shared by the standalone server
                          and the app). Features: `fs` (writes asset files, lazy reads via
                          std::fs) and `system-fonts`; both are on by default. The wasm32 build and
-                         the browser use `--no-default-features`, where `fs` is off.
+                         the browser use `--no-default-features`, where `fs` is off and
+                         default design-context assets are inline PNGs.
   link.rs                figstudio:// and figma.com links: parse_link, format_node_link,
                          format_region_link, validate_rect
   node_id.rs             node IDs and instance paths (moved from the server)
   error.rs               CoreError (InvalidNodeId, FileKey, Open, InvalidLink)
   output.rs              Output and Block: the text / image split every tool reply uses
   metadata.rs, metadata/ get_metadata and get_figjam text (figjam.rs, node.rs, pages.rs)
-  rendering.rs           Rendering: one document's renderer, with lazy image reads
+  rendering.rs           Rendering: one document's renderer; path or custom EntryReader for
+                         lazy images, sharing the decode cache and lazy-render lock
+  wasm_rpc/              SDK-free browser MCP dispatcher over McpTabEnv snapshots, tool
+                         schema data (native drift-tested), read-only tools and live hooks
+  prompts.rs             shared design-system rules text, reused by native and browser MCP
   screenshot.rs          render_node, layer_shot and the caps shared with the app's PNG export
   region.rs              nodes_in: the nodes of a page that touch a rectangle, top-level first
   region_shot.rs         plan / viewport / region_shot: the region crop shared by the app and MCP
@@ -395,7 +400,8 @@ and git-ignored). `web/index.html` loads the module, starts the Rayon pool
   uses 25–29. It must be a `.ttc`, and each output's full face name is checked, so a wrong
   source fails the build. `web-build.sh` clears `dist/fonts` first, so a removed font is not
   deployed again. Each variant is cached under `${CARGO_TARGET_DIR:-target}/web-font`.
-  Without Noto CJK or fontTools the build skips it and CJK shows as boxes.
+  Without Noto CJK or fontTools the build fails (a deploy without the fonts shows CJK as
+  boxes); `FIGSTUDIO_ALLOW_MISSING_CJK=1` opts out for a local dev build.
   The desktop app uses an installed CJK font
   (`theme::install_fonts`).
 

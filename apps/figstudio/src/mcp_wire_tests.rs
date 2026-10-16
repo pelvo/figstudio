@@ -12,6 +12,102 @@ fn tabs() -> Vec<Tab> {
 }
 
 #[test]
+fn relay_keys_are_unique_without_exposing_paths() {
+    let mut tabs = tabs();
+    tabs[0].path = PathBuf::from("folder-a/design.fig");
+    tabs[1].path = PathBuf::from("folder-b/design.fig");
+    assert_eq!(relay_keys(&tabs), ["design~7", "design~9"]);
+    tabs.reverse();
+    assert_eq!(relay_keys(&tabs), ["design~9", "design~7"]);
+    tabs[0].path = PathBuf::from("other.fig");
+    assert_eq!(relay_keys(&tabs), ["other", "design"]);
+}
+
+#[test]
+fn room_validation_and_urls() {
+    let room = format!("rm_{}", "a".repeat(64));
+    assert!(valid_room(&room));
+    for bad in [
+        "",
+        "rm_",
+        &format!("rm_{}", "a".repeat(63)),
+        &format!("rm_{}", "a".repeat(65)),
+        &format!("rm_{}", "G".repeat(64)),
+        &format!("xx_{}", "a".repeat(64)),
+        &format!("rm_{}", "é".repeat(32)),
+    ] {
+        assert!(!valid_room(bad), "{bad}");
+    }
+    for (protocol, ws) in [("https:", "wss"), ("http:", "ws")] {
+        assert_eq!(
+            relay_urls(protocol, "localhost:8787", &room),
+            Some((
+                format!("{ws}://localhost:8787/bridge/{room}"),
+                format!("{protocol}//localhost:8787/mcp/{room}")
+            ))
+        );
+    }
+    assert_eq!(relay_urls("file:", "localhost", &room), None);
+    assert_eq!(relay_urls("https:", "", &room), None);
+    assert_eq!(relay_urls("https:", "localhost", "bad"), None);
+}
+
+#[test]
+fn relay_rpc_round_trips_json_and_notifications() {
+    use serde_json::{Value, json};
+    let request = json!({"jsonrpc":"2.0", "id":7, "method":"ping"});
+    let frame = json!({"type":"rpc", "id":"request-1", "body":request});
+    let (id, body) = parse_rpc(&frame.to_string()).unwrap();
+    assert_eq!(body, request);
+    let response = json!({"jsonrpc":"2.0", "id":7, "result":{}});
+    let reply: Value =
+        serde_json::from_str(&rpc_reply(&id, Some(&response.to_string())).unwrap()).unwrap();
+    assert_eq!(
+        reply,
+        json!({"type":"rpc_reply", "id":"request-1", "status":200, "body":response})
+    );
+    let reply: Value = serde_json::from_str(&rpc_reply(&id, None).unwrap()).unwrap();
+    assert_eq!(
+        reply,
+        json!({"type":"rpc_reply", "id":"request-1", "status":202, "body":null})
+    );
+    assert!(rpc_reply(&id, Some("bad JSON")).is_err());
+    assert_eq!(
+        serde_json::from_str::<Value>(relay_ready()).unwrap(),
+        json!({"type":"ready","protocol":1})
+    );
+}
+
+#[test]
+fn relay_rpc_rejects_malformed_envelopes() {
+    for frame in [
+        "not JSON",
+        "null",
+        "[]",
+        r#"{"type":"rpc","body":{}}"#,
+        r#"{"type":"rpc","id":1,"body":{}}"#,
+        r#"{"type":"rpc","id":"","body":{}}"#,
+        r#"{"type":"rpc","id":"r","body":null}"#,
+        r#"{"type":"rpc","id":"r","body":"{}"}"#,
+        r#"{"type":"other","id":"r","body":{}}"#,
+    ] {
+        assert!(parse_rpc(frame).is_none(), "{frame}");
+    }
+}
+
+#[test]
+fn relay_reveal_applies_selection_fit_and_active_tab() {
+    let mut tabs = tabs();
+    let node = tabs[1].page;
+    let mut active = 0;
+    crate::mcp_state::reveal(&mut tabs, &mut active, 9, node).unwrap();
+    assert_eq!(active, 1);
+    assert_eq!(tabs[1].selection, Some(node));
+    assert_eq!(tabs[1].fit_node, Some(node));
+    assert_eq!(tabs[0].selection, None);
+}
+
+#[test]
 fn state_lists_only_received_tabs_with_wire_ids() {
     let mut tabs = tabs();
     tabs[0].select(Some(Guid(1, 25)));
@@ -54,6 +150,85 @@ fn chunks_cover_the_file_exactly() {
     );
     let big = 10 * CHUNK + 3;
     assert_eq!(chunk_ranges(big).map(|r| r.1).sum::<u64>(), big);
+}
+
+#[test]
+fn oversized_replies_become_an_error_result_for_the_same_call() {
+    use serde_json::{Value, json};
+    // 4 MiB of CJK is 12 MiB as UTF-8 JSON: over the 7.5 MiB tab-side reply budget.
+    let big = json!({"jsonrpc":"2.0", "id":42, "result":{"content":[
+        {"type":"text","text":"界".repeat(4 * 1024 * 1024)}]}});
+    let frame = rpc_reply("req-1", Some(&big.to_string())).unwrap();
+    assert!(frame.len() <= REPLY_BUDGET, "{}", frame.len());
+    let reply: Value = serde_json::from_str(&frame).unwrap();
+    assert_eq!(reply["type"], "rpc_reply");
+    assert_eq!(reply["id"], "req-1");
+    assert_eq!(reply["status"], 200);
+    assert_eq!(reply["body"]["id"], 42);
+    assert_eq!(reply["body"]["result"]["isError"], true);
+    let text = reply["body"]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(text.starts_with("reply too large ("), "{text}");
+    assert!(
+        text.ends_with("request fewer nodes or a smaller scale"),
+        "{text}"
+    );
+    // A reply inside the budget still round-trips the result unchanged.
+    let small = json!({"jsonrpc":"2.0", "id":42, "result":{"content":[]}});
+    let frame = rpc_reply("req-1", Some(&small.to_string())).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&frame).unwrap()["body"],
+        small
+    );
+}
+
+#[test]
+fn rpc_reply_matches_the_worker_frame_contract() {
+    use serde_json::{Value, json};
+    // web/worker.mjs webSocketMessage validates exactly this shape: `type` rpc_reply, the
+    // envelope `id` as a string, `status` 200 with a JSON-RPC object body (or 202 with a
+    // null body for a notification). Status is never optional.
+    let reply: Value = serde_json::from_str(
+        &rpc_reply("r", Some(r#"{"jsonrpc":"2.0","id":7,"result":{}}"#)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reply["type"], "rpc_reply");
+    assert!(reply["id"].is_string());
+    assert_eq!(reply["status"], 200);
+    assert_eq!(reply["body"], json!({"jsonrpc":"2.0", "id":7, "result":{}}));
+    let notice: Value = serde_json::from_str(&rpc_reply("r", None).unwrap()).unwrap();
+    assert_eq!(notice["status"], 202);
+    assert!(notice["body"].is_null());
+}
+
+#[test]
+fn encode_failure_and_busy_replies_carry_the_callers_id_for_the_worker_match() {
+    use serde_json::{Value, json};
+    // web/worker.mjs matches reply.body.id against the forwarded request id; the old
+    // encode-failure fallback sent a null id, which the worker answers as a 502
+    // "Invalid browser reply" instead of the intended error.
+    for (frame, status, message) in [
+        (
+            encode_failed_reply("r", &json!(7)),
+            500,
+            "Could not encode MCP reply",
+        ),
+        (
+            busy_reply("r", &json!(7)),
+            503,
+            "Relay is busy; retry later",
+        ),
+    ] {
+        let frame: Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(frame["type"], "rpc_reply");
+        assert_eq!(frame["id"], "r");
+        assert_eq!(frame["status"], status);
+        assert_eq!(frame["body"]["jsonrpc"], "2.0");
+        assert_eq!(frame["body"]["id"], 7);
+        assert_eq!(frame["body"]["error"]["message"], message);
+        assert!(frame["body"].get("result").is_none());
+    }
 }
 
 #[test]

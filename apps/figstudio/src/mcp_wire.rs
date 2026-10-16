@@ -34,6 +34,7 @@ pub(crate) fn state_message(tabs: &[Tab], active: usize, ready: &HashSet<u64>) -
 }
 
 /// `#mcp=<token>` from `location.hash`; the fragment never reaches a server or its logs.
+/// The `#room=`/`#exec=` pair keys are parsed and stripped in `mcp_pair.rs`/`mcp_join.rs`.
 pub(crate) fn token_from_fragment(hash: &str) -> Option<String> {
     form_urlencoded::parse(hash.trim_start_matches('#').as_bytes())
         .find(|(key, value)| key == "mcp" && !value.is_empty())
@@ -186,6 +187,129 @@ pub(crate) fn close_reason(code: u16) -> &'static str {
         4426 => "MCP bridge speaks a different protocol version",
         _ => "MCP bridge disconnected",
     }
+}
+
+/// Browser paths are just display names, so duplicate stems need a stable tab-id suffix.
+pub(crate) fn relay_keys(tabs: &[Tab]) -> Vec<String> {
+    let stems: Vec<_> = tabs
+        .iter()
+        .map(|tab| {
+            tab.path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("untitled")
+        })
+        .collect();
+    let mut used = HashSet::new();
+    stems
+        .iter()
+        .zip(tabs)
+        .map(|(stem, tab)| {
+            let mut key = (*stem).to_owned();
+            if stems.iter().filter(|other| *other == stem).count() > 1 {
+                key.push_str(&format!("~{}", tab.id));
+            }
+            while !used.insert(key.clone()) {
+                key.push_str(&format!("~{}", tab.id));
+            }
+            key
+        })
+        .collect()
+}
+
+/// Room URLs are bearer capabilities: exactly 256 bits of lower-case hex.
+pub(crate) fn valid_room(room: &str) -> bool {
+    room.len() == 67
+        && room.starts_with("rm_")
+        && room[3..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Location supplies the authority (including a development port), not a file name.
+/// The caller URL keeps its format; the room in it is now derived (mcp_pair.rs).
+pub(crate) fn relay_urls(protocol: &str, host: &str, room: &str) -> Option<(String, String)> {
+    let ws = match protocol {
+        "https:" => "wss",
+        "http:" => "ws",
+        _ => return None,
+    };
+    if host.is_empty() || !valid_room(room) {
+        return None;
+    }
+    Some((
+        format!("{ws}://{host}/bridge/{room}"),
+        format!("{protocol}//{host}/mcp/{room}"),
+    ))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "type")]
+pub(crate) enum RelayFrame {
+    #[serde(rename = "rpc")]
+    Rpc { id: String, body: serde_json::Value },
+}
+
+pub(crate) fn parse_rpc(text: &str) -> Option<(String, serde_json::Value)> {
+    let RelayFrame::Rpc { id, body } = serde_json::from_str(text).ok()?;
+    (!id.is_empty() && body.is_object()).then_some((id, body))
+}
+
+/// Serialized `rpc_reply` budget: below the relay's 8 MiB frame cap (`REPLY_LIMIT` in
+/// `web/worker.mjs`, which validates this shape) with headroom, so one oversized reply
+/// becomes an error result for its own call instead of failing every pending call.
+pub(crate) const REPLY_BUDGET: usize = 7_864_320; // 7.5 MiB
+
+/// The reply frame: `status` 200 with the parsed JSON-RPC `body`, or 202 with no body for
+/// a notification. The body remains JSON, never double-encoded. A reply whose serialized
+/// frame exceeds [`REPLY_BUDGET`] is replaced by a JSON-RPC `isError` result for the same
+/// id (the worker's validating side is `webSocketMessage` in `web/worker.mjs`).
+pub(crate) fn rpc_reply(id: &str, response: Option<&str>) -> Result<String, serde_json::Error> {
+    let (status, body) = match response {
+        Some(text) => (200, serde_json::from_str::<serde_json::Value>(text)?),
+        None => (202, serde_json::Value::Null),
+    };
+    let frame = serde_json::json!({"type":"rpc_reply", "id":id, "status":status, "body":body});
+    let text = frame.to_string();
+    if text.len() <= REPLY_BUDGET {
+        return Ok(text);
+    }
+    let rpc_id = frame["body"]
+        .get("id")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    Ok(serde_json::json!({
+        "type":"rpc_reply", "id":id, "status":200,
+        "body":{"jsonrpc":"2.0", "id":rpc_id, "result":{
+            "content":[{"type":"text","text":format!(
+                "reply too large ({} bytes); request fewer nodes or a smaller scale", text.len())}],
+            "isError":true}}
+    })
+    .to_string())
+}
+
+pub(crate) fn relay_ready() -> &'static str {
+    r#"{"type":"ready","protocol":1}"#
+}
+
+/// The reply when the dispatcher's output could not be encoded as a frame: still a frame
+/// the relay validates (`webSocketMessage` matches `body.id` against the caller's id), so
+/// it carries the caller's id — a null id would come back as an invalid-reply 502.
+pub(crate) fn encode_failed_reply(id: &str, rpc_id: &serde_json::Value) -> String {
+    serde_json::json!({"type":"rpc_reply", "id":id, "status":500,
+        "body":{"jsonrpc":"2.0", "id":rpc_id,
+            "error":{"code":-32603,"message":"Could not encode MCP reply"}}})
+    .to_string()
+}
+
+/// The reply when the tab refuses a call because its in-flight job queue is full: the
+/// worker's own busy shape (status 503, `-32000`), so a caller retries both refusals the
+/// same way (see `MAX_INFLIGHT` in `mcp_relay.rs`).
+pub(crate) fn busy_reply(id: &str, rpc_id: &serde_json::Value) -> String {
+    serde_json::json!({"type":"rpc_reply", "id":id, "status":503,
+        "body":{"jsonrpc":"2.0", "id":rpc_id,
+            "error":{"code":-32000,"message":"Relay is busy; retry later"}}})
+    .to_string()
 }
 
 #[cfg(test)]

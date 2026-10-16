@@ -1,9 +1,4 @@
-//! Agent access in the browser: pairs this tab with a local `figstudio-mcp --bridge`
-//! process over a WebSocket (docs/WEB-MCP-PLAN.md). Same API as `mcp_host.rs`.
-//!
-//! The tab uploads each open file in slices, reports its view when that changes (the same
-//! `Key` the desktop uses) and applies `reveal` requests. Off until the user connects or the
-//! URL fragment carries `#mcp=<token>`; the document stays open if the bridge goes away.
+//! Browser agent access: same-origin Wasm MCP relay, or the opt-in local upload bridge.
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -11,46 +6,39 @@ use std::rc::Rc;
 
 use egui::RichText;
 use figstudio_mcp_core::bridge::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
-use wasm_bindgen::{JsCast, closure::Closure};
-use web_sys::{CloseEvent, MessageEvent, WebSocket};
+use web_sys::WebSocket;
+use web_time::Instant;
 
+use crate::mcp_heartbeat::{Beat, Heartbeat, PONG_DEADLINE};
+use crate::mcp_join::{Link, RoomProposal, parse_link, proposed_pair};
+use crate::mcp_pair::ExecutorPair;
 use crate::mcp_state::{Key, key};
 use crate::mcp_upload::{Event, Shared, send, upload};
 use crate::mcp_wire::{
-    CONNECT_TIMEOUT_MS, close_reason, closed_message, connect_failed_message, reveal_wire,
-    state_message, token_from_fragment, upload_name,
+    closed_message, connect_failed_message, reveal_wire, state_message, upload_name,
 };
 use crate::tab::Tab;
 use crate::theme;
 
 const DEFAULT_URL: &str = "ws://127.0.0.1:3845/bridge";
 
-/// A live socket; its callbacks are detached when it is dropped.
-struct Conn {
-    ws: WebSocket,
-    welcomed: bool,
-    _handlers: (
-        Closure<dyn FnMut(MessageEvent)>,
-        Closure<dyn FnMut(CloseEvent)>,
-        Closure<dyn FnMut(web_sys::Event)>,
-    ),
-    /// The connect timeout: cleared and dropped with the connection, never leaked.
-    timeout: Option<(i32, Closure<dyn FnMut()>)>,
-}
-
-impl Drop for Conn {
-    fn drop(&mut self) {
-        self.ws.set_onmessage(None);
-        self.ws.set_onclose(None);
-        self.ws.set_onopen(None);
-        let _ = self.ws.close();
-        if let (Some((id, _)), Some(window)) = (&self.timeout, web_sys::window()) {
-            window.clear_timeout_with_handle(*id);
-        }
-    }
-}
+#[path = "mcp_web_events.rs"]
+mod events;
+#[path = "mcp_web_join.rs"]
+mod join;
+#[path = "mcp_web_menu.rs"]
+mod menu;
+#[path = "mcp_room.rs"]
+mod room;
+#[path = "mcp_socket.rs"]
+mod socket;
+use socket::Conn;
 
 pub struct McpHost {
+    relay: bool,
+    /// The executor credential; `None` until storage yields or accepts one.
+    pair: Option<ExecutorPair>,
+    rpc: crate::mcp_relay::Inbox,
     url: String,
     token: String,
     /// Set by the menu button or the URL fragment; consumed by `sync` (it has the context).
@@ -69,31 +57,45 @@ pub struct McpHost {
     last_key: Option<Key>,
     /// Toasts raised outside `frame` (shown by the next `frame`).
     notices: Vec<String>,
-    /// A token the URL fragment gained after startup (`hashchange`); `sync` applies it.
-    new_token: Rc<RefCell<Option<String>>>,
+    /// The fragment as last seen by `hashchange`; `sync` reads it every frame.
+    link: Rc<RefCell<Option<Link>>>,
+    /// A linked room waiting for the user's answer; never saved or connected before it.
+    proposal: Option<RoomProposal>,
+    /// The `Use room token` field; applied by `Apply` in the menu.
+    room_input: String,
+    /// Relay keepalive state: a ping's pong must come back within a deadline or the
+    /// connection is dropped (see `mcp_heartbeat.rs`).
+    heartbeat: Heartbeat<Instant>,
 }
 
 impl Default for McpHost {
     fn default() -> Self {
         let hash = web_sys::window().and_then(|w| w.location().hash().ok());
-        let token = hash.as_deref().and_then(token_from_fragment);
-        let new_token = Rc::<RefCell<Option<String>>>::default();
-        if let Some(window) = web_sys::window() {
-            // A new `#mcp=` (say, a fresh `figstudio-mcp --bridge` run) pairs again.
-            let (cell, w) = (new_token.clone(), window.clone());
-            let on_hash = Closure::<dyn FnMut()>::new(move || {
-                let hash = w.location().hash().ok();
-                *cell.borrow_mut() = hash.as_deref().and_then(token_from_fragment);
-            });
-            let _ = window
-                .add_event_listener_with_callback("hashchange", on_hash.as_ref().unchecked_ref());
-            // The listener lives as long as the page does.
-            on_hash.forget();
+        let link = parse_link(hash.as_deref());
+        let link_cell = Rc::<RefCell<Option<Link>>>::default();
+        join::watch_fragment(link_cell.clone());
+        // A `#room=` key is consumed the moment it is read, whatever else the fragment says.
+        if let Some(stripped) = &link.stripped {
+            room::replace_fragment(stripped);
         }
+        let mut notices: Vec<String> = Vec::new();
+        let loaded = room::load();
+        notices.extend(loaded.notices);
+        let pair = loaded.pair;
+        // A link names a room to propose, not to use; the pair above stays this tab's own.
+        let proposal =
+            proposed_pair(link.pair, link.token.is_some(), pair.as_ref()).map(RoomProposal::new);
+        let relay = link.token.is_none()
+            && pair
+                .as_ref()
+                .is_some_and(|p| room::urls(&p.room()).is_some());
         Self {
+            relay,
+            pair,
+            rpc: Default::default(),
             url: DEFAULT_URL.to_owned(),
-            want_connect: token.is_some(),
-            token: token.unwrap_or_default(),
+            want_connect: relay || link.token.is_some(),
+            token: link.token.unwrap_or_default(),
             conn: None,
             shared: Rc::default(),
             names: HashMap::new(),
@@ -102,46 +104,54 @@ impl Default for McpHost {
             uploading: None,
             generation: 0,
             last_key: None,
-            notices: Vec::new(),
-            new_token,
+            notices,
+            link: link_cell,
+            proposal,
+            room_input: String::new(),
+            heartbeat: Heartbeat::fresh(0),
         }
     }
 }
 
 impl McpHost {
-    pub fn menu(&mut self, ui: &mut egui::Ui) {
-        // Called inside the Agent access window, never inside a popup menu.
-        ui.label("Pairs this tab with `figstudio-mcp --bridge` on this computer.");
-        ui.add(egui::TextEdit::singleline(&mut self.url).hint_text(DEFAULT_URL));
-        ui.add(
-            egui::TextEdit::singleline(&mut self.token)
-                .password(true)
-                .hint_text("pairing token"),
-        );
-        if self.conn.is_none() {
-            if ui.button("Connect").clicked() {
-                self.want_connect = true;
-            }
-        } else if ui.button("Disconnect").clicked() {
-            self.stop();
-        }
-    }
-
-    pub fn status(&self, ui: &mut egui::Ui) {
-        let Some(conn) = &self.conn else { return };
-        let text = match (conn.welcomed, self.shared.progress.get()) {
-            (false, _) => "MCP connecting…".to_owned(),
-            (true, Some((sent, total))) => format!("MCP uploading {}%", sent * 100 / total.max(1)),
-            (true, None) => format!("MCP connected · {} tabs", self.ready.len()),
-        };
-        ui.label(RichText::new(text).color(theme::TEXT_DIM))
-            .on_hover_text("This tab is paired with the local MCP bridge.");
-        ui.separator();
-    }
-
     /// Start of each frame: apply what the bridge sent. Returns a message for a toast.
     pub fn frame(&mut self, tabs: &mut [Tab], active: &mut usize) -> Option<String> {
         let mut toast = self.notices.pop();
+        while let Ok(done) = self.rpc.rx.try_recv() {
+            use crate::mcp_relay::Done;
+            if matches!(done, Done::Reply { .. }) {
+                self.rpc.pending = self.rpc.pending.saturating_sub(1);
+            }
+            match done {
+                Done::Reveal {
+                    generation,
+                    tab,
+                    node,
+                    ack,
+                    claim,
+                } => {
+                    // Claim before touching state: a worker that already expired this
+                    // reveal answered the caller with a tool error, so a late frame must
+                    // not apply it after that (see `claim_reveal`).
+                    let result = if crate::mcp_relay::claim_reveal(&claim) {
+                        let live = (self.conn.is_some() && self.relay).then_some(self.generation);
+                        crate::mcp_relay::apply_reveal(live, generation, tabs, active, tab, node)
+                    } else {
+                        Err("the reveal expired before the UI applied it".to_owned())
+                    };
+                    // Always answer: a worker is blocked on this ack with a bounded wait.
+                    let _ = ack.send(result);
+                }
+                Done::Reply { generation, text }
+                    if self.conn.is_some() && self.relay && generation == self.generation =>
+                {
+                    if let Some(conn) = &self.conn {
+                        let _ = conn.ws.send_with_str(&text);
+                    }
+                }
+                _ => {}
+            }
+        }
         let events: Vec<Event> = self.shared.events.borrow_mut().drain(..).collect();
         for event in events {
             if let Some(message) = self.handle(event, tabs, active) {
@@ -151,94 +161,13 @@ impl McpHost {
         toast
     }
 
-    fn handle(&mut self, event: Event, tabs: &mut [Tab], active: &mut usize) -> Option<String> {
-        match event {
-            Event::Opened => {
-                let ws = self.conn.as_ref()?.ws.clone();
-                let hello = ClientMessage::Hello {
-                    token: self.token.clone(),
-                    version: PROTOCOL_VERSION,
-                };
-                send(&ws, &hello)
-                    .err()
-                    .map(|_| "Could not talk to the MCP bridge".to_owned())
-            }
-            Event::Server(ServerMessage::Welcome { .. }) => {
-                self.conn.as_mut()?.welcomed = true;
-                None
-            }
-            Event::ConnectTimeout(generation) => {
-                let waiting = self.generation == generation
-                    && self.conn.as_ref().is_some_and(|c| !c.welcomed);
-                if !waiting {
-                    return None;
-                }
-                self.stop();
-                Some(connect_failed_message().to_owned())
-            }
-            Event::Server(ServerMessage::Error { message, tab }) => {
-                // Only upload failures name a tab; other errors leave the tabs alone.
-                if let Some(tab) = tab {
-                    self.ready.remove(&tab);
-                    self.failed.insert(tab);
-                    // Stop a running upload: the bridge drops its remaining frames anyway.
-                    self.shared.cancelled.borrow_mut().insert(tab);
-                    self.last_key = None;
-                }
-                Some(format!("MCP bridge: {message}"))
-            }
-            Event::Server(ServerMessage::Reveal { id, tab, node }) => {
-                let result = reveal_wire(tabs, active, tab, &node);
-                let ws = self.conn.as_ref()?.ws.clone();
-                let _ = send(
-                    &ws,
-                    &ClientMessage::Reply {
-                        id,
-                        error: result.err(),
-                    },
-                );
-                None
-            }
-            Event::Closed(_) if self.conn.is_none() => None,
-            Event::Closed(code) => {
-                let welcomed = self.conn.take().is_some_and(|c| c.welcomed);
-                self.reset_link();
-                Some(closed_message(welcomed, code).to_owned())
-            }
-            Event::Uploaded { generation, .. } if generation != self.generation => None,
-            Event::Uploaded { tab, result, .. } => {
-                self.uploading = None;
-                match result {
-                    Ok(()) if self.failed.contains(&tab) => None,
-                    Ok(()) => {
-                        self.ready.insert(tab);
-                        self.last_key = None;
-                        None
-                    }
-                    Err(error) => {
-                        // Already failed: the bridge's error was shown and cancelled this upload.
-                        let reported = !self.failed.insert(tab);
-                        // The bridge may hold a partial file for this tab: tell it to drop it.
-                        // A tab that was closed already got `close` from `drop_closed`.
-                        if self.names.contains_key(&tab)
-                            && let Some(conn) = &self.conn
-                        {
-                            let _ = send(&conn.ws, &ClientMessage::Close { tab });
-                        }
-                        (self.names.contains_key(&tab) && !reported)
-                            .then(|| format!("MCP upload failed: {error}"))
-                    }
-                }
-            }
-        }
-    }
-
     /// Forget everything the bridge knew; a new connection uploads again.
     fn reset_link(&mut self) {
         self.ready.clear();
         self.failed.clear();
         self.uploading = None;
         self.last_key = None;
+        self.heartbeat = Heartbeat::fresh(self.generation);
         self.shared.progress.set(None);
         self.shared.cancelled.borrow_mut().clear();
     }
@@ -246,12 +175,35 @@ impl McpHost {
     /// End of each frame: connect when asked, upload new tabs, tell the bridge about closed
     /// tabs and publish the view when it changed.
     pub fn sync(&mut self, ctx: &egui::Context, tabs: &[Tab], active: usize) {
-        let fragment = self.new_token.borrow_mut().take();
-        if let Some(token) = fragment.filter(|t| *t != self.token) {
-            // Drop the old socket; `connect` below resets the link state.
-            self.conn = None;
-            self.token = token;
-            self.want_connect = true;
+        // Workers cannot wake egui from Wasm; poll while replies/image reads are pending,
+        // even after disconnect, so snapshots finish and release their sources.
+        if self.rpc.pending > 0 {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        let change = self.link.borrow_mut().take();
+        if let Some(change) = change {
+            // A `#room=` key is consumed the moment it is read, whatever else it said.
+            if let Some(stripped) = &change.stripped {
+                room::replace_fragment(stripped);
+            }
+            let pairing = change
+                .token
+                .as_deref()
+                .filter(|token| *token != self.token)
+                .is_some();
+            if let Some(token) = change.token.filter(|token| *token != self.token) {
+                // A fresh `#mcp=` pairing (say, a new `figstudio-mcp --bridge` run) moves
+                // this tab to the local bridge; a pending link is dropped.
+                self.conn = None;
+                self.token = token;
+                self.relay = false;
+                self.want_connect = true;
+                self.proposal = None;
+            } else if let Some(pair) = proposed_pair(change.pair, pairing, self.pair.as_ref()) {
+                self.proposal = Some(RoomProposal::new(pair));
+                // The ask was staged at frame end; without this, an idle page never paints it.
+                ctx.request_repaint();
+            }
         }
         if std::mem::take(&mut self.want_connect) && self.conn.is_none() {
             if let Err(error) = self.connect(ctx) {
@@ -263,6 +215,47 @@ impl McpHost {
         };
         let ws = conn.ws.clone();
         self.drop_closed(&ws, tabs);
+        if self.relay {
+            // Release the picked-file upload handles when relay tabs close too.
+            for tab in tabs {
+                self.names.entry(tab.id).or_insert_with(|| tab.path.clone());
+            }
+            let key = key(tabs, active);
+            if self.last_key.as_ref() != Some(&key) {
+                let _ = ws.send_with_str(crate::mcp_wire::relay_ready());
+                self.last_key = Some(key);
+            }
+            // Otherwise the relay socket can sit silent for a whole session while a NAT
+            // or proxy has already forgotten the flow, and a successful send only proves
+            // the browser buffered the bytes. The keepalive state machine runs the proof:
+            // a ping goes out, the DO's runtime answers `pong` without waking it, and no
+            // answer within the deadline drops the connection (see `mcp_heartbeat.rs`).
+            // `Beat::Wait` schedules the repaint for exactly the next decision — not a
+            // fixed cadence — so the deadline frame lands on time (or later, in a
+            // throttled background tab; never early).
+            let now = Instant::now();
+            let beat = self.heartbeat.tick(now);
+            match beat {
+                Beat::Wait(resume) => ctx.request_repaint_after(resume),
+                Beat::SendPing => match ws.send_with_str("ping") {
+                    Ok(()) => {
+                        self.heartbeat.ping_sent(now);
+                        ctx.request_repaint_after(PONG_DEADLINE);
+                    }
+                    // A refused send is the browser already giving up on the socket:
+                    // disconnect now, not after some later frame notices.
+                    Err(_) => {
+                        self.relay_lost(ctx, "Cloud relay disconnected", self.heartbeat.proven())
+                    }
+                },
+                // One automatic retry per proven connection; a connection that never
+                // proved itself waits for the user (the storm bound).
+                Beat::Elapsed { proven } => {
+                    self.relay_lost(ctx, "Cloud relay stopped responding", proven)
+                }
+            }
+            return;
+        }
         if self.uploading.is_none() {
             self.start_upload(&ws, ctx, tabs);
         }
@@ -319,59 +312,38 @@ impl McpHost {
     }
 
     fn connect(&mut self, ctx: &egui::Context) -> Result<(), String> {
-        if self.token.is_empty() {
+        if !self.relay && self.token.is_empty() {
             return Err("Enter the pairing token printed by figstudio-mcp --bridge".to_owned());
         }
-        let ws =
-            WebSocket::new(&self.url).map_err(|_| "Not a valid WebSocket address".to_owned())?;
+        if self.relay && self.pair.is_none() {
+            return Err("No MCP executor token yet; Apply one or Regenerate".to_owned());
+        }
         self.generation = self.generation.wrapping_add(1);
-        let push = |shared: &Rc<Shared>, ctx: &egui::Context, event: Event| {
-            shared.events.borrow_mut().push_back(event);
-            ctx.request_repaint();
-        };
-        let (s, c) = (self.shared.clone(), ctx.clone());
-        let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
-            // Binary or unparseable frames are ignored: nothing here trusts the peer.
-            let parsed = e
-                .data()
-                .as_string()
-                .and_then(|t| serde_json::from_str::<ServerMessage>(&t).ok());
-            if let Some(message) = parsed {
-                push(&s, &c, Event::Server(message));
-            }
-        });
-        let (s, c) = (self.shared.clone(), ctx.clone());
-        let on_close = Closure::<dyn FnMut(CloseEvent)>::new(move |e: CloseEvent| {
-            push(&s, &c, Event::Closed(e.code()))
-        });
-        let (s, c) = (self.shared.clone(), ctx.clone());
-        let on_open =
-            Closure::<dyn FnMut(web_sys::Event)>::new(move |_| push(&s, &c, Event::Opened));
-        ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-        ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-        ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-        // A socket that never says `welcome` (Local Network Access, mixed content) closes
-        // with no message of its own: give up after a while.
-        let (s, c, generation) = (self.shared.clone(), ctx.clone(), self.generation);
-        let give_up = Closure::<dyn FnMut()>::once(move || {
-            push(&s, &c, Event::ConnectTimeout(generation));
-        });
-        let timer = web_sys::window().and_then(|window| {
-            window
-                .set_timeout_with_callback_and_timeout_and_arguments_0(
-                    give_up.as_ref().unchecked_ref(),
-                    CONNECT_TIMEOUT_MS,
-                )
-                .ok()
-        });
         self.reset_link();
         self.shared.events.borrow_mut().clear();
-        self.conn = Some(Conn {
-            ws,
-            welcomed: false,
-            _handlers: (on_message, on_close, on_open),
-            timeout: timer.map(|id| (id, give_up)),
-        });
+        let url = if self.relay {
+            let pair = self
+                .pair
+                .as_ref()
+                .ok_or_else(|| "No MCP executor token".to_owned())?;
+            room::urls(&pair.room())
+                .ok_or_else(|| "Cloud relay needs an HTTP(S) page".to_owned())?
+                .0
+        } else {
+            self.url.clone()
+        };
+        let protocols = self
+            .relay
+            .then(|| self.pair.as_ref().map(|pair| pair.subprotocols()))
+            .flatten();
+        self.conn = Some(Conn::open(
+            &url,
+            protocols,
+            self.relay,
+            self.generation,
+            &self.shared,
+            ctx,
+        )?);
         Ok(())
     }
 
@@ -380,5 +352,19 @@ impl McpHost {
         self.conn = None;
         self.reset_link();
         self.shared.events.borrow_mut().clear();
+    }
+
+    /// The relay connection is dead from our side: drop it, say why, and retry once
+    /// when the connection had proven itself (`proven`); an unproven one waits for the
+    /// user, so a black-holed path can never produce a retry storm. The repaint makes
+    /// the next frame happen even on an otherwise idle page (it consumes `want_connect`
+    /// and shows the notice).
+    fn relay_lost(&mut self, ctx: &egui::Context, notice: &str, proven: bool) {
+        self.stop();
+        self.notices.push(notice.to_owned());
+        if proven {
+            self.want_connect = true;
+        }
+        ctx.request_repaint();
     }
 }

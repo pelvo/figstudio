@@ -1,7 +1,7 @@
 //! Node IDs, `figstudio://` and figma.com links, and the errors for them.
 //!
 //! No async runtime and no SDK types. With `--no-default-features` (no `fs`, no `system-fonts`) it builds
-//! for `wasm32-unknown-unknown`; lazy image reads use `std::fs`, which fails at run time there.
+//! for `wasm32-unknown-unknown`; byte-backed entry readers support lazy browser images.
 
 /// PNG, JPEG or original image bytes of nodes.
 pub mod assets;
@@ -28,6 +28,8 @@ pub mod metadata;
 pub mod node_id;
 /// Tool replies without an SDK type.
 pub mod output;
+/// Offline design-system prompt guidance shared by transports.
+pub mod prompts;
 /// The nodes a page rectangle touches.
 pub mod region;
 /// PNG renders of a page rectangle.
@@ -40,5 +42,7 @@ pub mod rendering;
 pub mod screenshot;
 /// Used style and variable definitions of a subtree.
 pub mod variables;
+/// Browser tab snapshot and SDK-free MCP JSON-RPC dispatch.
+pub mod wasm_rpc;
 
 pub use error::CoreError;
