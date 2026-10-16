@@ -42,6 +42,36 @@ fn page_json_caps_large_entries_without_losing_totals() {
     let page = summary::page_json(&old, &new, Guid(0, 1)).unwrap();
     assert!(serde_json::to_vec(&page).unwrap().len() <= 65_536);
     assert_eq!(page["truncated"], true);
+    assert_eq!(page["nameTruncated"], true);
+}
+
+#[test]
+fn page_json_keeps_small_change_after_omitting_largest_row() {
+    let old_small = node(3, Some(1), "FRAME", "small");
+    let mut new_small = old_small.clone();
+    new_small.data.set("size", Val::Float(20.0));
+    let new_small = Node::from_data(new_small.data).unwrap();
+    let small_page = summary::page_json(
+        &document(vec![old_small.clone()]),
+        &document(vec![new_small.clone()]),
+        Guid(0, 1),
+    )
+    .unwrap();
+    assert!(serde_json::to_vec(&small_page).unwrap().len() <= 65_536);
+    assert_eq!(small_page["changed"].as_array().unwrap().len(), 1);
+    assert_eq!(small_page["truncated"], false);
+
+    let old = document(vec![
+        node(2, Some(1), "FRAME", &"a".repeat(70_000)),
+        old_small,
+    ]);
+    let new = document(vec![node(2, Some(1), "FRAME", "after"), new_small]);
+    let page = summary::page_json(&old, &new, Guid(0, 1)).unwrap();
+    assert_eq!(page["changed"], small_page["changed"]);
+    assert_eq!(page["changedTotal"], 2);
+    assert_eq!(page["changedOmitted"], 1);
+    assert_eq!(page["truncated"], true);
+    assert!(serde_json::to_vec(&page).unwrap().len() <= 65_536);
 }
 
 #[test]

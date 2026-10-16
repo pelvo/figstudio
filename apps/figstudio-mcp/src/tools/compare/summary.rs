@@ -135,7 +135,7 @@ fn guid_string(value: &Value) -> Option<String> {
     Some(format!("{}:{}", pair[0].as_u64()?, pair[1].as_u64()?))
 }
 
-/// Trim whole entries from the byte-longest list; disk artifacts remain full.
+/// Trim the largest whole entries first; disk artifacts remain full.
 fn bound_page(value: &mut Value) {
     const LIMIT: usize = 65_536;
     let fields = ["added", "removed", "changed", "moved_out"];
@@ -162,31 +162,37 @@ fn bound_page(value: &mut Value) {
     // Bound page metadata too: a name alone can exceed the inline budget.
     for field in ["old_name", "new_name"] {
         if let Some(name) = value[field].as_str() {
-            value[field] = truncated(name).0.into();
+            let (name, cut) = truncated(name);
+            value[field] = name.into();
+            if cut {
+                value["nameTruncated"] = true.into();
+            }
         }
     }
     bytes = serde_json::to_vec(value).expect("JSON value").len();
-    let mut totals: Vec<usize> = lengths
-        .iter()
-        .map(|sizes| sizes.iter().sum::<usize>() + sizes.len().saturating_sub(1))
-        .collect();
     while bytes > LIMIT {
-        let Some(index) = (0..fields.len())
-            .filter(|&i| !lengths[i].is_empty())
-            .max_by_key(|&i| totals[i])
+        let Some((index, pos, size)) = lengths
+            .iter()
+            .enumerate()
+            .flat_map(|(index, sizes)| {
+                sizes
+                    .iter()
+                    .enumerate()
+                    .map(move |(pos, &size)| (index, pos, size))
+            })
+            .max_by_key(|&(_, _, size)| size)
         else {
             break;
         };
-        let size = lengths[index].pop().expect("nonempty list");
+        lengths[index].remove(pos);
         let removed = size + usize::from(!lengths[index].is_empty());
         value[fields[index]]
             .as_array_mut()
             .expect("page list")
-            .pop();
+            .remove(pos);
         let key = format!("{}Omitted", fields[index]);
         let old = value[&key].as_u64().expect("omitted count");
         value[&key] = (old + 1).into();
         bytes = bytes - removed + (old + 1).to_string().len() - old.to_string().len();
-        totals[index] -= removed;
     }
 }

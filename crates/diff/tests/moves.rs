@@ -1,8 +1,24 @@
 mod support;
 
-use figstudio_diff::{PageStatus, diff_documents};
+use figstudio_diff::{PageStatus, diff_documents, render_html};
 use figstudio_fig::{Guid, Val};
 use support::{document, node, object, rectangle};
+
+#[test]
+fn move_to_document_root_keeps_source_detail_without_moved_out_note() {
+    let old = document(vec![rectangle(2, 1)]);
+    let new = document(vec![rectangle(2, 0)]);
+    let report = diff_documents(&old, &new);
+    let source = report.pages.iter().find(|p| p.id == Guid(0, 1)).unwrap();
+    assert!(source.moved_out.is_empty());
+    assert_eq!(source.changed.len(), 1);
+    assert_eq!(source.changed[0].id, Guid(0, 2));
+    assert!(source.changed[0].moved.is_some());
+    assert_eq!(report.summary.nodes_moved, 1);
+    let html = render_html(&report);
+    let source_html = html.split("</section>").next().unwrap();
+    assert!(!source_html.contains("Moved out:"));
+}
 
 #[test]
 fn surviving_subtree_leaves_a_removed_page_without_becoming_removed() {

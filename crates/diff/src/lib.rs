@@ -56,7 +56,8 @@ pub fn diff_documents(old: &Document, new: &Document) -> DiffReport {
                 affected.extend(old_pages.get(&id).copied());
                 affected.extend(new_pages.get(&id).copied());
                 if moved.is_some()
-                    && old_pages.get(&id) != new_pages.get(&id)
+                    && let Some(dest) = new_pages.get(&id)
+                    && old_pages.get(&id) != Some(dest)
                     && let Some(&slot) = old_pages.get(&id).and_then(|page| slots.get(page))
                 {
                     pages[slot].moved_out.push(id);
