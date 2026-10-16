@@ -10,6 +10,7 @@ picking up work. Read the three documents below before changing code.
 | `docs/IMPLEMENTATION.md` | Architecture, data flow, how to add a feature, gotchas, task board |
 | `docs/TESTING.md` | Every test and check, how to write new ones, how to prove a test works |
 | `apps/figstudio-mcp/README.md` | The offline MCP server: install, client setup, tools, limits |
+| `.agents/skills/compare-fig-versions/SKILL.md` | How an agent compares two .fig versions with the CLI or MCP |
 | `docs/MCP-PLAN.md` | MCP server plan, lane notes, what shipped and what is open |
 | `docs/APPROXIMATIONS.md` | What each status-bar "approximated"/"skipped" counter is made of, and the plan to clear it |
 

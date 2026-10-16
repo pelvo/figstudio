@@ -1,5 +1,7 @@
 # Structural document diff
 
+For CLI and MCP usage, follow the [compare-fig-versions agent skill](../../.agents/skills/compare-fig-versions/SKILL.md).
+
 `diff_documents(&old, &new)` compares stored fields across decoded documents.
 `DiffReport::to_json()` writes deterministic compact JSON; `render_html(&report)`
 builds a self-contained escaped HTML report. Neither writes files or renders pixels.
