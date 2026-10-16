@@ -100,6 +100,27 @@ impl FileRegistry {
         Ok(self.resolve(key)?.path.clone())
     }
 
+    /// The rendering of the entry whose registered path is `path` (the value
+    /// `open_picked` returned), so a duplicate-stem pair never re-resolves by
+    /// stem.
+    ///
+    /// # Errors
+    /// Returns an error when `path` names no registered file.
+    pub fn rendering_for_path(
+        &self,
+        path: &Path,
+        system_fonts: bool,
+    ) -> Result<Rendering, McpError> {
+        let entry = self
+            .files
+            .iter()
+            .find(|file| file.path.as_path() == path)
+            .ok_or_else(McpError::file_key)?;
+        let mut rendering = entry.rendering.clone();
+        rendering.system_fonts = system_fonts;
+        Ok(rendering)
+    }
+
     /// How to render the file `key` selects: its path for lazily opened images and its
     /// shared image cache, with `system_fonts`.
     ///
@@ -111,12 +132,10 @@ impl FileRegistry {
         Ok(rendering)
     }
 
-    /// Open once per file; failures remain retryable even after cancellation.
-    pub async fn open(&self, key: Option<&str>) -> Result<Arc<Document>, McpError> {
-        let file = self.resolve(key)?;
+    /// Open the entry `file` (already resolved, so duplicate stems stay apart).
+    async fn open_entry(file: &FileEntry, lazy_above: u64) -> Result<Arc<Document>, McpError> {
         let cached = file.document.clone();
         let path = file.path.clone();
-        let lazy_above = self.lazy_above;
         // The initializer outlives a cancelled request and caches its completed decode.
         tokio::spawn(async move {
             cached
@@ -132,6 +151,22 @@ impl FileRegistry {
         })
         .await
         .map_err(McpError::load_task)?
+    }
+
+    /// Open once per file; failures remain retryable even after cancellation.
+    pub async fn open(&self, key: Option<&str>) -> Result<Arc<Document>, McpError> {
+        Self::open_entry(self.resolve(key)?, self.lazy_above).await
+    }
+
+    /// Open, key and path from one resolution, so a duplicate-stem pair can
+    /// never be re-resolved to the other entry between calls.
+    pub async fn open_picked(
+        &self,
+        key: Option<&str>,
+    ) -> Result<(Arc<Document>, String, PathBuf), McpError> {
+        let file = self.resolve(key)?;
+        let doc = Self::open_entry(file, self.lazy_above).await?;
+        Ok((doc, file.key.clone(), file.path.clone()))
     }
 
     /// List cached page counts without waiting for pending loads.
@@ -218,6 +253,28 @@ impl Files {
         }
     }
 
+    /// The rendering of the entry whose registered path is `path` (the value
+    /// `open_picked` returned), so a duplicate-stem pair never re-resolves
+    /// by stem.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown or ambiguous file key (standalone).
+    pub fn rendering_picked(
+        &self,
+        path: &Path,
+        doc: &Document,
+        system_fonts: bool,
+    ) -> Result<Rendering, McpError> {
+        match self {
+            Self::Registry(files) => files.rendering_for_path(path, system_fonts),
+            Self::Live(live) => Ok(live.rendering(doc, system_fonts)),
+        }
+        .map(|mut rendering| {
+            rendering.system_fonts = system_fonts;
+            rendering
+        })
+    }
+
     /// How to render `doc`, which [`Files::open`] returned for `key`.
     ///
     /// # Errors
@@ -255,9 +312,7 @@ impl Files {
         key: Option<&str>,
     ) -> Result<(Arc<Document>, String, PathBuf), McpError> {
         match self {
-            Self::Registry(files) => {
-                Ok((files.open(key).await?, files.key(key)?, files.path(key)?))
-            }
+            Self::Registry(files) => files.open_picked(key).await,
             Self::Live(live) => {
                 let picked = live.pick(key)?;
                 let tab = picked.tab();

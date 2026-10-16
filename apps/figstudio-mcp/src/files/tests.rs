@@ -57,6 +57,65 @@ fn resolves_single_and_multiple_files() {
     assert_eq!(two.resolve(absolute.to_str()).unwrap().key, "vector");
 }
 
+#[tokio::test]
+async fn open_picked_uses_the_resolved_entry_for_duplicate_stems() {
+    use figstudio_fig::Val;
+    let dir = tempfile::tempdir().unwrap();
+    let marker_path = |sub: &str, label: &str| {
+        let mut doc = figstudio_fig::Document::open(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/structure.fig"),
+        )
+        .unwrap();
+        let page = doc.pages[0];
+        let mut nodes = doc.nodes.clone();
+        let frame = nodes
+            .iter_mut()
+            .find(|n| n.kind == "FRAME" && n.parent == Some(page))
+            .unwrap();
+        frame.name = label.into();
+        frame.data.set("name", Val::Str(label.into()));
+        doc.set_nodes(nodes).unwrap();
+        let sub = dir.path().join(sub);
+        std::fs::create_dir_all(&sub).unwrap();
+        let path = sub.join("dup.fig");
+        doc.save(&path).unwrap();
+        path
+    };
+    let older = marker_path("a", "picked-old-marker");
+    let newer = marker_path("b", "picked-new-marker");
+    let files = FileRegistry::new(vec![older.clone(), newer.clone()]);
+    let (old_doc, old_key, old_path) = files
+        .open_picked(Some(older.to_str().unwrap()))
+        .await
+        .unwrap();
+    let (new_doc, new_key, new_path) = files
+        .open_picked(Some(newer.to_str().unwrap()))
+        .await
+        .unwrap();
+    assert_eq!((old_key.as_str(), new_key.as_str()), ("dup", "dup"));
+    assert_eq!((old_path, new_path), (older, newer));
+    // Each doc is its own file's: the renamed frame label proves identity.
+    let label = |doc: &figstudio_fig::Document| {
+        doc.nodes
+            .iter()
+            .find(|n| n.name.starts_with("picked-"))
+            .unwrap()
+            .name
+            .clone()
+    };
+    assert_eq!(label(&old_doc), "picked-old-marker");
+    assert_eq!(label(&new_doc), "picked-new-marker");
+}
+
+#[cfg(unix)]
+#[test]
+fn rendering_for_path_matches_non_utf8_registered_path() {
+    use std::os::unix::ffi::OsStrExt;
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(b"bad\xff.fig"));
+    let files = FileRegistry::new(vec![path.clone()]);
+    assert!(files.rendering_for_path(&path, false).is_ok());
+}
+
 #[test]
 fn duplicate_stems_require_paths() {
     let files = FileRegistry::new(vec![

@@ -108,7 +108,33 @@ async fn check_version(version: &str) {
             let (tools, response_session) = post(&client, &uri, &version, session.clone(), json!({"jsonrpc":"2.0", "id":2, "method":"tools/list", "params":{"_meta":meta}})).await;
             if version == ProtocolVersion::LATEST.to_string() { assert!(response_session.is_none()); }
             let tools = tools["result"]["tools"].as_array().unwrap_or_else(|| panic!("tools/list failed: {tools}"));
-            assert_eq!(tools.len(), 14);
+            assert_eq!(tools.len(), 16);
+            assert!(tools.iter().any(|tool| tool["name"] == "compare_files"));
+            assert!(tools.iter().any(|tool| tool["name"] == "compare_page"));
+            // Explicit compare schemas: drift must fail, not just a rename.
+            let schema = |name: &str| {
+                tools.iter().find(|t| t["name"] == name).unwrap()["inputSchema"].clone()
+            };
+            let files = schema("compare_files");
+            assert_eq!(files["type"], json!("object"));
+            assert!(files.get("required").is_none() || files["required"] == json!([]), "compare_files required: {files}");
+            assert_eq!(
+                files["properties"].as_object().unwrap().keys().map(|k| k.as_str().to_owned()).collect::<std::collections::BTreeSet<_>>(),
+                ["includeRender", "newFile", "oldFile"].into_iter().map(str::to_owned).collect::<std::collections::BTreeSet<_>>()
+            );
+            assert_eq!(files["properties"]["oldFile"]["type"], json!(["string", "null"]));
+            assert_eq!(files["properties"]["newFile"]["type"], json!(["string", "null"]));
+            assert_eq!(files["properties"]["includeRender"]["type"], json!(["boolean", "null"]));
+            let page = schema("compare_page");
+            assert_eq!(page["type"], json!("object"));
+            assert_eq!(page["required"], json!(["pageId"]));
+            assert_eq!(
+                page["properties"].as_object().unwrap().keys().map(|k| k.as_str().to_owned()).collect::<std::collections::BTreeSet<_>>(),
+                ["newFile", "oldFile", "pageId"].into_iter().map(str::to_owned).collect::<std::collections::BTreeSet<_>>()
+            );
+            assert_eq!(page["properties"]["oldFile"]["type"], json!(["string", "null"]));
+            assert_eq!(page["properties"]["newFile"]["type"], json!(["string", "null"]));
+            assert_eq!(page["properties"]["pageId"]["type"], json!("string"));
             assert!(tools.iter().any(|tool| tool["name"] == "get_design_context"));
             assert!(tools.iter().any(|tool| tool["name"] == "get_variable_defs"));
             assert!(tools.iter().any(|tool| tool["name"] == "download_assets"));

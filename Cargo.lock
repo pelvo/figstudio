@@ -1487,14 +1487,28 @@ name = "figstudio-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "figstudio-diff",
  "figstudio-fig",
  "figstudio-render",
  "fontdb",
  "image",
  "libc",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "zip",
+]
+
+[[package]]
+name = "figstudio-diff"
+version = "0.1.0"
+dependencies = [
+ "figstudio-fig",
+ "figstudio-render",
+ "html-escape",
+ "image",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1504,6 +1518,8 @@ dependencies = [
  "flate2",
  "kiwi-schema",
  "ruzstd",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
@@ -1518,6 +1534,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "clap",
+ "figstudio-diff",
  "figstudio-fig",
  "figstudio-mcp-core",
  "figstudio-render",
@@ -1539,6 +1556,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "zip",
 ]
 
 [[package]]

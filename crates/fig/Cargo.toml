@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
+serde.workspace = true
 kiwi-schema = { workspace = true }
 flate2 = { workspace = true }
 ruzstd = { workspace = true }
@@ -17,6 +18,7 @@ zip = { workspace = true }
 
 
 [dev-dependencies]
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 tracing-subscriber.workspace = true
 flate2 = { workspace = true }
 ruzstd = { workspace = true }

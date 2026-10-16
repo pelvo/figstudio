@@ -161,8 +161,10 @@ async fn stdio_discovers_and_calls_tools() {
             "standalone names live mode"
         );
         let tools = client.list_all_tools().await.unwrap();
-        assert_eq!(tools.len(), 14);
+        assert_eq!(tools.len(), 16);
         for name in [
+            "compare_files",
+            "compare_page",
             "get_design_context",
             "whoami",
             "list_files",
@@ -179,6 +181,65 @@ async fn stdio_discovers_and_calls_tools() {
         ] {
             assert!(tools.iter().any(|tool| tool.name == name));
         }
+        // Explicit compare schemas: drift must fail, not just a rename.
+        let schema = |name: &str| {
+            let tool = tools.iter().find(|t| t.name == name).unwrap();
+            serde_json::Value::Object((*tool.input_schema).clone())
+        };
+        let files = schema("compare_files");
+        assert_eq!(files["type"], json!("object"));
+        assert!(
+            files.get("required").is_none() || files["required"] == json!([]),
+            "compare_files required: {files}"
+        );
+        assert_eq!(
+            files["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(|k| k.as_str().to_owned())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["includeRender", "newFile", "oldFile"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+        assert_eq!(
+            files["properties"]["oldFile"]["type"],
+            json!(["string", "null"])
+        );
+        assert_eq!(
+            files["properties"]["newFile"]["type"],
+            json!(["string", "null"])
+        );
+        assert_eq!(
+            files["properties"]["includeRender"]["type"],
+            json!(["boolean", "null"])
+        );
+        let page = schema("compare_page");
+        assert_eq!(page["type"], json!("object"));
+        assert_eq!(page["required"], json!(["pageId"]));
+        assert_eq!(
+            page["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(|k| k.as_str().to_owned())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["newFile", "oldFile", "pageId"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+        assert_eq!(
+            page["properties"]["oldFile"]["type"],
+            json!(["string", "null"])
+        );
+        assert_eq!(
+            page["properties"]["newFile"]["type"],
+            json!(["string", "null"])
+        );
+        assert_eq!(page["properties"]["pageId"]["type"], json!("string"));
         let result = client
             .call_tool(CallToolRequestParams::new("whoami"))
             .await

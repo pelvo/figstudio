@@ -10,6 +10,16 @@ Branch `feat/mcp`, cut from `fix/known-gaps` at `f87989d`. Research notes (untra
 
 ## Status (2026-10-11)
 
+Update (2026-10-15): version-compare Phase 5 added the native-only tools
+`compare_files` and `compare_page` (16 tools total). They live in
+`apps/figstudio-mcp/src/tools/compare.rs`, not `figstudio-mcp-core`, because
+`figstudio-diff` renders through the native renderer; the browser wasm build
+does not register them (the wasm schema test lists them as explained
+omissions). `compare_files` writes its artifacts under the server assets
+directory and returns a bounded summary; `compare_page` re-runs the diff over
+cached documents. Follow-up fix: page ids are `session:local` strings
+throughout, and report.json keeps snake_case fields (the diff crate's serde).
+
 Lanes L0–L12 are done and merged on `feat/mcp`; every gate ended with `all checks passed`.
 Shipped: the `figstudio-mcp` binary (stdio and Streamable HTTP), 14 tools (`whoami`,
 `list_files`, `get_metadata`, `get_screenshot`, `get_variable_defs`, `get_design_context`,

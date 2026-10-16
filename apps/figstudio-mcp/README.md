@@ -259,8 +259,10 @@ pages.
 
 ## Tools
 
-14 tools and 1 prompt, plus 3 live tools in the app. "Official" means Figma's server;
-"differs offline" lists what a client should expect to be different.
+16 tools and 1 prompt, plus 3 live tools in the app. "Official" means Figma's server;
+"differs offline" lists what a client should expect to be different. The two
+`compare_*` tools are native only (the diff crate renders through the native
+renderer), so the browser MCP build does not register them.
 
 | Tool | Inputs | Output | Differs offline / limits |
 |---|---|---|---|
@@ -278,6 +280,8 @@ pages.
 | `add_code_connect_map` | `nodeId`, `componentName`, `source`, `label`, `snippet?`, `snippetImports?` | The stored mapping | Writes the sidecar atomically. An instance is stored under its component's id. `source` is stored, never fetched. Limits: source 4096 bytes, snippet 100 000 bytes, 100 imports of 4096 bytes. `imports` is accepted as an alias of `snippetImports`. |
 | `search_design_system` | `query`, `kinds?`, `fileKey?` | Ranked matches | This file only (no team libraries). `kinds`: `component`, `component_set`, `style`, `variable`. Exact names first; at most 100 results. |
 | `get_libraries` | `fileKey?` | Summary of this file's components, token collections, modes and styles | Local only; lists capped at 100, with totals. |
+| `compare_files` | `oldFile?`, `newFile?`, `includeRender?` (default false) | JSON `{old, new, summary, complete, truncated, pages, pagesTotal, pagesTruncated, reportJson, reportHtml}` | Writes `report.json`/`report.html` (plus `render/<guid>-{before,after,diff}.png` with `includeRender`) under `<assets-dir>/compare/compare-<random>/` (`$TMPDIR/figstudio-compare/compare-<random>/` in inline mode). At most 100 page entries inline; rendering is capped by the diff crate. Not an official tool; native server only. |
+| `compare_page` | `oldFile?`, `newFile?`, `pageId` | One page's `PageDiff` JSON capped at 64 KiB; whole entries omitted as needed, with per-list `Total`/`Omitted` counts and a `truncated` flag | Re-runs the comparison (documents are cached); the report is not cached. MCP schema Guids are `session:local` strings; disk `report.json` keeps native Guid arrays and full entries. When the inline page JSON is over 64 KiB, an `old_name` or `new_name` longer than 128 bytes is shortened to at most 128 bytes, ending in `~`, before any row is dropped; that cut sets `nameTruncated: true`. An unchanged or unknown page is a tool error. Not an official tool; native server only. |
 | `list_open_tabs` *(app only)* | none | `{tabs: [{tabId, fileKey, path, title, page: {id, name}, selection, active}]}` | Lists the app's open tabs. `fileKey` is what the other tools take. |
 | `get_selection` *(app only)* | `fileKey?` | `{fileKey, tabId, page, node: {nodeId, name, kind, bounds: {x, y, width, height}}}`, or `node: null` | The selected node of a tab (default the active tab). Bounds are in page units. |
 | `reveal_node` *(app only)* | `nodeId` (or a link), `fileKey?` | One line: the node is revealed in tab N | Selects the node in the app; the tab becomes active and the view fits the node. An instance path reveals its outer instance and says so. Waits 5 s for the app; then the error "the app did not respond" (a minimised window may not run frames, so the reveal can time out). |
@@ -329,6 +333,10 @@ MCP output from a private file into a public place.
   lock path is refused.
 - **Asset PNGs:** `get_design_context` writes `<fileKey>_<id>.png` files into
   `--assets-dir` (or returns them inline with `--assets inline`).
+- **Comparison artifacts:** `compare_files` writes `report.json`, `report.html`
+  and, with `includeRender`, `render/<guid>-{before,after,diff}.png` under
+  `<assets-dir>/compare/compare-<random>/` (or
+  `$TMPDIR/figstudio-compare/compare-<random>/` in inline mode).
 - The `.fig` itself is never opened for writing.
 - **Cache:** a file is decoded once and kept. Changing it on disk is not noticed;
   restart the server to read the new version.
