@@ -127,7 +127,7 @@ impl<T: Clock> Heartbeat<T> {
     }
 
     /// Whether this connection ever cleared a pong.
-    fn proven(&self) -> bool {
+    pub(crate) fn proven(&self) -> bool {
         match self.state {
             State::Idle { last_pong: Some(_) } => true,
             State::Idle { last_pong: None } => false,

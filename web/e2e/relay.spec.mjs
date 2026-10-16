@@ -376,6 +376,38 @@ test("a relay socket whose keepalives go unanswered is closed by the page", asyn
   // API level while no end-to-end proof can ever arrive — the silently-dropped NAT
   // path `mcp_heartbeat.rs` exists for. This observes the real connection the app
   // holds, not a helper's answer.
+  // Count only animation frames that really draw: eframe requests idle frames too.
+  // A draw later in the close's own frame still contains the old status label.
+  await page.addInitScript(() => {
+    let frame = 0;
+    const request = window.requestAnimationFrame;
+    window.requestAnimationFrame = (callback) => request.call(window, (time) => {
+      frame++;
+      callback(time);
+    });
+    window.relayPaint = { paintedFrame: 0, atClose: null };
+    // Headless Chromium may fall back to WebGL2; count either renderer's output.
+    for (const [prototype, method] of [
+      [GPUQueue.prototype, "submit"],
+      [WebGL2RenderingContext.prototype, "drawElements"],
+      [WebGL2RenderingContext.prototype, "drawArrays"],
+      [WebGL2RenderingContext.prototype, "drawElementsInstanced"],
+      [WebGL2RenderingContext.prototype, "drawArraysInstanced"],
+    ]) {
+      const original = prototype[method];
+      prototype[method] = function (...args) {
+        window.relayPaint.paintedFrame = frame;
+        return original.apply(this, args);
+      };
+    }
+    const close = WebSocket.prototype.close;
+    WebSocket.prototype.close = function (...args) {
+      if (this.url.includes("/bridge/")) {
+        window.relayPaint.atClose = frame;
+      }
+      return close.apply(this, args);
+    };
+  });
   const sockets = [];
   let closedByPage = false;
   let pings = 0;
@@ -407,8 +439,60 @@ test("a relay socket whose keepalives go unanswered is closed by the page", asyn
   await expect
     .poll(() => closedByPage, { timeout: 60_000 })
     .toBe(true);
+  // Status is drawn before sync detects the loss. The real Wasm UI must paint
+  // another frame to remove Connected and consume its notice, without user input.
+  await expect.poll(() => page.evaluate(() => {
+    const { paintedFrame, atClose } = window.relayPaint;
+    return atClose !== null && atClose > 0 && paintedFrame > atClose;
+  }), { timeout: 5_000 }).toBe(true);
+  await test.info().attach("relay-disconnected", {
+    body: await page.screenshot({ path: test.info().outputPath("relay-disconnected.png") }),
+    contentType: "image/png",
+  });
   // No retry storm: this connection never proved itself, so nothing reconnects on
   // its own (only the user's Connect starts another socket).
   await page.waitForTimeout(5_000);
   expect(sockets).toHaveLength(1);
+});
+
+test("a refused ping retries a proven relay once, not its unproven replacement", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.addInitScript(() => {
+    const send = WebSocket.prototype.send;
+    window.relaySend = { sockets: 0, pongs: 0, pings: 0, refused: 0, closed: 0 };
+    const NativeWebSocket = WebSocket;
+    window.WebSocket = class extends NativeWebSocket {
+      constructor(...args) {
+        super(...args);
+        if (this.url.includes("/bridge/")) {
+          window.relaySend.sockets++;
+          this.addEventListener("message", (event) => {
+            if (event.data === "pong") window.relaySend.pongs++;
+          });
+        }
+      }
+    };
+    WebSocket.prototype.send = function (message) {
+      if (this.url.includes("/bridge/") && message === "ping") {
+        // Let the first real ping/pong prove the original connection, then refuse
+        // sends on both it and its replacement through the actual Wasm error path.
+        if (++window.relaySend.pings > 1) {
+          window.relaySend.refused++;
+          throw new DOMException("send refused", "InvalidStateError");
+        }
+      }
+      return send.call(this, message);
+    };
+    const close = WebSocket.prototype.close;
+    WebSocket.prototype.close = function (...args) {
+      if (this.url.includes("/bridge/")) window.relaySend.closed++;
+      return close.apply(this, args);
+    };
+  });
+  await page.goto(`${baseURL}/?renderer=cpu&threads=2`);
+  await expect.poll(() => page.evaluate(() => window.relaySend.pongs), { timeout: 60_000 }).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.relaySend), { timeout: 60_000 })
+    .toEqual({ sockets: 2, pongs: 1, pings: 3, refused: 2, closed: 2 });
+  await page.waitForTimeout(5_000);
+  expect(await page.evaluate(() => window.relaySend.sockets)).toBe(2);
 });

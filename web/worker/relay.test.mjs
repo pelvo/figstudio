@@ -301,6 +301,25 @@ test("an unmarked socket is closed on its first frame and never promoted", async
   await errorResponse(await room.fetch(post()), 503, 7);
 });
 
+test("an unmarked socket fails pending calls even when close throws", async () => {
+  const tab = new Tab(1);
+  const { room } = setup([tab]);
+  const pending = await forward(room, tab);
+  // Lose the marker after a call was dispatched: rejection must fail that call,
+  // even if the runtime refuses to close the restored socket.
+  const attachment = { ready: false, order: 1 };
+  tab.attachment = attachment;
+  tab.close = () => { throw new Error("already closing"); };
+  assert.doesNotThrow(() => room.webSocketMessage(tab, JSON.stringify({
+    type: "ready", protocol: 1, authenticatedProtocol: EXEC_PROTOCOL,
+  })));
+  await errorResponse(await pending.response, 503, 7);
+  assert.deepEqual(tab.attachment, { ready: false, order: 1 });
+  assert.equal(room.pending.size, 0);
+  await errorResponse(await room.fetch(post()), 503, 7);
+  assert.doesNotThrow(() => reply(room, tab, pending.frame));
+});
+
 test("an authenticated socket without a ready attachment waits for ready", async () => {
   const unready = new Tab(1);
   unready.attachment = { authenticatedProtocol: EXEC_PROTOCOL, ready: false, order: 1 };

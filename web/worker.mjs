@@ -201,7 +201,7 @@ export class McpRoom {
     // depth): the socket is closed and its pending calls failed, not promoted.
     if (tab.deserializeAttachment()?.authenticatedProtocol !== EXEC_PROTOCOL) {
       this.failTab(tab);
-      tab.close(1008, "Reconnect to re-authenticate");
+      try { tab.close(1008, "Reconnect to re-authenticate"); } catch { /* already closing */ }
       return;
     }
     if (typeof message !== "string") {

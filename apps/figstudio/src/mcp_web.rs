@@ -244,7 +244,9 @@ impl McpHost {
                     }
                     // A refused send is the browser already giving up on the socket:
                     // disconnect now, not after some later frame notices.
-                    Err(_) => self.relay_lost(ctx, "Cloud relay disconnected", false),
+                    Err(_) => {
+                        self.relay_lost(ctx, "Cloud relay disconnected", self.heartbeat.proven())
+                    }
                 },
                 // One automatic retry per proven connection; a connection that never
                 // proved itself waits for the user (the storm bound).
@@ -362,7 +364,7 @@ impl McpHost {
         self.notices.push(notice.to_owned());
         if proven {
             self.want_connect = true;
-            ctx.request_repaint();
         }
+        ctx.request_repaint();
     }
 }
