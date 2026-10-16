@@ -21,6 +21,11 @@ pub(crate) enum Event {
         id: String,
         body: serde_json::Value,
     },
+    /// The relay's auto-answer to connection `generation`'s keepalive `ping`
+    /// (see `mcp_heartbeat.rs`; the host ignores a stale generation's).
+    Pong {
+        generation: u32,
+    },
     /// No `welcome` in time for connection `generation` (the host ignores a stale one).
     ConnectTimeout(u32),
     Server(ServerMessage),

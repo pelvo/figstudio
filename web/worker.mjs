@@ -72,17 +72,31 @@ export class McpRoom {
     // No storage: a hard eviction tears down the isolate with its timers and pending
     // map, so those callers' connections drop (they see no 504 from this deadline); the
     // 30 s deadline bounds only the requests that survive in this isolate.
-    this.order = Math.max(0, ...ctx.getWebSockets("tab").map((ws) =>
-      ws.deserializeAttachment()?.order ?? 0));
+    const restored = ctx.getWebSockets("tab");
+    // A socket is authenticated only by the marker its `connect` wrote after proving the
+    // executor secret. Attachments restored from an earlier deploy (`{order}`, `{ready,
+    // order}`) carry no marker — the old deploy proved nothing this deploy accepts — so
+    // they are closed here: a re-sent `ready` (which the old client sends on tab or
+    // selection changes) must never restore the executor role. The marker is a constant
+    // protocol name, never the secret.
+    for (const ws of restored) {
+      if (ws.deserializeAttachment()?.authenticatedProtocol !== EXEC_PROTOCOL) {
+        try { ws.close(1008, "Reconnect to re-authenticate"); } catch { /* already closing */ }
+      }
+    }
+    this.order = Math.max(0, ...restored.map((ws) => ws.deserializeAttachment()?.order ?? 0));
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
   activeTab() {
-    // Only sockets that said `ready`: a connected-but-silent client (or a hibernated
-    // socket restored from an old or not-yet-ready attachment) never takes the executor
-    // role, so an admitted-but-unproved tab cannot receive the next RPC.
+    // Only sockets this deploy authenticated (the marker) that also said `ready`: a
+    // connected-but-silent client (or any socket restored without the marker, such as
+    // one stored by an earlier deploy) never takes the executor role, so an
+    // admitted-but-unproved tab cannot receive the next RPC.
     return this.ctx.getWebSockets("tab")
-      .filter((ws) => ws.readyState === 1 && ws.deserializeAttachment()?.ready === true)
+      .filter((ws) => ws.readyState === 1 &&
+        ws.deserializeAttachment()?.authenticatedProtocol === EXEC_PROTOCOL &&
+        ws.deserializeAttachment()?.ready === true)
       .sort((a, b) => (b.deserializeAttachment()?.order ?? 0) -
         (a.deserializeAttachment()?.order ?? 0))[0];
   }
@@ -151,7 +165,10 @@ export class McpRoom {
     }
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server, ["tab"]);
-    server.serializeAttachment({ ready: false, order: ++this.order });
+    // The marker is the non-secret proof record: written only here, after the
+    // re-verified upgrade, so a socket that never went through this `connect` (an
+    // earlier deploy's restore) can never claim it.
+    server.serializeAttachment({ authenticatedProtocol: EXEC_PROTOCOL, ready: false, order: ++this.order });
     // Echo only the constant marker — never the offered executor hex — so clients that
     // expect the selected subprotocol to be answered see the handshake complete.
     return new Response(null, {
@@ -178,6 +195,15 @@ export class McpRoom {
   }
 
   webSocketMessage(tab, message) {
+    // Every frame requires the proof marker before any processing — `ready` alone (with
+    // or without a client-claimed `auth` field) never grants or restores it. This also
+    // covers any unmarked attachment that escaped the constructor's close (defense in
+    // depth): the socket is closed and its pending calls failed, not promoted.
+    if (tab.deserializeAttachment()?.authenticatedProtocol !== EXEC_PROTOCOL) {
+      this.failTab(tab);
+      tab.close(1008, "Reconnect to re-authenticate");
+      return;
+    }
     if (typeof message !== "string") {
       this.failTab(tab);
       tab.close(1009, "Invalid or oversized relay frame");
@@ -192,7 +218,8 @@ export class McpRoom {
     try { reply = JSON.parse(message); } catch { return; }
     if (!object(reply)) return;
     if (reply.type === "ready" && reply.protocol === 1) {
-      tab.serializeAttachment({ ready: true, order: ++this.order });
+      // Keep the proof marker: `ready` only flips readiness and bumps the order.
+      tab.serializeAttachment({ authenticatedProtocol: EXEC_PROTOCOL, ready: true, order: ++this.order });
       return;
     }
     if (reply.type !== "rpc_reply") return;

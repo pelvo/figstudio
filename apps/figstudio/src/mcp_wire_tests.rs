@@ -232,16 +232,6 @@ fn encode_failure_and_busy_replies_carry_the_callers_id_for_the_worker_match() {
 }
 
 #[test]
-fn relay_pings_are_due_on_connect_then_only_after_the_interval() {
-    assert!(
-        ping_due(None),
-        "the first ping validates the socket right away"
-    );
-    assert!(!ping_due(Some(Duration::from_secs(29))));
-    assert!(ping_due(Some(PING_EVERY)));
-}
-
-#[test]
 fn reveal_rejects_bad_ids_and_closed_tabs_without_touching_state() {
     let mut tabs = tabs();
     let mut active = 0;

@@ -18,9 +18,7 @@
 export const ROOM_DOMAIN = "figstudio/room/v1";
 export const EXEC_PROTOCOL = "figstudio-exec-v1";
 
-const ROOM = /^rm_[0-9a-f]{64}$/;
 const ROOM_HEX = /^[0-9a-f]{64}$/;
-const EXECUTOR = /^ex_[0-9a-f]{64}$/;
 const BRIDGE = /^\/bridge\/(rm_[0-9a-f]{64})$/;
 
 const fail = (status, message) => ({ ok: false, status, message });
@@ -36,25 +34,6 @@ export async function deriveRoom(executorHex) {
   preimage.set(executor, domain.length + 1);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", preimage));
   return "rm_" + [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/**
- * An executor as typed or pasted: a bare `ex_…`, or a complete link whose `room`
- * and `exec` fragment keys derive to each other. The caller MCP URL or a bare
- * `rm_…` room is `null`: the caller capability is not the executor.
- * Resolves to `{ executor, room }` or `null`; never echoes the input.
- */
-export async function executorFromInput(text) {
-  const input = String(text ?? "").trim();
-  if (EXECUTOR.test(input)) return { executor: input, room: await deriveRoom(input.slice(3)) };
-  const fragment = input.slice(input.lastIndexOf("#") + 1);
-  const params = new URLSearchParams(fragment);
-  const room = params.get("room");
-  const executor = params.get("exec");
-  if (EXECUTOR.test(executor) && ROOM.test(room) && room === (await deriveRoom(executor.slice(3)))) {
-    return { executor, room };
-  }
-  return null;
 }
 
 /**

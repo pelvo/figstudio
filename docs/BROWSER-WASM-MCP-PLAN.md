@@ -83,7 +83,7 @@ Same-origin WebSocket: `wss://<deploy-domain>/bridge/<room_token>`
 | tab -> DO | `{"type":"ready","protocol":1}` | Sent on open and when tabs/selection change; no tab title, so the relay never learns document names |
 | DO -> tab | `{"type":"rpc","id":"<req_uuid>","body":<JSON-RPC request>}` | Forwarded from `POST /mcp/<room_token>` |
 | tab -> DO | `{"type":"rpc_reply","id":"<req_uuid>","status":200,"body":<JSON-RPC response>}` | Tool/initialize/list result from Wasm; `body` is a JSON value (an object with status 200, or `null` with status 202 for a notification) |
-| tab <-> DO | Keepalive `ping`/`pong` (auto-response) | The tab sends `ping` every 30 s; the runtime auto-responds `pong` (`setWebSocketAutoResponse`) without waking the hibernating DO, keeping NAT/proxy mappings alive and surfacing a silently dropped connection as a close |
+| tab <-> DO | Keepalive `ping`/`pong` (auto-response) | The tab pings at most every 30 s (`mcp_heartbeat.rs`, counted from the last `pong`); the runtime auto-responds `pong` (`setWebSocketAutoResponse`) without waking the hibernating DO, keeping NAT/proxy mappings alive. The pong is also the path proof: no `pong` within 10 s of a `ping` and the page itself drops the connection ("Cloud relay stopped responding"; a refused send drops it right away), retrying at most once per connection that had already proven itself — a black-holed path can no longer masquerade as connected |
 
 ### MCP JSON-RPC Methods Handled in Wasm (`crates/mcp-core/src/wasm_rpc.rs`)
 Because `rmcp` depends on `tokio` and is native-only, `crates/mcp-core` gains a small,
@@ -295,8 +295,10 @@ pub struct Rendering {
   and Cloudflare's WebSocket Hibernation APIs (no custom protocol parser or packages).
   Static asset responses are returned untouched, including the `_headers` isolation
   headers. Invalid room paths return 404 before a DO lookup; no room tokens are logged.
-- `McpRoom` has no storage calls. Socket attachments retain the active-tab ordering across
-  hibernation; newest connect or protocol-1 `ready` wins. Pending calls live only in memory,
+- `McpRoom` has no storage calls. Socket attachments retain the authenticated-protocol
+  marker and active-tab ordering across hibernation (see the security-round notes below:
+  the marker is written only by a proved `connect`, and a socket without it is closed);
+  newest connect or protocol-1 `ready` wins. Pending calls live only in memory,
   with a 30-second deadline, socket-bound reply matching, and disconnect/send-error cleanup.
   An eviction (or any isolate restart) drops those in-flight calls: the client sees its own
   request timeout and should retry the call.
@@ -349,10 +351,22 @@ Approved design, split across two writers; this section records the shipped cont
   itself (one SHA-256) in `connect` — it never trusts a header that merely claims the
   outer Worker already checked, because such a header is forgeable — and the `101`
   echoes only the constant marker `figstudio-exec-v1` (never the offered hex) as the
-  selected subprotocol. A socket is not an executor until it sends `ready`: attachments
-  start `{ready:false, order}` and become `{ready:true, order}` on the `ready` frame,
-  so a restored (hibernated) attachment without `ready:true` — including one stored by
-  an earlier deploy — never receives calls. The local bridge WebSocket is unchanged.
+  selected subprotocol. A socket is not an executor until it sends `ready`, and `ready`
+  alone never grants authentication: the attachment is written only by `connect`, as
+  `{authenticatedProtocol:"figstudio-exec-v1", ready:false, order}`, after that
+  re-verified proof. The field is a constant, non-secret protocol name — never the
+  executor hex — and survives hibernation, so a hibernated authenticated socket stays
+  eligible after restore. `ready` only flips to `ready:true` and bumps `order`; the
+  marker is never written by any client frame (a client-claimed `auth` field is
+  ignored), and `activeTab` requires the exact marker AND `ready`. A socket whose
+  attachment lacks the exact marker — anything an earlier deploy stored (`{order}` or
+  `{ready, order}`, accepted when the room alone admitted the bridge) — is closed with
+  `1008` when the isolate restores it, and, defense in depth, again on its first frame
+  before any `ready`/`rpc_reply` processing, with its pending calls failed rather than
+  promoted. A tab from a previous deploy therefore never regains the executor by
+  re-sending `ready` (which the old client does on tab or selection changes): it must
+  reconnect and present the executor proof again — there is no `ready`-only upgrade
+  path. The local bridge WebSocket is unchanged.
 - **Apply / join**: `Apply` accepts a bare `ex_…` or a complete matching
   `#room=…&exec=…` link only; the caller MCP URL or a bare `rm_…` is rejected with a
   message that never echoes the input. A fragment stages BOTH keys as a proposal only

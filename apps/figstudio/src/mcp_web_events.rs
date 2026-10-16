@@ -18,6 +18,17 @@ impl McpHost {
                 }
                 None
             }
+            Event::Pong { generation } => {
+                // Events are drained before `sync` ticks the deadline, so a pong this
+                // frame sees always wins over a deadline that also passed this frame
+                // (the throttled-tab ordering, see `mcp_heartbeat.rs`). The machine
+                // ignores a foreign generation's pong by itself; the connection guard
+                // covers a pong drained after `stop` cleared the queue.
+                if self.conn.is_some() {
+                    self.heartbeat.pong(generation, Instant::now());
+                }
+                None
+            }
             Event::Opened => {
                 let ws = self.conn.as_ref()?.ws.clone();
                 if self.relay {

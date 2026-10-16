@@ -63,7 +63,13 @@ impl Conn {
                 return;
             };
             if relay {
-                if let Some((id, body)) = parse_rpc(&text) {
+                // The keepalive answer is the exact auto-response frame (the Worker's
+                // `setWebSocketAutoResponse`, web/worker.mjs) — checked before, and
+                // instead of, `rpc` frame parsing, and tagged with this connection's
+                // generation so only its own `pong` can clear its wait.
+                if text == "pong" {
+                    push(&s, &c, Event::Pong { generation });
+                } else if let Some((id, body)) = parse_rpc(&text) {
                     push(&s, &c, Event::Rpc { id, body });
                 }
             } else if let Ok(message) = serde_json::from_str::<ServerMessage>(&text) {

@@ -368,3 +368,47 @@ test("the bridge upgrade needs the executor proof, not the caller room", async (
   }, { room, protocols: ["figstudio-exec-v1", executor.slice(3)] });
   expect(opened).toBe("figstudio-exec-v1");
 });
+
+test("a relay socket whose keepalives go unanswered is closed by the page", async ({ page }) => {
+  test.setTimeout(180_000);
+  // Blackhole the keepalive answer at the transport: the page's `ping` frames are
+  // forwarded, the runtime's auto-`pong` is swallowed, so the socket stays open at the
+  // API level while no end-to-end proof can ever arrive — the silently-dropped NAT
+  // path `mcp_heartbeat.rs` exists for. This observes the real connection the app
+  // holds, not a helper's answer.
+  const sockets = [];
+  let closedByPage = false;
+  let pings = 0;
+  let pongs = 0;
+  await page.routeWebSocket(/\/bridge\//, (ws) => {
+    sockets.push(ws);
+    const server = ws.connectToServer();
+    ws.onMessage((message) => {
+      if (message === "ping") pings++;
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      if (message === "pong") pongs++;
+      else ws.send(message);
+    });
+    ws.onClose(() => {
+      closedByPage = true;
+      server.close();
+    });
+  });
+  await page.goto(`${baseURL}/?renderer=cpu&threads=2`);
+  await expect(page.locator("#figstudio")).toBeVisible();
+  await expect.poll(() => mcp(page), { timeout: 60_000 }).toBeTruthy();
+  // The interception is live: the page's first keepalive went out through it, and the
+  // runtime answered a pong the page never received.
+  await expect.poll(() => pings > 0 && pongs > 0, { timeout: 30_000 }).toBe(true);
+  // With no pong the 10 s deadline (mcp_heartbeat.rs PONG_DEADLINE) must close the
+  // socket from our side — the real connection, not a helper's answer.
+  await expect
+    .poll(() => closedByPage, { timeout: 60_000 })
+    .toBe(true);
+  // No retry storm: this connection never proved itself, so nothing reconnects on
+  // its own (only the user's Connect starts another socket).
+  await page.waitForTimeout(5_000);
+  expect(sockets).toHaveLength(1);
+});

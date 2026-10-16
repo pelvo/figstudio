@@ -32,9 +32,10 @@ export const post = (body = rpc) => new Request(endpoint, {
 
 export class Tab {
   constructor(order = 1) {
-    // A socket that already said `ready` (the shape `webSocketMessage` stores); tests
-    // that need the pre-ready shape set `attachment` explicitly.
-    this.attachment = { ready: true, order };
+    // A socket this deploy authenticated and that already said `ready` (the shape
+    // `webSocketMessage` stores after the `connect` proof); tests needing other shapes
+    // (pre-ready, legacy) set `attachment` explicitly.
+    this.attachment = { authenticatedProtocol: EXEC_PROTOCOL, ready: true, order };
     this.readyState = 1;
     this.sent = [];
   }

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  ROOM_DOMAIN, EXEC_PROTOCOL, deriveRoom, executorFromInput, checkBridgeUpgrade,
+  ROOM_DOMAIN, EXEC_PROTOCOL, deriveRoom, checkBridgeUpgrade,
 } from "../executor-auth.mjs";
 
 if (!globalThis.crypto) {
@@ -28,26 +28,6 @@ test("the derivation matches the shared vector", async () => {
   }
   assert.equal(ROOM_DOMAIN, "figstudio/room/v1");
   assert.equal(EXEC_PROTOCOL, "figstudio-exec-v1");
-});
-
-test("typed input accepts the executor or a matching link only", async () => {
-  const room = await deriveRoom(SEQUENCE.slice(3));
-  assert.deepEqual(await executorFromInput(SEQUENCE), { executor: SEQUENCE, room });
-  assert.deepEqual(await executorFromInput(`  ${SEQUENCE}  `), { executor: SEQUENCE, room });
-  assert.deepEqual(await executorFromInput(`https://relay.example/#room=${room}&exec=${SEQUENCE}`),
-    { executor: SEQUENCE, room });
-  // The caller capability alone — the MCP URL or a bare room — is not the executor.
-  for (const rejected of [
-    `https://relay.example/mcp/${room}`,
-    room,
-    `https://relay.example/#room=${room}`,
-    `https://relay.example/#room=${room}&exec=${ZEROS}`,
-    `wss://relay.example/bridge/${room}`,
-    `#room=${room}&exec=ex_short`,
-    "",
-  ]) {
-    assert.equal(await executorFromInput(rejected), null, rejected);
-  }
 });
 
 const upgrade = (path, overrides = {}) => new Request(`https://relay.example${path}`, {

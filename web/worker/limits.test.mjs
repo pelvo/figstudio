@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { endpoint, rpc, post, setup, forward, reply, errorResponse, upgrade, Tab } from "./test-support.mjs";
+import { EXEC_PROTOCOL } from "../executor-auth.mjs";
 
 test("bad JSON, batches and malformed messages are rejected before forwarding", async () => {
   const { room, tabs: [tab] } = setup();
@@ -149,6 +150,9 @@ test("upgrade accepts a tagged hibernating socket and makes it the newest execut
   assert.equal(response.status, 101);
   assert.equal(response.webSocket, client);
   assert.equal(ctx.getWebSockets("tab").at(-1), server);
+  // The proof marker is written only here, by the accepted connect; the socket is not
+  // an executor until it also says `ready`.
+  assert.deepEqual(server.attachment, { authenticatedProtocol: EXEC_PROTOCOL, ready: false, order: 1 });
   t.mock.restoreAll();
   // The accepted socket is not an executor until it says `ready`.
   await errorResponse(await room.fetch(post()), 503, 7);

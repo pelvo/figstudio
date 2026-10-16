@@ -9,6 +9,7 @@ use figstudio_mcp_core::bridge::{ClientMessage, PROTOCOL_VERSION, ServerMessage}
 use web_sys::WebSocket;
 use web_time::Instant;
 
+use crate::mcp_heartbeat::{Beat, Heartbeat, PONG_DEADLINE};
 use crate::mcp_join::{Link, RoomProposal, parse_link, proposed_pair};
 use crate::mcp_pair::ExecutorPair;
 use crate::mcp_state::{Key, key};
@@ -62,8 +63,9 @@ pub struct McpHost {
     proposal: Option<RoomProposal>,
     /// The `Use room token` field; applied by `Apply` in the menu.
     room_input: String,
-    /// When the last relay keepalive `ping` was sent (see `sync`).
-    last_ping: Option<Instant>,
+    /// Relay keepalive state: a ping's pong must come back within a deadline or the
+    /// connection is dropped (see `mcp_heartbeat.rs`).
+    heartbeat: Heartbeat<Instant>,
 }
 
 impl Default for McpHost {
@@ -106,7 +108,7 @@ impl Default for McpHost {
             link: link_cell,
             proposal,
             room_input: String::new(),
-            last_ping: None,
+            heartbeat: Heartbeat::fresh(0),
         }
     }
 }
@@ -165,7 +167,7 @@ impl McpHost {
         self.failed.clear();
         self.uploading = None;
         self.last_key = None;
-        self.last_ping = None;
+        self.heartbeat = Heartbeat::fresh(self.generation);
         self.shared.progress.set(None);
         self.shared.cancelled.borrow_mut().clear();
     }
@@ -223,14 +225,31 @@ impl McpHost {
                 let _ = ws.send_with_str(crate::mcp_wire::relay_ready());
                 self.last_key = Some(key);
             }
-            // Otherwise the relay socket can sit silent for a whole session: a NAT or
-            // proxy can drop it silently, and the status bar keeps saying connected until
-            // a call fails. The DO answers `ping` without waking, so the repaint cadence
-            // sends one — and the cadence stops with the connection (no timer to clean up).
-            ctx.request_repaint_after(crate::mcp_wire::PING_EVERY);
-            if crate::mcp_wire::ping_due(self.last_ping.map(|sent| sent.elapsed())) {
-                if ws.send_with_str("ping").is_ok() {
-                    self.last_ping = Some(Instant::now());
+            // Otherwise the relay socket can sit silent for a whole session while a NAT
+            // or proxy has already forgotten the flow, and a successful send only proves
+            // the browser buffered the bytes. The keepalive state machine runs the proof:
+            // a ping goes out, the DO's runtime answers `pong` without waking it, and no
+            // answer within the deadline drops the connection (see `mcp_heartbeat.rs`).
+            // `Beat::Wait` schedules the repaint for exactly the next decision — not a
+            // fixed cadence — so the deadline frame lands on time (or later, in a
+            // throttled background tab; never early).
+            let now = Instant::now();
+            let beat = self.heartbeat.tick(now);
+            match beat {
+                Beat::Wait(resume) => ctx.request_repaint_after(resume),
+                Beat::SendPing => match ws.send_with_str("ping") {
+                    Ok(()) => {
+                        self.heartbeat.ping_sent(now);
+                        ctx.request_repaint_after(PONG_DEADLINE);
+                    }
+                    // A refused send is the browser already giving up on the socket:
+                    // disconnect now, not after some later frame notices.
+                    Err(_) => self.relay_lost(ctx, "Cloud relay disconnected", false),
+                },
+                // One automatic retry per proven connection; a connection that never
+                // proved itself waits for the user (the storm bound).
+                Beat::Elapsed { proven } => {
+                    self.relay_lost(ctx, "Cloud relay stopped responding", proven)
                 }
             }
             return;
@@ -331,5 +350,19 @@ impl McpHost {
         self.conn = None;
         self.reset_link();
         self.shared.events.borrow_mut().clear();
+    }
+
+    /// The relay connection is dead from our side: drop it, say why, and retry once
+    /// when the connection had proven itself (`proven`); an unproven one waits for the
+    /// user, so a black-holed path can never produce a retry storm. The repaint makes
+    /// the next frame happen even on an otherwise idle page (it consumes `want_connect`
+    /// and shows the notice).
+    fn relay_lost(&mut self, ctx: &egui::Context, notice: &str, proven: bool) {
+        self.stop();
+        self.notices.push(notice.to_owned());
+        if proven {
+            self.want_connect = true;
+            ctx.request_repaint();
+        }
     }
 }

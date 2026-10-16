@@ -222,16 +222,92 @@ test("hibernated socket attachments preserve active order and ping auto-response
   await second.response;
 });
 
-test("a socket without a ready attachment is never the executor", async () => {
-  // Restored shapes: an attachment from before this protocol (no `ready` key) and a
-  // connected-but-not-ready socket. Neither receives calls until it says `ready`.
-  const stale = new Tab(9);
-  stale.attachment = { order: 9 };
+test("a socket stored by an earlier deploy is closed at restore and never regains the role", async () => {
+  // Attachments written before the authenticated marker existed: `{order}` (connected,
+  // never ready) and `{ready:true, order}` (accepted by a deploy where the room alone
+  // admitted the bridge — the old-socket hole). Restoring them closes both; a re-sent
+  // `ready` — with or without a client-claimed marker — promotes neither.
+  const legacy = [{ order: 9 }, { ready: true, order: 9 }].map((attachment, i) => {
+    const tab = new Tab(9 + i);
+    tab.attachment = attachment;
+    return tab;
+  });
+  const { room } = setup(legacy);
+  for (const tab of legacy) {
+    assert.equal(tab.readyState, 3, "the constructor closes a legacy socket");
+    assert.equal(tab.closeCode, 1008);
+  }
+  room.webSocketMessage(legacy[1], JSON.stringify({
+    type: "ready", protocol: 1, authenticatedProtocol: EXEC_PROTOCOL, auth: EXEC_PROTOCOL,
+  }));
+  await errorResponse(await room.fetch(post()), 503, 7);
+});
+
+test("an open socket without the authenticated marker never takes calls", async () => {
+  // Marker lost on an open socket (an earlier-deploy attachment, or a failed attachment
+  // write at accept): it looks newest-and-ready but must never be the executor.
+  const live = new Tab(1);
+  const { room, tabs } = setup([live]);
+  const unmarked = new Tab(3);
+  unmarked.attachment = { ready: true, order: 3 };
+  tabs.push(unmarked);
+  const delivered = new Promise((resolve) => { live.notify = resolve; });
+  const response = room.fetch(post());
+  const frame = await Promise.race([
+    delivered,
+    new Promise((resolve) => setTimeout(() => resolve(null), 250)),
+  ]);
+  assert.ok(frame, "the call must reach the authenticated tab, not the unmarked socket");
+  reply(room, live, frame);
+  assert.equal((await response).status, 200);
+});
+
+test("an unmarked socket's rpc_reply steals nothing", async () => {
+  const live = new Tab(1);
+  const { room, tabs } = setup([live]);
+  const unmarked = new Tab(3);
+  unmarked.attachment = { ready: true, order: 3 };
+  tabs.push(unmarked);
+  const delivered = new Promise((resolve) => { live.notify = resolve; });
+  const response = room.fetch(post());
+  const frame = await Promise.race([
+    delivered,
+    new Promise((resolve) => setTimeout(() => resolve(null), 250)),
+  ]);
+  assert.ok(frame, "the call must reach the authenticated tab");
+  let settled = false;
+  response.then(() => { settled = true; });
+  room.webSocketMessage(unmarked, JSON.stringify({
+    type: "rpc_reply", id: frame.id, status: 200,
+    body: { jsonrpc: "2.0", id: 7, result: { stolen: true } },
+  }));
+  await Promise.resolve();
+  assert.equal(settled, false, "an unmarked socket must not resolve a pending call");
+  assert.equal(unmarked.closeCode, 1008);
+  reply(room, live, frame);
+  assert.deepEqual(await (await response).json(), { jsonrpc: "2.0", id: 7, result: { ok: true } });
+});
+
+test("an unmarked socket is closed on its first frame and never promoted", async () => {
+  const { room, tabs } = setup([]);
+  const unmarked = new Tab(3);
+  unmarked.attachment = { ready: true, order: 3 };
+  tabs.push(unmarked);
+  room.webSocketMessage(unmarked, JSON.stringify({
+    type: "ready", protocol: 1, authenticatedProtocol: EXEC_PROTOCOL, auth: EXEC_PROTOCOL,
+  }));
+  assert.equal(unmarked.closeCode, 1008);
+  assert.equal(unmarked.attachment.ready, true, "`ready` must not be (re)granted");
+  await errorResponse(await room.fetch(post()), 503, 7);
+});
+
+test("an authenticated socket without a ready attachment waits for ready", async () => {
   const unready = new Tab(1);
-  unready.attachment = { ready: false, order: 1 };
-  const { room } = setup([stale, unready]);
+  unready.attachment = { authenticatedProtocol: EXEC_PROTOCOL, ready: false, order: 1 };
+  const { room } = setup([unready]);
   await errorResponse(await room.fetch(post()), 503, 7);
   room.webSocketMessage(unready, JSON.stringify({ type: "ready", protocol: 1 }));
+  assert.deepEqual(unready.attachment, { authenticatedProtocol: EXEC_PROTOCOL, ready: true, order: 2 });
   const { frame, response } = await forward(room, unready);
   reply(room, unready, frame);
   assert.equal((await response).status, 200);

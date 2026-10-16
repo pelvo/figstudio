@@ -18,6 +18,8 @@ mod gpu_tiles;
 mod gpu_tiles_web;
 mod labels;
 mod marquee;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod mcp_heartbeat;
 #[cfg_attr(
     all(not(feature = "mcp"), not(target_arch = "wasm32")),
     path = "mcp_off.rs"

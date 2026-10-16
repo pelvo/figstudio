@@ -1,7 +1,6 @@
 //! Pure helpers for the browser bridge client (`mcp_web.rs`): what the tab tells the local
 //! MCP process, and how it reads what comes back. No browser types, so native tests cover it.
 use std::collections::HashSet;
-use std::time::Duration;
 
 use figstudio_mcp_core::bridge::{ClientMessage, TabState, guid_string, parse_guid};
 
@@ -311,17 +310,6 @@ pub(crate) fn busy_reply(id: &str, rpc_id: &serde_json::Value) -> String {
         "body":{"jsonrpc":"2.0", "id":rpc_id,
             "error":{"code":-32000,"message":"Relay is busy; retry later"}}})
     .to_string()
-}
-
-/// Relay keepalive cadence: the socket is otherwise silent while no tools run, and a NAT
-/// or proxy can drop it silently (the status bar then still says connected). The tab
-/// pings; the DO's auto-response answers without waking (`web/worker.mjs`).
-pub(crate) const PING_EVERY: Duration = Duration::from_secs(30);
-
-/// Whether a relay keepalive `ping` is due, given the time since the last one (`None`
-/// right after connecting). Pure, so native tests pin the cadence.
-pub(crate) fn ping_due(elapsed_since_last: Option<Duration>) -> bool {
-    elapsed_since_last.is_none_or(|elapsed| elapsed >= PING_EVERY)
 }
 
 #[cfg(test)]
