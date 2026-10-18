@@ -199,3 +199,12 @@ fn loading_decides_between_use_upgrade_and_visible_failure() {
         Load::Corrupt
     ));
 }
+
+#[test]
+fn device_id_generation_and_validation_reject_all_zero_ids() {
+    let generated = random_hex_16().unwrap();
+    assert!(valid_device_id(&generated), "{generated}");
+    assert!(!valid_device_id("00000000000000000000000000000000"));
+    assert!(!valid_device_id("0123456789abcdef"));
+    assert!(!valid_device_id("0123456789ABCDEF0123456789abcdef"));
+}

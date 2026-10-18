@@ -83,6 +83,7 @@ pub enum Picked {
         entries: Vec<Entry>,
         eager: HashMap<String, Vec<u8>>,
         pick: u32,
+        doc_key: String,
     },
     Failed(String),
 }
@@ -346,12 +347,19 @@ async fn open_lazy(file: web_sys::File) -> Picked {
             Err(err) => return fail(err),
         }
     }
+    let head_len = len.min(crate::source::DOC_KEY_PREFIX_BYTES as u64);
+    let head = match read_range_max(&file, 0, head_len, crate::source::DOC_KEY_PREFIX_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(err) => return fail(err),
+    };
+    let doc_key = crate::source::doc_key_from_prefix(len, &head);
     Picked::Lazy {
         name,
         pick: pick_upload(&file),
         file: keep_file(file),
         entries,
         eager,
+        doc_key,
     }
 }
 

@@ -409,6 +409,7 @@ impl App {
                 Loaded::Ok {
                     path,
                     doc,
+                    doc_key,
                     source,
                     elapsed,
                     cjk,
@@ -428,7 +429,8 @@ impl App {
                     self.next_id += 1;
                     #[cfg(target_arch = "wasm32")]
                     web::bind_upload(&path, id);
-                    self.tabs.push(Tab::new(id, path, doc, source, elapsed));
+                    self.tabs
+                        .push(Tab::new(id, path, doc, source, elapsed).with_doc_key(doc_key));
                     self.active = self.tabs.len() - 1;
                 }
                 Loaded::Err { path, message } => {
@@ -548,13 +550,18 @@ impl App {
                     entries,
                     eager,
                     pick,
+                    doc_key,
                 } => {
                     // Made first: on a duplicate open, dropping it releases the `File`.
                     let source = self.web.source(file);
                     if self.loading.begin(&name) {
                         web::start_upload(&name, pick);
                         self.workers.decode(name, move || {
-                            Ok((web::decode_lazy(entries, eager)?, Some(source)))
+                            Ok((
+                                web::decode_lazy(entries, eager)?,
+                                Some(source),
+                                Some(doc_key),
+                            ))
                         });
                     } else {
                         web::discard_upload(pick);

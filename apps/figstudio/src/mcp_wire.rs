@@ -293,6 +293,30 @@ pub(crate) fn relay_ready() -> &'static str {
     r#"{"type":"ready","protocol":1}"#
 }
 
+fn sanitize_wire_text(input: &str, max_chars: usize) -> String {
+    input
+        .chars()
+        .map(|c| {
+            if matches!(c, '\r' | '\n' | '\t') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .filter(|&c| {
+            !c.is_control()
+                && !matches!(
+                    c,
+                    '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+                )
+        })
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(max_chars)
+        .collect()
+}
+
 /// Protocol 2 `ready` frame carrying the device identity, page instance, focus state,
 /// and open document summaries for multi-device session routing (`web/worker.mjs`).
 pub(crate) fn relay_ready_v2(
@@ -302,33 +326,34 @@ pub(crate) fn relay_ready_v2(
     focused: bool,
     tabs: &[Tab],
 ) -> String {
-    let keys = relay_keys(tabs);
     let docs: Vec<serde_json::Value> = tabs
         .iter()
-        .zip(keys)
         .take(32)
-        .map(|(tab, key)| {
-            let title = tab.title();
-            let name: String = title.chars().take(96).collect();
-            serde_json::json!({
+        .map(|tab| {
+            let name = sanitize_wire_text(&tab.title(), 96);
+            let mut entry = serde_json::json!({
                 "tab": tab.id,
                 "name": if name.is_empty() { "untitled".to_owned() } else { name },
-                "key": key,
                 "pages": tab.doc.pages.len(),
-            })
+            });
+            if let Some(key) = &tab.doc_key {
+                entry["key"] = serde_json::Value::String(key.clone());
+            }
+            entry
         })
         .collect();
-    let label = if device_label.trim().is_empty() {
-        "Browser tab"
+    let cleaned_label = sanitize_wire_text(device_label, 64);
+    let label = if cleaned_label.is_empty() {
+        "Browser tab".to_owned()
     } else {
-        device_label.trim()
+        cleaned_label
     };
     serde_json::json!({
         "type": "ready",
         "protocol": 2,
         "device": {
             "id": device_id,
-            "label": label.chars().take(64).collect::<String>(),
+            "label": label,
         },
         "instance": instance,
         "focused": focused,

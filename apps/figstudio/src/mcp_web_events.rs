@@ -32,12 +32,17 @@ impl McpHost {
             Event::Opened => {
                 let ws = self.conn.as_ref()?.ws.clone();
                 if self.relay {
+                    let (Some(device_id), Some(instance)) = (&self.device_id, &self.instance)
+                    else {
+                        self.stop();
+                        return Some("Could not generate a secure MCP device identity".to_owned());
+                    };
                     self.conn.as_mut()?.welcomed = true;
                     let focused = room::document_focused();
                     let frame = crate::mcp_wire::relay_ready_v2(
-                        &self.device_id,
+                        device_id,
                         &self.device_label,
-                        &self.instance,
+                        instance,
                         focused,
                         tabs,
                     );

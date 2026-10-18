@@ -77,6 +77,23 @@ pub(crate) fn valid_executor(token: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// 128-bit random lowercase hex (`32` hex characters) from OS/browser entropy.
+/// Never falls back to zeros when the RNG fails.
+pub(crate) fn random_hex_16() -> Result<String, getrandom::Error> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)?;
+    Ok(hex(&bytes))
+}
+
+/// A stored device id is valid only when it is 32 lowercase hex characters and not all zeros.
+pub(crate) fn valid_device_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && id.bytes().any(|b| b != b'0')
+}
+
 /// The `#room=` and `#exec=` keys together: both present, both valid, and the room must
 /// be the one derived from that executor. Anything else is not a proposal.
 pub(crate) fn pair_from_fragment(fragment: &str) -> Option<ExecutorPair> {

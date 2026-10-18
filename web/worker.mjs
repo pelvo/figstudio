@@ -9,7 +9,9 @@ const MAX_DOCS = 32;
 const MAX_DOC_NAME = 96;
 const MAX_LABEL = 64;
 const MAX_ID = 64;
+const MAX_MCP_SESSIONS = 64;
 const AMBIGUOUS_SESSION_CODE = -32002;
+const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 const encoder = new TextEncoder();
 const owns = (body, key) => Object.hasOwn(body, key);
 const object = (body) => body !== null && typeof body === "object" && !Array.isArray(body);
@@ -34,7 +36,7 @@ export const RELAY_TOOLS = [
       properties: {
         session: {
           type: "string",
-          description: "Session id from `list_sessions` (e.g. `s_a1b2c3d4`), or `\"\"` to clear.",
+          description: "Session id from `list_sessions` (e.g. `s_a1b2c3d4e5f60718`), or `\"\"` to clear.",
         },
       },
       required: ["session"],
@@ -43,14 +45,15 @@ export const RELAY_TOOLS = [
   },
 ];
 
-function rpcError(status, id, code, message, data = undefined) {
+function rpcError(status, id, code, message, data = undefined, headers = undefined) {
   const error = data === undefined ? { code, message } : { code, message, data };
-  return Response.json({ jsonrpc: "2.0", id, error }, { status });
+  const init = headers ? { status, headers } : { status };
+  return Response.json({ jsonrpc: "2.0", id, error }, init);
 }
 
 function cleanStr(val, maxLen) {
   if (typeof val !== "string") return "";
-  return val.trim().slice(0, maxLen);
+  return val.replace(/[\r\n\t]+/g, " ").replace(UNSAFE_CHARS, "").trim().slice(0, maxLen);
 }
 
 function sanitizeDocs(rawDocs) {
@@ -70,19 +73,67 @@ function sanitizeDocs(rawDocs) {
   return out;
 }
 
-// Fast, deterministic 8-hex session hash (FNV-1a 32-bit + mix) so `webSocketMessage` stays
-// synchronous while producing a stable `s_<8 hex>` identifier from `(device.id, instance)`.
-export function deriveSessionId(deviceId, instance) {
-  const input = `${deviceId}\0${instance}`;
-  let h1 = 0x811c9dc5;
-  let h2 = 0x01000193;
-  for (let i = 0; i < input.length; i++) {
-    const c = input.charCodeAt(i);
-    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
-    h2 = Math.imul(h2 ^ (c + i), 0x85ebca6b) >>> 0;
+const SHA256_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+function rotr(x, n) {
+  return (x >>> n) | (x << (32 - n));
+}
+
+// Synchronous SHA-256 hex digest so `webSocketMessage` stays synchronous while deriving
+// collision-resistant session identifiers.
+export function sha256Hex(text) {
+  const bytes = encoder.encode(text);
+  const bitLen = bytes.length * 8;
+  const totalLen = (((bytes.length + 8) >> 6) + 1) << 6;
+  const padded = new Uint8Array(totalLen);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(totalLen - 8, Math.floor(bitLen / 0x100000000), false);
+  view.setUint32(totalLen - 4, bitLen >>> 0, false);
+
+  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+  let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+  const w = new Uint32Array(64);
+
+  for (let offset = 0; offset < totalLen; offset += 64) {
+    for (let i = 0; i < 16; i++) w[i] = view.getUint32(offset + i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + S1 + ch + SHA256_K[i] + w[i]) >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + temp1) >>> 0;
+      d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;
   }
-  const mixed = ((h1 ^ (h2 >>> 13)) >>> 0).toString(16).padStart(8, "0");
-  return `s_${mixed}`;
+  return [h0, h1, h2, h3, h4, h5, h6, h7]
+    .map((n) => n.toString(16).padStart(8, "0"))
+    .join("");
+}
+
+// 128-bit SHA-256 session identifier (`s_<32 hex>`) derived from `(device.id, instance)`.
+export function deriveSessionId(deviceId, instance) {
+  return `s_${sha256Hex(`figstudio/session/v1\0${deviceId}\0${instance}`).slice(0, 32)}`;
 }
 
 function parseReadyV2(reply, order) {
@@ -159,7 +210,11 @@ export class McpRoom {
   constructor(ctx) {
     this.ctx = ctx;
     this.pending = new Map();
-    this.sticky = new Map();
+    // Server-issued `Mcp-Session-Id` -> pinned figstudio session (`string | null`),
+    // capped at MAX_MCP_SESSIONS (LRU). Client-supplied ids that were not minted on
+    // `initialize` are ignored.
+    this.mcpSessions = new Map();
+    this.nativeSessionTools = new Set();
     // No storage: a hard eviction tears down the isolate with its timers and pending
     // map, so those callers' connections drop (they see no 504 from this deadline); the
     // 30 s deadline bounds only the requests that survive in this isolate.
@@ -179,6 +234,25 @@ export class McpRoom {
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
+  mintMcpSession() {
+    const id = crypto.randomUUID();
+    if (this.mcpSessions.size >= MAX_MCP_SESSIONS) {
+      const oldest = this.mcpSessions.keys().next().value;
+      if (oldest !== undefined) this.mcpSessions.delete(oldest);
+    }
+    this.mcpSessions.set(id, null);
+    return id;
+  }
+
+  resolveMcpSession(request) {
+    const raw = request.headers.get("Mcp-Session-Id")?.trim() ?? "";
+    if (!raw || !this.mcpSessions.has(raw)) return null;
+    const pinned = this.mcpSessions.get(raw);
+    this.mcpSessions.delete(raw);
+    this.mcpSessions.set(raw, pinned);
+    return raw;
+  }
+
   readyTabs() {
     // Only sockets this deploy authenticated (the marker) that also said `ready`: a
     // connected-but-silent client (or any socket restored without the marker, such as
@@ -196,20 +270,32 @@ export class McpRoom {
     return this.readyTabs()[0];
   }
 
+  deviceKey(ws, index = 0) {
+    const att = ws.deserializeAttachment() ?? {};
+    if (typeof att.deviceId === "string" && att.deviceId.length > 0) {
+      return `v2:${att.deviceId}`;
+    }
+    // Each protocol-1 socket gets its own device key so two legacy machines trigger rule 4.
+    const baseOrder = att.firstOrder ?? att.order ?? 0;
+    return `v1:${baseOrder}:${index}`;
+  }
+
   sessionSummary(ws, now = Date.now()) {
     const att = ws.deserializeAttachment() ?? {};
-    const order = att.order ?? 0;
-    const session = att.sessionId ?? `s_v1_${order}`;
-    const deviceId = att.deviceId ?? "";
+    const baseOrder = att.firstOrder ?? att.order ?? 0;
+    const session = att.sessionId ?? deriveSessionId("v1", String(baseOrder));
     const deviceLabel = att.deviceLabel ?? "Browser tab";
     const focused = att.focused === true;
     const docs = Array.isArray(att.docs) ? att.docs : [];
     const secondsSinceReady = typeof att.readyAt === "number"
       ? Math.max(0, Math.round((now - att.readyAt) / 1000))
       : null;
+    // Never publish `device.id` in `list_sessions` or `error.data`: until per-device
+    // credentials exist, a published `device.id` would let another executor in the room
+    // copy it and join the same device group.
     return {
       session,
-      device: { id: deviceId || "legacy", label: deviceLabel },
+      device: { label: deviceLabel },
       focused,
       docs,
       secondsSinceReady,
@@ -220,7 +306,7 @@ export class McpRoom {
     const now = Date.now();
     const ready = this.readyTabs();
     const openCount = this.ctx.getWebSockets("tab").filter((ws) => ws.readyState === 1).length;
-    const sticky = this.sticky.get(callerKey) ?? null;
+    const sticky = callerKey ? (this.mcpSessions.get(callerKey) ?? null) : null;
     return {
       sessions: ready.map((ws) => this.sessionSummary(ws, now)),
       selectedSession: sticky,
@@ -231,16 +317,21 @@ export class McpRoom {
 
   resolveToolTarget(body, callerKey) {
     const ready = this.readyTabs();
+    const headers = callerKey ? { "Mcp-Session-Id": callerKey } : undefined;
     if (ready.length === 0) {
-      return { error: rpcError(503, body.id, -32000, "No browser tab connected") };
+      return { error: rpcError(503, body.id, -32000, "No browser tab connected", undefined, headers) };
     }
+    const toolName = body.params?.name;
+    const isNativeSessionTool = typeof toolName === "string" && this.nativeSessionTools.has(toolName);
     const args = object(body.params?.arguments) ? body.params.arguments : null;
-    const explicitSession = args && typeof args.session === "string" ? args.session.trim() : "";
+    const explicitSession = !isNativeSessionTool && args && typeof args.session === "string"
+      ? args.session.trim()
+      : "";
 
     // Rule 1: explicit `arguments.session`
     if (explicitSession) {
-      const match = ready.find((ws) => this.sessionSummary(ws).session === explicitSession);
-      if (!match) {
+      const matches = ready.filter((ws) => this.sessionSummary(ws).session === explicitSession);
+      if (matches.length === 0) {
         const data = this.listSessionsPayload(callerKey);
         return {
           error: rpcError(
@@ -249,6 +340,20 @@ export class McpRoom {
             AMBIGUOUS_SESSION_CODE,
             `Session '${explicitSession}' is not connected; choose one of the live sessions`,
             data,
+            headers,
+          ),
+        };
+      }
+      if (matches.length > 1) {
+        const data = this.listSessionsPayload(callerKey);
+        return {
+          error: rpcError(
+            200,
+            body.id,
+            AMBIGUOUS_SESSION_CODE,
+            `Session '${explicitSession}' matches multiple executors; cannot route unambiguously`,
+            data,
+            headers,
           ),
         };
       }
@@ -258,25 +363,54 @@ export class McpRoom {
         ...body,
         params: { ...body.params, arguments: nextArgs },
       };
-      return { tab: match, body: forwardedBody };
+      return { tab: matches[0], body: forwardedBody };
     }
 
-    // Rule 2: sticky choice for this caller
-    const stickySession = this.sticky.get(callerKey);
+    // Rule 2: sticky choice for this caller (`Mcp-Session-Id` issued on `initialize`)
+    const stickySession = callerKey ? this.mcpSessions.get(callerKey) : null;
     if (stickySession) {
-      const match = ready.find((ws) => this.sessionSummary(ws).session === stickySession);
-      if (match) return { tab: match, body };
-      this.sticky.delete(callerKey);
+      const matches = ready.filter((ws) => this.sessionSummary(ws).session === stickySession);
+      if (matches.length === 1) return { tab: matches[0], body };
+      if (matches.length > 1) {
+        const data = this.listSessionsPayload(callerKey);
+        return {
+          error: rpcError(
+            200,
+            body.id,
+            AMBIGUOUS_SESSION_CODE,
+            `Pinned session '${stickySession}' matches multiple executors; cannot route unambiguously`,
+            data,
+            headers,
+          ),
+        };
+      }
+      // Do not fall through to another device when a pinned session disconnects.
+      const data = this.listSessionsPayload(callerKey);
+      return {
+        error: rpcError(
+          200,
+          body.id,
+          AMBIGUOUS_SESSION_CODE,
+          `Pinned session '${stickySession}' is no longer connected; call \`select_session\` or pass \`session\``,
+          data,
+          headers,
+        ),
+      };
     }
 
-    // Rule 3: if all ready sessions belong to a single device, pick its focused or newest tab
-    const devices = new Set(ready.map((ws) => ws.deserializeAttachment()?.deviceId ?? ""));
+    // Rule 3: if all ready sessions belong to a single device, pick its focused or newest tab,
+    // unless two live sockets collide on the same session id or assert conflicting focus/labels.
+    const devices = new Set(ready.map((ws, idx) => this.deviceKey(ws, idx)));
     if (devices.size <= 1) {
-      const focusedTab = ready.find((ws) => ws.deserializeAttachment()?.focused === true);
-      return { tab: focusedTab ?? ready[0], body };
+      const sessionIds = new Set(ready.map((ws) => this.sessionSummary(ws).session));
+      const labels = new Set(ready.map((ws) => ws.deserializeAttachment()?.deviceLabel ?? "Browser tab"));
+      const focusedTabs = ready.filter((ws) => ws.deserializeAttachment()?.focused === true);
+      if (sessionIds.size === ready.length && labels.size <= 1 && focusedTabs.length <= 1) {
+        return { tab: focusedTabs[0] ?? ready[0], body };
+      }
     }
 
-    // Rule 4: sessions on multiple devices without a choice -> -32002 with candidate list
+    // Rule 4: sessions on multiple devices (or conflicting claims) without a choice -> -32002
     const data = this.listSessionsPayload(callerKey);
     return {
       error: rpcError(
@@ -285,12 +419,15 @@ export class McpRoom {
         AMBIGUOUS_SESSION_CODE,
         "Several figstudio sessions are connected across devices; pass `session` or call `select_session`",
         data,
+        headers,
       ),
     };
   }
 
   handleRelayTool(body, callerKey) {
     const name = body.params?.name;
+    const headers = callerKey ? { "Mcp-Session-Id": callerKey } : undefined;
+    const init = headers ? { headers } : undefined;
     if (name === "list_sessions") {
       const payload = this.listSessionsPayload(callerKey);
       return Response.json({
@@ -300,16 +437,29 @@ export class McpRoom {
           content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
           structuredContent: payload,
         },
-      });
+      }, init);
     }
     if (name === "select_session") {
       const args = object(body.params?.arguments) ? body.params.arguments : {};
       if (typeof args.session !== "string") {
-        return rpcError(400, body.id, -32602, "`select_session` requires a string `session` argument");
+        return rpcError(400, body.id, -32602, "`select_session` requires a string `session` argument", undefined, headers);
+      }
+      if (!callerKey) {
+        return Response.json({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            isError: true,
+            content: [{
+              type: "text",
+              text: "No server-issued `Mcp-Session-Id` header on this request; call `initialize` first or pass `session` on each tool call.",
+            }],
+          },
+        });
       }
       const target = args.session.trim();
       if (!target) {
-        this.sticky.delete(callerKey);
+        this.mcpSessions.set(callerKey, null);
         const payload = this.listSessionsPayload(callerKey);
         return Response.json({
           jsonrpc: "2.0",
@@ -317,10 +467,10 @@ export class McpRoom {
           result: {
             content: [{ type: "text", text: JSON.stringify({ cleared: true, ...payload }, null, 2) }],
           },
-        });
+        }, init);
       }
-      const match = this.readyTabs().find((ws) => this.sessionSummary(ws).session === target);
-      if (!match) {
+      const matches = this.readyTabs().filter((ws) => this.sessionSummary(ws).session === target);
+      if (matches.length === 0) {
         const payload = this.listSessionsPayload(callerKey);
         return Response.json({
           jsonrpc: "2.0",
@@ -332,17 +482,31 @@ export class McpRoom {
               text: `Session '${target}' is not connected. Live sessions: ${JSON.stringify(payload.sessions)}`,
             }],
           },
-        });
+        }, init);
       }
-      this.sticky.set(callerKey, target);
-      const chosen = this.sessionSummary(match);
+      if (matches.length > 1) {
+        const payload = this.listSessionsPayload(callerKey);
+        return Response.json({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            isError: true,
+            content: [{
+              type: "text",
+              text: `Session '${target}' matches multiple executors; cannot pin an ambiguous session. Live sessions: ${JSON.stringify(payload.sessions)}`,
+            }],
+          },
+        }, init);
+      }
+      this.mcpSessions.set(callerKey, target);
+      const chosen = this.sessionSummary(matches[0]);
       return Response.json({
         jsonrpc: "2.0",
         id: body.id,
         result: {
           content: [{ type: "text", text: JSON.stringify({ selected: chosen }, null, 2) }],
         },
-      });
+      }, init);
     }
     return null;
   }
@@ -382,7 +546,8 @@ export class McpRoom {
     }
     if (!owns(body, "id")) return new Response(null, { status: 202 });
 
-    const callerKey = request.headers.get("Mcp-Session-Id")?.trim() || "default";
+    const callerKey = this.resolveMcpSession(request);
+    const headers = callerKey ? { "Mcp-Session-Id": callerKey } : undefined;
 
     if (body.method === "tools/call") {
       const localReply = this.handleRelayTool(body, callerKey);
@@ -400,21 +565,24 @@ export class McpRoom {
       tab = this.activeTab();
       if (!tab) {
         if (body.method === "tools/list") {
-          return Response.json({ jsonrpc: "2.0", id: body.id, result: { tools: RELAY_TOOLS } });
+          return Response.json(
+            { jsonrpc: "2.0", id: body.id, result: { tools: RELAY_TOOLS } },
+            headers ? { headers } : undefined,
+          );
         }
-        return rpcError(503, body.id, -32000, "No browser tab connected");
+        return rpcError(503, body.id, -32000, "No browser tab connected", undefined, headers);
       }
     }
 
     if (this.pending.size >= 128) {
-      return rpcError(503, body.id, -32000, "Relay is busy; retry later");
+      return rpcError(503, body.id, -32000, "Relay is busy; retry later", undefined, headers);
     }
     const id = crypto.randomUUID();
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        this.finish(id, rpcError(504, body.id, -32000, "Browser tab timed out"));
+        this.finish(id, rpcError(504, body.id, -32000, "Browser tab timed out", undefined, headers));
       }, 30_000);
-      this.pending.set(id, { tab, rpcId: body.id, method: body.method, timer, resolve });
+      this.pending.set(id, { tab, rpcId: body.id, method: body.method, callerKey, timer, resolve });
       try {
         tab.send(JSON.stringify({ type: "rpc", id, body: forwardBody }));
       } catch {
@@ -470,7 +638,11 @@ export class McpRoom {
       const augmented = body.result.tools.map((tool) => {
         if (!object(tool) || !object(tool.inputSchema)) return tool;
         const props = object(tool.inputSchema.properties) ? tool.inputSchema.properties : {};
-        if (owns(props, "session")) return tool;
+        if (owns(props, "session")) {
+          if (typeof tool.name === "string") this.nativeSessionTools.add(tool.name);
+          return tool;
+        }
+        if (typeof tool.name === "string") this.nativeSessionTools.delete(tool.name);
         return {
           ...tool,
           inputSchema: {
@@ -485,21 +657,19 @@ export class McpRoom {
       return { ...body, result: { ...body.result, tools: augmented } };
     }
     if (entry.method === "tools/call") {
-      const att = tab.deserializeAttachment() ?? {};
-      if (att.sessionId) {
-        const prevMeta = object(body.result._meta) ? body.result._meta : {};
-        return {
-          ...body,
-          result: {
-            ...body.result,
-            _meta: {
-              ...prevMeta,
-              "figstudio/session": att.sessionId,
-              "figstudio/device": att.deviceLabel ?? "Browser tab",
-            },
+      const summary = this.sessionSummary(tab);
+      const prevMeta = object(body.result._meta) ? body.result._meta : {};
+      return {
+        ...body,
+        result: {
+          ...body.result,
+          _meta: {
+            ...prevMeta,
+            "figstudio/session": summary.session,
+            "figstudio/device": summary.device.label,
           },
-        };
-      }
+        },
+      };
     }
     return body;
   }
@@ -509,7 +679,8 @@ export class McpRoom {
     // or without a client-claimed `auth` field) never grants or restores it. This also
     // covers any unmarked attachment that escaped the constructor's close (defense in
     // depth): the socket is closed and its pending calls failed, not promoted.
-    if (tab.deserializeAttachment()?.authenticatedProtocol !== EXEC_PROTOCOL) {
+    const prev = tab.deserializeAttachment();
+    if (prev?.authenticatedProtocol !== EXEC_PROTOCOL) {
       this.failTab(tab);
       try { tab.close(1008, "Reconnect to re-authenticate"); } catch { /* already closing */ }
       return;
@@ -528,8 +699,26 @@ export class McpRoom {
     try { reply = JSON.parse(message); } catch { return; }
     if (!object(reply)) return;
     if (reply.type === "ready" && reply.protocol === 1) {
-      // Keep the proof marker: `ready` only flips readiness and bumps the order.
-      tab.serializeAttachment({ authenticatedProtocol: EXEC_PROTOCOL, ready: true, order: ++this.order });
+      const order = ++this.order;
+      if (prev.ready === true) {
+        const candidate = prev.firstOrder ?? prev.order ?? order;
+        const collides = this.ctx.getWebSockets("tab").some((other) => {
+          if (other === tab) return false;
+          const otherAtt = other.deserializeAttachment();
+          return (otherAtt?.firstOrder ?? otherAtt?.order) === candidate;
+        });
+        const firstOrder = collides ? order : candidate;
+        tab.serializeAttachment({
+          authenticatedProtocol: EXEC_PROTOCOL,
+          ready: true,
+          order,
+          firstOrder,
+          sessionId: prev.sessionId ?? deriveSessionId("v1", String(firstOrder)),
+        });
+      } else {
+        // First `ready` on a newly connected socket keeps the minimal attachment shape.
+        tab.serializeAttachment({ authenticatedProtocol: EXEC_PROTOCOL, ready: true, order });
+      }
       return;
     }
     if (reply.type === "ready" && reply.protocol === 2) {
@@ -567,7 +756,14 @@ export class McpRoom {
       return;
     }
     const decorated = this.decorateReply(tab, entry, reply.body);
-    this.finish(reply.id, Response.json(decorated, { status }));
+    let sessionHeader = entry.callerKey;
+    if (entry.method === "initialize" && status === 200 && owns(decorated, "result")) {
+      sessionHeader = this.mintMcpSession();
+    }
+    const init = sessionHeader
+      ? { status, headers: { "Mcp-Session-Id": sessionHeader } }
+      : { status };
+    this.finish(reply.id, Response.json(decorated, init));
   }
 
   // One oversized rpc_reply fails only its matching call (the tab should have replaced it;

@@ -8,21 +8,11 @@ const LEGACY_KEY: &str = "figstudio.mcp.room";
 const DEVICE_ID_KEY: &str = "figstudio.mcp.device.v1";
 const DEVICE_LABEL_KEY: &str = "figstudio.mcp.device_label.v1";
 
-pub(super) struct DeviceIdentity {
-    pub id: String,
+pub(super) struct DeviceLoad {
+    pub id: Option<String>,
     pub label: String,
-    pub instance: String,
-}
-
-fn random_hex_16() -> String {
-    let mut bytes = [0u8; 16];
-    let _ = getrandom::fill(&mut bytes);
-    let mut out = String::with_capacity(32);
-    for b in bytes {
-        use std::fmt::Write;
-        let _ = write!(&mut out, "{b:02x}");
-    }
-    out
+    pub instance: Option<String>,
+    pub notices: Vec<String>,
 }
 
 fn default_device_label() -> String {
@@ -52,35 +42,48 @@ fn default_device_label() -> String {
     format!("{os} · {browser}")
 }
 
-pub(super) fn load_device() -> DeviceIdentity {
+pub(super) fn load_device() -> DeviceLoad {
     let store = web_sys::window().and_then(|w| w.local_storage().ok().flatten());
-    let valid_hex = |s: &str| {
-        s.len() == 32
-            && s.bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    };
+    let mut notices = Vec::new();
     let existing_id = store
         .as_ref()
         .and_then(|s| s.get_item(DEVICE_ID_KEY).ok().flatten())
-        .filter(|s| valid_hex(s));
-    let id = existing_id.unwrap_or_else(|| {
-        let fresh = random_hex_16();
-        if let Some(s) = &store {
-            let _ = s.set_item(DEVICE_ID_KEY, &fresh);
-        }
-        fresh
-    });
+        .filter(|s| mcp_pair::valid_device_id(s));
+    let id = match existing_id {
+        Some(saved) => Some(saved),
+        None => match mcp_pair::random_hex_16() {
+            Ok(fresh) => {
+                if let Some(s) = &store {
+                    let _ = s.set_item(DEVICE_ID_KEY, &fresh);
+                }
+                Some(fresh)
+            }
+            Err(_) => {
+                notices.push("Could not generate a secure MCP device identity".to_owned());
+                None
+            }
+        },
+    };
     let label = store
         .as_ref()
         .and_then(|s| s.get_item(DEVICE_LABEL_KEY).ok().flatten())
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(default_device_label);
-    let instance = random_hex_16()[..16].to_owned();
-    DeviceIdentity {
+    let instance = match mcp_pair::random_hex_16() {
+        Ok(fresh) => Some(fresh[..16].to_owned()),
+        Err(_) => {
+            if notices.is_empty() {
+                notices.push("Could not generate a secure MCP device identity".to_owned());
+            }
+            None
+        }
+    };
+    DeviceLoad {
         id,
         label,
         instance,
+        notices,
     }
 }
 
