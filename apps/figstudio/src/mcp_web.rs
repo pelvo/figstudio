@@ -61,6 +61,8 @@ pub struct McpHost {
     link: Rc<RefCell<Option<Link>>>,
     /// A linked room waiting for the user's answer; never saved or connected before it.
     proposal: Option<RoomProposal>,
+    /// Local `--browser-proxy` target (`ws://127.0.0.1:<port>/bridge` with Wasm RPC).
+    proxy: Option<crate::mcp_join::ProxyTarget>,
     /// The `Use room token` field; applied by `Apply` in the menu.
     room_input: String,
     /// Persistent device identifier (`figstudio.mcp.device.v1`); `None` if entropy failed.
@@ -93,14 +95,19 @@ impl Default for McpHost {
         let device = room::load_device();
         notices.extend(device.notices);
         // A link names a room to propose, not to use; the pair above stays this tab's own.
-        let proposal =
-            proposed_pair(link.pair, link.token.is_some(), pair.as_ref()).map(RoomProposal::new);
+        let proposal = proposed_pair(
+            link.pair,
+            link.token.is_some() || link.proxy.is_some(),
+            pair.as_ref(),
+        )
+        .map(RoomProposal::new);
         let relay = link.token.is_none()
             && device.id.is_some()
             && device.instance.is_some()
-            && pair
-                .as_ref()
-                .is_some_and(|p| room::urls(&p.room()).is_some());
+            && (link.proxy.is_some()
+                || pair
+                    .as_ref()
+                    .is_some_and(|p| room::urls(&p.room()).is_some()));
         Self {
             relay,
             pair,
@@ -119,6 +126,7 @@ impl Default for McpHost {
             notices,
             link: link_cell,
             proposal,
+            proxy: link.proxy,
             room_input: String::new(),
             device_id: device.id,
             device_label: device.label,
@@ -208,10 +216,17 @@ impl McpHost {
                 .as_deref()
                 .filter(|token| *token != self.token)
                 .is_some();
-            if let Some(token) = change.token.filter(|token| *token != self.token) {
+            if let Some(proxy) = change.proxy {
+                self.conn = None;
+                self.proxy = Some(proxy);
+                self.relay = true;
+                self.want_connect = true;
+                self.proposal = None;
+            } else if let Some(token) = change.token.filter(|token| *token != self.token) {
                 // A fresh `#mcp=` pairing (say, a new `figstudio-mcp --bridge` run) moves
                 // this tab to the local bridge; a pending link is dropped.
                 self.conn = None;
+                self.proxy = None;
                 self.token = token;
                 self.relay = false;
                 self.want_connect = true;
@@ -344,7 +359,7 @@ impl McpHost {
         if !self.relay && self.token.is_empty() {
             return Err("Enter the pairing token printed by figstudio-mcp --bridge".to_owned());
         }
-        if self.relay && self.pair.is_none() {
+        if self.relay && self.proxy.is_none() && self.pair.is_none() {
             return Err("No MCP executor token yet; Apply one or Regenerate".to_owned());
         }
         if self.relay && (self.device_id.is_none() || self.instance.is_none()) {
@@ -353,21 +368,22 @@ impl McpHost {
         self.generation = self.generation.wrapping_add(1);
         self.reset_link();
         self.shared.events.borrow_mut().clear();
-        let url = if self.relay {
-            let pair = self
-                .pair
-                .as_ref()
-                .ok_or_else(|| "No MCP executor token".to_owned())?;
-            room::urls(&pair.room())
-                .ok_or_else(|| "Cloud relay needs an HTTP(S) page".to_owned())?
-                .0
+        let (url, protocols) = if self.relay {
+            if let Some(proxy) = &self.proxy {
+                (proxy.ws_url(), Some(proxy.subprotocols()))
+            } else {
+                let pair = self
+                    .pair
+                    .as_ref()
+                    .ok_or_else(|| "No MCP executor token".to_owned())?;
+                let ws_url = room::urls(&pair.room())
+                    .ok_or_else(|| "Cloud relay needs an HTTP(S) page".to_owned())?
+                    .0;
+                (ws_url, Some(pair.subprotocols()))
+            }
         } else {
-            self.url.clone()
+            (self.url.clone(), None)
         };
-        let protocols = self
-            .relay
-            .then(|| self.pair.as_ref().map(|pair| pair.subprotocols()))
-            .flatten();
         self.conn = Some(Conn::open(
             &url,
             protocols,

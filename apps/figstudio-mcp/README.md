@@ -89,6 +89,26 @@ Not verified: whether Safari or a newer Chrome blocks an `https://` page opening
 `ws://127.0.0.1` (mixed content / Local Network Access prompt). If your browser blocks it,
 use the local `--serve` build over `http://127.0.0.1:8765`.
 
+### In the browser (local zero-upload proxy, `--browser-proxy`)
+
+When your coding agent and browser run on the same computer, `--browser-proxy` combines the
+zero-upload Wasm RPC executor with a local `stdio` (or `--http`) proxy inspired by
+`googlecolab/colab-mcp` — no `.fig` upload, no Cloudflare Access bypass, and no manual
+token pasting:
+
+```sh
+claude mcp add figstudio -- /path/to/figstudio-mcp --browser-proxy --origin https://<your-deploy-domain>
+```
+
+- `figstudio-mcp --browser-proxy` speaks `stdio` to the agent (or Streamable HTTP when
+  `--http` is passed), binds `ws://127.0.0.1:<port>/bridge` (trying `3845..=3855` first,
+  then an ephemeral port), and mints a 256-bit process token.
+- When the agent calls `open_figstudio_browser`, the proxy opens
+  `https://<your-deploy-domain>/#mcpProxyPort=<port>&mcpProxyToken=<token>` in your default
+  browser (already signed into Access), strips the `#fragment` immediately, and waits up to
+  60 s for the tab's `ready` v2 frame before emitting `notifications/tools/list_changed`.
+- `list_sessions` and `select_session` work identically when multiple tabs connect.
+
 ### In the browser (cloud relay and multi-device sessions)
 
 When deployed behind the Cloudflare Worker (`web/worker.mjs` with the `McpRoom` Durable
@@ -323,7 +343,8 @@ renderer), so the browser MCP build does not register them.
 | `get_selection` *(app only)* | `fileKey?` | `{fileKey, tabId, page, node: {nodeId, name, kind, bounds: {x, y, width, height}}}`, or `node: null` | The selected node of a tab (default the active tab). Bounds are in page units. |
 | `reveal_node` *(app only)* | `nodeId` (or a link), `fileKey?` | One line: the node is revealed in tab N | Selects the node in the app; the tab becomes active and the view fits the node. An instance path reveals its outer instance and says so. Waits 5 s for the app; then the error "the app did not respond" (a minimised window may not run frames, so the reveal can time out). |
 | `list_sessions` *(cloud relay only)* | none | `{sessions: [{session, device: {label}, focused, docs: [{tab, name, fileKey, key, pages}], secondsSinceReady}], selectedSession, socketsInUse, socketCap}` | Answered by the relay Durable Object even when no tab is connected. `docs[].fileKey` is the tool `fileKey` argument; `docs[].key` is the first 16 hex of SHA-256 over the 8-byte little-endian file size and first 4 MiB. `device.id` is never exposed. |
-| `select_session` *(cloud relay only)* | `session` (`s_…` or `""` to clear) | `{selected: <sessionSummary>}` or `{cleared: true, ...}` | Pins a target session in memory for subsequent tool calls from this MCP client (keyed by the `Mcp-Session-Id` header issued on `initialize`, capped at 64 clients). If the pinned tab disconnects, subsequent calls return `-32002`; if the isolate restarts or evicts the `Mcp-Session-Id`, requests carrying the stale header return HTTP 404 (`-32002`) so the client re-initializes instead of falling through to another device. |
+| `select_session` *(cloud relay / browser proxy)* | `session` (`s_…` or `""` to clear) | `{selected: <sessionSummary>}` or `{cleared: true, ...}` | Pins a target session in memory for subsequent tool calls from this MCP client (keyed by the `Mcp-Session-Id` header issued on `initialize`, capped at 64 clients). If the pinned tab disconnects, subsequent calls return `-32002`; if the isolate restarts or evicts the `Mcp-Session-Id`, requests carrying the stale header return HTTP 404 (`-32002`) so the client re-initializes instead of falling through to another device. |
+| `open_figstudio_browser` *(`--browser-proxy` only)* | `timeoutSeconds?` (1–120, default 60) | `{connected, launched, sessions}` | Opens `<origin>/#mcpProxyPort=<port>&mcpProxyToken=<token>` in the system browser if no tab is connected yet and waits for the tab to send `ready` v2. |
 
 ### Comparing versions
 

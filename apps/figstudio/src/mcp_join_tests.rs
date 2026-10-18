@@ -27,6 +27,7 @@ fn a_link_parses_token_pair_and_the_strip_together() {
         Link {
             token: Some("pair".to_owned()),
             pair: Some(a.clone()),
+            proxy: None,
             stripped: Some("#mcp=pair".to_owned()),
         }
     );
@@ -35,6 +36,7 @@ fn a_link_parses_token_pair_and_the_strip_together() {
         Link {
             token: None,
             pair: Some(a),
+            proxy: None,
             stripped: Some(String::new()),
         }
     );
@@ -50,6 +52,7 @@ fn a_link_parses_token_pair_and_the_strip_together() {
             Link {
                 token: None,
                 pair: None,
+                proxy: None,
                 stripped: Some(String::new()),
             },
             "{fragment}"
@@ -62,6 +65,7 @@ fn a_link_parses_token_pair_and_the_strip_together() {
         Link {
             token: None,
             pair: Some(b),
+            proxy: None,
             stripped: Some("#z=2".to_owned()),
         }
     );
@@ -136,4 +140,41 @@ fn the_dialog_text_never_holds_the_whole_capability() {
         !debug.contains(SEQUENCE) && !debug.contains(&SEQUENCE[3..]),
         "{debug}"
     );
+}
+
+#[test]
+fn browser_proxy_fragment_parses_strips_and_redacts_token() {
+    let hex_token = &SEQUENCE[3..];
+    let frag = format!("#mcpProxyPort=3845&mcpProxyToken={hex_token}");
+    let parsed = parse_link(Some(&frag));
+    let proxy = parsed.proxy.expect("valid proxy target");
+    assert_eq!(proxy.port(), 3845);
+    assert_eq!(proxy.ws_url(), "ws://127.0.0.1:3845/bridge");
+    assert_eq!(
+        proxy.subprotocols(),
+        ["figstudio-exec-v1".to_owned(), hex_token.to_owned()]
+    );
+    assert_eq!(parsed.stripped, Some(String::new()));
+    let dbg = format!("{proxy:?}");
+    assert!(
+        dbg.contains("<redacted>") && !dbg.contains(hex_token),
+        "{dbg}"
+    );
+
+    // Invalid ports (< 1024 or > 65535) or malformed tokens are rejected and still stripped.
+    for bad in [
+        format!("#mcpProxyPort=80&mcpProxyToken={hex_token}"),
+        format!("#mcpProxyPort=70000&mcpProxyToken={hex_token}"),
+        "#mcpProxyPort=3845&mcpProxyToken=short".to_owned(),
+        format!(
+            "#mcpProxyPort=3845&mcpProxyToken={}",
+            hex_token.to_uppercase()
+        ),
+        "#mcpProxyPort=3845".to_owned(),
+        format!("#mcpProxyToken={hex_token}"),
+    ] {
+        let p = parse_link(Some(&bad));
+        assert!(p.proxy.is_none(), "{bad}");
+        assert_eq!(p.stripped, Some(String::new()), "{bad}");
+    }
 }

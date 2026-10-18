@@ -51,6 +51,7 @@ impl McpHost {
     /// Make `pair` this tab's credential and reconnect the relay to its room.
     pub(super) fn adopt(&mut self, pair: ExecutorPair) {
         self.stop();
+        self.proxy = None;
         self.pair = Some(pair);
         self.relay = true;
         self.want_connect = true;

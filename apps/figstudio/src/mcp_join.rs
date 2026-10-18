@@ -1,8 +1,65 @@
 //! Joining another browser's agent-access room by link: what the URL fragment proposes,
 //! and the one confirmation that gates it. Pure (no browser types) so native tests cover
 //! the security-relevant decisions; `mcp_web.rs` only wires them to the browser.
-use crate::mcp_pair::{ExecutorPair, pair_from_fragment};
+use crate::mcp_pair::{BRIDGE_PROTOCOL, ExecutorPair, pair_from_fragment};
 use crate::mcp_wire::token_from_fragment;
+
+/// Local browser-proxy endpoint (`#mcpProxyPort=<u16>&mcpProxyToken=<64 hex>`):
+/// pairs this tab's zero-upload Wasm RPC executor with `ws://127.0.0.1:<port>/bridge`.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ProxyTarget {
+    port: u16,
+    token: String,
+}
+
+impl std::fmt::Debug for ProxyTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ProxyTarget(port: {}, token: <redacted>)", self.port)
+    }
+}
+
+impl ProxyTarget {
+    pub(crate) fn from_fragment(fragment: &str) -> Option<Self> {
+        let fragment = fragment
+            .rsplit_once('#')
+            .map_or(fragment, |(_, after)| after);
+        let mut port = None;
+        let mut token = None;
+        for (key, value) in form_urlencoded::parse(fragment.as_bytes()) {
+            match key.as_ref() {
+                "mcpProxyPort" => {
+                    port = value.parse::<u16>().ok().filter(|&p| p >= 1024);
+                }
+                "mcpProxyToken"
+                    if value.len() == 64
+                        && value
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) =>
+                {
+                    token = Some(value.into_owned());
+                }
+                _ => {}
+            }
+        }
+        Some(Self {
+            port: port?,
+            token: token?,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub(crate) fn ws_url(&self) -> String {
+        format!("ws://127.0.0.1:{}/bridge", self.port)
+    }
+
+    pub(crate) fn subprotocols(&self) -> [String; 2] {
+        [BRIDGE_PROTOCOL.to_owned(), self.token.clone()]
+    }
+}
 
 /// What the URL fragment said, at startup or on a `hashchange`.
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -11,7 +68,9 @@ pub(crate) struct Link {
     pub token: Option<String>,
     /// A valid room/executor pair named by a link (`#room=…&exec=…`); not yet trusted.
     pub pair: Option<ExecutorPair>,
-    /// The fragment without its `room` and `exec` keys, when there was one to consume.
+    /// A valid local browser-proxy target (`#mcpProxyPort=…&mcpProxyToken=…`).
+    pub proxy: Option<ProxyTarget>,
+    /// The fragment without its secret capability keys, when there was one to consume.
     pub stripped: Option<String>,
 }
 
@@ -22,25 +81,27 @@ pub(crate) fn parse_link(fragment: Option<&str>) -> Link {
     Link {
         token: token_from_fragment(fragment),
         pair: pair_from_fragment(fragment),
+        proxy: ProxyTarget::from_fragment(fragment),
         stripped: strip_secret_keys(fragment),
     }
 }
 
-/// The fragment without its `room` and `exec` keys — consumed the moment they are read,
-/// whatever else the fragment says and whether the pair was even valid — keeping unrelated
-/// keys such as a `#mcp=` pairing. `None` when there was no `room` or `exec` key at all.
-/// The result is a whole fragment (with `#`) or empty.
+/// The fragment without its `room`, `exec`, `mcpProxyPort` and `mcpProxyToken` keys —
+/// consumed the moment they are read, whatever else the fragment says and whether the
+/// values were even valid — keeping unrelated keys such as a `#mcp=` pairing. `None` when
+/// none of those keys was present. The result is a whole fragment (with `#`) or empty.
 pub(crate) fn strip_secret_keys(fragment: &str) -> Option<String> {
     let fragment = fragment
         .rsplit_once('#')
         .map_or(fragment, |(_, after)| after);
+    let is_secret = |key: &str| matches!(key, "room" | "exec" | "mcpProxyPort" | "mcpProxyToken");
     let pairs = form_urlencoded::parse(fragment.as_bytes());
-    if !pairs.clone().any(|(key, _)| key == "room" || key == "exec") {
+    if !pairs.clone().any(|(key, _)| is_secret(&key)) {
         return None;
     }
     let mut kept = form_urlencoded::Serializer::new(String::new());
     for (key, value) in pairs {
-        if key != "room" && key != "exec" {
+        if !is_secret(&key) {
             kept.append_pair(&key, &value);
         }
     }

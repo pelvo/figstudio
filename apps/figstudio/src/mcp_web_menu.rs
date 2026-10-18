@@ -99,7 +99,9 @@ impl McpHost {
     }
 
     fn connected_label(&self) -> &'static str {
-        if self.relay {
+        if self.relay && self.proxy.is_some() {
+            "Connected to local browser proxy"
+        } else if self.relay {
             "Connected to cloud relay"
         } else {
             "Connected to local bridge"
