@@ -37,12 +37,12 @@ impl McpHost {
                         self.stop();
                         return Some("Could not generate a secure MCP device identity".to_owned());
                     };
-                    self.device_label = room::current_device_label();
+                    let wire_label = room::current_device_label();
                     self.conn.as_mut()?.welcomed = true;
                     let focused = room::document_focused();
                     let frame = crate::mcp_wire::relay_ready_v2(
                         device_id,
-                        &self.device_label,
+                        &wire_label,
                         instance,
                         focused,
                         tabs,

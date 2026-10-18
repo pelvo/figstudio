@@ -17,9 +17,16 @@ impl McpHost {
             ui.label("Use list_sessions / select_session when multiple devices share a room.");
             ui.horizontal(|ui| {
                 ui.label("Device label");
+                let id = egui::Id::new("mcp_device_label_input");
+                if !ui.ctx().memory(|m| m.has_focus(id))
+                    && let Some(saved) = room::raw_stored_device_label()
+                {
+                    self.device_label = saved;
+                }
                 if ui
                     .add(
                         egui::TextEdit::singleline(&mut self.device_label)
+                            .id(id)
                             .hint_text("e.g. Office · Chrome"),
                     )
                     .changed()

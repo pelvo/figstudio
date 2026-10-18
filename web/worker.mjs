@@ -60,27 +60,49 @@ function cleanStr(val, maxLen) {
 
 function sanitizeDocs(rawDocs) {
   if (!Array.isArray(rawDocs)) return [];
-  const out = [];
-  let usedBytes = 2;
+  const candidates = [];
   for (const item of rawDocs.slice(0, MAX_DOCS)) {
     if (!object(item)) continue;
-    const entry = {
-      tab: Number.isInteger(item.tab) && item.tab >= 0 ? item.tab : out.length,
+    const base = {
+      tab: Number.isInteger(item.tab) && item.tab >= 0 ? item.tab : candidates.length,
       name: cleanStr(item.name, MAX_DOC_NAME) || "untitled",
     };
-    // Preserve `fileKey` verbatim (as produced by `relay_keys`). If a document entry with
-    // its `fileKey` does not fit in the remaining 12 KiB budget, skip that document
-    // (`continue`) rather than storing a keyless entry or dropping subsequent documents.
-    if (typeof item.fileKey === "string" && item.fileKey.length > 0) {
-      entry.fileKey = item.fileKey;
-    }
     const key = cleanStr(item.key, 32);
-    if (key) entry.key = key;
-    if (Number.isInteger(item.pages) && item.pages >= 0) entry.pages = item.pages;
-    const entryBytes = encoder.encode(JSON.stringify(entry)).byteLength + 1;
-    if (usedBytes + entryBytes > DOC_BUDGET_BYTES) continue;
-    usedBytes += entryBytes;
-    out.push(entry);
+    if (key) base.key = key;
+    if (Number.isInteger(item.pages) && item.pages >= 0) base.pages = item.pages;
+    const baseBytes = encoder.encode(JSON.stringify(base)).byteLength + 1;
+    const hasFileKey = typeof item.fileKey === "string" && item.fileKey.length > 0;
+    const full = hasFileKey ? { ...base, fileKey: item.fileKey } : base;
+    const fullBytes = hasFileKey
+      ? encoder.encode(JSON.stringify(full)).byteLength + 1
+      : baseBytes;
+    candidates.push({ base, baseBytes, full, fullBytes, hasFileKey });
+  }
+  const out = [];
+  let usedBytes = 2;
+  for (let i = 0; i < candidates.length; i++) {
+    const cur = candidates[i];
+    if (usedBytes + cur.fullBytes <= DOC_BUDGET_BYTES) {
+      out.push(cur.full);
+      usedBytes += cur.fullBytes;
+      continue;
+    }
+    if (usedBytes + cur.baseBytes > DOC_BUDGET_BYTES) continue;
+    // Store the row without `fileKey` if that keyless row still leaves room for the
+    // later rows that fit; otherwise skip, so a keyless row never drops a tail document.
+    let laterBytes = 0;
+    for (let j = i + 1; j < candidates.length; j++) {
+      const next = candidates[j];
+      if (usedBytes + laterBytes + next.fullBytes <= DOC_BUDGET_BYTES) {
+        laterBytes += next.fullBytes;
+      } else if (!next.hasFileKey && usedBytes + laterBytes + next.baseBytes <= DOC_BUDGET_BYTES) {
+        laterBytes += next.baseBytes;
+      }
+    }
+    if (usedBytes + cur.baseBytes + laterBytes <= DOC_BUDGET_BYTES) {
+      out.push(cur.base);
+      usedBytes += cur.baseBytes;
+    }
   }
   return out;
 }

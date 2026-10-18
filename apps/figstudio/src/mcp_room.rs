@@ -64,7 +64,7 @@ pub(super) fn load_device() -> DeviceLoad {
             }
         },
     };
-    let label = current_device_label();
+    let label = raw_stored_device_label().unwrap_or_else(default_device_label);
     let instance = match mcp_pair::random_hex_16() {
         Ok(fresh) => Some(fresh[..16].to_owned()),
         Err(_) => {
@@ -84,15 +84,19 @@ pub(super) fn load_device() -> DeviceLoad {
 
 pub(super) fn save_device_label(label: &str) {
     if let Ok(s) = storage() {
-        let trimmed: String = label.trim().chars().take(64).collect();
-        let _ = s.set_item(DEVICE_LABEL_KEY, &trimmed);
+        let bounded: String = label.chars().take(64).collect();
+        let _ = s.set_item(DEVICE_LABEL_KEY, &bounded);
     }
 }
 
-pub(super) fn current_device_label() -> String {
-    let stored = web_sys::window()
+pub(super) fn raw_stored_device_label() -> Option<String> {
+    web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item(DEVICE_LABEL_KEY).ok().flatten());
+        .and_then(|s| s.get_item(DEVICE_LABEL_KEY).ok().flatten())
+}
+
+pub(super) fn current_device_label() -> String {
+    let stored = raw_stored_device_label();
     mcp_pair::resolve_device_label(stored.as_deref(), &default_device_label())
 }
 

@@ -240,11 +240,11 @@ impl McpHost {
             let key = key(tabs, active);
             let focused = room::document_focused();
             if self.last_key.as_ref() != Some(&key) || self.last_focused != Some(focused) {
-                self.device_label = room::current_device_label();
+                let wire_label = room::current_device_label();
                 if let (Some(device_id), Some(instance)) = (&self.device_id, &self.instance) {
                     let frame = crate::mcp_wire::relay_ready_v2(
                         device_id,
-                        &self.device_label,
+                        &wire_label,
                         instance,
                         focused,
                         tabs,

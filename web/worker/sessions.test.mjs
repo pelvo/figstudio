@@ -95,6 +95,21 @@ test("sha256Hex matches standard NIST vector and ready v2 stores sanitized, boun
   assert.equal(s0.session, att.sessionId);
   assert.deepEqual(s0.device, { label: "Office  · Chrome" });
   assert.equal("id" in s0.device, false, "device.id must not be published");
+
+  // When the budget is NOT crowded, a doc whose `fileKey` alone exceeds 12 KiB is stored
+  // without `fileKey` (preserving its `name` and `key`) alongside subsequent docs.
+  room.webSocketMessage(tab, readyV2("dev_office", "Office · Chrome", "inst_1", {
+    focused: true,
+    docs: [
+      { tab: 1, name: "wide.fig", fileKey: "W".repeat(20_000), key: "0123456789abcdef", pages: 3 },
+      { tab: 2, name: "after.fig", fileKey: "after-key", key: "fedcba9876543210", pages: 1 },
+    ],
+  }));
+  const sparseAtt = tab.deserializeAttachment();
+  assert.deepEqual(sparseAtt.docs, [
+    { tab: 1, name: "wide.fig", key: "0123456789abcdef", pages: 3 },
+    { tab: 2, name: "after.fig", fileKey: "after-key", key: "fedcba9876543210", pages: 1 },
+  ]);
 });
 
 test("tools/list works with no tab connected, augments tab tools, and preserves native session args", async () => {
