@@ -342,6 +342,7 @@ async fn browser_proxy_binary_speaks_stdio_never_logs_token_and_launches_browser
             got_list_changed = true;
         } else if val.get("id") == Some(&json!(2)) {
             assert_eq!(val["result"]["structuredContent"]["connected"], json!(true));
+            assert_eq!(val["result"]["structuredContent"]["launched"], json!(true));
             assert_eq!(
                 val["result"]["structuredContent"]["sessions"][0]["docs"][0]["fileKey"],
                 "design"
@@ -352,4 +353,10 @@ async fn browser_proxy_binary_speaks_stdio_never_logs_token_and_launches_browser
     assert!(got_list_changed && got_open_reply);
 
     child.kill().await.unwrap();
+    while let Ok(Some(line)) = stderr.next_line().await {
+        assert!(
+            !line.contains("mcpProxyToken") && !line.contains(&token),
+            "stderr leaked proxy token: {line}"
+        );
+    }
 }

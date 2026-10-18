@@ -118,10 +118,11 @@ whenever `--origin` is passed without `FILE.fig` or `--bridge`) combines the zer
 Wasm RPC executor with a local `stdio` proxy inspired by `googlecolab/colab-mcp` — no `.fig`
 upload, no Cloudflare Access bypass, and no manual token pasting.
 
-**One-line setup (`uvx`, `colab-mcp` style):**
+**One-line install and setup (`colab-mcp` style):**
 
 ```sh
-claude mcp add figstudio -- uvx git+https://github.com/pelvo/figstudio --origin https://<your-deploy-domain>
+cargo install --git https://github.com/pelvo/figstudio figstudio-mcp
+claude mcp add figstudio -- figstudio-mcp --origin https://<your-deploy-domain>
 ```
 
 Or in `.mcp.json` / Cursor / Windsurf:
@@ -130,17 +131,11 @@ Or in `.mcp.json` / Cursor / Windsurf:
 {
   "mcpServers": {
     "figstudio": {
-      "command": "uvx",
-      "args": ["git+https://github.com/pelvo/figstudio", "--origin", "https://<your-deploy-domain>"]
+      "command": "figstudio-mcp",
+      "args": ["--origin", "https://<your-deploy-domain>"]
     }
   }
 }
-```
-
-Or with the prebuilt Rust binary (`cargo install --git https://github.com/pelvo/figstudio figstudio-mcp`):
-
-```sh
-claude mcp add figstudio -- figstudio-mcp --origin https://<your-deploy-domain>
 ```
 
 - `figstudio-mcp --origin https://<your-deploy-domain>` (or `figstudio-mcp --browser-proxy`

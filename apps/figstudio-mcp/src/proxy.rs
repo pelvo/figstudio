@@ -938,20 +938,51 @@ fn rpc_error(id: Value, code: i32, message: &str, data: Option<Value>) -> Value 
     json!({ "jsonrpc": "2.0", "id": id, "error": err })
 }
 
-/// Parse one entry of a `BROWSER` environment variable (`program [args...]`, replacing
-/// `%s` with `url` or appending `url` when `%s` is absent), without invoking a shell.
+/// Parse one entry of a `BROWSER` environment variable (`program [args...]`, supporting
+/// single/double-quoted tokens and replacing `%s` with `url` or appending `url` when `%s`
+/// is absent), without invoking a shell. Returns `None` on empty input or unbalanced quotes.
 #[must_use]
 pub fn parse_browser_entry(entry: &str, url: &str) -> Option<(String, Vec<String>)> {
-    let mut parts = entry.split_whitespace();
-    let program = parts.next()?.to_owned();
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    let mut in_token = false;
+    let mut quote: Option<char> = None;
+    for ch in entry.chars() {
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => cur.push(ch),
+            None if ch == '\'' || ch == '"' => {
+                quote = Some(ch);
+                in_token = true;
+            }
+            None if ch.is_whitespace() => {
+                if in_token {
+                    tokens.push(std::mem::take(&mut cur));
+                    in_token = false;
+                }
+            }
+            None => {
+                cur.push(ch);
+                in_token = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if in_token {
+        tokens.push(cur);
+    }
+    let mut iter = tokens.into_iter();
+    let program = iter.next().filter(|p| !p.is_empty())?;
     let mut args = Vec::new();
     let mut substituted = false;
-    for tok in parts {
+    for tok in iter {
         if tok.contains("%s") {
             args.push(tok.replace("%s", url));
             substituted = true;
         } else {
-            args.push(tok.to_owned());
+            args.push(tok);
         }
     }
     if !substituted {
@@ -991,13 +1022,8 @@ fn open_system_browser(url: &str) -> bool {
     #[cfg(target_os = "windows")]
     {
         spawn_quiet(
-            "cmd",
-            &[
-                "/C".to_owned(),
-                "start".to_owned(),
-                String::new(),
-                url.to_owned(),
-            ],
+            "rundll32",
+            &["url.dll,FileProtocolHandler".to_owned(), url.to_owned()],
         )
     }
     #[cfg(all(unix, not(target_os = "macos")))]
