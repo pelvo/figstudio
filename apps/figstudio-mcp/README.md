@@ -286,6 +286,14 @@ renderer), so the browser MCP build does not register them.
 | `get_selection` *(app only)* | `fileKey?` | `{fileKey, tabId, page, node: {nodeId, name, kind, bounds: {x, y, width, height}}}`, or `node: null` | The selected node of a tab (default the active tab). Bounds are in page units. |
 | `reveal_node` *(app only)* | `nodeId` (or a link), `fileKey?` | One line: the node is revealed in tab N | Selects the node in the app; the tab becomes active and the view fits the node. An instance path reveals its outer instance and says so. Waits 5 s for the app; then the error "the app did not respond" (a minimised window may not run frames, so the reveal can time out). |
 
+### Comparing versions
+
+The [compare-fig-versions agent skill](../../.agents/skills/compare-fig-versions/SKILL.md)
+covers CLI reports and the native MCP compare tools. From the repo root, after building
+the CLI, run `target/release/figstudio-cli compare OLD.fig NEW.fig -o OUT_DIR`
+(use a fresh output folder). Claude Code reads `.claude/skills/`; users can symlink
+or copy `.agents/skills/compare-fig-versions` there.
+
 **Prompt: `create_design_system_rules`** (`prompts/get`; optional arguments
 `clientFrameworks`, `clientLanguages`, `fileKey`, all strings). Returns guidance for a
 design-system rules file, plus the file's token summary and component list (names cut at
