@@ -63,6 +63,14 @@ pub struct McpHost {
     proposal: Option<RoomProposal>,
     /// The `Use room token` field; applied by `Apply` in the menu.
     room_input: String,
+    /// Persistent device identifier (`figstudio.mcp.device.v1`); `None` if entropy failed.
+    device_id: Option<String>,
+    /// User-editable device label (`figstudio.mcp.device_label.v1`).
+    device_label: String,
+    /// Per-page-load instance identifier separating tabs on the same device.
+    instance: Option<String>,
+    /// Last focus state reported to the relay.
+    last_focused: Option<bool>,
     /// Relay keepalive state: a ping's pong must come back within a deadline or the
     /// connection is dropped (see `mcp_heartbeat.rs`).
     heartbeat: Heartbeat<Instant>,
@@ -82,10 +90,14 @@ impl Default for McpHost {
         let loaded = room::load();
         notices.extend(loaded.notices);
         let pair = loaded.pair;
+        let device = room::load_device();
+        notices.extend(device.notices);
         // A link names a room to propose, not to use; the pair above stays this tab's own.
         let proposal =
             proposed_pair(link.pair, link.token.is_some(), pair.as_ref()).map(RoomProposal::new);
         let relay = link.token.is_none()
+            && device.id.is_some()
+            && device.instance.is_some()
             && pair
                 .as_ref()
                 .is_some_and(|p| room::urls(&p.room()).is_some());
@@ -108,6 +120,10 @@ impl Default for McpHost {
             link: link_cell,
             proposal,
             room_input: String::new(),
+            device_id: device.id,
+            device_label: device.label,
+            instance: device.instance,
+            last_focused: None,
             heartbeat: Heartbeat::fresh(0),
         }
     }
@@ -167,6 +183,7 @@ impl McpHost {
         self.failed.clear();
         self.uploading = None;
         self.last_key = None;
+        self.last_focused = None;
         self.heartbeat = Heartbeat::fresh(self.generation);
         self.shared.progress.set(None);
         self.shared.cancelled.borrow_mut().clear();
@@ -221,9 +238,21 @@ impl McpHost {
                 self.names.entry(tab.id).or_insert_with(|| tab.path.clone());
             }
             let key = key(tabs, active);
-            if self.last_key.as_ref() != Some(&key) {
-                let _ = ws.send_with_str(crate::mcp_wire::relay_ready());
-                self.last_key = Some(key);
+            let focused = room::document_focused();
+            if self.last_key.as_ref() != Some(&key) || self.last_focused != Some(focused) {
+                let wire_label = room::current_device_label();
+                if let (Some(device_id), Some(instance)) = (&self.device_id, &self.instance) {
+                    let frame = crate::mcp_wire::relay_ready_v2(
+                        device_id,
+                        &wire_label,
+                        instance,
+                        focused,
+                        tabs,
+                    );
+                    let _ = ws.send_with_str(&frame);
+                    self.last_key = Some(key);
+                    self.last_focused = Some(focused);
+                }
             }
             // Otherwise the relay socket can sit silent for a whole session while a NAT
             // or proxy has already forgotten the flow, and a successful send only proves
@@ -317,6 +346,9 @@ impl McpHost {
         }
         if self.relay && self.pair.is_none() {
             return Err("No MCP executor token yet; Apply one or Regenerate".to_owned());
+        }
+        if self.relay && (self.device_id.is_none() || self.instance.is_none()) {
+            return Err("Could not generate a secure MCP device identity".to_owned());
         }
         self.generation = self.generation.wrapping_add(1);
         self.reset_link();

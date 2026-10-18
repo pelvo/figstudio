@@ -40,6 +40,9 @@ pub struct Tab {
     pub id: u64,
     pub path: PathBuf,
     pub doc: Arc<Document>,
+    /// First 16 hex of SHA-256 over the file size and first 4 MiB (`docs[].key`).
+    #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+    pub doc_key: Option<String>,
     /// Where the document's unread images are (big files open lazily).
     pub source: Option<crate::source::Source>,
     pub page: Guid,
@@ -74,6 +77,10 @@ impl Tab {
         source: Option<crate::source::Source>,
         load_time: Duration,
     ) -> Self {
+        #[cfg(test)]
+        let doc_key = crate::source::doc_key_from_path(&path);
+        #[cfg(not(test))]
+        let doc_key = None;
         let page = doc
             .pages
             .first()
@@ -84,6 +91,7 @@ impl Tab {
             id,
             path,
             doc,
+            doc_key,
             source,
             page,
             view: View {
@@ -105,6 +113,13 @@ impl Tab {
             pending_copy: None,
             marquee: Default::default(),
         }
+    }
+
+    pub fn with_doc_key(mut self, doc_key: Option<String>) -> Self {
+        if doc_key.is_some() {
+            self.doc_key = doc_key;
+        }
+        self
     }
 
     /// Zooms around the canvas centre (keyboard / menu zoom).

@@ -5,6 +5,107 @@ use crate::mcp_wire::relay_urls;
 
 const STORAGE_KEY: &str = "figstudio.mcp.executor.v2";
 const LEGACY_KEY: &str = "figstudio.mcp.room";
+const DEVICE_ID_KEY: &str = "figstudio.mcp.device.v1";
+const DEVICE_LABEL_KEY: &str = "figstudio.mcp.device_label.v1";
+
+pub(super) struct DeviceLoad {
+    pub id: Option<String>,
+    pub label: String,
+    pub instance: Option<String>,
+    pub notices: Vec<String>,
+}
+
+fn default_device_label() -> String {
+    let ua = web_sys::window()
+        .and_then(|w| w.navigator().user_agent().ok())
+        .unwrap_or_default();
+    let os = if ua.contains("Mac") {
+        "Mac"
+    } else if ua.contains("Win") {
+        "Windows"
+    } else if ua.contains("Linux") {
+        "Linux"
+    } else {
+        "Device"
+    };
+    let browser = if ua.contains("Edg/") {
+        "Edge"
+    } else if ua.contains("Chrome/") {
+        "Chrome"
+    } else if ua.contains("Firefox/") {
+        "Firefox"
+    } else if ua.contains("Safari/") {
+        "Safari"
+    } else {
+        "Browser"
+    };
+    format!("{os} · {browser}")
+}
+
+pub(super) fn load_device() -> DeviceLoad {
+    let store = web_sys::window().and_then(|w| w.local_storage().ok().flatten());
+    let mut notices = Vec::new();
+    let existing_id = store
+        .as_ref()
+        .and_then(|s| s.get_item(DEVICE_ID_KEY).ok().flatten())
+        .filter(|s| mcp_pair::valid_device_id(s));
+    let id = match existing_id {
+        Some(saved) => Some(saved),
+        None => match mcp_pair::random_hex_16() {
+            Ok(fresh) => {
+                if let Some(s) = &store {
+                    let _ = s.set_item(DEVICE_ID_KEY, &fresh);
+                }
+                Some(fresh)
+            }
+            Err(_) => {
+                notices.push("Could not generate a secure MCP device identity".to_owned());
+                None
+            }
+        },
+    };
+    let label = raw_stored_device_label().unwrap_or_else(default_device_label);
+    let instance = match mcp_pair::random_hex_16() {
+        Ok(fresh) => Some(fresh[..16].to_owned()),
+        Err(_) => {
+            if notices.is_empty() {
+                notices.push("Could not generate a secure MCP device identity".to_owned());
+            }
+            None
+        }
+    };
+    DeviceLoad {
+        id,
+        label,
+        instance,
+        notices,
+    }
+}
+
+pub(super) fn save_device_label(label: &str) {
+    if let Ok(s) = storage() {
+        let bounded: String = label.chars().take(64).collect();
+        let _ = s.set_item(DEVICE_LABEL_KEY, &bounded);
+    }
+}
+
+pub(super) fn raw_stored_device_label() -> Option<String> {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item(DEVICE_LABEL_KEY).ok().flatten())
+}
+
+pub(super) fn current_device_label() -> String {
+    let stored = raw_stored_device_label();
+    mcp_pair::resolve_device_label(stored.as_deref(), &default_device_label())
+}
+
+pub(super) fn document_focused() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.has_focus().ok())
+        .unwrap_or(true)
+}
 
 /// The pair this visit uses, plus one-time notices for the host to toast.
 pub(super) struct Loaded {

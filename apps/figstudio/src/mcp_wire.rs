@@ -191,13 +191,32 @@ pub(crate) fn close_reason(code: u16) -> &'static str {
 
 /// Browser paths are just display names, so duplicate stems need a stable tab-id suffix.
 pub(crate) fn relay_keys(tabs: &[Tab]) -> Vec<String> {
-    let stems: Vec<_> = tabs
+    let stems: Vec<String> = tabs
         .iter()
         .map(|tab| {
-            tab.path
+            let raw = tab
+                .path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .unwrap_or("untitled")
+                .unwrap_or("untitled");
+            let cleaned: String = raw
+                .chars()
+                .filter(|&c| {
+                    !c.is_control()
+                        && !matches!(
+                            c,
+                            '\u{200E}'
+                                | '\u{200F}'
+                                | '\u{202A}'..='\u{202E}'
+                                | '\u{2066}'..='\u{2069}'
+                        )
+                })
+                .collect();
+            if cleaned.is_empty() {
+                "untitled".to_owned()
+            } else {
+                cleaned
+            }
         })
         .collect();
     let mut used = HashSet::new();
@@ -205,7 +224,7 @@ pub(crate) fn relay_keys(tabs: &[Tab]) -> Vec<String> {
         .iter()
         .zip(tabs)
         .map(|(stem, tab)| {
-            let mut key = (*stem).to_owned();
+            let mut key = stem.clone();
             if stems.iter().filter(|other| *other == stem).count() > 1 {
                 key.push_str(&format!("~{}", tab.id));
             }
@@ -288,8 +307,81 @@ pub(crate) fn rpc_reply(id: &str, response: Option<&str>) -> Result<String, serd
     .to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn relay_ready() -> &'static str {
     r#"{"type":"ready","protocol":1}"#
+}
+
+fn sanitize_wire_text(input: &str, max_chars: usize) -> String {
+    input
+        .chars()
+        .map(|c| {
+            if matches!(c, '\r' | '\n' | '\t') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .filter(|&c| {
+            !c.is_control()
+                && !matches!(
+                    c,
+                    '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+                )
+        })
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(max_chars)
+        .collect()
+}
+
+/// Protocol 2 `ready` frame carrying the device identity, page instance, focus state,
+/// and open document summaries for multi-device session routing (`web/worker.mjs`).
+pub(crate) fn relay_ready_v2(
+    device_id: &str,
+    device_label: &str,
+    instance: &str,
+    focused: bool,
+    tabs: &[Tab],
+) -> String {
+    let file_keys = relay_keys(tabs);
+    let docs: Vec<serde_json::Value> = tabs
+        .iter()
+        .zip(file_keys)
+        .take(32)
+        .map(|(tab, file_key)| {
+            let name = sanitize_wire_text(&tab.title(), 96);
+            let mut entry = serde_json::json!({
+                "tab": tab.id,
+                "name": if name.is_empty() { "untitled".to_owned() } else { name },
+                "fileKey": file_key,
+                "pages": tab.doc.pages.len(),
+            });
+            if let Some(key) = &tab.doc_key {
+                entry["key"] = serde_json::Value::String(key.clone());
+            }
+            entry
+        })
+        .collect();
+    let cleaned_label = sanitize_wire_text(device_label, 64);
+    let label = if cleaned_label.is_empty() {
+        "Browser tab".to_owned()
+    } else {
+        cleaned_label
+    };
+    serde_json::json!({
+        "type": "ready",
+        "protocol": 2,
+        "device": {
+            "id": device_id,
+            "label": label,
+        },
+        "instance": instance,
+        "focused": focused,
+        "docs": docs,
+    })
+    .to_string()
 }
 
 /// The reply when the dispatcher's output could not be encoded as a frame: still a frame

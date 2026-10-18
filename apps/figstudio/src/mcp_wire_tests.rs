@@ -76,6 +76,36 @@ fn relay_rpc_round_trips_json_and_notifications() {
         serde_json::from_str::<Value>(relay_ready()).unwrap(),
         json!({"type":"ready","protocol":1})
     );
+    let tabs = tabs();
+    let v2: Value = serde_json::from_str(&relay_ready_v2(
+        "0123456789abcdef0123456789abcdef",
+        "Office\n\u{202E} · Chrome",
+        "deadbeefcafebabe",
+        true,
+        &tabs,
+    ))
+    .unwrap();
+    assert_eq!(v2["type"], "ready");
+    assert_eq!(v2["protocol"], 2);
+    assert_eq!(v2["device"]["id"], "0123456789abcdef0123456789abcdef");
+    assert_eq!(v2["device"]["label"], "Office  · Chrome");
+    assert_eq!(v2["instance"], "deadbeefcafebabe");
+    assert_eq!(v2["focused"], true);
+    assert_eq!(v2["docs"].as_array().unwrap().len(), 2);
+    assert_eq!(v2["docs"][0]["tab"], 7);
+    assert_eq!(v2["docs"][0]["fileKey"], "structure~7");
+    assert_eq!(v2["docs"][1]["fileKey"], "structure~9");
+    let key0 = v2["docs"][0]["key"].as_str().unwrap();
+    let key1 = v2["docs"][1]["key"].as_str().unwrap();
+    assert_eq!(key0.len(), 16);
+    assert!(
+        key0.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "{key0}"
+    );
+    // Both tabs opened the same `structure.fig` fixture, so their SHA-256 doc keys match.
+    assert_eq!(key0, key1);
+    assert!(v2["docs"][0]["pages"].as_u64().unwrap() >= 1);
 }
 
 #[test]

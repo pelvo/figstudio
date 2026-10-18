@@ -199,3 +199,32 @@ fn loading_decides_between_use_upgrade_and_visible_failure() {
         Load::Corrupt
     ));
 }
+
+#[test]
+fn device_id_generation_and_validation_reject_all_zero_ids() {
+    let generated = random_hex_16().unwrap();
+    assert!(valid_device_id(&generated), "{generated}");
+    assert!(!valid_device_id("00000000000000000000000000000000"));
+    assert!(!valid_device_id("0123456789abcdef"));
+    assert!(!valid_device_id("0123456789ABCDEF0123456789abcdef"));
+}
+
+#[test]
+fn device_label_resolution_uses_saved_text_and_falls_back_when_cleared() {
+    assert_eq!(
+        resolve_device_label(Some("  Office · Mac  "), "Linux · Chrome"),
+        "Office · Mac"
+    );
+    assert_eq!(
+        resolve_device_label(Some(""), "Linux · Chrome"),
+        "Linux · Chrome"
+    );
+    assert_eq!(
+        resolve_device_label(Some("   "), "Linux · Chrome"),
+        "Linux · Chrome"
+    );
+    assert_eq!(
+        resolve_device_label(None, "Linux · Chrome"),
+        "Linux · Chrome"
+    );
+}

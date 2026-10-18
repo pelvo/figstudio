@@ -67,6 +67,7 @@ pub enum Loaded {
     Ok {
         path: PathBuf,
         doc: Arc<Document>,
+        doc_key: Option<String>,
         source: Option<Source>,
         elapsed: Duration,
         /// What CJK the names or text need (the browser fetches a font for it).
@@ -457,19 +458,30 @@ impl Workers {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load(&self, path: PathBuf) {
-        self.decode(path.clone(), move || crate::source::open_path(&path));
+        self.decode(path.clone(), move || {
+            let doc_key = crate::source::doc_key_from_path(&path);
+            let (doc, source) = crate::source::open_path(&path)?;
+            Ok((doc, source, doc_key))
+        });
     }
 
     /// Decodes dropped bytes (used when the platform gives contents rather than a path).
     pub fn load_bytes(&self, name: PathBuf, bytes: Vec<u8>) {
-        self.decode(name, move || Ok((Document::from_bytes(&bytes)?, None)));
+        self.decode(name, move || {
+            let doc_key = Some(crate::source::doc_key_from_prefix(
+                bytes.len() as u64,
+                &bytes,
+            ));
+            Ok((Document::from_bytes(&bytes)?, None, doc_key))
+        });
     }
 
-    /// Opens a document on a worker; `read` returns it and where its unread images are.
+    /// Opens a document on a worker; `read` returns it, where its unread images are, and its key.
     pub fn decode(
         &self,
         path: PathBuf,
-        read: impl FnOnce() -> Result<(Document, Option<Source>), figstudio_fig::FigError>
+        read: impl FnOnce()
+            -> Result<(Document, Option<Source>, Option<String>), figstudio_fig::FigError>
         + Send
         + 'static,
     ) {
@@ -480,12 +492,13 @@ impl Workers {
         spawn(move || {
             let start = Instant::now();
             let msg = match read() {
-                Ok((doc, source)) => {
+                Ok((doc, source, doc_key)) => {
                     let name = path.file_name().map(|n| n.to_string_lossy());
                     Loaded::Ok {
                         cjk: crate::theme::cjk_need(&doc, name.as_deref().unwrap_or("")),
                         path,
                         doc: Arc::new(doc),
+                        doc_key,
                         source,
                         elapsed: start.elapsed(),
                     }
