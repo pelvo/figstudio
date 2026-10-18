@@ -94,6 +94,14 @@ pub(super) fn save_device_label(label: &str) {
     }
 }
 
+pub(super) fn stored_device_label() -> Option<String> {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item(DEVICE_LABEL_KEY).ok().flatten())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
+
 pub(super) fn document_focused() -> bool {
     web_sys::window()
         .and_then(|w| w.document())

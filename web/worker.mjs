@@ -6,7 +6,9 @@ const REQUEST_LIMIT = 1024 * 1024;
 // apps/figstudio/src/mcp_wire.rs), so a well-formed reply stays under this cap.
 const REPLY_LIMIT = 8 * 1024 * 1024;
 const MAX_DOCS = 32;
+const DOC_BUDGET_BYTES = 12_000;
 const MAX_DOC_NAME = 96;
+const MAX_FILE_KEY = 512;
 const MAX_LABEL = 64;
 const MAX_ID = 64;
 const MAX_MCP_SESSIONS = 64;
@@ -53,23 +55,32 @@ function rpcError(status, id, code, message, data = undefined, headers = undefin
 
 function cleanStr(val, maxLen) {
   if (typeof val !== "string") return "";
-  return val.replace(/[\r\n\t]+/g, " ").replace(UNSAFE_CHARS, "").trim().slice(0, maxLen);
+  const cleaned = val.replace(/[\r\n\t]+/g, " ").replace(UNSAFE_CHARS, "").trim();
+  return Array.from(cleaned).slice(0, maxLen).join("");
 }
 
 function sanitizeDocs(rawDocs) {
   if (!Array.isArray(rawDocs)) return [];
   const out = [];
+  let usedBytes = 2;
   for (const item of rawDocs.slice(0, MAX_DOCS)) {
     if (!object(item)) continue;
     const entry = {
       tab: Number.isInteger(item.tab) && item.tab >= 0 ? item.tab : out.length,
       name: cleanStr(item.name, MAX_DOC_NAME) || "untitled",
     };
-    const fileKey = cleanStr(item.fileKey, 48);
-    if (fileKey) entry.fileKey = fileKey;
+    // Preserve `fileKey` verbatim (as produced by `relay_keys`) so copying `docs[].fileKey`
+    // into a tool's `fileKey` argument always matches the tab's `McpTab.file_key`.
+    if (typeof item.fileKey === "string" && item.fileKey.length > 0 &&
+        item.fileKey.length <= MAX_FILE_KEY && !UNSAFE_CHARS.test(item.fileKey)) {
+      entry.fileKey = item.fileKey;
+    }
     const key = cleanStr(item.key, 32);
     if (key) entry.key = key;
     if (Number.isInteger(item.pages) && item.pages >= 0) entry.pages = item.pages;
+    const entryBytes = encoder.encode(JSON.stringify(entry)).byteLength + 1;
+    if (usedBytes + entryBytes > DOC_BUDGET_BYTES) break;
+    usedBytes += entryBytes;
     out.push(entry);
   }
   return out;
@@ -318,7 +329,7 @@ export class McpRoom {
     };
   }
 
-  resolveToolTarget(body, callerKey, unrecognized = false) {
+  resolveToolTarget(body, callerKey) {
     const ready = this.readyTabs();
     const headers = callerKey ? { "Mcp-Session-Id": callerKey } : undefined;
     if (ready.length === 0) {
@@ -369,22 +380,6 @@ export class McpRoom {
       return { tab: matches[0], body: forwardedBody };
     }
 
-    // An `Mcp-Session-Id` header that was not minted in this isolate (e.g. after Durable
-    // Object hibernation, redeploy, LRU eviction past 64, or a client-invented id) must
-    // not fall through to Rule 3 when a single device remains.
-    if (unrecognized) {
-      const data = this.listSessionsPayload(null);
-      return {
-        error: rpcError(
-          200,
-          body.id,
-          AMBIGUOUS_SESSION_CODE,
-          "Unrecognized or expired `Mcp-Session-Id`; call `initialize` to obtain a new session or pass `session`",
-          data,
-        ),
-      };
-    }
-
     // Rule 2: sticky choice for this caller (`Mcp-Session-Id` issued on `initialize`)
     const stickySession = callerKey ? this.mcpSessions.get(callerKey) : null;
     if (stickySession) {
@@ -417,15 +412,14 @@ export class McpRoom {
       };
     }
 
-    // Rule 3: if all ready sessions belong to a single device, pick its focused or newest tab
-    // (even if one tab updated its display label before another tab of the same device did),
-    // unless two live sockets collide on the same session id or assert conflicting focus.
+    // Rule 3: if all ready sessions belong to a single device, pick its newest focused tab
+    // (or newest ready tab), unless two live sockets collide on the same session id.
     const devices = new Set(ready.map((ws, idx) => this.deviceKey(ws, idx)));
     if (devices.size <= 1) {
       const sessionIds = new Set(ready.map((ws) => this.sessionSummary(ws).session));
-      const focusedTabs = ready.filter((ws) => ws.deserializeAttachment()?.focused === true);
-      if (sessionIds.size === ready.length && focusedTabs.length <= 1) {
-        return { tab: focusedTabs[0] ?? ready[0], body };
+      if (sessionIds.size === ready.length) {
+        const focusedTab = ready.find((ws) => ws.deserializeAttachment()?.focused === true);
+        return { tab: focusedTab ?? ready[0], body };
       }
     }
 
@@ -566,6 +560,18 @@ export class McpRoom {
     if (!owns(body, "id")) return new Response(null, { status: 202 });
 
     const { callerKey, unrecognized } = this.resolveMcpSession(request);
+    // Streamable HTTP (2025-03-26): an unknown or expired `Mcp-Session-Id` header on any
+    // non-`initialize` request must be answered with HTTP 404 so the client starts a new
+    // session, and must never fall through to Rule 3 or `activeTab()`.
+    if (unrecognized && body.method !== "initialize") {
+      return rpcError(
+        404,
+        body.id,
+        AMBIGUOUS_SESSION_CODE,
+        "Unrecognized or expired `Mcp-Session-Id`; start a new session with `initialize`",
+        this.listSessionsPayload(null),
+      );
+    }
     const headers = callerKey ? { "Mcp-Session-Id": callerKey } : undefined;
 
     if (body.method === "tools/call") {
@@ -576,7 +582,7 @@ export class McpRoom {
     let tab;
     let forwardBody = body;
     if (body.method === "tools/call") {
-      const resolved = this.resolveToolTarget(body, callerKey, unrecognized);
+      const resolved = this.resolveToolTarget(body, callerKey);
       if (resolved.error) return resolved.error;
       tab = resolved.tab;
       forwardBody = resolved.body;

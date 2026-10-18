@@ -42,10 +42,11 @@ test("sha256Hex matches standard NIST vector and ready v2 stores sanitized, boun
   );
   const tab = new Tab(0);
   const { room } = setup([tab]);
+  const longFileKey = `${"A".repeat(47)}~7`;
   const manyDocs = Array.from({ length: 50 }, (_, i) => ({
     tab: i,
-    name: `file-${i}\n\u202e-${"x".repeat(150)}.fig`,
-    fileKey: `file-${i}-${"k".repeat(80)}`,
+    name: `${"A".repeat(95)}😀\n\u202efig`,
+    fileKey: i === 0 ? longFileKey : `file-${i}`,
     key: "0123456789abcdef0123456789abcdef_extra",
     pages: i + 1,
   }));
@@ -62,9 +63,10 @@ test("sha256Hex matches standard NIST vector and ready v2 stores sanitized, boun
   assert.ok(!att.deviceLabel.includes("\n") && !att.deviceLabel.includes("\u202e"));
   assert.equal(att.focused, true);
   assert.equal(att.docs.length, 32);
-  assert.equal(att.docs[0].name.length, 96);
+  assert.equal(Array.from(att.docs[0].name).length, 96);
+  assert.equal(att.docs[0].name.endsWith("😀"), true, "code-point slice must not split surrogate pairs");
   assert.ok(!att.docs[0].name.includes("\n") && !att.docs[0].name.includes("\u202e"));
-  assert.equal(att.docs[0].fileKey.length, 48);
+  assert.equal(att.docs[0].fileKey, longFileKey, "fileKey must round-trip verbatim without 48-char truncation");
   assert.equal(att.docs[0].key.length, 32);
   assert.ok(JSON.stringify(att).length < 16_384, "attachment must stay well under the 16 KiB DO limit");
 
@@ -126,15 +128,14 @@ test("tools/list works with no tab connected, augments tab tools, and preserves 
   await callPromise;
 });
 
-test("single device with multiple tabs routes to focused or newest tab and tags _meta", async () => {
+test("single device with multiple tabs routes to focused or newest tab even during label rename or before blur", async () => {
   const tabA = new Tab(1);
   const tabB = new Tab(2);
   const { room } = setup([tabA, tabB]);
   room.webSocketMessage(tabA, readyV2("dev_same", "Office MBP", "tab_a", { focused: true }));
-  room.webSocketMessage(tabB, readyV2("dev_same", "Office MBP", "tab_b", { focused: false }));
-
-  // Even though tabB sent ready later, tabA is focused on the same device so it wins.
-  // Renaming the device label on tabA before tabB reloads must not break single-device routing.
+  // tabB has not painted a blur yet (also focused: true), then tabA renames its label and sends ready:
+  // newest focused tab (`tabA`) must still win without false-triggering -32002.
+  room.webSocketMessage(tabB, readyV2("dev_same", "Office MBP", "tab_b", { focused: true }));
   room.webSocketMessage(tabA, readyV2("dev_same", "Renamed MBP", "tab_a", { focused: true }));
   const sentA = new Promise((resolve) => { tabA.notify = resolve; });
   const resPromise = room.fetch(post(callTool("get_metadata", { node: "0:1" }, 10)));
@@ -221,13 +222,13 @@ test("two protocol-1 sockets get distinct device keys (-32002), keep stable sess
   assert.equal(callBody.result._meta["figstudio/device"], "Browser tab");
 });
 
-test("duplicate sessionId or copied deviceId with conflicting focus/label fails with -32002", async () => {
+test("duplicate sessionId across live sockets fails closed with -32002 on both explicit and auto routing", async () => {
   const orig = new Tab(1);
   const clone = new Tab(2);
   const { room } = setup([orig, clone]);
   // Both sockets claim the exact same (deviceId, instance) -> duplicate sessionId
   room.webSocketMessage(orig, readyV2("dev_office", "Office Mac", "inst_1", { focused: true }));
-  room.webSocketMessage(clone, readyV2("dev_office", "Office Mac", "inst_1", { focused: true }));
+  room.webSocketMessage(clone, readyV2("dev_office", "Office Mac", "inst_1", { focused: false }));
 
   const targetSession = deriveSessionId("dev_office", "inst_1");
   // Explicit session must refuse to pick newest when two live sockets share the id
@@ -235,14 +236,12 @@ test("duplicate sessionId or copied deviceId with conflicting focus/label fails 
   assert.equal(explicitRes.error.code, -32002);
   assert.match(explicitRes.error.error?.message ?? explicitRes.error.message, /multiple executors/);
 
-  // Even with distinct instances, if a second socket copies deviceId and asserts focused: true
-  // while the existing socket is also focused (or uses a different label), Rule 3 refuses to auto-route.
-  room.webSocketMessage(clone, readyV2("dev_office", "Copied Label", "inst_2", { focused: true }));
+  // Auto routing (Rule 3) also refuses when two live sockets collide on the same sessionId
   const rule3Res = await (await room.fetch(post(callTool("get_metadata", {}, 41)))).json();
   assert.equal(rule3Res.error.code, -32002);
 });
 
-test("Mcp-Session-Id is minted on initialize, isolated per client, ignores unissued ids, caps at 64, and fails on dead pin", async () => {
+test("Mcp-Session-Id is minted on initialize, isolated per client, rejects unrecognized ids with HTTP 404, caps at 64, and fails on dead pin", async () => {
   const office = new Tab(1);
   const home = new Tab(2);
   const { room } = setup([office, home]);
@@ -252,15 +251,25 @@ test("Mcp-Session-Id is minted on initialize, isolated per client, ignores uniss
   const officeSession = deriveSessionId("dev_office", "inst_o");
   const homeSession = deriveSessionId("dev_home", "inst_h");
 
-  // Unissued client-supplied Mcp-Session-Id is rejected by select_session and does not grow the map
+  // Unissued client-supplied Mcp-Session-Id is rejected with HTTP 404 on select_session, tools/call, and tools/list
   const forgedReq = (b) => new Request(endpoint, {
     method: "POST",
     body: JSON.stringify(b),
     headers: { "Content-Type": "application/json", "Mcp-Session-Id": "forged-client-id" },
   });
-  const forgedSel = await (await room.fetch(forgedReq(callTool("select_session", { session: homeSession }, 50)))).json();
-  assert.equal(forgedSel.result.isError, true);
+  for (const reqBody of [
+    callTool("select_session", { session: homeSession }, 50),
+    callTool("get_metadata", {}, 501),
+    { jsonrpc: "2.0", id: 502, method: "tools/list", params: {} },
+  ]) {
+    const forgedRes = await room.fetch(forgedReq(reqBody));
+    assert.equal(forgedRes.status, 404);
+    const forgedJson = await forgedRes.json();
+    assert.equal(forgedJson.error.code, -32002);
+  }
   assert.equal(room.mcpSessions.size, 0);
+  assert.equal(office.sent.length, 0);
+  assert.equal(home.sent.length, 0);
 
   // Two independent MCP clients initialize and get distinct server-issued Mcp-Session-Ids
   const mcpClient1 = await initClient(room, 51);
@@ -314,9 +323,11 @@ test("Mcp-Session-Id is minted on initialize, isolated per client, ignores uniss
   assert.equal(room.mcpSessions.has(mcpClient1), false, "oldest MCP session should be evicted past cap 64");
 
   // Even when only 1 device (`office`) remains open, calling with an evicted/unrecognized
-  // `Mcp-Session-Id` must return -32002 instead of falling through to Rule 3.
+  // `Mcp-Session-Id` must return HTTP 404 (-32002) instead of falling through to Rule 3.
   const sentBefore = office.sent.length;
-  const afterLruEvict = await (await room.fetch(req1(callTool("get_metadata", {}, 300)))).json();
+  const evictedRes = await room.fetch(req1(callTool("get_metadata", {}, 300)));
+  assert.equal(evictedRes.status, 404);
+  const afterLruEvict = await evictedRes.json();
   assert.equal(afterLruEvict.error.code, -32002);
   assert.equal(office.sent.length, sentBefore, "evicted Mcp-Session-Id must not fall through to Rule 3");
 });
