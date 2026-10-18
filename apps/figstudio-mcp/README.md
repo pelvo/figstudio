@@ -121,6 +121,8 @@ over WebSocket. Files never leave the browser.
      `"session": "s_…"` on individual tool calls.
    - Every forwarded `tools/call` result carries `_meta["figstudio/session"]` and
      `_meta["figstudio/device"]`.
+   - Unreloaded legacy (protocol 1) tabs each count as a separate session until reloaded
+     onto protocol 2.
    - See the [cloud-relay-sessions agent skill](../../.agents/skills/cloud-relay-sessions/SKILL.md)
      for the step-by-step agent workflow.
 

@@ -11,6 +11,7 @@ const MAX_DOC_NAME = 96;
 const MAX_LABEL = 64;
 const MAX_ID = 64;
 const MAX_MCP_SESSIONS = 64;
+const SOCKET_CAP = 16;
 const AMBIGUOUS_SESSION_CODE = -32002;
 const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 const encoder = new TextEncoder();
@@ -71,8 +72,11 @@ function sanitizeDocs(rawDocs) {
     if (key) base.key = key;
     if (Number.isInteger(item.pages) && item.pages >= 0) base.pages = item.pages;
     const baseBytes = encoder.encode(JSON.stringify(base)).byteLength + 1;
-    const hasFileKey = typeof item.fileKey === "string" && item.fileKey.length > 0;
-    const full = hasFileKey ? { ...base, fileKey: item.fileKey } : base;
+    const rawFileKey = typeof item.fileKey === "string"
+      ? item.fileKey.replace(UNSAFE_CHARS, "")
+      : "";
+    const hasFileKey = rawFileKey.length > 0;
+    const full = hasFileKey ? { ...base, fileKey: rawFileKey } : base;
     const fullBytes = hasFileKey
       ? encoder.encode(JSON.stringify(full)).byteLength + 1
       : baseBytes;
@@ -346,7 +350,7 @@ export class McpRoom {
       sessions: ready.map((ws) => this.sessionSummary(ws, now)),
       selectedSession: sticky,
       socketsInUse: openCount,
-      socketCap: 16,
+      socketCap: SOCKET_CAP,
     };
   }
 
@@ -645,7 +649,7 @@ export class McpRoom {
     // that merely claims the check already happened — such a header is forgeable.
     const proof = await checkBridgeUpgrade(request);
     if (!proof.ok) return new Response(proof.message, { status: proof.status });
-    if (this.ctx.getWebSockets("tab").filter((ws) => ws.readyState === 1).length >= 16) {
+    if (this.ctx.getWebSockets("tab").filter((ws) => ws.readyState === 1).length >= SOCKET_CAP) {
       return new Response("Too many browser tabs connected", { status: 503 });
     }
     const [client, server] = Object.values(new WebSocketPair());
