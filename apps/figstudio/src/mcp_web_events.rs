@@ -49,10 +49,12 @@ impl McpHost {
                     );
                     self.last_key = Some(key(tabs, *active));
                     self.last_focused = Some(focused);
-                    return ws
-                        .send_with_str(&frame)
-                        .err()
-                        .map(|_| "Could not talk to the cloud relay".to_owned());
+                    let err_msg = if self.proxy.is_some() {
+                        "Could not talk to the local browser proxy"
+                    } else {
+                        "Could not talk to the cloud relay"
+                    };
+                    return ws.send_with_str(&frame).err().map(|_| err_msg.to_owned());
                 }
                 let hello = ClientMessage::Hello {
                     token: self.token.clone(),

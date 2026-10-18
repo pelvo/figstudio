@@ -479,9 +479,11 @@ impl ProxyState {
             );
         }
         let url = self.config.launch_url(self.port);
-        if self.config.launch_browser {
-            open_system_browser(&url);
-        }
+        let launched = if self.config.launch_browser {
+            open_system_browser(&url)
+        } else {
+            false
+        };
         let deadline = Instant::now() + Duration::from_secs(timeout_secs);
         loop {
             // Register the waiter before checking `ready_tabs()` so a `ready` frame
@@ -493,7 +495,7 @@ impl ProxyState {
                 let payload = self.list_sessions_payload();
                 let out = json!({
                     "connected": true,
-                    "launched": self.config.launch_browser,
+                    "launched": launched,
                     "sessions": payload["sessions"],
                 });
                 return (
@@ -512,7 +514,7 @@ impl ProxyState {
             if remaining.is_zero() {
                 let out = json!({
                     "connected": false,
-                    "launched": self.config.launch_browser,
+                    "launched": launched,
                     "message": format!("Timed out after {timeout_secs}s waiting for a figstudio browser tab to connect to ws://127.0.0.1:{}/bridge.", self.port),
                 });
                 return (
@@ -936,37 +938,72 @@ fn rpc_error(id: Value, code: i32, message: &str, data: Option<Value>) -> Value 
     json!({ "jsonrpc": "2.0", "id": id, "error": err })
 }
 
-fn open_system_browser(url: &str) {
-    if let Some(browser) = std::env::var_os("BROWSER").filter(|b| !b.is_empty()) {
-        let _ = std::process::Command::new(browser)
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        return;
+/// Parse one entry of a `BROWSER` environment variable (`program [args...]`, replacing
+/// `%s` with `url` or appending `url` when `%s` is absent), without invoking a shell.
+#[must_use]
+pub fn parse_browser_entry(entry: &str, url: &str) -> Option<(String, Vec<String>)> {
+    let mut parts = entry.split_whitespace();
+    let program = parts.next()?.to_owned();
+    let mut args = Vec::new();
+    let mut substituted = false;
+    for tok in parts {
+        if tok.contains("%s") {
+            args.push(tok.replace("%s", url));
+            substituted = true;
+        } else {
+            args.push(tok.to_owned());
+        }
+    }
+    if !substituted {
+        args.push(url.to_owned());
+    }
+    Some((program, args))
+}
+
+fn spawn_quiet(program: &str, args: &[String]) -> bool {
+    std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+fn open_system_browser(url: &str) -> bool {
+    if let Ok(browser_env) = std::env::var("BROWSER") {
+        #[cfg(windows)]
+        let sep = ';';
+        #[cfg(not(windows))]
+        let sep = ':';
+        for entry in browser_env.split(sep) {
+            if let Some((prog, args)) = parse_browser_entry(entry, url)
+                && spawn_quiet(&prog, &args)
+            {
+                return true;
+            }
+        }
     }
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open")
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    {
+        spawn_quiet("open", &[url.to_owned()])
+    }
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    {
+        spawn_quiet(
+            "cmd",
+            &[
+                "/C".to_owned(),
+                "start".to_owned(),
+                String::new(),
+                url.to_owned(),
+            ],
+        )
+    }
     #[cfg(all(unix, not(target_os = "macos")))]
-    let _ = std::process::Command::new("xdg-open")
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    {
+        spawn_quiet("xdg-open", &[url.to_owned()])
+    }
 }
 
 /// Upgrade `/bridge` WebSocket connections after verifying `Origin` and `Sec-WebSocket-Protocol`.

@@ -2,24 +2,48 @@
 use super::*;
 impl McpHost {
     pub fn menu(&mut self, ui: &mut egui::Ui) {
-        let previous = self.relay;
+        let current_mode = if self.proxy.is_some() {
+            2u8
+        } else if self.relay {
+            0u8
+        } else {
+            1u8
+        };
+        let mut mode = current_mode;
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.relay, true, "Cloud relay");
-            ui.selectable_value(&mut self.relay, false, "Local bridge");
+            ui.selectable_value(&mut mode, 0, "Cloud relay");
+            ui.selectable_value(&mut mode, 1, "Local bridge");
         });
-        if self.relay != previous {
+        if mode != current_mode {
             self.proxy = None;
+            self.relay = mode == 0;
             self.stop();
         }
-        if self.relay {
-            if self.proxy.is_some() {
-                ui.label("Paired with local `figstudio-mcp --browser-proxy` (zero upload).");
-                if ui.button("Switch to cloud relay").clicked() {
-                    self.proxy = None;
-                    self.stop();
-                    self.want_connect = true;
+        if self.proxy.is_some() {
+            ui.label("Paired with local `figstudio-mcp --browser-proxy` (zero upload).");
+            ui.label("MCP tools run in this browser; files are not uploaded.");
+            ui.horizontal(|ui| {
+                ui.label("Device label");
+                let id = egui::Id::new("mcp_device_label_input");
+                if !ui.ctx().memory(|m| m.has_focus(id))
+                    && let Some(saved) = room::raw_stored_device_label()
+                {
+                    self.device_label = saved;
                 }
-            }
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.device_label)
+                            .id(id)
+                            .char_limit(64)
+                            .hint_text("e.g. Office · Chrome"),
+                    )
+                    .changed()
+                {
+                    room::save_device_label(&self.device_label);
+                    self.last_key = None;
+                }
+            });
+        } else if self.relay {
             ui.label("MCP tools run in this browser; files are not uploaded.");
             ui.label("Anyone with the MCP URL can call the tools; the room link also");
             ui.label("grants executor authority over the documents open in this browser.");

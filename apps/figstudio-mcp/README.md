@@ -113,16 +113,38 @@ Build the browser bundle first with `scripts/web-build.sh` (output in `web/dist`
 
 ### In the browser (local zero-upload proxy, `--browser-proxy`)
 
-When your coding agent and browser run on the same computer, `--browser-proxy` combines the
-zero-upload Wasm RPC executor with a local `stdio` proxy inspired by
-`googlecolab/colab-mcp` — no `.fig` upload, no Cloudflare Access bypass, and no manual
-token pasting:
+When your coding agent and browser run on the same computer, `--browser-proxy` (implied
+whenever `--origin` is passed without `FILE.fig` or `--bridge`) combines the zero-upload
+Wasm RPC executor with a local `stdio` proxy inspired by `googlecolab/colab-mcp` — no `.fig`
+upload, no Cloudflare Access bypass, and no manual token pasting.
+
+**One-line setup (`uvx`, `colab-mcp` style):**
 
 ```sh
-claude mcp add figstudio -- /path/to/figstudio-mcp --browser-proxy --origin https://<your-deploy-domain>
+claude mcp add figstudio -- uvx git+https://github.com/pelvo/figstudio --origin https://<your-deploy-domain>
 ```
 
-- `figstudio-mcp --browser-proxy` speaks `stdio` to the agent, binds
+Or in `.mcp.json` / Cursor / Windsurf:
+
+```json
+{
+  "mcpServers": {
+    "figstudio": {
+      "command": "uvx",
+      "args": ["git+https://github.com/pelvo/figstudio", "--origin", "https://<your-deploy-domain>"]
+    }
+  }
+}
+```
+
+Or with the prebuilt Rust binary (`cargo install --git https://github.com/pelvo/figstudio figstudio-mcp`):
+
+```sh
+claude mcp add figstudio -- figstudio-mcp --origin https://<your-deploy-domain>
+```
+
+- `figstudio-mcp --origin https://<your-deploy-domain>` (or `figstudio-mcp --browser-proxy`
+  for a local `http://127.0.0.1:8765` web build) speaks `stdio` to the agent, binds
   `ws://127.0.0.1:<port>/bridge` on loopback (trying `3845..=3855` first, then an ephemeral
   port), and mints a 256-bit process token (never printed to `stderr`).
 - When the agent calls `open_figstudio_browser`, the proxy opens

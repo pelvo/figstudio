@@ -54,7 +54,7 @@ struct Args {
     /// Maximum bytes per browser upload (default 2 GiB).
     #[arg(long, requires = "bridge", default_value_t = figstudio_mcp::bridge::DEFAULT_MAX_UPLOAD_BYTES)]
     max_upload_bytes: u64,
-    #[arg(required_unless_present_any = ["bridge", "browser_proxy"], value_name = "FILE.fig")]
+    #[arg(required_unless_present_any = ["bridge", "browser_proxy", "allow_origin"], value_name = "FILE.fig")]
     files: Vec<PathBuf>,
 }
 
@@ -110,14 +110,14 @@ fn main() -> anyhow::Result<()> {
 
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
-    if args.browser_proxy {
+    if args.browser_proxy || (!args.bridge && args.files.is_empty()) {
+        if args.http.is_some() {
+            anyhow::bail!("--browser-proxy uses stdio only and cannot be combined with --http");
+        }
         return run_browser_proxy(&args).await;
     }
     if args.bridge {
         return run_bridge(&args).await;
-    }
-    if !args.allow_origin.is_empty() {
-        anyhow::bail!("--allow-origin / --origin requires --bridge or --browser-proxy");
     }
     let assets = match (args.assets, args.assets_dir) {
         (Some(_), _) => Assets::Inline,

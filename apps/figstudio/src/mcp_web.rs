@@ -287,13 +287,23 @@ impl McpHost {
                     // A refused send is the browser already giving up on the socket:
                     // disconnect now, not after some later frame notices.
                     Err(_) => {
-                        self.relay_lost(ctx, "Cloud relay disconnected", self.heartbeat.proven())
+                        let msg = if self.proxy.is_some() {
+                            "Local browser proxy disconnected"
+                        } else {
+                            "Cloud relay disconnected"
+                        };
+                        self.relay_lost(ctx, msg, self.heartbeat.proven())
                     }
                 },
                 // One automatic retry per proven connection; a connection that never
                 // proved itself waits for the user (the storm bound).
                 Beat::Elapsed { proven } => {
-                    self.relay_lost(ctx, "Cloud relay stopped responding", proven)
+                    let msg = if self.proxy.is_some() {
+                        "Local browser proxy stopped responding"
+                    } else {
+                        "Cloud relay stopped responding"
+                    };
+                    self.relay_lost(ctx, msg, proven)
                 }
             }
             return;

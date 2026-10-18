@@ -1,6 +1,7 @@
 //! Integration tests for `figstudio-mcp --browser-proxy` (zero-upload Wasm RPC proxy).
 use figstudio_mcp::proxy::{
-    EXEC_PROTOCOL, ProxyConfig, ProxyState, bind_proxy_listener, derive_session_id, serve_proxy_ws,
+    EXEC_PROTOCOL, ProxyConfig, ProxyState, bind_proxy_listener, derive_session_id,
+    parse_browser_entry, serve_proxy_ws,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -125,8 +126,8 @@ async fn open_figstudio_browser_waits_for_ready_and_forwards_zero_upload_rpc() {
         expected_sid
     );
 
-    // Even when a tab is already ready, `initialize` is answered directly by the proxy
-    // with `capabilities.tools.listChanged: true`.
+    // Even when a tab is already ready, `initialize` and `ping` are answered directly by
+    // the proxy with `capabilities.tools.listChanged: true` and without blocking on the tab.
     let (_, init_after) = state
         .dispatch_rpc(json!({"jsonrpc": "2.0", "id": 99, "method": "initialize", "params": {}}))
         .await
@@ -135,6 +136,12 @@ async fn open_figstudio_browser_waits_for_ready_and_forwards_zero_upload_rpc() {
         init_after["result"]["capabilities"]["tools"]["listChanged"],
         json!(true)
     );
+    let (ping_st, ping_after) = state
+        .dispatch_rpc(json!({"jsonrpc": "2.0", "id": 100, "method": "ping", "params": {}}))
+        .await
+        .unwrap();
+    assert_eq!(ping_st, 200);
+    assert_eq!(ping_after["result"], json!({}));
 
     // Forward a `tools/call` (`get_metadata`) to the connected Wasm tab and check `_meta`.
     let state_rpc = state.clone();
@@ -186,6 +193,28 @@ async fn open_figstudio_browser_waits_for_ready_and_forwards_zero_upload_rpc() {
     shutdown.cancel();
 }
 
+#[test]
+fn browser_entry_parser_handles_percent_s_and_arguments() {
+    assert_eq!(
+        parse_browser_entry("firefox --new-tab %s", "https://example.com/#x"),
+        Some((
+            "firefox".to_owned(),
+            vec!["--new-tab".to_owned(), "https://example.com/#x".to_owned()]
+        ))
+    );
+    assert_eq!(
+        parse_browser_entry("chromium --incognito", "https://example.com/#x"),
+        Some((
+            "chromium".to_owned(),
+            vec![
+                "--incognito".to_owned(),
+                "https://example.com/#x".to_owned()
+            ]
+        ))
+    );
+    assert_eq!(parse_browser_entry("   ", "https://example.com"), None);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn browser_proxy_binary_speaks_stdio_never_logs_token_and_launches_browser() {
@@ -196,20 +225,22 @@ async fn browser_proxy_binary_speaks_stdio_never_logs_token_and_launches_browser
     let opener = dir.path().join("fake-browser.sh");
     std::fs::write(
         &opener,
-        format!("#!/bin/sh\nprintf '%s' \"$1\" > {}\n", url_file.display()),
+        format!("#!/bin/sh\nprintf '%s' \"$2\" > {}\n", url_file.display()),
     )
     .unwrap();
     let mut perms = std::fs::metadata(&opener).unwrap().permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&opener, perms).unwrap();
 
+    // Test colon-separated `BROWSER` with a failing first entry and `%s` substitution,
+    // and test 1-line `--origin <URL>` invocation (which implies `--browser-proxy`).
+    let browser_env = format!(
+        "/nonexistent-figstudio-browser:{} --flag %s",
+        opener.display()
+    );
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
-        .args([
-            "--browser-proxy",
-            "--origin",
-            "https://figstudio.example.com",
-        ])
-        .env("BROWSER", &opener)
+        .args(["--origin", "https://figstudio.example.com"])
+        .env("BROWSER", &browser_env)
         .kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
