@@ -68,19 +68,25 @@ function sanitizeDocs(rawDocs) {
       tab: Number.isInteger(item.tab) && item.tab >= 0 ? item.tab : out.length,
       name: cleanStr(item.name, MAX_DOC_NAME) || "untitled",
     };
-    // Preserve `fileKey` verbatim (as produced by `relay_keys`) so copying `docs[].fileKey`
-    // into a tool's `fileKey` argument always matches the tab's `McpTab.file_key`; the
-    // 12 KiB `DOC_BUDGET_BYTES` cap below bounds the total attachment size.
-    if (typeof item.fileKey === "string" && item.fileKey.length > 0) {
-      entry.fileKey = item.fileKey;
-    }
     const key = cleanStr(item.key, 32);
     if (key) entry.key = key;
     if (Number.isInteger(item.pages) && item.pages >= 0) entry.pages = item.pages;
-    const entryBytes = encoder.encode(JSON.stringify(entry)).byteLength + 1;
-    if (usedBytes + entryBytes > DOC_BUDGET_BYTES) break;
-    usedBytes += entryBytes;
+    const baseBytes = encoder.encode(JSON.stringify(entry)).byteLength + 1;
+    if (usedBytes + baseBytes > DOC_BUDGET_BYTES) continue;
+    // Preserve `fileKey` verbatim (as produced by `relay_keys`) when it fits in the
+    // remaining 12 KiB budget; if one `fileKey` is too large, omit only that key so
+    // the document entry and all subsequent documents remain addressable.
+    if (typeof item.fileKey === "string" && item.fileKey.length > 0) {
+      const withKey = { ...entry, fileKey: item.fileKey };
+      const fullBytes = encoder.encode(JSON.stringify(withKey)).byteLength + 1;
+      if (usedBytes + fullBytes <= DOC_BUDGET_BYTES) {
+        out.push(withKey);
+        usedBytes += fullBytes;
+        continue;
+      }
+    }
     out.push(entry);
+    usedBytes += baseBytes;
   }
   return out;
 }
@@ -412,15 +418,13 @@ export class McpRoom {
     }
 
     // Rule 3: if all ready sessions belong to a single device, pick its newest focused tab
-    // (or newest ready tab), unless two live sockets collide on the same session id or a
-    // second socket claims focus under a conflicting label.
+    // (or newest ready tab), unless two live sockets collide on the same session id.
     const devices = new Set(ready.map((ws, idx) => this.deviceKey(ws, idx)));
     if (devices.size <= 1) {
       const sessionIds = new Set(ready.map((ws) => this.sessionSummary(ws).session));
-      const labels = new Set(ready.map((ws) => ws.deserializeAttachment()?.deviceLabel ?? "Browser tab"));
-      const focusedTabs = ready.filter((ws) => ws.deserializeAttachment()?.focused === true);
-      if (sessionIds.size === ready.length && !(labels.size > 1 && focusedTabs.length > 1)) {
-        return { tab: focusedTabs[0] ?? ready[0], body };
+      if (sessionIds.size === ready.length) {
+        const focusedTab = ready.find((ws) => ws.deserializeAttachment()?.focused === true);
+        return { tab: focusedTab ?? ready[0], body };
       }
     }
 
@@ -750,21 +754,6 @@ export class McpRoom {
     if (reply.type === "ready" && reply.protocol === 2) {
       const order = ++this.order;
       const v2 = parseReadyV2(reply, order);
-      // When an already-ready tab of this device updates its label (saved to shared
-      // `localStorage`), update sibling tabs of the same device that still carry the
-      // previous label so a rename never creates a label split while another tab is still
-      // focused. A newly joining socket that claims an existing `deviceId` with a
-      // different label has `prev.ready !== true`, so its mismatch stays visible to Rule 3.
-      if (prev.ready === true && prev.deviceId === v2.deviceId && prev.deviceLabel !== v2.deviceLabel) {
-        for (const other of this.ctx.getWebSockets("tab")) {
-          if (other === tab || other.readyState !== 1) continue;
-          const otherAtt = other.deserializeAttachment();
-          if (otherAtt?.ready === true && otherAtt?.deviceId === v2.deviceId &&
-              otherAtt?.deviceLabel === prev.deviceLabel) {
-            other.serializeAttachment({ ...otherAtt, deviceLabel: v2.deviceLabel });
-          }
-        }
-      }
       tab.serializeAttachment({
         authenticatedProtocol: EXEC_PROTOCOL,
         ready: true,

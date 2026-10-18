@@ -64,12 +64,7 @@ pub(super) fn load_device() -> DeviceLoad {
             }
         },
     };
-    let label = store
-        .as_ref()
-        .and_then(|s| s.get_item(DEVICE_LABEL_KEY).ok().flatten())
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(default_device_label);
+    let label = current_device_label();
     let instance = match mcp_pair::random_hex_16() {
         Ok(fresh) => Some(fresh[..16].to_owned()),
         Err(_) => {
@@ -94,12 +89,11 @@ pub(super) fn save_device_label(label: &str) {
     }
 }
 
-pub(super) fn stored_device_label() -> Option<String> {
-    web_sys::window()
+pub(super) fn current_device_label() -> String {
+    let stored = web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item(DEVICE_LABEL_KEY).ok().flatten())
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
+        .and_then(|s| s.get_item(DEVICE_LABEL_KEY).ok().flatten());
+    mcp_pair::resolve_device_label(stored.as_deref(), &default_device_label())
 }
 
 pub(super) fn document_focused() -> bool {

@@ -208,3 +208,23 @@ fn device_id_generation_and_validation_reject_all_zero_ids() {
     assert!(!valid_device_id("0123456789abcdef"));
     assert!(!valid_device_id("0123456789ABCDEF0123456789abcdef"));
 }
+
+#[test]
+fn device_label_resolution_uses_saved_text_and_falls_back_when_cleared() {
+    assert_eq!(
+        resolve_device_label(Some("  Office · Mac  "), "Linux · Chrome"),
+        "Office · Mac"
+    );
+    assert_eq!(
+        resolve_device_label(Some(""), "Linux · Chrome"),
+        "Linux · Chrome"
+    );
+    assert_eq!(
+        resolve_device_label(Some("   "), "Linux · Chrome"),
+        "Linux · Chrome"
+    );
+    assert_eq!(
+        resolve_device_label(None, "Linux · Chrome"),
+        "Linux · Chrome"
+    );
+}

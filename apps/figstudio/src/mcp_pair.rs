@@ -94,6 +94,16 @@ pub(crate) fn valid_device_id(id: &str) -> bool {
         && id.bytes().any(|b| b != b'0')
 }
 
+/// Resolves the stored device label (`figstudio.mcp.device_label.v1`), falling back to
+/// `default` when no key is stored or when the stored label was cleared (`""` or whitespace).
+pub(crate) fn resolve_device_label(stored: Option<&str>, default: &str) -> String {
+    stored
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| default.to_owned())
+}
+
 /// The `#room=` and `#exec=` keys together: both present, both valid, and the room must
 /// be the one derived from that executor. Anything else is not a proposal.
 pub(crate) fn pair_from_fragment(fragment: &str) -> Option<ExecutorPair> {
