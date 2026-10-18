@@ -27,6 +27,7 @@ impl McpHost {
                     .add(
                         egui::TextEdit::singleline(&mut self.device_label)
                             .id(id)
+                            .char_limit(64)
                             .hint_text("e.g. Office · Chrome"),
                     )
                     .changed()

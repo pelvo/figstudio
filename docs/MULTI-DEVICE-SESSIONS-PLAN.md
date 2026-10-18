@@ -191,9 +191,11 @@ Every forwarded `tools/call` result gets
 always see who answered (fixes the "not told" part of F1).
 
 Phase 1b, sticky choice: the relay issues an `Mcp-Session-Id` on `initialize` and keeps
-`{mcp-session → figstudio session}` in memory. After hibernation or eviction the map is
-gone and routing falls back to rules 3–4, which is safe: the worst case is one extra
-ambiguity error.
+`{mcp-session → figstudio session}` in memory (capped at 64 entries). After hibernation,
+redeploy, or LRU eviction the map entry is gone and any non-`initialize` request carrying
+that stale `Mcp-Session-Id` receives HTTP 404 (`-32002`) per the Streamable HTTP
+2025-03-26 specification, prompting the client to re-initialize rather than silently
+falling through to another device.
 
 ### 3.3 Linking devices and revocation
 

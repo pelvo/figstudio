@@ -20,7 +20,7 @@ Use when the user opens `.fig` files in the browser build of figstudio on a depl
    - Set a clear **Device label** on each machine (for example `Office · Chrome` and `Home · Mac`); it is saved in `localStorage["figstudio.mcp.device_label.v1"]`. Each machine keeps its own random `device.id` in `localStorage["figstudio.mcp.device.v1"]`, while sharing the same room capability.
 
 3. **Single-device vs multi-device routing (what the agent does).**
-   - **One machine connected:** call tools (`list_open_tabs`, `get_metadata`, `get_screenshot`, `get_design_context`, `reveal_node`, …) directly with no `session` argument. Even if several browser tabs are open on that same machine, the relay automatically routes to the focused tab (or newest ready tab on that device).
+   - **One machine connected:** call tools (`list_open_tabs`, `get_metadata`, `get_screenshot`, `get_design_context`, `reveal_node`, …) directly with no `session` argument. Even if several browser tabs are open on that same machine (on protocol 2), the relay automatically routes to the focused tab (or newest ready tab on that device). Unreloaded legacy (protocol 1) tabs each count as a separate session and return `-32002` until reloaded onto protocol 2.
    - **Multiple machines connected:** an unpinned tool call without `session` returns JSON-RPC error `-32002` (`Several figstudio sessions are connected across devices; pass session or call select_session`), with `error.data.sessions` listing every connected session.
 
 4. **Inspect and choose a session when multiple machines are connected.**
