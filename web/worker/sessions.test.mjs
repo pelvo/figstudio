@@ -42,11 +42,11 @@ test("sha256Hex matches standard NIST vector and ready v2 stores sanitized, boun
   );
   const tab = new Tab(0);
   const { room } = setup([tab]);
-  const longFileKey = `${"A".repeat(47)}~7`;
+  const longFileKey = `${"A".repeat(600)}~7`;
   const manyDocs = Array.from({ length: 50 }, (_, i) => ({
     tab: i,
     name: `${"A".repeat(95)}😀\n\u202efig`,
-    fileKey: i === 0 ? longFileKey : `file-${i}`,
+    fileKey: i === 0 ? longFileKey : `file-${i}-${"k".repeat(450)}`,
     key: "0123456789abcdef0123456789abcdef_extra",
     pages: i + 1,
   }));
@@ -62,11 +62,11 @@ test("sha256Hex matches standard NIST vector and ready v2 stores sanitized, boun
   assert.equal(att.deviceLabel, "Office  · Chrome");
   assert.ok(!att.deviceLabel.includes("\n") && !att.deviceLabel.includes("\u202e"));
   assert.equal(att.focused, true);
-  assert.equal(att.docs.length, 32);
+  assert.ok(att.docs.length < 32 && att.docs.length >= 15, "12 KiB budget caps oversized docs before 32");
   assert.equal(Array.from(att.docs[0].name).length, 96);
   assert.equal(att.docs[0].name.endsWith("😀"), true, "code-point slice must not split surrogate pairs");
   assert.ok(!att.docs[0].name.includes("\n") && !att.docs[0].name.includes("\u202e"));
-  assert.equal(att.docs[0].fileKey, longFileKey, "fileKey must round-trip verbatim without 48-char truncation");
+  assert.equal(att.docs[0].fileKey, longFileKey, "fileKey must round-trip verbatim without truncation");
   assert.equal(att.docs[0].key.length, 32);
   assert.ok(JSON.stringify(att).length < 16_384, "attachment must stay well under the 16 KiB DO limit");
 
@@ -222,9 +222,10 @@ test("two protocol-1 sockets get distinct device keys (-32002), keep stable sess
   assert.equal(callBody.result._meta["figstudio/device"], "Browser tab");
 });
 
-test("duplicate sessionId across live sockets fails closed with -32002 on both explicit and auto routing", async () => {
+test("duplicate sessionId or a newly joined copied deviceId claiming focus with a different label fails with -32002", async () => {
   const orig = new Tab(1);
   const clone = new Tab(2);
+  clone.attachment = { ...clone.attachment, ready: false };
   const { room } = setup([orig, clone]);
   // Both sockets claim the exact same (deviceId, instance) -> duplicate sessionId
   room.webSocketMessage(orig, readyV2("dev_office", "Office Mac", "inst_1", { focused: true }));
@@ -239,6 +240,16 @@ test("duplicate sessionId across live sockets fails closed with -32002 on both e
   // Auto routing (Rule 3) also refuses when two live sockets collide on the same sessionId
   const rule3Res = await (await room.fetch(post(callTool("get_metadata", {}, 41)))).json();
   assert.equal(rule3Res.error.code, -32002);
+
+  // A new socket joining with a copied deviceId, a different label, and focused: true while
+  // the real tab is also focused must be refused with -32002.
+  const attacker = new Tab(3);
+  attacker.attachment = { ...attacker.attachment, ready: false };
+  const { room: room2 } = setup([orig, attacker]);
+  room2.webSocketMessage(orig, readyV2("dev_office", "Office Mac", "inst_1", { focused: true }));
+  room2.webSocketMessage(attacker, readyV2("dev_office", "Copied Label", "inst_2", { focused: true }));
+  const hijackRes = await (await room2.fetch(post(callTool("get_metadata", {}, 42)))).json();
+  assert.equal(hijackRes.error.code, -32002);
 });
 
 test("Mcp-Session-Id is minted on initialize, isolated per client, rejects unrecognized ids with HTTP 404, caps at 64, and fails on dead pin", async () => {
@@ -261,6 +272,7 @@ test("Mcp-Session-Id is minted on initialize, isolated per client, rejects unrec
     callTool("select_session", { session: homeSession }, 50),
     callTool("get_metadata", {}, 501),
     { jsonrpc: "2.0", id: 502, method: "tools/list", params: {} },
+    { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 1 } },
   ]) {
     const forgedRes = await room.fetch(forgedReq(reqBody));
     assert.equal(forgedRes.status, 404);

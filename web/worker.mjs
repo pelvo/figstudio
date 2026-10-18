@@ -8,7 +8,6 @@ const REPLY_LIMIT = 8 * 1024 * 1024;
 const MAX_DOCS = 32;
 const DOC_BUDGET_BYTES = 12_000;
 const MAX_DOC_NAME = 96;
-const MAX_FILE_KEY = 512;
 const MAX_LABEL = 64;
 const MAX_ID = 64;
 const MAX_MCP_SESSIONS = 64;
@@ -70,9 +69,9 @@ function sanitizeDocs(rawDocs) {
       name: cleanStr(item.name, MAX_DOC_NAME) || "untitled",
     };
     // Preserve `fileKey` verbatim (as produced by `relay_keys`) so copying `docs[].fileKey`
-    // into a tool's `fileKey` argument always matches the tab's `McpTab.file_key`.
-    if (typeof item.fileKey === "string" && item.fileKey.length > 0 &&
-        item.fileKey.length <= MAX_FILE_KEY && !UNSAFE_CHARS.test(item.fileKey)) {
+    // into a tool's `fileKey` argument always matches the tab's `McpTab.file_key`; the
+    // 12 KiB `DOC_BUDGET_BYTES` cap below bounds the total attachment size.
+    if (typeof item.fileKey === "string" && item.fileKey.length > 0) {
       entry.fileKey = item.fileKey;
     }
     const key = cleanStr(item.key, 32);
@@ -413,13 +412,15 @@ export class McpRoom {
     }
 
     // Rule 3: if all ready sessions belong to a single device, pick its newest focused tab
-    // (or newest ready tab), unless two live sockets collide on the same session id.
+    // (or newest ready tab), unless two live sockets collide on the same session id or a
+    // second socket claims focus under a conflicting label.
     const devices = new Set(ready.map((ws, idx) => this.deviceKey(ws, idx)));
     if (devices.size <= 1) {
       const sessionIds = new Set(ready.map((ws) => this.sessionSummary(ws).session));
-      if (sessionIds.size === ready.length) {
-        const focusedTab = ready.find((ws) => ws.deserializeAttachment()?.focused === true);
-        return { tab: focusedTab ?? ready[0], body };
+      const labels = new Set(ready.map((ws) => ws.deserializeAttachment()?.deviceLabel ?? "Browser tab"));
+      const focusedTabs = ready.filter((ws) => ws.deserializeAttachment()?.focused === true);
+      if (sessionIds.size === ready.length && !(labels.size > 1 && focusedTabs.length > 1)) {
+        return { tab: focusedTabs[0] ?? ready[0], body };
       }
     }
 
@@ -550,6 +551,19 @@ export class McpRoom {
         (owns(body, "id") && !validId(body.id))) {
       return rpcError(400, null, -32600, "Invalid JSON-RPC message");
     }
+    const { callerKey, unrecognized } = this.resolveMcpSession(request);
+    // Streamable HTTP (2025-03-26): an unknown or expired `Mcp-Session-Id` header on any
+    // non-`initialize` message (including notifications) must be answered with HTTP 404 so
+    // the client starts a new session, and must never return 202 or fall through to Rule 3.
+    if (unrecognized && body.method !== "initialize") {
+      return rpcError(
+        404,
+        owns(body, "id") ? body.id : null,
+        AMBIGUOUS_SESSION_CODE,
+        "Unrecognized or expired `Mcp-Session-Id`; start a new session with `initialize`",
+        this.listSessionsPayload(null),
+      );
+    }
     if (!owns(body, "method") && owns(body, "id") &&
         (owns(body, "result") !== owns(body, "error"))) {
       return new Response(null, { status: 202 });
@@ -559,19 +573,6 @@ export class McpRoom {
     }
     if (!owns(body, "id")) return new Response(null, { status: 202 });
 
-    const { callerKey, unrecognized } = this.resolveMcpSession(request);
-    // Streamable HTTP (2025-03-26): an unknown or expired `Mcp-Session-Id` header on any
-    // non-`initialize` request must be answered with HTTP 404 so the client starts a new
-    // session, and must never fall through to Rule 3 or `activeTab()`.
-    if (unrecognized && body.method !== "initialize") {
-      return rpcError(
-        404,
-        body.id,
-        AMBIGUOUS_SESSION_CODE,
-        "Unrecognized or expired `Mcp-Session-Id`; start a new session with `initialize`",
-        this.listSessionsPayload(null),
-      );
-    }
     const headers = callerKey ? { "Mcp-Session-Id": callerKey } : undefined;
 
     if (body.method === "tools/call") {
@@ -749,6 +750,21 @@ export class McpRoom {
     if (reply.type === "ready" && reply.protocol === 2) {
       const order = ++this.order;
       const v2 = parseReadyV2(reply, order);
+      // When an already-ready tab of this device updates its label (saved to shared
+      // `localStorage`), update sibling tabs of the same device that still carry the
+      // previous label so a rename never creates a label split while another tab is still
+      // focused. A newly joining socket that claims an existing `deviceId` with a
+      // different label has `prev.ready !== true`, so its mismatch stays visible to Rule 3.
+      if (prev.ready === true && prev.deviceId === v2.deviceId && prev.deviceLabel !== v2.deviceLabel) {
+        for (const other of this.ctx.getWebSockets("tab")) {
+          if (other === tab || other.readyState !== 1) continue;
+          const otherAtt = other.deserializeAttachment();
+          if (otherAtt?.ready === true && otherAtt?.deviceId === v2.deviceId &&
+              otherAtt?.deviceLabel === prev.deviceLabel) {
+            other.serializeAttachment({ ...otherAtt, deviceLabel: v2.deviceLabel });
+          }
+        }
+      }
       tab.serializeAttachment({
         authenticatedProtocol: EXEC_PROTOCOL,
         ready: true,
