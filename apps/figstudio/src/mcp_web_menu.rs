@@ -8,9 +8,18 @@ impl McpHost {
             ui.selectable_value(&mut self.relay, false, "Local bridge");
         });
         if self.relay != previous {
+            self.proxy = None;
             self.stop();
         }
         if self.relay {
+            if self.proxy.is_some() {
+                ui.label("Paired with local `figstudio-mcp --browser-proxy` (zero upload).");
+                if ui.button("Switch to cloud relay").clicked() {
+                    self.proxy = None;
+                    self.stop();
+                    self.want_connect = true;
+                }
+            }
             ui.label("MCP tools run in this browser; files are not uploaded.");
             ui.label("Anyone with the MCP URL can call the tools; the room link also");
             ui.label("grants executor authority over the documents open in this browser.");

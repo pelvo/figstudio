@@ -1,20 +1,17 @@
 //! Local zero-upload browser proxy (`--browser-proxy`), inspired by `googlecolab/colab-mcp`.
 //!
 //! Binds a loopback WebSocket endpoint (`ws://127.0.0.1:<port>/bridge`), generates a
-//! 256-bit random token, and forwards MCP JSON-RPC calls directly to the browser tab's
-//! in-page Wasm executor (`apps/figstudio/src/mcp_relay.rs`) without uploading `.fig`
-//! files. Speaks MCP over both `stdio` (default) and Streamable HTTP (`POST /mcp`).
+//! 256-bit random token, and forwards MCP JSON-RPC calls over `stdio` directly to the
+//! browser tab's in-page Wasm executor (`apps/figstudio/src/mcp_relay.rs`) without
+//! uploading `.fig` files.
 
-use crate::{
-    access::HttpAccess,
-    bridge::{DEFAULT_ORIGINS, pairing_token},
-};
+use crate::bridge::{DEFAULT_ORIGINS, pairing_token};
 use axum::{
     extract::{
         State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket},
     },
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use figstudio_mcp_core::wasm_rpc::tool_list;
@@ -45,7 +42,6 @@ const DOC_BUDGET_BYTES: usize = 12_000;
 const MAX_DOC_NAME: usize = 96;
 const MAX_LABEL: usize = 64;
 const MAX_ID: usize = 64;
-const MAX_MCP_SESSIONS: usize = 64;
 const AMBIGUOUS_SESSION_CODE: i32 = -32002;
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_OPEN_TIMEOUT_SECS: u64 = 60;
@@ -93,8 +89,6 @@ impl ProxyConfig {
                 origins.push(trimmed);
             }
         }
-        // Prefer the first user-supplied or HTTPS origin as the browser launch target;
-        // otherwise default to the local web build (`http://127.0.0.1:8765`).
         let launch_origin = extra_origins
             .first()
             .map(|s| s.trim().trim_end_matches('/').to_owned())
@@ -159,9 +153,6 @@ pub struct ProxyState {
     req_seq: AtomicU64,
     tabs: Mutex<HashMap<u64, ConnectedTab>>,
     pending: Mutex<HashMap<String, PendingCall>>,
-    /// Server-issued `Mcp-Session-Id` -> optional pinned session (`s_...`), capped at 64 (LRU order).
-    mcp_sessions: Mutex<Vec<(String, Option<String>)>>,
-    /// `"stdio"` pin used when callers talk over stdio without HTTP headers.
     stdio_pin: Mutex<Option<String>>,
     native_session_tools: Mutex<HashSet<String>>,
     pub ready_notify: Notify,
@@ -399,7 +390,6 @@ impl ProxyState {
             req_seq: AtomicU64::new(0),
             tabs: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
-            mcp_sessions: Mutex::new(Vec::new()),
             stdio_pin: Mutex::new(None),
             native_session_tools: Mutex::new(HashSet::new()),
             ready_notify: Notify::new(),
@@ -412,75 +402,18 @@ impl ProxyState {
         self.order_seq.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    fn mint_mcp_session(&self) -> String {
-        let mut bytes = [0u8; 16];
-        let _ = getrandom::fill(&mut bytes);
-        let id = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let mut sessions = self
-            .mcp_sessions
+    fn get_pinned(&self) -> Option<String> {
+        self.stdio_pin
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if sessions.len() >= MAX_MCP_SESSIONS {
-            sessions.remove(0);
-        }
-        sessions.push((id.clone(), None));
-        id
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
-    fn resolve_http_session(&self, headers: &HeaderMap) -> (Option<String>, bool) {
-        let raw = headers
-            .get("Mcp-Session-Id")
-            .and_then(|v| v.to_str().ok())
-            .map(str::trim)
-            .unwrap_or("");
-        if raw.is_empty() {
-            return (None, false);
-        }
-        let mut sessions = self
-            .mcp_sessions
+    fn set_pinned(&self, target: Option<String>) {
+        *self
+            .stdio_pin
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let Some(pos) = sessions.iter().position(|(k, _)| k == raw) else {
-            return (None, true);
-        };
-        let entry = sessions.remove(pos);
-        sessions.push(entry);
-        (Some(raw.to_owned()), false)
-    }
-
-    fn get_pinned(&self, caller_key: Option<&str>) -> Option<String> {
-        match caller_key {
-            Some("__stdio__") => self
-                .stdio_pin
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone(),
-            Some(key) => self
-                .mcp_sessions
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .iter()
-                .find(|(k, _)| k == key)
-                .and_then(|(_, pin)| pin.clone()),
-            None => None,
-        }
-    }
-
-    fn set_pinned(&self, caller_key: &str, target: Option<String>) {
-        if caller_key == "__stdio__" {
-            *self
-                .stdio_pin
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = target;
-            return;
-        }
-        let mut sessions = self
-            .mcp_sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some((_, pin)) = sessions.iter_mut().find(|(k, _)| k == caller_key) {
-            *pin = target;
-        }
+            .unwrap_or_else(PoisonError::into_inner) = target;
     }
 
     fn ready_tabs(&self) -> Vec<(ConnectedTab, TabReady)> {
@@ -493,7 +426,7 @@ impl ProxyState {
         ready
     }
 
-    pub fn list_sessions_payload(&self, caller_key: Option<&str>) -> Value {
+    pub fn list_sessions_payload(&self) -> Value {
         let ready = self.ready_tabs();
         let open_count = self
             .tabs
@@ -515,7 +448,7 @@ impl ProxyState {
             .collect();
         json!({
             "sessions": sessions,
-            "selectedSession": self.get_pinned(caller_key),
+            "selectedSession": self.get_pinned(),
             "socketsInUse": open_count,
             "socketCap": SOCKET_CAP,
         })
@@ -527,7 +460,7 @@ impl ProxyState {
             .and_then(Value::as_u64)
             .map_or(DEFAULT_OPEN_TIMEOUT_SECS, |s| s.clamp(1, 120));
         if !self.ready_tabs().is_empty() {
-            let payload = self.list_sessions_payload(None);
+            let payload = self.list_sessions_payload();
             let out = json!({
                 "connected": true,
                 "launched": false,
@@ -551,9 +484,13 @@ impl ProxyState {
         }
         let deadline = Instant::now() + Duration::from_secs(timeout_secs);
         loop {
+            // Register the waiter before checking `ready_tabs()` so a `ready` frame
+            // arriving between the check and `.await` is never lost.
             let notified = self.ready_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if !self.ready_tabs().is_empty() {
-                let payload = self.list_sessions_payload(None);
+                let payload = self.list_sessions_payload();
                 let out = json!({
                     "connected": true,
                     "launched": self.config.launch_browser,
@@ -591,24 +528,15 @@ impl ProxyState {
                     }),
                 );
             }
-            if tokio::time::timeout(remaining, notified).await.is_err() {
-                // Loop condition handles timeout expiry on next iteration.
-            }
+            let _ = tokio::time::timeout(remaining, notified).await;
         }
     }
 
-    /// Dispatch one JSON-RPC message. `caller_key` is `Some("__stdio__")` on stdio, or
-    /// `Some(mcp_session_id)` / `None` on HTTP. Returns `None` for notifications.
-    pub async fn dispatch_rpc(
-        self: &Arc<Self>,
-        body: Value,
-        caller_key: Option<String>,
-        unrecognized_http_session: bool,
-    ) -> Option<(u16, Option<String>, Value)> {
+    /// Dispatch one JSON-RPC message over `stdio`. Returns `None` for notifications.
+    pub async fn dispatch_rpc(self: &Arc<Self>, body: Value) -> Option<(u16, Value)> {
         if body.is_array() {
             return Some((
                 400,
-                None,
                 rpc_error(
                     Value::Null,
                     -32600,
@@ -620,14 +548,12 @@ impl ProxyState {
         let Some(obj) = body.as_object() else {
             return Some((
                 400,
-                None,
                 rpc_error(Value::Null, -32600, "Invalid JSON-RPC message", None),
             ));
         };
         if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
             return Some((
                 400,
-                None,
                 rpc_error(Value::Null, -32600, "Invalid JSON-RPC message", None),
             ));
         }
@@ -636,24 +562,10 @@ impl ProxyState {
         {
             return Some((
                 400,
-                None,
                 rpc_error(Value::Null, -32600, "Invalid JSON-RPC message", None),
             ));
         }
         let method = obj.get("method").and_then(Value::as_str).unwrap_or("");
-        if unrecognized_http_session && method != "initialize" {
-            let id = obj.get("id").cloned().unwrap_or(Value::Null);
-            return Some((
-                404,
-                None,
-                rpc_error(
-                    id,
-                    AMBIGUOUS_SESSION_CODE,
-                    "Unrecognized or expired `Mcp-Session-Id`; start a new session with `initialize`",
-                    Some(self.list_sessions_payload(None)),
-                ),
-            ));
-        }
         if !obj.contains_key("method")
             && obj.contains_key("id")
             && (obj.contains_key("result") != obj.contains_key("error"))
@@ -662,23 +574,14 @@ impl ProxyState {
         }
         if method.is_empty() || obj.contains_key("result") || obj.contains_key("error") {
             let id = obj.get("id").cloned().unwrap_or(Value::Null);
-            return Some((
-                400,
-                None,
-                rpc_error(id, -32600, "Invalid JSON-RPC request", None),
-            ));
+            return Some((400, rpc_error(id, -32600, "Invalid JSON-RPC request", None)));
         }
         let id = obj.get("id").cloned()?;
 
-        let is_stdio = caller_key.as_deref() == Some("__stdio__");
-        let mut resp_header = if is_stdio { None } else { caller_key.clone() };
-
-        // `initialize` and `ping` can be answered directly even when no browser tab is open yet,
-        // so stdio MCP clients (`claude`, Cursor, Codex) always start up cleanly.
-        if method == "initialize" && self.ready_tabs().is_empty() {
-            if !is_stdio {
-                resp_header = Some(self.mint_mcp_session());
-            }
+        // Always handle `initialize` and `ping` directly in the proxy so `tools.listChanged`
+        // is advertised consistently whether or not a browser tab is already connected, and
+        // `ping` never blocks on a tab.
+        if method == "initialize" {
             let ver = obj
                 .get("params")
                 .and_then(|p| p.get("protocolVersion"))
@@ -686,7 +589,6 @@ impl ProxyState {
                 .unwrap_or("2025-03-26");
             return Some((
                 200,
-                resp_header,
                 json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -699,12 +601,8 @@ impl ProxyState {
                 }),
             ));
         }
-        if method == "ping" && self.ready_tabs().is_empty() {
-            return Some((
-                200,
-                resp_header,
-                json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
-            ));
+        if method == "ping" {
+            return Some((200, json!({ "jsonrpc": "2.0", "id": id, "result": {} })));
         }
 
         if method == "tools/call" {
@@ -715,14 +613,12 @@ impl ProxyState {
                 .unwrap_or("");
             let args = obj.get("params").and_then(|p| p.get("arguments"));
             if tool_name == "open_figstudio_browser" {
-                let (st, val) = self.handle_open_browser(id, args).await;
-                return Some((st, resp_header, val));
+                return Some(self.handle_open_browser(id, args).await);
             }
             if tool_name == "list_sessions" {
-                let payload = self.list_sessions_payload(caller_key.as_deref());
+                let payload = self.list_sessions_payload();
                 return Some((
                     200,
-                    resp_header,
                     json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -738,7 +634,6 @@ impl ProxyState {
                 else {
                     return Some((
                         400,
-                        resp_header,
                         rpc_error(
                             id,
                             -32602,
@@ -747,27 +642,12 @@ impl ProxyState {
                         ),
                     ));
                 };
-                let Some(ck) = caller_key.as_deref() else {
-                    return Some((
-                        200,
-                        resp_header,
-                        json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": {
-                                "isError": true,
-                                "content": [{ "type": "text", "text": "No server-issued `Mcp-Session-Id` header on this request; call `initialize` first or pass `session` on each tool call." }]
-                            }
-                        }),
-                    ));
-                };
                 let target = target_raw.trim();
                 if target.is_empty() {
-                    self.set_pinned(ck, None);
-                    let payload = self.list_sessions_payload(Some(ck));
+                    self.set_pinned(None);
+                    let payload = self.list_sessions_payload();
                     return Some((
                         200,
-                        resp_header,
                         json!({
                             "jsonrpc": "2.0",
                             "id": id,
@@ -783,7 +663,7 @@ impl ProxyState {
                     .filter(|(_, r)| r.session_id == target)
                     .collect();
                 if matches.len() != 1 {
-                    let payload = self.list_sessions_payload(Some(ck));
+                    let payload = self.list_sessions_payload();
                     let msg = if matches.is_empty() {
                         format!(
                             "Session '{target}' is not connected. Live sessions: {}",
@@ -796,7 +676,6 @@ impl ProxyState {
                     };
                     return Some((
                         200,
-                        resp_header,
                         json!({
                             "jsonrpc": "2.0",
                             "id": id,
@@ -807,7 +686,7 @@ impl ProxyState {
                         }),
                     ));
                 }
-                self.set_pinned(ck, Some(target.to_owned()));
+                self.set_pinned(Some(target.to_owned()));
                 let r = &matches[0].1;
                 let chosen = json!({
                     "session": r.session_id,
@@ -817,7 +696,6 @@ impl ProxyState {
                 });
                 return Some((
                     200,
-                    resp_header,
                     json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -835,13 +713,11 @@ impl ProxyState {
                 let tools = augment_tools(tool_list(), &self.native_session_tools);
                 return Some((
                     200,
-                    resp_header,
                     json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": tools } }),
                 ));
             }
             return Some((
                 503,
-                resp_header,
                 rpc_error(
                     id,
                     -32000,
@@ -853,9 +729,9 @@ impl ProxyState {
 
         let mut forward_body = body.clone();
         let target_tab = if method == "tools/call" {
-            match self.resolve_tool_target(&id, &mut forward_body, caller_key.as_deref(), &ready) {
+            match self.resolve_tool_target(&id, &mut forward_body, &ready) {
                 Ok(t) => t,
-                Err((st, err_val)) => return Some((st, resp_header, err_val)),
+                Err((st, err_val)) => return Some((st, err_val)),
             }
         } else {
             ready[0].clone()
@@ -868,7 +744,6 @@ impl ProxyState {
             if pending.len() >= MAX_PENDING {
                 return Some((
                     503,
-                    resp_header,
                     rpc_error(id, -32000, "Relay is busy; retry later", None),
                 ));
             }
@@ -892,19 +767,11 @@ impl ProxyState {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .remove(&req_id);
-                return Some((
-                    504,
-                    resp_header,
-                    rpc_error(id, -32000, "Browser tab timed out", None),
-                ));
+                return Some((504, rpc_error(id, -32000, "Browser tab timed out", None)));
             }
         };
 
-        // Decorate `tools/list` and `tools/call` replies, and mint `Mcp-Session-Id` on `initialize`.
         if let Some(res_obj) = reply_body.get_mut("result").and_then(Value::as_object_mut) {
-            if method == "initialize" && status == 200 && !is_stdio {
-                resp_header = Some(self.mint_mcp_session());
-            }
             if method == "tools/list"
                 && let Some(tools_arr) = res_obj.get("tools").and_then(Value::as_array).cloned()
             {
@@ -927,14 +794,13 @@ impl ProxyState {
                 res_obj.insert("_meta".to_owned(), Value::Object(meta));
             }
         }
-        Some((status, resp_header, reply_body))
+        Some((status, reply_body))
     }
 
     fn resolve_tool_target(
         &self,
         id: &Value,
         forward_body: &mut Value,
-        caller_key: Option<&str>,
         ready: &[(ConnectedTab, TabReady)],
     ) -> Result<(ConnectedTab, TabReady), (u16, Value)> {
         let tool_name = forward_body
@@ -960,7 +826,6 @@ impl ProxyState {
                 .to_owned()
         };
 
-        // Rule 1: explicit `arguments.session`
         if !explicit.is_empty() {
             let matches: Vec<_> = ready
                 .iter()
@@ -975,7 +840,7 @@ impl ProxyState {
                         &format!(
                             "Session '{explicit}' is not connected; choose one of the live sessions"
                         ),
-                        Some(self.list_sessions_payload(caller_key)),
+                        Some(self.list_sessions_payload()),
                     ),
                 ));
             }
@@ -988,7 +853,7 @@ impl ProxyState {
                         &format!(
                             "Session '{explicit}' matches multiple executors; cannot route unambiguously"
                         ),
-                        Some(self.list_sessions_payload(caller_key)),
+                        Some(self.list_sessions_payload()),
                     ),
                 ));
             }
@@ -1002,8 +867,7 @@ impl ProxyState {
             return Ok(matches[0].clone());
         }
 
-        // Rule 2: sticky pin
-        if let Some(pinned) = self.get_pinned(caller_key) {
+        if let Some(pinned) = self.get_pinned() {
             let matches: Vec<_> = ready
                 .iter()
                 .filter(|(_, r)| r.session_id == pinned)
@@ -1019,12 +883,11 @@ impl ProxyState {
                     &format!(
                         "Pinned session '{pinned}' is no longer connected; call `select_session` or pass `session`"
                     ),
-                    Some(self.list_sessions_payload(caller_key)),
+                    Some(self.list_sessions_payload()),
                 ),
             ));
         }
 
-        // Rule 3: single device auto-routing
         let devices: HashSet<&str> = ready.iter().map(|(_, r)| r.device_id.as_str()).collect();
         let sessions: HashSet<&str> = ready.iter().map(|(_, r)| r.session_id.as_str()).collect();
         if devices.len() <= 1 && sessions.len() == ready.len() {
@@ -1036,14 +899,13 @@ impl ProxyState {
             return Ok(chosen);
         }
 
-        // Rule 4: multiple devices -> -32002
         Err((
             200,
             rpc_error(
                 id.clone(),
                 AMBIGUOUS_SESSION_CODE,
                 "Several figstudio sessions are connected across devices; pass `session` or call `select_session`",
-                Some(self.list_sessions_payload(caller_key)),
+                Some(self.list_sessions_payload()),
             ),
         ))
     }
@@ -1075,6 +937,15 @@ fn rpc_error(id: Value, code: i32, message: &str, data: Option<Value>) -> Value 
 }
 
 fn open_system_browser(url: &str) {
+    if let Some(browser) = std::env::var_os("BROWSER").filter(|b| !b.is_empty()) {
+        let _ = std::process::Command::new(browser)
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        return;
+    }
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open")
         .arg(url)
@@ -1220,7 +1091,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ProxyState>) {
     };
     state.fail_conn(conn_id);
     if was_last_ready {
-        state.tools_changed_notify.notify_waiters();
+        state.tools_changed_notify.notify_one();
     }
 }
 
@@ -1295,7 +1166,7 @@ fn handle_ws_frame(state: &Arc<ProxyState>, conn_id: u64, first_order: u64, text
         };
         state.ready_notify.notify_waiters();
         if became_first_ready {
-            state.tools_changed_notify.notify_waiters();
+            state.tools_changed_notify.notify_one();
         }
         return;
     }
@@ -1345,81 +1216,6 @@ fn handle_ws_frame(state: &Arc<ProxyState>, conn_id: u64, first_order: u64, text
     let _ = call.tx.send((status, body_val));
 }
 
-async fn handle_http_mcp(
-    State((state, access)): State<(Arc<ProxyState>, HttpAccess)>,
-    headers: HeaderMap,
-    body_bytes: axum::body::Bytes,
-) -> Response {
-    // Check Host and Origin headers for HTTP `/mcp`
-    let host_ok = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|h| access.hosts().iter().any(|allowed| allowed == h));
-    if !host_ok {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
-        let loopback_origin = origin.starts_with("http://localhost:")
-            || origin.starts_with("http://127.0.0.1:")
-            || origin.starts_with("http://[::1]:");
-        if !loopback_origin {
-            return StatusCode::FORBIDDEN.into_response();
-        }
-    }
-    if let Some(expected) = access.token() {
-        let auth_ok = headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.split_once(' '))
-            .is_some_and(|(scheme, tok)| {
-                scheme.eq_ignore_ascii_case("bearer")
-                    && bool::from(tok.trim().as_bytes().ct_eq(expected.as_bytes()))
-            });
-        if !auth_ok {
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
-    }
-    if body_bytes.len() > 1024 * 1024 {
-        return json_response(
-            413,
-            None,
-            &rpc_error(Value::Null, -32600, "Request exceeds 1 MiB", None),
-        );
-    }
-    let body: Value = match serde_json::from_slice(&body_bytes) {
-        Ok(v) => v,
-        Err(_) => {
-            return json_response(
-                400,
-                None,
-                &rpc_error(Value::Null, -32700, "Invalid JSON", None),
-            );
-        }
-    };
-    let (caller_key, unrecognized) = state.resolve_http_session(&headers);
-    match state.dispatch_rpc(body, caller_key, unrecognized).await {
-        None => StatusCode::ACCEPTED.into_response(),
-        Some((202, _, _)) => StatusCode::ACCEPTED.into_response(),
-        Some((status, mcp_sid, reply)) => json_response(status, mcp_sid.as_deref(), &reply),
-    }
-}
-
-fn json_response(status: u16, mcp_sid: Option<&str>, body: &Value) -> Response {
-    let code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    let mut resp = (
-        code,
-        [(header::CONTENT_TYPE, "application/json")],
-        body.to_string(),
-    )
-        .into_response();
-    if let Some(sid) = mcp_sid
-        && let Ok(val) = HeaderValue::from_str(sid)
-    {
-        resp.headers_mut().insert("Mcp-Session-Id", val);
-    }
-    resp
-}
-
 /// Bind a loopback listener for `--browser-proxy`: tries `3845..=3855` first, then `127.0.0.1:0`.
 ///
 /// # Errors
@@ -1436,11 +1232,13 @@ pub async fn bind_proxy_listener(
     tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await
 }
 
-/// Serve the HTTP `/mcp` and WebSocket `/bridge` routes on `listener` (and optional IPv6 loopback).
-pub async fn serve_proxy_http(
+/// Serve the WebSocket `/bridge` route on `listener` (and optional IPv6 loopback).
+///
+/// # Errors
+/// Returns an I/O error if the listener fails.
+pub async fn serve_proxy_ws(
     listener: tokio::net::TcpListener,
     state: Arc<ProxyState>,
-    access: HttpAccess,
 ) -> std::io::Result<()> {
     let port = listener.local_addr()?.port();
     let v6_companion = if listener.local_addr()?.ip() == Ipv4Addr::LOCALHOST {
@@ -1453,12 +1251,7 @@ pub async fn serve_proxy_http(
 
     let router = axum::Router::new()
         .route("/bridge", axum::routing::get(upgrade_bridge))
-        .with_state(state.clone())
-        .merge(
-            axum::Router::new()
-                .route("/mcp", axum::routing::post(handle_http_mcp))
-                .with_state((state.clone(), access)),
-        );
+        .with_state(state.clone());
 
     let shutdown = state.shutdown.clone();
     let mut tasks = vec![tokio::spawn({
@@ -1471,17 +1264,9 @@ pub async fn serve_proxy_http(
         }
     })];
     if let Some(v6) = v6_companion {
-        let loopback_router = axum::Router::new()
-            .route("/bridge", axum::routing::get(upgrade_bridge))
-            .with_state(state.clone())
-            .merge(
-                axum::Router::new()
-                    .route("/mcp", axum::routing::post(handle_http_mcp))
-                    .with_state((state, HttpAccess::loopback())),
-            );
         let shutdown = shutdown.clone();
         tasks.push(tokio::spawn(async move {
-            axum::serve(v6, loopback_router)
+            axum::serve(v6, router)
                 .with_graceful_shutdown(shutdown.cancelled_owned())
                 .await
         }));
@@ -1497,6 +1282,9 @@ pub async fn serve_proxy_http(
 
 /// Run the newline-delimited JSON-RPC `stdio` loop against `state`, emitting
 /// `notifications/tools/list_changed` whenever a browser tab connects or disconnects.
+///
+/// # Errors
+/// Returns an I/O error if reading stdin fails unexpectedly.
 pub async fn serve_proxy_stdio(state: Arc<ProxyState>) -> std::io::Result<()> {
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
     let writer_shutdown = state.shutdown.clone();
@@ -1554,9 +1342,7 @@ pub async fn serve_proxy_stdio(state: Arc<ProxyState>) -> std::io::Result<()> {
                             return;
                         }
                     };
-                    if let Some((status, _, reply)) = state
-                        .dispatch_rpc(body, Some("__stdio__".to_owned()), false)
-                        .await
+                    if let Some((status, reply)) = state.dispatch_rpc(body).await
                         && status != 202
                     {
                         let _ = out_tx.send(reply.to_string());

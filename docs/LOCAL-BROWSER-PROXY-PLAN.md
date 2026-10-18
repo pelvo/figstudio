@@ -103,12 +103,12 @@ Because `figstudio` already has a complete in-browser Wasm JSON-RPC executor
 Add `--browser-proxy` to `figstudio-mcp`:
 
 ```sh
-figstudio-mcp --browser-proxy [--origin https://figstudio.example.com] [--http[=ADDR]]
+figstudio-mcp --browser-proxy [--origin https://figstudio.example.com]
 ```
 
-- **Default transport is `stdio`** (matching `colab-mcp`), so MCP clients launch it on
-  demand without a background daemon. Passing `--http` (or `--http=ADDR`) additionally
-  serves Streamable HTTP on `/mcp` for clients that prefer HTTP.
+- **Transport is `stdio`** (matching `colab-mcp`), so MCP clients launch it on demand
+  without a background daemon, and `/bridge` is bound strictly on loopback (`127.0.0.1` and
+  `[::1]`). The proxy token is never printed on `stderr`.
 - **`--origin <URL>`** (repeatable, or `FIGSTUDIO_WEB_ORIGIN` env var): allowed browser
   `Origin`s, plus the target URL opened by `open_figstudio_browser`. Defaults to
   `http://127.0.0.1:8765` and `http://localhost:8765`.

@@ -74,7 +74,9 @@ impl McpHost {
                 }
                 self.stop();
                 Some(
-                    if self.relay {
+                    if self.relay && self.proxy.is_some() {
+                        "Could not connect to the local browser proxy"
+                    } else if self.relay {
                         "Could not connect to the cloud relay"
                     } else {
                         connect_failed_message()
@@ -110,7 +112,9 @@ impl McpHost {
                 let welcomed = self.conn.take().is_some_and(|c| c.welcomed);
                 self.reset_link();
                 Some(
-                    if self.relay {
+                    if self.relay && self.proxy.is_some() {
+                        "Local browser proxy disconnected"
+                    } else if self.relay {
                         "Cloud relay disconnected"
                     } else {
                         closed_message(welcomed, code)

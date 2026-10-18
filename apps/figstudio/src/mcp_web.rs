@@ -95,12 +95,8 @@ impl Default for McpHost {
         let device = room::load_device();
         notices.extend(device.notices);
         // A link names a room to propose, not to use; the pair above stays this tab's own.
-        let proposal = proposed_pair(
-            link.pair,
-            link.token.is_some() || link.proxy.is_some(),
-            pair.as_ref(),
-        )
-        .map(RoomProposal::new);
+        let proposal =
+            proposed_pair(link.pair, link.token.is_some(), pair.as_ref()).map(RoomProposal::new);
         let relay = link.token.is_none()
             && device.id.is_some()
             && device.instance.is_some()
@@ -216,13 +212,7 @@ impl McpHost {
                 .as_deref()
                 .filter(|token| *token != self.token)
                 .is_some();
-            if let Some(proxy) = change.proxy {
-                self.conn = None;
-                self.proxy = Some(proxy);
-                self.relay = true;
-                self.want_connect = true;
-                self.proposal = None;
-            } else if let Some(token) = change.token.filter(|token| *token != self.token) {
+            if let Some(token) = change.token.filter(|token| *token != self.token) {
                 // A fresh `#mcp=` pairing (say, a new `figstudio-mcp --bridge` run) moves
                 // this tab to the local bridge; a pending link is dropped.
                 self.conn = None;
@@ -231,10 +221,18 @@ impl McpHost {
                 self.relay = false;
                 self.want_connect = true;
                 self.proposal = None;
-            } else if let Some(pair) = proposed_pair(change.pair, pairing, self.pair.as_ref()) {
-                self.proposal = Some(RoomProposal::new(pair));
-                // The ask was staged at frame end; without this, an idle page never paints it.
-                ctx.request_repaint();
+            } else {
+                if let Some(proxy) = change.proxy {
+                    self.conn = None;
+                    self.proxy = Some(proxy);
+                    self.relay = true;
+                    self.want_connect = true;
+                }
+                if let Some(pair) = proposed_pair(change.pair, pairing, self.pair.as_ref()) {
+                    self.proposal = Some(RoomProposal::new(pair));
+                    // The ask was staged at frame end; without this, an idle page never paints it.
+                    ctx.request_repaint();
+                }
             }
         }
         if std::mem::take(&mut self.want_connect) && self.conn.is_none() {

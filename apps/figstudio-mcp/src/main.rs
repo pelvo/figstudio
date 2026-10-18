@@ -45,8 +45,8 @@ struct Args {
     /// Pair a browser with a local live MCP server (no FILE required).
     #[arg(long, conflicts_with_all = ["files", "assets", "assets_dir", "browser_proxy"])]
     bridge: bool,
-    /// Zero-upload local browser proxy (stdio by default, or --http; no FILE required).
-    #[arg(long, conflicts_with_all = ["files", "assets", "assets_dir", "bridge"])]
+    /// Zero-upload local browser proxy over stdio (no FILE required).
+    #[arg(long, conflicts_with_all = ["files", "assets", "assets_dir", "bridge", "http"])]
     browser_proxy: bool,
     /// Additional exact browser Origin allowed to pair (also sets the launch URL for --browser-proxy).
     #[arg(long, visible_alias = "origin", conflicts_with = "files")]
@@ -222,19 +222,13 @@ async fn run_bridge(args: &Args) -> anyhow::Result<()> {
 
 async fn run_browser_proxy(args: &Args) -> anyhow::Result<()> {
     use figstudio_mcp::proxy::{
-        ProxyConfig, ProxyState, bind_proxy_listener, serve_proxy_http, serve_proxy_stdio,
+        ProxyConfig, ProxyState, bind_proxy_listener, serve_proxy_stdio, serve_proxy_ws,
     };
-    let exact = match args.http {
-        Some(Http::Exact(addr)) => Some(addr),
-        _ => None,
-    };
-    let listener = bind_proxy_listener(exact).await?;
-    let access = access_for(&listener, &args.allow_host, args.allow_any_interface)?;
+    let listener = bind_proxy_listener(None).await?;
     let addr = listener.local_addr()?;
     let config = ProxyConfig::new(&args.allow_origin, true)?;
-    eprintln!("MCP: http://{addr}/mcp");
+    // Never log the proxy token or full launch URL on stderr: MCP hosts record stderr logs.
     eprintln!("Browser proxy: ws://127.0.0.1:{}/bridge", addr.port());
-    eprintln!("Launch URL: {}", config.launch_url(addr.port()));
     let shutdown = tokio_util::sync::CancellationToken::new();
     let state = ProxyState::new(config, addr.port(), shutdown.clone());
     let cancel = shutdown.clone();
@@ -242,19 +236,14 @@ async fn run_browser_proxy(args: &Args) -> anyhow::Result<()> {
         let _ = shutdown_signal().await;
         cancel.cancel();
     });
-    let result = if args.http.is_some() {
-        serve_proxy_http(listener, state, access).await
-    } else {
-        let http_state = state.clone();
-        let http_task = tokio::spawn(async move {
-            let _ = serve_proxy_http(listener, http_state, access).await;
-        });
-        let stdio_res = serve_proxy_stdio(state).await;
-        http_task.abort();
-        stdio_res
-    };
+    let ws_state = state.clone();
+    let ws_task = tokio::spawn(async move {
+        let _ = serve_proxy_ws(listener, ws_state).await;
+    });
+    let stdio_res = serve_proxy_stdio(state).await;
+    ws_task.abort();
     signal.abort();
-    result?;
+    stdio_res?;
     Ok(())
 }
 

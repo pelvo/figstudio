@@ -89,10 +89,32 @@ Not verified: whether Safari or a newer Chrome blocks an `https://` page opening
 `ws://127.0.0.1` (mixed content / Local Network Access prompt). If your browser blocks it,
 use the local `--serve` build over `http://127.0.0.1:8765`.
 
+### Deploying the browser app (two methods)
+
+Build the browser bundle first with `scripts/web-build.sh` (output in `web/dist`, including
+`web/dist/_headers` which sets `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp` required for Wasm threads). You can deploy
+`web/dist` in two ways depending on where your MCP client runs:
+
+1. **Static-only deployment (for local `--browser-proxy` or `--bridge`):**
+   - Serve `web/dist` from any static host or Cloudflare Workers static assets
+     (`"assets": { "directory": "web/dist" }` in `wrangler.jsonc`, with no `main` Worker
+     script or Durable Object needed).
+   - If the site sits behind an access gateway (such as Cloudflare Access with Google
+     sign-in), keep the whole origin protected with **no `/mcp/*` bypass**: your local agent
+     spawns `figstudio-mcp --browser-proxy` over `stdio`, and your already-signed-in browser
+     connects outbound to `ws://127.0.0.1:<port>/bridge`.
+2. **Cloud relay Worker deployment (for remote agents and multi-device HTTP MCP):**
+   - Deploy `web/worker.mjs` and the `McpRoom` Durable Object alongside `web/dist` using
+     the repo's `wrangler.jsonc` (`npx wrangler deploy`).
+   - Browser tabs connect to `wss://<your-deploy-domain>/bridge/rm_<64 hex>` and MCP clients
+     call `https://<your-deploy-domain>/mcp/rm_<64 hex>` directly over Streamable HTTP
+     without running `figstudio-mcp` locally.
+
 ### In the browser (local zero-upload proxy, `--browser-proxy`)
 
 When your coding agent and browser run on the same computer, `--browser-proxy` combines the
-zero-upload Wasm RPC executor with a local `stdio` (or `--http`) proxy inspired by
+zero-upload Wasm RPC executor with a local `stdio` proxy inspired by
 `googlecolab/colab-mcp` — no `.fig` upload, no Cloudflare Access bypass, and no manual
 token pasting:
 
@@ -100,13 +122,14 @@ token pasting:
 claude mcp add figstudio -- /path/to/figstudio-mcp --browser-proxy --origin https://<your-deploy-domain>
 ```
 
-- `figstudio-mcp --browser-proxy` speaks `stdio` to the agent (or Streamable HTTP when
-  `--http` is passed), binds `ws://127.0.0.1:<port>/bridge` (trying `3845..=3855` first,
-  then an ephemeral port), and mints a 256-bit process token.
+- `figstudio-mcp --browser-proxy` speaks `stdio` to the agent, binds
+  `ws://127.0.0.1:<port>/bridge` on loopback (trying `3845..=3855` first, then an ephemeral
+  port), and mints a 256-bit process token (never printed to `stderr`).
 - When the agent calls `open_figstudio_browser`, the proxy opens
   `https://<your-deploy-domain>/#mcpProxyPort=<port>&mcpProxyToken=<token>` in your default
-  browser (already signed into Access), strips the `#fragment` immediately, and waits up to
-  60 s for the tab's `ready` v2 frame before emitting `notifications/tools/list_changed`.
+  browser (`$BROWSER`, `open`, `xdg-open`, or `start`), strips the `#fragment` immediately,
+  and waits up to 60 s for the tab's `ready` v2 frame before emitting
+  `notifications/tools/list_changed`.
 - `list_sessions` and `select_session` work identically when multiple tabs connect.
 
 ### In the browser (cloud relay and multi-device sessions)
