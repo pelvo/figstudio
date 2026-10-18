@@ -14,7 +14,20 @@ impl McpHost {
             ui.label("MCP tools run in this browser; files are not uploaded.");
             ui.label("Anyone with the MCP URL can call the tools; the room link also");
             ui.label("grants executor authority over the documents open in this browser.");
-            ui.label("Calls go to the browser tab that connected or changed most recently.");
+            ui.label("Use list_sessions / select_session when multiple devices share a room.");
+            ui.horizontal(|ui| {
+                ui.label("Device label");
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.device_label)
+                            .hint_text("e.g. Office · Chrome"),
+                    )
+                    .changed()
+                {
+                    room::save_device_label(&self.device_label);
+                    self.last_key = None;
+                }
+            });
             ui.horizontal(|ui| {
                 let room = self.pair.as_ref().map(|p| p.room());
                 if ui.button("Copy MCP URL").clicked()

@@ -33,8 +33,18 @@ impl McpHost {
                 let ws = self.conn.as_ref()?.ws.clone();
                 if self.relay {
                     self.conn.as_mut()?.welcomed = true;
+                    let focused = room::document_focused();
+                    let frame = crate::mcp_wire::relay_ready_v2(
+                        &self.device_id,
+                        &self.device_label,
+                        &self.instance,
+                        focused,
+                        tabs,
+                    );
+                    self.last_key = Some(key(tabs, *active));
+                    self.last_focused = Some(focused);
                     return ws
-                        .send_with_str(crate::mcp_wire::relay_ready())
+                        .send_with_str(&frame)
                         .err()
                         .map(|_| "Could not talk to the cloud relay".to_owned());
                 }

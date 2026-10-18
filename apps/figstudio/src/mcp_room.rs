@@ -5,6 +5,98 @@ use crate::mcp_wire::relay_urls;
 
 const STORAGE_KEY: &str = "figstudio.mcp.executor.v2";
 const LEGACY_KEY: &str = "figstudio.mcp.room";
+const DEVICE_ID_KEY: &str = "figstudio.mcp.device.v1";
+const DEVICE_LABEL_KEY: &str = "figstudio.mcp.device_label.v1";
+
+pub(super) struct DeviceIdentity {
+    pub id: String,
+    pub label: String,
+    pub instance: String,
+}
+
+fn random_hex_16() -> String {
+    let mut bytes = [0u8; 16];
+    let _ = getrandom::fill(&mut bytes);
+    let mut out = String::with_capacity(32);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out
+}
+
+fn default_device_label() -> String {
+    let ua = web_sys::window()
+        .and_then(|w| w.navigator().user_agent().ok())
+        .unwrap_or_default();
+    let os = if ua.contains("Mac") {
+        "Mac"
+    } else if ua.contains("Win") {
+        "Windows"
+    } else if ua.contains("Linux") {
+        "Linux"
+    } else {
+        "Device"
+    };
+    let browser = if ua.contains("Edg/") {
+        "Edge"
+    } else if ua.contains("Chrome/") {
+        "Chrome"
+    } else if ua.contains("Firefox/") {
+        "Firefox"
+    } else if ua.contains("Safari/") {
+        "Safari"
+    } else {
+        "Browser"
+    };
+    format!("{os} · {browser}")
+}
+
+pub(super) fn load_device() -> DeviceIdentity {
+    let store = web_sys::window().and_then(|w| w.local_storage().ok().flatten());
+    let valid_hex = |s: &str| {
+        s.len() == 32
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    let existing_id = store
+        .as_ref()
+        .and_then(|s| s.get_item(DEVICE_ID_KEY).ok().flatten())
+        .filter(|s| valid_hex(s));
+    let id = existing_id.unwrap_or_else(|| {
+        let fresh = random_hex_16();
+        if let Some(s) = &store {
+            let _ = s.set_item(DEVICE_ID_KEY, &fresh);
+        }
+        fresh
+    });
+    let label = store
+        .as_ref()
+        .and_then(|s| s.get_item(DEVICE_LABEL_KEY).ok().flatten())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(default_device_label);
+    let instance = random_hex_16()[..16].to_owned();
+    DeviceIdentity {
+        id,
+        label,
+        instance,
+    }
+}
+
+pub(super) fn save_device_label(label: &str) {
+    if let Ok(s) = storage() {
+        let trimmed: String = label.trim().chars().take(64).collect();
+        let _ = s.set_item(DEVICE_LABEL_KEY, &trimmed);
+    }
+}
+
+pub(super) fn document_focused() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.has_focus().ok())
+        .unwrap_or(true)
+}
 
 /// The pair this visit uses, plus one-time notices for the host to toast.
 pub(super) struct Loaded {
