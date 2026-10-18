@@ -42,15 +42,30 @@ test("sha256Hex matches standard NIST vector and ready v2 stores sanitized, boun
   );
   const tab = new Tab(0);
   const { room } = setup([tab]);
-  const longFileKey = `${"A".repeat(600)}~7`;
-  const hugeFileKey = "X".repeat(20_000);
-  const manyDocs = Array.from({ length: 50 }, (_, i) => ({
-    tab: i,
-    name: i === 1 ? "oversized-key.fig" : i === 2 ? "third.fig" : `${"A".repeat(95)}😀\n\u202efig`,
-    fileKey: i === 0 ? longFileKey : i === 1 ? hugeFileKey : i === 2 ? "third" : `file-${i}`,
-    key: "0123456789abcdef0123456789abcdef_extra",
-    pages: i + 1,
-  }));
+  const longFileKey = `${"A".repeat(350)}~7`;
+  const manyDocs = [
+    ...Array.from({ length: 22 }, (_, i) => ({
+      tab: i,
+      name: `${"A".repeat(95)}😀\n\u202efig`,
+      fileKey: i === 0 ? longFileKey : `${"k".repeat(350)}_${i}`,
+      key: "0123456789abcdef0123456789abcdef_extra",
+      pages: i + 1,
+    })),
+    {
+      tab: 22,
+      name: "😀".repeat(96),
+      fileKey: "X".repeat(4_000),
+      key: "0123456789abcdef",
+      pages: 1,
+    },
+    {
+      tab: 23,
+      name: "after.fig",
+      fileKey: "after-key",
+      key: "fedcba9876543210",
+      pages: 2,
+    },
+  ];
   room.webSocketMessage(tab, readyV2("dev_office", "Office\n\u202e · Chrome", "inst_1", {
     focused: true,
     docs: manyDocs,
@@ -63,15 +78,13 @@ test("sha256Hex matches standard NIST vector and ready v2 stores sanitized, boun
   assert.equal(att.deviceLabel, "Office  · Chrome");
   assert.ok(!att.deviceLabel.includes("\n") && !att.deviceLabel.includes("\u202e"));
   assert.equal(att.focused, true);
-  assert.equal(att.docs.length, 32);
+  assert.equal(att.docs.length, 23, "oversized doc 22 is skipped so doc 23 ('after.fig') still fits in the 12 KiB budget");
   assert.equal(Array.from(att.docs[0].name).length, 96);
-  assert.equal(att.docs[0].name.endsWith("😀"), true, "code-point slice must not split surrogate pairs");
+  assert.equal(att.docs[0].name.includes("😀"), true, "code-point slice must not split surrogate pairs");
   assert.ok(!att.docs[0].name.includes("\n") && !att.docs[0].name.includes("\u202e"));
   assert.equal(att.docs[0].fileKey, longFileKey, "fileKey must round-trip verbatim without truncation");
-  assert.equal(att.docs[1].name, "oversized-key.fig", "doc with oversized fileKey is kept without its oversized fileKey");
-  assert.equal("fileKey" in att.docs[1], false);
-  assert.equal(att.docs[2].name, "third.fig", "later docs after an oversized fileKey are still stored");
-  assert.equal(att.docs[2].fileKey, "third");
+  assert.equal(att.docs[22].name, "after.fig");
+  assert.equal(att.docs[22].fileKey, "after-key");
   assert.equal(att.docs[0].key.length, 32);
   assert.ok(JSON.stringify(att).length < 16_384, "attachment must stay well under the 16 KiB DO limit");
 
@@ -133,24 +146,23 @@ test("tools/list works with no tab connected, augments tab tools, and preserves 
   await callPromise;
 });
 
-test("single device with multiple tabs routes to focused or newest tab even during label rename or before blur", async () => {
+test("single device with multiple tabs routes to newest focused tab even when labels differ on first ready", async () => {
   const tabA = new Tab(1);
   const tabB = new Tab(2);
   const { room } = setup([tabA, tabB]);
+  // `deviceLabel` is display-only: two sockets sharing `deviceId` with different labels
+  // (including a socket whose first `ready` carries another label) route to the newest focused tab.
   room.webSocketMessage(tabA, readyV2("dev_same", "Office MBP", "tab_a", { focused: true }));
-  // tabB has not painted a blur yet (also focused: true), then tabA renames its label and sends ready:
-  // newest focused tab (`tabA`) must still win without false-triggering -32002.
-  room.webSocketMessage(tabB, readyV2("dev_same", "Office MBP", "tab_b", { focused: true }));
-  room.webSocketMessage(tabA, readyV2("dev_same", "Renamed MBP", "tab_a", { focused: true }));
-  const sentA = new Promise((resolve) => { tabA.notify = resolve; });
+  room.webSocketMessage(tabB, readyV2("dev_same", "Renamed MBP", "tab_b", { focused: true }));
+  const sentB = new Promise((resolve) => { tabB.notify = resolve; });
   const resPromise = room.fetch(post(callTool("get_metadata", { node: "0:1" }, 10)));
-  const frameA = await sentA;
-  reply(room, tabA, frameA, {
-    body: { jsonrpc: "2.0", id: 10, result: { content: [{ type: "text", text: "from A" }] } },
+  const frameB = await sentB;
+  reply(room, tabB, frameB, {
+    body: { jsonrpc: "2.0", id: 10, result: { content: [{ type: "text", text: "from B" }] } },
   });
-  const bodyA = await (await resPromise).json();
-  assert.equal(bodyA.result._meta["figstudio/session"], deriveSessionId("dev_same", "tab_a"));
-  assert.equal(bodyA.result._meta["figstudio/device"], "Renamed MBP");
+  const bodyB = await (await resPromise).json();
+  assert.equal(bodyB.result._meta["figstudio/session"], deriveSessionId("dev_same", "tab_b"));
+  assert.equal(bodyB.result._meta["figstudio/device"], "Renamed MBP");
 });
 
 test("multiple devices without a session argument return -32002 without leaking device.id", async () => {

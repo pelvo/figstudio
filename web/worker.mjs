@@ -68,25 +68,19 @@ function sanitizeDocs(rawDocs) {
       tab: Number.isInteger(item.tab) && item.tab >= 0 ? item.tab : out.length,
       name: cleanStr(item.name, MAX_DOC_NAME) || "untitled",
     };
+    // Preserve `fileKey` verbatim (as produced by `relay_keys`). If a document entry with
+    // its `fileKey` does not fit in the remaining 12 KiB budget, skip that document
+    // (`continue`) rather than storing a keyless entry or dropping subsequent documents.
+    if (typeof item.fileKey === "string" && item.fileKey.length > 0) {
+      entry.fileKey = item.fileKey;
+    }
     const key = cleanStr(item.key, 32);
     if (key) entry.key = key;
     if (Number.isInteger(item.pages) && item.pages >= 0) entry.pages = item.pages;
-    const baseBytes = encoder.encode(JSON.stringify(entry)).byteLength + 1;
-    if (usedBytes + baseBytes > DOC_BUDGET_BYTES) continue;
-    // Preserve `fileKey` verbatim (as produced by `relay_keys`) when it fits in the
-    // remaining 12 KiB budget; if one `fileKey` is too large, omit only that key so
-    // the document entry and all subsequent documents remain addressable.
-    if (typeof item.fileKey === "string" && item.fileKey.length > 0) {
-      const withKey = { ...entry, fileKey: item.fileKey };
-      const fullBytes = encoder.encode(JSON.stringify(withKey)).byteLength + 1;
-      if (usedBytes + fullBytes <= DOC_BUDGET_BYTES) {
-        out.push(withKey);
-        usedBytes += fullBytes;
-        continue;
-      }
-    }
+    const entryBytes = encoder.encode(JSON.stringify(entry)).byteLength + 1;
+    if (usedBytes + entryBytes > DOC_BUDGET_BYTES) continue;
+    usedBytes += entryBytes;
     out.push(entry);
-    usedBytes += baseBytes;
   }
   return out;
 }
@@ -419,6 +413,8 @@ export class McpRoom {
 
     // Rule 3: if all ready sessions belong to a single device, pick its newest focused tab
     // (or newest ready tab), unless two live sockets collide on the same session id.
+    // `deviceLabel` is display-only and is not a routing credential: tabs on the same
+    // `deviceId` route to the newest focused tab even when their labels differ.
     const devices = new Set(ready.map((ws, idx) => this.deviceKey(ws, idx)));
     if (devices.size <= 1) {
       const sessionIds = new Set(ready.map((ws) => this.sessionSummary(ws).session));
