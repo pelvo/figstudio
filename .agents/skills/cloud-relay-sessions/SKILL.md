@@ -28,7 +28,7 @@ Use when the user opens `.fig` files in the browser build of figstudio on a depl
      - `session`: `s_<32 lowercase hex>` (stable for the lifetime of that browser tab's instance)
      - `device`: `{"label": "<Device label>"}` (`device.id` is kept internal and never exposed)
      - `focused`: whether that browser tab currently has DOM focus
-     - `docs`: array of `{"tab": <u64>, "name": "<file.fig>", "key": "<16 hex>", "pages": <usize>}` where `key` is the first 16 hex of SHA-256 over the 8-byte little-endian file size and the first 4 MiB of the file (identical when the same `.fig` is open on two machines)
+     - `docs`: array of `{"tab": <u64>, "name": "<file.fig>", "fileKey": "<stem or stem~tab>", "key": "<16 hex>", "pages": <usize>}` where `fileKey` is the `fileKey` argument accepted by MCP tools and `key` is the first 16 hex of SHA-256 over the 8-byte little-endian file size and the first 4 MiB of the file (identical when the same `.fig` is open on two machines)
      - `secondsSinceReady`: seconds since the tab's last state/focus update
    - **Pin for the whole MCP session:** call `select_session` with `{"session": "s_…"}`. The relay binds the pin to the caller's server-issued `Mcp-Session-Id` header (minted on `initialize`), so background reconnects or selection changes on the other machine will not steal subsequent calls. Pass `{"session": ""}` to clear the pin.
    - **Target a single call:** pass `"session": "s_…"` in any tool's `arguments` (for example `get_metadata` with `{"session": "s_…", "nodeId": "1:2"}`). The relay strips `session` before forwarding to the browser tab (unless a tool's native schema defines its own `session` property).

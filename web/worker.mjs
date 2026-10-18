@@ -25,7 +25,7 @@ const SESSION_ARG_SCHEMA = {
 export const RELAY_TOOLS = [
   {
     name: "list_sessions",
-    description: "List connected figstudio browser/native executor sessions in this room, their device labels, and open documents.",
+    description: "List connected figstudio browser/native executor sessions in this room, their device labels, and open documents (`docs[].fileKey` is the tool `fileKey` argument; `docs[].key` is the 16-hex content SHA-256 hash).",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -65,6 +65,8 @@ function sanitizeDocs(rawDocs) {
       tab: Number.isInteger(item.tab) && item.tab >= 0 ? item.tab : out.length,
       name: cleanStr(item.name, MAX_DOC_NAME) || "untitled",
     };
+    const fileKey = cleanStr(item.fileKey, 48);
+    if (fileKey) entry.fileKey = fileKey;
     const key = cleanStr(item.key, 32);
     if (key) entry.key = key;
     if (Number.isInteger(item.pages) && item.pages >= 0) entry.pages = item.pages;
@@ -246,11 +248,12 @@ export class McpRoom {
 
   resolveMcpSession(request) {
     const raw = request.headers.get("Mcp-Session-Id")?.trim() ?? "";
-    if (!raw || !this.mcpSessions.has(raw)) return null;
+    if (!raw) return { callerKey: null, unrecognized: false };
+    if (!this.mcpSessions.has(raw)) return { callerKey: null, unrecognized: true };
     const pinned = this.mcpSessions.get(raw);
     this.mcpSessions.delete(raw);
     this.mcpSessions.set(raw, pinned);
-    return raw;
+    return { callerKey: raw, unrecognized: false };
   }
 
   readyTabs() {
@@ -315,7 +318,7 @@ export class McpRoom {
     };
   }
 
-  resolveToolTarget(body, callerKey) {
+  resolveToolTarget(body, callerKey, unrecognized = false) {
     const ready = this.readyTabs();
     const headers = callerKey ? { "Mcp-Session-Id": callerKey } : undefined;
     if (ready.length === 0) {
@@ -366,6 +369,22 @@ export class McpRoom {
       return { tab: matches[0], body: forwardedBody };
     }
 
+    // An `Mcp-Session-Id` header that was not minted in this isolate (e.g. after Durable
+    // Object hibernation, redeploy, LRU eviction past 64, or a client-invented id) must
+    // not fall through to Rule 3 when a single device remains.
+    if (unrecognized) {
+      const data = this.listSessionsPayload(null);
+      return {
+        error: rpcError(
+          200,
+          body.id,
+          AMBIGUOUS_SESSION_CODE,
+          "Unrecognized or expired `Mcp-Session-Id`; call `initialize` to obtain a new session or pass `session`",
+          data,
+        ),
+      };
+    }
+
     // Rule 2: sticky choice for this caller (`Mcp-Session-Id` issued on `initialize`)
     const stickySession = callerKey ? this.mcpSessions.get(callerKey) : null;
     if (stickySession) {
@@ -398,14 +417,14 @@ export class McpRoom {
       };
     }
 
-    // Rule 3: if all ready sessions belong to a single device, pick its focused or newest tab,
-    // unless two live sockets collide on the same session id or assert conflicting focus/labels.
+    // Rule 3: if all ready sessions belong to a single device, pick its focused or newest tab
+    // (even if one tab updated its display label before another tab of the same device did),
+    // unless two live sockets collide on the same session id or assert conflicting focus.
     const devices = new Set(ready.map((ws, idx) => this.deviceKey(ws, idx)));
     if (devices.size <= 1) {
       const sessionIds = new Set(ready.map((ws) => this.sessionSummary(ws).session));
-      const labels = new Set(ready.map((ws) => ws.deserializeAttachment()?.deviceLabel ?? "Browser tab"));
       const focusedTabs = ready.filter((ws) => ws.deserializeAttachment()?.focused === true);
-      if (sessionIds.size === ready.length && labels.size <= 1 && focusedTabs.length <= 1) {
+      if (sessionIds.size === ready.length && focusedTabs.length <= 1) {
         return { tab: focusedTabs[0] ?? ready[0], body };
       }
     }
@@ -546,7 +565,7 @@ export class McpRoom {
     }
     if (!owns(body, "id")) return new Response(null, { status: 202 });
 
-    const callerKey = this.resolveMcpSession(request);
+    const { callerKey, unrecognized } = this.resolveMcpSession(request);
     const headers = callerKey ? { "Mcp-Session-Id": callerKey } : undefined;
 
     if (body.method === "tools/call") {
@@ -557,7 +576,7 @@ export class McpRoom {
     let tab;
     let forwardBody = body;
     if (body.method === "tools/call") {
-      const resolved = this.resolveToolTarget(body, callerKey);
+      const resolved = this.resolveToolTarget(body, callerKey, unrecognized);
       if (resolved.error) return resolved.error;
       tab = resolved.tab;
       forwardBody = resolved.body;

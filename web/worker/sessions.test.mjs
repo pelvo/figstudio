@@ -45,6 +45,7 @@ test("sha256Hex matches standard NIST vector and ready v2 stores sanitized, boun
   const manyDocs = Array.from({ length: 50 }, (_, i) => ({
     tab: i,
     name: `file-${i}\n\u202e-${"x".repeat(150)}.fig`,
+    fileKey: `file-${i}-${"k".repeat(80)}`,
     key: "0123456789abcdef0123456789abcdef_extra",
     pages: i + 1,
   }));
@@ -63,6 +64,7 @@ test("sha256Hex matches standard NIST vector and ready v2 stores sanitized, boun
   assert.equal(att.docs.length, 32);
   assert.equal(att.docs[0].name.length, 96);
   assert.ok(!att.docs[0].name.includes("\n") && !att.docs[0].name.includes("\u202e"));
+  assert.equal(att.docs[0].fileKey.length, 48);
   assert.equal(att.docs[0].key.length, 32);
   assert.ok(JSON.stringify(att).length < 16_384, "attachment must stay well under the 16 KiB DO limit");
 
@@ -132,6 +134,8 @@ test("single device with multiple tabs routes to focused or newest tab and tags 
   room.webSocketMessage(tabB, readyV2("dev_same", "Office MBP", "tab_b", { focused: false }));
 
   // Even though tabB sent ready later, tabA is focused on the same device so it wins.
+  // Renaming the device label on tabA before tabB reloads must not break single-device routing.
+  room.webSocketMessage(tabA, readyV2("dev_same", "Renamed MBP", "tab_a", { focused: true }));
   const sentA = new Promise((resolve) => { tabA.notify = resolve; });
   const resPromise = room.fetch(post(callTool("get_metadata", { node: "0:1" }, 10)));
   const frameA = await sentA;
@@ -140,7 +144,7 @@ test("single device with multiple tabs routes to focused or newest tab and tags 
   });
   const bodyA = await (await resPromise).json();
   assert.equal(bodyA.result._meta["figstudio/session"], deriveSessionId("dev_same", "tab_a"));
-  assert.equal(bodyA.result._meta["figstudio/device"], "Office MBP");
+  assert.equal(bodyA.result._meta["figstudio/device"], "Renamed MBP");
 });
 
 test("multiple devices without a session argument return -32002 without leaking device.id", async () => {
@@ -308,4 +312,11 @@ test("Mcp-Session-Id is minted on initialize, isolated per client, ignores uniss
   }
   assert.equal(room.mcpSessions.size, 64);
   assert.equal(room.mcpSessions.has(mcpClient1), false, "oldest MCP session should be evicted past cap 64");
+
+  // Even when only 1 device (`office`) remains open, calling with an evicted/unrecognized
+  // `Mcp-Session-Id` must return -32002 instead of falling through to Rule 3.
+  const sentBefore = office.sent.length;
+  const afterLruEvict = await (await room.fetch(req1(callTool("get_metadata", {}, 300)))).json();
+  assert.equal(afterLruEvict.error.code, -32002);
+  assert.equal(office.sent.length, sentBefore, "evicted Mcp-Session-Id must not fall through to Rule 3");
 });

@@ -93,6 +93,8 @@ fn relay_rpc_round_trips_json_and_notifications() {
     assert_eq!(v2["focused"], true);
     assert_eq!(v2["docs"].as_array().unwrap().len(), 2);
     assert_eq!(v2["docs"][0]["tab"], 7);
+    assert_eq!(v2["docs"][0]["fileKey"], "structure~7");
+    assert_eq!(v2["docs"][1]["fileKey"], "structure~9");
     let key0 = v2["docs"][0]["key"].as_str().unwrap();
     let key1 = v2["docs"][1]["key"].as_str().unwrap();
     assert_eq!(key0.len(), 16);

@@ -326,14 +326,18 @@ pub(crate) fn relay_ready_v2(
     focused: bool,
     tabs: &[Tab],
 ) -> String {
+    let file_keys = relay_keys(tabs);
     let docs: Vec<serde_json::Value> = tabs
         .iter()
+        .zip(file_keys)
         .take(32)
-        .map(|tab| {
+        .map(|(tab, file_key)| {
             let name = sanitize_wire_text(&tab.title(), 96);
+            let clean_fk = sanitize_wire_text(&file_key, 48);
             let mut entry = serde_json::json!({
                 "tab": tab.id,
                 "name": if name.is_empty() { "untitled".to_owned() } else { name },
+                "fileKey": clean_fk,
                 "pages": tab.doc.pages.len(),
             });
             if let Some(key) = &tab.doc_key {
