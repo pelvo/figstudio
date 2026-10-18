@@ -191,32 +191,13 @@ pub(crate) fn close_reason(code: u16) -> &'static str {
 
 /// Browser paths are just display names, so duplicate stems need a stable tab-id suffix.
 pub(crate) fn relay_keys(tabs: &[Tab]) -> Vec<String> {
-    let stems: Vec<String> = tabs
+    let stems: Vec<_> = tabs
         .iter()
         .map(|tab| {
-            let raw = tab
-                .path
+            tab.path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .unwrap_or("untitled");
-            let cleaned: String = raw
-                .chars()
-                .filter(|&c| {
-                    !c.is_control()
-                        && !matches!(
-                            c,
-                            '\u{200E}'
-                                | '\u{200F}'
-                                | '\u{202A}'..='\u{202E}'
-                                | '\u{2066}'..='\u{2069}'
-                        )
-                })
-                .collect();
-            if cleaned.is_empty() {
-                "untitled".to_owned()
-            } else {
-                cleaned
-            }
+                .unwrap_or("untitled")
         })
         .collect();
     let mut used = HashSet::new();
@@ -224,7 +205,7 @@ pub(crate) fn relay_keys(tabs: &[Tab]) -> Vec<String> {
         .iter()
         .zip(tabs)
         .map(|(stem, tab)| {
-            let mut key = stem.clone();
+            let mut key = (*stem).to_owned();
             if stems.iter().filter(|other| *other == stem).count() > 1 {
                 key.push_str(&format!("~{}", tab.id));
             }

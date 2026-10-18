@@ -72,11 +72,8 @@ function sanitizeDocs(rawDocs) {
     if (key) base.key = key;
     if (Number.isInteger(item.pages) && item.pages >= 0) base.pages = item.pages;
     const baseBytes = encoder.encode(JSON.stringify(base)).byteLength + 1;
-    const rawFileKey = typeof item.fileKey === "string"
-      ? item.fileKey.replace(UNSAFE_CHARS, "")
-      : "";
-    const hasFileKey = rawFileKey.length > 0;
-    const full = hasFileKey ? { ...base, fileKey: rawFileKey } : base;
+    const hasFileKey = typeof item.fileKey === "string" && item.fileKey.length > 0;
+    const full = hasFileKey ? { ...base, fileKey: item.fileKey } : base;
     const fullBytes = hasFileKey
       ? encoder.encode(JSON.stringify(full)).byteLength + 1
       : baseBytes;
@@ -99,7 +96,7 @@ function sanitizeDocs(rawDocs) {
       const next = candidates[j];
       if (usedBytes + laterBytes + next.fullBytes <= DOC_BUDGET_BYTES) {
         laterBytes += next.fullBytes;
-      } else if (!next.hasFileKey && usedBytes + laterBytes + next.baseBytes <= DOC_BUDGET_BYTES) {
+      } else if (usedBytes + laterBytes + next.baseBytes <= DOC_BUDGET_BYTES) {
         laterBytes += next.baseBytes;
       }
     }
