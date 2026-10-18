@@ -89,6 +89,41 @@ Not verified: whether Safari or a newer Chrome blocks an `https://` page opening
 `ws://127.0.0.1` (mixed content / Local Network Access prompt). If your browser blocks it,
 use the local `--serve` build over `http://127.0.0.1:8765`.
 
+### In the browser (cloud relay and multi-device sessions)
+
+When deployed behind the Cloudflare Worker (`web/worker.mjs` with the `McpRoom` Durable
+Object), the browser tab runs the MCP server in Wasm and pairs with `/bridge/rm_<64 hex>`
+over WebSocket. Files never leave the browser.
+
+1. **First machine (one-time MCP client setup):** open **View → Agent access**, keep
+   **Cloud relay** selected, optionally set **Device label** (for example `Office · Chrome`),
+   and click **Copy MCP URL**:
+   ```sh
+   claude mcp add --transport http figstudio https://<your-deploy-domain>/mcp/rm_<64 hex>
+   ```
+   The 256-bit executor token (`ex_<64 hex>`) is saved in
+   `localStorage["figstudio.mcp.executor.v2"]`; the room (`rm_<64 hex>`) is derived from it
+   by SHA-256, so the MCP URL stays the same across reloads and files.
+2. **Additional machines (same MCP URL, no extra tokens):** on the first machine click
+   **Copy room link** (`https://<your-deploy-domain>/#room=rm_…&exec=ex_…`), open that link
+   on the second machine, and confirm **Join that room** (or paste `ex_…` and click
+   **Apply**). Both machines now share the same `/mcp/rm_…` endpoint while keeping their own
+   `device.id` (`localStorage["figstudio.mcp.device.v1"]`) and **Device label**.
+3. **Routing across sessions:**
+   - When only **one device** is connected (even with multiple tabs), tool calls route
+     automatically to its focused or newest tab.
+   - When **multiple devices** are connected to the same room, an unpinned call without
+     `session` returns JSON-RPC error `-32002` with the candidate sessions in `error.data`.
+   - Call `list_sessions` to inspect connected devices and open `.fig` documents (`key` is
+     the first 16 hex of SHA-256 over the file size and first 4 MiB), then either pin a
+     target for the whole MCP client session with `select_session` (`{"session": "s_…"}`,
+     keyed by the server-issued `Mcp-Session-Id` header from `initialize`) or pass
+     `"session": "s_…"` on individual tool calls.
+   - Every forwarded `tools/call` result carries `_meta["figstudio/session"]` and
+     `_meta["figstudio/device"]`.
+   - See the [cloud-relay-sessions agent skill](../../.agents/skills/cloud-relay-sessions/SKILL.md)
+     for the step-by-step agent workflow.
+
 ### Remote agents
 
 Use this when the coding agent runs on another machine than figstudio (for example an SSH
@@ -285,6 +320,8 @@ renderer), so the browser MCP build does not register them.
 | `list_open_tabs` *(app only)* | none | `{tabs: [{tabId, fileKey, path, title, page: {id, name}, selection, active}]}` | Lists the app's open tabs. `fileKey` is what the other tools take. |
 | `get_selection` *(app only)* | `fileKey?` | `{fileKey, tabId, page, node: {nodeId, name, kind, bounds: {x, y, width, height}}}`, or `node: null` | The selected node of a tab (default the active tab). Bounds are in page units. |
 | `reveal_node` *(app only)* | `nodeId` (or a link), `fileKey?` | One line: the node is revealed in tab N | Selects the node in the app; the tab becomes active and the view fits the node. An instance path reveals its outer instance and says so. Waits 5 s for the app; then the error "the app did not respond" (a minimised window may not run frames, so the reveal can time out). |
+| `list_sessions` *(cloud relay only)* | none | `{sessions: [{session, device: {label}, focused, docs: [{tab, name, key, pages}], secondsSinceReady}], selectedSession, socketsInUse, socketCap}` | Answered by the relay Durable Object even when no tab is connected. `docs[].key` is the first 16 hex of SHA-256 over the 8-byte little-endian file size and first 4 MiB. `device.id` is never exposed. |
+| `select_session` *(cloud relay only)* | `session` (`s_…` or `""` to clear) | `{selected: <sessionSummary>}` or `{cleared: true, ...}` | Pins a target session for subsequent tool calls from this MCP client (keyed by the `Mcp-Session-Id` header issued on `initialize`, capped at 64 clients). If the pinned tab disconnects, subsequent calls return `-32002` instead of silently switching devices. |
 
 **Prompt: `create_design_system_rules`** (`prompts/get`; optional arguments
 `clientFrameworks`, `clientLanguages`, `fileKey`, all strings). Returns guidance for a
