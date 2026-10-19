@@ -88,6 +88,18 @@ use worker::{Loaded, Workers};
 
 const APP_NAME: &str = "figstudio";
 
+/// The window and Dock icon (512 px PNG). Without one eframe shows the egui logo.
+#[cfg(not(target_arch = "wasm32"))]
+const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
+
+/// [`ICON_PNG`] decoded; `None` (eframe's default) if it ever fails to decode.
+#[cfg(not(target_arch = "wasm32"))]
+fn app_icon() -> Option<egui::IconData> {
+    eframe::icon_data::from_png_bytes(ICON_PNG)
+        .inspect_err(|error| tracing::warn!("app icon not decoded: {error}"))
+        .ok()
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> std::process::ExitCode {
     init_tracing();
@@ -102,6 +114,9 @@ fn main() -> std::process::ExitCode {
             .with_drag_and_drop(true),
         ..Default::default()
     };
+    if let Some(icon) = app_icon() {
+        options.viewport = options.viewport.with_icon(icon);
+    }
     // Arc-style frameless window: the traffic lights float over the sidebar, and the window
     // is transparent so the blur behind it (`vibrancy.rs`) shows through the gradient.
     #[cfg(target_os = "macos")]
@@ -1092,6 +1107,15 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::chrome::{MIN_LAYERS, MIN_PAGES, split_height};
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_app_icon_decodes_as_a_square_of_at_least_256_px() {
+        let icon = super::app_icon().expect("assets/icon.png decodes");
+        assert_eq!(icon.width, icon.height);
+        assert!(icon.width >= 256, "{}", icon.width);
+        assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
+    }
 
     #[test]
     fn pages_get_more_room_than_layers_by_default() {
