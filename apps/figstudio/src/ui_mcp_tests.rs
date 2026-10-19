@@ -1,5 +1,6 @@
 //! Settings → Agents: entering an address, starting and stopping the hosted server.
 use super::*;
+use egui_kittest::kittest::NodeT as _;
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -63,6 +64,22 @@ fn the_agent_window_types_an_address_and_starts_and_stops_the_server() {
     });
     assert_ne!(addr.port(), 3845);
     assert!(TcpStream::connect(addr).is_ok());
+    // While it runs the remote switch cannot change, and says so (egui marks a widget in a
+    // disabled scope disabled); its note names the token.
+    let remote = h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Allow remote agents");
+    let disabled = h.query_by(|n| {
+        n.role() == egui::accesskit::Role::CheckBox
+            && n.is_disabled()
+            && n.bounding_box() == remote.accesskit_node().bounding_box()
+    });
+    assert!(
+        disabled.is_some(),
+        "reported disabled while the server runs"
+    );
+    assert!(
+        h.query_by_label_contains("send the access token").is_some(),
+        "the note says clients need the token"
+    );
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let client = runtime.block_on(async {
         let transport = StreamableHttpClientTransport::from_uri(format!("http://{addr}/mcp"));

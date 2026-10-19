@@ -56,23 +56,29 @@ impl McpHost {
                     ui.ctx().copy_text(link);
                 }
             });
+            // Apply first, from the right, so the field takes only the room left: in Settings'
+            // narrow column a default-width field pushed the button out of view.
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.room_input)
-                        .password(true)
-                        .hint_text("executor token or room link"),
-                );
-                if ui.button("Apply").clicked() {
-                    match room::join(&self.room_input) {
-                        Ok(pair) => {
-                            // Typing or pasting a token here is already consent.
-                            self.adopt(pair);
-                            self.room_input.clear();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let apply = ui.button("Apply");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.room_input)
+                            .password(true)
+                            .hint_text("executor token or room link")
+                            .desired_width(ui.available_width()),
+                    );
+                    if apply.clicked() {
+                        match room::join(&self.room_input) {
+                            Ok(pair) => {
+                                // Typing or pasting a token here is already consent.
+                                self.adopt(pair);
+                                self.room_input.clear();
+                            }
+                            // An invalid entry changes nothing.
+                            Err(error) => self.notices.push(error),
                         }
-                        // An invalid entry changes nothing.
-                        Err(error) => self.notices.push(error),
                     }
-                }
+                });
             });
             if ui.button("Regenerate room token").clicked() {
                 // Saved before the old connection is dropped (`regenerate` persists first):

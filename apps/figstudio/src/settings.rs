@@ -145,8 +145,15 @@ const TOOLBAR: f32 = 85.0;
 const INSET: f32 = 24.0;
 /// The window's corners.
 const RADIUS: u8 = 10;
-/// Arc's settings blue: the lit tab, the tiles, a keycap waiting for keys.
+/// Arc's settings blue: fills and rings (the switch track, the tiles' rim, a keycap's ring).
 const ACCENT: Color32 = Color32::from_rgb(52, 120, 246);
+/// The blue for marks and words on light surfaces (a white keycap, a tile's face, the light
+/// lit tab): darker than [`ACCENT`], which reads too faintly there.
+const ACCENT_INK: Color32 = Color32::from_rgb(36, 99, 220);
+/// A tile's key face.
+const TILE_FACE: Color32 = Color32::from_rgb(201, 215, 242);
+/// A keycap's keys when not recording.
+const KEYCAP_INK: Color32 = Color32::from_gray(88);
 /// Memory key: the next list row is the first of its section (no line above it).
 const FIRST_ROW: &str = "settings-first-row";
 
@@ -198,6 +205,10 @@ struct Look {
     button: Color32,
     track: Color32,
     segment: Color32,
+    /// The lit tab's icon.
+    accent_ink: Color32,
+    /// A notice ("moved here from …").
+    warning: Color32,
 }
 
 impl Look {
@@ -224,7 +235,9 @@ impl Look {
                 dim: c(145, 144, 143),
                 button: c(58, 56, 55),
                 track: c(62, 60, 59),
-                segment: c(104, 102, 101),
+                segment: c(92, 90, 89),
+                accent_ink: c(122, 170, 255),
+                warning: c(240, 180, 70),
             }
         } else {
             Look {
@@ -244,8 +257,26 @@ impl Look {
                 button: c(226, 225, 224),
                 track: c(226, 225, 224),
                 segment: Color32::WHITE,
+                accent_ink: ACCENT_INK,
+                warning: c(150, 85, 0),
             }
         }
+    }
+}
+
+/// A keycap's words: blue while it waits for keys.
+fn keycap_ink(recording: bool) -> Color32 {
+    if recording { ACCENT_INK } else { KEYCAP_INK }
+}
+
+/// A toolbar tab's icon and name. The tab you are on has a blue icon and its name in the
+/// text colour (blue words on the lit pill would be too faint); the others brighten on hover.
+fn tab_ink(look: &Look, on: bool, hover: f32) -> (Color32, Color32) {
+    if on {
+        (look.accent_ink, look.text)
+    } else {
+        let c = look.section.lerp_to_gamma(look.text, hover);
+        (c, c)
     }
 }
 
@@ -254,9 +285,9 @@ impl Look {
 fn keycap(ui: &Ui, text: &str, right: f32, y: f32, recording: bool) -> Rect {
     let look = Look::of(ui);
     let (shown, ink) = if recording {
-        ("Type keys…", ACCENT)
+        ("Type keys…", keycap_ink(true))
     } else {
-        (text, Color32::from_gray(88))
+        (text, keycap_ink(false))
     };
     let galley = ui
         .painter()
@@ -592,11 +623,7 @@ fn tile(painter: &egui::Painter, rect: Rect, glyph: Glyph) {
     );
     // The key's top: inset, a little higher than centred, as a key seen from the front.
     let face = Rect::from_min_max(rect.min + vec2(4.0, 4.0), rect.max - vec2(4.0, 6.0));
-    painter.rect_filled(
-        face,
-        CornerRadius::same(11),
-        Color32::from_rgb(201, 215, 242),
-    );
+    painter.rect_filled(face, CornerRadius::same(11), TILE_FACE);
     painter.rect_stroke(
         face,
         CornerRadius::same(11),
@@ -604,14 +631,14 @@ fn tile(painter: &egui::Painter, rect: Rect, glyph: Glyph) {
         StrokeKind::Inside,
     );
     match glyph {
-        Glyph::Icon(icon) => icons::paint(painter, icon, face.shrink(13.0), ACCENT),
+        Glyph::Icon(icon) => icons::paint(painter, icon, face.shrink(13.0), ACCENT_INK),
         Glyph::Text(text) => {
             painter.text(
                 face.center(),
                 Align2::CENTER_CENTER,
                 text,
                 theme::semibold(28.0),
-                ACCENT,
+                ACCENT_INK,
             );
         }
     }
@@ -932,23 +959,19 @@ impl App {
             let on = tab == t;
             response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, on, t.label()));
             let (hover, _) = icons::feedback(ui, &response);
-            let color = if on {
-                ACCENT
-            } else {
-                look.section.lerp_to_gamma(look.text, hover)
-            };
+            let (icon, name) = tab_ink(&look, on, hover);
             icons::paint(
                 ui.painter(),
                 t.icon(),
                 Rect::from_center_size(pos2(r.center().x, r.top() + 17.0), vec2(21.0, 21.0)),
-                color,
+                icon,
             );
             ui.painter().text(
                 pos2(r.center().x, r.top() + 37.0),
                 Align2::CENTER_CENTER,
                 t.label(),
                 font.clone(),
-                color,
+                name,
             );
             if response.clicked() {
                 self.settings.tab = t;
@@ -1084,8 +1107,9 @@ impl App {
                 setting(
                     ui,
                     "Allow remote agents",
-                    "Listen on the address below, not only on this computer. Plain HTTP: \
-                     use Tailscale or an SSH tunnel",
+                    "Listen on an address you give, not only on this computer. Clients send \
+                     the access token (Copy token, once on); plain HTTP, so use Tailscale or \
+                     an SSH tunnel",
                     |ui| {
                         ui.add_enabled_ui(!on, |ui| {
                             switch(ui, access.remote, "Allow remote agents");
@@ -1177,7 +1201,7 @@ impl App {
         );
         search.add(
             egui::TextEdit::singleline(&mut self.settings.filter)
-                .hint_text(RichText::new("Type a feature name or shortcut").color(look.section))
+                .hint_text(RichText::new("Type a feature name or shortcut").color(look.title))
                 .font(FontId::proportional(13.5))
                 .text_color(look.text)
                 .frame(egui::Frame::NONE)
@@ -1211,11 +1235,7 @@ impl App {
             let shown = anim::arrive(right.ctx(), Id::new("settings-notice"), notice, 0.2);
             right.scope(|ui| {
                 ui.multiply_opacity(shown);
-                ui.label(
-                    RichText::new(notice)
-                        .size(12.5)
-                        .color(theme::of(ui).warning),
-                );
+                ui.label(RichText::new(notice).size(12.5).color(Look::of(ui).warning));
             });
         }
         let column = right.max_rect();
@@ -1416,5 +1436,45 @@ mod tests {
         }
         assert_eq!(Renderer::Cpu.env_value(), Some("cpu"));
         assert_eq!(Renderer::Automatic.env_value(), None);
+    }
+}
+
+#[cfg(test)]
+mod look_tests {
+    use super::*;
+
+    /// Every word and mark Settings draws, on what it is drawn on, at its WCAG floor: 4.5:1
+    /// for text, 3:1 for icons and large text (the 28 pt tile glyph).
+    #[test]
+    fn settings_colours_are_readable_in_both_themes() {
+        for dark in [false, true] {
+            let l = Look::new(dark);
+            let (lit_icon, lit_name) = tab_ink(&l, true, 0.0);
+            let (tab, _) = tab_ink(&l, false, 0.0);
+            let pairs: [(&str, Color32, Color32, f32); 15] = [
+                ("row text", l.text, l.body, 4.5),
+                ("row note", l.dim, l.body, 4.5),
+                ("section title", l.section, l.body, 4.5),
+                ("window title", l.title, l.toolbar, 4.5),
+                ("a tab", tab, l.toolbar, 4.5),
+                ("the lit tab's name", lit_name, l.lit, 4.5),
+                ("the lit tab's icon", lit_icon, l.lit, 3.0),
+                ("a chosen segment", l.text, l.segment, 4.5),
+                ("a segment", l.text, l.track, 4.5),
+                ("a pill", l.text, l.button, 4.5),
+                ("the search hint", l.title, l.search, 4.5),
+                ("a notice", l.warning, l.body, 4.5),
+                ("a keycap", keycap_ink(false), Color32::WHITE, 4.5),
+                ("a keycap waiting", keycap_ink(true), Color32::WHITE, 4.5),
+                ("a tile's glyph", ACCENT_INK, TILE_FACE, 3.0),
+            ];
+            for (what, ink, under, floor) in pairs {
+                let c = theme::contrast(ink, under);
+                assert!(
+                    c >= floor,
+                    "{what} (dark {dark}): {c:.2}:1, needs {floor}:1"
+                );
+            }
+        }
     }
 }
