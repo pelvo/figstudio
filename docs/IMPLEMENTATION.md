@@ -582,7 +582,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   load ends (the file is no tab yet, so it could not be told from a copy under another
   spelling); other loads do not hold it. A held listing still fails at the timeout
   (`StillLoading`). A copy whose load failed meanwhile (the worker sends its resolved path
-  with `Loaded::Err`) is not loaded again; the link then answers `LoadFailed`. Reading a folder can block (a network drive, or macOS asking to allow reading
+  with `Loaded::Err`; failing that, the path's `.`/`..` are folded by text) still takes part
+  in the ranking, so a worse match or the other half of a tie never takes its place; when it
+  is the one chosen, the link answers `LoadFailed` and it is not loaded again. Reading a folder can block (a network drive, or macOS asking to allow reading
   `~/Downloads`), and the window keeps drawing meanwhile. `start_search` requests a frame and
   each poll with a search running requests another in 250 ms, so the timeout fires even in
   an idle window. After `SEARCH_TIMEOUT` (20 s) the link fails ("could not be read in time",

@@ -731,3 +731,55 @@ fn a_copy_whose_load_just_failed_is_not_loaded_again() {
     );
     assert!(app.tabs.is_empty());
 }
+
+/// The figma.com key's own file in `dir` (`KEY.fig`, listed as `dir/sub/../KEY.fig` with no
+/// `sub`, so it cannot be resolved), then the `structure` fixture, a name match only.
+fn key_then_name(dir: &Path) -> Vec<(PathBuf, Match)> {
+    vec![
+        (dir.join("sub/../KEY.fig"), Match::Key),
+        (fixture("structure.fig"), Match::Name),
+    ]
+}
+
+fn key_dir() -> &'static Path {
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(fixture("structure.fig"), dir.path().join("KEY.fig")).unwrap();
+        dir
+    })
+    .path()
+}
+
+fn key_listing(_: &[PathBuf], _: &FileHint) -> Vec<(PathBuf, Match)> {
+    key_then_name(key_dir())
+}
+
+#[test]
+fn a_failed_best_match_fails_the_link_instead_of_opening_a_worse_one() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = key_listing;
+    // The key's file is loading under its plain spelling; the worker cannot resolve it.
+    let opened = key_dir().join("KEY.fig");
+    assert!(h.state_mut().loading.begin(&opened));
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("structure", "1-4"), Some(done))
+    );
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    h.step();
+    h.state_mut().loading.finish(&opened);
+    h.state_mut().link_failed(&opened, None);
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("could not be opened"), "{error}");
+    let app = h.state();
+    assert_eq!(
+        app.loading.iter().count(),
+        0,
+        "a file was loaded in its place"
+    );
+    assert!(app.tabs.is_empty());
+}

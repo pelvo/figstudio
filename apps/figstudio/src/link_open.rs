@@ -324,6 +324,24 @@ pub(crate) fn real_paths(copies: Vec<(PathBuf, Match)>) -> Vec<Copy> {
         .collect()
 }
 
+/// `path` with `.` and `..` folded away by its text alone (no disk access, so symlinks are
+/// not followed): how a failed load is matched when the worker could not resolve it.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// Whether `path`'s file name is one `hint` matches (no disk access).
 fn names(hint: &FileHint, path: &Path) -> bool {
     path.file_stem()
@@ -518,11 +536,20 @@ impl App {
     }
 
     fn finish_search(&mut self, ctx: &egui::Context, mut search: Search) {
-        let mut copies = search.found.take().unwrap_or_default();
-        // A copy that just failed to load is not decoded again.
-        let listed = copies.len();
-        copies.retain(|(_, real, _)| !self.link.failed.contains(real));
-        let failed = copies.len() < listed;
+        let copies = search.found.take().unwrap_or_default();
+        // Copies that just failed to load, by either spelling (the worker may not have
+        // resolved the path). They still take part in the ranking, so a worse match or the
+        // other half of a tie never takes their place; only opening one is refused.
+        let failed: Vec<PathBuf> = copies
+            .iter()
+            .filter(|(path, real, _)| {
+                self.link.failed.iter().any(|f| {
+                    let f = lexical(f);
+                    f == lexical(path) || f == lexical(real)
+                })
+            })
+            .map(|(path, _, _)| path.clone())
+            .collect();
         // The tabs open now, not when the search started: one may have opened meanwhile.
         let tabs: Vec<(u64, &Path, &Path)> = self
             .tabs
@@ -531,6 +558,10 @@ impl App {
             .collect();
         let active = self.tabs.get(self.active).map(|t| t.id);
         match plan(&tabs, active, Some(&search.hint), copies, &self.link.dirs) {
+            Ok(Target::Open(path)) if failed.contains(&path) => {
+                // Not decoded again; its load error is already a toast.
+                self.answer(ctx, search.done, Err(LinkError::LoadFailed));
+            }
             Ok(target) => {
                 let window = search.done.is_none();
                 if self.go_to(ctx, target, search.node, search.done) && window {
@@ -546,9 +577,6 @@ impl App {
                 self.link.choice_node = search.node;
                 self.link.text = search.text;
                 self.link.window = true;
-            }
-            Err(LinkError::NotFound { .. }) if failed => {
-                self.answer(ctx, search.done, Err(LinkError::LoadFailed));
             }
             Err(error) => self.answer(ctx, search.done, Err(error)),
         }
