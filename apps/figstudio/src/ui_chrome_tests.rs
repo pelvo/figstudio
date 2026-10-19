@@ -226,6 +226,33 @@ fn command_f_finds_text_on_the_page_and_steps_through_it() {
     h.run_steps(3);
     assert!(!h.state().find.is_open(), "Escape closes the bar");
     assert!(h.state().tabs[0].find_hits.is_empty(), "and the highlights");
+
+    // After a click on the canvas the field has no focus; Escape still closes the bar
+    // (before it clears the selection), and ⌘F does not get past an open command bar.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    h.run_steps(3);
+    let canvas = h.state().tabs[0].canvas_rect.expect("laid out");
+    let empty = canvas.left_bottom() + egui::vec2(20.0, -60.0);
+    h.event(Event::PointerMoved(empty));
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: empty,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.run_steps(3);
+    assert!(!h.ctx.egui_wants_keyboard_input(), "the field lost focus");
+    assert!(h.state().find.is_open());
+    h.key_press(Key::Escape);
+    h.run_steps(3);
+    assert!(!h.state().find.is_open(), "Escape closes it all the same");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(3);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    h.run_steps(3);
+    assert!(!h.state().find.is_open(), "the command bar is modal");
 }
 
 #[test]

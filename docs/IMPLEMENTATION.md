@@ -439,7 +439,11 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   frames `labels::named` lists), sorted top to bottom. The canvas highlights them (a name on
   its label when the label is drawn, else round its frame); Enter / ⌘G and
   Shift for the previous one; a match is brought into view only when it is off screen or too
-  small to read.
+  small to read in the target view (`Tab::view`, where an ease ends). At most 5000 matches
+  are kept, the top of the page (sorted before the cut); instances are searched top first
+  and the walk stops once the kept matches all sit above the next one (`find_at_most`).
+  Escape closes the bar whether or not its field has focus; the next Escape clears the
+  selection.
 - The canvas card has round corners: the page background is a rounded rect and tiles that
   reach into a corner are drawn as a polygon cut to it (`tiles_view::rounded_clip`).
 - View jumps (fit, zoom buttons and keys, the Zoom tool, double-click) ease over 0.28 s:

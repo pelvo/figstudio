@@ -150,15 +150,47 @@ const MAX_INSIDE: usize = 200_000;
 /// they show it, and the names drawn above frames and sections. Top to bottom, then left to
 /// right.
 pub fn find_text(doc: &Document, page: Guid, query: &str) -> Vec<Hit> {
+    find_at_most(doc, page, query, MAX_HITS)
+}
+
+/// Where a match sits in reading order: its box's top, then its left.
+type Place = (f32, f32);
+
+fn place_of(b: Option<Rect>) -> Place {
+    b.map_or((f32::MAX, f32::MAX), |b| (b.top(), b.left()))
+}
+
+fn by_place(a: &Place, b: &Place) -> std::cmp::Ordering {
+    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+}
+
+/// Keeps the first `cap` of `hits` in reading order. Returns where the last kept one sits:
+/// nothing lower can be among them any more.
+fn keep_top(hits: &mut Vec<(Place, Hit)>, cap: usize) -> Option<Place> {
+    if hits.len() > cap {
+        hits.select_nth_unstable_by(cap - 1, |a, b| by_place(&a.0, &b.0));
+        hits.truncate(cap);
+    }
+    (hits.len() >= cap)
+        .then(|| hits.iter().map(|h| h.0).max_by(by_place))
+        .flatten()
+}
+
+/// [`find_text`] keeping the top `cap` matches of the page (`cap` ≥ 1). Instances are
+/// searched from the top of the page down, and the search stops once `cap` matches sit above
+/// the next instance, so a big page is not walked to its end for matches that would be cut.
+fn find_at_most(doc: &Document, page: Guid, query: &str, cap: usize) -> Vec<Hit> {
+    let cap = cap.max(1);
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return Vec::new();
     }
     let matches = |text: &str| text.to_lowercase().contains(&query);
-    let mut hits: Vec<Hit> = crate::labels::named(doc, page)
+    let placed = |hit: Hit| (place_of(hit.bounds(doc)), hit);
+    let mut hits: Vec<(Place, Hit)> = crate::labels::named(doc, page)
         .into_iter()
         .filter(|id| doc.node(*id).is_some_and(|n| matches(&n.name)))
-        .map(Hit::Name)
+        .map(|id| placed(Hit::Name(id)))
         .collect();
     let mut instances = Vec::new();
     let mut stack: Vec<Guid> = doc.children(page).to_vec();
@@ -166,16 +198,22 @@ pub fn find_text(doc: &Document, page: Guid, query: &str) -> Vec<Hit> {
         stack.extend(doc.children(id).iter().copied());
         let Some(node) = doc.node(id) else { continue };
         if node.kind == "INSTANCE" {
-            instances.push(id);
+            instances.push(placed(Hit::Node(id)));
         } else if crate::copy::text(node).is_some_and(matches) {
-            hits.push(Hit::Node(id));
+            hits.push(placed(Hit::Node(id)));
         }
     }
+    // Top of the page first, so the walk can stop where the kept matches end.
+    instances.sort_by(|a, b| by_place(&a.0, &b.0));
+    let mut lowest_kept = keep_top(&mut hits, cap);
     let definitions = std::sync::Arc::new(figstudio_fig::resolve::definitions(doc));
     let mut renderer = figstudio_render::Renderer::new();
     let mut budget = MAX_INSIDE;
-    for instance in instances {
-        if budget == 0 || hits.len() >= MAX_HITS {
+    for (top, instance) in instances {
+        let Hit::Node(instance) = instance else {
+            continue;
+        };
+        if budget == 0 || lowest_kept.is_some_and(|low| by_place(&top, &low).is_gt()) {
             break;
         }
         let Ok(walk) =
@@ -194,24 +232,22 @@ pub fn find_text(doc: &Document, page: Guid, query: &str) -> Vec<Hit> {
                 continue;
             }
             if let Some(b) = renderer.path_bounds(doc, &inside.path) {
-                hits.push(Hit::Inside(Rect::from_min_max(
+                let rect = Rect::from_min_max(
                     Pos2::new(b.x0 as f32, b.y0 as f32),
                     Pos2::new(b.x1 as f32, b.y1 as f32),
-                )));
+                );
+                hits.push((place_of(Some(rect)), Hit::Inside(rect)));
             }
         }
+        // Trimmed now and then, not per match: a cut costs a pass over what is kept.
+        if hits.len() >= cap.saturating_mul(2) {
+            lowest_kept = keep_top(&mut hits, cap);
+        }
     }
-    hits.truncate(MAX_HITS);
+    keep_top(&mut hits, cap);
     // Reading order: rows of the page from the top, left to right within a row.
-    let place = |hit: &Hit| {
-        hit.bounds(doc)
-            .map_or((f32::MAX, f32::MAX), |b| (b.top(), b.left()))
-    };
-    hits.sort_by(|a, b| {
-        let (pa, pb) = (place(a), place(b));
-        pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    hits
+    hits.sort_by(|a, b| by_place(&a.0, &b.0));
+    hits.into_iter().map(|(_, hit)| hit).collect()
 }
 
 /// Brings a match into view the way a browser scrolls to it: nothing when it is already
@@ -403,6 +439,93 @@ mod tests {
             find_text(&doc, page, "Symbol and images").is_empty(),
             "as in a browser, the words must appear as typed"
         );
+    }
+
+    /// A page of text layers "match" stacked top to bottom, listed bottom first in the
+    /// layer tree, so the walk meets the lowest first.
+    fn stacked_text(n: u32) -> Document {
+        use figstudio_fig::{Node, Obj, Val};
+        let obj = |fields: &[(&str, Val)]| {
+            let mut o = Obj::new();
+            for (k, v) in fields {
+                o.insert(k, v.clone());
+            }
+            Val::Obj(o)
+        };
+        let parent = |guid: Guid, position: String| {
+            obj(&[("guid", guid.to_val()), ("position", Val::Str(position))])
+        };
+        let page = Guid(9, 1);
+        let mut nodes = vec![
+            Node::from_data(obj(&[
+                ("guid", page.to_val()),
+                ("type", Val::Str("CANVAS".into())),
+                ("name", Val::Str("Page".into())),
+                ("parentIndex", parent(Guid(0, 0), "0".into())),
+            ]))
+            .expect("page"),
+        ];
+        for i in 0..n {
+            nodes.push(
+                Node::from_data(obj(&[
+                    ("guid", Guid(9, i + 2).to_val()),
+                    ("type", Val::Str("TEXT".into())),
+                    ("name", Val::Str("Caption".into())),
+                    ("parentIndex", parent(page, format!("{i:03}"))),
+                    (
+                        "size",
+                        obj(&[("x", Val::Float(80.0)), ("y", Val::Float(20.0))]),
+                    ),
+                    (
+                        "transform",
+                        obj(&[
+                            ("m00", Val::Float(1.0)),
+                            ("m11", Val::Float(1.0)),
+                            ("m12", Val::Float(f64::from(i) * 40.0)),
+                        ]),
+                    ),
+                    ("textData", obj(&[("characters", Val::Str("match".into()))])),
+                ]))
+                .expect("text"),
+            );
+        }
+        let bytes = include_bytes!("../../../tests/fixtures/structure.fig");
+        let mut doc = Document::from_bytes(bytes).expect("fixture");
+        doc.set_nodes(nodes).expect("nodes");
+        doc.pages = vec![page];
+        doc
+    }
+
+    #[test]
+    fn the_matches_kept_are_the_top_of_the_page_not_the_first_walked() {
+        let doc = stacked_text(6);
+        let page = doc.pages[0];
+        let all = find_at_most(&doc, page, "match", usize::MAX);
+        assert_eq!(all.len(), 6);
+        let top = |h: &Hit| h.bounds(&doc).map(|b| b.top());
+        assert_eq!(top(&all[0]), Some(0.0));
+        for cap in 1..6 {
+            assert_eq!(
+                find_at_most(&doc, page, "match", cap),
+                all[..cap],
+                "at most {cap}: the top {cap} of the page"
+            );
+        }
+        // And on a real file, with instances and frame names among the matches.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/structure.fig");
+        let doc = Document::open(path).expect("fixture");
+        let page = doc.pages[0];
+        for query in ["abc", "e", "a", "o"] {
+            let all = find_at_most(&doc, page, query, usize::MAX);
+            for cap in 1..all.len() {
+                assert_eq!(
+                    find_at_most(&doc, page, query, cap),
+                    all[..cap],
+                    "{query:?} {cap}"
+                );
+            }
+        }
     }
 
     #[test]

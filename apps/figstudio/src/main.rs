@@ -818,8 +818,14 @@ impl App {
         for action in run {
             self.apply(action, ctx);
         }
-        if !quiet && ctx.input(|i| i.key_pressed(Key::Escape)) {
-            self.apply(menu::Action::ClearSelection, ctx);
+        // Escape closes the find bar first, also when its field no longer has focus (a
+        // click on the canvas took it); the next one clears the selection.
+        if !quiet && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+            if self.find.is_open() {
+                self.find.hide();
+            } else {
+                self.apply(menu::Action::ClearSelection, ctx);
+            }
         }
     }
 
