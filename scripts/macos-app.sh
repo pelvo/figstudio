@@ -36,6 +36,21 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$out/figstudio" "$out/figstudio-mcp" "$out/figstudio-cli" "$app/Contents/MacOS/"
 
+# The Finder/Launchpad icon, from the same PNG the app sets on its window (512 px, so the
+# largest entry is 512x512 at 1x and 256x256 at 2x). sips and iconutil ship with macOS.
+iconset=$(mktemp -d)/figstudio.iconset
+mkdir -p "$iconset"
+for size in 16 32 128 256 512; do
+  sips -z $size $size apps/figstudio/assets/icon.png --out "$iconset/icon_${size}x${size}.png" >/dev/null
+  if [ $size -le 256 ]; then
+    double=$((size * 2))
+    sips -z $double $double apps/figstudio/assets/icon.png \
+      --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+  fi
+done
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/figstudio.icns"
+rm -rf "$(dirname "$iconset")"
+
 cat >"$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -46,6 +61,7 @@ cat >"$app/Contents/Info.plist" <<EOF
   <key>CFBundleIdentifier</key><string>dev.figstudio.app</string>
   <key>CFBundleExecutable</key><string>figstudio</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>figstudio</string>
   <key>CFBundleVersion</key><string>$version</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
@@ -56,6 +72,9 @@ cat >"$app/Contents/Info.plist" <<EOF
 EOF
 
 plutil -lint "$app/Contents/Info.plist" >/dev/null
+# No CFBundleDocumentTypes: winit does not hand the app macOS "open file" events, so a
+# double-clicked .fig would start an empty window. Taking them needs an unsafe AppKit
+# delegate, which the workspace denies.
 # Helpers first, then the bundle (its seal covers the signed helpers).
 codesign --force --sign - "$app/Contents/MacOS/figstudio-mcp" "$app/Contents/MacOS/figstudio-cli"
 codesign --force --sign - "$app"
