@@ -65,6 +65,8 @@ mod tiles;
 mod tiles_view;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod ui_tests;
+#[cfg(target_os = "macos")]
+mod vibrancy;
 #[cfg(target_arch = "wasm32")]
 mod web;
 mod worker;
@@ -93,14 +95,16 @@ fn main() -> std::process::ExitCode {
             .with_drag_and_drop(true),
         ..Default::default()
     };
-    // Arc-style frameless window: the traffic lights float over the sidebar.
+    // Arc-style frameless window: the traffic lights float over the sidebar, and the window
+    // is transparent so the blur behind it (`vibrancy.rs`) shows through the gradient.
     #[cfg(target_os = "macos")]
     {
         options.viewport = options
             .viewport
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
-            .with_title_shown(false);
+            .with_title_shown(false)
+            .with_transparent(true);
     }
     options.wgpu_options.wgpu_setup = gpu::setup();
     let run = eframe::run_native(
@@ -109,6 +113,10 @@ fn main() -> std::process::ExitCode {
         Box::new(move |cc| {
             let mut app = App::new(cc, files);
             app.attach_menu(cc);
+            #[cfg(target_os = "macos")]
+            {
+                app.vibrancy = vibrancy::Vibrancy::attach(cc);
+            }
             Ok(Box::new(app))
         }),
     );
@@ -216,6 +224,9 @@ struct App {
     card_rect: Option<egui::Rect>,
     /// The hidden sidebar is peeking out over the canvas (`chrome.rs`).
     peek: bool,
+    /// macOS: the blur behind the transparent window; `None` keeps the gradient opaque.
+    #[cfg(target_os = "macos")]
+    vibrancy: Option<vibrancy::Vibrancy>,
     #[cfg(target_arch = "wasm32")]
     web: web::Inbox,
     /// The window size cap last sent (`gpu::cap_window`).
@@ -282,6 +293,8 @@ impl App {
             shown_file: None,
             card_rect: None,
             peek: false,
+            #[cfg(target_os = "macos")]
+            vibrancy: None,
             #[cfg(target_arch = "wasm32")]
             web: web::Inbox::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -343,6 +356,18 @@ impl App {
             born: now,
             until: now + if error { 8.0 } else { 3.0 },
         });
+    }
+
+    /// Whether the window background is see-through (macOS with the blur attached).
+    fn translucent(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.vibrancy.is_some()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
     }
 
     fn tab(&mut self) -> Option<&mut Tab> {
@@ -748,6 +773,12 @@ fn shifted_digit(i: &egui::InputState, digit: Key, shifted: Option<Key>) -> bool
 }
 
 impl eframe::App for App {
+    /// Clear to transparent where the window blurs what is behind it; elsewhere the window
+    /// gradient covers everything anyway.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     fn on_exit(&mut self) {
         self.mcp.stop();
     }
@@ -794,10 +825,19 @@ impl App {
         // The menu's check mark follows the real setting (a host may turn motion off too).
         self.reduce_motion = anim::reduced(&ctx);
         let p = theme::palette(&ctx);
+        #[cfg(target_os = "macos")]
+        if let Some(blur) = &mut self.vibrancy {
+            blur.set_dark(p.dark);
+        }
         chrome::paint_gradient(
             &ctx.layer_painter(egui::LayerId::background()),
             ctx.content_rect(),
             self.tint_now(&ctx),
+            if self.translucent() {
+                theme::TRANSLUCENT_TINT
+            } else {
+                1.0
+            },
         );
 
         // Hidden sidebar: a thin strip keeps the window controls and the way back.

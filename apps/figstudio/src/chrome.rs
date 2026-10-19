@@ -65,9 +65,15 @@ pub(crate) fn card_shadow(p: &Palette, blur: u8) -> Shadow {
     }
 }
 
-/// Paints the window gradient for `tint` over `rect`: `top` at the top left, `bottom` at the
-/// bottom right, a soft `glow` near the top. A grid of vertices keeps the glow round.
-pub(crate) fn paint_gradient(painter: &egui::Painter, rect: Rect, tint: Tint) {
+/// Paints the window gradient for `tint` over `rect` (see [`gradient_mesh`]).
+pub(crate) fn paint_gradient(painter: &egui::Painter, rect: Rect, tint: Tint, alpha: f32) {
+    painter.add(Shape::mesh(gradient_mesh(rect, tint, alpha)));
+}
+
+/// The window gradient for `tint` over `rect`: `top` at the top left, `bottom` at the bottom
+/// right, a soft `glow` near the top. A grid of vertices keeps the glow round. `alpha` below
+/// 1 lets the window's blur show through (macOS vibrancy).
+pub(crate) fn gradient_mesh(rect: Rect, tint: Tint, alpha: f32) -> Mesh {
     const COLS: u32 = 12;
     const ROWS: u32 = 8;
     let glow_at = pos2(0.25, 0.0);
@@ -83,7 +89,7 @@ pub(crate) fn paint_gradient(painter: &egui::Painter, rect: Rect, tint: Tint) {
             mesh.vertices.push(Vertex {
                 pos: rect.lerp_inside(vec2(u, v)),
                 uv: egui::epaint::WHITE_UV,
-                color: base.lerp_to_gamma(tint.glow, glow),
+                color: base.lerp_to_gamma(tint.glow, glow).gamma_multiply(alpha),
             });
         }
     }
@@ -94,7 +100,7 @@ pub(crate) fn paint_gradient(painter: &egui::Painter, rect: Rect, tint: Tint) {
             mesh.add_triangle(at(row, col + 1), at(row + 1, col + 1), at(row + 1, col));
         }
     }
-    painter.add(Shape::mesh(mesh));
+    mesh
 }
 
 /// A rounded rectangle filled with a gradient between its corner colours (top left, top
@@ -1054,5 +1060,27 @@ impl App {
         if moving {
             ctx.request_repaint();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_gradient_covers_the_window_and_is_see_through_only_over_the_blur() {
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let tint = theme::tint(0, true);
+        let opaque = gradient_mesh(rect, tint, 1.0);
+        assert!(opaque.vertices.iter().all(|v| v.color.a() == 255));
+        let bounds = opaque.calc_bounds();
+        assert_eq!(bounds, rect, "covers the whole window");
+        let blurred = gradient_mesh(rect, tint, theme::TRANSLUCENT_TINT);
+        assert!(
+            blurred
+                .vertices
+                .iter()
+                .all(|v| (100..200).contains(&v.color.a()))
+        );
     }
 }

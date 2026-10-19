@@ -113,6 +113,7 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   command.rs             the ⌘K command bar: search over commands, files, pages and layers
   anim.rs                springs and colour fades in egui memory; Reduce motion
   icons.rs               line icons painted on a 16-unit grid; the icon button
+  vibrancy.rs            macOS only: the blur view behind the transparent window
   canvas.rs              canvas input, render requests, frame re-projection, outlines
   tab.rs                 per-document state (Tab, with its tint) and the page<->screen mapping
   panels.rs              Pages list, Layers tree, Properties card
@@ -340,7 +341,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   test harness). Widget-heavy lists keep one hover state per list (`panels::hover_fade`).
 - macOS runs frameless (`with_fullsize_content_view`, no title bar): the sidebar header and
   the title strip leave room for the traffic lights and move the window
-  (`ViewportCommand::StartDrag`).
+  (`ViewportCommand::StartDrag`). The window is transparent with a blur behind it
+  (`vibrancy.rs`, Sidebar material, following View → Appearance); the gradient is painted at
+  `theme::TRANSLUCENT_TINT` over it, opaque everywhere else.
 - The canvas card has round corners: the page background is a rounded rect and tiles that
   reach into a corner are drawn as a polygon cut to it (`tiles_view::rounded_clip`).
 - View jumps (fit, zoom buttons and keys, the Zoom tool, double-click) ease over 0.28 s:
@@ -570,8 +573,11 @@ Debug spans (`RUST_LOG=debug`): `open`/`from_bytes` (bytes, node/page/image coun
   whose accessible label is "View ⏵"; tests use `get_by_label_contains`.
 - **The test harness turns egui's animations off before `App::new`.** `theme::apply` keeps a
   zero `animation_time`, so kittest frames stay deterministic (springs jump to their target).
-- **`window-vibrancy` hides the whole UI under wgpu.** Its `NSVisualEffectView` lands above
-  the Metal layer; translucency would need `unsafe` AppKit calls (not allowed).
+- **A blur view inside the content view hides the whole UI under wgpu.** `window-vibrancy`
+  adds its `NSVisualEffectView` to the content view, above wgpu's Metal layer. `vibrancy.rs`
+  puts it in the window's frame view instead, below the content view; the window is
+  transparent and egui clears to transparent, so the gradient's alpha decides how much blur
+  shows. The one `unsafe` block turns eframe's raw `NSView` pointer into a reference.
 - **`usize::MAX + 1` wraps to 0.** Limits in `read_limited` use saturating arithmetic. A limit
   of `usize::MAX` once made `take()` read nothing, with no error.
 

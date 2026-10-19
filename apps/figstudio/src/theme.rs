@@ -17,6 +17,9 @@ pub const SEMIBOLD: &str = "semibold";
 pub const CARD_RADIUS: u8 = 12;
 /// Gap between the window edge, the sidebar and the cards.
 pub const GAP: f32 = 8.0;
+/// Opacity of the window gradient over the macOS blur: tinted, with the desktop showing
+/// through.
+pub const TRANSLUCENT_TINT: f32 = 0.6;
 
 /// White at `a` alpha (premultiplied), for translucent fills on the gradient.
 const fn white(a: u8) -> Color32 {

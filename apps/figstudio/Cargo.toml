@@ -89,5 +89,13 @@ muda = { version = "0.21.2", default-features = false }
 [target."cfg(windows)".dependencies]
 raw-window-handle = "0.6"
 
+# The blurred window background (vibrancy.rs): AppKit through the objc2 bindings eframe,
+# muda and rfd already use.
+[target.'cfg(target_os = "macos")'.dependencies]
+raw-window-handle = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSAppearance", "NSGraphics", "NSResponder", "NSView", "NSVisualEffectView", "NSWindow"] }
+
 [lints]
 workspace = true

@@ -40,7 +40,10 @@ picking up work. Read the three documents below before changing code.
    local paths. Describe a bug in neutral terms ("a table frame on a print-layout page").
    Test with public fixtures or documents built in the test, never a private file. Notes
    that need real names (such as a local gap list) stay untracked and git-ignored.
-10. **No new `unsafe`.** The workspace denies it; the one FFI call is in `doctor.rs`.
+10. **No new `unsafe`.** The workspace denies it. The only exceptions, each one block with a
+    SAFETY comment and `#[expect(unsafe_code)]`: the FFI call in `doctor.rs`, the Windows
+    menu attach in `menu_native.rs`, and the macOS blur view in `vibrancy.rs` (approved by
+    the owner). Ask before adding another.
 11. **Update `docs/PLAN.md`** when you finish something: tick the box only after its check
     really passed, and add one line to the progress log. Report what you did **not** verify.
 12. **Use trustworthy crates; do not hand-roll.** For protocols, formats and encodings
