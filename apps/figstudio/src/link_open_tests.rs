@@ -9,7 +9,7 @@ use egui_kittest::Harness;
 use figstudio_mcp_core::link::{FileHint, Match};
 use figstudio_mcp_core::local_copy::local_copies;
 
-use super::{Choice, Done, LinkError, Target, as_tab_paths, parse, plan};
+use super::{Choice, Done, LinkError, Target, parse, plan, real_paths};
 use crate::App;
 use crate::ui_tests::{fixture, harness, wait};
 
@@ -26,18 +26,41 @@ fn searched(h: &mut Harness<'_, App>) {
     });
 }
 
-/// `plan` with the copies `local_copies` finds in `dirs`, as the search thread hands them over.
+/// `plan` with the copies `local_copies` finds in `dirs`, as the search thread hands them over,
+/// and tabs whose loader resolved their paths.
 fn plan_in(
     tabs: &[(u64, &Path)],
     active: Option<u64>,
     file: Option<&FileHint>,
     dirs: &[PathBuf],
 ) -> Result<Target, LinkError> {
-    let open: Vec<PathBuf> = tabs.iter().map(|(_, p)| p.to_path_buf()).collect();
-    let copies = file.map_or_else(Vec::new, |hint| {
-        as_tab_paths(local_copies(dirs, hint), &open)
-    });
-    plan(tabs, active, file, copies, dirs)
+    let real: Vec<PathBuf> = tabs
+        .iter()
+        .map(|(_, p)| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
+        .collect();
+    let tabs: Vec<(u64, &Path, &Path)> = tabs
+        .iter()
+        .zip(&real)
+        .map(|(&(id, path), real)| (id, path, real.as_path()))
+        .collect();
+    let copies = file.map_or_else(Vec::new, |hint| real_paths(local_copies(dirs, hint)));
+    plan(&tabs, active, file, copies, dirs)
+}
+
+/// After 800 ms, the `structure` fixture under a path spelled differently from the usual one
+/// (`fixtures/../fixtures/structure.fig`; `Path` equality skips `.` but not `..`).
+fn slow_structure(_: &[PathBuf], _: &FileHint) -> Vec<(PathBuf, Match)> {
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let path = fixture("../fixtures/structure.fig");
+    assert_ne!(path, fixture("structure.fig"));
+    vec![(path, Match::Name)]
+}
+
+/// An app with no file open.
+fn empty_app() -> Harness<'static, App> {
+    Harness::builder()
+        .with_size(egui::vec2(800.0, 600.0))
+        .build_eframe(|cc| App::new(cc, Vec::new()))
 }
 
 /// A listing that is slow for the file `Slow` (and then finds the `sections` fixture) and
@@ -350,7 +373,12 @@ fn a_slow_folder_does_not_block_the_window_and_the_link_fails_with_a_reason() {
     h.step();
     let error = rx.try_recv().unwrap().unwrap_err();
     assert!(error.contains("could not be read in time"), "{error}");
-    assert!(error.contains("permission"), "{error}");
+    // The permission hint is for macOS only.
+    assert_eq!(
+        error.contains("permission"),
+        cfg!(target_os = "macos"),
+        "{error}"
+    );
     // The late result is dropped, not answered twice or shown.
     std::thread::sleep(std::time::Duration::from_secs(2));
     h.step();
@@ -416,9 +444,7 @@ fn while_a_listing_is_blocked_past_its_time_new_links_fail_at_once() {
 #[test]
 fn starting_a_search_schedules_the_frame_that_watches_it() {
     // No file open: nothing else asks for frames, as in an empty window waiting on a folder.
-    let mut h = Harness::builder()
-        .with_size(egui::vec2(800.0, 600.0))
-        .build_eframe(|cc| App::new(cc, Vec::new()));
+    let mut h = empty_app();
     let ctx = h.ctx.clone();
     h.state_mut().link.search = slow_search;
     for _ in 0..50 {
@@ -480,25 +506,101 @@ fn a_result_that_comes_after_the_timeout_is_not_used() {
 }
 
 #[test]
-fn a_copy_that_is_an_open_tab_is_found_by_its_real_path_off_the_ui_thread() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join("sub")).unwrap();
-    let tab = dir.path().join("My Design.fig");
-    std::fs::write(&tab, b"").unwrap();
-    let listed = dir.path().join("sub/../My Design.fig");
-    let copies = as_tab_paths(
-        vec![(listed.clone(), Match::Name)],
-        std::slice::from_ref(&tab),
+fn a_tab_opened_while_the_folders_are_listed_is_not_opened_again() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_structure;
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("structure", "1-4"), Some(done))
     );
-    assert_eq!(copies, vec![(tab.clone(), Match::Name)]);
-    // So plan, which does no I/O, sees the tab and not a second file.
-    let hint = parse(SLUG_LINK).unwrap().file.unwrap();
-    let tabs = [(9, tab.as_path())];
+    // While the listing runs, the same file is opened under its usual path.
+    h.state_mut().open(fixture("structure.fig"));
+    wait(&mut h, &mut Vec::new(), "the file to load", |a| {
+        a.tabs.len() == 1
+    });
+    searched(&mut h);
+    h.step();
+    let answer = rx.try_recv().unwrap().unwrap();
+    assert!(!answer.contains("opened"), "{answer}");
+    let app = h.state();
+    assert_eq!(app.tabs.len(), 1, "the file was loaded a second time");
+    assert_eq!(app.tabs[0].selection, Some(Guid(1, 4)));
+}
+
+#[test]
+fn a_node_id_from_the_window_replaces_its_running_search() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_for_one;
+    assert!(h.state_mut().go_to_link(&ctx, &figma("Slow", "0-1"), None));
+    assert!(h.state_mut().go_to_link(&ctx, "1:4", None));
+    assert_eq!(h.state().link.searching(), 0, "the older search still runs");
+    assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 4)));
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    for _ in 0..3 {
+        h.step();
+    }
+    let app = h.state();
+    assert_eq!(app.tabs.len(), 1, "the replaced search opened its file");
+    assert_eq!(app.tabs[0].selection, Some(Guid(1, 4)));
+}
+
+#[test]
+fn a_refused_link_leaves_the_window_search_running_and_a_repeat_starts_no_thread() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_search;
+    h.state_mut().link.search_timeout = std::time::Duration::from_millis(600);
+    assert!(h.state_mut().go_to_link(&ctx, &figma("A", "1-1"), None));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    // B replaces A, whose listing stays blocked; Go on B again starts nothing new.
+    assert!(h.state_mut().go_to_link(&ctx, &figma("B", "1-1"), None));
+    assert!(h.state_mut().go_to_link(&ctx, &figma("B", "1-1"), None));
     assert_eq!(
-        plan(&tabs, Some(9), Some(&hint), copies, &[]),
-        Ok(Target::Tab(9))
+        (h.state().link.searching(), h.state().link.listings.len()),
+        (1, 2)
     );
-    // A file that is not open keeps its listed path.
-    let other = as_tab_paths(vec![(listed.clone(), Match::Name)], &[]);
-    assert_eq!(other, vec![(listed, Match::Name)]);
+    // A's listing is now past the timeout; B's search is not. C is refused, B stays.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert!(!h.state_mut().go_to_link(&ctx, &figma("C", "1-1"), None));
+    assert_eq!(
+        h.state().link.searching(),
+        1,
+        "the refused link dropped the running search"
+    );
+}
+
+#[test]
+fn closing_the_window_cancels_its_search() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_for_one;
+    h.state_mut().apply(crate::menu::Action::OpenLink, &ctx);
+    h.step();
+    link_field(&h).type_text(&figma("Slow", "0-1"));
+    h.step();
+    h.get_by_label("Go").click();
+    h.step();
+    assert_eq!(h.state().link.searching(), 1);
+    h.get_by_label("Close window").click();
+    h.step();
+    assert_eq!(
+        h.state().link.searching(),
+        0,
+        "the search outlived its window"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    for _ in 0..3 {
+        h.step();
+    }
+    let app = h.state();
+    assert_eq!(
+        app.tabs.len(),
+        1,
+        "the closed window's search opened its file"
+    );
+    assert!(!app.link.window);
 }

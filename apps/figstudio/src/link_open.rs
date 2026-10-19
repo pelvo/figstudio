@@ -63,8 +63,8 @@ pub(crate) struct LinkOpen {
     /// [`SEARCH_TIMEOUT`] and still blocked makes new links fail at once.
     listings: Vec<(u64, web_time::Instant)>,
     /// Finished searches: the search id and what it found.
-    found_tx: Sender<(u64, Vec<(PathBuf, Match)>)>,
-    found_rx: Receiver<(u64, Vec<(PathBuf, Match)>)>,
+    found_tx: Sender<(u64, Vec<Copy>)>,
+    found_rx: Receiver<(u64, Vec<Copy>)>,
     /// What lists a folder, and how long it may take (tests swap both).
     pub search: SearchFn,
     pub search_timeout: Duration,
@@ -133,6 +133,10 @@ struct Waiting {
     node: Option<Guid>,
     done: Option<Done>,
 }
+
+/// A local copy of a link: the path it was listed under (opened and shown), the same path
+/// resolved (to recognise it as an open tab), and how well it matches.
+pub(crate) type Copy = (PathBuf, PathBuf, Match);
 
 /// Where a link is shown.
 #[derive(Clone, Debug, PartialEq)]
@@ -250,16 +254,16 @@ pub(crate) fn parse(text: &str) -> Result<Parsed, LinkError> {
         .map_err(|_| LinkError::Unreadable)
 }
 
-/// Where a link that names `file` is shown, given the open tabs (`(id, path)`), the active
-/// tab and the local `copies` found in `dirs` ([`local_copies`]). With no file named, the
-/// active tab. Otherwise the one best-matching file among the tabs and the copies; a copy
-/// that is an open tab counts once, as the tab ([`as_tab_paths`] has given such a copy the
-/// tab's path). No I/O, so it is safe on the UI thread.
+/// Where a link that names `file` is shown, given the open tabs (`(id, path, real path)`),
+/// the active tab and the local `copies` found in `dirs` ([`local_copies`], resolved by
+/// [`real_paths`]). With no file named, the active tab. Otherwise the one best-matching file
+/// among the tabs and the copies; a copy that is an open tab (equal to its path or its real
+/// path) counts once, as the tab. No I/O, so it is safe on the UI thread.
 pub(crate) fn plan(
-    tabs: &[(u64, &Path)],
+    tabs: &[(u64, &Path, &Path)],
     active: Option<u64>,
     file: Option<&FileHint>,
-    copies: Vec<(PathBuf, Match)>,
+    copies: Vec<Copy>,
     dirs: &[PathBuf],
 ) -> Result<Target, LinkError> {
     let Some(hint) = file else {
@@ -268,7 +272,7 @@ pub(crate) fn plan(
     let rank = |path: &Path| hint.match_stem(path.file_stem()?.to_str()?);
     let mut candidates: Vec<(Choice, Match)> = tabs
         .iter()
-        .filter_map(|&(id, path)| {
+        .filter_map(|&(id, path, _)| {
             let choice = Choice {
                 target: Target::Tab(id),
                 path: path.to_owned(),
@@ -276,8 +280,11 @@ pub(crate) fn plan(
             Some((choice, rank(path)?))
         })
         .collect();
-    for (path, rank) in copies {
-        if !tabs.iter().any(|(_, open)| *open == path.as_path()) {
+    for (path, real, rank) in copies {
+        let open = |&(_, tab, tab_real): &(u64, &Path, &Path)| {
+            tab == path || tab_real == real || tab == real
+        };
+        if !tabs.iter().any(open) {
             let target = Target::Open(path.clone());
             candidates.push((Choice { target, path }, rank));
         }
@@ -293,30 +300,16 @@ pub(crate) fn plan(
     }
 }
 
-/// The `copies` of a link with each one that is the file of an open tab (paths `tabs`) given
-/// that tab's path, so [`plan`] can compare paths without touching the disk. Resolves paths
-/// (I/O): runs with the folder listing, off the UI thread.
-pub(crate) fn as_tab_paths(
-    copies: Vec<(PathBuf, Match)>,
-    tabs: &[PathBuf],
-) -> Vec<(PathBuf, Match)> {
+/// The `copies` of a link, each with its path resolved (symlinks, `..`) to compare with a
+/// tab's [`Tab::real_path`]. Disk access: runs with the folder listing, off the UI thread.
+pub(crate) fn real_paths(copies: Vec<(PathBuf, Match)>) -> Vec<Copy> {
     copies
         .into_iter()
-        .map(
-            |(path, rank)| match tabs.iter().find(|tab| same_file(tab, &path)) {
-                Some(tab) => (tab.clone(), rank),
-                None => (path, rank),
-            },
-        )
+        .map(|(path, rank)| {
+            let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            (path, real, rank)
+        })
         .collect()
-}
-
-fn same_file(a: &Path, b: &Path) -> bool {
-    a == b
-        || matches!(
-            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
-            (Ok(a), Ok(b)) if a == b
-        )
 }
 
 /// Make tab `i` active and show `node` there ([`Tab::show_node`]). The answer reads like
@@ -362,31 +355,51 @@ impl App {
                 return false;
             }
         };
+        let window = done.is_none();
         let Some(hint) = parsed.file else {
             let active = self.tabs.get(self.active).map(|t| t.id);
             return match plan(&[], active, None, Vec::new(), &[]) {
-                Ok(target) => self.go_to(ctx, target, parsed.node, done),
+                Ok(target) => {
+                    let shown = self.go_to(ctx, target, parsed.node, done);
+                    if shown && window {
+                        // The window's link is now this one; its older search is moot.
+                        self.cancel_window_search();
+                    }
+                    shown
+                }
                 Err(error) => {
                     self.answer(ctx, done, Err(error));
                     false
                 }
             };
         };
-        if done.is_none() {
-            // A new link from the window replaces the window's older one.
-            self.link.searches.retain(|s| s.done.is_some());
+        let text = text.trim().to_owned();
+        if window
+            && self
+                .link
+                .searches
+                .iter()
+                .any(|s| s.done.is_none() && s.text == text)
+        {
+            // Go again on the link being searched for: keep that search, start no thread.
+            return true;
         }
         if self.link.blocked() {
             // The folders still have not answered; another thread would block the same way.
+            // A refused link leaves the window's current search running.
             self.answer(ctx, done, Err(LinkError::SearchTimeout));
             return false;
+        }
+        if window {
+            // A new link from the window replaces the window's older one.
+            self.cancel_window_search();
         }
         let id = self.link.next_search;
         self.link.next_search += 1;
         self.start_search(ctx, id, hint.clone());
         self.link.searches.push(Search {
             id,
-            text: text.trim().to_owned(),
+            text,
             hint,
             node: parsed.node,
             done,
@@ -395,15 +408,20 @@ impl App {
         true
     }
 
+    /// Drop the window's search, if any: its result is then ignored when it comes (MCP
+    /// searches are untouched).
+    pub(crate) fn cancel_window_search(&mut self) {
+        self.link.searches.retain(|s| s.done.is_some());
+    }
+
     /// List the link folders for `hint` off the UI thread (in the browser there are none,
     /// and it runs inline). The result is applied by the next frames' [`Self::poll_link_searches`].
     fn start_search(&mut self, ctx: &egui::Context, id: u64, hint: FileHint) {
         let search = self.link.search;
         let dirs = self.link.dirs.clone();
-        let tabs: Vec<PathBuf> = self.tabs.iter().map(|t| t.path.clone()).collect();
         let found = self.link.found_tx.clone();
         let list = move || {
-            let copies = as_tab_paths(search(&dirs, &hint), &tabs);
+            let copies = real_paths(search(&dirs, &hint));
             // The app may have quit meanwhile; nobody to tell then.
             let _ = found.send((id, copies));
         };
@@ -463,13 +481,13 @@ impl App {
         }
     }
 
-    fn finish_search(
-        &mut self,
-        ctx: &egui::Context,
-        search: Search,
-        copies: Vec<(PathBuf, Match)>,
-    ) {
-        let tabs: Vec<(u64, &Path)> = self.tabs.iter().map(|t| (t.id, t.path.as_path())).collect();
+    fn finish_search(&mut self, ctx: &egui::Context, search: Search, copies: Vec<Copy>) {
+        // The tabs open now, not when the search started: one may have opened meanwhile.
+        let tabs: Vec<(u64, &Path, &Path)> = self
+            .tabs
+            .iter()
+            .map(|t| (t.id, t.path.as_path(), t.real_path.as_path()))
+            .collect();
         let active = self.tabs.get(self.active).map(|t| t.id);
         match plan(&tabs, active, Some(&search.hint), copies, &self.link.dirs) {
             Ok(target) => {
@@ -607,6 +625,10 @@ impl App {
                 #[cfg(not(target_arch = "wasm32"))]
                 self.link_folders(ui);
             });
+        if self.link.window && !open {
+            // Closed by the person: the link they asked for is no longer wanted.
+            self.cancel_window_search();
+        }
         self.link.window = open;
         if let Some(target) = picked {
             let node = self.link.choice_node;

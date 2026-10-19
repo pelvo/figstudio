@@ -68,6 +68,9 @@ pub enum Loaded {
         path: PathBuf,
         doc: Arc<Document>,
         doc_key: Option<String>,
+        /// The file's resolved path (symlinks and `..` followed), when it is a file on disk;
+        /// resolved here so the UI thread never has to.
+        real_path: Option<PathBuf>,
         source: Option<Source>,
         elapsed: Duration,
         /// What CJK the names or text need (the browser fetches a font for it).
@@ -458,7 +461,7 @@ impl Workers {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load(&self, path: PathBuf) {
-        self.decode(path.clone(), move || {
+        self.decode(path.clone(), true, move || {
             let doc_key = crate::source::doc_key_from_path(&path);
             let (doc, source) = crate::source::open_path(&path)?;
             Ok((doc, source, doc_key))
@@ -467,7 +470,7 @@ impl Workers {
 
     /// Decodes dropped bytes (used when the platform gives contents rather than a path).
     pub fn load_bytes(&self, name: PathBuf, bytes: Vec<u8>) {
-        self.decode(name, move || {
+        self.decode(name, false, move || {
             let doc_key = Some(crate::source::doc_key_from_prefix(
                 bytes.len() as u64,
                 &bytes,
@@ -477,9 +480,11 @@ impl Workers {
     }
 
     /// Opens a document on a worker; `read` returns it, where its unread images are, and its key.
+    /// `on_disk`: `path` is a file (not just a name), so its resolved path is looked up too.
     pub fn decode(
         &self,
         path: PathBuf,
+        on_disk: bool,
         read: impl FnOnce()
             -> Result<(Document, Option<Source>, Option<String>), figstudio_fig::FigError>
         + Send
@@ -494,7 +499,9 @@ impl Workers {
             let msg = match read() {
                 Ok((doc, source, doc_key)) => {
                     let name = path.file_name().map(|n| n.to_string_lossy());
+                    let real_path = on_disk.then(|| std::fs::canonicalize(&path).ok()).flatten();
                     Loaded::Ok {
+                        real_path,
                         cjk: crate::theme::cjk_need(&doc, name.as_deref().unwrap_or("")),
                         path,
                         doc: Arc::new(doc),

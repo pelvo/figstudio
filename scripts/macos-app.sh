@@ -38,8 +38,10 @@ cp "$out/figstudio" "$out/figstudio-mcp" "$out/figstudio-cli" "$app/Contents/Mac
 
 # The Finder/Launchpad icon, from the same PNG the app sets on its window (512 px, so the
 # largest entry is 512x512 at 1x and 256x256 at 2x). sips and iconutil ship with macOS.
-iconset=$(mktemp -d)/figstudio.iconset
-mkdir -p "$iconset"
+icondir=$(mktemp -d)
+trap 'rm -rf "$icondir"' EXIT
+iconset="$icondir/figstudio.iconset"
+mkdir "$iconset"
 for size in 16 32 128 256 512; do
   sips -z $size $size apps/figstudio/assets/icon.png --out "$iconset/icon_${size}x${size}.png" >/dev/null
   if [ $size -le 256 ]; then
@@ -49,7 +51,6 @@ for size in 16 32 128 256 512; do
   fi
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/figstudio.icns"
-rm -rf "$(dirname "$iconset")"
 
 cat >"$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

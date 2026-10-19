@@ -610,6 +610,7 @@ impl App {
                     path,
                     doc,
                     doc_key,
+                    real_path,
                     source,
                     elapsed,
                     cjk,
@@ -629,7 +630,7 @@ impl App {
                     self.next_id += 1;
                     #[cfg(target_arch = "wasm32")]
                     web::bind_upload(&path, id);
-                    let mut tab = Tab::new(id, path.clone(), doc, source, elapsed).with_doc_key(doc_key);
+                    let mut tab = Tab::new(id, path.clone(), doc, source, elapsed).with_doc_key(doc_key).with_real_path(real_path);
                     tab.tint = theme::pick_tint(&tab.title(), self.tabs.iter().map(|t| t.tint));
                     let title = tab.title();
                     tab.style = self
@@ -764,7 +765,7 @@ impl App {
                     let source = self.web.source(file);
                     if self.loading.begin(&name) {
                         web::start_upload(&name, pick);
-                        self.workers.decode(name, move || {
+                        self.workers.decode(name, false, move || {
                             Ok((
                                 web::decode_lazy(entries, eager)?,
                                 Some(source),
@@ -973,10 +974,12 @@ impl App {
         }
         // A shortcut being recorded takes the keys before anything else sees them.
         self.record_shortcut(&ctx);
+        // Polled first, so a listing that came back this frame is not still counted as
+        // blocked for the links taken next.
+        self.poll_link_searches(&ctx);
         for (link, done) in self.mcp.take_links() {
             self.go_to_link(&ctx, &link, Some(done));
         }
-        self.poll_link_searches(&ctx);
         self.native_events(&ctx);
         // Ahead of the shortcuts: the dialog's Escape must be consumed first.
         self.mcp.confirm(&ctx);
