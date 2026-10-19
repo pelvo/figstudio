@@ -87,28 +87,59 @@ impl Properties {
         let Some(scope) = self.scopes.last() else {
             return patch;
         };
-        for reference in data
-            .get("componentPropRefs")
-            .map(Val::items)
-            .unwrap_or_default()
-        {
-            let Some(value) = reference
-                .get("defID")
-                .and_then(Val::as_guid)
-                .and_then(|id| scope.get(&id))
-            else {
-                continue;
-            };
-            let field = match reference.text("componentPropNodeField") {
-                Some("VISIBLE") => "visible",
-                Some("TEXT_DATA") => "textData",
-                Some("OVERRIDDEN_SYMBOL_ID") => "overriddenSymbolID",
-                _ => continue,
-            };
-            patch.set(field, value.clone());
+        for (field, id) in bindings(data) {
+            if let Some(value) = scope.get(&id) {
+                patch.set(field, value.clone());
+            }
         }
         patch
     }
+}
+
+/// The property each node field is bound to. Figma keeps the binding in both the legacy
+/// `componentPropRefs` and `parameterConsumptionMap`; the legacy copy can be stale (a
+/// duplicated layer rebound to another property), so the map wins per field.
+fn bindings(data: &Val) -> Vec<(&'static str, Guid)> {
+    let mut bindings: Vec<(&'static str, Guid)> = Vec::new();
+    let mut bind = |field: Option<&str>, id: Option<Guid>| {
+        let field = match field {
+            Some("VISIBLE") => "visible",
+            Some("TEXT_DATA") => "textData",
+            Some("OVERRIDDEN_SYMBOL_ID") => "overriddenSymbolID",
+            _ => return,
+        };
+        let Some(id) = id else { return };
+        bindings.retain(|(f, _)| *f != field);
+        bindings.push((field, id));
+    };
+    for reference in data
+        .get("componentPropRefs")
+        .map(Val::items)
+        .unwrap_or_default()
+    {
+        bind(
+            reference.text("componentPropNodeField"),
+            reference.get("defID").and_then(Val::as_guid),
+        );
+    }
+    for entry in data
+        .path(&["parameterConsumptionMap", "entries"])
+        .map(Val::items)
+        .unwrap_or_default()
+    {
+        let Some(variable) = entry.get("variableData") else {
+            continue;
+        };
+        if variable.text("dataType") == Some("PROP_REF") {
+            bind(
+                entry.text("variableField"),
+                variable
+                    .path(&["value", "propRefValue", "defId"])
+                    .and_then(Val::as_guid),
+            );
+        }
+    }
+    bindings
 }
 
 fn property_value(data: &Val, key: &str) -> Option<Val> {
