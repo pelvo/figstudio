@@ -38,6 +38,10 @@ pub enum Icon {
     Image,
     Dot,
     Warning,
+    Gear,
+    Keyboard,
+    Sparkle,
+    Info,
 }
 
 /// The icon for a node type in the layer tree.
@@ -277,6 +281,49 @@ pub fn paint(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
         }
         Icon::Dot => {
             painter.circle_filled(g.p(8.0, 8.0), 1.8 * g.scale, color);
+        }
+        Icon::Gear => {
+            painter.circle_stroke(g.p(8.0, 8.0), 4.4 * g.scale, stroke);
+            painter.circle_stroke(g.p(8.0, 8.0), 1.8 * g.scale, stroke);
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::TAU / 8.0;
+                let (s, c) = a.sin_cos();
+                capsule(
+                    (8.0 + c * 4.6, 8.0 + s * 4.6),
+                    (8.0 + c * 6.6, 8.0 + s * 6.6),
+                );
+            }
+        }
+        Icon::Keyboard => {
+            round_rect(g.rect(1.5, 4.0, 14.5, 12.5), 2.0);
+            for (y, xs) in [(6.6, [4.2, 6.4, 8.6, 10.8]), (8.6, [5.2, 7.4, 9.6, 11.8])] {
+                for x in xs {
+                    painter.circle_filled(g.p(x, y), 0.75 * g.scale, color);
+                }
+            }
+            capsule((5.5, 10.6), (10.5, 10.6));
+        }
+        Icon::Sparkle => {
+            path(
+                &[
+                    (7.5, 1.5),
+                    (8.9, 6.1),
+                    (13.5, 7.5),
+                    (8.9, 8.9),
+                    (7.5, 13.5),
+                    (6.1, 8.9),
+                    (1.5, 7.5),
+                    (6.1, 6.1),
+                ],
+                true,
+            );
+            capsule((13.0, 11.0), (13.0, 14.0));
+            capsule((11.5, 12.5), (14.5, 12.5));
+        }
+        Icon::Info => {
+            painter.circle_stroke(g.p(8.0, 8.0), 6.2 * g.scale, stroke);
+            painter.circle_filled(g.p(8.0, 4.9), 0.95 * g.scale, color);
+            capsule((8.0, 7.3), (8.0, 11.4));
         }
         Icon::Warning => {
             path(&[(8.0, 2.0), (14.5, 13.5), (1.5, 13.5)], true);

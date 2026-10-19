@@ -37,7 +37,10 @@ impl Style {
             .filter(|n| !n.is_empty());
         self.symbol = match self.symbol {
             Some(Symbol::Emoji(e)) => {
-                let e: String = e.trim().chars().take(MAX_EMOJI).collect();
+                // One grapheme: a badge shows one emoji, not a word.
+                use unicode_segmentation::UnicodeSegmentation as _;
+                let first = e.trim().graphemes(true).next().unwrap_or("");
+                let e: String = first.chars().take(MAX_EMOJI).collect();
                 (!e.is_empty()).then_some(Symbol::Emoji(e))
             }
             Some(Symbol::Icon(name)) => icon(&name).is_some().then_some(Symbol::Icon(name)),
@@ -424,6 +427,29 @@ mod tests {
         }
         .tidy();
         assert_eq!(style.symbol, None, "blank emoji");
+        let one = |typed: &str| {
+            Style {
+                symbol: Some(Symbol::Emoji(typed.into())),
+                ..Style::default()
+            }
+            .tidy()
+            .symbol
+        };
+        assert_eq!(
+            one("dddddddd"),
+            Some(Symbol::Emoji("d".into())),
+            "one character"
+        );
+        assert_eq!(
+            one("👍🏽🚀"),
+            Some(Symbol::Emoji("👍🏽".into())),
+            "a skin tone stays"
+        );
+        assert_eq!(
+            one(" 🇯🇵"),
+            Some(Symbol::Emoji("🇯🇵".into())),
+            "a flag is one"
+        );
         assert_eq!(style.name.map(|n| n.chars().count()), Some(MAX_NAME));
         assert_eq!(
             Style {

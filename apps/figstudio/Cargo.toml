@@ -29,6 +29,8 @@ sha2 = "0.10"
 serde = { workspace = true }
 # Saved space styles (spaces.rs), and the bridge client's JSON frames in the browser.
 serde_json = { workspace = true }
+# A typed space icon keeps its first grapheme (one emoji, flags and skin tones included).
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
 # Only the export test decodes PNGs.

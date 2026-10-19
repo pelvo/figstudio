@@ -1,6 +1,5 @@
 //! Shared menu state and actions; renderers never implement the commands themselves.
 use crate::{App, Tool};
-use egui::{Key, KeyboardShortcut, Modifiers};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Action {
@@ -19,6 +18,11 @@ pub(crate) enum Action {
     SpaceColour,
     ResetSpace,
     FindOnPage,
+    FindNext,
+    FindPrevious,
+    NextSpace,
+    PreviousSpace,
+    Settings,
     Appearance(Appearance),
     ReduceMotion,
     AgentAccess,
@@ -64,23 +68,6 @@ impl Appearance {
             Self::Light => egui::ThemePreference::Light,
             Self::Dark => egui::ThemePreference::Dark,
         }
-    }
-}
-
-impl Action {
-    pub(crate) fn shortcut(self) -> Option<KeyboardShortcut> {
-        let (modifiers, key) = match self {
-            Self::Open => (Modifiers::COMMAND, Key::O),
-            Self::CloseTab => (Modifiers::COMMAND, Key::W),
-            Self::ExportSelection(2.0) => (Modifiers::COMMAND | Modifiers::SHIFT, Key::E),
-            Self::ZoomFit => (Modifiers::SHIFT, Key::Num1),
-            Self::CommandBar => return Some(crate::command::SHORTCUT),
-            Self::FindOnPage => (Modifiers::COMMAND, Key::F),
-            Self::ToggleLayers => (Modifiers::COMMAND, Key::Backslash),
-            Self::ActualSize => (Modifiers::SHIFT, Key::Num0),
-            _ => return None,
-        };
-        Some(KeyboardShortcut::new(modifiers, key))
     }
 }
 
@@ -157,8 +144,10 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
     let mut view = vec![
         Item::action("Find on page…", Action::FindOnPage, has_tab),
         Item::separator(),
-        Item::action("Zoom to fit   ⇧1", Action::ZoomFit, has_tab),
-        Item::action("Actual size   ⇧0", Action::ActualSize, has_tab),
+        Item::action("Zoom to fit", Action::ZoomFit, has_tab),
+        Item::action("Actual size", Action::ActualSize, has_tab),
+        Item::action("Zoom in", Action::ZoomBy(1.25), has_tab),
+        Item::action("Zoom out", Action::ZoomBy(0.8), has_tab),
         Item::separator(),
         Item::checked("Sidebar", Action::ToggleLayers, app.show_left),
         Item::checked("Properties panel", Action::ToggleProperties, app.show_right),
@@ -193,6 +182,7 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                 export("Export selection as PNG", true),
                 Item::separator(),
                 Item::action("Close file", Action::CloseTab, has_tab),
+                Item::action("Settings…", Action::Settings, true),
                 Item::action("Quit", Action::Quit, true),
             ],
         ),
@@ -205,6 +195,9 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                 Item::action("Edit theme colour…", Action::SpaceColour, has_tab),
                 Item::separator(),
                 Item::action("Reset space look", Action::ResetSpace, has_tab),
+                Item::separator(),
+                Item::action("Next space", Action::NextSpace, app.tabs.len() > 1),
+                Item::action("Previous space", Action::PreviousSpace, app.tabs.len() > 1),
             ],
         ),
         Item::group(
@@ -247,6 +240,22 @@ impl App {
                 }
             }
             Action::FindOnPage => self.find.show(),
+            Action::FindNext | Action::FindPrevious => {
+                if self.find.is_open() {
+                    self.find.step(action == Action::FindNext);
+                }
+            }
+            Action::NextSpace | Action::PreviousSpace => {
+                let n = self.tabs.len();
+                if n > 0 {
+                    let step = if action == Action::NextSpace {
+                        1
+                    } else {
+                        n - 1
+                    };
+                    self.active = (self.active + step) % n;
+                }
+            }
             Action::Appearance(appearance) => {
                 self.appearance = appearance;
                 ctx.set_theme(appearance.preference());
@@ -276,8 +285,9 @@ impl App {
                     t.select(None);
                 }
             }
-            Action::AgentAccess => self.agent_window = true,
-            Action::About => self.about_window = true,
+            Action::AgentAccess => self.settings.show(Some(crate::settings::Tab::Agents), ctx),
+            Action::About => self.settings.show(Some(crate::settings::Tab::About), ctx),
+            Action::Settings => self.settings.show(None, ctx),
             #[cfg(target_arch = "wasm32")]
             Action::CjkFont(v) => self.web.select_cjk_font(v, ctx),
         }

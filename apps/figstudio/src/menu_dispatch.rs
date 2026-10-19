@@ -12,6 +12,7 @@ pub(crate) fn native_owned(macos: bool, attached: bool, action: Action) -> bool 
                 | Action::CommandBar
                 | Action::ToggleLayers
                 | Action::FindOnPage
+                | Action::Settings
         )
 }
 
@@ -61,8 +62,14 @@ impl App {
                 self.apply(action, _ctx);
             }
             let tree = crate::menu::tree(self);
+            // The menus show the user's shortcuts, and none while one is being recorded.
+            let keys = (self.settings.recording().is_none()).then(|| self.prefs.keymap.clone());
             if let Some(menu) = &mut self.native_menu {
                 menu.sync(&tree);
+                if self.native_keys.as_ref() != Some(&keys) {
+                    menu.set_keys(keys.as_ref());
+                    self.native_keys = Some(keys);
+                }
             }
         }
     }
@@ -81,6 +88,7 @@ mod tests {
             Action::CommandBar,
             Action::ToggleLayers,
             Action::FindOnPage,
+            Action::Settings,
         ] {
             assert!(native_owned(true, true, action));
             assert!(

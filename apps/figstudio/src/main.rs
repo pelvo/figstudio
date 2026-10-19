@@ -21,6 +21,7 @@ mod gpu_tiles;
 #[cfg(target_arch = "wasm32")]
 mod gpu_tiles_web;
 mod icons;
+mod keymap;
 mod labels;
 mod marquee;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -56,6 +57,7 @@ mod panels;
 mod recordings;
 mod region_copy;
 mod region_png;
+mod settings;
 mod source;
 mod space_editor;
 mod spaces;
@@ -78,7 +80,7 @@ mod worker;
 use std::path::PathBuf;
 
 use canvas::Tool;
-use egui::{Key, KeyboardShortcut, Modifiers};
+use egui::{Key, KeyboardShortcut};
 use state::{OpenAction, Pending, Poll, classify, open_action};
 use tab::Tab;
 use worker::{Loaded, Workers};
@@ -189,6 +191,37 @@ struct UiState {
     show_left: bool,
     show_right: bool,
     pages_share: f32,
+    /// Settings → General and Canvas (absent in states saved before them).
+    #[serde(default)]
+    prefs: Prefs,
+}
+
+/// What Settings → General and Canvas set (the rest lives in egui's options and the panels).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct Prefs {
+    /// macOS: the blurred, translucent window background.
+    translucent: bool,
+    /// The renderer for the next start.
+    renderer: settings::Renderer,
+    /// Names above top-level frames on the canvas.
+    frame_labels: bool,
+    /// A plain scroll wheel zooms (and pans with ⌘ / Ctrl).
+    scroll_zooms: bool,
+    /// Shortcuts changed in Settings → Shortcuts.
+    keymap: keymap::Keymap,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            translucent: true,
+            renderer: settings::Renderer::Automatic,
+            frame_labels: true,
+            scroll_zooms: false,
+            keymap: keymap::Keymap::default(),
+        }
+    }
 }
 
 const UI_STATE_KEY: &str = "figstudio.ui";
@@ -220,10 +253,14 @@ struct App {
     pages_share: f32,
     show_left: bool,
     show_right: bool,
-    agent_window: bool,
-    about_window: bool,
+    /// ⌘, (`settings.rs`).
+    settings: settings::Settings,
+    prefs: Prefs,
     #[cfg(any(target_os = "macos", windows))]
     native_menu: Option<menu_native::NativeMenu>,
+    /// The shortcuts the native menu shows (`None` inside: none, while recording).
+    #[cfg(any(target_os = "macos", windows))]
+    native_keys: Option<Option<keymap::Keymap>>,
     cursor: Option<egui::Pos2>,
     /// `FIGSTUDIO_PROFILE=1` prints per-frame UI time and render times to stderr.
     profile: bool,
@@ -273,11 +310,21 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
         theme::install_fonts(&cc.egui_ctx);
+        // What the window looked like when it was last closed (eframe's storage).
+        let saved = cc
+            .storage
+            .and_then(|s| eframe::get_value::<UiState>(s, UI_STATE_KEY));
         #[cfg(not(target_arch = "wasm32"))]
         let (workers, renderer, tiles) = {
             let mut tiles = tiles_view::Tiles::default();
             let state = cc.wgpu_render_state.as_ref();
-            let env = std::env::var("FIGSTUDIO_RENDERER").ok();
+            // The environment wins over Settings → Canvas.
+            let env = std::env::var("FIGSTUDIO_RENDERER").ok().or_else(|| {
+                saved
+                    .as_ref()
+                    .and_then(|s| s.prefs.renderer.env_value())
+                    .map(str::to_owned)
+            });
             let side = state.map(|s| s.device.limits().max_texture_dimension_2d);
             let kind = state.map(|s| s.adapter.get_info().device_type);
             let choice = gpu_tiles::choose(env.as_deref(), side, kind);
@@ -311,10 +358,12 @@ impl App {
             pages_share: 0.55,
             show_left: true,
             show_right: true,
-            agent_window: false,
-            about_window: false,
+            settings: Default::default(),
+            prefs: saved.as_ref().map(|s| s.prefs.clone()).unwrap_or_default(),
             #[cfg(any(target_os = "macos", windows))]
             native_menu: None,
+            #[cfg(any(target_os = "macos", windows))]
+            native_keys: None,
             cursor: None,
             profile: std::env::var_os("FIGSTUDIO_PROFILE").is_some(),
             frameless: cfg!(target_os = "macos"),
@@ -347,10 +396,7 @@ impl App {
             window_cap: None,
             mcp: Default::default(),
         };
-        if let Some(saved) = cc
-            .storage
-            .and_then(|s| eframe::get_value::<UiState>(s, UI_STATE_KEY))
-        {
+        if let Some(saved) = saved {
             app.show_left = saved.show_left;
             app.show_right = saved.show_right;
             app.pages_share = saved.pages_share.clamp(0.05, 0.95);
@@ -416,7 +462,7 @@ impl App {
     fn translucent(&self) -> bool {
         #[cfg(target_os = "macos")]
         {
-            self.vibrancy.is_some()
+            self.vibrancy.is_some() && self.prefs.translucent
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -703,104 +749,70 @@ impl App {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        let cmd = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
+        // Recording a new shortcut in Settings: every key goes there.
+        if self.settings.recording().is_some() {
+            return;
+        }
+        let keys = |b: keymap::Binding| self.prefs.keymap.get(b);
         // The command bar is modal: only its own shortcut (which closes it) gets through, so
         // nothing changes the file under its results.
         if self.command.is_open() {
             if !self.native_owns(menu::Action::CommandBar)
-                && ctx.input_mut(|i| i.consume_shortcut(&command::SHORTCUT))
+                && let Some(s) = keys(keymap::Binding::CommandBar)
+                && ctx.input_mut(|i| i.consume_shortcut(&s))
             {
                 self.command.hide();
             }
             return;
         }
-        for action in [menu::Action::CommandBar, menu::Action::ToggleLayers] {
-            if !self.native_owns(action)
-                && let Some(shortcut) = action.shortcut()
-                && ctx.input_mut(|i| i.consume_shortcut(&shortcut))
+        // Keys without ⌘ / Ctrl / Alt wait while text is typed or a panel is up.
+        let quiet = ctx.egui_wants_keyboard_input()
+            || self.settings.is_open()
+            || self.space_editing.is_some();
+        // Most modifiers first: a Ctrl+Tab pattern also matches Ctrl+Shift+Tab.
+        let mut bindings: Vec<(keymap::Binding, KeyboardShortcut)> = keymap::Binding::ALL
+            .into_iter()
+            .filter_map(|b| keys(b).map(|s| (b, s)))
+            .collect();
+        bindings.sort_by_key(|(_, s)| {
+            let m = s.modifiers;
+            std::cmp::Reverse(
+                u8::from(m.command) + u8::from(m.ctrl) + u8::from(m.alt) + u8::from(m.shift),
+            )
+        });
+        let mut run = Vec::new();
+        for (binding, shortcut) in bindings {
+            use keymap::Binding as B;
+            let action = binding.action();
+            let plain = keymap::Binding::is_plain(&shortcut);
+            if (plain && quiet)
+                || self.native_owns(action)
+                || (matches!(binding, B::NextMatch | B::PreviousMatch) && !self.find.is_open())
             {
-                self.apply(action, ctx);
+                continue;
             }
-        }
-        // Ctrl+Tab / Ctrl+Shift+Tab: the next or previous open file. The Shift one first:
-        // a plain Ctrl+Tab pattern also matches with Shift held.
-        let (previous, next) = ctx.input_mut(|i| {
-            (
-                i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab),
-                i.consume_key(Modifiers::CTRL, Key::Tab),
-            )
-        });
-        let n = self.tabs.len();
-        if n > 0 && (next || previous) {
-            let step = if previous { n - 1 } else { 1 };
-            self.active = (self.active + step) % n;
-        }
-        if !self.native_owns(menu::Action::Open)
-            && ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::O)))
-        {
-            self.apply(menu::Action::Open, ctx);
-        }
-        if !self.native_owns(menu::Action::CloseTab)
-            && ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::W)))
-        {
-            self.apply(menu::Action::CloseTab, ctx);
-        }
-        if !self.native_owns(menu::Action::ExportSelection(2.0))
-            && ctx.input_mut(|i| {
-                i.consume_shortcut(&KeyboardShortcut::new(
-                    Modifiers::COMMAND | Modifiers::SHIFT,
-                    Key::E,
-                ))
-            })
-        {
-            self.apply(menu::Action::ExportSelection(2.0), ctx);
-        }
-        if !self.native_owns(menu::Action::FindOnPage)
-            && ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::F)))
-        {
-            self.apply(menu::Action::FindOnPage, ctx);
-        }
-        // ⌘G / ⇧⌘G: the next or previous match while the find bar is open.
-        if self.find.is_open() {
-            let shift = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::G);
-            if ctx.input_mut(|i| i.consume_shortcut(&shift)) {
-                self.find.step(false);
-            } else if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::G))) {
-                self.find.step(true);
-            }
-        }
-        let typing = ctx.egui_wants_keyboard_input();
-        if typing || self.command.is_open() {
-            return;
-        }
-        let (v, h, z, esc, one, zero, plus, minus, shift) = ctx.input(|i| {
-            (
-                i.key_pressed(Key::V),
-                i.key_pressed(Key::H),
-                i.key_pressed(Key::Z) && i.modifiers.is_none(),
-                i.key_pressed(Key::Escape),
-                shifted_digit(i, Key::Num1, Some(Key::Exclamationmark)),
-                shifted_digit(i, Key::Num0, None),
-                i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals),
-                i.key_pressed(Key::Minus),
-                i.modifiers.shift,
-            )
-        });
-        for (pressed, action) in [
-            (v, menu::Action::SelectTool(Tool::Select)),
-            (h, menu::Action::SelectTool(Tool::Hand)),
-            (z, menu::Action::SelectTool(Tool::Zoom)),
-            (esc, menu::Action::ClearSelection),
-            (one, menu::Action::ZoomFit),
-            (zero, menu::Action::ActualSize),
-            (
-                (plus || minus) && !shift,
-                menu::Action::ZoomBy(if plus { 1.25 } else { 0.8 }),
-            ),
-        ] {
+            let default = keymap::same(&shortcut, &binding.default_keys());
+            let pressed = ctx.input_mut(|i| match binding {
+                // Shift+digit: the logical key depends on the layout (Shift+1 is `!` on US
+                // layouts), so the default also matches the physical key.
+                B::ZoomFit if default => shifted_digit(i, Key::Num1, Some(Key::Exclamationmark)),
+                B::ActualSize if default => shifted_digit(i, Key::Num0, None),
+                // `+` where it needs no Shift (a keypad) zooms in too.
+                B::ZoomIn if default => {
+                    i.consume_shortcut(&shortcut)
+                        || (i.key_pressed(Key::Plus) && !i.modifiers.shift)
+                }
+                _ => i.consume_shortcut(&shortcut),
+            });
             if pressed {
-                self.apply(action, ctx);
+                run.push(action);
             }
+        }
+        for action in run {
+            self.apply(action, ctx);
+        }
+        if !quiet && ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.apply(menu::Action::ClearSelection, ctx);
         }
     }
 
@@ -875,6 +887,7 @@ impl eframe::App for App {
             show_left: self.show_left,
             show_right: self.show_right,
             pages_share: self.pages_share,
+            prefs: self.prefs.clone(),
         };
         eframe::set_value(storage, UI_STATE_KEY, &state);
     }

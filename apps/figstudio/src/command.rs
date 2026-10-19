@@ -73,6 +73,7 @@ impl CommandBar {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
     Action(Action),
+    Settings(crate::settings::Tab),
     File(usize),
     Page(Guid),
     Layer(Guid),
@@ -125,7 +126,13 @@ fn score_lower(text: &str, query: &str, buf: &mut String) -> Option<u32> {
 }
 
 /// Every enabled menu command, titled like "Export page as PNG @2x…".
-fn commands(items: &[menu::Item], group: &str, parent: Option<&str>, out: &mut Vec<Entry>) {
+fn commands(
+    items: &[menu::Item],
+    group: &str,
+    parent: Option<&str>,
+    keys: &crate::keymap::Keymap,
+    out: &mut Vec<Entry>,
+) {
     for item in items {
         if item.label.is_empty() || !item.enabled {
             continue;
@@ -137,7 +144,7 @@ fn commands(items: &[menu::Item], group: &str, parent: Option<&str>, out: &mut V
             None => label.to_owned(),
         };
         let Some(action) = item.action else {
-            commands(&item.children, group, Some(&title), out);
+            commands(&item.children, group, Some(&title), keys, out);
             continue;
         };
         if action == Action::CommandBar {
@@ -153,7 +160,7 @@ fn commands(items: &[menu::Item], group: &str, parent: Option<&str>, out: &mut V
             detail,
             icon: Icon::Dot,
             target: Target::Action(action),
-            shortcut: action.shortcut(),
+            shortcut: keys.for_action(action),
             space: None,
             score: 0,
         });
@@ -207,7 +214,24 @@ pub fn entries(app: &App, query: &str) -> Vec<Entry> {
         }
     }
     for group in menu::tree(app) {
-        commands(&group.children, group.label, None, &mut all);
+        commands(
+            &group.children,
+            group.label,
+            None,
+            &app.prefs.keymap,
+            &mut all,
+        );
+    }
+    for tab in crate::settings::Tab::ALL {
+        all.push(Entry {
+            title: format!("{} settings", tab.label()),
+            detail: "Settings".into(),
+            icon: tab.icon(),
+            target: Target::Settings(tab),
+            shortcut: None,
+            space: None,
+            score: 0,
+        });
     }
     let query = query.trim();
     let mut kept: Vec<Entry> = all
@@ -462,6 +486,7 @@ impl App {
     fn run_target(&mut self, target: Target, ctx: &egui::Context) {
         match target {
             Target::Action(action) => self.apply(action, ctx),
+            Target::Settings(tab) => self.settings.show(Some(tab), ctx),
             Target::File(i) => {
                 if i < self.tabs.len() {
                     self.active = i;

@@ -64,17 +64,36 @@ pub fn fit_rect(tab: &mut Tab, rect: Rect, page_rect: Rect) {
     };
 }
 
-/// Draws the canvas (with rounded corners of `radius`) and handles its input. Returns the
-/// page-space cursor position.
+/// How the canvas behaves this frame.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    pub tool: Tool,
+    /// Space is held: dragging pans.
+    pub space_held: bool,
+    /// The card's corner radius.
+    pub radius: f32,
+    /// Names above top-level frames (Settings → Canvas).
+    pub frame_labels: bool,
+    /// A plain scroll wheel zooms, and pans with ⌘ / Ctrl (Settings → Canvas).
+    pub scroll_zooms: bool,
+}
+
+/// Draws the canvas (with rounded corners) and handles its input. Returns the page-space
+/// cursor position.
 pub fn show(
     ui: &mut egui::Ui,
     tab: &mut Tab,
     workers: &mut Workers,
     tiles: &mut Tiles,
-    tool: Tool,
-    space_held: bool,
-    radius: f32,
+    options: Options,
 ) -> Option<Pos2> {
+    let Options {
+        tool,
+        space_held,
+        radius,
+        frame_labels,
+        scroll_zooms,
+    } = options;
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let origin = rect.min;
@@ -110,7 +129,7 @@ pub fn show(
         if zoom_delta != 1.0 {
             tab.view.zoom_at(origin, anchor, zoom_delta);
         } else if scroll != Vec2::ZERO {
-            if modifiers.command || modifiers.ctrl {
+            if (modifiers.command || modifiers.ctrl) != scroll_zooms {
                 tab.view.zoom_at(origin, anchor, (scroll.y / 200.0).exp());
             } else {
                 tab.view.pan += scroll;
@@ -192,10 +211,12 @@ pub fn show(
     );
 
     // Overlays.
-    crate::labels::paint(
-        &painter,
-        &crate::labels::labels(&tab.doc, tab.page, tab.view, origin, rect),
-    );
+    if frame_labels {
+        crate::labels::paint(
+            &painter,
+            &crate::labels::labels(&tab.doc, tab.page, tab.view, origin, rect),
+        );
+    }
     find_highlights(&painter, tab, origin);
     if let Some(h) = tab.hover.filter(|h| Some(*h) != tab.selection) {
         outline(

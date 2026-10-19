@@ -1,7 +1,7 @@
 //! The Arc-style chrome through the real app: the sidebar and its title strip, the file
 //! switcher, the tool pill and the command bar.
 use egui::accesskit::Role;
-use egui::{Key, Modifiers};
+use egui::{Key, KeyboardShortcut, Modifiers};
 
 use super::*;
 
@@ -283,6 +283,13 @@ fn the_sidebar_and_panels_come_back_as_they_were_left() {
     );
     first.show_left = false;
     first.pages_share = 0.3;
+    first.prefs.renderer = crate::settings::Renderer::Cpu;
+    first.prefs.frame_labels = false;
+    let cmd_j = egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::J);
+    first
+        .prefs
+        .keymap
+        .set(crate::keymap::Binding::CommandBar, Some(cmd_j));
     first.save(&mut storage);
     let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
     cc.storage = Some(&storage);
@@ -290,6 +297,17 @@ fn the_sidebar_and_panels_come_back_as_they_were_left() {
     assert!(!second.show_left, "the hidden sidebar stays hidden");
     assert!(second.show_right);
     assert!((second.pages_share - 0.3).abs() < 1e-6);
+    assert_eq!(
+        second.prefs.renderer,
+        crate::settings::Renderer::Cpu,
+        "Settings → Canvas"
+    );
+    assert!(!second.prefs.frame_labels);
+    assert_eq!(
+        second.prefs.keymap.get(crate::keymap::Binding::CommandBar),
+        Some(cmd_j),
+        "changed shortcuts"
+    );
 }
 
 #[test]
@@ -712,5 +730,146 @@ fn without_the_blur_the_window_clears_to_an_opaque_colour() {
     assert_eq!(
         clear[3], 1.0,
         "no blur here (Linux, Windows, the browser, tests): {clear:?}"
+    );
+}
+
+#[test]
+fn settings_open_with_their_shortcut_and_their_tabs_switch() {
+    let mut h = harness();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Comma);
+    h.run_steps(3);
+    assert!(h.state().settings.is_open());
+    for tab in ["General", "Canvas", "Shortcuts", "Agents", "About"] {
+        assert!(
+            h.query_by_role_and_label(Role::Button, tab).is_some(),
+            "{tab} tab"
+        );
+    }
+    h.get_by_role_and_label(Role::Button, "Shortcuts").click();
+    h.run_steps(3);
+    let row =
+        |h: &Harness<'_, App>, what: &str| h.query_by_role_and_label(Role::Label, what).is_some();
+    assert!(row(&h, "Command bar"), "the list");
+    assert!(row(&h, "Find on page"));
+    let search = h.get_by(|n| {
+        n.role() == egui::accesskit::Role::TextInput
+            && n.placeholder() == Some("Type a feature name or shortcut")
+    });
+    search.click();
+    h.run_steps(2);
+    h.event(egui::Event::Text("find".into()));
+    h.run_steps(3);
+    assert!(row(&h, "Find on page"));
+    assert!(!row(&h, "Command bar"), "filtered out");
+    h.key_press(Key::Escape);
+    h.run_steps(3);
+    assert!(!h.state().settings.is_open(), "Escape closes them");
+}
+
+#[test]
+fn general_and_canvas_settings_change_the_app() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().apply(crate::menu::Action::Settings, &ctx);
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Button, "Light").click();
+    h.run_steps(3);
+    assert_eq!(ctx.theme(), egui::Theme::Light);
+    let reduced = crate::anim::reduced(&ctx);
+    h.get_by_role_and_label(Role::CheckBox, "Reduce motion")
+        .click();
+    h.run_steps(2);
+    assert_eq!(crate::anim::reduced(&ctx), !reduced);
+
+    h.get_by_role_and_label(Role::Button, "Canvas").click();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::CheckBox, "Frame names")
+        .click();
+    h.run_steps(2);
+    assert!(!h.state().prefs.frame_labels);
+    h.get_by_role_and_label(Role::Button, "Zooms").click();
+    h.run_steps(2);
+    assert!(h.state().prefs.scroll_zooms);
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    // A plain scroll on the canvas now zooms.
+    let before = h.state().tabs[0].view;
+    let at = h.state().tabs[0].canvas_rect.expect("laid out").center();
+    h.event(Event::PointerMoved(at));
+    h.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, 60.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(3);
+    let after = h.state().tabs[0].view;
+    assert!(after.zoom > before.zoom, "{before:?} -> {after:?}");
+}
+
+#[test]
+fn a_shortcut_can_be_changed_removed_and_reset_and_the_app_follows_it() {
+    use crate::keymap::Binding;
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    let open_shortcuts = |h: &mut Harness<'_, App>| {
+        h.state_mut().apply(crate::menu::Action::Settings, &ctx);
+        h.run_steps(2);
+        h.get_by_role_and_label(Role::Button, "Shortcuts").click();
+        h.run_steps(2);
+    };
+    let record = |h: &mut Harness<'_, App>, what: &str, modifiers: Modifiers, key: Key| {
+        // Searched for, so its row is on screen to click.
+        h.state_mut().settings.filter = what.to_owned();
+        h.run_steps(2);
+        h.get_by_label(&format!("{what} shortcut")).click();
+        h.run_steps(2);
+        assert!(h.state().settings.recording().is_some(), "recording {what}");
+        h.key_press_modifiers(modifiers, key);
+        h.run_steps(2);
+        assert!(h.state().settings.recording().is_none());
+    };
+    let cmd_j = KeyboardShortcut::new(Modifiers::COMMAND, Key::J);
+
+    open_shortcuts(&mut h);
+    record(&mut h, "Command bar", Modifiers::COMMAND, Key::J);
+    assert_eq!(h.state().prefs.keymap.get(Binding::CommandBar), Some(cmd_j));
+    assert!(
+        h.query_by_role_and_label(Role::Label, "Customized Shortcuts")
+            .is_some()
+    );
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(!h.state().settings.is_open());
+
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(2);
+    assert!(!h.state().command.is_open(), "⌘L no longer opens it");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::J);
+    h.run_steps(2);
+    assert!(h.state().command.is_open(), "⌘J does");
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+
+    // Keys another shortcut has move, and the person is told.
+    open_shortcuts(&mut h);
+    record(&mut h, "Find on page", Modifiers::COMMAND, Key::J);
+    assert_eq!(h.state().prefs.keymap.get(Binding::FindOnPage), Some(cmd_j));
+    assert_eq!(h.state().prefs.keymap.get(Binding::CommandBar), None);
+    assert!(h.query_by_label_contains("moved here").is_some());
+    // Backspace removes a shortcut; Escape keeps it.
+    record(&mut h, "Hand tool", Modifiers::NONE, Key::Backspace);
+    assert_eq!(h.state().prefs.keymap.get(Binding::HandTool), None);
+    record(&mut h, "Select tool", Modifiers::NONE, Key::Escape);
+    assert_eq!(
+        h.state().prefs.keymap.get(Binding::SelectTool),
+        Some(Binding::SelectTool.default_keys())
+    );
+    h.get_by_label("Reset All Shortcuts").click();
+    h.run_steps(2);
+    assert!(!h.state().prefs.keymap.any_changed());
+    assert_eq!(
+        h.state().prefs.keymap.get(Binding::CommandBar),
+        Some(Binding::CommandBar.default_keys())
     );
 }

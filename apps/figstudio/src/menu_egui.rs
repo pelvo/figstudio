@@ -1,5 +1,5 @@
 //! Drawn menu for Linux, web, headless tests and native-attach fallback.
-use crate::{APP_NAME, App, menu::Item, theme};
+use crate::{App, menu::Item};
 
 impl App {
     /// The "⋯" button in the sidebar: the File, View and Help menus where there is no native
@@ -39,7 +39,7 @@ impl App {
                     ui.separator();
                     ui.label(
                         egui::RichText::new("Korean (KR) in use: a file has only Hangul")
-                            .color(theme::of(ui).text_dim),
+                            .color(crate::theme::of(ui).text_dim),
                     );
                 }
                 continue;
@@ -47,7 +47,7 @@ impl App {
             let clicked = if let Some(mut checked) = item.checked {
                 let response =
                     ui.add_enabled(item.enabled, egui::Checkbox::new(&mut checked, item.label));
-                if let Some(shortcut) = action.shortcut() {
+                if let Some(shortcut) = self.prefs.keymap.for_action(action) {
                     response
                         .on_hover_text(ui.ctx().format_shortcut(&shortcut))
                         .clicked()
@@ -58,7 +58,7 @@ impl App {
                 let mut button = egui::Button::new(item.label);
                 // Labels with a typed hint ("Zoom to fit   ⇧1") already show it.
                 if !item.label.contains("   ")
-                    && let Some(shortcut) = action.shortcut()
+                    && let Some(shortcut) = self.prefs.keymap.for_action(action)
                 {
                     button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
                 }
@@ -69,20 +69,5 @@ impl App {
                 self.apply(action, ui.ctx());
             }
         }
-    }
-
-    pub(crate) fn help_text(&self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new(format!("{APP_NAME} {}", env!("CARGO_PKG_VERSION"))).strong());
-        ui.label("Opens Figma .fig local copies offline.");
-        ui.label(
-            egui::RichText::new("V select · H hand · Z zoom · Space drag to pan")
-                .color(theme::of(ui).text_dim),
-        );
-        ui.label(
-            egui::RichText::new("Ctrl+scroll or pinch to zoom · ⇧1 fit")
-                .color(theme::of(ui).text_dim),
-        );
-        let bar = ui.ctx().format_shortcut(&crate::command::SHORTCUT);
-        ui.label(egui::RichText::new(format!("{bar} command bar")).color(theme::of(ui).text_dim));
     }
 }

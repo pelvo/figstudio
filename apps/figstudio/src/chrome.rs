@@ -923,15 +923,14 @@ impl App {
                     });
                 }
                 Some(tab) => {
-                    cursor = canvas::show(
-                        ui,
-                        tab,
-                        &mut self.workers,
-                        &mut self.tiles,
-                        self.tool,
+                    let options = canvas::Options {
+                        tool: self.tool,
                         space_held,
-                        f32::from(CARD_RADIUS),
-                    );
+                        radius: f32::from(CARD_RADIUS),
+                        frame_labels: self.prefs.frame_labels,
+                        scroll_zooms: self.prefs.scroll_zooms,
+                    };
+                    cursor = canvas::show(ui, tab, &mut self.workers, &mut self.tiles, options);
                 }
                 None => open_clicked = self.empty_state(ui, card),
             }

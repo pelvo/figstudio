@@ -120,6 +120,10 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
                          + appearance), opened above the space's dot
   swipe.rs               two-finger sideways swipes over the sidebar switch spaces
   find.rs                ⌘F find bar: text on the page, inside instances too; highlights
+  settings.rs            Settings (⌘,), Arc's layout: General, Canvas, Shortcuts, Agents
+                         (agent access, the MCP server), About
+  keymap.rs              shortcuts the user can change: Binding (label, group, default,
+                         action) and the Keymap of changes, saved in Prefs
   canvas.rs              canvas input, render requests, frame re-projection, outlines
   tab.rs                 per-document state (Tab, with its tint) and the page<->screen mapping
   panels.rs              Pages list, Layers tree, Properties card
@@ -379,8 +383,23 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   sidebar on every switch; they are `new_child` UIs. The panel id changed
   (`chrome::SIDEBAR`) so a width inflated that way is not restored.
 - eframe's `persistence` keeps the window, the panel widths and egui's options (appearance,
-  Reduce motion) between launches; `App::save` adds the sidebar / properties visibility and
-  the Pages/Layers split (`UiState`).
+  Reduce motion) between launches; `App::save` adds the sidebar / properties visibility, the
+  Pages/Layers split and Settings' `Prefs` (`UiState`): the translucent sidebar, the renderer
+  (applied at the next start; `FIGSTUDIO_RENDERER` wins), frame names and whether the scroll
+  wheel zooms (`canvas::Options`).
+- **Settings** (`settings.rs`, ⌘, / the app menu on macOS / File → Settings… elsewhere / the
+  command bar): a foreground window with Arc's tab row. Agent access (`mcp.menu`, `mcp.status`)
+  and About live in it; View → Agent access… and Help → About open those tabs
+  (`menu_windows.rs` only shows it now).
+- **Shortcuts are data** (`keymap.rs`). A new shortcut is a `Binding` (label, group,
+  default keys, the `Action` it runs); `App::shortcuts` runs every binding from the keymap
+  (most modifiers first, keys without ⌘/Ctrl/Alt only while nothing takes typing), the drawn
+  menus and the command bar show `keymap.for_action`, and the macOS/Windows menus get
+  accelerators from it (`NativeMenu::set_keys`, none while a shortcut is being recorded so
+  the menu does not swallow the keys). Settings → Shortcuts records the next key press:
+  Backspace removes, Escape keeps, keys another binding has move (it is told). Only changes
+  are saved, so new defaults reach everyone else. Escape, Enter in the find bar and pointer
+  gestures are fixed.
 - **Find on page** (`find.rs`, ⌘F, View → Find on page…): matches text layers of the page
   and text drawn inside instances (`resolve::walk_instance` with overrides, boxed with
   `Renderer::path_bounds`), sorted top to bottom. The canvas highlights them; Enter / ⌘G and

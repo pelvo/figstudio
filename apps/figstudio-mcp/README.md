@@ -46,10 +46,10 @@ figstudio-mcp [--http[=ADDR]] [--no-system-fonts] [--assets-dir DIR | --assets i
 
 ### Inside the figstudio app (live mode)
 
-The desktop app can host this server with the files it has open. Turn it on in **View →
-Agent access (MCP server)** (on Linux and in the browser the File, View and Help menus are
-behind the **⋯** button at the top of the sidebar; ⌘L / Ctrl+L finds them too). It is off at
-every launch and is not saved.
+The desktop app can host this server with the files it has open. Turn it on in **Settings →
+Agents** (⌘, / Ctrl+,; **View → Agent access…** opens the same tab) with **Agent access (MCP
+server)**. On Linux and in the browser the menus are behind the **⋯** button at the top of the
+sidebar; ⌘L / Ctrl+L finds them too. It is off at every launch and is not saved.
 
 - While it runs, the status pill at the bottom left of the canvas shows `MCP 127.0.0.1:3845/mcp`. Point your client there.
   The app tries 3845, then 3846–3855, and shows the address it got.
@@ -77,8 +77,8 @@ claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp
 ```
 
 Open the printed `Local:` or `Web:` URL (`...#mcp=<token>`). The token travels in the URL
-fragment, which the page's server never sees; or paste it in **View → Agent access (local
-MCP)…** and press Connect. The status pill shows `MCP connected`.
+fragment, which the page's server never sees; or paste it in **Settings → Agents** (View →
+Agent access…) and press Connect. The status pill shows `MCP connected`.
 
 | Flag | Meaning |
 |---|---|
@@ -101,7 +101,7 @@ When deployed behind the Cloudflare Worker (`web/worker.mjs` with the `McpRoom` 
 Object), the browser tab runs the MCP server in Wasm and pairs with `/bridge/rm_<64 hex>`
 over WebSocket. Files never leave the browser.
 
-1. **First machine (one-time MCP client setup):** open **View → Agent access**, keep
+1. **First machine (one-time MCP client setup):** open **Settings → Agents** (View → Agent access…), keep
    **Cloud relay** selected, optionally set **Device label** (for example `Office · Chrome`),
    and click **Copy MCP URL**:
    ```sh
@@ -157,7 +157,7 @@ know your LAN or Tailscale addresses: a client that sends one as `Host` gets 403
 token. Name each one with `--allow-host` (for example `--allow-host 100.64.0.1` or a MagicDNS
 name). The banner prints this when no `--allow-host` is given.
 
-In the desktop app tick **View → Agent access → Allow remote agents**, type the address and
+In the desktop app tick **Settings → Agents → Allow remote agents**, type the address and
 port, then turn Agent access on; the status pill has a **Copy token** button. The setting is
 not saved. `0.0.0.0` and `::` are refused (`--allow-any-interface` overrides on the CLI, the
 app never listens on every interface). In bridge mode `/bridge` keeps its own Origin and

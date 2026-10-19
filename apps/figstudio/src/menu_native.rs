@@ -56,21 +56,22 @@ impl NativeMenu {
         let menu = Menu::new();
         let mut entries = vec![];
         #[cfg(target_os = "macos")]
-        macos_app_menu(&menu, &mut entries)?;
+        macos_app_menu(&menu, &mut entries, &app.prefs.keymap)?;
         #[cfg(target_os = "macos")]
         let mut help = None;
         for group in crate::menu::tree(app) {
             #[cfg(target_os = "macos")]
             let group = {
                 let mut group = group;
+                // The app menu has these on macOS.
                 group
                     .children
-                    .retain(|i| !matches!(i.action, Some(Action::Quit)));
+                    .retain(|i| !matches!(i.action, Some(Action::Quit | Action::Settings)));
                 group
             };
             let submenu = Submenu::new(group.label, true);
             for item in &group.children {
-                add(&submenu, item, &mut entries)?;
+                add(&submenu, item, &mut entries, Some(&app.prefs.keymap))?;
             }
             menu.append(&submenu)?;
             #[cfg(target_os = "macos")]
@@ -117,6 +118,23 @@ impl NativeMenu {
             .collect()
     }
 
+    /// Shows `keys` (the user's shortcuts) as the menu's accelerators; `None` takes them all
+    /// off while a new shortcut is being recorded.
+    pub(crate) fn set_keys(&mut self, keys: Option<&crate::keymap::Keymap>) {
+        for entry in &self.items {
+            let Some(action) = entry.action else { continue };
+            let accelerator = accelerator(action, keys);
+            let set = match &entry.kind {
+                Kind::Item(i) => i.set_accelerator(accelerator),
+                Kind::Check(i) => i.set_accelerator(accelerator),
+                Kind::Group(_) => Ok(()),
+            };
+            if let Err(error) = set {
+                tracing::warn!("menu shortcut not set: {error}");
+            }
+        }
+    }
+
     pub(crate) fn sync(&mut self, tree: &[Item]) {
         for state in tree {
             if state.label.is_empty() {
@@ -138,7 +156,11 @@ impl NativeMenu {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_app_menu(menu: &Menu, entries: &mut Vec<Entry>) -> anyhow::Result<()> {
+fn macos_app_menu(
+    menu: &Menu,
+    entries: &mut Vec<Entry>,
+    keys: &crate::keymap::Keymap,
+) -> anyhow::Result<()> {
     let app_menu = Submenu::new("figstudio", true);
     add(
         &app_menu,
@@ -150,6 +172,20 @@ fn macos_app_menu(menu: &Menu, entries: &mut Vec<Entry>) -> anyhow::Result<()> {
             children: vec![],
         },
         entries,
+        Some(keys),
+    )?;
+    app_menu.append(&PredefinedMenuItem::separator())?;
+    add(
+        &app_menu,
+        &Item {
+            label: "Settings…",
+            action: Some(Action::Settings),
+            enabled: true,
+            checked: None,
+            children: vec![],
+        },
+        entries,
+        Some(keys),
     )?;
     app_menu.append(&PredefinedMenuItem::separator())?;
     app_menu.append(&PredefinedMenuItem::hide(None))?;
@@ -186,12 +222,17 @@ fn attach_windows(menu: &Menu, cc: &eframe::CreationContext<'_>) -> anyhow::Resu
     Ok(())
 }
 
-fn add(parent: &Submenu, item: &Item, entries: &mut Vec<Entry>) -> muda::Result<()> {
+fn add(
+    parent: &Submenu,
+    item: &Item,
+    entries: &mut Vec<Entry>,
+    keys: Option<&crate::keymap::Keymap>,
+) -> muda::Result<()> {
     if item.label.is_empty() {
         return parent.append(&PredefinedMenuItem::separator());
     }
     let kind = if let Some(action) = item.action {
-        let accelerator = accelerator(action);
+        let accelerator = accelerator(action, keys);
         // The egui labels include textual hints; native menus render their own accelerators.
         let label = if accelerator.is_some() {
             item.label.split("   ").next().unwrap_or(item.label)
@@ -210,7 +251,7 @@ fn add(parent: &Submenu, item: &Item, entries: &mut Vec<Entry>) -> muda::Result<
     } else {
         let group = Submenu::new(item.label, item.enabled);
         for child in &item.children {
-            add(&group, child, entries)?;
+            add(&group, child, entries, keys)?;
         }
         parent.append(&group)?;
         Kind::Group(group)
@@ -224,33 +265,117 @@ fn add(parent: &Submenu, item: &Item, entries: &mut Vec<Entry>) -> muda::Result<
     Ok(())
 }
 
-fn accelerator(action: Action) -> Option<muda::accelerator::Accelerator> {
-    use muda::accelerator::{Accelerator, Code, Modifiers};
+/// The native accelerator for `action` with the user's `keys` (`None` while a shortcut is
+/// being recorded, so the menu does not swallow it).
+fn accelerator(
+    action: Action,
+    keys: Option<&crate::keymap::Keymap>,
+) -> Option<muda::accelerator::Accelerator> {
+    use muda::accelerator::{Accelerator, Modifiers};
     if cfg!(target_os = "macos") && !crate::menu_dispatch::native_owned(true, true, action) {
         return None;
     }
-    let shortcut = action.shortcut()?;
-    let code = match shortcut.logical_key {
-        egui::Key::O => Code::KeyO,
-        egui::Key::W => Code::KeyW,
-        egui::Key::E => Code::KeyE,
-        egui::Key::L => Code::KeyL,
-        egui::Key::F => Code::KeyF,
-        egui::Key::Backslash => Code::Backslash,
-        egui::Key::Num1 => Code::Digit1,
-        egui::Key::Num0 => Code::Digit0,
-        _ => return None,
-    };
+    let shortcut = keys?.for_action(action)?;
+    let code = code(shortcut.logical_key)?;
+    let m = shortcut.modifiers;
     let mut mods = Modifiers::empty();
-    if shortcut.modifiers.command {
+    if m.command || m.mac_cmd {
         mods |= if cfg!(target_os = "macos") {
             Modifiers::META
         } else {
             Modifiers::CONTROL
         };
     }
-    if shortcut.modifiers.shift {
+    if m.ctrl && !m.command {
+        mods |= Modifiers::CONTROL;
+    }
+    if m.alt {
+        mods |= Modifiers::ALT;
+    }
+    if m.shift {
         mods |= Modifiers::SHIFT;
     }
     Some(Accelerator::new(mods, code))
+}
+
+/// The key code of a key that a menu accelerator can use.
+fn code(key: egui::Key) -> Option<muda::accelerator::Code> {
+    use egui::Key as K;
+    use muda::accelerator::Code as C;
+    Some(match key {
+        K::A => C::KeyA,
+        K::B => C::KeyB,
+        K::C => C::KeyC,
+        K::D => C::KeyD,
+        K::E => C::KeyE,
+        K::F => C::KeyF,
+        K::G => C::KeyG,
+        K::H => C::KeyH,
+        K::I => C::KeyI,
+        K::J => C::KeyJ,
+        K::K => C::KeyK,
+        K::L => C::KeyL,
+        K::M => C::KeyM,
+        K::N => C::KeyN,
+        K::O => C::KeyO,
+        K::P => C::KeyP,
+        K::Q => C::KeyQ,
+        K::R => C::KeyR,
+        K::S => C::KeyS,
+        K::T => C::KeyT,
+        K::U => C::KeyU,
+        K::V => C::KeyV,
+        K::W => C::KeyW,
+        K::X => C::KeyX,
+        K::Y => C::KeyY,
+        K::Z => C::KeyZ,
+        K::Num0 => C::Digit0,
+        K::Num1 => C::Digit1,
+        K::Num2 => C::Digit2,
+        K::Num3 => C::Digit3,
+        K::Num4 => C::Digit4,
+        K::Num5 => C::Digit5,
+        K::Num6 => C::Digit6,
+        K::Num7 => C::Digit7,
+        K::Num8 => C::Digit8,
+        K::Num9 => C::Digit9,
+        K::F1 => C::F1,
+        K::F2 => C::F2,
+        K::F3 => C::F3,
+        K::F4 => C::F4,
+        K::F5 => C::F5,
+        K::F6 => C::F6,
+        K::F7 => C::F7,
+        K::F8 => C::F8,
+        K::F9 => C::F9,
+        K::F10 => C::F10,
+        K::F11 => C::F11,
+        K::F12 => C::F12,
+        K::Comma => C::Comma,
+        K::Period => C::Period,
+        K::Slash => C::Slash,
+        K::Backslash => C::Backslash,
+        K::Semicolon => C::Semicolon,
+        K::Quote => C::Quote,
+        K::Minus => C::Minus,
+        K::Equals => C::Equal,
+        K::OpenBracket => C::BracketLeft,
+        K::CloseBracket => C::BracketRight,
+        K::Backtick => C::Backquote,
+        K::Space => C::Space,
+        K::Enter => C::Enter,
+        K::Tab => C::Tab,
+        K::Escape => C::Escape,
+        K::Backspace => C::Backspace,
+        K::Delete => C::Delete,
+        K::Home => C::Home,
+        K::End => C::End,
+        K::PageUp => C::PageUp,
+        K::PageDown => C::PageDown,
+        K::ArrowUp => C::ArrowUp,
+        K::ArrowDown => C::ArrowDown,
+        K::ArrowLeft => C::ArrowLeft,
+        K::ArrowRight => C::ArrowRight,
+        _ => return None,
+    })
 }

@@ -362,6 +362,11 @@ fn icon_picker(ui: &mut egui::Ui, editor: &mut SpaceEditor, tab: &mut Tab) -> Cl
         if typed.changed() {
             let e = editor.emoji.trim();
             tab.style.symbol = (!e.is_empty()).then(|| Symbol::Emoji(e.into()));
+            // What the badge will show: the first emoji typed.
+            tab.style = std::mem::take(&mut tab.style).tidy();
+            if let Some(Symbol::Emoji(e)) = &tab.style.symbol {
+                editor.emoji.clone_from(e);
+            }
         }
         if typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             close = Close::Save;
