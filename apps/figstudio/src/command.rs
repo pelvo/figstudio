@@ -13,10 +13,6 @@ use crate::icons::{self, Icon};
 use crate::menu::{self, Action};
 use crate::{App, theme};
 
-/// Opens and closes the command bar.
-/// ⌘L, as Arc's address bar.
-pub const SHORTCUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::L);
-
 /// Most rows the bar lists, and most layers it looks at per search.
 const MAX_RESULTS: usize = 60;
 const MAX_LAYERS_SCANNED: usize = 200_000;

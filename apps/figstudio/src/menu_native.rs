@@ -286,7 +286,8 @@ fn accelerator(
             Modifiers::CONTROL
         };
     }
-    if m.ctrl && !m.command {
+    // On a Mac, Control is its own key next to ⌘; elsewhere `ctrl` is the command key.
+    if m.ctrl && (cfg!(target_os = "macos") || !m.command) {
         mods |= Modifiers::CONTROL;
     }
     if m.alt {
@@ -296,6 +297,11 @@ fn accelerator(
         mods |= Modifiers::SHIFT;
     }
     Some(Accelerator::new(mods, code))
+}
+
+/// Whether a menu accelerator can use `key` (else egui runs that shortcut).
+pub(crate) fn has_code(key: egui::Key) -> bool {
+    code(key).is_some()
 }
 
 /// The key code of a key that a menu accelerator can use.

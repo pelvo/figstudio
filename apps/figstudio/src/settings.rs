@@ -144,6 +144,21 @@ const ACCENT: Color32 = Color32::from_rgb(52, 120, 246);
 /// Memory key: the next list row is the first of its section (no line above it).
 const FIRST_ROW: &str = "settings-first-row";
 
+/// Shift, Control, Alt and ⌘ pressed on their own (egui sends them as keys too).
+fn is_modifier(key: Key) -> bool {
+    matches!(
+        key,
+        Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::ControlLeft
+            | Key::ControlRight
+            | Key::AltLeft
+            | Key::AltRight
+            | Key::SuperLeft
+            | Key::SuperRight
+    )
+}
+
 /// Things done with the pointer or fixed keys: listed, not changeable.
 const FIXED: [(&str, &str); 7] = [
     ("Clear the selection", "Esc"),
@@ -639,8 +654,12 @@ fn columns(ui: &mut Ui) -> (Ui, Ui) {
 
 impl App {
     /// Gives the next key press to the shortcut being recorded. Returns whether it took one.
-    fn record_shortcut(&mut self, ctx: &egui::Context) -> bool {
-        let Some(binding) = self.settings.recording else {
+    /// Call first in the frame: while a shortcut is being recorded, every key and typed
+    /// character goes to it (none reach a text field, a shortcut or the canvas). Modifier
+    /// keys alone (egui sends Shift, Control, Alt and ⌘ as keys of their own) do not end the
+    /// recording; the next other key does, with the modifiers held then as the chord.
+    pub(crate) fn record_shortcut(&mut self, ctx: &egui::Context) -> bool {
+        let Some(binding) = self.settings.recording() else {
             return false;
         };
         let pressed = ctx.input(|i| {
@@ -651,14 +670,30 @@ impl App {
                     repeat: false,
                     modifiers,
                     ..
-                } => Some((*key, *modifiers)),
+                } if !is_modifier(*key) => Some((*key, *modifiers)),
+                // ⌘X, ⌘C and ⌘V arrive as Cut, Copy and Paste, without a key event.
+                egui::Event::Cut => Some((Key::X, i.modifiers)),
+                egui::Event::Copy => Some((Key::C, i.modifiers)),
+                egui::Event::Paste(_) => Some((Key::V, i.modifiers)),
                 _ => None,
             })
+        });
+        ctx.input_mut(|i| {
+            i.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key { .. }
+                        | egui::Event::Text(_)
+                        | egui::Event::Ime(_)
+                        | egui::Event::Paste(_)
+                        | egui::Event::Copy
+                        | egui::Event::Cut
+                )
+            });
         });
         let Some((key, modifiers)) = pressed else {
             return false;
         };
-        ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Key { .. })));
         let plain = !(modifiers.command || modifiers.ctrl || modifiers.alt || modifiers.mac_cmd);
         self.settings.notice = None;
         match key {
@@ -689,15 +724,14 @@ impl App {
         if !open && pop <= 0.001 {
             return;
         }
-        let recorded = open && self.record_shortcut(ctx);
         let look = Look::new(theme::palette(ctx).dark);
         let screen = ctx.content_rect();
         let size = vec2(
             (screen.width() - 32.0).min(680.0),
             (screen.height() - 40.0).min(640.0),
         );
+        // A key that ended a recording was taken from the input, so Escape here is not it.
         let mut close = open
-            && !recorded
             && self.settings.recording.is_none()
             && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
         egui::Area::new(Id::new("settings-backdrop"))
@@ -1310,6 +1344,8 @@ impl App {
         if let Some(binding) = record {
             self.settings.recording = Some(binding);
             self.settings.notice = None;
+            // The menu bar's own shortcuts are taken away now, before the keys are pressed.
+            self.sync_native_keys();
         }
         if let Some(binding) = reset {
             self.prefs.keymap.reset(binding);

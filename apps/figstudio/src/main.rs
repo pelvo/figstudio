@@ -760,7 +760,7 @@ impl App {
         // The command bar is modal: only its own shortcut (which closes it) gets through, so
         // nothing changes the file under its results.
         if self.command.is_open() {
-            if !self.native_owns(menu::Action::CommandBar)
+            if !self.native_takes(menu::Action::CommandBar, keys(keymap::Binding::CommandBar))
                 && let Some(s) = keys(keymap::Binding::CommandBar)
                 && ctx.input_mut(|i| i.consume_shortcut(&s))
             {
@@ -789,7 +789,7 @@ impl App {
             let action = binding.action();
             let plain = keymap::Binding::is_plain(&shortcut);
             if (plain && quiet)
-                || self.native_owns(action)
+                || self.native_takes(action, Some(shortcut))
                 || (matches!(binding, B::NextMatch | B::PreviousMatch) && !self.find.is_open())
             {
                 continue;
@@ -930,6 +930,8 @@ impl App {
         if let Some(error) = self.mcp.frame(&mut self.tabs, &mut self.active) {
             self.toast(&ctx, error, true);
         }
+        // A shortcut being recorded takes the keys before anything else sees them.
+        self.record_shortcut(&ctx);
         self.native_events(&ctx);
         // Ahead of the shortcuts: the dialog's Escape must be consumed first.
         self.mcp.confirm(&ctx);

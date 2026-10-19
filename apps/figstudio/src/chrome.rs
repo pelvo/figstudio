@@ -383,6 +383,15 @@ pub(crate) fn paint_badge(
     }
 }
 
+/// A control's accessible name with its keys, as the hint painted on it shows them.
+fn with_keys(name: &str, keys: &str) -> String {
+    if keys.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name} ({keys})")
+    }
+}
+
 /// A small section title in the sidebar ("Pages", "Layers") with an optional count.
 fn section_label(ui: &mut Ui, title: &str, count: Option<usize>) {
     let p = theme::of(ui);
@@ -771,7 +780,15 @@ impl App {
         let p = theme::of(ui);
         let (rect, response) =
             ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Command bar"));
+        // The command bar's keys as the person set them (none: no hint).
+        let shortcut = self
+            .prefs
+            .keymap
+            .get(crate::keymap::Binding::CommandBar)
+            .map(|s| ui.ctx().format_shortcut(&s))
+            .unwrap_or_default();
+        let label = with_keys("Command bar", &shortcut);
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
         let (hover, press) = icons::feedback(ui, &response);
         let r = rect.shrink(press);
         let painter = ui.painter();
@@ -785,7 +802,6 @@ impl App {
         );
         let icon = Rect::from_center_size(pos2(r.left() + 18.0, r.center().y), vec2(14.0, 14.0));
         icons::paint(painter, Icon::Search, icon, p.text_dim);
-        let shortcut = ui.ctx().format_shortcut(&crate::command::SHORTCUT);
         let hint = elided(
             ui,
             &shortcut,
@@ -1420,7 +1436,14 @@ impl App {
         );
         let button = Rect::from_center_size(c + vec2(0.0, 36.0), vec2(150.0, 38.0));
         let response = ui.interact(button, Id::new("open-file"), Sense::click());
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Open file…"));
+        let shortcut = self
+            .prefs
+            .keymap
+            .get(crate::keymap::Binding::Open)
+            .map(|s| ctx.format_shortcut(&s))
+            .unwrap_or_default();
+        let label = with_keys("Open file…", &shortcut);
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
         let (hover, press) = icons::feedback(ui, &response);
         let r = button
             .translate(vec2(0.0, -hover * 1.5))
@@ -1437,10 +1460,6 @@ impl App {
             theme::semibold(14.0),
             theme::on_accent(fill),
         );
-        let shortcut = ctx.format_shortcut(&egui::KeyboardShortcut::new(
-            egui::Modifiers::COMMAND,
-            egui::Key::O,
-        ));
         painter.text(
             c + vec2(0.0, 76.0),
             Align2::CENTER_CENTER,

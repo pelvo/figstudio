@@ -236,7 +236,9 @@ impl Keys {
         Self {
             key: s.logical_key.name().to_owned(),
             command: m.command || m.mac_cmd,
-            ctrl: m.ctrl && !m.command,
+            // `ctrl` duplicates `command` except on a Mac, where ⌘ (`mac_cmd`) and Control
+            // are two keys and a chord can hold both.
+            ctrl: m.ctrl && (m.mac_cmd || !m.command),
             alt: m.alt,
             shift: m.shift,
         }
@@ -264,7 +266,47 @@ impl Keys {
 /// The shortcuts that differ from the defaults. `None` keys: no shortcut.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Keymap {
+    /// Loaded leniently: a damaged entry is dropped, not the whole saved window state.
+    #[serde(default, deserialize_with = "lenient_changes")]
     changes: Vec<(Binding, Option<Keys>)>,
+}
+
+/// One saved change, or something this version cannot read (an unknown shortcut name, a
+/// key with no name).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Saved {
+    Change((Binding, Option<Keys>)),
+    Unreadable(serde::de::IgnoredAny),
+}
+
+/// The changes that can be read, each binding once, and no two with the same keys (the
+/// earlier one keeps them, as `Keymap::set` leaves it).
+fn lenient_changes<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<(Binding, Option<Keys>)>, D::Error> {
+    let saved = Vec::<Saved>::deserialize(d)?;
+    let mut map = Keymap::default();
+    for item in saved {
+        let Saved::Change((binding, keys)) = item else {
+            continue;
+        };
+        let real = Binding::ALL.contains(&binding);
+        let readable = keys.as_ref().is_none_or(|k| k.to_shortcut().is_some());
+        if !real || !readable || map.is_changed(binding) {
+            continue;
+        }
+        let shortcut = keys.as_ref().and_then(Keys::to_shortcut);
+        if shortcut.is_some_and(|s| {
+            Binding::ALL
+                .into_iter()
+                .any(|b| b != binding && map.get(b).is_some_and(|k| same(&k, &s)))
+        }) {
+            continue;
+        }
+        map.put(binding, shortcut);
+    }
+    Ok(map.changes)
 }
 
 impl Keymap {
@@ -385,6 +427,34 @@ mod tests {
             Some(Binding::SelectTool.default_keys())
         );
         assert_eq!(map.get(Binding::HandTool), None, "it gave the V back");
+    }
+
+    #[test]
+    fn control_is_kept_beside_command_on_a_mac_and_not_doubled_elsewhere() {
+        let mac_ctrl_cmd = Modifiers {
+            ctrl: true,
+            command: true,
+            mac_cmd: true,
+            ..Modifiers::NONE
+        };
+        let mac_cmd = Modifiers {
+            command: true,
+            mac_cmd: true,
+            ..Modifiers::NONE
+        };
+        let both = KeyboardShortcut::new(mac_ctrl_cmd, Key::K);
+        let cmd = KeyboardShortcut::new(mac_cmd, Key::K);
+        assert!(!same(&both, &cmd), "⌃⌘K is not ⌘K");
+        let back = Keys::from_shortcut(&both).to_shortcut().expect("readable");
+        assert!(back.modifiers.ctrl && back.modifiers.command, "{back:?}");
+        // Windows and Linux: Ctrl is the command key, reported as both.
+        let ctrl = Modifiers {
+            ctrl: true,
+            command: true,
+            ..Modifiers::NONE
+        };
+        let saved = Keys::from_shortcut(&KeyboardShortcut::new(ctrl, Key::K));
+        assert!(!saved.ctrl && saved.command, "{saved:?}");
     }
 
     #[test]

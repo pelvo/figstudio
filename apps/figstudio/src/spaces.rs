@@ -14,7 +14,8 @@ use crate::theme::Colour;
 const MAX_ENTRIES: usize = 500;
 /// Longest name or emoji kept, in characters.
 const MAX_NAME: usize = 64;
-const MAX_EMOJI: usize = 8;
+/// Longest emoji kept, in characters: a family of four with skin tones is 11.
+const MAX_EMOJI: usize = 16;
 
 /// A space's look. `None` fields keep the defaults: the tint picked from the file name, a
 /// plain dot, the file name.
@@ -39,9 +40,11 @@ impl Style {
             Some(Symbol::Emoji(e)) => {
                 // One grapheme: a badge shows one emoji, not a word.
                 use unicode_segmentation::UnicodeSegmentation as _;
+                // Whole or not at all: cutting a long grapheme (a family with skin tones
+                // is one) would leave a broken sequence.
                 let first = e.trim().graphemes(true).next().unwrap_or("");
-                let e: String = first.chars().take(MAX_EMOJI).collect();
-                (!e.is_empty()).then_some(Symbol::Emoji(e))
+                (!first.is_empty() && first.chars().count() <= MAX_EMOJI)
+                    .then(|| Symbol::Emoji(first.to_owned()))
             }
             Some(Symbol::Icon(name)) => icon(&name).is_some().then_some(Symbol::Icon(name)),
             None => None,
@@ -360,6 +363,28 @@ mod tests {
 
     fn id<'a>(key: Option<&'a str>, file: &'a str, folder: Option<&'a str>) -> FileId<'a> {
         FileId { key, file, folder }
+    }
+
+    #[test]
+    fn a_long_emoji_is_kept_whole_or_not_at_all() {
+        let emoji = |e: &str| {
+            Style {
+                symbol: Some(Symbol::Emoji(e.into())),
+                ..Style::default()
+            }
+            .tidy()
+            .symbol
+        };
+        // A family of four with skin tones: one grapheme of 11 characters.
+        let family = "👨🏽\u{200d}👩🏽\u{200d}👧🏽\u{200d}👦🏽";
+        assert_eq!(family.chars().count(), 11);
+        assert_eq!(
+            emoji(&format!("{family}xyz")),
+            Some(Symbol::Emoji(family.into()))
+        );
+        // Longer than any emoji worth drawing: dropped, never cut into a broken sequence.
+        let silly = format!("a{}", "\u{301}".repeat(30));
+        assert_eq!(emoji(&silly), None);
     }
 
     #[test]

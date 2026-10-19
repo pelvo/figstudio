@@ -84,7 +84,7 @@ fn the_command_bar_opens_with_its_shortcut_and_runs_what_is_picked() {
         "zoomed to fit"
     );
 
-    h.get_by_label("Command bar").click();
+    h.get_by_label_contains("Command bar (").click();
     h.run_steps(3);
     assert!(
         h.state().command.is_open(),
@@ -291,6 +291,17 @@ fn the_sidebar_and_panels_come_back_as_they_were_left() {
         .keymap
         .set(crate::keymap::Binding::CommandBar, Some(cmd_j));
     first.save(&mut storage);
+    // A saved shortcut this version cannot read (an unknown name, a key with no name, keys
+    // another one has) is dropped on its own; the rest of the window state still loads.
+    let saved = storage.0.get(crate::UI_STATE_KEY).cloned().expect("saved");
+    let list = saved.find("changes:[").expect("the keymap");
+    let end = list + saved[list..].find(']').expect("the list ends");
+    let damaged = format!(
+        "{},(NoSuchShortcut,None),(Open,Some((command:true))),(FindOnPage,Some((key:\"J\",command:true))){}",
+        &saved[..end],
+        &saved[end..]
+    );
+    storage.0.insert(crate::UI_STATE_KEY.to_owned(), damaged);
     let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
     cc.storage = Some(&storage);
     let second = App::new(&cc, Vec::new());
@@ -307,6 +318,16 @@ fn the_sidebar_and_panels_come_back_as_they_were_left() {
         second.prefs.keymap.get(crate::keymap::Binding::CommandBar),
         Some(cmd_j),
         "changed shortcuts"
+    );
+    assert_eq!(
+        second.prefs.keymap.get(crate::keymap::Binding::Open),
+        Some(crate::keymap::Binding::Open.default_keys()),
+        "the unreadable change is dropped"
+    );
+    assert_eq!(
+        second.prefs.keymap.get(crate::keymap::Binding::FindOnPage),
+        Some(crate::keymap::Binding::FindOnPage.default_keys()),
+        "⌘J stays with the command bar, which had it first"
     );
 }
 
@@ -1073,4 +1094,107 @@ fn the_name_pill_fades_out_after_the_pointer_leaves() {
     assert!(visible(&h), "fading out, not gone at once");
     h.run_steps(40);
     assert!(!visible(&h), "gone once faded");
+}
+
+#[test]
+fn recording_takes_a_real_keyboard_chord_and_nothing_else_acts_on_it() {
+    use crate::keymap::Binding;
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    h.run_steps(2);
+    let ctx = h.ctx.clone();
+    let keys = |b: Binding| KeyboardShortcut::new(Modifiers::COMMAND, b.default_keys().logical_key);
+    // The hints show the command bar's and Open's keys as set.
+    let hint = |h: &Harness<'_, App>, name: &str, k: KeyboardShortcut| {
+        let label = format!("{name} ({})", h.ctx.format_shortcut(&k));
+        h.query_by_label(&label).is_some()
+    };
+    assert!(hint(&h, "Command bar", keys(Binding::CommandBar)));
+
+    h.state_mut()
+        .settings
+        .show(Some(crate::settings::Tab::Shortcuts), &ctx);
+    h.run_steps(2);
+    // Typed into the search first, so its field has focus when the keycap is clicked.
+    h.get_by(|n| {
+        n.role() == egui::accesskit::Role::TextInput
+            && n.placeholder() == Some("Type a feature name or shortcut")
+    })
+    .click();
+    h.run_steps(2);
+    h.event(egui::Event::Text("Command".into()));
+    h.run_steps(2);
+    assert_eq!(h.state().settings.filter, "Command");
+    h.get_by_label("Command bar shortcut").click();
+    h.run_steps(2);
+    assert!(h.state().settings.recording().is_some());
+
+    // While recording, the menu bar's actions do not run (on a Mac it may still have had
+    // the old accelerator for the chord being pressed).
+    let tabs = h.state().tabs.len();
+    h.state_mut()
+        .apply_native(vec![crate::menu::Action::CloseTab], &ctx);
+    assert_eq!(h.state().tabs.len(), tabs, "⌘W did not close a file");
+
+    // A keyboard sends ⌘ as a key of its own, then J with ⌘ held, and J as text too.
+    let cmd = Modifiers::COMMAND;
+    h.event(egui::Event::Key {
+        key: Key::SuperLeft,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: cmd,
+    });
+    h.run_steps(1);
+    assert!(
+        h.state().settings.recording().is_some(),
+        "⌘ alone does not end it"
+    );
+    h.event(egui::Event::Key {
+        key: Key::J,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: cmd,
+    });
+    h.event(egui::Event::Text("j".into()));
+    h.run_steps(2);
+    let cmd_j = KeyboardShortcut::new(cmd, Key::J);
+    assert_eq!(h.state().prefs.keymap.get(Binding::CommandBar), Some(cmd_j));
+    assert_eq!(
+        h.state().settings.filter,
+        "Command",
+        "the letter did not reach the search"
+    );
+    assert!(!h.state().command.is_open(), "the chord did not also run");
+
+    // ⇧⌘C arrives as a Copy event with no key event; it is recorded all the same.
+    h.get_by_label("Command bar shortcut").click();
+    h.run_steps(2);
+    let shift_cmd = Modifiers::COMMAND | Modifiers::SHIFT;
+    h.event_modifiers(egui::Event::Copy, shift_cmd);
+    h.run_steps(2);
+    assert_eq!(
+        h.state().prefs.keymap.get(Binding::CommandBar),
+        Some(KeyboardShortcut::new(shift_cmd, Key::C))
+    );
+    h.state_mut()
+        .prefs
+        .keymap
+        .set(Binding::CommandBar, Some(cmd_j));
+
+    h.key_press(Key::Escape);
+    h.run_steps(30);
+    assert!(
+        hint(&h, "Command bar", cmd_j),
+        "the sidebar hint follows the change"
+    );
+    // A shortcut removed: no hint at all.
+    h.state_mut().prefs.keymap.set(Binding::CommandBar, None);
+    h.run_steps(2);
+    assert!(h.query_by_label("Command bar").is_some());
 }

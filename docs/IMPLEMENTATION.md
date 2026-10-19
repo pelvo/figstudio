@@ -415,9 +415,17 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   (most modifiers first, keys without ⌘/Ctrl/Alt only while nothing takes typing), the drawn
   menus and the command bar show `keymap.for_action`, and the macOS/Windows menus get
   accelerators from it (`NativeMenu::set_keys`, none while a shortcut is being recorded so
-  the menu does not swallow the keys). Settings → Shortcuts records the next key press:
-  Backspace removes, Escape keeps, keys another binding has move (it is told). Only changes
-  are saved, so new defaults reach everyone else. Escape, Enter in the find bar and pointer
+  the menu does not swallow the keys; cleared in the same turn recording starts, and menu
+  actions are ignored while it lasts). A key a menu cannot show (`!`, F13, Insert) stays
+  with `App::shortcuts` even for a menu-owned action (`menu_dispatch::menu_runs`).
+  Settings → Shortcuts records the next key press, first thing in the frame
+  (`App::record_shortcut`, which takes every key and typed character meanwhile): modifier
+  keys alone do not end it (egui sends them as keys), ⌘X/⌘C/⌘V arrive as Cut/Copy/Paste and
+  are recorded too. Backspace removes, Escape keeps, keys another binding has move (it is
+  told). On a Mac Control is kept beside ⌘ (`ctrl` duplicates `command` only elsewhere).
+  Only changes are saved, so new defaults reach everyone else; they load leniently (an
+  unreadable or clashing entry is dropped, not the window state). The sidebar's and the
+  empty state's key hints read the keymap. Escape, Enter in the find bar and pointer
   gestures are fixed.
 - **Find on page** (`find.rs`, ⌘F, View → Find on page…): matches text layers of the page
   and text drawn inside instances (`resolve::walk_instance` with overrides, boxed with
