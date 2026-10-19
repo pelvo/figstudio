@@ -195,6 +195,92 @@ pub fn tint(index: usize, dark: bool) -> Tint {
     tint_of(table[index % TINTS])
 }
 
+/// Names of the preset tints, in order (the space editor's swatches).
+pub const TINT_NAMES: [&str; TINTS] = [
+    "Lavender", "Sky", "Mint", "Peach", "Rose", "Lime", "Sand", "Slate",
+];
+
+/// A space's colour: one of the preset tints, or any colour the user picked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Colour {
+    Preset(usize),
+    Custom([u8; 3]),
+}
+
+/// The window gradient for a space's `colour`.
+pub fn space_tint(colour: Colour, dark: bool) -> Tint {
+    match colour {
+        Colour::Preset(i) => tint(i, dark),
+        Colour::Custom([r, g, b]) => custom_tint(Color32::from_rgb(r, g, b), dark),
+    }
+}
+
+/// WCAG contrast ratio of two opaque sRGB colours (1 to 21).
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    fn luminance(c: Color32) -> f32 {
+        let f = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.040_45 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+    }
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// Black or white, whichever reads better on `fill` (text on an accent-coloured button).
+pub fn on_accent(fill: Color32) -> Color32 {
+    let dark_text = Color32::from_rgb(20, 20, 24);
+    if contrast(Color32::WHITE, fill) >= contrast(dark_text, fill) {
+        Color32::WHITE
+    } else {
+        dark_text
+    }
+}
+
+/// A gradient made from any colour: as much of `c` as keeps the palette's text readable on
+/// it, and an accent that stands out from the cards.
+fn custom_tint(c: Color32, dark: bool) -> Tint {
+    let p = if dark { DARK } else { LIGHT };
+    let readable = |bg: Color32| contrast(p.text, bg) >= 7.0 && contrast(p.text_dim, bg) >= 4.5;
+    // The strongest mix of `c` into `base`, up to `most`, with readable text on it.
+    let mix = |base: Color32, most: f32| {
+        (0..=20)
+            .rev()
+            .map(|i| base.lerp_to_gamma(c, most * i as f32 / 20.0))
+            .find(|bg| readable(*bg))
+            .unwrap_or(base)
+    };
+    let (top, bottom, glow) = if dark {
+        let base = Color32::from_rgb(22, 22, 26);
+        (
+            mix(base, 0.4),
+            mix(Color32::from_rgb(12, 12, 15), 0.22),
+            mix(base, 0.6),
+        )
+    } else {
+        let base = Color32::from_rgb(250, 250, 252);
+        (mix(base, 0.2), mix(base, 0.34), mix(Color32::WHITE, 0.1))
+    };
+    // The accent marks the active tool and file: it must stand out from the cards.
+    let toward = if dark { Color32::WHITE } else { Color32::BLACK };
+    let accent = (0..=20)
+        .map(|i| c.lerp_to_gamma(toward, i as f32 / 20.0))
+        .find(|a| contrast(*a, p.card) >= 3.0)
+        .unwrap_or(toward);
+    Tint {
+        top,
+        bottom,
+        glow,
+        accent,
+    }
+}
+
 /// The tint shown when no file is open.
 pub const HOME_TINT: usize = 0;
 
@@ -619,22 +705,6 @@ mod tests {
 
     #[test]
     fn text_is_readable_on_every_tint() {
-        // WCAG contrast of two sRGB colours.
-        fn luminance(c: Color32) -> f32 {
-            let f = |v: u8| {
-                let v = f32::from(v) / 255.0;
-                if v <= 0.040_45 {
-                    v / 12.92
-                } else {
-                    ((v + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
-        }
-        fn contrast(a: Color32, b: Color32) -> f32 {
-            let (a, b) = (luminance(a), luminance(b));
-            (a.max(b) + 0.05) / (a.min(b) + 0.05)
-        }
         for p in [LIGHT, DARK] {
             for i in 0..TINTS {
                 let t = tint(i, p.dark);
@@ -654,6 +724,40 @@ mod tests {
             assert!(contrast(p.text, p.card) >= 7.0);
             assert!(contrast(p.text_faint, p.card) >= 3.0);
         }
+    }
+
+    #[test]
+    fn any_custom_colour_keeps_text_readable_and_its_accent_visible() {
+        let picks = [
+            [0, 0, 0],
+            [255, 255, 255],
+            [255, 230, 0],
+            [0, 40, 255],
+            [255, 0, 0],
+            [0, 200, 120],
+            [128, 128, 128],
+        ];
+        for p in [LIGHT, DARK] {
+            for rgb in picks {
+                let t = space_tint(Colour::Custom(rgb), p.dark);
+                for bg in [t.top, t.bottom, t.glow] {
+                    assert!(contrast(p.text, bg) >= 7.0, "{rgb:?} dark={}", p.dark);
+                    assert!(contrast(p.text_dim, bg) >= 4.5, "{rgb:?} dark={}", p.dark);
+                }
+                assert!(
+                    contrast(t.accent, p.card) >= 3.0,
+                    "accent {rgb:?} dark={}",
+                    p.dark
+                );
+                assert!(
+                    contrast(on_accent(t.accent), t.accent) >= 4.5,
+                    "button {rgb:?}"
+                );
+            }
+        }
+        // A strong colour shows: the gradient is not just the neutral base.
+        let blue = space_tint(Colour::Custom([0, 40, 255]), false);
+        assert!(blue.bottom.b() > blue.bottom.r() + 10, "{:?}", blue.bottom);
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub(crate) enum Action {
     ToggleLayers,
     ToggleProperties,
     CommandBar,
+    EditSpace,
     Appearance(Appearance),
     ReduceMotion,
     AgentAccess,
@@ -174,6 +175,7 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                 export("Export page as PNG", false),
                 export("Export selection as PNG", true),
                 Item::separator(),
+                Item::action("Edit space…", Action::EditSpace, has_tab),
                 Item::action("Close file", Action::CloseTab, has_tab),
                 Item::action("Quit", Action::Quit, true),
             ],
@@ -197,6 +199,12 @@ impl App {
             Action::ToggleLayers => self.show_left = !self.show_left,
             Action::ToggleProperties => self.show_right = !self.show_right,
             Action::CommandBar => self.command.toggle(ctx),
+            Action::EditSpace => {
+                self.space_editing = self
+                    .tabs
+                    .get(self.active)
+                    .map(crate::space_editor::SpaceEditor::new);
+            }
             Action::Appearance(appearance) => {
                 self.appearance = appearance;
                 ctx.set_theme(appearance.preference());

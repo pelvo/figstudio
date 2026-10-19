@@ -119,3 +119,75 @@ fn reduce_motion_and_appearance_apply_to_the_whole_ui() {
     h.run_steps(2);
     assert_eq!(ctx.theme(), egui::Theme::Dark);
 }
+
+#[test]
+fn the_space_editor_changes_colour_icon_and_name_and_saves_them_for_the_file() {
+    use crate::spaces::{Style, Symbol};
+    use crate::theme::Colour;
+    let mut h = harness();
+    h.get_by_label("Edit space").click();
+    h.run_steps(3);
+    assert!(
+        h.state().space_editing.is_some(),
+        "the header opens the editor"
+    );
+    h.get_by_label("Rose").click();
+    h.run_steps(2);
+    h.get_by_label("🚀").click();
+    h.run_steps(2);
+    let field = h.get_by(|n| {
+        n.role() == egui::accesskit::Role::TextInput && n.placeholder() == Some("structure.fig")
+    });
+    field.click();
+    h.run_steps(2);
+    h.event(egui::Event::Text("Launch".into()));
+    h.run_steps(2);
+    let tab = &h.state().tabs[0];
+    assert_eq!(
+        tab.colour(),
+        Colour::Preset(4),
+        "the window follows at once"
+    );
+    assert_eq!(tab.space_name(), "Launch");
+    h.get_by_label("Done").click();
+    h.run_steps(3);
+    assert!(h.state().space_editing.is_none());
+    let want = Style {
+        colour: Some(Colour::Preset(4)),
+        symbol: Some(Symbol::Emoji("🚀".into())),
+        name: Some("Launch".into()),
+    };
+    let tab = &h.state().tabs[0];
+    let saved = h
+        .state()
+        .spaces
+        .lookup(tab.doc_key.as_deref(), &tab.title());
+    assert_eq!(saved, Some(want));
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Launch").is_some(),
+        "the file dot is named after the space"
+    );
+}
+
+#[test]
+fn a_file_opens_with_the_style_saved_for_it() {
+    use crate::spaces::{Style, Symbol};
+    use crate::theme::Colour;
+    let mut h = harness();
+    let saved = Style {
+        colour: Some(Colour::Custom([10, 120, 250])),
+        symbol: Some(Symbol::Icon("component".into())),
+        name: Some("Icons".into()),
+    };
+    h.state_mut().spaces.remember(None, "vector.fig", &saved);
+    h.state_mut().open(fixture("vector.fig"));
+    wait(&mut h, &mut Vec::new(), "the second file", |a| {
+        a.tabs.len() == 2
+    });
+    assert_eq!(h.state().tabs[1].style, saved);
+    assert_eq!(
+        h.state().tabs[0].style,
+        Style::default(),
+        "others keep theirs"
+    );
+}

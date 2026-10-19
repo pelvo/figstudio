@@ -77,8 +77,8 @@ pub struct Entry {
     pub icon: Icon,
     pub target: Target,
     pub shortcut: Option<KeyboardShortcut>,
-    /// The file's tint number, for file rows.
-    pub tint: Option<usize>,
+    /// The space's colour and symbol, for file rows.
+    pub space: Option<(crate::theme::Colour, Option<crate::spaces::Symbol>)>,
     score: u32,
 }
 
@@ -138,7 +138,7 @@ fn commands(items: &[menu::Item], group: &str, parent: Option<&str>, out: &mut V
             icon: Icon::Dot,
             target: Target::Action(action),
             shortcut: action.shortcut(),
-            tint: None,
+            space: None,
             score: 0,
         });
     }
@@ -149,18 +149,20 @@ fn commands(items: &[menu::Item], group: &str, parent: Option<&str>, out: &mut V
 pub fn entries(app: &App, query: &str) -> Vec<Entry> {
     let mut all = Vec::new();
     for (i, tab) in app.tabs.iter().enumerate() {
+        let renamed = tab.style.name.is_some();
+        let detail = match (i == app.active, renamed) {
+            (true, false) => "Open file · current".to_owned(),
+            (false, false) => "Open file".to_owned(),
+            (true, true) => format!("{} · current", tab.title()),
+            (false, true) => tab.title(),
+        };
         all.push(Entry {
-            title: tab.title(),
-            detail: if i == app.active {
-                "Open file · current"
-            } else {
-                "Open file"
-            }
-            .into(),
+            title: tab.space_name(),
+            detail,
             icon: Icon::Dot,
             target: Target::File(i),
             shortcut: None,
-            tint: Some(tab.tint),
+            space: Some((tab.colour(), tab.style.symbol.clone())),
             score: 0,
         });
     }
@@ -183,7 +185,7 @@ pub fn entries(app: &App, query: &str) -> Vec<Entry> {
                 icon: Icon::Page,
                 target: Target::Page(page),
                 shortcut: None,
-                tint: None,
+                space: None,
                 score: 0,
             });
         }
@@ -209,7 +211,7 @@ pub fn entries(app: &App, query: &str) -> Vec<Entry> {
                     icon: icons::for_kind(&node.kind),
                     target: Target::Layer(id),
                     shortcut: None,
-                    tint: None,
+                    space: None,
                     score: 0,
                 });
             }
@@ -441,15 +443,21 @@ impl App {
 fn paint_row(ui: &egui::Ui, rect: Rect, e: &Entry, selected: bool, p: &theme::Palette) {
     let painter = ui.painter();
     let tile = Rect::from_center_size(pos2(rect.left() + 22.0, rect.center().y), vec2(26.0, 26.0));
-    match e.tint {
-        Some(tint) => {
-            let tint = theme::tint(tint, p.dark);
+    match &e.space {
+        Some((colour, symbol)) => {
+            let tint = theme::space_tint(*colour, p.dark);
             painter.rect_filled(
                 tile,
                 CornerRadius::same(8),
                 tint.top.lerp_to_gamma(tint.accent, 0.25),
             );
-            painter.circle_filled(tile.center(), 5.0, tint.accent);
+            crate::chrome::paint_badge(
+                painter,
+                tile.shrink(3.0),
+                symbol.as_ref(),
+                tint.accent,
+                p.text,
+            );
         }
         None => {
             painter.rect_filled(tile, CornerRadius::same(8), p.well);
@@ -498,6 +506,7 @@ fn command_icon(e: &Entry) -> Icon {
         Target::Action(Action::ZoomFit | Action::ActualSize) => Icon::Fit,
         Target::Action(Action::ToggleLayers) => Icon::Sidebar,
         Target::Action(Action::ToggleProperties) => Icon::Inspector,
+        Target::Action(Action::EditSpace) => Icon::Ellipse,
         Target::Action(Action::SelectTool(crate::canvas::Tool::Hand)) => Icon::Hand,
         _ => Icon::More,
     }

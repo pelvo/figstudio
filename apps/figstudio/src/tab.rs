@@ -67,8 +67,10 @@ pub struct Tab {
     pub pending_copy: Option<crate::copy::Item>,
     /// The drag-drawn region (`marquee.rs`).
     pub marquee: crate::marquee::Marquee,
-    /// The window gradient while this file is active (`theme::tint`), like an Arc space.
+    /// The preset tint picked for this file (`theme::pick_tint`), unless `style` sets one.
     pub tint: usize,
+    /// The space's colour, symbol and name chosen by the user (`spaces.rs`).
+    pub style: crate::spaces::Style,
 }
 
 impl Tab {
@@ -115,7 +117,24 @@ impl Tab {
             pending_copy: None,
             marquee: Default::default(),
             tint: crate::theme::HOME_TINT,
+            style: Default::default(),
         }
+    }
+
+    /// The space's colour: the user's, else the tint picked for the file.
+    pub fn colour(&self) -> crate::theme::Colour {
+        self.style
+            .colour
+            .unwrap_or(crate::theme::Colour::Preset(self.tint))
+    }
+
+    /// The space's name: the user's, else the file name.
+    pub fn space_name(&self) -> String {
+        self.style
+            .name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| self.title())
     }
 
     pub fn with_doc_key(mut self, doc_key: Option<String>) -> Self {

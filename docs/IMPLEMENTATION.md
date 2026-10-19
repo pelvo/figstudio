@@ -114,6 +114,9 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   anim.rs                springs and colour fades in egui memory; Reduce motion
   icons.rs               line icons painted on a 16-unit grid; the icon button
   vibrancy.rs            macOS only: the blur view behind the transparent window
+  spaces.rs              a space's colour / emoji or icon / name, saved per file on this
+                         computer (config folder JSON, localStorage in the browser)
+  space_editor.rs        the Edit space window
   canvas.rs              canvas input, render requests, frame re-projection, outlines
   tab.rs                 per-document state (Tab, with its tint) and the page<->screen mapping
   panels.rs              Pages list, Layers tree, Properties card
@@ -344,6 +347,15 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   (`ViewportCommand::StartDrag`). The window is transparent with a blur behind it
   (`vibrancy.rs`, Sidebar material, following View → Appearance); the gradient is painted at
   `theme::TRANSLUCENT_TINT` over it, opaque everywhere else.
+- **Spaces.** Each open file is a space: `Tab::tint` (picked from the name) unless
+  `Tab::style` (`spaces::Style`) sets a preset or custom colour, an emoji or icon badge and a
+  display name. File → Edit space…, the sidebar's space header and a file dot's menu open the
+  editor; changes show at once and are saved when it closes (`spaces::Store`, keyed by
+  `Tab::doc_key`, falling back to the file name so a new copy of the file keeps its look).
+  The store is `<config dir>/figstudio/spaces.json` on the desktop and `localStorage` in the
+  browser; tests use an in-memory store and never touch it. It holds file names, so it stays
+  local: nothing (doctor included) prints or uploads it. Custom colours go through
+  `theme::space_tint`, which mixes in only as much colour as keeps text readable.
 - The canvas card has round corners: the page background is a rounded rect and tiles that
   reach into a corner are drawn as a polygon cut to it (`tiles_view::rounded_clip`).
 - View jumps (fit, zoom buttons and keys, the Zoom tool, double-click) ease over 0.28 s:
@@ -578,6 +590,10 @@ Debug spans (`RUST_LOG=debug`): `open`/`from_bytes` (bytes, node/page/image coun
   puts it in the window's frame view instead, below the content view; the window is
   transparent and egui clears to transparent, so the gradient's alpha decides how much blur
   shows. The one `unsafe` block turns eframe's raw `NSView` pointer into a reference.
+- **`Fonts::has_glyph` says no for egui's own emoji.** It misses the bundled NotoEmoji, which
+  does draw them. `spaces` tests compare the glyph's atlas spot with the box drawn for a
+  missing character instead. Apple's colour emoji are not drawn at all (egui draws outlines),
+  so the editor offers emoji from that font.
 - **`usize::MAX + 1` wraps to 0.** Limits in `read_limited` use saturating arithmetic. A limit
   of `usize::MAX` once made `take()` read nothing, with no error.
 

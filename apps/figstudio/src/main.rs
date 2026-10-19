@@ -56,6 +56,8 @@ mod recordings;
 mod region_copy;
 mod region_png;
 mod source;
+mod space_editor;
+mod spaces;
 mod state;
 mod tab;
 mod theme;
@@ -224,6 +226,10 @@ struct App {
     card_rect: Option<egui::Rect>,
     /// The hidden sidebar is peeking out over the canvas (`chrome.rs`).
     peek: bool,
+    /// Saved colours, symbols and names of spaces (`spaces.rs`).
+    spaces: spaces::Store,
+    /// The space being edited (`space_editor.rs`).
+    space_editing: Option<space_editor::SpaceEditor>,
     /// macOS: the blur behind the transparent window; `None` keeps the gradient opaque.
     #[cfg(target_os = "macos")]
     vibrancy: Option<vibrancy::Vibrancy>,
@@ -293,6 +299,13 @@ impl App {
             shown_file: None,
             card_rect: None,
             peek: false,
+            // Tests never read or write the user's saved styles.
+            spaces: if cfg!(test) {
+                spaces::Store::memory()
+            } else {
+                spaces::Store::load()
+            },
+            space_editing: None,
             #[cfg(target_os = "macos")]
             vibrancy: None,
             #[cfg(target_arch = "wasm32")]
@@ -491,6 +504,10 @@ impl App {
                     web::bind_upload(&path, id);
                     let mut tab = Tab::new(id, path, doc, source, elapsed).with_doc_key(doc_key);
                     tab.tint = theme::pick_tint(&tab.title(), self.tabs.iter().map(|t| t.tint));
+                    tab.style = self
+                        .spaces
+                        .lookup(tab.doc_key.as_deref(), &tab.title())
+                        .unwrap_or_default();
                     self.tabs.push(tab);
                     self.active = self.tabs.len() - 1;
                 }
@@ -910,6 +927,7 @@ impl App {
             self.toast(&ctx, text, error);
         }
         self.peek_sidebar(&ctx);
+        self.space_editor(&ctx);
         self.drop_overlay(&ctx, hovering_files);
         self.command_bar(&ctx);
         self.toasts(&ctx);

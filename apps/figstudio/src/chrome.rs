@@ -14,6 +14,7 @@ use crate::anim::{self, Spring};
 use crate::canvas::{self, Tool};
 use crate::icons::{self, Icon};
 use crate::menu::Action;
+use crate::spaces::{self, Symbol};
 use crate::theme::{self, CARD_RADIUS, GAP, Palette, Tint};
 use crate::{APP_NAME, App, panels};
 
@@ -134,6 +135,43 @@ pub(crate) fn rounded_gradient(rect: Rect, radius: f32, colours: [Color32; 4]) -
         mesh.add_triangle(0, i, if i == n { 1 } else { i + 1 });
     }
     mesh
+}
+
+/// Paints a space's badge in the square `rect`: its emoji or icon on a soft disc of its
+/// `accent`, or a plain accent dot.
+pub(crate) fn paint_badge(
+    painter: &egui::Painter,
+    rect: Rect,
+    symbol: Option<&Symbol>,
+    accent: Color32,
+    text: Color32,
+) {
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) / 2.0;
+    let icon = match symbol {
+        None => {
+            painter.circle_filled(c, r * 0.55, accent);
+            return;
+        }
+        Some(Symbol::Icon(name)) => spaces::icon(name),
+        Some(Symbol::Emoji(_)) => None,
+    };
+    painter.circle_filled(c, r, accent.gamma_multiply(0.24));
+    match (symbol, icon) {
+        (_, Some(icon)) => icons::paint(painter, icon, rect.shrink(r * 0.45), accent),
+        (Some(Symbol::Emoji(e)), None) => {
+            painter.text(
+                c,
+                Align2::CENTER_CENTER,
+                e,
+                egui::FontId::proportional(r * 1.15),
+                text,
+            );
+        }
+        _ => {
+            painter.circle_filled(c, r * 0.55, accent);
+        }
+    }
 }
 
 /// A small section title in the sidebar ("Pages", "Layers") with an optional count.
@@ -286,11 +324,11 @@ impl App {
     /// The gradient of the active file, crossfading when the file changes.
     pub(crate) fn tint_now(&self, ctx: &egui::Context) -> Tint {
         let dark = theme::palette(ctx).dark;
-        let index = self
+        let colour = self
             .tabs
             .get(self.active)
-            .map_or(theme::HOME_TINT, |t| t.tint);
-        let target = theme::tint(index, dark);
+            .map_or(theme::Colour::Preset(theme::HOME_TINT), |t| t.colour());
+        let target = theme::space_tint(colour, dark);
         let id = Id::new("window-tint");
         let fade = |n: &str, c: Color32| anim::fade(ctx, id.with(n), c, 0.45);
         Tint {
@@ -348,7 +386,7 @@ impl App {
                     .node(tab.page)
                     .map(|n| n.name.clone())
                     .unwrap_or_default();
-                let title = format!("{}  ·  {page}", tab.title());
+                let title = format!("{}  ·  {page}", tab.space_name());
                 let width = rect.width() - 24.0;
                 let g = elided(ui, &title, theme::semibold(12.5), p.text_dim, width);
                 let at = pos2(
@@ -432,7 +470,9 @@ impl App {
         self.window_row(ui, true);
         ui.add_space(6.0);
         self.address_field(ui);
-        ui.add_space(10.0);
+        ui.add_space(8.0);
+        self.space_header(ui);
+        ui.add_space(4.0);
         let max = ui.max_rect();
         let body = Rect::from_min_max(ui.cursor().min, pos2(max.right(), max.bottom() - FOOTER));
         let ctx = ui.ctx().clone();
@@ -500,6 +540,51 @@ impl App {
         }
     }
 
+    /// The active space's badge and name; a click opens the space editor.
+    fn space_header(&mut self, ui: &mut Ui) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let p = theme::of(ui);
+        let (rect, response) =
+            ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Edit space"));
+        let (hover, press) = icons::feedback(ui, &response);
+        let r = rect.shrink(press);
+        icons::row_fill(ui, r, hover, false);
+        let tint = self.tint_now(ui.ctx());
+        let badge = Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), vec2(20.0, 20.0));
+        paint_badge(
+            ui.painter(),
+            badge,
+            tab.style.symbol.as_ref(),
+            tint.accent,
+            p.text,
+        );
+        let name = tab.space_name();
+        let width = r.width() - 40.0 - 28.0;
+        let g = elided(ui, &name, theme::semibold(13.5), p.text, width);
+        ui.painter().galley(
+            pos2(r.left() + 34.0, r.center().y - g.size().y / 2.0),
+            g,
+            p.text,
+        );
+        if hover > 0.0 {
+            let more =
+                Rect::from_center_size(pos2(r.right() - 16.0, r.center().y), vec2(14.0, 14.0));
+            icons::paint(
+                ui.painter(),
+                Icon::More,
+                more,
+                p.text_dim.gamma_multiply(hover),
+            );
+        }
+        let response = response.on_hover_text("Name, icon and colour of this space");
+        if response.clicked() {
+            self.apply(Action::EditSpace, ui.ctx());
+        }
+    }
+
     fn sidebar_body(&mut self, ui: &mut Ui) {
         let p = theme::of(ui);
         let Some(tab) = self.tabs.get_mut(self.active) else {
@@ -536,11 +621,11 @@ impl App {
         ui.spacing_mut().item_spacing.x = 0.0;
         let free = ui.available_width() - plus - count as f32 * dot;
         ui.add_space((free / 2.0).max(4.0));
-        let (mut pick, mut close) = (None, None);
+        let (mut pick, mut close, mut edit) = (None, None, None);
         for (i, tab) in self.tabs.iter().enumerate() {
             let active = i == self.active;
             let (rect, response) = ui.allocate_exact_size(vec2(dot, dot), Sense::click());
-            let title = tab.title();
+            let title = tab.space_name();
             response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, active, &title));
             let (hover, press) = icons::feedback(ui, &response);
             let grow = anim::spring(
@@ -550,16 +635,25 @@ impl App {
                 Spring::BOUNCY,
             );
             let scale = grow + hover * 0.12 - press * 0.15;
-            let tint = theme::tint(tab.tint, p.dark);
+            let tint = theme::space_tint(tab.colour(), p.dark);
             let c = rect.center();
             let painter = ui.painter();
-            painter.circle_filled(c, 6.5 * scale, tint.accent);
+            let badge = Rect::from_center_size(c, vec2(22.0, 22.0) * scale);
+            paint_badge(
+                painter,
+                badge,
+                tab.style.symbol.as_ref(),
+                tint.accent,
+                p.text,
+            );
             if active {
-                painter.circle_stroke(
-                    c,
-                    6.5 * scale + 3.0,
-                    Stroke::new(1.5, tint.accent.gamma_multiply(0.55)),
-                );
+                let ring = if tab.style.symbol.is_some() {
+                    11.0
+                } else {
+                    6.5
+                } * scale
+                    + 2.5;
+                painter.circle_stroke(c, ring, Stroke::new(1.5, tint.accent.gamma_multiply(0.55)));
             }
             let response = response.on_hover_text(&title);
             if response.clicked() {
@@ -569,6 +663,10 @@ impl App {
                 close = Some(i);
             }
             response.context_menu(|ui| {
+                if ui.button("Edit space…").clicked() {
+                    edit = Some(i);
+                    ui.close();
+                }
                 if ui.button("Close").clicked() {
                     close = Some(i);
                     ui.close();
@@ -586,6 +684,10 @@ impl App {
         });
         if let Some(i) = pick {
             self.active = i;
+        }
+        if let Some(i) = edit {
+            self.active = i;
+            self.apply(Action::EditSpace, &ctx);
         }
         if let Some(i) = close {
             self.close(i);
@@ -924,17 +1026,14 @@ impl App {
         let painter = ui.painter();
         painter
             .add(card_shadow(&p, (8.0 + hover * 10.0) as u8).as_shape(r, CornerRadius::same(12)));
-        painter.rect_filled(
-            r,
-            CornerRadius::same(12),
-            tint.accent.lerp_to_gamma(Color32::WHITE, hover * 0.1),
-        );
+        let fill = tint.accent.lerp_to_gamma(Color32::WHITE, hover * 0.1);
+        painter.rect_filled(r, CornerRadius::same(12), fill);
         painter.text(
             r.center(),
             Align2::CENTER_CENTER,
             "Open file…",
             theme::semibold(14.0),
-            Color32::WHITE,
+            theme::on_accent(fill),
         );
         let shortcut = ctx.format_shortcut(&egui::KeyboardShortcut::new(
             egui::Modifiers::COMMAND,
