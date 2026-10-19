@@ -27,7 +27,7 @@ picking up work. Read the three documents below before changing code.
    Green tests do not mean the render is right.
 5. **Never panic on a bad file.** Malformed input returns `FigError`; the app shows a toast.
 6. **Unsupported means counted, not hidden.** Anything not drawn exactly increments a field
-   in `Stats` so the app status bar and the CLI show it.
+   in `Stats` so the app (warning chip and status pill) and the CLI show it.
 7. **Keep the document writable.** Do not drop fields when decoding; `crates/fig` must keep
    writing the fixtures back byte for byte (`encoded_message_matches_the_original_bytes`).
 8. **Privacy.** `figstudio-cli doctor` output is pasted publicly by users with private

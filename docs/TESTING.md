@@ -233,7 +233,7 @@ GUI_SMOKE_CLICK="900 560" scripts/gui-smoke.sh /tmp/gui tests/fixtures/structure
 Runs the app on a virtual screen (Xvfb, 1400×880), clicks, zooms with Ctrl+wheel, presses
 Shift+1, and saves `1-open.png 2-select.png 3-zoom.png 4-fit.png` plus `profile.log`.
 Look at every screenshot: file loaded, selection outline and Properties filled after the
-click, zoom percentage changed in the status bar, fit restored. `GUI_SMOKE_SECONDS` and
+click, zoom percentage changed in the tool pill, fit restored. `GUI_SMOKE_SECONDS` and
 `GUI_SMOKE_LOAD_WAIT` adjust timing for big files.
 
 Manual checks only a real desktop can do (list them as unverified unless you did them):
@@ -242,14 +242,14 @@ Retina scaling, trackpad pinch, macOS menu and shortcuts (Cmd).
 
 ## 7b. Headless UI tests (egui_kittest)
 
-`apps/figstudio/src/ui_tests.rs` (+ `ui_copy_tests.rs`, `ui_mcp_tests.rs`) run the real `App`
+`apps/figstudio/src/ui_tests.rs` (+ `ui_copy_tests.rs`, `ui_mcp_tests.rs`, `ui_chrome_tests.rs`) run the real `App`
 on `tests/fixtures/structure.fig` inside `cargo test`: no display, X server, GPU or xdotool, on
 macOS, Linux and CI. They use `egui_kittest` (dev-dependency, `eframe` feature only; no wgpu,
 no snapshot images). `App::new` takes `eframe::CreationContext`, which kittest builds with no
 wgpu state, so tiles render on the CPU path.
 
 ```sh
-cargo test -p figstudio ui_tests          # 8 tests, about 1 s
+cargo test -p figstudio ui_tests          # 14 tests, about 1 s
 ```
 
 How to write one: `harness()` returns a `Harness<App>` with the file loaded and fitted;
@@ -258,7 +258,9 @@ send pointer events; `step` also collects what the frame sent to the clipboard (
 `OutputCommand::CopyText` / `CopyImage`), which is how tests read "copied" text. Find widgets
 with `h.get_by_label("Copy link")` (plain `ui.label`s are matched by their accesskit value, see
 `shown_addr`). Menus open a frame or two after the click: use `wait_for`, not a fixed step count.
-Tests that start the MCP server use whatever port `bind_first` gives and read it from the status bar.
+Tests that start the MCP server use whatever port `bind_first` gives and read it from the status pill.
+Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
+`get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
 
 Cannot be covered here: the real OS clipboard (paste into an editor or Preview), a real
 window manager, native file dialogs, GPU tiles, HiDPI and trackpad gestures.
@@ -290,7 +292,7 @@ regression over 20% needs a reason in the commit message. Do not commit stress f
 
 `scripts/web-build.sh --serve` serves `web/dist` on http://127.0.0.1:8765 with the headers
 threads need. In a browser: the console shows no errors, `crossOriginIsolated` is true, drop
-a fixture on the page, and the status bar shows layers drawn and the render time. Compare
+a fixture on the page, and the status pill shows layers drawn and the render time. Compare
 `?threads=1` with the default. Headless Chromium works (`--use-angle=swiftshader`); drop a file
 by dispatching `dragenter`/`dragover`/`drop` with a `DataTransfer` on the canvas.
 

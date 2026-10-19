@@ -1,8 +1,11 @@
 //! figstudio — desktop and browser app for Figma `.fig` local copies.
 
+mod anim;
 mod canvas;
+mod chrome;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod cjk;
+mod command;
 mod copy;
 mod copy_menu;
 mod gpu;
@@ -16,6 +19,7 @@ mod gpu_scenes;
 mod gpu_tiles;
 #[cfg(target_arch = "wasm32")]
 mod gpu_tiles_web;
+mod icons;
 mod labels;
 mod marquee;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -68,7 +72,7 @@ mod worker;
 use std::path::PathBuf;
 
 use canvas::Tool;
-use egui::{Key, KeyboardShortcut, Modifiers, RichText, Sense, vec2};
+use egui::{Key, KeyboardShortcut, Modifiers};
 use state::{OpenAction, Pending, Poll, classify, open_action};
 use tab::Tab;
 use worker::{Loaded, Workers};
@@ -89,6 +93,15 @@ fn main() -> std::process::ExitCode {
             .with_drag_and_drop(true),
         ..Default::default()
     };
+    // Arc-style frameless window: the traffic lights float over the sidebar.
+    #[cfg(target_os = "macos")]
+    {
+        options.viewport = options
+            .viewport
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false);
+    }
     options.wgpu_options.wgpu_setup = gpu::setup();
     let run = eframe::run_native(
         APP_NAME,
@@ -160,6 +173,8 @@ fn main() {}
 struct Toast {
     text: String,
     error: bool,
+    /// When it appeared and when it goes (egui time, seconds).
+    born: f64,
     until: f64,
 }
 
@@ -189,6 +204,18 @@ struct App {
     cursor: Option<egui::Pos2>,
     /// `FIGSTUDIO_PROFILE=1` prints per-frame UI time and render times to stderr.
     profile: bool,
+    /// macOS: no title bar; the traffic lights sit over the sidebar (`chrome.rs`).
+    frameless: bool,
+    /// ⌘K: search commands, files, pages and layers (`command.rs`).
+    command: command::CommandBar,
+    appearance: menu::Appearance,
+    reduce_motion: bool,
+    /// The file the sidebar showed last frame, to slide it when the file changes.
+    shown_file: Option<u64>,
+    /// The canvas card from the last frame (toasts and the drop overlay sit on it).
+    card_rect: Option<egui::Rect>,
+    /// The hidden sidebar is peeking out over the canvas (`chrome.rs`).
+    peek: bool,
     #[cfg(target_arch = "wasm32")]
     web: web::Inbox,
     /// The window size cap last sent (`gpu::cap_window`).
@@ -248,6 +275,13 @@ impl App {
             native_menu: None,
             cursor: None,
             profile: std::env::var_os("FIGSTUDIO_PROFILE").is_some(),
+            frameless: cfg!(target_os = "macos"),
+            command: Default::default(),
+            appearance: Default::default(),
+            reduce_motion: anim::reduced(&cc.egui_ctx),
+            shown_file: None,
+            card_rect: None,
+            peek: false,
             #[cfg(target_arch = "wasm32")]
             web: web::Inbox::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -306,6 +340,7 @@ impl App {
         self.toasts.push(Toast {
             text: text.into(),
             error,
+            born: now,
             until: now + if error { 8.0 } else { 3.0 },
         });
     }
@@ -429,8 +464,9 @@ impl App {
                     self.next_id += 1;
                     #[cfg(target_arch = "wasm32")]
                     web::bind_upload(&path, id);
-                    self.tabs
-                        .push(Tab::new(id, path, doc, source, elapsed).with_doc_key(doc_key));
+                    let mut tab = Tab::new(id, path, doc, source, elapsed).with_doc_key(doc_key);
+                    tab.tint = theme::pick_tint(&tab.title(), self.tabs.iter().map(|t| t.tint));
+                    self.tabs.push(tab);
                     self.active = self.tabs.len() - 1;
                 }
                 Loaded::Err { path, message } => {
@@ -580,6 +616,27 @@ impl App {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let cmd = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
+        for action in [menu::Action::CommandBar, menu::Action::ToggleLayers] {
+            if !self.native_owns(action)
+                && let Some(shortcut) = action.shortcut()
+                && ctx.input_mut(|i| i.consume_shortcut(&shortcut))
+            {
+                self.apply(action, ctx);
+            }
+        }
+        // Ctrl+Tab / Ctrl+Shift+Tab: the next or previous open file. The Shift one first:
+        // a plain Ctrl+Tab pattern also matches with Shift held.
+        let (previous, next) = ctx.input_mut(|i| {
+            (
+                i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab),
+                i.consume_key(Modifiers::CTRL, Key::Tab),
+            )
+        });
+        let n = self.tabs.len();
+        if n > 0 && (next || previous) {
+            let step = if previous { n - 1 } else { 1 };
+            self.active = (self.active + step) % n;
+        }
         if !self.native_owns(menu::Action::Open)
             && ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::O)))
         {
@@ -601,7 +658,7 @@ impl App {
             self.apply(menu::Action::ExportSelection(2.0), ctx);
         }
         let typing = ctx.egui_wants_keyboard_input();
-        if typing {
+        if typing || self.command.is_open() {
             return;
         }
         let (v, h, z, esc, one, zero, plus, minus, shift) = ctx.input(|i| {
@@ -632,85 +689,6 @@ impl App {
             if pressed {
                 self.apply(action, ctx);
             }
-        }
-    }
-
-    fn tool_strip(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
-        ui.vertical_centered(|ui| {
-            for (tool, glyph, tip) in [
-                (Tool::Select, "⬉", "Select (V)"),
-                (Tool::Hand, "✋", "Hand (H)"),
-                (Tool::Zoom, "🔍", "Zoom (Z), Alt to zoom out"),
-            ] {
-                let selected = self.tool == tool;
-                let b = egui::Button::new(RichText::new(glyph).size(16.0))
-                    .selected(selected)
-                    .min_size(vec2(30.0, 30.0))
-                    .frame_when_inactive(false);
-                if ui.add(b).on_hover_text(tip).clicked() {
-                    self.tool = tool;
-                }
-            }
-        });
-    }
-
-    fn tab_strip(&mut self, ui: &mut egui::Ui) {
-        let mut close = None;
-        egui::ScrollArea::horizontal()
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 1.0;
-                    for (i, tab) in self.tabs.iter().enumerate() {
-                        let active = i == self.active;
-                        let fill = if active {
-                            theme::CHROME
-                        } else {
-                            theme::TAB_STRIP
-                        };
-                        egui::Frame::new()
-                            .fill(fill)
-                            .inner_margin(egui::Margin::symmetric(10, 5))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    let title = RichText::new(tab.title()).color(if active {
-                                        theme::TEXT
-                                    } else {
-                                        theme::TEXT_DIM
-                                    });
-                                    if ui
-                                        .add(egui::Label::new(title).sense(Sense::click()))
-                                        .clicked()
-                                    {
-                                        self.active = i;
-                                    }
-                                    if ui
-                                        .add(
-                                            egui::Button::new(RichText::new("×").size(14.0))
-                                                .frame_when_inactive(false),
-                                        )
-                                        .on_hover_text("Close")
-                                        .clicked()
-                                    {
-                                        close = Some(i);
-                                    }
-                                });
-                            });
-                    }
-                    for p in self.loading.iter() {
-                        let name = p
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        ui.add_space(8.0);
-                        ui.spinner();
-                        ui.label(RichText::new(name).color(theme::TEXT_FAINT));
-                    }
-                });
-            });
-        if let Some(i) = close {
-            self.close(i);
         }
     }
 
@@ -749,113 +727,10 @@ impl App {
             s.map_or(0, |s| s.gpu_fallback_tiles),
         )
     }
-
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            self.mcp.status(ui);
-            let Some(tab) = self.tabs.get(self.active) else {
-                ui.label(RichText::new("No file open").color(theme::TEXT_FAINT));
-                return;
-            };
-            ui.label(format!("{:.0}%", tab.view.zoom * 100.0));
-            ui.separator();
-            let cpu_tiles = match tab.stats.gpu_fallback_tiles {
-                0 => String::new(),
-                n => format!(" · {n} tiles on the CPU"),
-            };
-            ui.label(RichText::new(format!("{}{cpu_tiles}", self.renderer)).color(theme::TEXT_DIM))
-                .on_hover_text("What draws the canvas (FIGSTUDIO_RENDERER=cpu|gpu). Tiles on the CPU use something the GPU path cannot draw yet.");
-            ui.separator();
-            if let Some(p) = self.cursor {
-                ui.label(RichText::new(format!("{:.0}, {:.0}", p.x, p.y)).color(theme::TEXT_DIM));
-                ui.separator();
-            }
-            ui.label(RichText::new(format!("{} layers drawn · {:.0} ms", tab.stats.nodes, tab.render_time.as_secs_f64() * 1000.0)).color(theme::TEXT_DIM));
-            if tab.stats.images_loading > 0 {
-                ui.separator();
-                ui.label(RichText::new(format!("loading {} images…", tab.stats.images_loading)).color(theme::TEXT_DIM));
-            }
-            let notes = tab.stats.to_string();
-            let gaps: Vec<&str> = notes.split(", ").filter(|s| s.contains("skipped") || s.contains("missing") || s.contains("approximated")).collect();
-            if !gaps.is_empty() {
-                ui.separator();
-                ui.label(RichText::new(format!("⚠ {}", gaps.join(", "))).color(theme::WARNING))
-                    .on_hover_text("Parts of this page use features figstudio does not draw yet, so it may differ from Figma.");
-            }
-        });
-    }
-
-    fn toasts(&self, ctx: &egui::Context) {
-        if self.toasts.is_empty() {
-            return;
-        }
-        egui::Area::new("toasts".into())
-            .anchor(egui::Align2::RIGHT_BOTTOM, vec2(-16.0, -36.0))
-            .show(ctx, |ui| {
-                for t in &self.toasts {
-                    let color = if t.error { theme::WARNING } else { theme::TEXT };
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.set_max_width(420.0);
-                        ui.label(RichText::new(&t.text).color(color));
-                    });
-                }
-            });
-    }
-}
-
-/// Shown when no file is open. Returns true when "Open file…" was clicked.
-fn empty_state(ui: &mut egui::Ui) -> bool {
-    let mut clicked = false;
-    ui.vertical_centered(|ui| {
-        ui.add_space(ui.available_height() * 0.32);
-        ui.label(RichText::new(APP_NAME).size(28.0).color(theme::TEXT_DIM));
-        ui.add_space(8.0);
-        ui.label(RichText::new("Drop a .fig file here, or").color(theme::TEXT_FAINT));
-        ui.add_space(6.0);
-        clicked = ui.button(RichText::new("Open file…").size(15.0)).clicked();
-        ui.add_space(10.0);
-        ui.label(
-            RichText::new("Figma → File → Save local copy… gives you a .fig")
-                .color(theme::TEXT_FAINT)
-                .small(),
-        );
-    });
-    clicked
 }
 
 /// Shift+digit. The logical key depends on the keyboard layout (Shift+1 is `!` on US layouts),
 /// so match the physical key too.
-/// Space kept for each side of the Pages/Layers split, in points.
-const MIN_PAGES: f32 = 60.0;
-const MIN_LAYERS: f32 = 120.0;
-
-/// Height of the page list for `share` of `avail`, keeping both sides usable.
-fn split_height(avail: f32, share: f32) -> f32 {
-    let max = (avail - MIN_LAYERS).max(MIN_PAGES);
-    (avail * share).clamp(MIN_PAGES, max)
-}
-
-/// The draggable line between Pages and Layers. Dragging moves the split.
-fn split_handle(ui: &mut egui::Ui, share: &mut f32) {
-    let total = ui.max_rect().height().max(1.0);
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), Sense::drag());
-    let response = response.on_hover_cursor(egui::CursorIcon::ResizeVertical);
-    if response.dragged() {
-        *share = (*share + response.drag_delta().y / total).clamp(0.05, 0.95);
-    }
-    let color = if response.hovered() || response.dragged() {
-        theme::ACCENT
-    } else {
-        theme::SEPARATOR
-    };
-    ui.painter().hline(
-        rect.x_range(),
-        rect.center().y,
-        egui::Stroke::new(1.0, color),
-    );
-}
-
 fn shifted_digit(i: &egui::InputState, digit: Key, shifted: Option<Key>) -> bool {
     i.events.iter().any(|e| match e {
         egui::Event::Key {
@@ -915,142 +790,88 @@ impl App {
         let space_held = ctx.input(|i| i.key_down(Key::Space)) && !ctx.egui_wants_keyboard_input();
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
 
-        let bar = |fill| {
-            egui::Frame::new()
-                .fill(fill)
-                .inner_margin(egui::Margin::symmetric(6, 2))
-        };
-        if self.show_drawn_menu() {
-            egui::Panel::top("menu")
-                .frame(bar(theme::CHROME))
-                .show(ui, |ui| self.menu_bar(ui));
-        }
-        egui::Panel::top("tabs")
-            .frame(egui::Frame::new().fill(theme::TAB_STRIP))
-            .exact_size(28.0)
-            .show(ui, |ui| self.tab_strip(ui));
-        egui::Panel::bottom("status")
-            .frame(bar(theme::CHROME))
-            .exact_size(24.0)
-            .show(ui, |ui| self.status_bar(ui));
-        egui::Panel::left("tools")
-            .frame(egui::Frame::new().fill(theme::CHROME))
-            .exact_size(42.0)
-            .show(ui, |ui| self.tool_strip(ui));
+        self.note_active_file(&ctx);
+        // The menu's check mark follows the real setting (a host may turn motion off too).
+        self.reduce_motion = anim::reduced(&ctx);
+        let p = theme::palette(&ctx);
+        chrome::paint_gradient(
+            &ctx.layer_painter(egui::LayerId::background()),
+            ctx.content_rect(),
+            self.tint_now(&ctx),
+        );
+
+        // Hidden sidebar: a thin strip keeps the window controls and the way back.
+        let mut strip = !self.show_left;
+        egui::Panel::top("title-strip")
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                left: 8,
+                right: 8,
+                top: 4,
+                bottom: 0,
+            }))
+            .exact_size(36.0)
+            .resizable(false)
+            .show_separator_line(false)
+            .show_collapsible(ui, &mut strip, |ui| self.title_strip(ui));
+        let mut show_left = self.show_left;
+        egui::Panel::left("sidebar")
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                left: 10,
+                right: 2,
+                top: 6,
+                bottom: 4,
+            }))
+            .resizable(true)
+            // The window's left edge peeks the hidden sidebar instead (`chrome::peek_sidebar`).
+            .drag_to_open(false)
+            .show_separator_line(false)
+            .default_size(256.0)
+            .size_range(200.0..=440.0)
+            .show_collapsible(ui, &mut show_left, |ui| self.sidebar(ui));
+        // The sidebar's own button may have hidden it this frame; a drag past its edge too.
+        self.show_left = self.show_left && show_left;
 
         let has_tab = !self.tabs.is_empty();
-        let dock = egui::Frame::new()
-            .fill(theme::DOCK)
-            .inner_margin(egui::Margin::same(8))
-            .stroke(egui::Stroke::new(1.0, theme::SEPARATOR));
-        if has_tab && self.show_left {
-            let filter = &mut self.layer_filter;
-            let pages_share = &mut self.pages_share;
-            let tab = &mut self.tabs[self.active];
-            egui::Panel::left("layers")
-                .frame(dock)
-                .resizable(true)
-                .default_size(250.0)
-                .size_range(180.0..=520.0)
-                .show(ui, |ui| {
-                    let pages_height = split_height(ui.available_height(), *pages_share);
-                    ui.label(
-                        RichText::new("PAGES")
-                            .color(theme::TEXT_DIM)
-                            .small()
-                            .strong(),
-                    );
-                    egui::ScrollArea::vertical()
-                        .id_salt("pages")
-                        .auto_shrink([false, false])
-                        .max_height(pages_height)
-                        .show(ui, |ui| panels::pages(ui, tab));
-                    split_handle(ui, pages_share);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("LAYERS")
-                                .color(theme::TEXT_DIM)
-                                .small()
-                                .strong(),
-                        );
-                        ui.add(
-                            egui::TextEdit::singleline(filter)
-                                .hint_text("Search")
-                                .desired_width(f32::INFINITY),
-                        );
-                    });
-                    ui.add_space(2.0);
-                    panels::layers(ui, tab, filter);
-                });
-        }
-        if has_tab && self.show_right {
-            let tab = &mut self.tabs[self.active];
-            egui::Panel::right("properties")
-                .frame(dock)
-                .resizable(true)
-                .default_size(260.0)
-                .size_range(200.0..=480.0)
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new("PROPERTIES")
-                            .color(theme::TEXT_DIM)
-                            .small()
-                            .strong(),
-                    );
-                    ui.add_space(2.0);
+        let mut show_right = has_tab && self.show_right;
+        let card = egui::Frame::new()
+            .fill(p.card)
+            .corner_radius(egui::CornerRadius::same(theme::CARD_RADIUS))
+            .stroke(egui::Stroke::new(1.0, p.card_stroke))
+            .shadow(chrome::card_shadow(&p, 16))
+            .inner_margin(egui::Margin::same(14))
+            .outer_margin(egui::Margin {
+                left: 0,
+                right: theme::GAP as i8,
+                top: theme::GAP as i8,
+                bottom: theme::GAP as i8,
+            });
+        egui::Panel::right("properties")
+            .frame(card)
+            .resizable(true)
+            .show_separator_line(false)
+            .default_size(276.0)
+            .size_range(220.0..=480.0)
+            .show_collapsible(ui, &mut show_right, |ui| {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
                     tab.pending_copy = panels::properties(ui, tab).or(tab.pending_copy.take());
-                });
+                }
+            });
+        if has_tab {
+            self.show_right = show_right;
         }
 
-        let worker_unavailable = self.render_worker_lost;
-        let tool = self.tool;
         let mut cursor = None;
-        let mut open_clicked = false;
         egui::CentralPanel::no_frame().show(ui, |ui| {
-            ui.painter().rect_filled(ui.max_rect(), 0.0, theme::CANVAS);
-            match self.tabs.get_mut(self.active) {
-                Some(_tab) if worker_unavailable => {
-                    ui.centered_and_justified(|ui| {
-                        ui.label(
-                            RichText::new("Rendering is unavailable; restart the app.")
-                                .color(theme::WARNING),
-                        );
-                    });
-                }
-                Some(tab) => {
-                    cursor = canvas::show(
-                        ui,
-                        tab,
-                        &mut self.workers,
-                        &mut self.tiles,
-                        tool,
-                        space_held,
-                    )
-                }
-                None => open_clicked = empty_state(ui),
-            }
+            cursor = self.canvas_card(ui, space_held);
         });
         self.cursor = cursor;
         let tab = self.tabs.get_mut(self.active);
         for (text, error) in region_png::drive(&ctx, &self.workers, &self.png, tab) {
             self.toast(&ctx, text, error);
         }
-        if open_clicked {
-            self.open_dialog(&ctx);
-        }
-        if hovering_files {
-            let rect = ctx.content_rect();
-            let painter =
-                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, "drop".into()));
-            painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(140));
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "Drop to open",
-                egui::FontId::proportional(24.0),
-                theme::TEXT,
-            );
-        }
+        self.peek_sidebar(&ctx);
+        self.drop_overlay(&ctx, hovering_files);
+        self.command_bar(&ctx);
         self.toasts(&ctx);
         self.mcp.sync(&ctx, &self.tabs, self.active);
         if let Some(tab) = self.tabs.get(self.active) {
@@ -1070,7 +891,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{MIN_LAYERS, MIN_PAGES, split_height};
+    use crate::chrome::{MIN_LAYERS, MIN_PAGES, split_height};
 
     #[test]
     fn pages_get_more_room_than_layers_by_default() {

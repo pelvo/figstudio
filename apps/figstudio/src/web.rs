@@ -51,9 +51,26 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
                 options.wgpu_options.wgpu_setup = crate::gpu::setup();
                 options
             },
-            Box::new(|cc| Ok(Box::new(crate::App::new(cc, Vec::new())))),
+            Box::new(|cc| {
+                // The system's "reduce motion" setting turns the UI's animations off.
+                if prefers_reduced_motion() {
+                    crate::anim::set_reduced(&cc.egui_ctx, true);
+                }
+                Ok(Box::new(crate::App::new(cc, Vec::new())))
+            }),
         )
         .await
+}
+
+/// Whether the browser reports `prefers-reduced-motion: reduce`.
+fn prefers_reduced_motion() -> bool {
+    web_sys::window()
+        .and_then(|w| {
+            w.match_media("(prefers-reduced-motion: reduce)")
+                .ok()
+                .flatten()
+        })
+        .is_some_and(|q| q.matches())
 }
 
 /// Logs go to the browser console. No ANSI colours and no timestamps (the browser has no

@@ -41,7 +41,7 @@ pub fn text_block(ui: &mut egui::Ui, tab: &Tab, node: &Node, picked: &mut Option
     let Some(full) = copy::text(node) else { return };
     let preview: String = full.chars().take(400).collect();
     let label = ui.add(egui::Label::new(
-        egui::RichText::new(preview).color(theme::TEXT_DIM),
+        egui::RichText::new(preview).color(theme::of(ui).text_dim),
     ));
     on_context(&label, tab, node.id, picked);
     if ui.small_button("Copy").clicked() {

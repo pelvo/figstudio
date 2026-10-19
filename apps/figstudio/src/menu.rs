@@ -13,6 +13,9 @@ pub(crate) enum Action {
     ActualSize,
     ToggleLayers,
     ToggleProperties,
+    CommandBar,
+    Appearance(Appearance),
+    ReduceMotion,
     AgentAccess,
     About,
     SelectTool(Tool),
@@ -22,6 +25,33 @@ pub(crate) enum Action {
     CjkFont(crate::cjk::Variant),
 }
 
+/// View > Appearance: follow the system, or force light or dark.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl Appearance {
+    fn label(self) -> &'static str {
+        match self {
+            Self::System => "Match system",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+
+    fn preference(self) -> egui::ThemePreference {
+        match self {
+            Self::System => egui::ThemePreference::System,
+            Self::Light => egui::ThemePreference::Light,
+            Self::Dark => egui::ThemePreference::Dark,
+        }
+    }
+}
+
 impl Action {
     pub(crate) fn shortcut(self) -> Option<KeyboardShortcut> {
         let (modifiers, key) = match self {
@@ -29,6 +59,8 @@ impl Action {
             Self::CloseTab => (Modifiers::COMMAND, Key::W),
             Self::ExportSelection(2.0) => (Modifiers::COMMAND | Modifiers::SHIFT, Key::E),
             Self::ZoomFit => (Modifiers::SHIFT, Key::Num1),
+            Self::CommandBar => return Some(crate::command::SHORTCUT),
+            Self::ToggleLayers => (Modifiers::COMMAND, Key::Backslash),
             Self::ActualSize => (Modifiers::SHIFT, Key::Num0),
             _ => return None,
         };
@@ -110,8 +142,18 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
         Item::action("Zoom to fit   ⇧1", Action::ZoomFit, has_tab),
         Item::action("Actual size   ⇧0", Action::ActualSize, has_tab),
         Item::separator(),
-        Item::checked("Layers panel", Action::ToggleLayers, app.show_left),
+        Item::checked("Sidebar", Action::ToggleLayers, app.show_left),
         Item::checked("Properties panel", Action::ToggleProperties, app.show_right),
+        Item::action("Command bar…", Action::CommandBar, true),
+        Item::separator(),
+        Item::group(
+            "Appearance",
+            [Appearance::System, Appearance::Light, Appearance::Dark]
+                .into_iter()
+                .map(|a| Item::checked(a.label(), Action::Appearance(a), app.appearance == a))
+                .collect(),
+        ),
+        Item::checked("Reduce motion", Action::ReduceMotion, app.reduce_motion),
     ];
     #[cfg(target_arch = "wasm32")]
     view.push(Item::group(
@@ -132,7 +174,7 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                 export("Export page as PNG", false),
                 export("Export selection as PNG", true),
                 Item::separator(),
-                Item::action("Close tab", Action::CloseTab, has_tab),
+                Item::action("Close file", Action::CloseTab, has_tab),
                 Item::action("Quit", Action::Quit, true),
             ],
         ),
@@ -154,6 +196,15 @@ impl App {
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::ToggleLayers => self.show_left = !self.show_left,
             Action::ToggleProperties => self.show_right = !self.show_right,
+            Action::CommandBar => self.command.toggle(ctx),
+            Action::Appearance(appearance) => {
+                self.appearance = appearance;
+                ctx.set_theme(appearance.preference());
+            }
+            Action::ReduceMotion => {
+                self.reduce_motion = !crate::anim::reduced(ctx);
+                crate::anim::set_reduced(ctx, self.reduce_motion);
+            }
             Action::SelectTool(tool) => self.tool = tool,
             Action::ZoomFit => {
                 if let Some(t) = self.tab() {

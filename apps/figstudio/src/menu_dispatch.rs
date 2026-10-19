@@ -6,7 +6,11 @@ pub(crate) fn native_owned(macos: bool, attached: bool, action: Action) -> bool 
         && attached
         && matches!(
             action,
-            Action::Open | Action::CloseTab | Action::ExportSelection(2.0)
+            Action::Open
+                | Action::CloseTab
+                | Action::ExportSelection(2.0)
+                | Action::CommandBar
+                | Action::ToggleLayers
         )
 }
 
@@ -65,7 +69,13 @@ mod tests {
 
     #[test]
     fn only_command_actions_are_native_owned_on_attached_macos() {
-        for action in [Action::Open, Action::CloseTab, Action::ExportSelection(2.0)] {
+        for action in [
+            Action::Open,
+            Action::CloseTab,
+            Action::ExportSelection(2.0),
+            Action::CommandBar,
+            Action::ToggleLayers,
+        ] {
             assert!(native_owned(true, true, action));
             assert!(
                 !native_owned(true, false, action),

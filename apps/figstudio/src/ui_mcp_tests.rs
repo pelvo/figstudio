@@ -25,7 +25,10 @@ fn wait_for<T>(
 fn the_agent_window_types_an_address_and_starts_and_stops_the_server() {
     let mut h = harness();
     assert!(!h.state().mcp.on, "off at launch");
-    h.get_by_label("View").click();
+    // No native menu here: File, View and Help sit behind the sidebar's "⋯" button.
+    h.get_by_label("Menu").click();
+    h.run_steps(3);
+    h.get_by_label_contains("View").click();
     h.run_steps(3);
     h.get_by_label("Agent access…").click();
     h.run_steps(3);
@@ -82,7 +85,9 @@ fn the_agent_window_types_an_address_and_starts_and_stops_the_server() {
 #[test]
 fn help_opens_the_about_window() {
     let mut h = harness();
-    h.get_by_label("Help").click();
+    h.get_by_label("Menu").click();
+    h.run_steps(3);
+    h.get_by_label_contains("Help").click();
     h.run_steps(3);
     h.get_by_label("About figstudio").click();
     h.run_steps(3);

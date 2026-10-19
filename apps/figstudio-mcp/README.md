@@ -47,9 +47,11 @@ figstudio-mcp [--http[=ADDR]] [--no-system-fonts] [--assets-dir DIR | --assets i
 ### Inside the figstudio app (live mode)
 
 The desktop app can host this server with the files it has open. Turn it on in **View →
-Agent access (MCP server)**. It is off at every launch and is not saved.
+Agent access (MCP server)** (on Linux and in the browser the File, View and Help menus are
+behind the **⋯** button at the top of the sidebar; ⌘K / Ctrl+K finds them too). It is off at
+every launch and is not saved.
 
-- While it runs, the status bar shows `MCP 127.0.0.1:3845/mcp`. Point your client there.
+- While it runs, the status pill at the bottom left of the canvas shows `MCP 127.0.0.1:3845/mcp`. Point your client there.
   The app tries 3845, then 3846–3855, and shows the address it got.
 - It is loopback only unless you tick **Allow remote agents** (see [Remote agents](#remote-agents)).
 - Tabs are the files: `fileKey` is the file's stem (or its full path when two open files
@@ -76,7 +78,7 @@ claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp
 
 Open the printed `Local:` or `Web:` URL (`...#mcp=<token>`). The token travels in the URL
 fragment, which the page's server never sees; or paste it in **View → Agent access (local
-MCP)…** and press Connect. The status bar shows `MCP connected`.
+MCP)…** and press Connect. The status pill shows `MCP connected`.
 
 | Flag | Meaning |
 |---|---|
@@ -156,7 +158,7 @@ token. Name each one with `--allow-host` (for example `--allow-host 100.64.0.1` 
 name). The banner prints this when no `--allow-host` is given.
 
 In the desktop app tick **View → Agent access → Allow remote agents**, type the address and
-port, then turn Agent access on; the status bar has a **Copy token** button. The setting is
+port, then turn Agent access on; the status pill has a **Copy token** button. The setting is
 not saved. `0.0.0.0` and `::` are refused (`--allow-any-interface` overrides on the CLI, the
 app never listens on every interface). In bridge mode `/bridge` keeps its own Origin and
 pairing-token checks.

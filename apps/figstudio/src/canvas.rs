@@ -64,7 +64,8 @@ pub fn fit_rect(tab: &mut Tab, rect: Rect, page_rect: Rect) {
     };
 }
 
-/// Draws the canvas and handles its input. Returns the page-space cursor position.
+/// Draws the canvas (with rounded corners of `radius`) and handles its input. Returns the
+/// page-space cursor position.
 pub fn show(
     ui: &mut egui::Ui,
     tab: &mut Tab,
@@ -72,6 +73,7 @@ pub fn show(
     tiles: &mut Tiles,
     tool: Tool,
     space_held: bool,
+    radius: f32,
 ) -> Option<Pos2> {
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -89,8 +91,10 @@ pub fn show(
 
     // Input: pan.
     let panning = tool == Tool::Hand || space_held || ui.input(|i| i.pointer.middle_down());
+    let mut direct = false;
     if response.dragged() && (panning || response.dragged_by(egui::PointerButton::Middle)) {
         tab.view.pan += response.drag_delta();
+        direct = true;
     }
     if response.hovered() {
         let (scroll, zoom_delta, modifiers, pointer) = ui.input(|i| {
@@ -102,6 +106,7 @@ pub fn show(
             )
         });
         let anchor = pointer.unwrap_or(rect.center());
+        direct |= zoom_delta != 1.0 || scroll != Vec2::ZERO;
         if zoom_delta != 1.0 {
             tab.view.zoom_at(origin, anchor, zoom_delta);
         } else if scroll != Vec2::ZERO {
@@ -158,11 +163,14 @@ pub fn show(
         fit_node(tab, rect, sel);
     }
 
-    // Rendering: cached tiles now, missing ones requested (tiles_view.rs).
+    // Rendering: cached tiles now, missing ones requested (tiles_view.rs). After a jump the
+    // drawing eases to the new view; input above already uses it.
+    let target = tab.view;
+    tab.view = shown_view(ui, tab, direct);
     let painter = ui.painter_at(rect);
     let bg = page_background(&tab.doc, tab.page);
-    painter.rect_filled(rect, 0.0, to_color32(bg));
-    tiles.show(&painter, rect, tab, workers, ui.pixels_per_point());
+    painter.rect_filled(rect, radius, to_color32(bg));
+    tiles.show(&painter, rect, radius, tab, workers, ui.pixels_per_point());
 
     // Overlays.
     crate::labels::paint(
@@ -182,6 +190,7 @@ pub fn show(
         outline(&painter, tab, origin, sel, Stroke::new(1.5, theme::ACCENT));
     }
     marquee::paint(&painter, tab, origin);
+    tab.view = target;
 
     let cursor = match tool {
         _ if panning => egui::CursorIcon::Grab,
@@ -226,6 +235,78 @@ fn outline(painter: &egui::Painter, tab: &Tab, origin: Pos2, id: Guid, stroke: S
     }
 }
 
+/// How long a jump of the view (fit, zoom buttons and keys, the Zoom tool) eases; pans and
+/// zooms the pointer drives follow it exactly.
+const VIEW_EASE: f64 = 0.28;
+
+/// A view on its way from `from` to `to`, started at `start` (egui time) on `page`.
+#[derive(Clone, Copy, Debug)]
+struct ViewMove {
+    from: View,
+    to: View,
+    start: f64,
+    page: Guid,
+}
+
+/// The view between `from` and `to` at `t` (0..1). The zoom changes geometrically around the
+/// page point both views show at the same place (the Zoom tool's click stays put); views at
+/// the same zoom pan in a straight line.
+pub(crate) fn view_between(from: View, to: View, t: f32) -> View {
+    if t >= 1.0 {
+        return to;
+    }
+    let zoom = (from.zoom.ln() + (to.zoom.ln() - from.zoom.ln()) * t).exp();
+    if (to.zoom / from.zoom - 1.0).abs() < 1e-3 {
+        return View {
+            zoom,
+            pan: from.pan + (to.pan - from.pan) * t,
+        };
+    }
+    // pan_a + q·za = pan_b + q·zb: the page point that does not move.
+    let fixed = (from.pan - to.pan) / (to.zoom - from.zoom);
+    let screen = from.pan + fixed * from.zoom;
+    View {
+        zoom,
+        pan: screen - fixed * zoom,
+    }
+}
+
+/// The view to draw this frame: the tab's, or one on the way to it after a jump. `direct`
+/// means the pointer moved the view this frame, which is never eased.
+fn shown_view(ui: &egui::Ui, tab: &Tab, direct: bool) -> View {
+    let ctx = ui.ctx();
+    let id = egui::Id::new(("canvas-view", tab.id));
+    let now = ctx.input(|i| i.time);
+    let target = tab.view;
+    let settled = ViewMove {
+        from: target,
+        to: target,
+        start: now - VIEW_EASE,
+        page: tab.page,
+    };
+    let at = |m: &ViewMove| {
+        let t = ((now - m.start) / VIEW_EASE).clamp(0.0, 1.0) as f32;
+        view_between(m.from, m.to, egui::emath::easing::cubic_out(t))
+    };
+    let mut state = ctx.data(|d| d.get_temp::<ViewMove>(id)).unwrap_or(settled);
+    if direct || crate::anim::reduced(ctx) || state.page != tab.page {
+        state = settled;
+    } else if state.to != target {
+        state = ViewMove {
+            from: at(&state),
+            to: target,
+            start: now,
+            page: tab.page,
+        };
+    }
+    ctx.data_mut(|d| d.insert_temp(id, state));
+    let shown = at(&state);
+    if shown != target {
+        ctx.request_repaint();
+    }
+    shown
+}
+
 pub fn to_color32(c: AlphaColor<figstudio_render::color::Srgb>) -> Color32 {
     let [r, g, b, a] = c.components;
     Color32::from_rgba_unmultiplied(
@@ -234,4 +315,39 @@ pub fn to_color32(c: AlphaColor<figstudio_render::color::Srgb>) -> Color32 {
         (b * 255.0) as u8,
         (a * 255.0) as u8,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_zoom_jump_keeps_its_anchor_still_and_ends_on_the_target() {
+        let from = View {
+            zoom: 1.0,
+            pan: Vec2::new(10.0, 20.0),
+        };
+        let mut to = from;
+        let anchor = Pos2::new(300.0, 200.0);
+        to.zoom_at(Pos2::ZERO, anchor, 4.0);
+        let page = from.to_page(Pos2::ZERO, anchor);
+        for t in [0.0, 0.25, 0.5, 0.9] {
+            let v = view_between(from, to, t);
+            let at = v.to_screen(Pos2::ZERO, page);
+            assert!((at - anchor).length() < 0.01, "t {t}: {at:?}");
+            assert!(
+                v.zoom >= from.zoom && v.zoom <= to.zoom,
+                "t {t}: {}",
+                v.zoom
+            );
+        }
+        assert_eq!(view_between(from, to, 1.0), to);
+        assert!(
+            (view_between(from, to, 0.5).zoom - 2.0).abs() < 1e-4,
+            "geometric"
+        );
+        let mut moved = from;
+        moved.pan += Vec2::new(100.0, 0.0);
+        assert_eq!(view_between(from, moved, 0.5).pan, Vec2::new(60.0, 20.0));
+    }
 }

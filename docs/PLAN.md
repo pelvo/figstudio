@@ -19,7 +19,7 @@ task board) and `docs/TESTING.md` (tests, checks, how to prove a test).
 | Headless use | must | `apps/figstudio-cli` (info / tree / render / thumbnail / doctor) |
 | Browser (wasm) | nice to have | same crates built for `wasm32-unknown-unknown`; eframe web shell |
 | Vello renderer | accepted | `vello_cpu` 0.3 (CPU, runs headless and in wasm); GPU `vello` is a later option |
-| UI similar to PhotoCraft | accepted | same toolkit (egui 0.36) and layout; no PhotoCraft code copied |
+| UI in the Arc browser style | accepted (2026-10-19; was PhotoCraft-like) | same toolkit (egui 0.36): tinted window gradient per file, sidebar, rounded canvas card, command bar, springs; no Arc assets copied |
 | Large private files | must work | requester cannot share them: synthetic stress file here, `doctor` report there |
 
 Out of scope for v1: editing, Figma API / login, prototyping/interactions, variables and
@@ -39,7 +39,8 @@ Rules:
 - `crates/fig` and `crates/render` do no file-system or UI work beyond `Document::open`, so
   they build for wasm.
 - Never panic on bad input: every malformed file returns `FigError`.
-- Anything not drawn exactly is counted in `Stats` and shown to the user (app status bar, CLI).
+- Anything not drawn exactly is counted in `Stats` and shown to the user (app: the warning chip
+  and status pill on the canvas; CLI).
 - Edit-ready: the document keeps everything needed to write the file back (schema, all
   node fields, blobs, other archive entries). The UI reads the document through one
   model so edit commands can be added later without restructuring.
@@ -161,6 +162,18 @@ tiling would fix it); the Layers panel is not virtualised yet (fine at 9 000 row
 - [x] export page or selection to PNG at 1x / 2x / 3x (Ctrl+Shift+E = selection @2x)
 - [x] CJK-capable UI font (first installed Noto CJK / Source Han / PingFang / Hiragino)
 - [x] status bar: zoom, cursor position, layers drawn, render time, unsupported features
+      (since the Arc redesign: the tool pill shows the zoom, the status pill the rest, a
+      warning chip the unsupported features)
+- [x] Arc-style redesign (2026-10-19): per-file gradient (light and dark, follows the system,
+      View → Appearance), sidebar with window controls, command field, pages, layers and a
+      file switcher; frameless window on macOS; the canvas as a rounded card with tool and
+      status pills; Properties as a card; ⌘K command bar (commands, files, pages, layers);
+      hidden sidebar peeks from the left edge; zoom jumps ease around their anchor; springs
+      and fades, View → Reduce motion
+      (the browser follows `prefers-reduced-motion`)
+- [ ] macOS vibrancy (translucent sidebar): `window-vibrancy` puts its NSVisualEffectView above
+      wgpu's Metal layer, which hides the whole UI; fixing the layer order needs `unsafe`
+      AppKit calls, which ground rule 10 forbids. Waiting for a decision from the owner
 - [x] errors shown as toasts (bad file stays non-fatal)
 - [ ] save dialog path checked by hand on a desktop (Xvfb has no portal, so the export
       menu was checked but the dialog itself was not exercised)
@@ -746,3 +759,5 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-19 — macOS app bundle and releases: `scripts/macos-app.sh` builds an ad-hoc signed `figstudio.app` (app + figstudio-mcp + figstudio-cli; `--install` copies it to ~/Applications); release-please (simple strategy, TOML extra-files for the workspace version and the figstudio entries in Cargo.lock) keeps a release PR, and on release a macos-latest job attaches the zipped app, a CLI/MCP tarball and SHA256SUMS. Verified locally: bundle built, `codesign --verify --deep --strict` passed, unzipped app launched, both helper binaries ran, the TOML updaters bumped exactly the 8 version fields. Not verified: the workflow on GitHub (needs the Actions PR permission), Gatekeeper on a downloaded copy (not notarized), Intel Macs, opening a .fig by double-click.
 - 2026-10-19 — PR review fixes for the macOS release: `macos-app.sh` runs under macOS Bash 3.2 without FIGSTUDIO_TOOLCHAIN (old script failed with an unbound `TC[@]`, seen red then green with a cargo stub), rejects unknown arguments, builds `--locked` and honours CARGO_TARGET_DIR; the workflow scopes permissions per job, pins actions to SHAs, hashes only the two archives and can rebuild an existing tag by hand (`workflow_dispatch`). actionlint 1.7.12 clean, real build under /bin/bash passed codesign. Not verified: the workflow on GitHub, the CARGO_TARGET_DIR path.
 - 2026-10-19 — Faster gate: `scripts/check.sh` lints and tests with a new `fast` profile (release optimisation, no LTO, incremental) instead of `--release`. Thin LTO linked each of the ~100 test binaries; after a one-line change in `crates/fig`, `cargo test --release --workspace --no-run` took 20 min 24 s, while `--profile fast` takes 36 s. The whole gate after that change took 8 min 10 s, 4 min of it the LTO release build, which stays in the gate. All checks passed on Rust 1.99.1. Not measured: the full gate before the change (the test build step alone was 20 min).
+- 2026-10-19 — Arc-style UI redesign (`chrome.rs`, `command.rs`, `anim.rs`, `icons.rs`, new `theme.rs`): per-file tinted gradient in light and dark, sidebar (window controls, command field, pages with a sliding pill, layer tree with rotating chevrons, file switcher dots), frameless macOS window, rounded canvas card (tiles cut at the corners), tool / status pills and a warning chip, Properties card, ⌘K command bar, peeking sidebar, eased zoom jumps, springs and fades with Reduce motion. New tests seen red first (the UI tests' labels and actions did not exist; the clip, tint, contrast, score and zoom-anchor tests failed on purposely broken code); 192 app tests, `cargo check` for wasm32, full check.sh; screenshots checked in light and dark on macOS (command bar, peek, hidden sidebar, zoom easing). Not verified: Linux and Windows look, the browser build in a real browser, window dragging from the sidebar by hand, macOS vibrancy (blocked, see P3)
+

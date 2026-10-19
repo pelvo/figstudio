@@ -106,7 +106,7 @@ impl McpHost {
         let text = running
             .addr
             .map_or_else(|| "MCP starting…".to_owned(), |a| format!("MCP {a}/mcp"));
-        ui.label(RichText::new(text).color(theme::TEXT_DIM))
+        ui.label(RichText::new(text).color(theme::of(ui).text_dim))
             .on_hover_text("Point your MCP client here.");
         if let Some(token) = &running.token
             && ui

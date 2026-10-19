@@ -1,6 +1,6 @@
 # Approximation counters: what each one means and how to clear it
 
-The status bar and the CLI report counters for things that are drawn approximately or not
+The app (the warning chip on the canvas) and the CLI report counters for things that are drawn approximately or not
 drawn at all (AGENTS.md rule 6, "unsupported means counted, not hidden"). This file keeps a
 record of what each counter is made of, so the work to clear it can be tracked.
 
@@ -12,7 +12,7 @@ build was thrown away. Re-measure after each fix and update the table and the lo
 
 Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
 
-| Counter (status bar text) | Total | Pages |
+| Counter (warning chip text) | Total | Pages |
 |---|---:|---:|
 | shadow effects approximated | 5324 | 24 |
 | effects skipped | 483 | 22 |

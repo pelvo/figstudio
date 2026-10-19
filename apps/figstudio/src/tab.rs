@@ -67,6 +67,8 @@ pub struct Tab {
     pub pending_copy: Option<crate::copy::Item>,
     /// The drag-drawn region (`marquee.rs`).
     pub marquee: crate::marquee::Marquee,
+    /// The window gradient while this file is active (`theme::tint`), like an Arc space.
+    pub tint: usize,
 }
 
 impl Tab {
@@ -112,6 +114,7 @@ impl Tab {
             canvas_rect: None,
             pending_copy: None,
             marquee: Default::default(),
+            tint: crate::theme::HOME_TINT,
         }
     }
 

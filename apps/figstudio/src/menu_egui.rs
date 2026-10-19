@@ -1,14 +1,15 @@
 //! Drawn menu for Linux, web, headless tests and native-attach fallback.
-use crate::{
-    APP_NAME, App,
-    menu::{Action, Item},
-    theme,
-};
+use crate::{APP_NAME, App, menu::Item, theme};
 
 impl App {
-    pub(crate) fn menu_bar(&mut self, ui: &mut egui::Ui) {
+    /// The "⋯" button in the sidebar: the File, View and Help menus where there is no native
+    /// menu bar (Linux, the browser, tests).
+    pub(crate) fn menu_button(&mut self, ui: &mut egui::Ui) {
+        // No tooltip: egui's tooltip on the same response would keep the menu from opening.
+        let response = crate::icons::raw_button(ui, crate::icons::Icon::More, "Menu", false, 28.0);
         let tree = crate::menu::tree(self);
-        egui::MenuBar::new().ui(ui, |ui| {
+        egui::Popup::menu(&response).show(|ui| {
+            ui.set_min_width(170.0);
             for group in tree {
                 ui.menu_button(group.label, |ui| self.menu_items(ui, &group.children));
             }
@@ -28,7 +29,7 @@ impl App {
                 continue;
             };
             #[cfg(target_arch = "wasm32")]
-            if let Action::CjkFont(v) = action {
+            if let crate::menu::Action::CjkFont(v) = action {
                 if ui.radio(item.checked == Some(true), item.label).clicked() {
                     self.apply(action, ui.ctx());
                 }
@@ -36,17 +37,25 @@ impl App {
                     ui.separator();
                     ui.label(
                         egui::RichText::new("Korean (KR) in use: a file has only Hangul")
-                            .color(theme::TEXT_DIM),
+                            .color(theme::of(ui).text_dim),
                     );
                 }
                 continue;
             }
             let clicked = if let Some(mut checked) = item.checked {
-                ui.add_enabled(item.enabled, egui::Checkbox::new(&mut checked, item.label))
-                    .clicked()
+                let response =
+                    ui.add_enabled(item.enabled, egui::Checkbox::new(&mut checked, item.label));
+                if let Some(shortcut) = action.shortcut() {
+                    response
+                        .on_hover_text(ui.ctx().format_shortcut(&shortcut))
+                        .clicked()
+                } else {
+                    response.clicked()
+                }
             } else {
                 let mut button = egui::Button::new(item.label);
-                if matches!(action, Action::Open | Action::ExportSelection(2.0))
+                // Labels with a typed hint ("Zoom to fit   ⇧1") already show it.
+                if !item.label.contains("   ")
                     && let Some(shortcut) = action.shortcut()
                 {
                     button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
@@ -65,10 +74,13 @@ impl App {
         ui.label("Opens Figma .fig local copies offline.");
         ui.label(
             egui::RichText::new("V select · H hand · Z zoom · Space drag to pan")
-                .color(theme::TEXT_DIM),
+                .color(theme::of(ui).text_dim),
         );
         ui.label(
-            egui::RichText::new("Ctrl+scroll or pinch to zoom · ⇧1 fit").color(theme::TEXT_DIM),
+            egui::RichText::new("Ctrl+scroll or pinch to zoom · ⇧1 fit")
+                .color(theme::of(ui).text_dim),
         );
+        let bar = ui.ctx().format_shortcut(&crate::command::SHORTCUT);
+        ui.label(egui::RichText::new(format!("{bar} command bar")).color(theme::of(ui).text_dim));
     }
 }

@@ -2,7 +2,8 @@
 //!
 //! `harness()` opens `structure.fig` on the CPU tile path (kittest gives no wgpu state). The
 //! sibling files hold the tests: `ui_mcp_tests.rs` (View menu), `ui_copy_tests.rs` (Copy menus,
-//! marquee, click and Hand-tool drag).
+//! marquee, click and Hand-tool drag), `ui_chrome_tests.rs` (sidebar, file switcher, tool pill,
+//! command bar).
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -14,6 +15,8 @@ use figstudio_fig::Guid;
 
 use crate::App;
 
+#[path = "ui_chrome_tests.rs"]
+mod chrome;
 #[path = "ui_copy_tests.rs"]
 mod copy;
 // Without the `mcp` feature there is no View item (mcp_off.rs) and no tokio to test it with.

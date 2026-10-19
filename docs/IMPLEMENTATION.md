@@ -7,10 +7,12 @@ do. Read `AGENTS.md` first. Testing is in `docs/TESTING.md`; status is in `docs/
 
 `apps/figstudio/src/menu.rs` defines menu state and `Action`; `App::apply` handles
 commands from clicks and shortcuts. `menu_egui.rs` renders Linux/web menus and the
-headless/native-attach fallback. `menu_windows.rs` hosts Agent access and About.
+headless/native-attach fallback behind the sidebar's "⋯" button (File, View and Help as
+submenus); the command bar (`command.rs`) lists the same enabled commands. `menu_windows.rs` hosts Agent access and About.
 `menu_native.rs` attaches muda on macOS/Windows in the eframe creation closure;
 `menu_dispatch.rs` drains queued ids with repaint and synchronizes changed flags.
-macOS owns Open, Close tab and selection-export accelerators; egui retains Shift+1
+macOS owns Open, Close file, selection-export, command bar (⌘K) and sidebar (⌘\)
+accelerators; egui retains Shift+1
 and Shift+0 (only outside text editing). Windows keeps egui shortcuts (winit does
 not translate native accelerators). Context menus remain egui. Native attachment failure logs a
 warning and keeps the drawn bar.
@@ -103,13 +105,21 @@ apps/figstudio-mcp/tests/  protocol tests (stdio.rs, http.rs, prompts.rs, files.
                          file per tool (see docs/TESTING.md "MCP server"); README.md is the
                          user doc
 apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
-  main.rs                App: menus, shortcuts, panel layout, message polling, export
+  main.rs                App: shortcuts, panel layout, message polling, export
+  chrome.rs              Arc-style chrome: window gradient, sidebar (window controls, command
+                         field, pages, layers, file switcher), title strip, peeking sidebar,
+                         canvas card with tool / status pills and the warning chip, toasts,
+                         empty state, drop overlay
+  command.rs             the ⌘K command bar: search over commands, files, pages and layers
+  anim.rs                springs and colour fades in egui memory; Reduce motion
+  icons.rs               line icons painted on a 16-unit grid; the icon button
   canvas.rs              canvas input, render requests, frame re-projection, outlines
-  tab.rs                 per-document state (Tab) and the page<->screen mapping (View)
-  panels.rs              Pages, Layers tree, Properties
+  tab.rs                 per-document state (Tab, with its tint) and the page<->screen mapping
+  panels.rs              Pages list, Layers tree, Properties card
   worker.rs              background threads: file loading, rendering (OS threads or Web Workers)
   web.rs                 browser only: start(), file picker, dropped files, downloads
-  theme.rs               colours, spacing, CJK font fallback (desktop) / detection (web)
+  theme.rs               light / dark palettes, per-file tints, visuals, UI font (system face
+                         + semibold), CJK font fallback (desktop) / detection (web)
 web/                     index.html (boot: init, thread pool, start), _headers (COOP/COEP)
 scripts/                 check.sh, thumb-sheet.py, gui-smoke.sh, web-build.sh, web-serve.py
 tests/fixtures/          7 sample .fig files (MIT, fig2sketch)
@@ -258,7 +268,8 @@ misses the output, or when a leaf is under a quarter pixel. **If you make anythi
 outside a node's frame, extend `overhang()`**, or culling will cut it off at the window edge.
 
 **Stats.** Every approximation or skip increments a `Stats` field. The CLI prints them and
-the app shows them in the status bar. Add a field when you add a new kind of gap.
+the app shows them in the warning chip on the canvas. Add a field when you add a new kind of
+gap.
 
 **Parallel strips (`render_parallel`, feature `parallel`).** The walk draws through the
 `record::Canvas` trait. `render` passes a `RenderContext`; `render_parallel` passes a
@@ -291,7 +302,7 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   its queued tiles, and closing a document marks it closed in the image cache
   (`Images::close_document`), which then refuses any image, failure or request for it under
   its lock, so a read or decode finishing late cannot store it back.
-  The status bar shows, per field, the largest count of any one sharp tile on screen
+  The warning chip shows, per field, the largest count of any one sharp tile on screen
   (`Stats::max_with`): a lower bound for the view, not a sum.
 - `Tab` holds the document (`Arc<Document>`), page, view, selection, hover, expanded tree
   nodes and stats. `Tab::select` switches page and expands ancestors so the Layers tree can
@@ -308,8 +319,34 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   filters too big for its intermediates, too many layers), render errors, a lost device or a
   device with textures under 4096 px fall back to CPU tiles, counted in
   `Stats::gpu_fallback_tiles` ("N tiles on the CPU"). `FIGSTUDIO_RENDERER=cpu` forces the CPU;
-  the status bar names the renderer ("GPU (Metal)" or "CPU"). The CLI, tests and export always
+  the status pill names the renderer ("GPU (Metal)" or "CPU"). The CLI, tests and export always
   use the CPU renderer, so their output stays reproducible.
+
+### The window chrome (`chrome.rs`, `theme.rs`, `anim.rs`, `icons.rs`, `command.rs`)
+
+- Layout, outside in: the window gradient (painted on the background layer, the active
+  file's `Tab::tint` crossfading on a file switch), a collapsible left panel (the sidebar) or,
+  when it is hidden, a top title strip; a collapsible right panel framed as the Properties
+  card; the central panel draws the canvas card (`App::canvas_card`) with the tool pill,
+  status pill and warning chip on top. Toasts, the drop overlay, the peeking sidebar and the
+  command bar are `Order::Foreground` areas.
+- Colours come from `theme::of(ui)` / `theme::palette(ctx)` (light or dark), never from
+  constants, except `theme::ACCENT` for canvas outlines. Tints are picked per file by name
+  (`pick_tint`), skipping ones open files have. `theme::tests` checks text contrast on
+  every tint: add a tint, run them.
+- Motion: `anim::spring*` for movement and pops, `anim::fade` for colour, egui's own
+  `animate_bool*` for hover fades. All of it stops when `anim::reduced` (egui's
+  `animation_time` is 0: View → Reduce motion, `prefers-reduced-motion` in the browser, the
+  test harness). Widget-heavy lists keep one hover state per list (`panels::hover_fade`).
+- macOS runs frameless (`with_fullsize_content_view`, no title bar): the sidebar header and
+  the title strip leave room for the traffic lights and move the window
+  (`ViewportCommand::StartDrag`).
+- The canvas card has round corners: the page background is a rounded rect and tiles that
+  reach into a corner are drawn as a polygon cut to it (`tiles_view::rounded_clip`).
+- View jumps (fit, zoom buttons and keys, the Zoom tool, double-click) ease over 0.28 s:
+  `Tab::view` changes at once (input, hit tests and the MCP see it), and `canvas::show`
+  draws with `shown_view`, which zooms geometrically around the page point both views share
+  (`view_between`). Drags, scrolls and pinches are never eased.
 
 ### Copy menus, marquee and region copy (`apps/figstudio`)
 
@@ -526,6 +563,15 @@ Debug spans (`RUST_LOG=debug`): `open`/`from_bytes` (bytes, node/page/image coun
   changed nodes are then invisible to `node()` and the renderer, with no error. Use
   `set_nodes`, which validates parent links and rebuilds the index. `to_bytes` reads `nodes`
   directly, so a test that only writes bytes can skip the index.
+- **A tooltip on a button kills its popup.** `on_hover_text` and `Popup::menu` on the same
+  response share the popup id; the menu never opens. The "⋯" button uses
+  `icons::raw_button` (no tooltip).
+- **Submenu labels carry an arrow.** In a popup, `ui.menu_button("View", …)` is a submenu
+  whose accessible label is "View ⏵"; tests use `get_by_label_contains`.
+- **The test harness turns egui's animations off before `App::new`.** `theme::apply` keeps a
+  zero `animation_time`, so kittest frames stay deterministic (springs jump to their target).
+- **`window-vibrancy` hides the whole UI under wgpu.** Its `NSVisualEffectView` lands above
+  the Metal layer; translucency would need `unsafe` AppKit calls (not allowed).
 - **`usize::MAX + 1` wraps to 0.** Limits in `read_limited` use saturating arithmetic. A limit
   of `usize::MAX` once made `take()` read nothing, with no error.
 

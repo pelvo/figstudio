@@ -113,7 +113,7 @@ impl McpHost {
             (true, Some((sent, total))) => format!("MCP uploading {}%", sent * 100 / total.max(1)),
             (true, None) => self.connected_label().to_owned(),
         };
-        ui.label(RichText::new(text).color(theme::TEXT_DIM));
+        ui.label(RichText::new(text).color(theme::of(ui).text_dim));
         ui.separator();
     }
 }

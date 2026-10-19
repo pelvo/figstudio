@@ -234,6 +234,8 @@ fn accelerator(action: Action) -> Option<muda::accelerator::Accelerator> {
         egui::Key::O => Code::KeyO,
         egui::Key::W => Code::KeyW,
         egui::Key::E => Code::KeyE,
+        egui::Key::K => Code::KeyK,
+        egui::Key::Backslash => Code::Backslash,
         egui::Key::Num1 => Code::Digit1,
         egui::Key::Num0 => Code::Digit0,
         _ => return None,
