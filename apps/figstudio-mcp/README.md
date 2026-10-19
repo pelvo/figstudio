@@ -121,7 +121,7 @@ upload, no Cloudflare Access bypass, and no manual token pasting.
 **One-line install and setup (`colab-mcp` style):**
 
 ```sh
-cargo install --git https://github.com/pelvo/figstudio figstudio-mcp
+cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp
 claude mcp add figstudio -- figstudio-mcp --origin https://<your-deploy-domain>
 ```
 
@@ -144,7 +144,7 @@ Or in `.mcp.json` / Cursor / Windsurf:
   port), and mints a 256-bit process token (never printed to `stderr`).
 - When the agent calls `open_figstudio_browser`, the proxy opens
   `https://<your-deploy-domain>/#mcpProxyPort=<port>&mcpProxyToken=<token>` in your default
-  browser (`$BROWSER`, `open`, `xdg-open`, or `start`), strips the `#fragment` immediately,
+  browser (`$BROWSER`, `open`, `xdg-open`, or `rundll32 url.dll,FileProtocolHandler`), strips the `#fragment` immediately,
   and waits up to 60 s for the tab's `ready` v2 frame before emitting
   `notifications/tools/list_changed`.
 - `list_sessions` and `select_session` work identically when multiple tabs connect.

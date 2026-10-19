@@ -939,19 +939,34 @@ fn rpc_error(id: Value, code: i32, message: &str, data: Option<Value>) -> Value 
 }
 
 /// Parse one entry of a `BROWSER` environment variable (`program [args...]`, supporting
-/// single/double-quoted tokens and replacing `%s` with `url` or appending `url` when `%s`
-/// is absent), without invoking a shell. Returns `None` on empty input or unbalanced quotes.
+/// single/double-quoted tokens, `\"` / `\\` escapes inside double quotes, and replacing
+/// `%s` with `url` while turning `%%` into a literal `%`), without invoking a shell.
+/// Returns `None` on empty input or unbalanced quotes.
 #[must_use]
 pub fn parse_browser_entry(entry: &str, url: &str) -> Option<(String, Vec<String>)> {
     let mut tokens = Vec::new();
     let mut cur = String::new();
     let mut in_token = false;
     let mut quote: Option<char> = None;
-    for ch in entry.chars() {
+    let mut chars = entry.chars().peekable();
+    while let Some(ch) = chars.next() {
         match quote {
             Some(q) if ch == q => quote = None,
+            Some('"') if ch == '\\' => {
+                if let Some(&next) = chars.peek()
+                    && (next == '"' || next == '\\')
+                {
+                    cur.push(chars.next().unwrap());
+                } else {
+                    cur.push(ch);
+                }
+            }
             Some(_) => cur.push(ch),
-            None if ch == '\'' || ch == '"' => {
+            None if ch == '"' => {
+                quote = Some(ch);
+                in_token = true;
+            }
+            None if ch == '\'' && !in_token => {
                 quote = Some(ch);
                 in_token = true;
             }
@@ -978,17 +993,72 @@ pub fn parse_browser_entry(entry: &str, url: &str) -> Option<(String, Vec<String
     let mut args = Vec::new();
     let mut substituted = false;
     for tok in iter {
-        if tok.contains("%s") {
-            args.push(tok.replace("%s", url));
-            substituted = true;
-        } else {
-            args.push(tok);
+        let mut out = String::new();
+        let mut tc = tok.chars().peekable();
+        while let Some(c) = tc.next() {
+            if c == '%' {
+                match tc.peek().copied() {
+                    Some('%') => {
+                        tc.next();
+                        out.push('%');
+                    }
+                    Some('s') => {
+                        tc.next();
+                        out.push_str(url);
+                        substituted = true;
+                    }
+                    _ => out.push('%'),
+                }
+            } else {
+                out.push(c);
+            }
         }
+        args.push(out);
     }
     if !substituted {
         args.push(url.to_owned());
     }
     Some((program, args))
+}
+
+/// Split a `BROWSER` value on `sep` (`:` on Unix, `;` on Windows) only outside quotes.
+#[must_use]
+pub fn split_browser_list(browser_env: &str, sep: char) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut in_token = false;
+    let mut chars = browser_env.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some(q) if ch == q => {
+                quote = None;
+                cur.push(ch);
+            }
+            Some('"') if ch == '\\' => {
+                cur.push(ch);
+                if let Some(next) = chars.next() {
+                    cur.push(next);
+                }
+            }
+            Some(_) => cur.push(ch),
+            None if ch == sep => {
+                entries.push(std::mem::take(&mut cur));
+                in_token = false;
+            }
+            None if ch == '"' || (ch == '\'' && !in_token) => {
+                quote = Some(ch);
+                in_token = true;
+                cur.push(ch);
+            }
+            None => {
+                in_token = !ch.is_whitespace();
+                cur.push(ch);
+            }
+        }
+    }
+    entries.push(cur);
+    entries
 }
 
 fn spawn_quiet(program: &str, args: &[String]) -> bool {
@@ -1007,8 +1077,8 @@ fn open_system_browser(url: &str) -> bool {
         let sep = ';';
         #[cfg(not(windows))]
         let sep = ':';
-        for entry in browser_env.split(sep) {
-            if let Some((prog, args)) = parse_browser_entry(entry, url)
+        for entry in split_browser_list(&browser_env, sep) {
+            if let Some((prog, args)) = parse_browser_entry(&entry, url)
                 && spawn_quiet(&prog, &args)
             {
                 return true;

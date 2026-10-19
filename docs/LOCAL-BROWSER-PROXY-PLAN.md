@@ -155,7 +155,7 @@ Following `colab-mcp`'s `open_colab_browser_connection` + `ColabProxyMiddleware`
    - If a ready browser tab is already connected, returns immediately with the connected
      session summary (`list_sessions`).
    - Otherwise, opens `<primary_origin>/#mcpProxyPort=<port>&mcpProxyToken=<token>` in the
-     system browser (`open` on macOS, `xdg-open` on Linux, `cmd /c start` on Windows) and
+     system browser (`open` on macOS, `xdg-open` on Linux, `rundll32 url.dll,FileProtocolHandler` on Windows) and
      waits up to 60 s (`UI_CONNECTION_TIMEOUT`) for the first `ready` v2 frame.
    - Once the tab sends `ready` v2, emits `notifications/tools/list_changed` and returns
      the connected session and open documents (`docs`).
