@@ -783,3 +783,70 @@ fn a_failed_best_match_fails_the_link_instead_of_opening_a_worse_one() {
     );
     assert!(app.tabs.is_empty());
 }
+
+#[test]
+fn a_listing_stuck_in_old_folders_does_not_block_links_to_new_ones() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_search;
+    h.state_mut().link.search_timeout = std::time::Duration::from_millis(200);
+    assert!(h.state_mut().go_to_link(&ctx, &figma("A", "1-1"), None));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    h.step();
+    // The folders still have not answered: links are refused.
+    assert!(!h.state_mut().go_to_link(&ctx, &figma("B", "1-1"), None));
+    // The person chooses another folder: links search again.
+    h.state_mut()
+        .link
+        .set_dirs(vec![PathBuf::from("/elsewhere")]);
+    assert!(h.state_mut().go_to_link(&ctx, &figma("B", "1-1"), None));
+    assert_eq!(h.state().link.searching(), 1);
+}
+
+#[test]
+fn a_listing_that_finished_in_time_is_used_even_when_polled_late() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = listed_structure;
+    h.state_mut().link.search_timeout = std::time::Duration::from_millis(300);
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("structure", "1-4"), Some(done))
+    );
+    // The listing is back at once; the next frame runs only after the deadline.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    h.step();
+    wait(&mut h, &mut Vec::new(), "the copy to open", |a| {
+        a.tabs.len() == 1
+    });
+    h.step();
+    let answer = rx.try_recv().unwrap().unwrap();
+    assert!(answer.contains("opened"), "{answer}");
+}
+
+#[test]
+fn a_load_that_outlasts_the_callers_budget_is_answered_and_still_shown() {
+    let mut h = harness();
+    let (done, rx) = done();
+    h.state_mut().link.waiting.push(super::Waiting {
+        path: PathBuf::from("/nowhere/Slow Load.fig"),
+        node: Some(Guid(1, 4)),
+        done: Some(done),
+        asked: web_time::Instant::now(),
+    });
+    h.step();
+    assert!(rx.try_recv().is_err(), "answered before its time");
+    h.state_mut().link.answer_by = std::time::Duration::ZERO;
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("still opening"), "{error}");
+    // Still waiting for the load, to show the node once it opens.
+    assert_eq!(h.state().link.waiting.len(), 1);
+}
+
+#[cfg(feature = "mcp")]
+#[test]
+fn mcp_requests_are_answered_before_the_server_gives_up() {
+    assert!(super::ANSWER_BY < figstudio_mcp::live::OPEN_TIMEOUT);
+}

@@ -584,7 +584,13 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   (`StillLoading`). A copy whose load failed meanwhile (the worker sends its resolved path
   with `Loaded::Err`; failing that, the path's `.`/`..` are folded by text) still takes part
   in the ranking, so a worse match or the other half of a tie never takes its place; when it
-  is the one chosen, the link answers `LoadFailed` and it is not loaded again. Reading a folder can block (a network drive, or macOS asking to allow reading
+  is the one chosen, the link answers `LoadFailed` and it is not loaded again. A listing
+  that finished before its deadline is used even when the frame that polls it comes later
+  (the thread stamps its result); one that finished after it never is. Choosing another
+  folder forgets the listings of the old folders, so one stuck there no longer blocks
+  links. An MCP request whose copy is still loading at `ANSWER_BY` (55 s from the request,
+  under the server's 60 s `OPEN_TIMEOUT`) is answered "still opening"; the file still opens
+  and shows the node. Reading a folder can block (a network drive, or macOS asking to allow reading
   `~/Downloads`), and the window keeps drawing meanwhile. `start_search` requests a frame and
   each poll with a search running requests another in 250 ms, so the timeout fires even in
   an idle window. After `SEARCH_TIMEOUT` (20 s) the link fails ("could not be read in time",
@@ -608,7 +614,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   folder that neither blocks the window nor hangs the call, a replaced window search, a
   blocked listing, the frame a search schedules, a late result, a tab opened during the listing, a node ID or a refused link from the window,
   closing the window, a listing held while a file loads, an unrelated load, a held listing
-  timing out, a copy whose load failed),
+  timing out, a copy whose load failed, a better match that failed, a listing stuck in old
+  folders, a listing polled late, a load past the caller's budget),
   `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
 ### The browser app (`apps/figstudio` on wasm32)

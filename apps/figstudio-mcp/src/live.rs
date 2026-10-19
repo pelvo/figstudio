@@ -23,6 +23,9 @@ use tokio::sync::oneshot;
 pub const REVEAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long `reveal_node` waits for the app to open a local copy: a large file loads for seconds.
+/// The whole request shares it: the app may list its link folders for up to 20 s first, and
+/// answers "still opening" a few seconds before this runs out if the load has not finished
+/// (the file still opens and shows the node afterwards).
 pub const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What the app shows, as the tools see it.

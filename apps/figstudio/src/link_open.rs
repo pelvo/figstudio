@@ -38,6 +38,14 @@ pub(crate) type Done = Box<dyn FnOnce(Result<String, String>) + Send>;
 /// person to allow reading the folder; the search then still finishes in the background).
 pub(crate) const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long an MCP request may wait for its local copy to load, counted from the request:
+/// it is answered before the server gives up (`figstudio_mcp::live::OPEN_TIMEOUT`, 60 s), and
+/// the file still opens and shows the node afterwards.
+pub(crate) const ANSWER_BY: Duration = Duration::from_secs(55);
+
+/// A finished listing: its search id, what it found, and when it finished.
+type Found = (u64, Vec<Copy>, web_time::Instant);
+
 /// Lists the local copies of a link in some folders; [`local_copies`] unless a test swaps it.
 pub(crate) type SearchFn = fn(&[PathBuf], &FileHint) -> Vec<(PathBuf, Match)>;
 
@@ -61,13 +69,15 @@ pub(crate) struct LinkOpen {
     next_search: u64,
     /// Listings still running (search id, start), timed-out ones included: one that is past
     /// [`SEARCH_TIMEOUT`] and still blocked makes new links fail at once.
-    listings: Vec<(u64, web_time::Instant)>,
+    listings: Vec<(u64, web_time::Instant, Vec<PathBuf>)>,
     /// Finished searches: the search id and what it found.
-    found_tx: Sender<(u64, Vec<Copy>)>,
-    found_rx: Receiver<(u64, Vec<Copy>)>,
+    found_tx: Sender<Found>,
+    found_rx: Receiver<Found>,
     /// What lists a folder, and how long it may take (tests swap both).
     pub search: SearchFn,
     pub search_timeout: Duration,
+    /// [`ANSWER_BY`] unless a test swaps it.
+    pub answer_by: Duration,
     waiting: Vec<Waiting>,
     /// Resolved paths of files that failed to load while searches ran: a copy that is one of
     /// them is not opened again. Cleared once no search runs.
@@ -93,6 +103,7 @@ impl Default for LinkOpen {
             found_rx,
             search: local_copies,
             search_timeout: SEARCH_TIMEOUT,
+            answer_by: ANSWER_BY,
             waiting: Vec::new(),
             failed: Vec::new(),
             answers: Vec::new(),
@@ -111,12 +122,24 @@ impl LinkOpen {
         self.searches.iter().any(|s| s.done.is_none())
     }
 
-    /// Whether a listing has run past the timeout and is still blocked.
+    /// Whether a listing has run past the timeout and is still blocked. Only listings of
+    /// the current folders are kept here ([`Self::set_dirs`]).
     fn blocked(&self) -> bool {
         let timeout = self.search_timeout;
         self.listings
             .iter()
-            .any(|(_, started)| started.elapsed() >= timeout)
+            .any(|(_, started, _)| started.elapsed() >= timeout)
+    }
+
+    /// Search `dirs` from now on. Listings of other folders are forgotten, so one stuck in
+    /// a folder chosen away from no longer blocks links (its late result is still dropped).
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "the browser has no link folders to choose")
+    )]
+    pub(crate) fn set_dirs(&mut self, dirs: Vec<PathBuf>) {
+        self.listings.retain(|(_, _, listed)| *listed == dirs);
+        self.dirs = dirs;
     }
 }
 
@@ -139,6 +162,8 @@ struct Waiting {
     path: PathBuf,
     node: Option<Guid>,
     done: Option<Done>,
+    /// When the link was asked for, for [`ANSWER_BY`].
+    asked: web_time::Instant,
 }
 
 /// A local copy of a link: the path it was listed under (opened and shown), the same path
@@ -402,7 +427,7 @@ impl App {
                         // file does not have); its older search is moot.
                         self.cancel_window_search();
                     }
-                    self.go_to(ctx, target, parsed.node, done)
+                    self.go_to(ctx, target, parsed.node, done, web_time::Instant::now())
                 }
                 Err(error) => {
                     self.answer(ctx, done, Err(error));
@@ -458,12 +483,14 @@ impl App {
         let search = self.link.search;
         let dirs = self.link.dirs.clone();
         let found = self.link.found_tx.clone();
+        self.link
+            .listings
+            .push((id, web_time::Instant::now(), dirs.clone()));
         let list = move || {
             let copies = real_paths(search(&dirs, &hint));
             // The app may have quit meanwhile; nobody to tell then.
-            let _ = found.send((id, copies));
+            let _ = found.send((id, copies, web_time::Instant::now()));
         };
-        self.link.listings.push((id, web_time::Instant::now()));
         #[cfg(not(target_arch = "wasm32"))]
         {
             let (list, ctx) = (
@@ -493,32 +520,24 @@ impl App {
         ctx.request_repaint();
     }
 
-    /// Each frame: fail the searches past their time, then take in the listings that came
-    /// back, and finish them once no file is loading. A result for a search that is gone
-    /// (timed out, replaced or cancelled) is dropped.
+    /// Each frame: take in the listings that came back (one that finished after its
+    /// deadline counts as timed out, however soon it is polled), fail the searches past their
+    /// time, and finish the rest once no file they could name is loading. A result for a
+    /// search that is gone (timed out, replaced or cancelled) is dropped. Also answers MCP
+    /// requests still waiting for a load at [`ANSWER_BY`].
     pub(crate) fn poll_link_searches(&mut self, ctx: &egui::Context) {
         let timeout = self.link.search_timeout;
-        let (late, running): (Vec<Search>, Vec<Search>) = std::mem::take(&mut self.link.searches)
-            .into_iter()
-            .partition(|s| s.started.elapsed() >= timeout);
-        self.link.searches = running;
-        for search in late {
-            // Back but held for a load (below), or not back at all.
-            let error = match search.found {
-                Some(_) => LinkError::StillLoading,
-                None => LinkError::SearchTimeout,
-            };
-            self.answer(ctx, search.done, Err(error));
-        }
-        while let Ok((id, copies)) = self.link.found_rx.try_recv() {
-            self.link.listings.retain(|(listing, _)| *listing != id);
-            if let Some(search) = self.link.searches.iter_mut().find(|s| s.id == id) {
+        while let Ok((id, copies, finished)) = self.link.found_rx.try_recv() {
+            self.link.listings.retain(|(listing, _, _)| *listing != id);
+            if let Some(search) = self.link.searches.iter_mut().find(|s| s.id == id)
+                && finished.saturating_duration_since(search.started) < timeout
+            {
                 search.found = Some(copies);
             }
         }
         // A file still loading whose name the link matches may be one of the copies under
         // another spelling; once it is a tab, its real path tells. The worker wakes the UI when
-        // the load ends; a load that never ends runs into the timeout above.
+        // the load ends; a load that never ends runs into the timeout below.
         let loading: Vec<PathBuf> = self.loading.iter().cloned().collect();
         let (ready, waiting): (Vec<Search>, Vec<Search>) = std::mem::take(&mut self.link.searches)
             .into_iter()
@@ -527,10 +546,36 @@ impl App {
         for search in ready {
             self.finish_search(ctx, search);
         }
+        let (late, running): (Vec<Search>, Vec<Search>) = std::mem::take(&mut self.link.searches)
+            .into_iter()
+            .partition(|s| s.started.elapsed() >= timeout);
+        self.link.searches = running;
+        for search in late {
+            // Back but held for a load, or not back (in time) at all.
+            let error = match search.found {
+                Some(_) => LinkError::StillLoading,
+                None => LinkError::SearchTimeout,
+            };
+            self.answer(ctx, search.done, Err(error));
+        }
         if self.link.searches.is_empty() {
             self.link.failed.clear();
-        } else {
-            // Wake for the timeout even if the thread never reports.
+        }
+        // A load that outlasts the caller's budget: answer now; the file still opens and
+        // shows the node (the entry stays, without its `done`).
+        let answer_by = self.link.answer_by;
+        let overdue: Vec<Done> = self
+            .link
+            .waiting
+            .iter_mut()
+            .filter(|w| w.asked.elapsed() >= answer_by)
+            .filter_map(|w| w.done.take())
+            .collect();
+        for done in overdue {
+            self.answer(ctx, Some(done), Err(LinkError::StillLoading));
+        }
+        if !self.link.searches.is_empty() || self.link.waiting.iter().any(|w| w.done.is_some()) {
+            // Wake for the timeouts even if nothing else reports.
             ctx.request_repaint_after(Duration::from_millis(250));
         }
     }
@@ -564,7 +609,7 @@ impl App {
             }
             Ok(target) => {
                 let window = search.done.is_none();
-                if self.go_to(ctx, target, search.node, search.done) && window {
+                if self.go_to(ctx, target, search.node, search.done, search.started) && window {
                     // Shown or loading: the window's job is done.
                     self.link.window = false;
                     if self.link.text.trim() == search.text {
@@ -589,6 +634,7 @@ impl App {
         target: Target,
         node: Option<Guid>,
         done: Option<Done>,
+        asked: web_time::Instant,
     ) -> bool {
         match target {
             Target::Tab(id) => {
@@ -609,6 +655,7 @@ impl App {
                     path: path.clone(),
                     node,
                     done,
+                    asked,
                 });
                 self.open(path);
                 true
@@ -710,7 +757,7 @@ impl App {
         if let Some(target) = picked {
             let node = self.link.choice_node;
             self.link.choices.clear();
-            if self.go_to(ctx, target, node, None) {
+            if self.go_to(ctx, target, node, None, web_time::Instant::now()) {
                 self.link.window = false;
                 self.link.text.clear();
             }
@@ -778,7 +825,7 @@ impl App {
         if ui.button("Choose folder\u{2026}").clicked()
             && let Some(dir) = rfd::FileDialog::new().pick_folder()
         {
-            self.link.dirs = vec![dir];
+            self.link.set_dirs(vec![dir]);
         }
     }
 }
