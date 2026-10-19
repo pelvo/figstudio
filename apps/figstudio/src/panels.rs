@@ -129,7 +129,7 @@ pub fn pages(ui: &mut Ui, tab: &mut Tab) {
                     "{} internal page(s) hidden",
                     doc.internal_pages.len()
                 ))
-                .color(p.text_faint)
+                .color(p.text_dim)
                 .small(),
             );
         });
@@ -173,9 +173,7 @@ pub fn layers(ui: &mut Ui, tab: &mut Tab, filter: &str) {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.add_space(8.0);
-                        ui.label(
-                            RichText::new("No matching layers").color(theme::of(ui).text_faint),
-                        );
+                        ui.label(RichText::new("No matching layers").color(theme::of(ui).text_dim));
                     });
                 }
             }

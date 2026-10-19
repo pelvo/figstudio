@@ -57,7 +57,7 @@ pub const LIGHT: Palette = Palette {
     dark: false,
     text: Color32::from_rgb(28, 28, 32),
     text_dim: Color32::from_rgb(84, 84, 94),
-    text_faint: Color32::from_rgb(128, 128, 140),
+    text_faint: Color32::from_rgb(112, 112, 122),
     hover: white(80),
     selected: white(210),
     field: white(120),
@@ -75,7 +75,7 @@ pub const DARK: Palette = Palette {
     dark: true,
     text: Color32::from_rgb(236, 236, 241),
     text_dim: Color32::from_rgb(170, 170, 180),
-    text_faint: Color32::from_rgb(120, 120, 132),
+    text_faint: Color32::from_rgb(140, 140, 152),
     hover: white(16),
     selected: white(36),
     field: white(22),
@@ -259,7 +259,11 @@ pub fn on_accent(fill: Color32) -> Color32 {
 /// it, and an accent that stands out from the cards.
 fn custom_tint(c: Color32, dark: bool) -> Tint {
     let p = if dark { DARK } else { LIGHT };
-    let readable = |bg: Color32| contrast(p.text, bg) >= 7.0 && contrast(p.text_dim, bg) >= 4.5;
+    let readable = |bg: Color32| {
+        contrast(p.text, bg) >= 7.0
+            && contrast(p.text_dim, bg) >= 4.5
+            && contrast(p.text_faint, bg) >= 3.0
+    };
     // The strongest mix of `c` into `base`, up to `most`, with readable text on it.
     let mix = |base: Color32, most: f32| {
         (0..=20)
@@ -281,9 +285,10 @@ fn custom_tint(c: Color32, dark: bool) -> Tint {
     };
     // The accent marks the active tool and file: it must stand out from the cards.
     let toward = if dark { Color32::WHITE } else { Color32::BLACK };
+    // And button text on it (`on_accent`) must read at 4.5:1, which mid tones miss.
     let accent = (0..=20)
         .map(|i| c.lerp_to_gamma(toward, i as f32 / 20.0))
-        .find(|a| contrast(*a, p.card) >= 3.0)
+        .find(|a| contrast(*a, p.card) >= 3.0 && contrast(on_accent(*a), *a) >= 4.5)
         .unwrap_or(toward);
     Tint {
         top,
@@ -777,6 +782,11 @@ mod tests {
                         "dim text on tint {i} dark={}",
                         p.dark
                     );
+                    assert!(
+                        contrast(p.text_faint, bg) >= 3.0,
+                        "faint text on tint {i} dark={}",
+                        p.dark
+                    );
                 }
             }
             assert!(contrast(p.text, p.card) >= 7.0);
@@ -794,6 +804,10 @@ mod tests {
             [255, 0, 0],
             [0, 200, 120],
             [128, 128, 128],
+            // Mid tones, where neither black nor white text reaches 4.5:1 unchanged.
+            [68, 136, 85],
+            [119, 119, 119],
+            [0, 140, 180],
         ];
         for p in [LIGHT, DARK] {
             for rgb in picks {
@@ -801,6 +815,7 @@ mod tests {
                 for bg in [t.top, t.bottom, t.glow] {
                     assert!(contrast(p.text, bg) >= 7.0, "{rgb:?} dark={}", p.dark);
                     assert!(contrast(p.text_dim, bg) >= 4.5, "{rgb:?} dark={}", p.dark);
+                    assert!(contrast(p.text_faint, bg) >= 3.0, "{rgb:?} dark={}", p.dark);
                 }
                 assert!(
                     contrast(t.accent, p.card) >= 3.0,

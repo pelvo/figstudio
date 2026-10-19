@@ -354,9 +354,13 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   `Tab::style` (`spaces::Style`) sets a preset or custom colour, an emoji or icon badge and a
   display name. A space dot's right-click menu (and the Space menu, and the command bar)
   opens Arc's three popovers above the dot: Change space icon, Rename space, Edit theme
-  colour. Changes show at once; a click outside, Escape or Enter closes and saves them
-  (`spaces::Store`, keyed by `Tab::doc_key`, falling back to the file name so a new copy of
-  the file keeps its look). Escape while renaming goes back. The store is
+  colour. Changes show at once; a click outside, Escape or Enter closes and saves them, and
+  so do opening another popover, closing the file and quitting (`commit_space_editor`).
+  Escape while renaming goes back. `spaces::Store` finds a file by `Tab::doc_key`, else by
+  its name in the same folder (`folder_of`: a hash of the folder, never the path), so a new
+  copy keeps its look and a same-named file elsewhere does not; a reset is stored too, so it
+  sticks. Writes go to a temporary file renamed over the store, readable by its owner only
+  (0600); reads skip damaged entries and cap sizes. The store is
   `<config dir>/figstudio/spaces.json` on the desktop and `localStorage` in the browser; tests
   use an in-memory store and never touch it. It holds file names, so it stays local: nothing
   (doctor included) prints or uploads it. Custom colours go through `theme::space_tint`,
@@ -385,9 +389,22 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 - The canvas card has round corners: the page background is a rounded rect and tiles that
   reach into a corner are drawn as a polygon cut to it (`tiles_view::rounded_clip`).
 - View jumps (fit, zoom buttons and keys, the Zoom tool, double-click) ease over 0.28 s:
-  `Tab::view` changes at once (input, hit tests and the MCP see it), and `canvas::show`
-  draws with `shown_view`, which zooms geometrically around the page point both views share
-  (`view_between`). Drags, scrolls and pinches are never eased.
+  `Tab::view` is the target (the MCP and the next jump see it); `canvas::show` takes the
+  eased `shown_view` (kept in `Tab::shown`), which zooms geometrically around the page point
+  both views share (`view_between`), and uses it for hover, clicks, the marquee and the
+  drawing, so they match the pixels. Tiles are planned and requested for the target, so an
+  ease does not cancel batches as it crosses tiles. Drags, scrolls and pinches are never
+  eased.
+- The command bar is modal: `App::shortcuts` and the native menu ignore everything but its
+  own shortcut (and Quit) while it is open, and its results are keyed on the query, the
+  active file and the number of files. Layer search scores names during the walk and keeps
+  only matches. Ctrl+Tab does not reach the browser build (browsers keep it); the dots and
+  the command bar switch files there.
+- The status pill (with the MCP address and Copy token) moves above the tool pill when the
+  card is narrow; the tool pill drops − and + first, then the zoom percentage. The file dots
+  scroll sideways when they do not fit, and a hovered dot shows a × to close its file.
+- On the window gradient, small text uses `text_dim` (≥ 4.5:1 on every tint); `text_faint`
+  is for hints (≥ 3:1). `theme::tests` checks both, for presets and custom colours.
 
 ### Copy menus, marquee and region copy (`apps/figstudio`)
 

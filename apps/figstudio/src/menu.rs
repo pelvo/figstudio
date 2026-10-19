@@ -231,16 +231,19 @@ impl App {
                     Action::RenameSpace => crate::space_editor::Popover::Rename,
                     _ => crate::space_editor::Popover::Colour,
                 };
+                self.commit_space_editor();
                 self.space_editing = self
                     .tabs
                     .get(self.active)
                     .map(|tab| crate::space_editor::SpaceEditor::new(tab, kind, ctx));
             }
             Action::ResetSpace => {
+                self.commit_space_editor();
                 if let Some(tab) = self.tabs.get_mut(self.active) {
                     tab.style = Default::default();
+                    let title = tab.title();
                     self.spaces
-                        .remember(tab.doc_key.as_deref(), &tab.title(), &tab.style);
+                        .remember(crate::spaces::FileId::of(tab, &title), &tab.style);
                 }
             }
             Action::FindOnPage => self.find.show(),

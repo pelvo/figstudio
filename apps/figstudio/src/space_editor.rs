@@ -28,7 +28,7 @@ pub enum Popover {
 #[derive(Debug)]
 pub struct SpaceEditor {
     /// The tab (`Tab::id`) whose space this is.
-    tab: u64,
+    pub tab: u64,
     pub kind: Popover,
     /// The name being typed (Rename).
     name: String,
@@ -203,6 +203,20 @@ fn colour_pad(ui: &mut egui::Ui, current: Color32) -> Option<Color32> {
 }
 
 impl App {
+    /// Saves and closes an open space popover: when it closes, when another one opens, when
+    /// its file closes and when the app quits, so a change is never only in memory.
+    pub(crate) fn commit_space_editor(&mut self) {
+        let Some(editor) = self.space_editing.take() else {
+            return;
+        };
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == editor.tab) {
+            tab.style = std::mem::take(&mut tab.style).tidy();
+            let title = tab.title();
+            self.spaces
+                .remember(crate::spaces::FileId::of(tab, &title), &tab.style);
+        }
+    }
+
     /// Shows the open space popover; saves the style when it closes.
     pub(crate) fn space_popover(&mut self, ctx: &egui::Context) {
         let Some(editor) = &mut self.space_editing else {
@@ -294,14 +308,11 @@ impl App {
                 Close::Save
             };
         }
+        if close == Close::Revert {
+            tab.style = editor.before.clone();
+        }
         if close != Close::Keep {
-            if close == Close::Revert {
-                tab.style = editor.before.clone();
-            }
-            tab.style = std::mem::take(&mut tab.style).tidy();
-            self.spaces
-                .remember(tab.doc_key.as_deref(), &tab.title(), &tab.style);
-            self.space_editing = None;
+            self.commit_space_editor();
         }
         if let Some(a) = appearance {
             self.apply(Action::Appearance(a), ctx);

@@ -139,7 +139,7 @@ fn a_space_dot_menu_changes_colour_icon_and_name_and_saves_them_for_the_file() {
         let tab = &h.state().tabs[0];
         h.state()
             .spaces
-            .lookup(tab.doc_key.as_deref(), &tab.title())
+            .lookup(crate::spaces::FileId::of(tab, &tab.title()))
     };
 
     open(&mut h, "Edit theme colour…");
@@ -189,7 +189,7 @@ fn a_space_dot_menu_changes_colour_icon_and_name_and_saves_them_for_the_file() {
     assert_eq!(h.state().tabs[0].space_name(), "Launch", "Escape goes back");
 
     open(&mut h, "Reset space look");
-    assert_eq!(saved(&h), None, "reset forgets the file");
+    assert_eq!(saved(&h), Some(Style::default()), "the reset is kept");
     assert_eq!(h.state().tabs[0].style, Style::default());
 }
 
@@ -238,7 +238,13 @@ fn a_file_opens_with_the_style_saved_for_it() {
         symbol: Some(Symbol::Icon("component".into())),
         name: Some("Icons".into()),
     };
-    h.state_mut().spaces.remember(None, "vector.fig", &saved);
+    let folder = crate::spaces::folder_of(&fixture("vector.fig"));
+    let id = crate::spaces::FileId {
+        key: None,
+        file: "vector.fig",
+        folder: folder.as_deref(),
+    };
+    h.state_mut().spaces.remember(id, &saved);
     h.state_mut().open(fixture("vector.fig"));
     wait(&mut h, &mut Vec::new(), "the second file", |a| {
         a.tabs.len() == 2
@@ -422,4 +428,289 @@ fn mid_swipe_both_spaces_show_and_the_colour_is_between_theirs() {
     h.event(wheel(egui::Vec2::ZERO, egui::TouchPhase::End));
     h.run_steps(3);
     assert_eq!(h.state().active, 1, "past a third: the next space");
+}
+
+#[test]
+fn a_space_change_is_saved_when_its_popover_is_replaced_its_file_closes_or_the_app_quits() {
+    use crate::menu::Action;
+    use eframe::App as _;
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    let saved_name = |h: &Harness<'_, App>, key: &Option<String>, folder: &Option<String>| {
+        let id = crate::spaces::FileId {
+            key: key.as_deref(),
+            file: FIXTURE,
+            folder: folder.as_deref(),
+        };
+        h.state().spaces.lookup(id).and_then(|s| s.name)
+    };
+    let (key, folder) = {
+        let tab = &h.state().tabs[0];
+        (tab.doc_key.clone(), tab.folder.clone())
+    };
+    let rename = |h: &mut Harness<'_, App>, text: &str| {
+        let ctx = h.ctx.clone();
+        h.state_mut().apply(Action::RenameSpace, &ctx);
+        h.run_steps(2);
+        h.event(egui::Event::Text(text.into()));
+        h.run_steps(2);
+    };
+
+    rename(&mut h, "One");
+    h.state_mut().apply(Action::SpaceIcon, &ctx);
+    h.run_steps(2);
+    assert_eq!(
+        saved_name(&h, &key, &folder).as_deref(),
+        Some("One"),
+        "replaced by another popover"
+    );
+
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    h.state_mut().apply(Action::RenameSpace, &ctx);
+    h.run_steps(2);
+    h.event(egui::Event::Text(" more".into()));
+    h.run_steps(2);
+    h.state_mut().on_exit();
+    assert_eq!(
+        saved_name(&h, &key, &folder).as_deref(),
+        Some("One more"),
+        "the app quits"
+    );
+
+    let mut h = harness();
+    rename(&mut h, "Two");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    h.run_steps(2);
+    assert!(h.state().tabs.is_empty(), "⌘W closed the file");
+    assert_eq!(
+        saved_name(&h, &key, &folder).as_deref(),
+        Some("Two"),
+        "its file closed"
+    );
+}
+
+#[test]
+fn the_command_bar_is_modal_and_never_lists_another_files_layers() {
+    use crate::command::Target;
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    // The files load side by side; find which tab is which.
+    let structure = (h.state().tabs.iter())
+        .position(|t| t.title() == FIXTURE)
+        .expect("open");
+    h.state_mut().active = structure;
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(2);
+    h.event(egui::Event::Text("symbols and images".into()));
+    h.run_steps(2);
+    let layer = |h: &Harness<'_, App>| {
+        h.state()
+            .command
+            .results()
+            .iter()
+            .any(|e| matches!(e.target, Target::Layer(_)))
+    };
+    assert!(layer(&h), "the layer of the active file is listed");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    h.key_press_modifiers(Modifiers::CTRL, Key::Tab);
+    h.run_steps(2);
+    assert_eq!(
+        h.state().tabs.len(),
+        2,
+        "⌘W does not close a file under the bar"
+    );
+    assert_eq!(
+        h.state().active,
+        structure,
+        "Ctrl+Tab does not switch under the bar"
+    );
+    assert!(h.state().command.is_open());
+    // Should the active file change anyway (an agent, a menu), the list follows it.
+    h.state_mut().active = 1 - structure;
+    h.run_steps(2);
+    assert!(!layer(&h), "the other file has no such layer");
+}
+
+#[test]
+fn during_an_eased_zoom_clicks_hit_what_is_drawn_and_tiles_are_asked_for_the_target() {
+    // A rounded rectangle away from other nodes (as in ui_copy_tests.rs).
+    const NODE: Guid = Guid(1, 34);
+    // Frames a 60th of a second apart, so the 0.28 s ease takes several.
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE)]));
+    wait(&mut h, &mut Vec::new(), "the file to load", |a| {
+        a.tabs
+            .first()
+            .is_some_and(|t| t.canvas_rect.is_some() && !t.fit_pending)
+    });
+    let ctx = h.ctx.clone();
+    crate::anim::set_reduced(&ctx, false);
+    h.run_steps(2);
+    h.state_mut().apply(crate::menu::Action::ZoomBy(2.0), &ctx);
+    for _ in 0..5 {
+        h.step();
+    }
+    let tab = &h.state().tabs[0];
+    let (shown, target) = (tab.shown, tab.view);
+    assert!(
+        shown.zoom > target.zoom / 2.0 && shown.zoom < target.zoom,
+        "mid-ease: {shown:?}"
+    );
+    let ppp = h.ctx.pixels_per_point();
+    let level = crate::tiles::level_for(target.zoom * ppp);
+    assert!(
+        tab.tile_requests.iter().all(|k| k.level == level),
+        "tiles for the target level {level}: {:?}",
+        tab.tile_requests
+            .iter()
+            .map(|k| k.level)
+            .collect::<Vec<_>>()
+    );
+    // Click where the node is drawn now, not where it will end up.
+    let b = figstudio_render::node_bounds(&tab.doc, NODE).expect("bounds");
+    let page = Pos2::new(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32);
+    let at = shown.to_screen(tab.canvas_rect.expect("laid out").min, page);
+    h.event(Event::PointerMoved(at));
+    h.step();
+    press(&h, at, PointerButton::Primary, true);
+    press(&h, at, PointerButton::Primary, false);
+    h.step();
+    assert_eq!(h.state().tabs[0].selection, Some(NODE));
+}
+
+#[test]
+fn a_click_on_the_peeking_sidebar_does_not_reach_the_canvas() {
+    const NODE: Guid = Guid(1, 34);
+    let mut h = harness();
+    h.state_mut().show_left = false;
+    h.run_steps(3);
+    h.state_mut().tabs[0].select(Some(NODE));
+    h.state_mut().peek = true;
+    h.run_steps(3);
+    // The card's left padding, over the canvas's empty margin.
+    let at = Pos2::new(crate::theme::GAP + 3.0, 300.0);
+    h.event(Event::PointerMoved(at));
+    h.step();
+    assert!(h.state().peek, "still peeking");
+    press(&h, at, PointerButton::Primary, true);
+    press(&h, at, PointerButton::Primary, false);
+    h.run_steps(2);
+    assert_eq!(
+        h.state().tabs[0].selection,
+        Some(NODE),
+        "the click stayed on the sidebar"
+    );
+}
+
+#[test]
+fn a_narrow_window_keeps_the_status_and_the_zoom_percentage() {
+    // The smallest window, both panels open: the canvas card is about 200 points wide.
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(720.0, 560.0))
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE)]));
+    wait(&mut h, &mut Vec::new(), "the file to load", |a| {
+        a.tabs
+            .first()
+            .is_some_and(|t| t.canvas_rect.is_some() && !t.fit_pending)
+    });
+    h.run_steps(3);
+    let card = h.state().tabs[0].canvas_rect.expect("laid out");
+    assert!(card.width() < 260.0, "narrow: {}", card.width());
+    assert!(
+        h.query_by_label_contains("layers drawn").is_some(),
+        "the status pill"
+    );
+    assert!(
+        h.query_by_label("Zoom to fit").is_some(),
+        "the zoom percentage"
+    );
+    assert!(h.query_by_label("Hand tool").is_some());
+}
+
+#[test]
+fn many_files_scroll_in_the_footer_and_a_hovered_dot_shows_a_close_button() {
+    let names = [
+        "structure.fig",
+        "vector.fig",
+        "sections.fig",
+        "corners.fig",
+        "stacks_wrap.fig",
+        "noise_and_grain.fig",
+        "broken_images.fig",
+    ];
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(move |cc| App::new(cc, names.iter().map(|n| fixture(n)).collect()));
+    wait(&mut h, &mut Vec::new(), "all files to load", |a| {
+        a.tabs.len() == 7
+    });
+    h.run_steps(3);
+    // The narrowest sidebar.
+    let width =
+        egui::containers::panel::PanelState::load(&h.ctx, egui::Id::new(crate::chrome::SIDEBAR))
+            .map(|s| s.size().x)
+            .expect("shown");
+    let edge = Pos2::new(width, 400.0);
+    h.event(Event::PointerMoved(edge));
+    h.step();
+    press(&h, edge, PointerButton::Primary, true);
+    // To just above its minimum (past it, the sidebar would close).
+    let to = 200.0 - width;
+    for i in 1..=4 {
+        h.event(Event::PointerMoved(
+            edge + egui::vec2(to * i as f32 / 4.0, 0.0),
+        ));
+        h.step();
+    }
+    press(
+        &h,
+        edge + egui::vec2(to, 0.0),
+        PointerButton::Primary,
+        false,
+    );
+    h.run_steps(5);
+    assert!(h.state().show_left, "the sidebar is still open");
+    let plus = h.get_by_label("Open file…").rect();
+    let app = h.state();
+    assert!(
+        app.dots_clip.right() < plus.left(),
+        "the dots stop before the + button"
+    );
+    let active = app.tabs[app.active].id;
+    let (_, dot) = *app
+        .space_dots
+        .iter()
+        .find(|(id, _)| *id == active)
+        .expect("a dot");
+    assert!(
+        app.dots_clip.expand(0.5).contains_rect(dot),
+        "the active file's dot is scrolled into view, clear of the + button: {dot:?} in {:?}",
+        app.dots_clip
+    );
+    // Hovering a dot shows its close button.
+    let name = app.tabs[app.active].space_name();
+    h.event(Event::PointerMoved(dot.center()));
+    h.run_steps(2);
+    h.get_by_label(&format!("Close {name}")).click();
+    h.run_steps(2);
+    assert_eq!(h.state().tabs.len(), 6);
+}
+
+#[test]
+fn without_the_blur_the_window_clears_to_an_opaque_colour() {
+    use eframe::App as _;
+    let h = harness();
+    let clear = h.state().clear_color(&egui::Visuals::dark());
+    assert_eq!(
+        clear[3], 1.0,
+        "no blur here (Linux, Windows, the browser, tests): {clear:?}"
+    );
 }

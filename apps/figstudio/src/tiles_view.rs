@@ -141,17 +141,20 @@ impl Tiles {
     pub fn show(
         &mut self,
         painter: &egui::Painter,
-        rect: Rect,
-        radius: f32,
+        (rect, radius): (Rect, f32),
         tab: &mut Tab,
+        target: crate::tab::View,
         workers: &mut Workers,
         ppp: f32,
     ) {
+        // Drawn: what `tab.view` shows (an ease in progress, maybe). Planned and requested:
+        // the `target` view it is heading for.
         let (doc, page, view) = (tab.doc.instance, tab.page, tab.view);
         let visible = tiles::visible_page(view.zoom, view.pan.into(), rect.size().into());
+        let planned = tiles::visible_page(target.zoom, target.pan.into(), rect.size().into());
         let range = tiles::plan(
-            tiles::level_for(view.zoom * ppp),
-            visible,
+            tiles::level_for(target.zoom * ppp),
+            planned,
             self.cache.budget(),
         );
         let level = range.level;

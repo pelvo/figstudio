@@ -40,7 +40,8 @@ impl Style {
                 let e: String = e.trim().chars().take(MAX_EMOJI).collect();
                 (!e.is_empty()).then_some(Symbol::Emoji(e))
             }
-            other => other,
+            Some(Symbol::Icon(name)) => icon(&name).is_some().then_some(Symbol::Icon(name)),
+            None => None,
         };
         self
     }
@@ -79,6 +80,35 @@ pub fn icon(name: &str) -> Option<Icon> {
     ICONS.iter().find(|(n, _)| *n == name).map(|(_, i)| *i)
 }
 
+/// Which file a style belongs to: its content key when known, its name, and a hash of its
+/// folder (never the path itself), so a same-named file in another folder is another file.
+#[derive(Clone, Copy, Debug)]
+pub struct FileId<'a> {
+    pub key: Option<&'a str>,
+    pub file: &'a str,
+    pub folder: Option<&'a str>,
+}
+
+impl<'a> FileId<'a> {
+    pub fn of(tab: &'a crate::tab::Tab, title: &'a str) -> Self {
+        Self {
+            key: tab.doc_key.as_deref(),
+            file: title,
+            folder: tab.folder.as_deref(),
+        }
+    }
+}
+
+/// A short hash of the folder holding `path` (`None` without one, as in the browser).
+pub fn folder_of(path: &std::path::Path) -> Option<String> {
+    use sha2::Digest as _;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty())?;
+    let hash = sha2::Sha256::digest(parent.to_string_lossy().as_bytes());
+    Some(hash[..8].iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// One remembered file. A default `style` is kept too (a reset), so a reset file does not
+/// fall back to an older copy's style.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Entry {
     /// The file's content key, when known.
@@ -86,8 +116,41 @@ struct Entry {
     key: Option<String>,
     /// The file name, for a new copy of the same file.
     file: String,
+    /// [`folder_of`] the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
     style: Style,
 }
+
+impl Entry {
+    /// Cuts what a damaged or hostile store could hold: long keys, names and folders.
+    fn tidy(mut self) -> Option<Self> {
+        let short = |s: &str, max: usize| s.chars().count() <= max;
+        if !short(&self.file, MAX_FILE)
+            || self.key.as_deref().is_some_and(|k| !short(k, MAX_KEY))
+            || self.folder.as_deref().is_some_and(|f| !short(f, MAX_KEY))
+        {
+            return None;
+        }
+        self.style = self.style.tidy();
+        Some(self)
+    }
+
+    fn is(&self, id: &FileId<'_>) -> bool {
+        match id.key {
+            Some(key) => self.key.as_deref() == Some(key),
+            None => {
+                self.key.is_none() && self.file == id.file && self.folder.as_deref() == id.folder
+            }
+        }
+    }
+}
+
+/// Longest file name, key or folder hash kept from the store.
+const MAX_FILE: usize = 255;
+const MAX_KEY: usize = 64;
+/// Largest store read (bytes); a bigger one is ignored, not read.
+const MAX_BYTES: u64 = 2 << 20;
 
 /// Where the styles live.
 #[derive(Debug)]
@@ -126,7 +189,8 @@ impl Store {
     }
 
     /// The store of this computer: `<config>/figstudio/spaces.json` on the desktop,
-    /// `localStorage` in the browser. Unreadable or damaged data starts an empty store.
+    /// `localStorage` in the browser. Unreadable data starts an empty store; damaged entries
+    /// are skipped one by one.
     pub fn load() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -137,7 +201,9 @@ impl Store {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let text = local_storage().and_then(|s| s.get_item(STORAGE_KEY).ok().flatten());
+            let text = local_storage()
+                .and_then(|s| s.get_item(STORAGE_KEY).ok().flatten())
+                .filter(|t| t.len() as u64 <= MAX_BYTES);
             Self {
                 entries: text.as_deref().map(parse).unwrap_or_default(),
                 backend: Backend::LocalStorage,
@@ -148,7 +214,17 @@ impl Store {
     /// The store kept in the file at `path` (read now; written on every change).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn at(path: std::path::PathBuf) -> Self {
-        let entries = match std::fs::read_to_string(&path) {
+        let read = std::fs::metadata(&path).and_then(|m| {
+            if m.len() > MAX_BYTES {
+                Err(std::io::Error::other(format!(
+                    "{} bytes, more than {MAX_BYTES}",
+                    m.len()
+                )))
+            } else {
+                std::fs::read_to_string(&path)
+            }
+        });
+        let entries = match read {
             Ok(text) => parse(&text),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => {
@@ -162,34 +238,34 @@ impl Store {
         }
     }
 
-    /// The style saved for the file with content `key` named `file`: by key first, else the
-    /// last one saved under that name.
-    pub fn lookup(&self, key: Option<&str>, file: &str) -> Option<Style> {
-        let by_key = key.and_then(|k| {
+    /// The style saved for the file: by its content key first, else the last one saved
+    /// under the same name in the same folder. A reset file gives the default style.
+    pub fn lookup(&self, id: FileId<'_>) -> Option<Style> {
+        let by_key = id.key.and_then(|k| {
             self.entries
                 .iter()
                 .rev()
                 .find(|e| e.key.as_deref() == Some(k))
         });
         by_key
-            .or_else(|| self.entries.iter().rev().find(|e| e.file == file))
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .rev()
+                    .find(|e| e.file == id.file && e.folder.as_deref() == id.folder)
+            })
             .map(|e| e.style.clone())
     }
 
-    /// Saves `style` for the file (`key`, `file`). The default style forgets the file.
-    pub fn remember(&mut self, key: Option<&str>, file: &str, style: &Style) {
-        let style = style.clone().tidy();
-        self.entries.retain(|e| match (key, e.key.as_deref()) {
-            (Some(k), Some(ek)) => k != ek,
-            _ => e.file != file,
+    /// Saves `style` for the file; the default style is saved too (a reset sticks).
+    pub fn remember(&mut self, id: FileId<'_>, style: &Style) {
+        self.entries.retain(|e| !e.is(&id));
+        self.entries.push(Entry {
+            key: id.key.map(str::to_owned),
+            file: id.file.to_owned(),
+            folder: id.folder.map(str::to_owned),
+            style: style.clone().tidy(),
         });
-        if style != Style::default() {
-            self.entries.push(Entry {
-                key: key.map(str::to_owned),
-                file: file.to_owned(),
-                style,
-            });
-        }
         let extra = self.entries.len().saturating_sub(MAX_ENTRIES);
         self.entries.drain(..extra);
         self.save();
@@ -207,30 +283,59 @@ impl Store {
             Backend::Memory => {}
             #[cfg(not(target_arch = "wasm32"))]
             Backend::File(path) => {
-                let written = path
-                    .parent()
-                    .map_or(Ok(()), std::fs::create_dir_all)
-                    .and_then(|()| std::fs::write(path, text));
-                if let Err(e) = written {
+                if let Err(e) = write_private(path, &text) {
                     tracing::warn!("space styles not saved: {e}");
                 }
             }
             #[cfg(target_arch = "wasm32")]
             Backend::LocalStorage => {
-                if let Some(storage) = local_storage() {
-                    let _ = storage.set_item(STORAGE_KEY, &text);
+                let set = local_storage().map(|s| s.set_item(STORAGE_KEY, &text));
+                if !matches!(set, Some(Ok(()))) {
+                    tracing::warn!("space styles not saved: the browser's storage refused them");
                 }
             }
         }
     }
 }
 
-/// The entries in `text`, or none when it is not a valid list (a damaged file starts over).
+/// Writes `text` to `path` readable by its owner only, all or nothing: into a temporary file
+/// next to it, then renamed over it, so a crash never leaves half a file.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let temp = path.with_extension("json.tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temp)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&temp, path)
+}
+
+/// The entries in `text`: each damaged or oversized one is skipped, not the whole list, and
+/// at most the newest [`MAX_ENTRIES`] are kept.
 fn parse(text: &str) -> Vec<Entry> {
-    serde_json::from_str(text).unwrap_or_else(|e| {
+    let items: Vec<serde_json::Value> = serde_json::from_str(text).unwrap_or_else(|e| {
         tracing::warn!("space styles ignored: {e}");
         Vec::new()
-    })
+    });
+    let mut entries: Vec<Entry> = items
+        .into_iter()
+        .filter_map(|item| serde_json::from_value::<Entry>(item).ok())
+        .filter_map(Entry::tidy)
+        .collect();
+    let extra = entries.len().saturating_sub(MAX_ENTRIES);
+    entries.drain(..extra);
+    entries
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -250,35 +355,64 @@ mod tests {
         }
     }
 
+    fn id<'a>(key: Option<&'a str>, file: &'a str, folder: Option<&'a str>) -> FileId<'a> {
+        FileId { key, file, folder }
+    }
+
     #[test]
-    fn a_file_is_found_by_its_key_then_by_its_name() {
+    fn a_file_is_found_by_its_key_then_by_its_name_in_the_same_folder() {
         let mut store = Store::memory();
-        store.remember(Some("k1"), "a.fig", &rose());
+        store.remember(id(Some("k1"), "a.fig", Some("f1")), &rose());
+        let found = |s: &Store, key, file, folder| s.lookup(id(key, file, folder));
         assert_eq!(
-            store.lookup(Some("k1"), "renamed.fig"),
+            found(&store, Some("k1"), "renamed.fig", Some("f9")),
             Some(rose()),
             "by key"
         );
         assert_eq!(
-            store.lookup(Some("k2"), "a.fig"),
+            found(&store, Some("k2"), "a.fig", Some("f1")),
             Some(rose()),
-            "a new copy, same name"
+            "a new copy"
         );
-        assert_eq!(store.lookup(Some("k3"), "b.fig"), None);
+        assert_eq!(
+            found(&store, Some("k2"), "a.fig", Some("f2")),
+            None,
+            "a same-named file in another folder is another file"
+        );
+        assert_eq!(found(&store, Some("k3"), "b.fig", Some("f1")), None);
         let blue = Style {
             colour: Some(Colour::Custom([0, 0, 255])),
             ..Style::default()
         };
-        store.remember(Some("k1"), "a.fig", &blue);
-        assert_eq!(store.lookup(Some("k1"), "a.fig"), Some(blue), "replaced");
-        assert_eq!(store.entries.len(), 1);
-        store.remember(Some("k1"), "a.fig", &Style::default());
+        store.remember(id(Some("k1"), "a.fig", Some("f1")), &blue);
         assert_eq!(
-            store.lookup(Some("k1"), "a.fig"),
-            None,
-            "the default forgets"
+            found(&store, Some("k1"), "a.fig", Some("f1")),
+            Some(blue),
+            "replaced"
         );
-        assert!(store.entries.is_empty());
+        assert_eq!(store.entries.len(), 1);
+    }
+
+    #[test]
+    fn a_reset_sticks_even_when_an_older_copy_has_a_style() {
+        let mut store = Store::memory();
+        let (a, b) = (
+            id(Some("kA"), "design.fig", Some("f")),
+            id(Some("kB"), "design.fig", Some("f")),
+        );
+        store.remember(a, &rose());
+        assert_eq!(store.lookup(b), Some(rose()), "the re-export inherits");
+        store.remember(b, &rose());
+        store.remember(b, &Style::default());
+        assert_eq!(store.lookup(b), Some(Style::default()), "the reset stays");
+        assert_eq!(
+            store.lookup(a),
+            Some(rose()),
+            "the older copy keeps its own"
+        );
+        // Without a key only the unkeyed entry of that name and folder is replaced.
+        store.remember(id(None, "design.fig", Some("f")), &Style::default());
+        assert_eq!(store.lookup(a), Some(rose()), "keyed entries stay");
     }
 
     #[test]
@@ -308,14 +442,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut store = Store::at(path.clone());
         assert!(store.entries.is_empty(), "no file yet");
-        store.remember(Some("k1"), "a.fig", &rose());
-        assert_eq!(
-            Store::at(path.clone()).lookup(Some("k1"), "a.fig"),
-            Some(rose())
+        let a = id(Some("k1"), "a.fig", None);
+        store.remember(a, &rose());
+        assert_eq!(Store::at(path.clone()).lookup(a), Some(rose()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path)
+                .expect("written")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "only its owner reads it");
+        }
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "written through a temporary file"
         );
         std::fs::write(&path, "{ not json").expect("write");
-        let damaged = Store::at(path.clone());
-        assert!(damaged.entries.is_empty(), "starts over");
+        assert!(Store::at(path.clone()).entries.is_empty(), "starts over");
+        // One bad entry (and an oversized one) is skipped, not the whole list.
+        let long = "x".repeat(MAX_FILE + 1);
+        let text = format!(
+            r#"[{{"key":"k1","file":"a.fig","style":{{"name":"Kept"}}}},{{"file":7}},{{"file":"{long}","style":{{}}}}]"#
+        );
+        std::fs::write(&path, text).expect("write");
+        let kept = Store::at(path.clone());
+        assert_eq!(kept.entries.len(), 1);
+        assert_eq!(kept.lookup(a).and_then(|s| s.name), Some("Kept".into()));
+        // A store too big to be one is not read.
+        std::fs::write(&path, " ".repeat(MAX_BYTES as usize + 1)).expect("write");
+        assert!(Store::at(path.clone()).entries.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -323,11 +479,12 @@ mod tests {
     fn old_files_are_forgotten_first() {
         let mut store = Store::memory();
         for i in 0..MAX_ENTRIES + 3 {
-            store.remember(Some(&format!("k{i}")), &format!("{i}.fig"), &rose());
+            let (key, file) = (format!("k{i}"), format!("{i}.fig"));
+            store.remember(id(Some(&key), &file, None), &rose());
         }
         assert_eq!(store.entries.len(), MAX_ENTRIES);
-        assert_eq!(store.lookup(Some("k0"), "0.fig"), None);
-        assert!(store.lookup(Some("k3"), "3.fig").is_some());
+        assert_eq!(store.lookup(id(Some("k0"), "0.fig", None)), None);
+        assert!(store.lookup(id(Some("k3"), "3.fig", None)).is_some());
     }
 
     #[test]

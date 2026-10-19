@@ -150,6 +150,30 @@ pub(crate) fn context_menu(response: &Response, add: impl FnOnce(&mut Ui)) {
         .show(add);
 }
 
+/// What was clicked among the file dots this frame.
+#[derive(Debug, Default)]
+struct Dots {
+    pick: Option<usize>,
+    close: Option<usize>,
+    action: Option<(usize, Action)>,
+}
+
+/// Width of a file dot's slot in the sidebar's footer.
+pub(crate) const DOT: f32 = 26.0;
+/// Most a dot grows (the spring's overshoot plus hover).
+const DOT_MAX_SCALE: f32 = 1.15;
+
+/// The badge's size and the active ring's radius for a dot at `scale`: they stay inside the
+/// slot, so neighbouring dots never overlap.
+pub(crate) fn dot_metrics(symbol: bool, scale: f32) -> (f32, f32) {
+    let scale = scale.clamp(0.0, DOT_MAX_SCALE);
+    if symbol {
+        (17.0 * scale, 8.5 * scale + 1.8)
+    } else {
+        (13.0 * scale, 6.5 * scale + 3.0)
+    }
+}
+
 /// Paints a space's badge in the square `rect`: its emoji or icon on a soft disc of its
 /// `accent`, or a plain accent dot.
 pub(crate) fn paint_badge(
@@ -197,7 +221,8 @@ fn section_label(ui: &mut Ui, title: &str, count: Option<usize>) {
         Align2::LEFT_CENTER,
         title,
         theme::semibold(11.0),
-        p.text_faint,
+        // On the window gradient: dim, not faint, so small text stays readable (4.5:1).
+        p.text_dim,
     );
     if let Some(n) = count {
         painter.text(
@@ -205,7 +230,7 @@ fn section_label(ui: &mut Ui, title: &str, count: Option<usize>) {
             Align2::RIGHT_CENTER,
             n.to_string(),
             egui::FontId::proportional(11.0),
-            p.text_faint,
+            p.text_dim,
         );
     }
 }
@@ -492,6 +517,9 @@ impl App {
             .order(egui::Order::Foreground)
             .fixed_pos(card.min)
             .show(ctx, |ui| {
+                // The card takes the pointer everywhere, gaps and padding included, so no
+                // click or drag on it reaches the canvas underneath.
+                ui.interact(card, Id::new("peek-card"), Sense::click_and_drag());
                 let radius = CornerRadius::same(CARD_RADIUS);
                 let painter = ui.painter();
                 painter.add(card_shadow(&p, 28).as_shape(card, radius));
@@ -691,7 +719,7 @@ impl App {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.add_space(6.0);
-                ui.label(RichText::new("No file open").color(p.text_faint));
+                ui.label(RichText::new("No file open").color(p.text_dim));
             });
             return;
         };
@@ -713,19 +741,69 @@ impl App {
 
     /// The bottom of the sidebar: one dot per open file in its colour, like Arc's spaces.
     fn file_switcher(&mut self, ui: &mut Ui) {
+        let ctx = ui.ctx().clone();
+        let row = ui.max_rect();
+        let plus = 30.0;
+        // The dots, centred when they fit; a sideways scroll when they do not, so they never
+        // run under the + button.
+        let area = Rect::from_min_max(row.min, pos2(row.right() - plus - 6.0, row.max.y));
+        self.dots_clip = area;
+        let count = self.tabs.len() + self.loading.len();
+        let fits = count as f32 * DOT <= area.width();
+        let mut dots = ui.new_child(
+            UiBuilder::new()
+                .max_rect(area)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        dots.spacing_mut().item_spacing.x = 0.0;
+        let mut clicked = Dots::default();
+        if fits {
+            dots.add_space((area.width() - count as f32 * DOT) / 2.0);
+            self.dots(&mut dots, &mut clicked);
+        } else {
+            egui::ScrollArea::horizontal()
+                .id_salt("file-dots")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(&mut dots, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        self.dots(ui, &mut clicked);
+                    });
+                });
+        }
+        let plus_at = Rect::from_center_size(
+            pos2(row.right() - plus / 2.0, row.center().y),
+            vec2(28.0, 28.0),
+        );
+        let open = ui
+            .put(plus_at, |ui: &mut Ui| {
+                icons::button(ui, Icon::Plus, "Open file…", false)
+            })
+            .clicked();
+        if let Some(i) = clicked.pick {
+            self.active = i;
+        }
+        if let Some((i, then)) = clicked.action {
+            self.active = i;
+            self.apply(then, &ctx);
+        }
+        if let Some(i) = clicked.close {
+            self.close(i);
+        }
+        if open {
+            self.open_dialog(&ctx);
+        }
+    }
+
+    /// One dot per open file (a × to close it on hover, a menu on right-click) and a spinner
+    /// per file still loading.
+    fn dots(&mut self, ui: &mut Ui, clicked: &mut Dots) {
         let p = theme::of(ui);
         let ctx = ui.ctx().clone();
-        let dot = 26.0;
-        let count = self.tabs.len() + self.loading.len();
-        let plus = 30.0;
-        ui.spacing_mut().item_spacing.x = 0.0;
-        let free = ui.available_width() - plus - count as f32 * dot;
-        ui.add_space((free / 2.0).max(4.0));
-        let (mut pick, mut close, mut action) = (None, None, None);
         self.space_dots.clear();
         for (i, tab) in self.tabs.iter().enumerate() {
             let active = i == self.active;
-            let (rect, response) = ui.allocate_exact_size(vec2(dot, dot), Sense::click());
+            let (rect, response) = ui.allocate_exact_size(vec2(DOT, DOT), Sense::click());
             let title = tab.space_name();
             response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, active, &title));
             let (hover, press) = icons::feedback(ui, &response);
@@ -738,31 +816,48 @@ impl App {
             let scale = grow + hover * 0.12 - press * 0.15;
             let tint = theme::space_tint(tab.colour(), p.dark);
             let c = rect.center();
-            let painter = ui.painter();
-            let badge = Rect::from_center_size(c, vec2(22.0, 22.0) * scale);
+            let (size, ring) = dot_metrics(tab.style.symbol.is_some(), scale);
+            let badge = Rect::from_center_size(c, vec2(size, size));
             paint_badge(
-                painter,
+                ui.painter(),
                 badge,
                 tab.style.symbol.as_ref(),
                 tint.accent,
                 p.text,
             );
             if active {
-                let ring = if tab.style.symbol.is_some() {
-                    11.0
-                } else {
-                    6.5
-                } * scale
-                    + 2.5;
-                painter.circle_stroke(c, ring, Stroke::new(1.5, tint.accent.gamma_multiply(0.55)));
+                ui.painter().circle_stroke(
+                    c,
+                    ring,
+                    Stroke::new(1.5, tint.accent.gamma_multiply(0.55)),
+                );
             }
             self.space_dots.push((tab.id, rect));
+            // Bring the active file's dot into view when it changes or the footer resizes;
+            // otherwise the dots stay where the person scrolled them.
+            if active && (tab.id, self.dots_clip.width()) != self.dot_in_view {
+                response.scroll_to_me(None);
+            }
             let response = response.on_hover_text(&title);
             if response.clicked() {
-                pick = Some(i);
+                clicked.pick = Some(i);
             }
             if response.middle_clicked() {
-                close = Some(i);
+                clicked.close = Some(i);
+            }
+            // A visible way to close: a small × on the dot under the pointer.
+            if ui.rect_contains_pointer(rect) {
+                let x =
+                    Rect::from_center_size(rect.right_top() + vec2(-6.0, 6.0), vec2(12.0, 12.0));
+                let close = ui.interact(x, response.id.with("close"), Sense::click());
+                let label = format!("Close {title}");
+                close.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
+                let fill = if close.hovered() { p.text } else { p.text_dim };
+                ui.painter().circle_filled(x.center(), 6.0, fill);
+                icons::paint(ui.painter(), Icon::Close, x.shrink(3.0), p.card);
+                if close.clicked() {
+                    clicked.close = Some(i);
+                }
             }
             context_menu(&response, |ui| {
                 ui.set_min_width(200.0);
@@ -772,40 +867,31 @@ impl App {
                     ("Edit theme colour…", Action::SpaceColour),
                 ] {
                     if ui.button(label).clicked() {
-                        action = Some((i, then));
+                        clicked.action = Some((i, then));
                     }
                 }
                 ui.separator();
                 if ui.button("Reset space look").clicked() {
-                    action = Some((i, Action::ResetSpace));
+                    clicked.action = Some((i, Action::ResetSpace));
                 }
                 ui.separator();
                 if ui.button("Close space").clicked() {
-                    close = Some(i);
+                    clicked.close = Some(i);
                 }
             });
         }
-        for _ in self.loading.iter() {
-            let (rect, _) = ui.allocate_exact_size(vec2(dot, dot), Sense::hover());
+        self.dot_in_view = (
+            self.tabs.get(self.active).map_or(0, |t| t.id),
+            self.dots_clip.width(),
+        );
+        for path in self.loading.iter() {
+            let (rect, response) = ui.allocate_exact_size(vec2(DOT, DOT), Sense::hover());
             egui::Spinner::new().paint_at(ui, rect.shrink(7.0));
-        }
-        let mut open = false;
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add_space(2.0);
-            open = icons::button(ui, Icon::Plus, "Open file…", false).clicked();
-        });
-        if let Some(i) = pick {
-            self.active = i;
-        }
-        if let Some((i, then)) = action {
-            self.active = i;
-            self.apply(then, &ctx);
-        }
-        if let Some(i) = close {
-            self.close(i);
-        }
-        if open {
-            self.open_dialog(&ctx);
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            response.on_hover_text(format!("Opening {name}…"));
         }
     }
 
@@ -857,7 +943,7 @@ impl App {
             );
             if !self.render_worker_lost && self.tabs.get(self.active).is_some() {
                 let tools = self.tool_pill(ui, card, &mut actions);
-                self.status_pill(ui, card, tools.left() - 8.0);
+                self.status_pill(ui, card, tools);
                 let below = self.find_bar(ui, card);
                 self.gaps_chip(ui, card, below);
             }
@@ -887,10 +973,20 @@ impl App {
             ),
         ];
         let (b, pad, zoom_w, sep) = (30.0, 4.0, 52.0, 9.0);
-        let full = pad * 2.0 + b * 3.0 + sep + b * 2.0 + zoom_w;
-        // A narrow card keeps only the tools (the zoom stays on the keys and the menus).
-        let compact = card.width() < full + 32.0;
-        let width = if compact { pad * 2.0 + b * 3.0 } else { full };
+        let tools_only = pad * 2.0 + b * 3.0;
+        let with_zoom = tools_only + sep + zoom_w;
+        let full = with_zoom + b * 2.0;
+        // A narrow card drops the − and + first (the keys and menus still zoom), then the
+        // zoom percentage.
+        let (zoom_shown, steps_shown) = (
+            card.width() >= with_zoom + 32.0,
+            card.width() >= full + 32.0,
+        );
+        let width = match (zoom_shown, steps_shown) {
+            (_, true) => full,
+            (true, false) => with_zoom,
+            _ => tools_only,
+        };
         let rect = Rect::from_center_size(
             pos2(card.center().x, card.bottom() - 32.0),
             vec2(width, 38.0),
@@ -937,7 +1033,7 @@ impl App {
                 actions.push(Action::SelectTool(tool));
             }
         }
-        if compact {
+        if !zoom_shown {
             return rect;
         }
         let sep_x = rect.left() + pad + 3.0 * b + sep / 2.0;
@@ -948,17 +1044,19 @@ impl App {
         );
         let left = sep_x + sep / 2.0;
         let out = Rect::from_min_size(pos2(left, rect.top() + 4.0), vec2(b, b));
-        let zoom = Rect::from_min_size(pos2(out.right(), rect.top() + 4.0), vec2(zoom_w, b));
+        let zoom_left = if steps_shown { out.right() } else { left };
+        let zoom = Rect::from_min_size(pos2(zoom_left, rect.top() + 4.0), vec2(zoom_w, b));
         let into = Rect::from_min_size(pos2(zoom.right(), rect.top() + 4.0), vec2(b, b));
-        if pill_button(
-            ui,
-            out,
-            Id::new("zoom-out"),
-            (Some(Icon::Minus), "Zoom out", "Zoom out (-)"),
-            false,
-            accent,
-        )
-        .clicked()
+        if steps_shown
+            && pill_button(
+                ui,
+                out,
+                Id::new("zoom-out"),
+                (Some(Icon::Minus), "Zoom out", "Zoom out (-)"),
+                false,
+                accent,
+            )
+            .clicked()
         {
             actions.push(Action::ZoomBy(0.8));
         }
@@ -984,34 +1082,42 @@ impl App {
         if response.on_hover_text("Zoom to fit (⇧1)").clicked() {
             actions.push(Action::ZoomFit);
         }
-        if pill_button(
-            ui,
-            into,
-            Id::new("zoom-in"),
-            (Some(Icon::Plus), "Zoom in", "Zoom in (+)"),
-            false,
-            accent,
-        )
-        .clicked()
+        if steps_shown
+            && pill_button(
+                ui,
+                into,
+                Id::new("zoom-in"),
+                (Some(Icon::Plus), "Zoom in", "Zoom in (+)"),
+                false,
+                accent,
+            )
+            .clicked()
         {
             actions.push(Action::ZoomBy(1.25));
         }
         rect
     }
 
-    /// What draws the canvas, the cursor and the render time, at the bottom left.
-    fn status_pill(&mut self, ui: &mut Ui, card: Rect, right: f32) {
+    /// What draws the canvas, the cursor, the render time and agent access, at the bottom
+    /// left beside the tool pill (`tools`), or above it when the card is too narrow: it never
+    /// goes away, since it holds the MCP address and its Copy token button.
+    fn status_pill(&mut self, ui: &mut Ui, card: Rect, tools: Rect) {
         let Some(tab) = self.tabs.get(self.active) else {
             return;
         };
         let p = theme::of(ui);
-        let max = Rect::from_min_max(
+        let beside = Rect::from_min_max(
             pos2(card.left() + 12.0, card.bottom() - 47.0),
-            pos2(right, card.bottom() - 17.0),
+            pos2(tools.left() - 8.0, card.bottom() - 17.0),
         );
-        if max.width() < 90.0 {
-            return;
-        }
+        let max = if beside.width() >= 160.0 {
+            beside
+        } else {
+            Rect::from_min_max(
+                pos2(card.left() + 12.0, tools.top() - 38.0),
+                pos2(card.right() - 12.0, tools.top() - 8.0),
+            )
+        };
         let cpu_tiles = match tab.stats.gpu_fallback_tiles {
             0 => String::new(),
             n => format!(" · {n} tiles on the CPU"),
@@ -1281,6 +1387,17 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dot_and_its_ring_stay_inside_their_slot() {
+        for symbol in [false, true] {
+            for scale in [0.7, 1.0, 1.12, 1.3, 2.0] {
+                let (size, ring) = dot_metrics(symbol, scale);
+                let reach = (size / 2.0).max(ring + 0.75);
+                assert!(reach <= DOT / 2.0, "symbol {symbol} scale {scale}: {reach}");
+            }
+        }
+    }
 
     #[test]
     fn the_gradient_covers_the_window_and_is_see_through_only_over_the_blur() {

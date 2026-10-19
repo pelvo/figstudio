@@ -118,6 +118,14 @@ pub fn show(
         }
     }
 
+    // What is on screen this frame: the view, or the ease toward it after a jump. Hit tests,
+    // hover, the marquee and the drawing all use it, so they match the pixels; changes (the
+    // Zoom tool) go to the target.
+    let mut target = tab.view;
+    let shown = shown_view(ui, tab, direct);
+    tab.view = shown;
+    tab.shown = shown;
+
     // Input: selection / zoom tool.
     let cursor_page = response.hover_pos().map(|p| tab.view.to_page(origin, p));
     if response.hovered() && !response.dragged() {
@@ -137,7 +145,12 @@ pub fn show(
             Tool::Zoom => {
                 if let Some(p) = response.interact_pointer_pos() {
                     let alt = ui.input(|i| i.modifiers.alt);
-                    tab.view.zoom_at(origin, p, if alt { 0.5 } else { 2.0 });
+                    let factor = if alt { 0.5 } else { 2.0 };
+                    // The point clicked (as drawn) stays under the pointer when it settles.
+                    let page = shown.to_page(origin, p);
+                    target.zoom =
+                        (target.zoom * factor).clamp(crate::tab::MIN_ZOOM, crate::tab::MAX_ZOOM);
+                    target.pan = (p - origin) - page.to_vec2() * target.zoom;
                 }
             }
             Tool::Hand => {}
@@ -160,17 +173,23 @@ pub fn show(
         && tool == Tool::Select
         && let Some(sel) = tab.selection
     {
-        fit_node(tab, rect, sel);
+        // Fitted from the target on the next frame, then eased to.
+        tab.fit_node = Some(sel);
     }
 
-    // Rendering: cached tiles now, missing ones requested (tiles_view.rs). After a jump the
-    // drawing eases to the new view; input above already uses it.
-    let target = tab.view;
-    tab.view = shown_view(ui, tab, direct);
+    // Rendering: cached tiles for the view on screen; missing tiles are requested for the
+    // target, so an ease does not cancel batches as it crosses tiles (tiles_view.rs).
     let painter = ui.painter_at(rect);
     let bg = page_background(&tab.doc, tab.page);
     painter.rect_filled(rect, radius, to_color32(bg));
-    tiles.show(&painter, rect, radius, tab, workers, ui.pixels_per_point());
+    tiles.show(
+        &painter,
+        (rect, radius),
+        tab,
+        target,
+        workers,
+        ui.pixels_per_point(),
+    );
 
     // Overlays.
     crate::labels::paint(

@@ -63,6 +63,8 @@ pub struct Tab {
     pub load_time: Duration,
     /// Canvas rect from the last frame, for keyboard zoom around the centre.
     pub canvas_rect: Option<egui::Rect>,
+    /// The view drawn last frame: `view`, or the ease toward it after a jump.
+    pub shown: View,
     /// A Copy menu item picked this frame; `main.rs` puts it on the clipboard.
     pub pending_copy: Option<crate::copy::Item>,
     /// The drag-drawn region (`marquee.rs`).
@@ -71,6 +73,8 @@ pub struct Tab {
     pub tint: usize,
     /// The space's colour, symbol and name chosen by the user (`spaces.rs`).
     pub style: crate::spaces::Style,
+    /// A hash of the file's folder (`spaces::folder_of`), to tell same-named files apart.
+    pub folder: Option<String>,
     /// Text layers matching the find bar, highlighted on the canvas (`find.rs`).
     pub find_hits: Vec<crate::find::Hit>,
     pub find_current: Option<usize>,
@@ -94,6 +98,7 @@ impl Tab {
             .copied()
             .or(doc.root)
             .unwrap_or(figstudio_fig::Guid(0, 0));
+        let folder = crate::spaces::folder_of(&path);
         Tab {
             id,
             path,
@@ -117,10 +122,15 @@ impl Tab {
             render_time: Duration::ZERO,
             load_time,
             canvas_rect: None,
+            shown: View {
+                zoom: 1.0,
+                pan: egui::Vec2::ZERO,
+            },
             pending_copy: None,
             marquee: Default::default(),
             tint: crate::theme::HOME_TINT,
             style: Default::default(),
+            folder,
             find_hits: Vec::new(),
             find_current: None,
         }

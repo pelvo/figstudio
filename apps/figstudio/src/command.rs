@@ -28,9 +28,10 @@ pub struct CommandBar {
     selected: usize,
     /// Give the field focus on the next frame (the bar just opened).
     focus: bool,
-    /// The entries for `results_for`, so a big file is not searched every frame.
+    /// The entries for `results_for` (the query, the active file, how many files are open),
+    /// so a big file is not searched every frame and a list never outlives its file.
     results: Vec<Entry>,
-    results_for: Option<String>,
+    results_for: Option<(String, Option<u64>, usize)>,
 }
 
 impl CommandBar {
@@ -51,6 +52,12 @@ impl CommandBar {
         self.open = false;
         self.results.clear();
         self.results_for = None;
+    }
+
+    /// What the bar lists now.
+    #[cfg(test)]
+    pub fn results(&self) -> &[Entry] {
+        &self.results
     }
 
     pub fn toggle(&mut self, ctx: &egui::Context) {
@@ -90,11 +97,19 @@ pub fn score(text: &str, query: &str) -> Option<u32> {
     if query.is_empty() {
         return Some(1);
     }
-    let text = text.to_lowercase();
-    if text.starts_with(&query) {
+    score_lower(text, &query, &mut String::new())
+}
+
+/// [`score`] for a query already trimmed and lowercased, lowercasing `text` into `buf` (kept
+/// between calls, so a walk over many layers allocates once).
+fn score_lower(text: &str, query: &str, buf: &mut String) -> Option<u32> {
+    buf.clear();
+    buf.extend(text.chars().flat_map(char::to_lowercase));
+    let text = buf.as_str();
+    if text.starts_with(query) {
         return Some(400 - text.len().saturating_sub(query.len()).min(100) as u32);
     }
-    if let Some(at) = text.find(&query) {
+    if let Some(at) = text.find(query) {
         let word_start = text[..at]
             .chars()
             .last()
@@ -195,30 +210,6 @@ pub fn entries(app: &App, query: &str) -> Vec<Entry> {
         commands(&group.children, group.label, None, &mut all);
     }
     let query = query.trim();
-    if let Some(tab) = tab.filter(|_| !query.is_empty()) {
-        let doc = &tab.doc;
-        let mut stack: Vec<Guid> = doc.children(tab.page).iter().rev().copied().collect();
-        let mut scanned = 0;
-        while let Some(id) = stack.pop() {
-            scanned += 1;
-            if scanned > MAX_LAYERS_SCANNED {
-                break;
-            }
-            let Some(node) = doc.node(id) else { continue };
-            if !node.name.is_empty() {
-                all.push(Entry {
-                    title: node.name.clone(),
-                    detail: format!("Layer · {}", node.kind.to_lowercase().replace('_', " ")),
-                    icon: icons::for_kind(&node.kind),
-                    target: Target::Layer(id),
-                    shortcut: None,
-                    space: None,
-                    score: 0,
-                });
-            }
-            stack.extend(doc.children(id).iter().rev().copied());
-        }
-    }
     let mut kept: Vec<Entry> = all
         .into_iter()
         .filter_map(|mut e| {
@@ -227,10 +218,55 @@ pub fn entries(app: &App, query: &str) -> Vec<Entry> {
         })
         .filter(|e| !query.is_empty() || !matches!(e.target, Target::File(i) if i == app.active))
         .collect();
+    if let Some(tab) = tab.filter(|_| !query.is_empty()) {
+        kept.extend(layers(tab, query));
+    }
     // Stable: equal scores keep files, pages, commands, layers in that order.
     kept.sort_by_key(|e| std::cmp::Reverse(e.score));
     kept.truncate(MAX_RESULTS);
     kept
+}
+
+/// The page's layers matching `query`, best first, at most [`MAX_RESULTS`]. Each name is
+/// scored during the walk and only matches are kept, so a keystroke on a big file stays
+/// cheap.
+fn layers(tab: &crate::tab::Tab, query: &str) -> Vec<Entry> {
+    let doc = &tab.doc;
+    let query = query.to_lowercase();
+    let mut buf = String::new();
+    let mut found: Vec<(u32, Guid)> = Vec::new();
+    let mut stack: Vec<Guid> = doc.children(tab.page).iter().rev().copied().collect();
+    let mut scanned = 0;
+    while let Some(id) = stack.pop() {
+        scanned += 1;
+        if scanned > MAX_LAYERS_SCANNED {
+            break;
+        }
+        let Some(node) = doc.node(id) else { continue };
+        if !node.name.is_empty()
+            && let Some(score) = score_lower(&node.name, &query, &mut buf)
+        {
+            found.push((score, id));
+        }
+        stack.extend(doc.children(id).iter().rev().copied());
+    }
+    found.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    found.truncate(MAX_RESULTS);
+    found
+        .into_iter()
+        .filter_map(|(score, id)| {
+            let node = doc.node(id)?;
+            Some(Entry {
+                title: node.name.clone(),
+                detail: format!("Layer · {}", node.kind.to_lowercase().replace('_', " ")),
+                icon: icons::for_kind(&node.kind),
+                target: Target::Layer(id),
+                shortcut: None,
+                space: None,
+                score,
+            })
+        })
+        .collect()
 }
 
 impl App {
@@ -239,9 +275,14 @@ impl App {
         if !self.command.open {
             return;
         }
-        if self.command.results_for.as_deref() != Some(self.command.query.as_str()) {
+        let key = (
+            self.command.query.clone(),
+            self.tabs.get(self.active).map(|t| t.id),
+            self.tabs.len(),
+        );
+        if self.command.results_for.as_ref() != Some(&key) {
             self.command.results = entries(self, &self.command.query);
-            self.command.results_for = Some(self.command.query.clone());
+            self.command.results_for = Some(key);
             self.command.selected = 0;
         }
         let (down, up, enter, escape) = ctx.input_mut(|i| {

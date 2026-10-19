@@ -246,8 +246,11 @@ struct App {
     /// How far the sidebar's pages are moved (points, last frame) and how wide a page is.
     slide: f32,
     page_width: f32,
-    /// Where each space's dot was drawn last frame (popovers open above it).
+    /// Where each space's dot was drawn last frame (popovers open above it), the part of
+    /// the footer they scroll in, and the file whose dot was last scrolled into view.
     space_dots: Vec<(u64, egui::Rect)>,
+    dots_clip: egui::Rect,
+    dot_in_view: (u64, f32),
     /// ⌘F: find text on the page (`find.rs`).
     find: find::FindBar,
     /// The space being edited (`space_editor.rs`).
@@ -333,6 +336,8 @@ impl App {
             slide: 0.0,
             page_width: 280.0,
             space_dots: Vec::new(),
+            dots_clip: egui::Rect::NOTHING,
+            dot_in_view: (0, 0.0),
             find: Default::default(),
             #[cfg(target_os = "macos")]
             vibrancy: None,
@@ -425,6 +430,10 @@ impl App {
 
     fn close(&mut self, i: usize) {
         if i < self.tabs.len() {
+            // A space popover on this file saves first: its style lives only on the tab.
+            if self.space_editing.as_ref().map(|e| e.tab) == Some(self.tabs[i].id) {
+                self.commit_space_editor();
+            }
             let closed = self.tabs.remove(i);
             #[cfg(target_arch = "wasm32")]
             web::forget_upload(closed.id);
@@ -540,9 +549,10 @@ impl App {
                     web::bind_upload(&path, id);
                     let mut tab = Tab::new(id, path, doc, source, elapsed).with_doc_key(doc_key);
                     tab.tint = theme::pick_tint(&tab.title(), self.tabs.iter().map(|t| t.tint));
+                    let title = tab.title();
                     tab.style = self
                         .spaces
-                        .lookup(tab.doc_key.as_deref(), &tab.title())
+                        .lookup(spaces::FileId::of(&tab, &title))
                         .unwrap_or_default();
                     self.tabs.push(tab);
                     self.active = self.tabs.len() - 1;
@@ -694,6 +704,16 @@ impl App {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let cmd = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
+        // The command bar is modal: only its own shortcut (which closes it) gets through, so
+        // nothing changes the file under its results.
+        if self.command.is_open() {
+            if !self.native_owns(menu::Action::CommandBar)
+                && ctx.input_mut(|i| i.consume_shortcut(&command::SHORTCUT))
+            {
+                self.command.hide();
+            }
+            return;
+        }
         for action in [menu::Action::CommandBar, menu::Action::ToggleLayers] {
             if !self.native_owns(action)
                 && let Some(shortcut) = action.shortcut()
@@ -840,10 +860,14 @@ fn shifted_digit(i: &egui::InputState, digit: Key, shifted: Option<Key>) -> bool
 }
 
 impl eframe::App for App {
-    /// Clear to transparent where the window blurs what is behind it; elsewhere the window
-    /// gradient covers everything anyway.
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0; 4]
+    /// Transparent only where the window blurs what is behind it (macOS with the blur
+    /// attached); everywhere else an opaque colour under the gradient.
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        if self.translucent() {
+            [0.0; 4]
+        } else {
+            visuals.window_fill.to_normalized_gamma_f32()
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -856,6 +880,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        self.commit_space_editor();
         self.mcp.stop();
     }
 

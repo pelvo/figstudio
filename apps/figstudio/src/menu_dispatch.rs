@@ -54,6 +54,10 @@ impl App {
                 .map(|menu| menu.drain())
                 .unwrap_or_default();
             for action in actions {
+                // While the command bar is open, the menus only close it or quit.
+                if self.command.is_open() && !matches!(action, Action::CommandBar | Action::Quit) {
+                    continue;
+                }
                 self.apply(action, _ctx);
             }
             let tree = crate::menu::tree(self);

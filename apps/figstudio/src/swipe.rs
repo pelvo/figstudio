@@ -11,8 +11,10 @@ pub const TURN_SHARE: f32 = 0.33;
 /// A flick this fast (points per second) turns the page from [`FLICK_MIN`] points on.
 pub const FLICK_SPEED: f32 = 900.0;
 pub const FLICK_MIN: f32 = 40.0;
-/// Events closer together than this belong to the same stream: after the fingers lift, the
-/// trackpad's momentum (even when it reports a new start) is ignored until such a pause.
+/// A start this soon after the fingers lifted is the trackpad's momentum, not new fingers
+/// (nobody lifts and touches again that fast).
+const MOMENTUM: f64 = 0.025;
+/// A wheel without phases (a plain mouse wheel) has ended after this pause.
 const PAUSE: f64 = 0.12;
 
 /// How a swipe ended: how far the content moved (positive: right) and how fast.
@@ -52,8 +54,11 @@ pub struct Swipe {
     velocity: f32,
     /// The device reports phases (a trackpad): its End finishes the swipe.
     phased: bool,
-    /// Ignoring the stream after a swipe ended (momentum), until a pause.
-    coasting: bool,
+    /// When the fingers last lifted (a phased End).
+    lifted: Option<f64>,
+    /// Inside the trackpad's momentum after a lift: ignored up to its own End. New fingers
+    /// end it (macOS ends the momentum, then starts the new gesture).
+    momentum: bool,
     last: f64,
 }
 
@@ -63,21 +68,25 @@ impl Swipe {
     pub fn feed(&mut self, delta: Vec2, phase: TouchPhase, now: f64) -> Option<End> {
         let gap = now - self.last;
         self.last = now;
-        if self.coasting {
-            if gap < PAUSE {
-                return None;
-            }
-            self.coasting = false;
-        }
         match phase {
+            TouchPhase::Start if self.lifted.is_some_and(|t| now - t <= MOMENTUM) => {
+                self.momentum = true;
+                None
+            }
             TouchPhase::Start => {
                 self.restart(true);
                 None
             }
+            TouchPhase::End | TouchPhase::Cancel if self.momentum => {
+                self.momentum = false;
+                None
+            }
             TouchPhase::End | TouchPhase::Cancel => {
                 self.phased = true;
+                self.lifted = Some(now);
                 self.finish()
             }
+            TouchPhase::Move if self.momentum => None,
             TouchPhase::Move => {
                 if !self.active {
                     // A device without phases: the first event starts the swipe.
@@ -129,6 +138,7 @@ impl Swipe {
             active: true,
             phased,
             last: self.last,
+            lifted: self.lifted,
             ..Self::default()
         };
     }
@@ -138,11 +148,9 @@ impl Swipe {
             offset,
             velocity: self.velocity,
         });
-        let last = self.last;
         *self = Self {
-            // What follows a finished swipe right away is its momentum.
-            coasting: end.is_some() || self.phased,
-            last,
+            last: self.last,
+            lifted: self.lifted,
             ..Self::default()
         };
         end
@@ -166,20 +174,30 @@ mod tests {
         let end = s.feed(Vec2::ZERO, TouchPhase::End, 0.064).expect("ended");
         assert_eq!(end.offset, -76.0);
         assert!(end.velocity < -500.0, "{}", end.velocity);
-        // Momentum, even one that reports a new start, is not another swipe.
-        s.feed(Vec2::ZERO, TouchPhase::Start, 0.07);
+        // The momentum right after the lift (macOS starts it as a new scroll) is no swipe.
+        s.feed(Vec2::ZERO, TouchPhase::Start, 0.072);
         for i in 1..10 {
             s.feed(
                 vec2(-20.0, 0.0),
                 TouchPhase::Move,
-                0.07 + f64::from(i) * 0.016,
+                0.072 + f64::from(i) * 0.016,
             );
             assert_eq!(s.offset(), None, "momentum {i}");
         }
-        // After a pause a new swipe starts.
-        s.feed(Vec2::ZERO, TouchPhase::Start, 1.0);
-        s.feed(vec2(30.0, 0.0), TouchPhase::Move, 1.016);
+        // New fingers stop the momentum and swipe again at once, no pause needed.
+        assert_eq!(
+            s.feed(Vec2::ZERO, TouchPhase::End, 0.25),
+            None,
+            "the momentum ends"
+        );
+        s.feed(Vec2::ZERO, TouchPhase::Start, 0.26);
+        s.feed(vec2(30.0, 0.0), TouchPhase::Move, 0.276);
         assert_eq!(s.offset(), Some(30.0));
+        assert!(s.feed(Vec2::ZERO, TouchPhase::End, 0.29).is_some());
+        // A slow lift has no momentum: the next touch swipes.
+        s.feed(Vec2::ZERO, TouchPhase::Start, 0.5);
+        s.feed(vec2(-30.0, 0.0), TouchPhase::Move, 0.516);
+        assert_eq!(s.offset(), Some(-30.0));
     }
 
     #[test]
