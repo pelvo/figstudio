@@ -816,7 +816,8 @@ fn general_and_canvas_settings_change_the_app() {
     h.run_steps(2);
     assert!(h.state().prefs.scroll_zooms);
     h.key_press(Key::Escape);
-    h.run_steps(2);
+    // Motion is on again (toggled above): Settings takes the pointer until it has faded.
+    h.run_steps(40);
     // A plain scroll on the canvas now zooms.
     let before = h.state().tabs[0].view;
     let at = h.state().tabs[0].canvas_rect.expect("laid out").center();
@@ -1299,5 +1300,165 @@ fn a_dot_sliding_over_is_clicked_where_it_is_drawn() {
     assert!(
         (node.center().x - after.center().x).abs() < 0.5,
         "its button is where it is drawn: {node:?} vs {after:?}"
+    );
+}
+
+/// A real click at `pos` (kittest's `click()` goes to the widget directly, past whatever
+/// covers it).
+fn click_at(h: &mut Harness<'_, App>, pos: egui::Pos2) {
+    h.event(Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+}
+
+#[test]
+fn a_fading_overlay_still_takes_clicks_and_keys_until_it_is_gone() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    let ctx = h.ctx.clone();
+    crate::anim::set_reduced(&ctx, false);
+    h.run_steps(30);
+    let hide = h.get_by_label("Hide sidebar").rect().center();
+
+    // The command bar fading out: the dimmed screen eats a click on the sidebar button,
+    // and ⌘W does not close a file it still covers.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(30);
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    click_at(&mut h, hide);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    h.run_steps(2);
+    assert!(
+        h.state().show_left,
+        "the click did not reach the sidebar button"
+    );
+    assert_eq!(h.state().tabs.len(), 2, "⌘W waited for the bar to go");
+    h.run_steps(40);
+
+    // Settings fading out: the same for a click, and a plain tool key waits.
+    h.state_mut().apply(crate::menu::Action::Settings, &ctx);
+    h.run_steps(30);
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    click_at(&mut h, hide);
+    h.key_press(Key::H);
+    h.run_steps(2);
+    assert!(
+        h.state().show_left,
+        "the click did not reach the sidebar button"
+    );
+    assert_eq!(h.state().tool, crate::canvas::Tool::Select, "H waited too");
+    h.run_steps(40);
+
+    // Once they are gone, both work again.
+    h.key_press(Key::H);
+    h.run_steps(2);
+    assert_eq!(h.state().tool, crate::canvas::Tool::Hand);
+    click_at(&mut h, hide);
+    h.run_steps(2);
+    assert!(!h.state().show_left);
+}
+
+#[test]
+fn a_new_space_popover_pops_in_while_the_last_one_fades_out() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    let ctx = h.ctx.clone();
+    crate::anim::set_reduced(&ctx, false);
+    h.run_steps(30);
+    h.state_mut().apply(crate::menu::Action::RenameSpace, &ctx);
+    h.run_steps(30);
+    // Straight from renaming to the icon picker: both on screen for a moment.
+    h.state_mut().apply(crate::menu::Action::SpaceIcon, &ctx);
+    h.run_steps(2);
+    assert!(
+        h.query_by_label("Space name").is_some(),
+        "the rename popover fades out"
+    );
+    assert!(h.query_by_label_contains("Space icon").is_some());
+    let opening = h.state().space_popover_presence(&ctx, true).expect("open");
+    assert!(opening < 0.9, "the icon picker pops in: {opening}");
+    h.run_steps(40);
+    assert!(h.query_by_label("Space name").is_none(), "then it is gone");
+
+    // While it fades out it still covers what is under it: the pointer there is over the
+    // popover (egui sends clicks and scrolls to that layer, where everything is inert).
+    h.state_mut().apply(crate::menu::Action::RenameSpace, &ctx);
+    h.run_steps(30);
+    let field = h.get_by_label("Space name").rect().center();
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(h.query_by_label("Space name").is_some(), "still fading");
+    assert_eq!(
+        h.ctx.layer_id_at(field).map(|l| l.order),
+        Some(egui::Order::Foreground),
+        "the popover's layer, not the sidebar under it"
+    );
+}
+
+#[test]
+fn find_highlights_fading_out_stay_with_their_own_file() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    let ctx = h.ctx.clone();
+    crate::anim::set_reduced(&ctx, false);
+    h.run_steps(10);
+    h.state_mut().active = 1;
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    h.run_steps(5);
+    h.event(egui::Event::Text("e".into()));
+    h.run_steps(5);
+    assert!(
+        !h.state().tabs[1].find_hits.is_empty(),
+        "the second file has matches"
+    );
+    h.state_mut().active = 0;
+    h.run_steps(5);
+    assert!(!h.state().tabs[0].find_hits.is_empty(), "so has the first");
+    // Closed on the first file; going to the second while it fades shows none of the
+    // second file's older matches.
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(
+        !h.state().tabs[0].find_hits.is_empty(),
+        "fading on its own file"
+    );
+    h.state_mut().active = 1;
+    h.run_steps(1);
+    assert!(h.state().tabs[1].find_hits.is_empty(), "no stale matches");
+
+    // The last file closing while the bar fades: it still finishes fading.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    h.run_steps(30);
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    h.state_mut().close(1);
+    h.state_mut().close(0);
+    h.run_steps(40);
+    assert!(
+        !crate::anim::on_screen(&ctx, egui::Id::new("find-bar")),
+        "the bar finished fading with no file open"
     );
 }

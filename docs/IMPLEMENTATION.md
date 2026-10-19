@@ -354,7 +354,13 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   find bar and its highlights, the space name pill) use `anim::presence`: they pop in, and
   after closing keep drawing, `anim::inert` (no input), until they have faded and shrunk
   away; their state must outlive the close (the command bar keeps its results, a closed
-  popover moves to `space_leaving`, find keeps its highlights). New content uses
+  popover moves to `space_leaving`, find keeps its highlights). While fading they stay
+  interactable areas, so a click or scroll on them reaches nothing underneath, and the
+  shortcut guards hold until they are gone (`CommandBar::is_up`, `Settings::is_up`,
+  `App::space_popover_up`, all via `anim::on_screen`). Each space popover has its own
+  presence and area, keyed by when it opened, so a new one pops in while the last fades.
+  Find's fading highlights stay only on the tab and page they were found on
+  (`FindBar::shown_on`), and the bar still fades with no file open. New content uses
   `anim::arrive` (a short fade whenever its key changes: another file or page on the canvas,
   another selection in the properties, hover and selection outlines, a Settings tab's page,
   children of a layer just opened); `anim::pop_on` bounces what just became current (the

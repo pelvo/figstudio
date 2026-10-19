@@ -31,6 +31,7 @@ pub struct CommandBar {
 }
 
 impl CommandBar {
+    #[cfg(test)]
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -54,6 +55,11 @@ impl CommandBar {
     #[cfg(test)]
     pub fn results(&self) -> &[Entry] {
         &self.results
+    }
+
+    /// Open, or still fading out: modal until it is gone.
+    pub fn is_up(&self, ctx: &egui::Context) -> bool {
+        self.open || anim::on_screen(ctx, Id::new("command-pop"))
     }
 
     pub fn toggle(&mut self, ctx: &egui::Context) {
@@ -337,10 +343,11 @@ impl App {
 
         let p = theme::palette(ctx);
         let screen = ctx.content_rect();
+        // Both stay interactable while they fade (inert, sensing only hover): a click then
+        // does nothing rather than land on the app under the dimmed screen.
         egui::Area::new(Id::new("command-backdrop"))
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
-            .interactable(open)
             .show(ctx, |ui| {
                 let sense = if open { Sense::click() } else { Sense::hover() };
                 let response = ui.allocate_rect(screen, sense);
@@ -356,7 +363,6 @@ impl App {
         let area = egui::Area::new(Id::new("command-bar"))
             .order(egui::Order::Foreground)
             .fixed_pos(pos2(screen.center().x - width / 2.0, top))
-            .interactable(open)
             .fade_in(false)
             .show(ctx, |ui| {
                 if !open {

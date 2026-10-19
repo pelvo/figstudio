@@ -44,7 +44,6 @@ pub struct SpaceEditor {
 
 impl SpaceEditor {
     pub fn new(tab: &Tab, kind: Popover, ctx: &egui::Context) -> Self {
-        anim::reset(ctx, Id::new(("space-popover", kind)), 0.0);
         Self {
             tab: tab.id,
             kind,
@@ -218,26 +217,33 @@ impl App {
         self.space_leaving = Some(editor);
     }
 
-    /// Shows the open space popover; saves the style when it closes.
+    /// Shows the open space popover; saves the style when it closes. The one that just
+    /// closed (saved already) fades and shrinks away under it, inert.
     pub(crate) fn space_popover(&mut self, ctx: &egui::Context) {
-        // It pops in; after it closes (saved already) it fades and shrinks away, inert.
-        let open = self.space_editing.is_some();
-        if open {
-            self.space_leaving = None;
-        }
-        let Some(kind) = self
-            .space_editing
-            .as_ref()
-            .or(self.space_leaving.as_ref())
-            .map(|e| e.kind)
-        else {
-            return;
-        };
-        let pop = anim::presence(ctx, Id::new(("space-popover", kind)), open);
-        if !open && pop <= 0.001 {
-            self.space_leaving = None;
-            return;
-        }
+        self.one_popover(ctx, false);
+        self.one_popover(ctx, true);
+    }
+
+    /// Whether a space popover is on screen, open or still fading out: it takes clicks and
+    /// keeps plain-key shortcuts away until it is gone.
+    pub(crate) fn space_popover_up(&self) -> bool {
+        self.space_editing.is_some() || self.space_leaving.is_some()
+    }
+
+    /// How present the open popover (`open`) or the one fading out is, as last drawn.
+    #[cfg(test)]
+    pub(crate) fn space_popover_presence(&self, ctx: &egui::Context, open: bool) -> Option<f32> {
+        let e = if open {
+            self.space_editing.as_ref()
+        } else {
+            self.space_leaving.as_ref()
+        }?;
+        anim::peek(ctx, Id::new(("space-popover", e.tab, e.kind, e.opened)))
+    }
+
+    /// The open popover (`open`) or the one fading out. Each has its own presence and area,
+    /// keyed by when it opened, so a new one pops in from nothing while the last fades.
+    fn one_popover(&mut self, ctx: &egui::Context, open: bool) {
         let slot = if open {
             &mut self.space_editing
         } else {
@@ -246,7 +252,17 @@ impl App {
         let Some(editor) = slot else {
             return;
         };
+        let kind = editor.kind;
+        let id = Id::new(("space-popover", editor.tab, kind, editor.opened));
+        let pop = anim::presence(ctx, id, open);
+        if !open && pop <= 0.001 {
+            anim::forget(ctx, id);
+            *slot = None;
+            return;
+        }
         let Some(tab) = self.tabs.iter_mut().find(|t| t.id == editor.tab) else {
+            // Its file closed (saved by `App::close`); it goes with it.
+            anim::forget(ctx, id);
             *slot = None;
             return;
         };
@@ -268,12 +284,13 @@ impl App {
         };
         let mut close = Close::Keep;
         let mut appearance = None;
-        let area = egui::Area::new(Id::new("space-popover"))
+        // Interactable while it fades too (inert): a click on it does nothing rather than
+        // land on what is underneath.
+        let area = egui::Area::new(id)
             .order(egui::Order::Foreground)
             .pivot(pivot)
             .fixed_pos(at)
             .constrain(true)
-            .interactable(open)
             .fade_in(false)
             .show(ctx, |ui| {
                 if !open {

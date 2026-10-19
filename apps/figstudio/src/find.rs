@@ -36,6 +36,9 @@ pub struct FindBar {
     fade: f32,
     /// Counts searches, so new matches fade in.
     search: u64,
+    /// The tab (`Tab::id`) and page the last matches were given to: after closing, only they
+    /// keep theirs while fading (a match box belongs to its page).
+    shown_on: Option<(u64, Guid)>,
 }
 
 impl FindBar {
@@ -69,18 +72,28 @@ impl FindBar {
         self.reveal = true;
     }
 
+    /// No file is open: the bar (drawn only over a file) eases out, so it is not left
+    /// half-faded for the next file, and its matches go.
+    pub fn update_without_tab(&mut self, ctx: &egui::Context) {
+        self.fade = crate::anim::presence(ctx, egui::Id::new("find-bar"), false);
+        self.hits.clear();
+        self.hits_for = None;
+        self.shown_on = None;
+    }
+
     /// Searches `tab`'s page again when the query, file or page changed, then gives the tab
     /// the matches to highlight. Call before the canvas draws.
     pub fn update(&mut self, tab: &mut Tab, ctx: &egui::Context) {
         self.fade = crate::anim::presence(ctx, egui::Id::new("find-bar"), self.open);
         tab.find_fade = self.fade;
-        if !self.open && self.fade > 0.001 {
-            // Closing: the last highlights stay while they fade.
+        if !self.open && self.fade > 0.001 && self.shown_on == Some((tab.id, tab.page)) {
+            // Closing: the last highlights stay while they fade, on their own page.
             return;
         }
         if !self.open || self.query.trim().is_empty() {
             self.hits.clear();
             self.hits_for = None;
+            self.shown_on = None;
             tab.find_hits.clear();
             tab.find_current = None;
             return;
@@ -94,6 +107,7 @@ impl FindBar {
             self.reveal = true;
         }
         tab.find_hits.clone_from(&self.hits);
+        self.shown_on = Some((tab.id, tab.page));
         tab.find_search = self.search;
         tab.find_current = (!self.hits.is_empty()).then_some(self.current);
         if std::mem::take(&mut self.reveal)

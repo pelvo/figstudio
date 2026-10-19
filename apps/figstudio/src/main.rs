@@ -761,21 +761,21 @@ impl App {
             return;
         }
         let keys = |b: keymap::Binding| self.prefs.keymap.get(b);
-        // The command bar is modal: only its own shortcut (which closes it) gets through, so
-        // nothing changes the file under its results.
-        if self.command.is_open() {
+        // The command bar is modal, also while it fades out (it still covers the app): only
+        // its own shortcut (which closes or reopens it) gets through, so nothing changes the
+        // file under its results.
+        if self.command.is_up(ctx) {
             if !self.native_takes(menu::Action::CommandBar, keys(keymap::Binding::CommandBar))
                 && let Some(s) = keys(keymap::Binding::CommandBar)
                 && ctx.input_mut(|i| i.consume_shortcut(&s))
             {
-                self.command.hide();
+                self.command.toggle(ctx);
             }
             return;
         }
-        // Keys without ⌘ / Ctrl / Alt wait while text is typed or a panel is up.
-        let quiet = ctx.egui_wants_keyboard_input()
-            || self.settings.is_open()
-            || self.space_editing.is_some();
+        // Keys without ⌘ / Ctrl / Alt wait while text is typed or a panel is up (or fading).
+        let quiet =
+            ctx.egui_wants_keyboard_input() || self.settings.is_up(ctx) || self.space_popover_up();
         // Most modifiers first: a Ctrl+Tab pattern also matches Ctrl+Shift+Tab.
         let mut bindings: Vec<(keymap::Binding, KeyboardShortcut)> = keymap::Binding::ALL
             .into_iter()

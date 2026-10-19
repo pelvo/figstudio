@@ -1136,8 +1136,9 @@ impl App {
         let mut actions = Vec::new();
         let mut cursor = None;
         let mut open_clicked = false;
-        if let Some(tab) = self.tabs.get_mut(self.active) {
-            self.find.update(tab, &ctx);
+        match self.tabs.get_mut(self.active) {
+            Some(tab) => self.find.update(tab, &ctx),
+            None => self.find.update_without_tab(&ctx),
         }
         ui.scope_builder(UiBuilder::new().max_rect(card), |ui| {
             ui.set_clip_rect(ui.clip_rect().intersect(card));

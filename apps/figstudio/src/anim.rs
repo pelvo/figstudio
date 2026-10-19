@@ -118,6 +118,22 @@ pub fn spring(ctx: &Context, id: Id, target: f32, spring: Spring) -> f32 {
     spring_from(ctx, id, target, None, spring)
 }
 
+/// Whether the overlay under `id` ([`presence`]) was still on screen in its last frame:
+/// open, or fading out.
+pub fn on_screen(ctx: &Context, id: Id) -> bool {
+    peek(ctx, id).is_some_and(|x| x > 0.001)
+}
+
+/// The spring under `id` as of its last step, without stepping it.
+pub fn peek(ctx: &Context, id: Id) -> Option<f32> {
+    ctx.data(|d| d.get_temp::<SpringState>(id)).map(|s| s.x)
+}
+
+/// Drops the spring under `id` (an overlay that is gone for good).
+pub fn forget(ctx: &Context, id: Id) {
+    ctx.data_mut(|d| d.remove::<SpringState>(id));
+}
+
 /// Jumps the spring under `id` to `value` (for example to replay a pop-in).
 pub fn reset(ctx: &Context, id: Id, value: f32) {
     let time = now(ctx);

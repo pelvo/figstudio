@@ -90,7 +90,7 @@ impl App {
             if self.settings.recording().is_some() {
                 continue;
             }
-            if self.command.is_open() && !matches!(action, Action::CommandBar | Action::Quit) {
+            if self.command.is_up(ctx) && !matches!(action, Action::CommandBar | Action::Quit) {
                 continue;
             }
             self.apply(action, ctx);

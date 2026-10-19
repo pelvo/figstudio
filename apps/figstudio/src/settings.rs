@@ -106,8 +106,14 @@ pub struct Settings {
 }
 
 impl Settings {
+    #[cfg(test)]
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Open, or still fading out: plain keys stay away until it is gone.
+    pub fn is_up(&self, ctx: &egui::Context) -> bool {
+        self.open || anim::on_screen(ctx, Id::new("settings-pop"))
     }
 
     /// Opens the window, on `tab` if given.
@@ -734,10 +740,11 @@ impl App {
         let mut close = open
             && self.settings.recording.is_none()
             && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+        // Both stay interactable while they fade (inert, sensing only hover): a click then
+        // does nothing rather than land on the app under the dimmed screen.
         egui::Area::new(Id::new("settings-backdrop"))
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
-            .interactable(open)
             .show(ctx, |ui| {
                 let sense = if open { Sense::click() } else { Sense::hover() };
                 let response = ui.allocate_rect(screen, sense);
@@ -750,7 +757,6 @@ impl App {
             .order(egui::Order::Foreground)
             .pivot(Align2::CENTER_CENTER)
             .fixed_pos(screen.center())
-            .interactable(open)
             .fade_in(false)
             .show(ctx, |ui| {
                 if !open {
