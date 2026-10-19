@@ -207,59 +207,66 @@ impl Store {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let text = local_storage()
-                .and_then(|s| s.get_item(STORAGE_KEY).ok().flatten())
-                .filter(|t| t.len() as u64 <= MAX_BYTES);
-            Self {
-                entries: text.as_deref().map(parse).unwrap_or_default(),
-                backend: Backend::LocalStorage,
+            // The browser hands over the whole string; one too big (or storage that refuses
+            // to be read) is kept as it is, and this session's styles stay in memory.
+            match local_storage().map(|s| s.get_item(STORAGE_KEY)) {
+                Some(Ok(text)) if text.as_ref().is_none_or(|t| t.len() as u64 <= MAX_BYTES) => {
+                    Self {
+                        entries: text.as_deref().map(parse).unwrap_or_default(),
+                        backend: Backend::LocalStorage,
+                    }
+                }
+                _ => {
+                    tracing::warn!("space styles not read, kept in memory this time");
+                    Self::memory()
+                }
             }
         }
     }
 
-    /// The store kept in the file at `path` (read now; written on every change).
+    /// The store kept in the file at `path` (read now; written on every change). A file
+    /// that cannot be read (too big, no permission) is left as it is: this session keeps its
+    /// styles in memory only, so what was not read is never written over.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn at(path: std::path::PathBuf) -> Self {
-        let read = std::fs::metadata(&path).and_then(|m| {
-            if m.len() > MAX_BYTES {
-                Err(std::io::Error::other(format!(
-                    "{} bytes, more than {MAX_BYTES}",
-                    m.len()
-                )))
-            } else {
-                std::fs::read_to_string(&path)
+        use std::io::Read as _;
+        // Capped while reading, not by an earlier size: the file may grow in between.
+        let read = std::fs::File::open(&path).and_then(|file| {
+            let mut bytes = Vec::new();
+            file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > MAX_BYTES {
+                return Err(std::io::Error::other(format!(
+                    "more than {MAX_BYTES} bytes"
+                )));
             }
+            Ok(bytes)
         });
-        let entries = match read {
-            Ok(text) => parse(&text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        match read {
+            // Not text or not JSON: nothing in it can be used, so it is started over.
+            Ok(bytes) => Self {
+                entries: std::str::from_utf8(&bytes).map(parse).unwrap_or_default(),
+                backend: Backend::File(path),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self {
+                entries: Vec::new(),
+                backend: Backend::File(path),
+            },
             Err(e) => {
-                tracing::warn!("space styles not read: {e}");
-                Vec::new()
+                tracing::warn!("space styles not read, kept in memory this time: {e}");
+                Self::memory()
             }
-        };
-        Self {
-            entries,
-            backend: Backend::File(path),
         }
     }
 
     /// The style saved for the file: by its content key first, else the last one saved
-    /// under the same name in the same folder. A reset file gives the default style.
+    /// under the same name in the same folder, else under that name with no folder (saved
+    /// before folders were). A reset file gives the default style.
     pub fn lookup(&self, id: FileId<'_>) -> Option<Style> {
-        let by_key = id.key.and_then(|k| {
-            self.entries
-                .iter()
-                .rev()
-                .find(|e| e.key.as_deref() == Some(k))
-        });
-        by_key
-            .or_else(|| {
-                self.entries
-                    .iter()
-                    .rev()
-                    .find(|e| e.file == id.file && e.folder.as_deref() == id.folder)
-            })
+        let newest = |keep: &dyn Fn(&Entry) -> bool| self.entries.iter().rev().find(|e| keep(e));
+        id.key
+            .and_then(|k| newest(&|e| e.key.as_deref() == Some(k)))
+            .or_else(|| newest(&|e| e.file == id.file && e.folder.as_deref() == id.folder))
+            .or_else(|| newest(&|e| e.file == id.file && e.folder.is_none()))
             .map(|e| e.style.clone())
     }
 
@@ -304,27 +311,32 @@ impl Store {
     }
 }
 
-/// Writes `text` to `path` readable by its owner only, all or nothing: into a temporary file
-/// next to it, then renamed over it, so a crash never leaves half a file.
+/// Writes `text` to `path` all or nothing: into a new, uniquely named temporary file next
+/// to it, then renamed over it, so a crash or a second figstudio writing at the same time
+/// never leaves half a file. On Unix only its owner can read it (the temporary file is
+/// created that way, and the rename keeps it); Windows sets no ACL here.
 #[cfg(not(target_arch = "wasm32"))]
 fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     use std::io::Write as _;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let temp = path.with_extension("json.tmp");
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let mut file = tempfile::Builder::new()
+        .prefix(".spaces-")
+        .suffix(".tmp")
+        .tempfile_in(dir)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
+        use std::os::unix::fs::PermissionsExt as _;
+        file.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
-    let mut file = options.open(&temp)?;
     file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&temp, path)
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 /// The entries in `text`: each damaged or oversized one is skipped, not the whole list, and
@@ -505,10 +517,36 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "only its owner reads it");
         }
+        let left = |dir: &std::path::Path| {
+            std::fs::read_dir(dir)
+                .expect("dir")
+                .filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n != "spaces.json" && n != "spaces.json.tmp")
+                .collect::<Vec<_>>()
+        };
         assert!(
-            !path.with_extension("json.tmp").exists(),
-            "written through a temporary file"
+            left(path.parent().expect("dir")).is_empty(),
+            "no temporary file left"
         );
+        // A temporary file an older version left behind, readable by anyone, changes
+        // nothing: the store is written through a new one, still owner-only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let stale = path.with_extension("json.tmp");
+            std::fs::write(&stale, "[]").expect("write");
+            std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644))
+                .expect("chmod");
+            store.remember(a, &rose());
+            let mode = std::fs::metadata(&path)
+                .expect("written")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "still only its owner");
+            assert_eq!(Store::at(path.clone()).lookup(a), Some(rose()));
+            let _ = std::fs::remove_file(&stale);
+        }
         std::fs::write(&path, "{ not json").expect("write");
         assert!(Store::at(path.clone()).entries.is_empty(), "starts over");
         // One bad entry (and an oversized one) is skipped, not the whole list.
@@ -520,10 +558,44 @@ mod tests {
         let kept = Store::at(path.clone());
         assert_eq!(kept.entries.len(), 1);
         assert_eq!(kept.lookup(a).and_then(|s| s.name), Some("Kept".into()));
-        // A store too big to be one is not read.
-        std::fs::write(&path, " ".repeat(MAX_BYTES as usize + 1)).expect("write");
-        assert!(Store::at(path.clone()).entries.is_empty());
+        // A store too big to be one is not read, and not written over either: what was
+        // not read is never lost.
+        let big = " ".repeat(MAX_BYTES as usize + 1);
+        std::fs::write(&path, &big).expect("write");
+        let mut refused = Store::at(path.clone());
+        assert!(refused.entries.is_empty());
+        refused.remember(a, &rose());
+        assert_eq!(refused.lookup(a), Some(rose()), "kept for this session");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read").len(),
+            big.len(),
+            "the file is as it was"
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_style_saved_before_folders_were_is_found_by_name() {
+        let mut store = Store::memory();
+        store.remember(id(Some("old"), "a.fig", None), &rose());
+        // The same name re-exported (a new content key), now with a folder.
+        let found = store.lookup(id(Some("new"), "a.fig", Some("f1")));
+        assert_eq!(found, Some(rose()));
+        // A row with that exact folder wins over one with none.
+        let other = Style {
+            name: Some("Other".into()),
+            ..Style::default()
+        };
+        store.remember(id(Some("k2"), "a.fig", Some("f1")), &other);
+        store.remember(id(Some("k3"), "a.fig", None), &rose());
+        assert_eq!(
+            store.lookup(id(Some("new"), "a.fig", Some("f1"))),
+            Some(other)
+        );
+        assert_eq!(
+            store.lookup(id(Some("new"), "a.fig", Some("f2"))),
+            Some(rose())
+        );
     }
 
     #[test]

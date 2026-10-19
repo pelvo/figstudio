@@ -191,6 +191,20 @@ fn a_space_dot_menu_changes_colour_icon_and_name_and_saves_them_for_the_file() {
     open(&mut h, "Reset space look");
     assert_eq!(saved(&h), Some(Style::default()), "the reset is kept");
     assert_eq!(h.state().tabs[0].style, Style::default());
+
+    // A reset while renaming closes the popover, so its Escape cannot bring the old name
+    // back.
+    open(&mut h, "Rename space…");
+    h.event(egui::Event::Text("Draft".into()));
+    h.run_steps(2);
+    let ctx = h.ctx.clone();
+    h.state_mut().apply(crate::menu::Action::ResetSpace, &ctx);
+    h.run_steps(2);
+    assert_eq!(kind(&h), None);
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().tabs[0].style, Style::default());
+    assert_eq!(saved(&h), Some(Style::default()));
 }
 
 #[test]

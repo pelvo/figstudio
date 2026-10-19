@@ -62,6 +62,9 @@ rfd = { workspace = true }
 fontdb = { workspace = true }
 # The platform's config folder for saved space styles (spaces.rs).
 dirs = "6"
+# Saving them atomically: a uniquely named temporary file (created new, owner-only on Unix),
+# renamed over the store (spaces.rs).
+tempfile.workspace = true
 # Feature `mcp`: the app hosts the live MCP server on loopback (same crates as figstudio-mcp).
 figstudio-mcp = { path = "../figstudio-mcp", optional = true }
 tokio = { workspace = true, optional = true }
