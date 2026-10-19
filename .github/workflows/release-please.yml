@@ -6,8 +6,11 @@
 # The build runs in this workflow, not on `release: published`: a release made with
 # GITHUB_TOKEN does not start other workflows.
 #
-# Repo setting needed once: Settings > Actions > General > Workflow permissions >
-# "Allow GitHub Actions to create and approve pull requests".
+# Token: GITHUB_TOKEN, which needs Settings > Actions > General > Workflow permissions >
+# "Allow GitHub Actions to create and approve pull requests" (on in the org and this repo).
+# Optional: a repo secret RELEASE_PLEASE_TOKEN (Contents and Pull requests write) is used
+# instead when set; release PRs opened with it also start other workflows.
+
 name: release-please
 
 on:
@@ -28,6 +31,7 @@ jobs:
       - uses: googleapis/release-please-action@v5
         id: release
         with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
