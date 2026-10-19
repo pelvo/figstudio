@@ -61,6 +61,7 @@ scripts/check.sh                                        # the gate (first run co
 cargo run --release -p figstudio-cli -- info tests/fixtures/structure.fig
 cargo run --release -p figstudio-cli -- render tests/fixtures/structure.fig -o /tmp/s.png --scale 2
 cargo run --release -p figstudio -- tests/fixtures/structure.fig   # desktop app
+scripts/macos-app.sh --install                          # macOS: figstudio.app in ~/Applications
 scripts/web-build.sh --serve                            # browser app (nightly) on :8765
 ```
 
@@ -76,6 +77,11 @@ driver for wgpu, GTK/portal for the file dialog). macOS needs only Xcode command
   `app`, `web`) or several joined with commas. Summary is lower case, imperative, no full
   stop, under 72 characters.
 - `main` is the integration branch. Work on a branch and open a PR unless told otherwise.
+- Releases: release-please (`.github/workflows/release-please.yml`) keeps one release PR
+  open from the Conventional Commit titles on `main`. Merging it bumps the version in
+  `Cargo.toml`/`Cargo.lock`, writes `CHANGELOG.md`, tags `vX.Y.Z` and attaches the macOS
+  app (`figstudio-vX.Y.Z-macos-arm64.zip`) and the CLI/MCP binaries to the GitHub release.
+  Do not bump versions or edit `CHANGELOG.md` by hand.
 - Do not commit `target/`, generated PNGs, stress files (`synth` output) or private `.fig`
   files. Only the 7 fixtures in `tests/fixtures` (MIT, from fig2sketch) belong in the repo.
 - Do not put people's names, chat names, phone numbers or local paths in commits, issues or

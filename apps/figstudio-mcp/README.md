@@ -19,6 +19,10 @@ cargo build --release -p figstudio-mcp
 # binary: target/release/figstudio-mcp
 ```
 
+Or download it: each GitHub release has `figstudio-cli-mcp-vX.Y.Z-macos-arm64.tar.gz`, and
+the macOS app carries it at `figstudio.app/Contents/MacOS/figstudio-mcp`
+(`scripts/macos-app.sh` builds that bundle locally).
+
 Rust 1.95 or newer (see `AGENTS.md`). No Figma app or network is needed to run it.
 
 ## Run

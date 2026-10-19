@@ -1,0 +1,92 @@
+# Releases with release-please. Every push to main updates one release PR (version bump in
+# Cargo.toml and Cargo.lock, CHANGELOG.md from the Conventional Commit titles). Merging that
+# PR tags vX.Y.Z and publishes a GitHub release; the job below then builds the macOS app and
+# attaches it to the release.
+#
+# The build runs in this workflow, not on `release: published`: a release made with
+# GITHUB_TOKEN does not start other workflows.
+#
+# Retry: if the macOS build failed, or a release has no assets, run this workflow by hand
+# (Actions > release-please > Run workflow) with the release's tag. It rebuilds that tag and
+# replaces the assets.
+#
+# Token: GITHUB_TOKEN, which needs Settings > Actions > General > Workflow permissions >
+# "Allow GitHub Actions to create and approve pull requests" (on in the org and this repo).
+# Optional: a repo secret RELEASE_PLEASE_TOKEN (Contents and Pull requests write) is used
+# instead when set; release PRs opened with it also start other workflows.
+#
+# Third-party actions are pinned to commit SHAs; the comment names the release.
+
+name: release-please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild and attach assets to (for example v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  macos:
+    needs: release-please
+    # !cancelled(): on a manual run the release-please job is skipped, which would skip this
+    # job too without it.
+    if: >-
+      !cancelled() && (github.event_name == 'workflow_dispatch'
+      || needs.release-please.outputs.release_created == 'true')
+    # Apple silicon runner: the build is arm64.
+    runs-on: macos-latest
+    permissions:
+      contents: write # gh release upload
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check the tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Fully qualified: checkout resolves a bare name to a branch before a tag, so a
+          # branch named like the tag would be built and its assets uploaded.
+          ref: refs/tags/${{ env.TAG }}
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build figstudio.app
+        run: scripts/macos-app.sh
+      - name: Package
+        run: |
+          rm -rf dist && mkdir dist
+          app="figstudio-$TAG-macos-arm64.zip"
+          tools="figstudio-cli-mcp-$TAG-macos-arm64.tar.gz"
+          # ditto keeps the bundle's signature and symlinks intact (plain zip does not).
+          ditto -c -k --keepParent target/release/figstudio.app "dist/$app"
+          tar -C target/release -czf "dist/$tools" figstudio-cli figstudio-mcp
+          (cd dist && shasum -a 256 "$app" "$tools" > SHA256SUMS)
+      - name: Attach to the release
+        run: gh release upload "$TAG" dist/* --clobber -R "$GITHUB_REPOSITORY"
