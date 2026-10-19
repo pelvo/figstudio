@@ -282,6 +282,8 @@ struct App {
     swipe: swipe::Swipe,
     /// How far the sidebar's pages are moved (points, last frame) and how wide a page is.
     slide: f32,
+    /// The slide is a far jump's short nudge (it fades), not a page turn (side by side).
+    slide_nudge: bool,
     page_width: f32,
     /// Where each space's dot was drawn last frame (popovers open above it), the part of
     /// the footer they scroll in, and the file whose dot was last scrolled into view.
@@ -389,6 +391,7 @@ impl App {
             space_leaving: None,
             swipe: Default::default(),
             slide: 0.0,
+            slide_nudge: false,
             page_width: 280.0,
             space_dots: Vec::new(),
             window_title: String::new(),

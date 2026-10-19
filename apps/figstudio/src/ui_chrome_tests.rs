@@ -1489,3 +1489,37 @@ fn find_highlights_fading_out_stay_with_their_own_file() {
         "the bar finished fading with no file open"
     );
 }
+
+#[test]
+fn a_far_space_nudges_in_and_the_next_one_turns_the_page() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| {
+            App::new(
+                cc,
+                vec![
+                    fixture(FIXTURE),
+                    fixture("vector.fig"),
+                    fixture("sections.fig"),
+                ],
+            )
+        });
+    wait(&mut h, &mut Vec::new(), "the files to load", |a| {
+        a.tabs.len() == 3
+    });
+    crate::anim::set_reduced(&h.ctx.clone(), false);
+    h.state_mut().active = 0;
+    h.run_steps(60);
+    h.key_press_modifiers(Modifiers::CTRL, Key::Num3);
+    h.run_steps(2);
+    assert!(h.state().slide_nudge, "two spaces away: a short nudge");
+    h.run_steps(60);
+    h.key_press_modifiers(Modifiers::CTRL, Key::Num2);
+    h.run_steps(2);
+    assert!(!h.state().slide_nudge, "the one beside: a page turn");
+    assert!(h.state().slide.abs() > SLIDE_CHECK, "{}", h.state().slide);
+}
+
+/// More than the far jump's nudge: a page turn starts a whole page away.
+const SLIDE_CHECK: f32 = 40.0;

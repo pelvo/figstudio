@@ -14,6 +14,9 @@ pub const FLICK_MIN: f32 = 40.0;
 /// A start this soon after the fingers lifted is the trackpad's momentum, not new fingers
 /// (nobody lifts and touches again that fast).
 const MOMENTUM: f64 = 0.025;
+/// A start in the frame right after the lift is momentum too, however long that frame took
+/// (the UI thread hitched), up to this long.
+const MOMENTUM_FRAME: f64 = 0.2;
 /// A wheel without phases (a plain mouse wheel) has ended after this pause.
 const PAUSE: f64 = 0.12;
 
@@ -54,8 +57,8 @@ pub struct Swipe {
     velocity: f32,
     /// The device reports phases (a trackpad): its End finishes the swipe.
     phased: bool,
-    /// When the fingers last lifted (a phased End).
-    lifted: Option<f64>,
+    /// When (time and frame) the fingers last lifted (a phased End), until its momentum.
+    lifted: Option<(f64, u64)>,
     /// Inside the trackpad's momentum after a lift: ignored up to its own End. New fingers
     /// end it (macOS ends the momentum, then starts the new gesture).
     momentum: bool,
@@ -63,13 +66,48 @@ pub struct Swipe {
 }
 
 impl Swipe {
-    /// Feeds one scroll event (`delta` in points, content direction). Returns how a
-    /// horizontal swipe ended.
-    pub fn feed(&mut self, delta: Vec2, phase: TouchPhase, now: f64) -> Option<End> {
+    /// Feeds one frame's scroll events, in order (`delta` in points, content direction), at
+    /// time `now` in frame number `frame`. The events of a frame share its time, so moves in
+    /// a row count as one: their sum over the time since the last frame is the speed (a
+    /// trackpad sends several a frame). Returns how a horizontal swipe ended.
+    pub fn feed_frame(
+        &mut self,
+        events: &[(Vec2, TouchPhase)],
+        now: f64,
+        frame: u64,
+    ) -> Option<End> {
+        let mut ended = None;
+        let mut moved: Option<Vec2> = None;
+        for &(delta, phase) in events {
+            if phase == TouchPhase::Move {
+                *moved.get_or_insert(Vec2::ZERO) += delta;
+                continue;
+            }
+            if let Some(sum) = moved.take() {
+                ended = ended.or(self.event(sum, TouchPhase::Move, now, frame));
+            }
+            ended = ended.or(self.event(delta, phase, now, frame));
+        }
+        if let Some(sum) = moved {
+            ended = ended.or(self.event(sum, TouchPhase::Move, now, frame));
+        }
+        ended
+    }
+
+    /// One scroll event in its own frame (a frame number far from any other).
+    #[cfg(test)]
+    fn feed(&mut self, delta: Vec2, phase: TouchPhase, now: f64) -> Option<End> {
+        self.feed_frame(&[(delta, phase)], now, (now * 1000.0) as u64 * 10)
+    }
+
+    fn event(&mut self, delta: Vec2, phase: TouchPhase, now: f64, frame: u64) -> Option<End> {
         let gap = now - self.last;
         self.last = now;
+        let momentum = self.lifted.is_some_and(|(t, f)| {
+            now - t <= MOMENTUM || (frame <= f + 1 && now - t <= MOMENTUM_FRAME)
+        });
         match phase {
-            TouchPhase::Start if self.lifted.is_some_and(|t| now - t <= MOMENTUM) => {
+            TouchPhase::Start if momentum => {
                 self.momentum = true;
                 None
             }
@@ -78,12 +116,14 @@ impl Swipe {
                 None
             }
             TouchPhase::End | TouchPhase::Cancel if self.momentum => {
+                // One momentum per lift: a start after it is new fingers.
                 self.momentum = false;
+                self.lifted = None;
                 None
             }
             TouchPhase::End | TouchPhase::Cancel => {
                 self.phased = true;
-                self.lifted = Some(now);
+                self.lifted = Some((now, frame));
                 self.finish()
             }
             TouchPhase::Move if self.momentum => None,
@@ -198,6 +238,51 @@ mod tests {
         s.feed(Vec2::ZERO, TouchPhase::Start, 0.5);
         s.feed(vec2(-30.0, 0.0), TouchPhase::Move, 0.516);
         assert_eq!(s.offset(), Some(-30.0));
+    }
+
+    #[test]
+    fn a_flick_whose_moves_share_a_frame_is_still_quick() {
+        let mut s = Swipe::default();
+        s.feed_frame(&[(Vec2::ZERO, TouchPhase::Start)], 0.0, 1);
+        s.feed_frame(&[(vec2(-12.0, 0.0), TouchPhase::Move)], 0.016, 2);
+        // A trackpad sends several moves in one frame; they all have the frame's time.
+        let burst = [(vec2(-10.0, 0.0), TouchPhase::Move); 4];
+        s.feed_frame(&burst, 0.032, 3);
+        let end = s
+            .feed_frame(&[(Vec2::ZERO, TouchPhase::End)], 0.048, 4)
+            .expect("ended");
+        assert_eq!(end.offset, -52.0);
+        assert!(end.velocity <= -FLICK_SPEED, "{}", end.velocity);
+        assert_eq!(end.turn(200.0), -1, "a flick, not a slow drag");
+    }
+
+    #[test]
+    fn momentum_after_a_hitch_and_new_fingers_after_momentum_are_told_apart() {
+        let swipe = |s: &mut Swipe, t: f64, frame: u64| {
+            s.feed_frame(&[(Vec2::ZERO, TouchPhase::Start)], t, frame);
+            s.feed_frame(
+                &[(vec2(-40.0, 0.0), TouchPhase::Move)],
+                t + 0.016,
+                frame + 1,
+            );
+            s.feed_frame(&[(Vec2::ZERO, TouchPhase::End)], t + 0.032, frame + 2)
+        };
+        let mut s = Swipe::default();
+        assert!(swipe(&mut s, 0.0, 1).is_some());
+        // The UI thread hitched for 80 ms: the momentum's start comes in the next frame.
+        assert_eq!(
+            swipe(&mut s, 0.112, 4),
+            None,
+            "momentum, not a second swipe"
+        );
+        // A start right after that momentum ended is new fingers, not more momentum.
+        let mut s = Swipe::default();
+        assert!(swipe(&mut s, 0.0, 1).is_some());
+        s.feed_frame(&[(Vec2::ZERO, TouchPhase::Start)], 0.036, 4);
+        s.feed_frame(&[(Vec2::ZERO, TouchPhase::End)], 0.040, 5);
+        assert!(swipe(&mut s, 0.050, 20).is_some(), "a new swipe");
+        // Long after a lift, an idle app's next frame is a new swipe too.
+        assert!(swipe(&mut s, 2.0, 23).is_some());
     }
 
     #[test]

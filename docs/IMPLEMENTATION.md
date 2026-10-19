@@ -393,9 +393,14 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   the active space's page and its neighbour's sit side by side and follow the fingers, and
   the window colour blends between theirs. Letting go past a third of the sidebar, or a
   flick (900 pt/s, at least 40 pt), turns the page; the pages carry on from where the
-  fingers left them. Everything the trackpad sends right after the lift (momentum, even
-  when it reports a new start) is ignored until a 0.12 s pause. A click on the next or
-  previous dot turns a whole page too. The lists scroll vertically only.
+  fingers left them. The momentum the trackpad sends after a lift (as a new start within
+  25 ms, or in the very next frame up to 0.2 s when the UI thread hitched) is ignored up to
+  its own end; one momentum per lift, so a start after it is new fingers. The moves of one
+  frame share its time, so `Swipe::feed_frame` counts them as one sample (their sum over the
+  frame time) for the flick speed. A click on the next or previous dot turns a whole page
+  too, and both pages stay side by side until the spring settles; only a far jump's short
+  nudge fades (`App::slide_nudge`, `chrome::sidebar_pages`). The lists scroll vertically
+  only.
 - **Pages moved sideways must not take room in the panel.** egui grows a panel to fit what
   its content allocates, so a page drawn with `scope_builder` at an offset widened the
   sidebar on every switch; they are `new_child` UIs. The panel id changed

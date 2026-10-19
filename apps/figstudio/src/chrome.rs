@@ -415,6 +415,34 @@ pub(crate) fn paint_badge(
     }
 }
 
+/// The sidebar pages to draw while they move by `slide`: the active space's, and while a
+/// page turn or a swipe is on, the one beside it (index, x offset, opacity). Pages stay side
+/// by side until the spring settles; only a far jump's short nudge (`nudge`) fades instead.
+fn sidebar_pages(
+    active: usize,
+    count: usize,
+    slide: f32,
+    nudge: bool,
+    page_width: f32,
+) -> Vec<(usize, f32, f32)> {
+    if nudge {
+        let opacity = 1.0 - (slide.abs() / SLIDE).min(1.0) * 0.85;
+        return vec![(active, slide, opacity)];
+    }
+    let mut pages = vec![(active, slide, 1.0)];
+    let beside = if slide.abs() < 0.5 {
+        None
+    } else if slide > 0.0 {
+        active.checked_sub(1)
+    } else {
+        Some(active + 1).filter(|i| *i < count)
+    };
+    if let Some(i) = beside {
+        pages.push((i, slide - slide.signum() * page_width, 1.0));
+    }
+    pages
+}
+
 /// A control's accessible name with its keys, as the hint painted on it shows them.
 fn with_keys(name: &str, keys: &str) -> String {
     if keys.is_empty() {
@@ -628,6 +656,7 @@ impl App {
                     _ => (1.0, SLIDE),
                 };
                 anim::reset(ctx, Id::new("space-slide"), dir * step);
+                self.slide_nudge = step == SLIDE;
             }
             self.shown_file = now;
         }
@@ -635,14 +664,15 @@ impl App {
 
     /// The space shown beside the active one while the sidebar's pages move by `slide`.
     fn neighbour(&self, slide: f32) -> Option<usize> {
-        if slide.abs() <= SLIDE {
-            return None;
-        }
-        if slide > 0.0 {
-            self.active.checked_sub(1)
-        } else {
-            Some(self.active + 1).filter(|i| *i < self.tabs.len())
-        }
+        sidebar_pages(
+            self.active,
+            self.tabs.len(),
+            slide,
+            self.slide_nudge,
+            self.page_width,
+        )
+        .get(1)
+        .map(|p| p.0)
     }
 
     /// The window controls row at the top of the sidebar (or of the title strip).
@@ -776,14 +806,18 @@ impl App {
             None => anim::spring(&ctx, Id::new("space-slide"), 0.0, Spring::SMOOTH),
         };
         self.slide = slide;
-        // The pages of two spaces side by side while they move, Arc style; a short nudge
-        // (a far space) fades instead.
-        let paging = slide.abs() > SLIDE;
-        let beside = self
-            .neighbour(slide)
-            .map(|i| (i, slide - slide.signum() * self.page_width));
+        if self.swipe.offset().is_some() {
+            self.slide_nudge = false;
+        }
         let clip = body.expand2(vec2(0.0, 4.0));
-        for (index, x) in std::iter::once((self.active, slide)).chain(beside) {
+        let pages = sidebar_pages(
+            self.active,
+            self.tabs.len(),
+            slide,
+            self.slide_nudge,
+            self.page_width,
+        );
+        for (index, x, opacity) in pages {
             // A child that takes no room in the panel: a page moved sideways must not widen
             // the sidebar (egui grows a panel to fit what its content allocates).
             let salt = ("space-page", self.tabs.get(index).map(|t| t.id));
@@ -793,9 +827,7 @@ impl App {
                     .max_rect(body.translate(vec2(x, 0.0))),
             );
             page.set_clip_rect(ui.clip_rect().intersect(clip));
-            if !paging {
-                page.multiply_opacity(1.0 - (slide.abs() / SLIDE).min(1.0) * 0.85);
-            }
+            page.multiply_opacity(opacity);
             self.sidebar_body(&mut page, index);
         }
         let footer = Rect::from_min_max(pos2(max.left(), max.bottom() - FOOTER), max.max);
@@ -889,11 +921,10 @@ impl App {
         } else {
             Vec::new()
         };
-        let mut ended = None;
-        for (delta, phase) in wheel {
-            ended = ended.or(self.swipe.feed(delta, phase, now));
-        }
-        let ended = ended.or_else(|| self.swipe.tick(now));
+        let ended = self
+            .swipe
+            .feed_frame(&wheel, now, ctx.cumulative_frame_nr())
+            .or_else(|| self.swipe.tick(now));
         let (has_previous, has_next) = (self.active > 0, self.active + 1 < self.tabs.len());
         let page = self.page_width;
         // At most a page; past the first or last space the content only gives a little.
@@ -921,6 +952,7 @@ impl App {
             };
             self.shown_file = self.tabs.get(self.active).map(|t| t.id);
             anim::reset(ctx, Id::new("space-slide"), slide);
+            self.slide_nudge = false;
             return None;
         }
         let offset = self.swipe.offset()?;
@@ -1694,5 +1726,32 @@ mod tests {
                 .iter()
                 .all(|v| (100..200).contains(&v.color.a()))
         );
+    }
+}
+
+#[cfg(test)]
+mod pager_tests {
+    use super::*;
+
+    #[test]
+    fn a_page_turn_keeps_both_pages_until_it_settles_and_only_a_nudge_fades() {
+        let (width, count) = (260.0, 3);
+        // The last 20 points of a turn to the next space (the slide springs from a page).
+        let end_of_turn = sidebar_pages(1, count, 20.0, false, width);
+        assert_eq!(
+            end_of_turn,
+            vec![(1, 20.0, 1.0), (0, 20.0 - width, 1.0)],
+            "the page it left is still beside it, and nothing fades"
+        );
+        assert_eq!(
+            sidebar_pages(1, count, 0.0, false, width),
+            vec![(1, 0.0, 1.0)]
+        );
+        // A far jump moves only a little and fades in.
+        let nudge = sidebar_pages(2, count, 18.0, true, width);
+        assert_eq!(nudge.len(), 1);
+        assert!((nudge[0].2 - (1.0 - 0.5 * 0.85)).abs() < 1e-6, "{nudge:?}");
+        // Past the last space there is nothing beside it.
+        assert_eq!(sidebar_pages(2, count, -30.0, false, width).len(), 1);
     }
 }
