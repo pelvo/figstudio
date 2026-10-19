@@ -1537,3 +1537,25 @@ fn a_far_space_nudges_in_and_the_next_one_turns_the_page() {
 
 /// More than the far jump's nudge: a page turn starts a whole page away.
 const SLIDE_CHECK: f32 = 40.0;
+
+#[test]
+fn the_command_bar_lists_the_layers_of_the_page_shown_now() {
+    let mut h = harness();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(3);
+    h.event(egui::Event::Text("Component".into()));
+    h.run_steps(3);
+    let layers = |h: &Harness<'_, App>| {
+        h.state()
+            .command
+            .results()
+            .iter()
+            .filter(|e| matches!(e.target, crate::command::Target::Layer(_)))
+            .count()
+    };
+    assert!(layers(&h) > 0, "the page's layers are listed");
+    // The page changes under the open bar (an agent can turn it): the list follows.
+    h.state_mut().tabs[0].page = figstudio_fig::Guid(77, 77);
+    h.run_steps(3);
+    assert_eq!(layers(&h), 0, "an empty page has none");
+}

@@ -415,6 +415,12 @@ pub(crate) fn paint_badge(
     }
 }
 
+/// The zoom the tool pill shows: the picture's (`Tab::shown`, which eases after a jump),
+/// not the jump's target, so the number matches what is on screen.
+fn zoom_percent(tab: Option<&crate::tab::Tab>) -> f32 {
+    tab.map_or(100.0, |t| t.shown.zoom * 100.0)
+}
+
 /// The sidebar pages to draw while they move by `slide`: the active space's, and while a
 /// page turn or a swipe is on, the one beside it (index, x offset, opacity). Pages stay side
 /// by side until the spring settles; only a far jump's short nudge (`nudge`) fades instead.
@@ -1325,10 +1331,7 @@ impl App {
         {
             actions.push(Action::ZoomBy(0.8));
         }
-        let percent = self
-            .tabs
-            .get(self.active)
-            .map_or(100.0, |t| t.view.zoom * 100.0);
+        let percent = zoom_percent(self.tabs.get(self.active));
         let response = ui.interact(zoom, Id::new("zoom-fit"), Sense::click());
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Zoom to fit"));
         let (hover, press) = icons::feedback(ui, &response);
@@ -1753,5 +1756,22 @@ mod pager_tests {
         assert!((nudge[0].2 - (1.0 - 0.5 * 0.85)).abs() < 1e-6, "{nudge:?}");
         // Past the last space there is nothing beside it.
         assert_eq!(sidebar_pages(2, count, -30.0, false, width).len(), 1);
+    }
+
+    #[test]
+    fn the_zoom_shown_is_the_picture_s_while_it_eases() {
+        let bytes = include_bytes!("../../../tests/fixtures/structure.fig");
+        let doc = figstudio_fig::Document::from_bytes(bytes).expect("fixture");
+        let mut tab = crate::tab::Tab::new(
+            1,
+            "a.fig".into(),
+            std::sync::Arc::new(doc),
+            None,
+            std::time::Duration::ZERO,
+        );
+        tab.shown.zoom = 1.0;
+        tab.view.zoom = 2.0;
+        assert_eq!(zoom_percent(Some(&tab)), 100.0, "on its way to 200%");
+        assert_eq!(zoom_percent(None), 100.0);
     }
 }

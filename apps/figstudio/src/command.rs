@@ -17,6 +17,10 @@ use crate::{App, theme};
 const MAX_RESULTS: usize = 60;
 const MAX_LAYERS_SCANNED: usize = 200_000;
 
+/// What a result list was made for: the query, the active file (`Tab::id`) and its page, and
+/// how many files are open.
+type ResultsKey = (String, Option<(u64, Guid)>, usize);
+
 #[derive(Debug, Default)]
 pub struct CommandBar {
     open: bool,
@@ -24,10 +28,11 @@ pub struct CommandBar {
     selected: usize,
     /// Give the field focus on the next frame (the bar just opened).
     focus: bool,
-    /// The entries for `results_for` (the query, the active file, how many files are open),
-    /// so a big file is not searched every frame and a list never outlives its file.
+    /// The entries for `results_for` (the query, the active file and its page, how many files
+    /// are open), so a big file is not searched every frame and a list never outlives its
+    /// file or page (an agent may turn the page while the bar is open).
     results: Vec<Entry>,
-    results_for: Option<(String, Option<u64>, usize)>,
+    results_for: Option<ResultsKey>,
 }
 
 impl CommandBar {
@@ -260,7 +265,16 @@ fn layers(tab: &crate::tab::Tab, query: &str) -> Vec<Entry> {
     let doc = &tab.doc;
     let query = query.to_lowercase();
     let mut buf = String::new();
-    let mut found: Vec<(u32, Guid)> = Vec::new();
+    // Best first, then in layer order; only the best [`MAX_RESULTS`] are kept as the walk
+    // goes (trimmed now and then), so a short query on a big page does not hold every match.
+    let order = |(score, seq, _): &(u32, usize, Guid)| (std::cmp::Reverse(*score), *seq);
+    let keep = |found: &mut Vec<(u32, usize, Guid)>| {
+        if found.len() > MAX_RESULTS {
+            found.select_nth_unstable_by_key(MAX_RESULTS - 1, order);
+            found.truncate(MAX_RESULTS);
+        }
+    };
+    let mut found: Vec<(u32, usize, Guid)> = Vec::new();
     let mut stack: Vec<Guid> = doc.children(tab.page).iter().rev().copied().collect();
     let mut scanned = 0;
     while let Some(id) = stack.pop() {
@@ -272,15 +286,18 @@ fn layers(tab: &crate::tab::Tab, query: &str) -> Vec<Entry> {
         if !node.name.is_empty()
             && let Some(score) = score_lower(&node.name, &query, &mut buf)
         {
-            found.push((score, id));
+            found.push((score, scanned, id));
+            if found.len() >= 4 * MAX_RESULTS {
+                keep(&mut found);
+            }
         }
         stack.extend(doc.children(id).iter().rev().copied());
     }
-    found.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-    found.truncate(MAX_RESULTS);
+    keep(&mut found);
+    found.sort_by_key(order);
     found
         .into_iter()
-        .filter_map(|(score, id)| {
+        .filter_map(|(score, _, id)| {
             let node = doc.node(id)?;
             Some(Entry {
                 title: node.name.clone(),
@@ -307,7 +324,7 @@ impl App {
         }
         let key = (
             self.command.query.clone(),
-            self.tabs.get(self.active).map(|t| t.id),
+            self.tabs.get(self.active).map(|t| (t.id, t.page)),
             self.tabs.len(),
         );
         if open && self.command.results_for.as_ref() != Some(&key) {
@@ -605,6 +622,72 @@ fn command_icon(e: &Entry) -> Icon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page of `n` layers: every third named "match …" (a prefix), the others "a match"
+    /// (a word start), so many share each score.
+    fn many_layers(n: u32) -> crate::tab::Tab {
+        use figstudio_fig::{Document, Node, Obj, Val};
+        let obj = |fields: &[(&str, Val)]| {
+            let mut o = Obj::new();
+            for (k, v) in fields {
+                o.insert(k, v.clone());
+            }
+            Val::Obj(o)
+        };
+        let parent = |guid: Guid, position: String| {
+            obj(&[("guid", guid.to_val()), ("position", Val::Str(position))])
+        };
+        let page = Guid(9, 1);
+        let mut nodes = vec![
+            Node::from_data(obj(&[
+                ("guid", page.to_val()),
+                ("type", Val::Str("CANVAS".into())),
+                ("name", Val::Str("Page".into())),
+                ("parentIndex", parent(Guid(0, 0), "0".into())),
+            ]))
+            .expect("page"),
+        ];
+        for i in 0..n {
+            let name = if i % 3 == 0 {
+                format!("match {i}")
+            } else {
+                format!("a match {i}")
+            };
+            nodes.push(
+                Node::from_data(obj(&[
+                    ("guid", Guid(9, i + 2).to_val()),
+                    ("type", Val::Str("FRAME".into())),
+                    ("name", Val::Str(name)),
+                    ("parentIndex", parent(page, format!("{i:04}"))),
+                ]))
+                .expect("layer"),
+            );
+        }
+        let bytes = include_bytes!("../../../tests/fixtures/structure.fig");
+        let mut doc = Document::from_bytes(bytes).expect("fixture");
+        doc.set_nodes(nodes).expect("nodes");
+        doc.pages = vec![page];
+        let mut tab = crate::tab::Tab::new(
+            1,
+            "a.fig".into(),
+            std::sync::Arc::new(doc),
+            None,
+            std::time::Duration::ZERO,
+        );
+        tab.page = page;
+        tab
+    }
+
+    #[test]
+    fn the_layers_kept_are_the_best_in_layer_order() {
+        let tab = many_layers(600);
+        let got: Vec<String> = layers(&tab, "match").into_iter().map(|e| e.title).collect();
+        // All 200 prefixes score alike and beat the word starts: the first 60 in the tree.
+        let want: Vec<String> = (0..MAX_RESULTS as u32)
+            .map(|k| format!("match {}", k * 3))
+            .collect();
+        assert_eq!(got, want);
+    }
 
     #[test]
     fn a_prefix_beats_a_word_start_beats_a_substring_beats_letters_in_order() {

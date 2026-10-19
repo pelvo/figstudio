@@ -459,13 +459,14 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   `Tab::view` is the target (the MCP and the next jump see it); `canvas::show` takes the
   eased `shown_view` (kept in `Tab::shown`), which zooms geometrically around the page point
   both views share (`view_between`), and uses it for hover, clicks, the marquee and the
-  drawing, so they match the pixels. Tiles are planned and requested for the target, so an
-  ease does not cancel batches as it crosses tiles. Drags, scrolls and pinches are never
-  eased.
+  drawing, so they match the pixels; the tool pill's zoom percentage reads it too
+  (`chrome::zoom_percent`). Tiles are planned and requested for the target, so an ease does
+  not cancel batches as it crosses tiles. Drags, scrolls and pinches are never eased.
 - The command bar is modal: `App::shortcuts` and the native menu ignore everything but its
-  own shortcut (and Quit) while it is open, and its results are keyed on the query, the
-  active file and the number of files. Layer search scores names during the walk and keeps
-  only matches. Ctrl+Tab does not reach the browser build (browsers keep it); the dots and
+  own shortcut (and Quit) while it is open or fading, and its results are keyed on the
+  query, the active file and its page (an agent may turn the page meanwhile) and the number
+  of files. Layer search scores names during the walk and keeps only the best 60 as it goes
+  (ties in layer order). Ctrl+Tab does not reach the browser build (browsers keep it); the dots and
   the command bar switch files there.
 - The status pill (with the MCP address and Copy token) moves above the tool pill when the
   card is narrow; the tool pill drops − and + first, then the zoom percentage. The file dots
