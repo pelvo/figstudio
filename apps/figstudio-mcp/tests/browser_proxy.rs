@@ -1,7 +1,7 @@
 //! Integration tests for `figstudio-mcp --browser-proxy` (zero-upload Wasm RPC proxy).
 use figstudio_mcp::proxy::{
     EXEC_PROTOCOL, ProxyConfig, ProxyState, bind_proxy_listener, derive_session_id,
-    parse_browser_entry, serve_proxy_ws,
+    parse_browser_entry, serve_proxy_ws, split_browser_list,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -195,24 +195,115 @@ async fn open_figstudio_browser_waits_for_ready_and_forwards_zero_upload_rpc() {
 
 #[test]
 fn browser_entry_parser_handles_percent_s_and_arguments() {
+    let url = "https://example.com/#x";
     assert_eq!(
-        parse_browser_entry("firefox --new-tab %s", "https://example.com/#x"),
+        parse_browser_entry("firefox --new-tab %s", url),
         Some((
             "firefox".to_owned(),
-            vec!["--new-tab".to_owned(), "https://example.com/#x".to_owned()]
+            vec!["--new-tab".to_owned(), url.to_owned()]
         ))
     );
     assert_eq!(
-        parse_browser_entry("chromium --incognito", "https://example.com/#x"),
+        parse_browser_entry("chromium --incognito", url),
         Some((
             "chromium".to_owned(),
+            vec!["--incognito".to_owned(), url.to_owned()]
+        ))
+    );
+    assert_eq!(
+        parse_browser_entry("open -a \"Google Chrome\"", url),
+        Some((
+            "open".to_owned(),
+            vec!["-a".to_owned(), "Google Chrome".to_owned(), url.to_owned()]
+        ))
+    );
+    assert_eq!(
+        parse_browser_entry("open -a'Google Chrome'", url),
+        Some((
+            "open".to_owned(),
+            vec!["-aGoogle Chrome".to_owned(), url.to_owned()]
+        ))
+    );
+    assert_eq!(
+        parse_browser_entry("open -a \"Google \\\"Chrome\\\"\"", url),
+        Some((
+            "open".to_owned(),
             vec![
-                "--incognito".to_owned(),
-                "https://example.com/#x".to_owned()
+                "-a".to_owned(),
+                "Google \"Chrome\"".to_owned(),
+                url.to_owned()
             ]
         ))
     );
-    assert_eq!(parse_browser_entry("   ", "https://example.com"), None);
+    assert_eq!(
+        parse_browser_entry("firefox --title 100%%s", url),
+        Some((
+            "firefox".to_owned(),
+            vec!["--title".to_owned(), "100%s".to_owned(), url.to_owned()]
+        ))
+    );
+    assert_eq!(
+        parse_browser_entry("firefox %%%s", url),
+        Some(("firefox".to_owned(), vec![format!("%{url}")]))
+    );
+    assert_eq!(
+        parse_browser_entry("firefox %%s %s", url),
+        Some(("firefox".to_owned(), vec!["%s".to_owned(), url.to_owned()]))
+    );
+    assert_eq!(
+        parse_browser_entry("/opt/year's/firefox", url),
+        Some(("/opt/year's/firefox".to_owned(), vec![url.to_owned()]))
+    );
+    assert_eq!(
+        parse_browser_entry("\"/opt/year's/firefox\"", url),
+        Some(("/opt/year's/firefox".to_owned(), vec![url.to_owned()]))
+    );
+    assert_eq!(
+        parse_browser_entry("\"C:\\Program Files\\Firefox\\\"", url),
+        Some((
+            "C:\\Program Files\\Firefox\\".to_owned(),
+            vec![url.to_owned()]
+        ))
+    );
+    assert_eq!(parse_browser_entry("open -a \"unterminated", url), None);
+    assert_eq!(parse_browser_entry("\"\" %s", url), None);
+    assert_eq!(parse_browser_entry("   ", url), None);
+
+    let list = split_browser_list("firefox --profile \"/tmp/a:b\" %s:lynx", ':');
+    assert_eq!(list.len(), 2);
+    assert_eq!(
+        parse_browser_entry(&list[0], url),
+        Some((
+            "firefox".to_owned(),
+            vec![
+                "--profile".to_owned(),
+                "/tmp/a:b".to_owned(),
+                url.to_owned()
+            ]
+        ))
+    );
+    assert_eq!(
+        parse_browser_entry(&list[1], url),
+        Some(("lynx".to_owned(), vec![url.to_owned()]))
+    );
+
+    let single_q = split_browser_list("firefox --profile='/tmp/a:b' %s:lynx", ':');
+    assert_eq!(single_q.len(), 2);
+    assert_eq!(
+        parse_browser_entry(&single_q[0], url),
+        Some((
+            "firefox".to_owned(),
+            vec!["--profile=/tmp/a:b".to_owned(), url.to_owned()]
+        ))
+    );
+
+    let unclosed = split_browser_list("firefox \"/tmp/oops:lynx %s", ':');
+    assert_eq!(unclosed.len(), 2);
+    assert_eq!(parse_browser_entry(&unclosed[0], url), None);
+    assert_eq!(
+        parse_browser_entry(&unclosed[1], url),
+        Some(("lynx".to_owned(), vec![url.to_owned()]))
+    );
 }
 
 #[cfg(unix)]

@@ -938,36 +938,55 @@ fn rpc_error(id: Value, code: i32, message: &str, data: Option<Value>) -> Value 
     json!({ "jsonrpc": "2.0", "id": id, "error": err })
 }
 
-/// Parse one entry of a `BROWSER` environment variable (`program [args...]`, supporting
-/// single/double-quoted tokens, `\"` / `\\` escapes inside double quotes, and replacing
-/// `%s` with `url` while turning `%%` into a literal `%`), without invoking a shell.
-/// Returns `None` on empty input or unbalanced quotes.
+/// Parse one entry of a `BROWSER` environment variable (`program [args...]`), supporting
+/// single/double-quoted spans (including mid-token `--profile='/tmp/a:b'` and `-a'Google Chrome'`),
+/// `\"` escapes inside double quotes, literal unclosed apostrophes in paths (`/opt/year's/firefox`),
+/// and replacing `%s` in argument tokens with `url` while turning `%%` into a literal `%`.
+/// Never invokes a shell. Returns `None` on empty input or unbalanced double quotes.
 #[must_use]
 pub fn parse_browser_entry(entry: &str, url: &str) -> Option<(String, Vec<String>)> {
     let mut tokens = Vec::new();
     let mut cur = String::new();
     let mut in_token = false;
     let mut quote: Option<char> = None;
-    let mut chars = entry.chars().peekable();
-    while let Some(ch) = chars.next() {
+    let chars: Vec<char> = entry.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
         match quote {
-            Some(q) if ch == q => quote = None,
-            Some('"') if ch == '\\' => {
-                if let Some(&next) = chars.peek()
-                    && (next == '"' || next == '\\')
-                {
-                    cur.push(chars.next().unwrap());
-                } else {
-                    cur.push(ch);
+            Some(q) if ch == q => {
+                quote = None;
+            }
+            Some('"') if ch == '\\' && i + 1 < chars.len() => {
+                let next = chars[i + 1];
+                // Treat `\"` as an escaped quote only when another closing `"` follows later
+                // in the entry; a trailing `\"` at the end of a Windows path (`"C:\...\Firefox\"`)
+                // keeps its literal backslash and closes the quote on the next step.
+                if next == '"' && chars[i + 2..].contains(&'"') {
+                    cur.push('"');
+                    i += 2;
+                    continue;
+                } else if next == '\\' && i + 2 < chars.len() && chars[i + 2] != '"' {
+                    cur.push('\\');
+                    i += 2;
+                    continue;
                 }
+                cur.push(ch);
             }
             Some(_) => cur.push(ch),
             None if ch == '"' => {
-                quote = Some(ch);
+                quote = Some('"');
                 in_token = true;
             }
-            None if ch == '\'' && !in_token => {
-                quote = Some(ch);
+            None if ch == '\'' => {
+                // Start a single-quoted span when a matching closing `'` exists later in the
+                // entry (`--profile='/tmp/a:b'`, `-a'Google Chrome'`); otherwise keep a lone
+                // apostrophe literal (`/opt/year's/firefox`).
+                if chars[i + 1..].contains(&'\'') {
+                    quote = Some('\'');
+                } else {
+                    cur.push('\'');
+                }
                 in_token = true;
             }
             None if ch.is_whitespace() => {
@@ -981,6 +1000,7 @@ pub fn parse_browser_entry(entry: &str, url: &str) -> Option<(String, Vec<String
                 in_token = true;
             }
         }
+        i += 1;
     }
     if quote.is_some() {
         return None;
@@ -1021,41 +1041,44 @@ pub fn parse_browser_entry(entry: &str, url: &str) -> Option<(String, Vec<String
     Some((program, args))
 }
 
-/// Split a `BROWSER` value on `sep` (`:` on Unix, `;` on Windows) only outside quotes.
+/// Split a `BROWSER` value on `sep` (`:` on Unix, `;` on Windows) outside balanced quotes.
+/// An unclosed quote that never closes in the remainder does not swallow subsequent entries.
 #[must_use]
 pub fn split_browser_list(browser_env: &str, sep: char) -> Vec<String> {
     let mut entries = Vec::new();
     let mut cur = String::new();
     let mut quote: Option<char> = None;
-    let mut in_token = false;
-    let mut chars = browser_env.chars().peekable();
-    while let Some(ch) = chars.next() {
+    let chars: Vec<char> = browser_env.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
         match quote {
             Some(q) if ch == q => {
                 quote = None;
                 cur.push(ch);
             }
-            Some('"') if ch == '\\' => {
-                cur.push(ch);
-                if let Some(next) = chars.next() {
-                    cur.push(next);
+            Some('"') if ch == '\\' && i + 1 < chars.len() && chars[i + 1] == '"' => {
+                if chars[i + 2..].contains(&'"') {
+                    cur.push('\\');
+                    cur.push('"');
+                    i += 2;
+                    continue;
                 }
+                cur.push(ch);
             }
             Some(_) => cur.push(ch),
             None if ch == sep => {
                 entries.push(std::mem::take(&mut cur));
-                in_token = false;
             }
-            None if ch == '"' || (ch == '\'' && !in_token) => {
-                quote = Some(ch);
-                in_token = true;
+            None if ch == '"' || ch == '\'' => {
+                if chars[i + 1..].contains(&ch) {
+                    quote = Some(ch);
+                }
                 cur.push(ch);
             }
-            None => {
-                in_token = !ch.is_whitespace();
-                cur.push(ch);
-            }
+            None => cur.push(ch),
         }
+        i += 1;
     }
     entries.push(cur);
     entries
