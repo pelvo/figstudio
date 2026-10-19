@@ -9,9 +9,9 @@ fail. Read `AGENTS.md` first.
 `egui_kittest` cannot instantiate it. The desktop window test covers the shared
 menu-to-window action, not the browser bridge controls. After a browser build:
 
-- View → Agent access opens the window directly (no nested bridge menu).
-- Click and type in both URL and pairing-token fields; neither closes the window.
-- Connect and Disconnect leave the window open; status reflects the connection.
+- View → Agent access opens Settings on its Agents tab directly (no nested bridge menu).
+- Click and type in both URL and pairing-token fields; neither closes Settings.
+- Connect and Disconnect leave Settings open; status reflects the connection.
 
 This browser GUI checklist remains unverified; a successful wasm build only proves
 compilation.
@@ -22,14 +22,16 @@ Use an extra instance with public fixtures, agent access off; do not disturb a l
 app or tunnel. Linux/web and headless tests retain the drawn bar. Check macOS:
 
 - App, File, View, Window and Help appear in the OS bar; the drawn bar is absent.
-- About opens the help window from both the app and Help menus; Hide/Hide Others/
+- About opens Settings on its About tab from both the app and Help menus; Hide/Hide Others/
   Show All and Window Minimize/Zoom work.
 - Open by click and Cmd+O opens exactly one picker; cancel it. Cmd+W closes one tab.
 - Export page at each scale; export selection only when selected. Cmd+Shift+E acts once.
 - No-tab and no-selection items are disabled; changing tabs updates them.
 - Shift+1 fits once and Shift+0 restores actual size via egui (native menu labels
   show hints only); text editing does not trigger zoom.
-- Panel checks follow state and clicks toggle once; Agent access opens its window.
+- Panel checks follow state and clicks toggle once; Agent access opens Settings → Agents.
+- Settings… (⌘,) sits in the app menu, not in File; a shortcut changed in Settings →
+  Shortcuts shows on its menu item.
 - Custom Quit / Cmd+Q closes through eframe; no orphan server is left.
 - Forced attach failure retains a usable drawn menu (build-time failure injection).
   `menu_dispatch::tests` covers the pure attached/fallback visibility decision and

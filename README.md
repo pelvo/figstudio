@@ -46,10 +46,10 @@ cargo run --release -p figstudio -- path/to/design.fig
 
 - Pan and zoom the canvas, switch pages, search layers, inspect properties, and export any
   selection or page to PNG.
-- Agent access is off at launch. Enable **View → Agent access (MCP server)** to start the
-  in-process Streamable HTTP MCP server on loopback (`http://127.0.0.1:3845/mcp`, or
-  `3846–3855` if busy) so an MCP client can query open tabs, read the live selection, or
-  reveal a node (`reveal_node`) in the window.
+- Agent access is off at launch. Turn on **Settings → Agents → Agent access** (⌘, or
+  View → Agent access…) to start the in-process Streamable HTTP MCP server on loopback
+  (`http://127.0.0.1:3845/mcp`, or `3846–3855` if busy) so an MCP client can query open
+  tabs, read the live selection, or reveal a node (`reveal_node`) in the window.
 
 ### 2. Browser app (WebAssembly)
 
