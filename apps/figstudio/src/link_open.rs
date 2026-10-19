@@ -7,7 +7,15 @@
 //! the window lists them for a person to pick, and nothing is guessed. A local copy is opened
 //! and the node revealed once it has loaded. The MCP `reveal_node` tool reaches the same code
 //! for every figma.com link; its answers never carry paths or file names ([`LinkError::public`]).
+//!
+//! The folders are listed on a background thread ([`LinkOpen::search`]) and the result is
+//! picked up by [`App::poll_link_searches`] each frame: reading a folder can block for long
+//! (a network drive, or macOS asking for permission to read `~/Downloads`), and the window
+//! must keep drawing meanwhile. A search that takes longer than [`SEARCH_TIMEOUT`] fails with
+//! a message that says so, instead of the MCP call timing out with no reason.
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::Duration;
 
 use figstudio_fig::Guid;
 use figstudio_mcp_core::{
@@ -22,6 +30,13 @@ use crate::tab::Tab;
 /// Told once what a link did (one line) or why it failed; how an MCP request gets its answer.
 /// Both texts are [`LinkError::public`]-safe: no paths, folder names or file names.
 pub(crate) type Done = Box<dyn FnOnce(Result<String, String>) + Send>;
+
+/// How long a folder search may take before the link fails (macOS may be waiting for the
+/// person to allow reading the folder; the search then still finishes in the background).
+pub(crate) const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Lists the local copies of a link in some folders; [`local_copies`] unless a test swaps it.
+pub(crate) type SearchFn = fn(&[PathBuf], &FileHint) -> Vec<(PathBuf, Match)>;
 
 /// A [`Done`] with the answer it is to get once the frame has published its tabs.
 pub(crate) type Answer = (Done, Result<String, String>);
@@ -38,6 +53,15 @@ pub(crate) struct LinkOpen {
     pub choices: Vec<Choice>,
     /// The node of the link the choices are for.
     choice_node: Option<Guid>,
+    /// Folder searches running on their threads.
+    searches: Vec<Search>,
+    next_search: u64,
+    /// Finished searches: the search id and what it found.
+    found_tx: Sender<(u64, Vec<(PathBuf, Match)>)>,
+    found_rx: Receiver<(u64, Vec<(PathBuf, Match)>)>,
+    /// What lists a folder, and how long it may take (tests swap both).
+    pub search: SearchFn,
+    pub search_timeout: Duration,
     waiting: Vec<Waiting>,
     /// Answers kept until the frame has published the new tabs to the MCP server.
     answers: Vec<Answer>,
@@ -45,6 +69,7 @@ pub(crate) struct LinkOpen {
 
 impl Default for LinkOpen {
     fn default() -> Self {
+        let (found_tx, found_rx) = channel();
         Self {
             window: false,
             text: String::new(),
@@ -52,10 +77,34 @@ impl Default for LinkOpen {
             focus: false,
             choices: Vec::new(),
             choice_node: None,
+            searches: Vec::new(),
+            next_search: 0,
+            found_tx,
+            found_rx,
+            search: local_copies,
+            search_timeout: SEARCH_TIMEOUT,
             waiting: Vec::new(),
             answers: Vec::new(),
         }
     }
+}
+
+impl LinkOpen {
+    /// How many folder searches are still running.
+    pub(crate) fn searching(&self) -> usize {
+        self.searches.len()
+    }
+}
+
+/// A link whose folders are being searched.
+struct Search {
+    id: u64,
+    /// The link as given, for the window when the result is a choice.
+    text: String,
+    hint: FileHint,
+    node: Option<Guid>,
+    done: Option<Done>,
+    started: web_time::Instant,
 }
 
 /// A link whose local copy is loading.
@@ -98,6 +147,8 @@ pub(crate) enum LinkError {
     TabClosed,
     /// The local copy did not load.
     LoadFailed,
+    /// Listing the link folders took longer than [`SEARCH_TIMEOUT`].
+    SearchTimeout,
 }
 
 impl LinkError {
@@ -137,6 +188,9 @@ impl LinkError {
             Self::NodeMissing { node, .. } => format!("node {node} is not in that file"),
             Self::TabClosed => "tab closed".to_owned(),
             Self::LoadFailed => "the local copy could not be opened".to_owned(),
+            Self::SearchTimeout => "the app's link folders could not be read in time; macOS \
+                 may be asking in the figstudio window for permission to read them"
+                .to_owned(),
         }
     }
 }
@@ -171,14 +225,15 @@ pub(crate) fn parse(text: &str) -> Result<Parsed, LinkError> {
         .map_err(|_| LinkError::Unreadable)
 }
 
-/// Pure but for listing `dirs`: where a link that names `file` is shown, given the open tabs
-/// (`(id, path)`) and the active tab. With no file named, the active tab. Otherwise the one
-/// best-matching file among the tabs and the local copies; a local copy that is an open tab
-/// counts once, as the tab.
+/// Where a link that names `file` is shown, given the open tabs (`(id, path)`), the active
+/// tab and the local `copies` found in `dirs` ([`local_copies`]). With no file named, the
+/// active tab. Otherwise the one best-matching file among the tabs and the copies; a copy
+/// that is an open tab counts once, as the tab. No I/O but resolving paths of namesakes.
 pub(crate) fn plan(
     tabs: &[(u64, &Path)],
     active: Option<u64>,
     file: Option<&FileHint>,
+    copies: Vec<(PathBuf, Match)>,
     dirs: &[PathBuf],
 ) -> Result<Target, LinkError> {
     let Some(hint) = file else {
@@ -195,7 +250,7 @@ pub(crate) fn plan(
             Some((choice, rank(path)?))
         })
         .collect();
-    for (path, rank) in local_copies(dirs, hint) {
+    for (path, rank) in copies {
         if !tabs.iter().any(|(_, open)| same_file(open, &path)) {
             let target = Target::Open(path.clone());
             candidates.push((Choice { target, path }, rank));
@@ -246,8 +301,9 @@ fn show(
 
 impl App {
     /// Show what `text` links to. `done` gets the answer (MCP); without it, failures are
-    /// toasts and a tie fills the window's choices. Returns whether the link is shown or
-    /// loading.
+    /// toasts and a tie fills the window's choices. A link that names a file starts a folder
+    /// search and is finished by [`App::poll_link_searches`]. Returns whether the link is
+    /// shown, loading or being searched for.
     pub(crate) fn go_to_link(
         &mut self,
         ctx: &egui::Context,
@@ -262,19 +318,104 @@ impl App {
                 return false;
             }
         };
+        let Some(hint) = parsed.file else {
+            let active = self.tabs.get(self.active).map(|t| t.id);
+            return match plan(&[], active, None, Vec::new(), &[]) {
+                Ok(target) => self.go_to(ctx, target, parsed.node, done),
+                Err(error) => {
+                    self.answer(ctx, done, Err(error));
+                    false
+                }
+            };
+        };
+        let id = self.link.next_search;
+        self.link.next_search += 1;
+        self.start_search(ctx, id, hint.clone());
+        self.link.searches.push(Search {
+            id,
+            text: text.trim().to_owned(),
+            hint,
+            node: parsed.node,
+            done,
+            started: web_time::Instant::now(),
+        });
+        true
+    }
+
+    /// List the link folders for `hint` off the UI thread (in the browser there are none).
+    fn start_search(&self, ctx: &egui::Context, id: u64, hint: FileHint) {
+        let (dirs, search, found) = (
+            self.link.dirs.clone(),
+            self.link.search,
+            self.link.found_tx.clone(),
+        );
+        let run = move || {
+            // The app may have quit meanwhile; nobody to tell then.
+            let _ = found.send((id, search(&dirs, &hint)));
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let ctx = ctx.clone();
+            let spawned = std::thread::Builder::new()
+                .name("link-search".into())
+                .spawn(move || {
+                    run();
+                    ctx.request_repaint();
+                });
+            if let Err(error) = spawned {
+                // No thread: the search times out with its message.
+                tracing::warn!("link folder search not started: {error}");
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = ctx;
+            run();
+        }
+    }
+
+    /// Each frame: finish the searches that came back, fail the ones past their time.
+    pub(crate) fn poll_link_searches(&mut self, ctx: &egui::Context) {
+        while let Ok((id, copies)) = self.link.found_rx.try_recv() {
+            let Some(i) = self.link.searches.iter().position(|s| s.id == id) else {
+                continue; // Timed out before; already answered.
+            };
+            let search = self.link.searches.remove(i);
+            self.finish_search(ctx, search, copies);
+        }
+        let timeout = self.link.search_timeout;
+        let (late, running): (Vec<Search>, Vec<Search>) = std::mem::take(&mut self.link.searches)
+            .into_iter()
+            .partition(|s| s.started.elapsed() >= timeout);
+        self.link.searches = running;
+        for search in late {
+            self.answer(ctx, search.done, Err(LinkError::SearchTimeout));
+        }
+        if !self.link.searches.is_empty() {
+            // Wake for the timeout even if the thread never reports.
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+    }
+
+    fn finish_search(
+        &mut self,
+        ctx: &egui::Context,
+        search: Search,
+        copies: Vec<(PathBuf, Match)>,
+    ) {
         let tabs: Vec<(u64, &Path)> = self.tabs.iter().map(|t| (t.id, t.path.as_path())).collect();
         let active = self.tabs.get(self.active).map(|t| t.id);
-        match plan(&tabs, active, parsed.file.as_ref(), &self.link.dirs) {
-            Ok(target) => self.go_to(ctx, target, parsed.node, done),
-            Err(LinkError::Several(choices)) if done.is_none() => {
+        match plan(&tabs, active, Some(&search.hint), copies, &self.link.dirs) {
+            Ok(target) => {
+                self.go_to(ctx, target, search.node, search.done);
+            }
+            Err(LinkError::Several(choices)) if search.done.is_none() => {
                 self.link.choices = choices;
-                self.link.choice_node = parsed.node;
-                false
+                self.link.choice_node = search.node;
+                self.link.text = search.text;
+                self.link.window = true;
             }
-            Err(error) => {
-                self.answer(ctx, done, Err(error));
-                false
-            }
+            Err(error) => self.answer(ctx, search.done, Err(error)),
         }
     }
 
@@ -383,6 +524,12 @@ impl App {
                 let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let filled = !self.link.text.trim().is_empty();
                 go = ui.add_enabled(filled, egui::Button::new("Go")).clicked() || (enter && filled);
+                if self.link.searching() > 0 {
+                    ui.label(
+                        egui::RichText::new("Searching the link folders\u{2026}")
+                            .color(crate::theme::TEXT_DIM),
+                    );
+                }
                 picked = self.link_choices(ui);
                 #[cfg(not(target_arch = "wasm32"))]
                 self.link_folders(ui);

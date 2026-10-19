@@ -5,13 +5,42 @@ use std::sync::mpsc;
 
 use figstudio_fig::Guid;
 
+use egui_kittest::Harness;
+use figstudio_mcp_core::link::{FileHint, Match};
+use figstudio_mcp_core::local_copy::local_copies;
+
 use super::{Choice, Done, LinkError, Target, parse, plan};
+use crate::App;
 use crate::ui_tests::{fixture, harness, wait};
 
 const SLUG_LINK: &str = "https://www.figma.com/design/KEY/My-Design?node-id=1-5&t=abc-4";
 
 fn figma(name: &str, node: &str) -> String {
     format!("https://www.figma.com/design/KEY/{name}?node-id={node}")
+}
+
+/// Steps until no folder search is running (they run on threads).
+fn searched(h: &mut Harness<'_, App>) {
+    wait(h, &mut Vec::new(), "the folder search", |a| {
+        a.link.searching() == 0
+    });
+}
+
+/// `plan` with the copies `local_copies` finds in `dirs`.
+fn plan_in(
+    tabs: &[(u64, &Path)],
+    active: Option<u64>,
+    file: Option<&FileHint>,
+    dirs: &[PathBuf],
+) -> Result<Target, LinkError> {
+    let copies = file.map_or_else(Vec::new, |hint| local_copies(dirs, hint));
+    plan(tabs, active, file, copies, dirs)
+}
+
+/// A folder listing that hangs, as one behind a macOS permission prompt does.
+fn slow_search(_: &[PathBuf], _: &FileHint) -> Vec<(PathBuf, Match)> {
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    Vec::new()
 }
 
 /// A `Done` and the receiver of its answer.
@@ -48,16 +77,19 @@ fn plan_picks_the_one_best_file_among_tabs_and_local_copies() {
     // Only the local copy matches.
     let tabs: Vec<(u64, &Path)> = vec![(1, &other)];
     assert_eq!(
-        plan(&tabs, Some(1), Some(&hint), &dirs),
+        plan_in(&tabs, Some(1), Some(&hint), &dirs),
         Ok(Target::Open(copy.clone()))
     );
     // The copy is open as a tab: it counts once, as the tab.
     let tabs: Vec<(u64, &Path)> = vec![(1, &other), (2, &copy)];
-    assert_eq!(plan(&tabs, Some(1), Some(&hint), &dirs), Ok(Target::Tab(2)));
+    assert_eq!(
+        plan_in(&tabs, Some(1), Some(&hint), &dirs),
+        Ok(Target::Tab(2))
+    );
     // No file in the link: the active tab, or an error with no tab.
-    assert_eq!(plan(&tabs, Some(1), None, &dirs), Ok(Target::Tab(1)));
-    assert_eq!(plan(&[], None, None, &dirs), Err(LinkError::NoFile));
-    let missing = plan(&[], None, Some(&hint), &[]).unwrap_err();
+    assert_eq!(plan_in(&tabs, Some(1), None, &dirs), Ok(Target::Tab(1)));
+    assert_eq!(plan_in(&[], None, None, &dirs), Err(LinkError::NoFile));
+    let missing = plan_in(&[], None, Some(&hint), &[]).unwrap_err();
     assert!(matches!(missing, LinkError::NotFound { .. }), "{missing:?}");
 }
 
@@ -72,7 +104,7 @@ fn namesakes_tie_and_are_listed_but_a_file_key_wins() {
     let hint = parse(SLUG_LINK).unwrap().file.unwrap();
     // An open tab and a newer download with the same name: no guess by tab or by date.
     assert_eq!(
-        plan(&tabs, Some(4), Some(&hint), &dirs),
+        plan_in(&tabs, Some(4), Some(&hint), &dirs),
         Err(LinkError::Several(vec![
             Choice {
                 target: Target::Tab(4),
@@ -88,7 +120,7 @@ fn namesakes_tie_and_are_listed_but_a_file_key_wins() {
     let keyed = dir.path().join("KEY.fig");
     std::fs::write(&keyed, b"").unwrap();
     assert_eq!(
-        plan(&tabs, Some(4), Some(&hint), &dirs),
+        plan_in(&tabs, Some(4), Some(&hint), &dirs),
         Ok(Target::Open(keyed))
     );
 }
@@ -136,14 +168,16 @@ fn a_link_to_an_open_tab_selects_and_fits_its_node() {
         h.state_mut()
             .go_to_link(&ctx, &figma("structure", "1-25"), None)
     );
+    searched(&mut h);
     let tab = &h.state().tabs[0];
+    // Selected; the canvas has already taken `fit_node` to fit it.
     assert_eq!(tab.selection, Some(Guid(1, 25)));
-    assert_eq!(tab.fit_node, Some(Guid(1, 25)));
     // A node the file does not have is refused, and nothing is opened.
     assert!(
-        !h.state_mut()
+        h.state_mut()
             .go_to_link(&ctx, &figma("structure", "999-1"), None)
     );
+    searched(&mut h);
     assert_eq!(h.state().tabs.len(), 1);
     assert!(h.state().toasts.last().unwrap().error);
 }
@@ -174,6 +208,7 @@ fn a_link_to_a_local_copy_opens_it_then_shows_the_node_and_answers_without_names
     let ctx = h.ctx.clone();
     h.state_mut().active = 0;
     assert!(h.state_mut().go_to_link(&ctx, SLUG_LINK, None));
+    searched(&mut h);
     assert_eq!((h.state().tabs.len(), h.state().active), (2, 1));
 }
 
@@ -187,10 +222,8 @@ fn an_mcp_request_for_namesakes_fails_without_names_and_opens_nothing() {
     let ctx = h.ctx.clone();
     h.state_mut().link.dirs = vec![dir.path().to_owned()];
     let (done, rx) = done();
-    assert!(!h.state_mut().go_to_link(&ctx, SLUG_LINK, Some(done)));
-    for (done, result) in h.state_mut().take_link_answers() {
-        done(result);
-    }
+    assert!(h.state_mut().go_to_link(&ctx, SLUG_LINK, Some(done)));
+    searched(&mut h);
     let error = rx.try_recv().unwrap().unwrap_err();
     assert!(
         error.starts_with("several files match this link"),
@@ -221,7 +254,7 @@ fn the_window_goes_to_the_link_typed_into_it() {
     h.step();
     h.get_by_label("Go").click();
     h.step();
-    h.step();
+    searched(&mut h);
     let app = h.state();
     assert_eq!(app.tabs[0].selection, Some(Guid(1, 4)));
     assert!(!app.link.window, "the window closes once the link is shown");
@@ -246,9 +279,10 @@ fn the_window_lists_namesakes_and_opens_the_one_picked() {
     h.step();
     h.get_by_label("Go").click();
     h.step();
+    searched(&mut h);
     h.step();
     assert_eq!(h.state().link.choices.len(), 2);
-    assert!(h.state().link.window, "the window stays open to pick");
+    assert!(h.state().link.window, "the window shows the files to pick");
     assert_eq!(h.state().tabs.len(), 1, "nothing opened yet");
     h.get_by_label("My Design (1).fig").click();
     h.step();
@@ -259,4 +293,35 @@ fn the_window_lists_namesakes_and_opens_the_one_picked() {
     assert!(app.tabs[1].path.ends_with("My Design (1).fig"));
     assert_eq!(app.tabs[1].selection, Some(Guid(1, 5)));
     assert!(!app.link.window && app.link.choices.is_empty());
+}
+
+#[test]
+fn a_slow_folder_does_not_block_the_window_and_the_link_fails_with_a_reason() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_search;
+    h.state_mut().link.search_timeout = std::time::Duration::from_millis(200);
+    let (done, rx) = done();
+    let started = std::time::Instant::now();
+    assert!(h.state_mut().go_to_link(&ctx, SLUG_LINK, Some(done)));
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "go_to_link waited for the folders: {:?}",
+        started.elapsed()
+    );
+    // Frames keep running while the folder hangs; the link fails at the timeout.
+    searched(&mut h);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("could not be read in time"), "{error}");
+    assert!(error.contains("permission"), "{error}");
+    // The late result is dropped, not answered twice or shown.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    h.step();
+    assert_eq!(h.state().tabs.len(), 1);
 }

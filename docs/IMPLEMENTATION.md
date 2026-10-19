@@ -573,12 +573,21 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   once. One best match is used; when several distinct files tie (two documents can share a
   name), the window lists them to pick, and an MCP request fails. Nothing is chosen by date.
   A `.fig` does not store its figma.com key, so the file name is usually all there is.
+- **Off the UI thread:** a link that names a file starts a folder search on a `link-search`
+  thread (`LinkOpen::search`, `local_copies` by default); `poll_link_searches` picks the
+  result up each frame and runs `plan`, which does no I/O of its own. Reading a folder can
+  block (a network drive, or macOS asking to allow reading `~/Downloads`), and the window
+  keeps drawing meanwhile. After `SEARCH_TIMEOUT` (20 s) the link fails with a message that
+  says the folders could not be read and why that may be, rather than the MCP call timing
+  out with "the app did not respond". A late result is dropped. In the browser the search
+  runs inline (there are no folders).
 - **Messages:** `LinkError::local` (toasts, the window) names files and folders;
   `LinkError::public` (MCP answers) never carries paths, folder names or file names.
 - **Opening** pushes a `Waiting` entry and calls `App::open`; `poll` calls `link_loaded` when
   that path finishes loading (select + `fit_node`), or `link_failed`.
 - **Tests:** `src/link_open_tests.rs` (parse, plan, ties and key wins, public messages, an open
-  tab, a local copy loaded and answered, an MCP tie, the window and its pick list),
+  tab, a local copy loaded and answered, an MCP tie, the window and its pick list, a slow
+  folder that neither blocks the window nor hangs the call),
   `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
 ### The browser app (`apps/figstudio` on wasm32)

@@ -976,6 +976,7 @@ impl App {
         for (link, done) in self.mcp.take_links() {
             self.go_to_link(&ctx, &link, Some(done));
         }
+        self.poll_link_searches(&ctx);
         self.native_events(&ctx);
         // Ahead of the shortcuts: the dialog's Escape must be consumed first.
         self.mcp.confirm(&ctx);
