@@ -351,7 +351,8 @@ works wherever a `nodeId` is taken, and `reveal_node` takes one too. A region li
   - a figma.com link names a file when its key equals a file's stem, or else its slug
     equals the stem with spaces turned into `-` (compared as is, then without a browser's
     ` (1)` suffix on a repeated download; when two tabs share a stem, their full-path keys
-    are matched by stem); a key match beats a name match;
+    are matched by stem); a key match beats a name match, and when several files tie (say
+    `AbC123` and `AbC123 (1)`) the call fails and asks for `fileKey` rather than guess;
   - otherwise the link's file part is ignored and the usual rule applies: the single file,
     or the active tab in live mode.
 

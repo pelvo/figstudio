@@ -128,7 +128,10 @@ impl FigstudioServer {
                 }
             }
         } else {
-            self.file_for(input.file_key.as_deref(), Some(&input.node_id))
+            match self.file_for(input.file_key.as_deref(), Some(&input.node_id)) {
+                Ok(key) => key,
+                Err(error) => return tool_error(error),
+            }
         };
         let picked = match live.pick(key.as_deref()) {
             Ok(picked) => picked,

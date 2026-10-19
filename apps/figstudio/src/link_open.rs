@@ -12,7 +12,10 @@
 //! picked up by [`App::poll_link_searches`] each frame: reading a folder can block for long
 //! (a network drive, or macOS asking for permission to read `~/Downloads`), and the window
 //! must keep drawing meanwhile. A search that takes longer than [`SEARCH_TIMEOUT`] fails with
-//! a message that says so, instead of the MCP call timing out with no reason.
+//! a message that says so, instead of the MCP call timing out with no reason. A new link from
+//! the window replaces the window's older search (its result is dropped); MCP calls each keep
+//! their own. While a timed-out listing is still blocked, new links fail at once rather than
+//! piling up more blocked threads.
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
@@ -56,6 +59,9 @@ pub(crate) struct LinkOpen {
     /// Folder searches running on their threads.
     searches: Vec<Search>,
     next_search: u64,
+    /// Listings still running (search id, start), timed-out ones included: one that is past
+    /// [`SEARCH_TIMEOUT`] and still blocked makes new links fail at once.
+    listings: Vec<(u64, web_time::Instant)>,
     /// Finished searches: the search id and what it found.
     found_tx: Sender<(u64, Vec<(PathBuf, Match)>)>,
     found_rx: Receiver<(u64, Vec<(PathBuf, Match)>)>,
@@ -79,6 +85,7 @@ impl Default for LinkOpen {
             choice_node: None,
             searches: Vec::new(),
             next_search: 0,
+            listings: Vec::new(),
             found_tx,
             found_rx,
             search: local_copies,
@@ -93,6 +100,19 @@ impl LinkOpen {
     /// How many folder searches are still running.
     pub(crate) fn searching(&self) -> usize {
         self.searches.len()
+    }
+
+    /// Whether the window's own link is being searched for.
+    fn window_searching(&self) -> bool {
+        self.searches.iter().any(|s| s.done.is_none())
+    }
+
+    /// Whether a listing has run past the timeout and is still blocked.
+    fn blocked(&self) -> bool {
+        let timeout = self.search_timeout;
+        self.listings
+            .iter()
+            .any(|(_, started)| started.elapsed() >= timeout)
     }
 }
 
@@ -188,8 +208,13 @@ impl LinkError {
             Self::NodeMissing { node, .. } => format!("node {node} is not in that file"),
             Self::TabClosed => "tab closed".to_owned(),
             Self::LoadFailed => "the local copy could not be opened".to_owned(),
-            Self::SearchTimeout => "the app's link folders could not be read in time; macOS \
-                 may be asking in the figstudio window for permission to read them"
+            Self::SearchTimeout if cfg!(target_os = "macos") => {
+                "the app's link folders could not be read in time; macOS may be asking in the \
+                 figstudio window for permission to read them"
+                    .to_owned()
+            }
+            Self::SearchTimeout => "the app's link folders could not be read in time (a slow \
+                 or unreachable folder)"
                 .to_owned(),
         }
     }
@@ -228,7 +253,8 @@ pub(crate) fn parse(text: &str) -> Result<Parsed, LinkError> {
 /// Where a link that names `file` is shown, given the open tabs (`(id, path)`), the active
 /// tab and the local `copies` found in `dirs` ([`local_copies`]). With no file named, the
 /// active tab. Otherwise the one best-matching file among the tabs and the copies; a copy
-/// that is an open tab counts once, as the tab. No I/O but resolving paths of namesakes.
+/// that is an open tab counts once, as the tab ([`as_tab_paths`] has given such a copy the
+/// tab's path). No I/O, so it is safe on the UI thread.
 pub(crate) fn plan(
     tabs: &[(u64, &Path)],
     active: Option<u64>,
@@ -251,7 +277,7 @@ pub(crate) fn plan(
         })
         .collect();
     for (path, rank) in copies {
-        if !tabs.iter().any(|(_, open)| same_file(open, &path)) {
+        if !tabs.iter().any(|(_, open)| *open == path.as_path()) {
             let target = Target::Open(path.clone());
             candidates.push((Choice { target, path }, rank));
         }
@@ -265,6 +291,24 @@ pub(crate) fn plan(
         1 => Ok(best.remove(0).target),
         _ => Err(LinkError::Several(best)),
     }
+}
+
+/// The `copies` of a link with each one that is the file of an open tab (paths `tabs`) given
+/// that tab's path, so [`plan`] can compare paths without touching the disk. Resolves paths
+/// (I/O): runs with the folder listing, off the UI thread.
+pub(crate) fn as_tab_paths(
+    copies: Vec<(PathBuf, Match)>,
+    tabs: &[PathBuf],
+) -> Vec<(PathBuf, Match)> {
+    copies
+        .into_iter()
+        .map(
+            |(path, rank)| match tabs.iter().find(|tab| same_file(tab, &path)) {
+                Some(tab) => (tab.clone(), rank),
+                None => (path, rank),
+            },
+        )
+        .collect()
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -328,6 +372,15 @@ impl App {
                 }
             };
         };
+        if done.is_none() {
+            // A new link from the window replaces the window's older one.
+            self.link.searches.retain(|s| s.done.is_some());
+        }
+        if self.link.blocked() {
+            // The folders still have not answered; another thread would block the same way.
+            self.answer(ctx, done, Err(LinkError::SearchTimeout));
+            return false;
+        }
         let id = self.link.next_search;
         self.link.next_search += 1;
         self.start_search(ctx, id, hint.clone());
@@ -342,47 +395,52 @@ impl App {
         true
     }
 
-    /// List the link folders for `hint` off the UI thread (in the browser there are none).
-    fn start_search(&self, ctx: &egui::Context, id: u64, hint: FileHint) {
-        let (dirs, search, found) = (
-            self.link.dirs.clone(),
-            self.link.search,
-            self.link.found_tx.clone(),
-        );
-        let run = move || {
+    /// List the link folders for `hint` off the UI thread (in the browser there are none,
+    /// and it runs inline). The result is applied by the next frames' [`Self::poll_link_searches`].
+    fn start_search(&mut self, ctx: &egui::Context, id: u64, hint: FileHint) {
+        let search = self.link.search;
+        let dirs = self.link.dirs.clone();
+        let tabs: Vec<PathBuf> = self.tabs.iter().map(|t| t.path.clone()).collect();
+        let found = self.link.found_tx.clone();
+        let list = move || {
+            let copies = as_tab_paths(search(&dirs, &hint), &tabs);
             // The app may have quit meanwhile; nobody to tell then.
-            let _ = found.send((id, search(&dirs, &hint)));
+            let _ = found.send((id, copies));
         };
+        self.link.listings.push((id, web_time::Instant::now()));
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let ctx = ctx.clone();
+            let (list, ctx) = (
+                std::sync::Arc::new(std::sync::Mutex::new(Some(list))),
+                ctx.clone(),
+            );
+            let job = std::sync::Arc::clone(&list);
             let spawned = std::thread::Builder::new()
                 .name("link-search".into())
                 .spawn(move || {
-                    run();
+                    if let Some(list) = job.lock().ok().and_then(|mut l| l.take()) {
+                        list();
+                    }
                     ctx.request_repaint();
                 });
             if let Err(error) = spawned {
-                // No thread: the search times out with its message.
-                tracing::warn!("link folder search not started: {error}");
+                // No thread: list here rather than wait for the timeout.
+                tracing::warn!("link folder search thread not started: {error}");
+                if let Some(list) = list.lock().ok().and_then(|mut l| l.take()) {
+                    list();
+                }
             }
         }
         #[cfg(target_arch = "wasm32")]
-        {
-            let _ = ctx;
-            run();
-        }
+        list();
+        // The next frame polls, and keeps polling until the result or the timeout.
+        ctx.request_repaint();
     }
 
-    /// Each frame: finish the searches that came back, fail the ones past their time.
+    /// Each frame: fail the searches past their time, then finish the ones that came back. A
+    /// result for a search that is gone (timed out, or replaced by a newer window link) is
+    /// dropped.
     pub(crate) fn poll_link_searches(&mut self, ctx: &egui::Context) {
-        while let Ok((id, copies)) = self.link.found_rx.try_recv() {
-            let Some(i) = self.link.searches.iter().position(|s| s.id == id) else {
-                continue; // Timed out before; already answered.
-            };
-            let search = self.link.searches.remove(i);
-            self.finish_search(ctx, search, copies);
-        }
         let timeout = self.link.search_timeout;
         let (late, running): (Vec<Search>, Vec<Search>) = std::mem::take(&mut self.link.searches)
             .into_iter()
@@ -390,6 +448,14 @@ impl App {
         self.link.searches = running;
         for search in late {
             self.answer(ctx, search.done, Err(LinkError::SearchTimeout));
+        }
+        while let Ok((id, copies)) = self.link.found_rx.try_recv() {
+            self.link.listings.retain(|(listing, _)| *listing != id);
+            let Some(i) = self.link.searches.iter().position(|s| s.id == id) else {
+                continue;
+            };
+            let search = self.link.searches.remove(i);
+            self.finish_search(ctx, search, copies);
         }
         if !self.link.searches.is_empty() {
             // Wake for the timeout even if the thread never reports.
@@ -407,7 +473,14 @@ impl App {
         let active = self.tabs.get(self.active).map(|t| t.id);
         match plan(&tabs, active, Some(&search.hint), copies, &self.link.dirs) {
             Ok(target) => {
-                self.go_to(ctx, target, search.node, search.done);
+                let window = search.done.is_none();
+                if self.go_to(ctx, target, search.node, search.done) && window {
+                    // Shown or loading: the window's job is done.
+                    self.link.window = false;
+                    if self.link.text.trim() == search.text {
+                        self.link.text.clear();
+                    }
+                }
             }
             Err(LinkError::Several(choices)) if search.done.is_none() => {
                 self.link.choices = choices;
@@ -543,11 +616,12 @@ impl App {
                 self.link.text.clear();
             }
         } else if go {
-            let text = std::mem::take(&mut self.link.text);
-            if self.go_to_link(ctx, &text, None) {
+            // The window stays open (with the text) while its link is searched for, and on a
+            // failure; it closes once the link is shown or loading.
+            let text = self.link.text.clone();
+            if self.go_to_link(ctx, &text, None) && !self.link.window_searching() {
                 self.link.window = false;
-            } else {
-                self.link.text = text;
+                self.link.text.clear();
             }
         }
     }

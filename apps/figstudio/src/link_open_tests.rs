@@ -9,7 +9,7 @@ use egui_kittest::Harness;
 use figstudio_mcp_core::link::{FileHint, Match};
 use figstudio_mcp_core::local_copy::local_copies;
 
-use super::{Choice, Done, LinkError, Target, parse, plan};
+use super::{Choice, Done, LinkError, Target, as_tab_paths, parse, plan};
 use crate::App;
 use crate::ui_tests::{fixture, harness, wait};
 
@@ -26,15 +26,38 @@ fn searched(h: &mut Harness<'_, App>) {
     });
 }
 
-/// `plan` with the copies `local_copies` finds in `dirs`.
+/// `plan` with the copies `local_copies` finds in `dirs`, as the search thread hands them over.
 fn plan_in(
     tabs: &[(u64, &Path)],
     active: Option<u64>,
     file: Option<&FileHint>,
     dirs: &[PathBuf],
 ) -> Result<Target, LinkError> {
-    let copies = file.map_or_else(Vec::new, |hint| local_copies(dirs, hint));
+    let open: Vec<PathBuf> = tabs.iter().map(|(_, p)| p.to_path_buf()).collect();
+    let copies = file.map_or_else(Vec::new, |hint| {
+        as_tab_paths(local_copies(dirs, hint), &open)
+    });
     plan(tabs, active, file, copies, dirs)
+}
+
+/// A listing that is slow for the file `Slow` (and then finds the `sections` fixture) and
+/// finds nothing at once for any other file.
+fn slow_for_one(_: &[PathBuf], hint: &FileHint) -> Vec<(PathBuf, Match)> {
+    if hint.name() != "Slow" {
+        return Vec::new();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    vec![(fixture("sections.fig"), Match::Name)]
+}
+
+/// The Open Figma link window's text field.
+fn link_field<'h>(h: &'h Harness<'_, App>) -> egui_kittest::Node<'h> {
+    use egui_kittest::kittest::Queryable;
+    h.get_by(|n| {
+        n.role() == egui::accesskit::Role::TextInput
+            && n.placeholder()
+                .is_some_and(|p| p.starts_with("https://www.figma.com"))
+    })
 }
 
 /// A folder listing that hangs, as one behind a macOS permission prompt does.
@@ -147,6 +170,7 @@ fn public_messages_carry_no_paths_or_file_names() {
         LinkError::TabClosed,
         LinkError::NoFile,
         LinkError::Unreadable,
+        LinkError::SearchTimeout,
     ];
     for error in &errors {
         let text = error.public();
@@ -155,6 +179,13 @@ fn public_messages_carry_no_paths_or_file_names() {
             "{text}"
         );
     }
+    // The permission hint is for macOS only; elsewhere a hung folder has other causes.
+    let timeout = LinkError::SearchTimeout.public();
+    assert_eq!(
+        timeout.contains("permission"),
+        cfg!(target_os = "macos"),
+        "{timeout}"
+    );
     // The person at the computer still gets the details.
     assert!(errors[0].local().contains("Private Folder"));
     assert!(errors[2].local().contains(secret));
@@ -324,4 +355,150 @@ fn a_slow_folder_does_not_block_the_window_and_the_link_fails_with_a_reason() {
     std::thread::sleep(std::time::Duration::from_secs(2));
     h.step();
     assert_eq!(h.state().tabs.len(), 1);
+}
+
+#[test]
+fn a_new_window_link_replaces_the_older_search_whose_late_result_is_dropped() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_for_one;
+    h.state_mut().apply(crate::menu::Action::OpenLink, &ctx);
+    h.step();
+    link_field(&h).type_text(&figma("Slow", "0-1"));
+    h.step();
+    h.get_by_label("Go").click();
+    h.step();
+    // Still searching for the first link: the second one replaces it.
+    assert_eq!(h.state().link.searching(), 1);
+    h.state_mut().link.text = figma("structure", "1-4");
+    h.step();
+    h.get_by_label("Go").click();
+    h.step();
+    searched(&mut h);
+    assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 4)));
+    // The first listing comes back later: nothing opens and the window stays closed.
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    for _ in 0..3 {
+        h.step();
+    }
+    let app = h.state();
+    assert_eq!(app.tabs.len(), 1, "the replaced search opened its file");
+    assert!(!app.link.window);
+}
+
+#[test]
+fn while_a_listing_is_blocked_past_its_time_new_links_fail_at_once() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_search;
+    h.state_mut().link.search_timeout = std::time::Duration::from_millis(200);
+    let (first, first_rx) = done();
+    assert!(h.state_mut().go_to_link(&ctx, SLUG_LINK, Some(first)));
+    searched(&mut h);
+    assert!(first_rx.try_recv().unwrap().is_err());
+    // The listing is still blocked: no second thread, an answer at once.
+    let (second, second_rx) = done();
+    let started = std::time::Instant::now();
+    assert!(!h.state_mut().go_to_link(&ctx, SLUG_LINK, Some(second)));
+    assert_eq!(h.state().link.searching(), 0);
+    h.step();
+    let error = second_rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("could not be read in time"), "{error}");
+    assert!(started.elapsed() < std::time::Duration::from_millis(150));
+    // Once the blocked listing returns, links search again.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    h.step();
+    assert!(h.state_mut().go_to_link(&ctx, SLUG_LINK, None));
+    assert_eq!(h.state().link.searching(), 1);
+}
+
+#[test]
+fn starting_a_search_schedules_the_frame_that_watches_it() {
+    // No file open: nothing else asks for frames, as in an empty window waiting on a folder.
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(800.0, 600.0))
+        .build_eframe(|cc| App::new(cc, Vec::new()));
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_search;
+    for _ in 0..50 {
+        if !ctx.has_requested_repaint() {
+            break;
+        }
+        h.step();
+    }
+    assert!(!ctx.has_requested_repaint(), "the empty app is not idle");
+    assert!(h.state_mut().go_to_link(&ctx, SLUG_LINK, None));
+    assert!(
+        ctx.has_requested_repaint(),
+        "no frame would poll the search, so its timeout would never fire"
+    );
+}
+
+#[test]
+fn the_window_keeps_its_link_while_searching_and_after_a_miss() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_search;
+    h.state_mut().apply(crate::menu::Action::OpenLink, &ctx);
+    h.step();
+    link_field(&h).type_text(&figma("Missing", "1-4"));
+    h.step();
+    h.get_by_label("Go").click();
+    h.step();
+    h.step();
+    assert!(h.state().link.window, "the window closed while searching");
+    assert_eq!(h.state().link.text, figma("Missing", "1-4"));
+    h.get_by_label("Searching the link folders\u{2026}");
+    // Nothing is found: the window and its text stay for another try.
+    searched(&mut h);
+    h.step();
+    let app = h.state();
+    assert!(app.link.window, "the window closed on a miss");
+    assert_eq!(app.link.text, figma("Missing", "1-4"));
+}
+
+#[test]
+fn a_result_that_comes_after_the_timeout_is_not_used() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_for_one;
+    h.state_mut().link.search_timeout = std::time::Duration::from_millis(200);
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("Slow", "0-1"), Some(done))
+    );
+    // No frame runs until the listing is back, well past the timeout.
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    h.step();
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("could not be read in time"), "{error}");
+    assert_eq!(h.state().tabs.len(), 1, "the late result was opened");
+}
+
+#[test]
+fn a_copy_that_is_an_open_tab_is_found_by_its_real_path_off_the_ui_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let tab = dir.path().join("My Design.fig");
+    std::fs::write(&tab, b"").unwrap();
+    let listed = dir.path().join("sub/../My Design.fig");
+    let copies = as_tab_paths(
+        vec![(listed.clone(), Match::Name)],
+        std::slice::from_ref(&tab),
+    );
+    assert_eq!(copies, vec![(tab.clone(), Match::Name)]);
+    // So plan, which does no I/O, sees the tab and not a second file.
+    let hint = parse(SLUG_LINK).unwrap().file.unwrap();
+    let tabs = [(9, tab.as_path())];
+    assert_eq!(
+        plan(&tabs, Some(9), Some(&hint), copies, &[]),
+        Ok(Target::Tab(9))
+    );
+    // A file that is not open keeps its listed path.
+    let other = as_tab_paths(vec![(listed.clone(), Match::Name)], &[]);
+    assert_eq!(other, vec![(listed, Match::Name)]);
 }

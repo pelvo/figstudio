@@ -9,12 +9,26 @@ impl FigstudioServer {
     ///   as is, so the tool fails with the usual file-key error.
     /// - A figma.com link selects the file whose stem equals its `<key>`, or whose stem with
     ///   spaces turned into `-` equals its `<slug>` ([`FileHint::matches`]; a ` (N)` download
-    ///   suffix is ignored). With no such file its file part is ignored.
-    pub fn file_for(&self, file_key: Option<&str>, node_id: Option<&str>) -> Option<String> {
+    ///   suffix is ignored). A key match beats a name match. With no such file its file part
+    ///   is ignored.
+    ///
+    /// # Errors
+    /// Several files tie for a figma.com link (two files can share a name): guessing could
+    /// read the wrong document, so the caller has to pass `fileKey`.
+    pub fn file_for(
+        &self,
+        file_key: Option<&str>,
+        node_id: Option<&str>,
+    ) -> Result<Option<String>, McpError> {
         if let Some(key) = file_key {
-            return Some(key.to_owned());
+            return Ok(Some(key.to_owned()));
         }
-        let hint = parse_link(node_id?).ok()?.file?;
+        let Some(hint) = node_id
+            .and_then(|n| parse_link(n).ok())
+            .and_then(|l| l.file)
+        else {
+            return Ok(None);
+        };
         select(&self.files().keys(), &hint)
     }
 
@@ -58,16 +72,19 @@ impl FigstudioServer {
     }
 }
 
-fn select(keys: &[String], hint: &FileHint) -> Option<String> {
+fn select(keys: &[String], hint: &FileHint) -> Result<Option<String>, McpError> {
     match hint {
-        FileHint::Exact(key) => Some(key.clone()),
-        // A key match beats a name match; among ties the first, as before.
-        FileHint::Figma { .. } => best_matches(keys.iter().filter_map(|k| {
-            let rank = hint.match_stem(stem_of(k))?;
-            Some((k, rank))
-        }))
-        .first()
-        .map(|k| (*k).clone()),
+        FileHint::Exact(key) => Ok(Some(key.clone())),
+        FileHint::Figma { .. } => {
+            let mut best = best_matches(keys.iter().filter_map(|k| {
+                let rank = hint.match_stem(stem_of(k))?;
+                Some((k, rank))
+            }));
+            match best.len() {
+                0 | 1 => Ok(best.pop().cloned()),
+                _ => Err(McpError::link_tie()),
+            }
+        }
     }
 }
 
