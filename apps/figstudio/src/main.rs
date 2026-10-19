@@ -8,6 +8,7 @@ mod cjk;
 mod command;
 mod copy;
 mod copy_menu;
+mod find;
 mod gpu;
 mod gpu_common;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -59,6 +60,7 @@ mod source;
 mod space_editor;
 mod spaces;
 mod state;
+mod swipe;
 mod tab;
 mod theme;
 mod tile_cache;
@@ -180,6 +182,17 @@ fn init_tracing() {
 #[cfg(target_arch = "wasm32")]
 fn main() {}
 
+/// The window's layout, kept between launches in eframe's storage (with the window size and
+/// the panel widths, which eframe and egui keep themselves).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct UiState {
+    show_left: bool,
+    show_right: bool,
+    pages_share: f32,
+}
+
+const UI_STATE_KEY: &str = "figstudio.ui";
+
 struct Toast {
     text: String,
     error: bool,
@@ -216,7 +229,7 @@ struct App {
     profile: bool,
     /// macOS: no title bar; the traffic lights sit over the sidebar (`chrome.rs`).
     frameless: bool,
-    /// ⌘K: search commands, files, pages and layers (`command.rs`).
+    /// ⌘L: search commands, files, pages and layers (`command.rs`).
     command: command::CommandBar,
     appearance: menu::Appearance,
     reduce_motion: bool,
@@ -228,6 +241,15 @@ struct App {
     peek: bool,
     /// Saved colours, symbols and names of spaces (`spaces.rs`).
     spaces: spaces::Store,
+    /// A two-finger swipe over the sidebar (`swipe.rs`).
+    swipe: swipe::Swipe,
+    /// How far the sidebar's pages are moved (points, last frame) and how wide a page is.
+    slide: f32,
+    page_width: f32,
+    /// Where each space's dot was drawn last frame (popovers open above it).
+    space_dots: Vec<(u64, egui::Rect)>,
+    /// ⌘F: find text on the page (`find.rs`).
+    find: find::FindBar,
     /// The space being edited (`space_editor.rs`).
     space_editing: Option<space_editor::SpaceEditor>,
     /// macOS: the blur behind the transparent window; `None` keeps the gradient opaque.
@@ -294,7 +316,8 @@ impl App {
             profile: std::env::var_os("FIGSTUDIO_PROFILE").is_some(),
             frameless: cfg!(target_os = "macos"),
             command: Default::default(),
-            appearance: Default::default(),
+            // egui keeps the theme preference with its memory; the menu follows it.
+            appearance: menu::Appearance::from(cc.egui_ctx.options(|o| o.theme_preference)),
             reduce_motion: anim::reduced(&cc.egui_ctx),
             shown_file: None,
             card_rect: None,
@@ -306,6 +329,11 @@ impl App {
                 spaces::Store::load()
             },
             space_editing: None,
+            swipe: Default::default(),
+            slide: 0.0,
+            page_width: 280.0,
+            space_dots: Vec::new(),
+            find: Default::default(),
             #[cfg(target_os = "macos")]
             vibrancy: None,
             #[cfg(target_arch = "wasm32")]
@@ -314,6 +342,14 @@ impl App {
             window_cap: None,
             mcp: Default::default(),
         };
+        if let Some(saved) = cc
+            .storage
+            .and_then(|s| eframe::get_value::<UiState>(s, UI_STATE_KEY))
+        {
+            app.show_left = saved.show_left;
+            app.show_right = saved.show_right;
+            app.pages_share = saved.pages_share.clamp(0.05, 0.95);
+        }
         for f in files {
             app.open(f);
         }
@@ -699,6 +735,20 @@ impl App {
         {
             self.apply(menu::Action::ExportSelection(2.0), ctx);
         }
+        if !self.native_owns(menu::Action::FindOnPage)
+            && ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::F)))
+        {
+            self.apply(menu::Action::FindOnPage, ctx);
+        }
+        // ⌘G / ⇧⌘G: the next or previous match while the find bar is open.
+        if self.find.is_open() {
+            let shift = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::G);
+            if ctx.input_mut(|i| i.consume_shortcut(&shift)) {
+                self.find.step(false);
+            } else if ctx.input_mut(|i| i.consume_shortcut(&cmd(Key::G))) {
+                self.find.step(true);
+            }
+        }
         let typing = ctx.egui_wants_keyboard_input();
         if typing || self.command.is_open() {
             return;
@@ -796,6 +846,15 @@ impl eframe::App for App {
         [0.0; 4]
     }
 
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let state = UiState {
+            show_left: self.show_left,
+            show_right: self.show_right,
+            pages_share: self.pages_share,
+        };
+        eframe::set_value(storage, UI_STATE_KEY, &state);
+    }
+
     fn on_exit(&mut self) {
         self.mcp.stop();
     }
@@ -871,7 +930,7 @@ impl App {
             .show_separator_line(false)
             .show_collapsible(ui, &mut strip, |ui| self.title_strip(ui));
         let mut show_left = self.show_left;
-        egui::Panel::left("sidebar")
+        egui::Panel::left(chrome::SIDEBAR)
             .frame(egui::Frame::NONE.inner_margin(egui::Margin {
                 left: 10,
                 right: 2,
@@ -882,8 +941,8 @@ impl App {
             // The window's left edge peeks the hidden sidebar instead (`chrome::peek_sidebar`).
             .drag_to_open(false)
             .show_separator_line(false)
-            .default_size(256.0)
-            .size_range(200.0..=440.0)
+            .default_size(232.0)
+            .size_range(196.0..=560.0)
             .show_collapsible(ui, &mut show_left, |ui| self.sidebar(ui));
         // The sidebar's own button may have hidden it this frame; a drag past its edge too.
         self.show_left = self.show_left && show_left;
@@ -907,7 +966,7 @@ impl App {
             .resizable(true)
             .show_separator_line(false)
             .default_size(276.0)
-            .size_range(220.0..=480.0)
+            .size_range(220.0..=560.0)
             .show_collapsible(ui, &mut show_right, |ui| {
                 if let Some(tab) = self.tabs.get_mut(self.active) {
                     tab.pending_copy = panels::properties(ui, tab).or(tab.pending_copy.take());
@@ -927,7 +986,7 @@ impl App {
             self.toast(&ctx, text, error);
         }
         self.peek_sidebar(&ctx);
-        self.space_editor(&ctx);
+        self.space_popover(&ctx);
         self.drop_overlay(&ctx, hovering_files);
         self.command_bar(&ctx);
         self.toasts(&ctx);

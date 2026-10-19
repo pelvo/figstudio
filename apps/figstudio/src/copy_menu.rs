@@ -26,7 +26,7 @@ pub fn node_menu(ui: &mut egui::Ui, tab: &Tab, id: Guid, picked: &mut Option<Ite
 
 /// Right-click on `response` opens the node menu. Returns the item picked this frame.
 pub fn on_context(response: &egui::Response, tab: &Tab, id: Guid, picked: &mut Option<Item>) {
-    response.context_menu(|ui| node_menu(ui, tab, id, picked));
+    crate::chrome::context_menu(response, |ui| node_menu(ui, tab, id, picked));
 }
 
 /// Copies a picked item to the clipboard. Returns the toast text.

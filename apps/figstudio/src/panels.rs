@@ -139,7 +139,8 @@ pub fn pages(ui: &mut Ui, tab: &mut Tab) {
 pub fn layers(ui: &mut Ui, tab: &mut Tab, filter: &str) {
     let doc = tab.doc.clone();
     let filter = filter.trim().to_lowercase();
-    egui::ScrollArea::both()
+    // Vertical only: sideways swipes over the sidebar switch spaces (`swipe.rs`).
+    egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;

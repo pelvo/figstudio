@@ -18,8 +18,14 @@ use crate::spaces::{self, Symbol};
 use crate::theme::{self, CARD_RADIUS, GAP, Palette, Tint};
 use crate::{APP_NAME, App, panels};
 
-/// How far the sidebar's content slides when switching files.
+/// How far the sidebar's content slides when switching to a space that is not next to the
+/// current one (a click on a far dot, the command bar); neighbours turn a whole page.
 const SLIDE: f32 = 36.0;
+/// Space between two spaces' pages while they slide side by side.
+const PAGE_GAP: f32 = 24.0;
+/// The sidebar panel's id (its width is kept with egui's memory).
+/// Renamed once, so a width the old slide had inflated is not restored.
+pub(crate) const SIDEBAR: &str = "space-sidebar";
 /// Room for the macOS traffic lights in the frameless window.
 const TRAFFIC_LIGHTS: f32 = 70.0;
 /// Height of the file switcher at the bottom of the sidebar.
@@ -135,6 +141,13 @@ pub(crate) fn rounded_gradient(rect: Rect, radius: f32, colours: [Color32; 4]) -
         mesh.add_triangle(0, i, if i == n { 1 } else { i + 1 });
     }
     mesh
+}
+
+/// Opens `add` as a right-click menu on `response`, in the macOS style (`theme::menu_style`).
+pub(crate) fn context_menu(response: &Response, add: impl FnOnce(&mut Ui)) {
+    egui::Popup::context_menu(response)
+        .style(theme::menu_style)
+        .show(add);
 }
 
 /// Paints a space's badge in the square `rect`: its emoji or icon on a soft disc of its
@@ -328,9 +341,28 @@ impl App {
             .tabs
             .get(self.active)
             .map_or(theme::Colour::Preset(theme::HOME_TINT), |t| t.colour());
-        let target = theme::space_tint(colour, dark);
+        let mut target = theme::space_tint(colour, dark);
+        // While two spaces' pages move side by side, their colours blend with the pages.
+        let neighbour = self.neighbour(self.slide).and_then(|i| self.tabs.get(i));
+        let blending = neighbour.is_some();
+        if let Some(other) = neighbour {
+            let t = (self.slide.abs() / self.page_width.max(1.0)).clamp(0.0, 1.0);
+            target = target.mix(theme::space_tint(other.colour(), dark), t);
+        }
         let id = Id::new("window-tint");
-        let fade = |n: &str, c: Color32| anim::fade(ctx, id.with(n), c, 0.45);
+        // Quick while the colour pad is being dragged, a slow crossfade otherwise.
+        let picking = self
+            .space_editing
+            .as_ref()
+            .is_some_and(|e| e.kind == crate::space_editor::Popover::Colour);
+        let secs = if blending {
+            0.0
+        } else if picking {
+            0.08
+        } else {
+            0.45
+        };
+        let fade = |n: &str, c: Color32| anim::fade(ctx, id.with(n), c, secs);
         Tint {
             top: fade("top", target.top),
             bottom: fade("bottom", target.bottom),
@@ -339,19 +371,39 @@ impl App {
         }
     }
 
-    /// Starts the sidebar slide when the active file changed since the last frame.
+    /// Starts the sidebar slide when the active file changed since the last frame: a whole
+    /// page from the side for the next or previous space, a short nudge for a far one.
     pub(crate) fn note_active_file(&mut self, ctx: &egui::Context) {
         let now = self.tabs.get(self.active).map(|t| t.id);
         if now != self.shown_file {
             if let (Some(before), Some(now)) = (self.shown_file, now) {
                 let pos = |id: u64| self.tabs.iter().position(|t| t.id == id);
-                let dir = match (pos(before), pos(now)) {
-                    (Some(a), Some(b)) if a > b => -1.0,
-                    _ => 1.0,
+                let (dir, step) = match (pos(before), pos(now)) {
+                    (Some(a), Some(b)) => (
+                        if a > b { -1.0 } else { 1.0 },
+                        if a.abs_diff(b) == 1 {
+                            self.page_width
+                        } else {
+                            SLIDE
+                        },
+                    ),
+                    _ => (1.0, SLIDE),
                 };
-                anim::reset(ctx, Id::new("space-slide"), dir * SLIDE);
+                anim::reset(ctx, Id::new("space-slide"), dir * step);
             }
             self.shown_file = now;
+        }
+    }
+
+    /// The space shown beside the active one while the sidebar's pages move by `slide`.
+    fn neighbour(&self, slide: f32) -> Option<usize> {
+        if slide.abs() <= SLIDE {
+            return None;
+        }
+        if slide > 0.0 {
+            self.active.checked_sub(1)
+        } else {
+            Some(self.active + 1).filter(|i| *i < self.tabs.len())
         }
     }
 
@@ -405,7 +457,10 @@ impl App {
     /// canvas (Arc's peek); it slides away when the pointer leaves it.
     pub(crate) fn peek_sidebar(&mut self, ctx: &egui::Context) {
         let screen = ctx.content_rect();
-        let width = 264.0;
+        // As wide as the docked sidebar was left.
+        let width = egui::containers::panel::PanelState::load(ctx, Id::new(SIDEBAR))
+            .map_or(264.0, |s| s.size().x)
+            .clamp(200.0, 560.0);
         let card = Rect::from_min_size(
             pos2(screen.left() + GAP, screen.top() + 44.0),
             vec2(width, (screen.height() - 44.0 - GAP).max(100.0)),
@@ -470,21 +525,38 @@ impl App {
         self.window_row(ui, true);
         ui.add_space(6.0);
         self.address_field(ui);
-        ui.add_space(8.0);
-        self.space_header(ui);
-        ui.add_space(4.0);
+        ui.add_space(10.0);
         let max = ui.max_rect();
         let body = Rect::from_min_max(ui.cursor().min, pos2(max.right(), max.bottom() - FOOTER));
+        self.page_width = body.width() + PAGE_GAP;
         let ctx = ui.ctx().clone();
-        let slide = anim::spring(&ctx, Id::new("space-slide"), 0.0, Spring::SMOOTH);
-        ui.scope_builder(
-            UiBuilder::new().max_rect(body.translate(vec2(slide, 0.0))),
-            |ui| {
-                ui.set_clip_rect(ui.clip_rect().intersect(body.expand2(vec2(0.0, 4.0))));
-                ui.multiply_opacity(1.0 - (slide.abs() / SLIDE).min(1.0) * 0.85);
-                self.sidebar_body(ui);
-            },
-        );
+        let slide = match self.swipe_spaces(&ctx, max.expand(10.0)) {
+            Some(offset) => offset,
+            None => anim::spring(&ctx, Id::new("space-slide"), 0.0, Spring::SMOOTH),
+        };
+        self.slide = slide;
+        // The pages of two spaces side by side while they move, Arc style; a short nudge
+        // (a far space) fades instead.
+        let paging = slide.abs() > SLIDE;
+        let beside = self
+            .neighbour(slide)
+            .map(|i| (i, slide - slide.signum() * self.page_width));
+        let clip = body.expand2(vec2(0.0, 4.0));
+        for (index, x) in std::iter::once((self.active, slide)).chain(beside) {
+            // A child that takes no room in the panel: a page moved sideways must not widen
+            // the sidebar (egui grows a panel to fit what its content allocates).
+            let salt = ("space-page", self.tabs.get(index).map(|t| t.id));
+            let mut page = ui.new_child(
+                UiBuilder::new()
+                    .id_salt(salt)
+                    .max_rect(body.translate(vec2(x, 0.0))),
+            );
+            page.set_clip_rect(ui.clip_rect().intersect(clip));
+            if !paging {
+                page.multiply_opacity(1.0 - (slide.abs() / SLIDE).min(1.0) * 0.85);
+            }
+            self.sidebar_body(&mut page, index);
+        }
         let footer = Rect::from_min_max(pos2(max.left(), max.bottom() - FOOTER), max.max);
         ui.scope_builder(
             UiBuilder::new()
@@ -540,54 +612,82 @@ impl App {
         }
     }
 
-    /// The active space's badge and name; a click opens the space editor.
-    fn space_header(&mut self, ui: &mut Ui) {
-        let Some(tab) = self.tabs.get(self.active) else {
-            return;
+    /// Two-finger horizontal swipes over the sidebar (`area`) move between spaces. Returns
+    /// the content's offset while a swipe is on.
+    fn swipe_spaces(&mut self, ctx: &egui::Context, area: Rect) -> Option<f32> {
+        let now = ctx.input(|i| i.time);
+        // A swipe that started over the sidebar is followed until it ends, wherever the
+        // pointer goes.
+        let over = self.swipe.is_on() || ctx.pointer_hover_pos().is_some_and(|p| area.contains(p));
+        let wheel: Vec<(egui::Vec2, egui::TouchPhase)> = if over {
+            ctx.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::MouseWheel {
+                            unit, delta, phase, ..
+                        } => {
+                            let scale = match unit {
+                                egui::MouseWheelUnit::Point => 1.0,
+                                egui::MouseWheelUnit::Line => 40.0,
+                                egui::MouseWheelUnit::Page => 400.0,
+                            };
+                            Some((*delta * scale, *phase))
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+        } else {
+            Vec::new()
         };
-        let p = theme::of(ui);
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Edit space"));
-        let (hover, press) = icons::feedback(ui, &response);
-        let r = rect.shrink(press);
-        icons::row_fill(ui, r, hover, false);
-        let tint = self.tint_now(ui.ctx());
-        let badge = Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), vec2(20.0, 20.0));
-        paint_badge(
-            ui.painter(),
-            badge,
-            tab.style.symbol.as_ref(),
-            tint.accent,
-            p.text,
-        );
-        let name = tab.space_name();
-        let width = r.width() - 40.0 - 28.0;
-        let g = elided(ui, &name, theme::semibold(13.5), p.text, width);
-        ui.painter().galley(
-            pos2(r.left() + 34.0, r.center().y - g.size().y / 2.0),
-            g,
-            p.text,
-        );
-        if hover > 0.0 {
-            let more =
-                Rect::from_center_size(pos2(r.right() - 16.0, r.center().y), vec2(14.0, 14.0));
-            icons::paint(
-                ui.painter(),
-                Icon::More,
-                more,
-                p.text_dim.gamma_multiply(hover),
-            );
+        let mut ended = None;
+        for (delta, phase) in wheel {
+            ended = ended.or(self.swipe.feed(delta, phase, now));
         }
-        let response = response.on_hover_text("Name, icon and colour of this space");
-        if response.clicked() {
-            self.apply(Action::EditSpace, ui.ctx());
+        let ended = ended.or_else(|| self.swipe.tick(now));
+        let (has_previous, has_next) = (self.active > 0, self.active + 1 < self.tabs.len());
+        let page = self.page_width;
+        // At most a page; past the first or last space the content only gives a little.
+        let shown = |offset: f32| {
+            let allowed = if offset < 0.0 { has_next } else { has_previous };
+            if allowed {
+                offset.clamp(-page, page)
+            } else {
+                (offset * 0.25).clamp(-40.0, 40.0)
+            }
+        };
+        if let Some(end) = ended {
+            let at = shown(end.offset);
+            // The pages carry on from where the fingers left them.
+            let slide = match end.turn(page - PAGE_GAP) {
+                -1 if has_next => {
+                    self.active += 1;
+                    at + page
+                }
+                1 if has_previous => {
+                    self.active -= 1;
+                    at - page
+                }
+                _ => at,
+            };
+            self.shown_file = self.tabs.get(self.active).map(|t| t.id);
+            anim::reset(ctx, Id::new("space-slide"), slide);
+            return None;
         }
+        let offset = self.swipe.offset()?;
+        // A sideways swipe does not scroll the lists under it.
+        ctx.input_mut(|i| {
+            i.smooth_scroll_delta = egui::Vec2::ZERO;
+        });
+        ctx.request_repaint();
+        Some(shown(offset))
     }
 
-    fn sidebar_body(&mut self, ui: &mut Ui) {
+    /// The pages and layers of space `index`.
+    fn sidebar_body(&mut self, ui: &mut Ui, index: usize) {
         let p = theme::of(ui);
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(tab) = self.tabs.get_mut(index) else {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.add_space(6.0);
@@ -621,7 +721,8 @@ impl App {
         ui.spacing_mut().item_spacing.x = 0.0;
         let free = ui.available_width() - plus - count as f32 * dot;
         ui.add_space((free / 2.0).max(4.0));
-        let (mut pick, mut close, mut edit) = (None, None, None);
+        let (mut pick, mut close, mut action) = (None, None, None);
+        self.space_dots.clear();
         for (i, tab) in self.tabs.iter().enumerate() {
             let active = i == self.active;
             let (rect, response) = ui.allocate_exact_size(vec2(dot, dot), Sense::click());
@@ -655,6 +756,7 @@ impl App {
                     + 2.5;
                 painter.circle_stroke(c, ring, Stroke::new(1.5, tint.accent.gamma_multiply(0.55)));
             }
+            self.space_dots.push((tab.id, rect));
             let response = response.on_hover_text(&title);
             if response.clicked() {
                 pick = Some(i);
@@ -662,14 +764,24 @@ impl App {
             if response.middle_clicked() {
                 close = Some(i);
             }
-            response.context_menu(|ui| {
-                if ui.button("Edit space…").clicked() {
-                    edit = Some(i);
-                    ui.close();
+            context_menu(&response, |ui| {
+                ui.set_min_width(200.0);
+                for (label, then) in [
+                    ("Change space icon…", Action::SpaceIcon),
+                    ("Rename space…", Action::RenameSpace),
+                    ("Edit theme colour…", Action::SpaceColour),
+                ] {
+                    if ui.button(label).clicked() {
+                        action = Some((i, then));
+                    }
                 }
-                if ui.button("Close").clicked() {
+                ui.separator();
+                if ui.button("Reset space look").clicked() {
+                    action = Some((i, Action::ResetSpace));
+                }
+                ui.separator();
+                if ui.button("Close space").clicked() {
                     close = Some(i);
-                    ui.close();
                 }
             });
         }
@@ -685,9 +797,9 @@ impl App {
         if let Some(i) = pick {
             self.active = i;
         }
-        if let Some(i) = edit {
+        if let Some((i, then)) = action {
             self.active = i;
-            self.apply(Action::EditSpace, &ctx);
+            self.apply(then, &ctx);
         }
         if let Some(i) = close {
             self.close(i);
@@ -710,6 +822,9 @@ impl App {
         let mut actions = Vec::new();
         let mut cursor = None;
         let mut open_clicked = false;
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            self.find.update(tab);
+        }
         ui.scope_builder(UiBuilder::new().max_rect(card), |ui| {
             ui.set_clip_rect(ui.clip_rect().intersect(card));
             match self.tabs.get_mut(self.active) {
@@ -743,7 +858,8 @@ impl App {
             if !self.render_worker_lost && self.tabs.get(self.active).is_some() {
                 let tools = self.tool_pill(ui, card, &mut actions);
                 self.status_pill(ui, card, tools.left() - 8.0);
-                self.gaps_chip(ui, card);
+                let below = self.find_bar(ui, card);
+                self.gaps_chip(ui, card, below);
             }
         });
         for action in actions {
@@ -939,7 +1055,7 @@ impl App {
     }
 
     /// What this page uses that figstudio does not draw exactly, at the top right.
-    fn gaps_chip(&self, ui: &mut Ui, card: Rect) {
+    fn gaps_chip(&self, ui: &mut Ui, card: Rect, top: f32) {
         let Some(tab) = self.tabs.get(self.active) else {
             return;
         };
@@ -949,8 +1065,8 @@ impl App {
         }
         let p = theme::of(ui);
         let max = Rect::from_min_max(
-            pos2(card.center().x, card.top() + 12.0),
-            pos2(card.right() - 12.0, card.top() + 42.0),
+            pos2(card.center().x, top + 12.0),
+            pos2(card.right() - 12.0, top + 42.0),
         );
         ui.scope_builder(
             UiBuilder::new()

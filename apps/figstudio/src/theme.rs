@@ -113,6 +113,18 @@ pub struct Tint {
     pub accent: Color32,
 }
 
+impl Tint {
+    /// Between `self` (at 0) and `other` (at 1).
+    pub fn mix(self, other: Tint, t: f32) -> Tint {
+        Tint {
+            top: self.top.lerp_to_gamma(other.top, t),
+            bottom: self.bottom.lerp_to_gamma(other.bottom, t),
+            glow: self.glow.lerp_to_gamma(other.glow, t),
+            accent: self.accent.lerp_to_gamma(other.accent, t),
+        }
+    }
+}
+
 /// How many tints there are; [`pick_tint`] hands each open file a different one while it can.
 pub const TINTS: usize = 8;
 
@@ -363,6 +375,52 @@ fn visuals(p: &Palette) -> Visuals {
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.separator);
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, p.text_dim);
     v
+}
+
+/// The highlight of the row under the pointer in menus, as macOS draws it.
+pub const MENU_HIGHLIGHT: Color32 = Color32::from_rgb(10, 105, 230);
+
+/// Menus in the macOS style (Arc uses the system's): rounded, roomy rows, a blue highlight
+/// with white text. Used for every popup and context menu the app opens.
+pub fn menu_style(style: &mut egui::Style) {
+    egui::containers::menu::menu_style(style);
+    let dark = style.visuals.dark_mode;
+    let p = if dark { DARK } else { LIGHT };
+    let v = &mut style.visuals;
+    v.override_text_color = None;
+    v.window_fill = if dark {
+        Color32::from_rgb(40, 40, 44)
+    } else {
+        Color32::from_rgb(246, 246, 248)
+    };
+    v.window_stroke = Stroke::new(
+        1.0,
+        if dark {
+            white(34)
+        } else {
+            Color32::from_black_alpha(30)
+        },
+    );
+    v.menu_corner_radius = CornerRadius::same(10);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0, p.text);
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, p.text_dim);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.separator);
+    for w in [
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+    ] {
+        w.weak_bg_fill = MENU_HIGHLIGHT;
+        w.bg_fill = MENU_HIGHLIGHT;
+        w.bg_stroke = Stroke::NONE;
+        w.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+        w.corner_radius = CornerRadius::same(5);
+        w.expansion = 0.0;
+    }
+    style.spacing.button_padding = egui::vec2(10.0, 3.0);
+    style.spacing.interact_size.y = 22.0;
+    style.spacing.menu_margin = Margin::same(5);
+    style.spacing.item_spacing = egui::vec2(6.0, 1.0);
 }
 
 /// Installs both appearances; egui picks one from the system setting (or View > Appearance).

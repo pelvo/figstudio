@@ -1,4 +1,4 @@
-//! The command bar (⌘K / Ctrl+K, or a click on the sidebar's top field), Arc style: one search
+//! The command bar (⌘L / Ctrl+L, or a click on the sidebar's top field), Arc style: one search
 //! over the app's commands, the open files, and the pages and layers of the active file.
 
 use egui::{
@@ -14,7 +14,8 @@ use crate::menu::{self, Action};
 use crate::{App, theme};
 
 /// Opens and closes the command bar.
-pub const SHORTCUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::K);
+/// ⌘L, as Arc's address bar.
+pub const SHORTCUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::L);
 
 /// Most rows the bar lists, and most layers it looks at per search.
 const MAX_RESULTS: usize = 60;
@@ -506,7 +507,11 @@ fn command_icon(e: &Entry) -> Icon {
         Target::Action(Action::ZoomFit | Action::ActualSize) => Icon::Fit,
         Target::Action(Action::ToggleLayers) => Icon::Sidebar,
         Target::Action(Action::ToggleProperties) => Icon::Inspector,
-        Target::Action(Action::EditSpace) => Icon::Ellipse,
+        Target::Action(Action::SpaceIcon | Action::SpaceColour | Action::ResetSpace) => {
+            Icon::Ellipse
+        }
+        Target::Action(Action::RenameSpace) => Icon::Text,
+        Target::Action(Action::FindOnPage) => Icon::Search,
         Target::Action(Action::SelectTool(crate::canvas::Tool::Hand)) => Icon::Hand,
         _ => Icon::More,
     }

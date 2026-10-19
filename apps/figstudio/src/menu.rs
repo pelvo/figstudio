@@ -14,7 +14,11 @@ pub(crate) enum Action {
     ToggleLayers,
     ToggleProperties,
     CommandBar,
-    EditSpace,
+    SpaceIcon,
+    RenameSpace,
+    SpaceColour,
+    ResetSpace,
+    FindOnPage,
     Appearance(Appearance),
     ReduceMotion,
     AgentAccess,
@@ -33,6 +37,16 @@ pub(crate) enum Appearance {
     System,
     Light,
     Dark,
+}
+
+impl From<egui::ThemePreference> for Appearance {
+    fn from(preference: egui::ThemePreference) -> Self {
+        match preference {
+            egui::ThemePreference::System => Self::System,
+            egui::ThemePreference::Light => Self::Light,
+            egui::ThemePreference::Dark => Self::Dark,
+        }
+    }
 }
 
 impl Appearance {
@@ -61,6 +75,7 @@ impl Action {
             Self::ExportSelection(2.0) => (Modifiers::COMMAND | Modifiers::SHIFT, Key::E),
             Self::ZoomFit => (Modifiers::SHIFT, Key::Num1),
             Self::CommandBar => return Some(crate::command::SHORTCUT),
+            Self::FindOnPage => (Modifiers::COMMAND, Key::F),
             Self::ToggleLayers => (Modifiers::COMMAND, Key::Backslash),
             Self::ActualSize => (Modifiers::SHIFT, Key::Num0),
             _ => return None,
@@ -140,6 +155,8 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
         )
     };
     let mut view = vec![
+        Item::action("Find on page…", Action::FindOnPage, has_tab),
+        Item::separator(),
         Item::action("Zoom to fit   ⇧1", Action::ZoomFit, has_tab),
         Item::action("Actual size   ⇧0", Action::ActualSize, has_tab),
         Item::separator(),
@@ -175,12 +192,21 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                 export("Export page as PNG", false),
                 export("Export selection as PNG", true),
                 Item::separator(),
-                Item::action("Edit space…", Action::EditSpace, has_tab),
                 Item::action("Close file", Action::CloseTab, has_tab),
                 Item::action("Quit", Action::Quit, true),
             ],
         ),
         Item::group("View", view),
+        Item::group(
+            "Space",
+            vec![
+                Item::action("Change space icon…", Action::SpaceIcon, has_tab),
+                Item::action("Rename space…", Action::RenameSpace, has_tab),
+                Item::action("Edit theme colour…", Action::SpaceColour, has_tab),
+                Item::separator(),
+                Item::action("Reset space look", Action::ResetSpace, has_tab),
+            ],
+        ),
         Item::group(
             "Help",
             vec![Item::action("About figstudio", Action::About, true)],
@@ -199,12 +225,25 @@ impl App {
             Action::ToggleLayers => self.show_left = !self.show_left,
             Action::ToggleProperties => self.show_right = !self.show_right,
             Action::CommandBar => self.command.toggle(ctx),
-            Action::EditSpace => {
+            Action::SpaceIcon | Action::RenameSpace | Action::SpaceColour => {
+                let kind = match action {
+                    Action::SpaceIcon => crate::space_editor::Popover::Icon,
+                    Action::RenameSpace => crate::space_editor::Popover::Rename,
+                    _ => crate::space_editor::Popover::Colour,
+                };
                 self.space_editing = self
                     .tabs
                     .get(self.active)
-                    .map(crate::space_editor::SpaceEditor::new);
+                    .map(|tab| crate::space_editor::SpaceEditor::new(tab, kind, ctx));
             }
+            Action::ResetSpace => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.style = Default::default();
+                    self.spaces
+                        .remember(tab.doc_key.as_deref(), &tab.title(), &tab.style);
+                }
+            }
+            Action::FindOnPage => self.find.show(),
             Action::Appearance(appearance) => {
                 self.appearance = appearance;
                 ctx.set_theme(appearance.preference());

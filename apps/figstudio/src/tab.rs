@@ -71,6 +71,9 @@ pub struct Tab {
     pub tint: usize,
     /// The space's colour, symbol and name chosen by the user (`spaces.rs`).
     pub style: crate::spaces::Style,
+    /// Text layers matching the find bar, highlighted on the canvas (`find.rs`).
+    pub find_hits: Vec<crate::find::Hit>,
+    pub find_current: Option<usize>,
 }
 
 impl Tab {
@@ -118,6 +121,8 @@ impl Tab {
             marquee: Default::default(),
             tint: crate::theme::HOME_TINT,
             style: Default::default(),
+            find_hits: Vec::new(),
+            find_current: None,
         }
     }
 

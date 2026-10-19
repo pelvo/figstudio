@@ -118,7 +118,9 @@ pub fn right_click(response: &egui::Response, tab: &mut Tab, origin: Pos2) -> bo
 pub fn context(response: &egui::Response, tab: &mut Tab) {
     let Some(rect) = tab.marquee.rect else { return };
     let mut picked: Option<Item> = None;
-    response.context_menu(|ui| crate::region_copy::menu(ui, tab, rect, &mut picked));
+    crate::chrome::context_menu(response, |ui| {
+        crate::region_copy::menu(ui, tab, rect, &mut picked);
+    });
     tab.pending_copy = picked.or(tab.pending_copy.take());
 }
 

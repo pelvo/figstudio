@@ -8,12 +8,14 @@ impl App {
         // No tooltip: egui's tooltip on the same response would keep the menu from opening.
         let response = crate::icons::raw_button(ui, crate::icons::Icon::More, "Menu", false, 28.0);
         let tree = crate::menu::tree(self);
-        egui::Popup::menu(&response).show(|ui| {
-            ui.set_min_width(170.0);
-            for group in tree {
-                ui.menu_button(group.label, |ui| self.menu_items(ui, &group.children));
-            }
-        });
+        egui::Popup::menu(&response)
+            .style(crate::theme::menu_style)
+            .show(|ui| {
+                ui.set_min_width(170.0);
+                for group in tree {
+                    ui.menu_button(group.label, |ui| self.menu_items(ui, &group.children));
+                }
+            });
     }
 
     fn menu_items(&mut self, ui: &mut egui::Ui, items: &[Item]) {

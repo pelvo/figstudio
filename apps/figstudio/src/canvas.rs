@@ -177,6 +177,7 @@ pub fn show(
         &painter,
         &crate::labels::labels(&tab.doc, tab.page, tab.view, origin, rect),
     );
+    find_highlights(&painter, tab, origin);
     if let Some(h) = tab.hover.filter(|h| Some(*h) != tab.selection) {
         outline(
             &painter,
@@ -208,19 +209,63 @@ pub fn show(
     cursor_page
 }
 
-/// Outline of a node's frame, following its rotation.
-fn outline(painter: &egui::Painter, tab: &Tab, origin: Pos2, id: Guid, stroke: Stroke) {
-    let Some(node) = tab.doc.node(id) else { return };
+/// The screen corners of a node's frame on the tab's page, following its rotation.
+fn corners(tab: &Tab, origin: Pos2, id: Guid) -> Option<[Pos2; 4]> {
+    let node = tab.doc.node(id)?;
     if tab.doc.page_of(id) != Some(tab.page) {
-        return;
+        return None;
     }
     let tf = absolute_transform(&tab.doc, id);
     let (w, h) = geom::size(&node.data);
-    let corners = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].map(|(x, y)| {
+    Some([(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].map(|(x, y)| {
         let p = tf * Point::new(x, y);
         tab.view
             .to_screen(origin, Pos2::new(p.x as f32, p.y as f32))
-    });
+    }))
+}
+
+/// The find bar's matches: a soft highlight on each, a stronger one on the current match.
+fn find_highlights(painter: &egui::Painter, tab: &Tab, origin: Pos2) {
+    for (i, hit) in tab.find_hits.iter().enumerate() {
+        let c = match hit {
+            crate::find::Hit::Node(id) => corners(tab, origin, *id),
+            crate::find::Hit::Inside(page) => {
+                let r = Rect::from_min_max(
+                    tab.view.to_screen(origin, page.min),
+                    tab.view.to_screen(origin, page.max),
+                );
+                Some([
+                    r.left_top(),
+                    r.right_top(),
+                    r.right_bottom(),
+                    r.left_bottom(),
+                ])
+            }
+        };
+        let Some(c) = c else {
+            continue;
+        };
+        let current = tab.find_current == Some(i);
+        let (fill, stroke) = if current {
+            (
+                crate::find::CURRENT.gamma_multiply(0.35),
+                Stroke::new(2.0, crate::find::CURRENT),
+            )
+        } else {
+            (
+                crate::find::HIT.gamma_multiply(0.3),
+                Stroke::new(1.0, crate::find::HIT),
+            )
+        };
+        painter.add(egui::Shape::convex_polygon(c.to_vec(), fill, stroke));
+    }
+}
+
+/// Outline of a node's frame, following its rotation.
+fn outline(painter: &egui::Painter, tab: &Tab, origin: Pos2, id: Guid, stroke: Stroke) {
+    let Some(corners) = corners(tab, origin, id) else {
+        return;
+    };
     let axis_aligned =
         (corners[0].y - corners[1].y).abs() < 0.01 && (corners[0].x - corners[3].x).abs() < 0.01;
     if axis_aligned {

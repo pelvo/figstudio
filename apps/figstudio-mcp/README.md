@@ -48,7 +48,7 @@ figstudio-mcp [--http[=ADDR]] [--no-system-fonts] [--assets-dir DIR | --assets i
 
 The desktop app can host this server with the files it has open. Turn it on in **View →
 Agent access (MCP server)** (on Linux and in the browser the File, View and Help menus are
-behind the **⋯** button at the top of the sidebar; ⌘K / Ctrl+K finds them too). It is off at
+behind the **⋯** button at the top of the sidebar; ⌘L / Ctrl+L finds them too). It is off at
 every launch and is not saved.
 
 - While it runs, the status pill at the bottom left of the canvas shows `MCP 127.0.0.1:3845/mcp`. Point your client there.

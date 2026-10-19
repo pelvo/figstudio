@@ -11,6 +11,7 @@ pub(crate) fn native_owned(macos: bool, attached: bool, action: Action) -> bool 
                 | Action::ExportSelection(2.0)
                 | Action::CommandBar
                 | Action::ToggleLayers
+                | Action::FindOnPage
         )
 }
 
@@ -75,6 +76,7 @@ mod tests {
             Action::ExportSelection(2.0),
             Action::CommandBar,
             Action::ToggleLayers,
+            Action::FindOnPage,
         ] {
             assert!(native_owned(true, true, action));
             assert!(

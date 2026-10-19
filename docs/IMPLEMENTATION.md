@@ -11,7 +11,7 @@ headless/native-attach fallback behind the sidebar's "⋯" button (File, View an
 submenus); the command bar (`command.rs`) lists the same enabled commands. `menu_windows.rs` hosts Agent access and About.
 `menu_native.rs` attaches muda on macOS/Windows in the eframe creation closure;
 `menu_dispatch.rs` drains queued ids with repaint and synchronizes changed flags.
-macOS owns Open, Close file, selection-export, command bar (⌘K) and sidebar (⌘\)
+macOS owns Open, Close file, selection-export, command bar (⌘L), find (⌘F) and sidebar (⌘\)
 accelerators; egui retains Shift+1
 and Shift+0 (only outside text editing). Windows keeps egui shortcuts (winit does
 not translate native accelerators). Context menus remain egui. Native attachment failure logs a
@@ -110,13 +110,16 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
                          field, pages, layers, file switcher), title strip, peeking sidebar,
                          canvas card with tool / status pills and the warning chip, toasts,
                          empty state, drop overlay
-  command.rs             the ⌘K command bar: search over commands, files, pages and layers
+  command.rs             the ⌘L command bar: search over commands, files, pages and layers
   anim.rs                springs and colour fades in egui memory; Reduce motion
   icons.rs               line icons painted on a 16-unit grid; the icon button
   vibrancy.rs            macOS only: the blur view behind the transparent window
   spaces.rs              a space's colour / emoji or icon / name, saved per file on this
                          computer (config folder JSON, localStorage in the browser)
-  space_editor.rs        the Edit space window
+  space_editor.rs        the space popovers: icon picker, rename, theme colour (pad + presets
+                         + appearance), opened above the space's dot
+  swipe.rs               two-finger sideways swipes over the sidebar switch spaces
+  find.rs                ⌘F find bar: text on the page, inside instances too; highlights
   canvas.rs              canvas input, render requests, frame re-projection, outlines
   tab.rs                 per-document state (Tab, with its tint) and the page<->screen mapping
   panels.rs              Pages list, Layers tree, Properties card
@@ -349,13 +352,36 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   `theme::TRANSLUCENT_TINT` over it, opaque everywhere else.
 - **Spaces.** Each open file is a space: `Tab::tint` (picked from the name) unless
   `Tab::style` (`spaces::Style`) sets a preset or custom colour, an emoji or icon badge and a
-  display name. File → Edit space…, the sidebar's space header and a file dot's menu open the
-  editor; changes show at once and are saved when it closes (`spaces::Store`, keyed by
-  `Tab::doc_key`, falling back to the file name so a new copy of the file keeps its look).
-  The store is `<config dir>/figstudio/spaces.json` on the desktop and `localStorage` in the
-  browser; tests use an in-memory store and never touch it. It holds file names, so it stays
-  local: nothing (doctor included) prints or uploads it. Custom colours go through
-  `theme::space_tint`, which mixes in only as much colour as keeps text readable.
+  display name. A space dot's right-click menu (and the Space menu, and the command bar)
+  opens Arc's three popovers above the dot: Change space icon, Rename space, Edit theme
+  colour. Changes show at once; a click outside, Escape or Enter closes and saves them
+  (`spaces::Store`, keyed by `Tab::doc_key`, falling back to the file name so a new copy of
+  the file keeps its look). Escape while renaming goes back. The store is
+  `<config dir>/figstudio/spaces.json` on the desktop and `localStorage` in the browser; tests
+  use an in-memory store and never touch it. It holds file names, so it stays local: nothing
+  (doctor included) prints or uploads it. Custom colours go through `theme::space_tint`,
+  which mixes in only as much colour as keeps text readable.
+- Menus and right-click menus use `theme::menu_style` (macOS look: rounded, blue highlight,
+  white text); open new ones with `chrome::context_menu` or `.style(theme::menu_style)`.
+- Two-finger sideways swipes over the sidebar move between spaces (`swipe.rs`), Arc's pager:
+  the active space's page and its neighbour's sit side by side and follow the fingers, and
+  the window colour blends between theirs. Letting go past a third of the sidebar, or a
+  flick (900 pt/s, at least 40 pt), turns the page; the pages carry on from where the
+  fingers left them. Everything the trackpad sends right after the lift (momentum, even
+  when it reports a new start) is ignored until a 0.12 s pause. A click on the next or
+  previous dot turns a whole page too. The lists scroll vertically only.
+- **Pages moved sideways must not take room in the panel.** egui grows a panel to fit what
+  its content allocates, so a page drawn with `scope_builder` at an offset widened the
+  sidebar on every switch; they are `new_child` UIs. The panel id changed
+  (`chrome::SIDEBAR`) so a width inflated that way is not restored.
+- eframe's `persistence` keeps the window, the panel widths and egui's options (appearance,
+  Reduce motion) between launches; `App::save` adds the sidebar / properties visibility and
+  the Pages/Layers split (`UiState`).
+- **Find on page** (`find.rs`, ⌘F, View → Find on page…): matches text layers of the page
+  and text drawn inside instances (`resolve::walk_instance` with overrides, boxed with
+  `Renderer::path_bounds`), sorted top to bottom. The canvas highlights them; Enter / ⌘G and
+  Shift for the previous one; a match is brought into view only when it is off screen or too
+  small to read.
 - The canvas card has round corners: the page background is a rounded rect and tiles that
   reach into a corner are drawn as a polygon cut to it (`tiles_view::rounded_clip`).
 - View jumps (fit, zoom buttons and keys, the Zoom tool, double-click) ease over 0.28 s:

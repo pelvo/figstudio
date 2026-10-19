@@ -54,7 +54,8 @@ vello_gpu = { workspace = true }
 pollster = { workspace = true }
 # wgpu: eframe's wgpu renderer (Metal, Vulkan, DX12, GL fallback via egui-wgpu defaults), so
 # the GPU canvas (docs/GPU.md) can share its device.
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+# persistence: window size and place, panel widths and the sidebar state survive a restart.
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11", "persistence"] }
 rfd = { workspace = true }
 fontdb = { workspace = true }
 # The platform's config folder for saved space styles (spaces.rs).
@@ -74,7 +75,7 @@ getrandom = { version = "0.3.4", features = ["wasm_js"] }
 figstudio-render = { path = "../../crates/render", default-features = false, features = ["parallel", "gpu"] }
 vello_gpu = { workspace = true }
 # wgpu: WebGPU where the browser has it, else WebGL2 (egui-wgpu enables wgpu/webgpu + webgl).
-eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "persistence"] }
 # file-handle-inner: the picked `File`, so big files are read in slices, not whole.
 rfd = { workspace = true, features = ["file-handle-inner"] }
 rayon = { workspace = true }
