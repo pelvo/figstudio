@@ -4,9 +4,11 @@ Fast, offline-first Figma `.fig` viewer, renderer, version comparator, and Model
 Protocol (MCP) server, written in Rust.
 
 - **No Figma account or cloud upload required:** reads `.fig` archives directly from disk or
-  a browser `File` handle. Files above 256 MiB (`Document::open_auto`) and browser `File`
-  handles stream image entries lazily (~0.7 s desktop open and ~1.4 s browser open on a
-  1.7 GB file; single-file CLI commands other than `compare` cap eager reads at 1 GiB).
+  a browser `File` handle. Archive files larger than 256 MiB (`LAZY_ABOVE`) stream image
+  entries lazily in the desktop app (`Document::open_auto`), the browser app (for ZIP
+  archives over 256 MiB), and `figstudio-cli compare` (~0.7 s desktop open and ~1.4 s
+  browser open on a 1.7 GB file); smaller files and the other `figstudio-cli` commands read
+  the file in full up to a 1 GiB (`MAX_FILE_BYTES`) ceiling.
 - **Runs natively and in the browser:** the desktop app (`eframe` + `wgpu`) and the browser
   WebAssembly build share the same parser (`figstudio-fig`), 2D renderer (`figstudio-render`
   on Vello CPU with optional `vello_gpu` and custom text layout on `fontdb` / `ttf-parser`),
