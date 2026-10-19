@@ -292,6 +292,8 @@ struct App {
     find: find::FindBar,
     /// The space being edited (`space_editor.rs`).
     space_editing: Option<space_editor::SpaceEditor>,
+    /// A popover that closed, drawn while it fades away.
+    space_leaving: Option<space_editor::SpaceEditor>,
     /// macOS: the blur behind the transparent window; `None` keeps the gradient opaque.
     #[cfg(target_os = "macos")]
     vibrancy: Option<vibrancy::Vibrancy>,
@@ -381,6 +383,7 @@ impl App {
                 spaces::Store::load()
             },
             space_editing: None,
+            space_leaving: None,
             swipe: Default::default(),
             slide: 0.0,
             page_width: 280.0,
@@ -1007,6 +1010,13 @@ impl App {
             .size_range(220.0..=560.0)
             .show_collapsible(ui, &mut show_right, |ui| {
                 if let Some(tab) = self.tabs.get_mut(self.active) {
+                    // Another selection's properties fade in.
+                    ui.multiply_opacity(anim::arrive(
+                        ui.ctx(),
+                        egui::Id::new("properties-in"),
+                        (tab.id, tab.selection),
+                        0.15,
+                    ));
                     tab.pending_copy = panels::properties(ui, tab).or(tab.pending_copy.take());
                 }
             });

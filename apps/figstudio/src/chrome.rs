@@ -215,9 +215,37 @@ fn pill_due(ctx: &egui::Context, key: u64) -> bool {
     }
 }
 
+/// What the name pill shows: the dot it sits over, the space's name and its keys.
+#[derive(Clone, Debug)]
+struct PillContent {
+    dot: Rect,
+    name: String,
+    keys: Option<egui::KeyboardShortcut>,
+}
+
 /// Arc's hover card over a space: a dark pill with the space's name and its keys as caps,
-/// above `dot`. A screen reader hears the name and the keys.
-fn space_pill(ctx: &egui::Context, dot: Rect, name: &str, keys: Option<egui::KeyboardShortcut>) {
+/// above its dot. It fades and rises in, glides from dot to dot, and fades out after the
+/// pointer leaves. `want` is the pill to show this frame, if any.
+fn space_pill(ctx: &egui::Context, want: Option<PillContent>) {
+    let last = Id::new("space-pill-last");
+    let showing = want.is_some();
+    let was = ctx.data(|d| {
+        d.get_temp::<bool>(Id::new("space-pill-visible"))
+            .unwrap_or(false)
+    });
+    let t = anim::presence(ctx, Id::new("space-pill-t"), showing);
+    let content = match want {
+        Some(c) => {
+            ctx.data_mut(|d| d.insert_temp(last, c.clone()));
+            Some(c)
+        }
+        None => ctx.data(|d| d.get_temp::<PillContent>(last)),
+    };
+    let visible = t > 0.001 && content.is_some();
+    ctx.data_mut(|d| d.insert_temp(Id::new("space-pill-visible"), visible));
+    let Some(PillContent { dot, name, keys }) = content.filter(|_| visible) else {
+        return;
+    };
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     let mut caps: Vec<String> = Vec::new();
     if let Some(keys) = keys {
@@ -242,7 +270,7 @@ fn space_pill(ctx: &egui::Context, dot: Rect, name: &str, keys: Option<egui::Key
         egui::Order::Tooltip,
         Id::new("space-pill"),
     ));
-    let title = painter.layout_no_wrap(name.to_owned(), theme::semibold(12.0), ink);
+    let title = painter.layout_no_wrap(name.clone(), theme::semibold(12.0), ink);
     let caps: Vec<_> = caps
         .into_iter()
         .map(|c| painter.layout_no_wrap(c, theme::semibold(11.0), cap_ink))
@@ -257,23 +285,33 @@ fn space_pill(ctx: &egui::Context, dot: Rect, name: &str, keys: Option<egui::Key
         } else {
             8.0 + caps_w + 2.0
         };
+    // Glides between dots while shown; starts over its dot when it appears.
+    let glide = Id::new("space-pill-x");
+    if !was {
+        anim::reset(ctx, glide, dot.center().x);
+    }
+    let centre = anim::spring(ctx, glide, dot.center().x, Spring::SMOOTH);
     let screen = ctx.content_rect();
-    let x = (dot.center().x - width / 2.0).clamp(
+    let x = (centre - width / 2.0).clamp(
         screen.left() + 4.0,
         (screen.right() - width - 4.0).max(screen.left()),
     );
     let rect = Rect::from_min_size(pos2(x, dot.top() - 6.0 - height), vec2(width, height));
     let label = match keys {
         Some(keys) => format!("{name}, {}", ctx.format_shortcut(&keys)),
-        None => name.to_owned(),
+        None => name.clone(),
     };
-    egui::Area::new(Id::new("space-pill"))
+    let area = egui::Area::new(Id::new("space-pill"))
         .order(egui::Order::Tooltip)
         .fixed_pos(rect.min)
         .interactable(false)
+        .fade_in(false)
         .show(ctx, |ui| {
+            ui.multiply_opacity(t.clamp(0.0, 1.0));
             let (rect, response) = ui.allocate_exact_size(rect.size(), Sense::hover());
-            response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &label));
+            if showing {
+                response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &label));
+            }
             let painter = ui.painter();
             painter.add(
                 Shadow {
@@ -304,10 +342,17 @@ fn space_pill(ctx: &egui::Context, dot: Rect, name: &str, keys: Option<egui::Key
                 x += w + 3.0;
             }
         });
+    // Rises a few points and grows from its foot while it appears.
+    let scale = 0.9 + 0.1 * t;
+    let foot = area.response.rect.center_bottom().to_vec2();
+    ctx.set_transform_layer(
+        area.response.layer_id,
+        egui::emath::TSTransform::new(foot * (1.0 - scale) + vec2(0.0, (1.0 - t) * 4.0), scale),
+    );
 }
 
-/// Paints a space's badge in the square `rect`: its emoji or icon on a soft disc of its
-/// `accent`, or a plain accent dot.
+/// Paints a space's badge in the square `rect`, as Arc's: its icon in its `accent`, its emoji
+/// (or letter) in `text`, or a plain accent dot. Nothing behind it.
 pub(crate) fn paint_badge(
     painter: &egui::Painter,
     rect: Rect,
@@ -317,23 +362,18 @@ pub(crate) fn paint_badge(
 ) {
     let c = rect.center();
     let r = rect.width().min(rect.height()) / 2.0;
-    let icon = match symbol {
-        None => {
-            painter.circle_filled(c, r * 0.55, accent);
-            return;
+    match symbol {
+        Some(Symbol::Icon(name)) if spaces::icon(name).is_some() => {
+            if let Some(icon) = spaces::icon(name) {
+                icons::paint(painter, icon, rect.shrink(r * 0.12), accent);
+            }
         }
-        Some(Symbol::Icon(name)) => spaces::icon(name),
-        Some(Symbol::Emoji(_)) => None,
-    };
-    painter.circle_filled(c, r, accent.gamma_multiply(0.24));
-    match (symbol, icon) {
-        (_, Some(icon)) => icons::paint(painter, icon, rect.shrink(r * 0.45), accent),
-        (Some(Symbol::Emoji(e)), None) => {
+        Some(Symbol::Emoji(e)) => {
             painter.text(
                 c,
                 Align2::CENTER_CENTER,
                 e,
-                egui::FontId::proportional(r * 1.15),
+                egui::FontId::proportional(r * 1.6),
                 text,
             );
         }
@@ -934,26 +974,38 @@ impl App {
         let ctx = ui.ctx().clone();
         self.space_dots.clear();
         let mut resting = false;
+        let mut pill = None;
         for (i, tab) in self.tabs.iter().enumerate() {
             let active = i == self.active;
             let (rect, response) = ui.allocate_exact_size(vec2(DOT, DOT), Sense::click());
             let title = tab.space_name();
             response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, active, &title));
             let (hover, press) = icons::feedback(ui, &response);
-            // Every badge the same size, as Arc's; only the colour tells the active one.
-            let scale = 1.0 + hover * 0.08 - press * 0.12;
+            // Every badge the same size, as Arc's; only the colour tells the active one. A new
+            // file's dot pops in, and dots slide over when one before them closes.
+            let appear = anim::spring_from(
+                &ctx,
+                Id::new(("dot-appear", tab.id)),
+                1.0,
+                Some(0.0),
+                Spring::BOUNCY,
+            );
+            let slot = rect.left() - ui.max_rect().left();
+            let slid = anim::spring(&ctx, Id::new(("dot-x", tab.id)), slot, Spring::SMOOTH);
+            let scale = (1.0 + hover * 0.08 - press * 0.12) * appear.max(0.0);
             let lit = ctx.animate_bool_with_time(response.id.with("lit"), active, 0.18);
             let away = (1.0 - lit) * (1.0 - hover);
             let tint = theme::space_tint(tab.colour(), p.dark);
-            let c = rect.center();
+            let c = rect.center() + vec2(slid - slot, 0.0);
             let size = dot_size(tab.style.symbol.is_some(), scale);
             let badge = Rect::from_center_size(c, vec2(size, size));
+            let colour = drained(tint.accent, away);
             paint_badge(
                 ui.painter(),
                 badge,
                 tab.style.symbol.as_ref(),
-                drained(tint.accent, away),
-                drained(p.text, away),
+                colour,
+                colour,
             );
             self.space_dots.push((tab.id, rect));
             // Bring the active file's dot into view when it changes or the footer resizes;
@@ -966,7 +1018,11 @@ impl App {
                 if pill_due(&ctx, tab.id) {
                     let keys =
                         crate::keymap::Binding::space(i).and_then(|b| self.prefs.keymap.get(b));
-                    space_pill(&ctx, rect, &title, keys);
+                    pill = Some(PillContent {
+                        dot: rect,
+                        name: title.clone(),
+                        keys,
+                    });
                 }
             }
             if response.clicked() {
@@ -999,6 +1055,7 @@ impl App {
         if !resting {
             ctx.data_mut(|d| d.remove::<(u64, f64)>(Id::new("space-pill-rest")));
         }
+        space_pill(&ctx, pill);
         self.dot_in_view = (
             self.tabs.get(self.active).map_or(0, |t| t.id),
             self.dots_clip.width(),
@@ -1028,7 +1085,7 @@ impl App {
         let mut cursor = None;
         let mut open_clicked = false;
         if let Some(tab) = self.tabs.get_mut(self.active) {
-            self.find.update(tab);
+            self.find.update(tab, &ctx);
         }
         ui.scope_builder(UiBuilder::new().max_rect(card), |ui| {
             ui.set_clip_rect(ui.clip_rect().intersect(card));
@@ -1049,7 +1106,12 @@ impl App {
                         frame_labels: self.prefs.frame_labels,
                         scroll_zooms: self.prefs.scroll_zooms,
                     };
+                    // Another file or page fades in instead of replacing the last at once.
+                    let shown = anim::arrive(&ctx, Id::new("canvas-in"), (tab.id, tab.page), 0.16);
+                    let before = ui.opacity();
+                    ui.multiply_opacity(shown);
                     cursor = canvas::show(ui, tab, &mut self.workers, &mut self.tiles, options);
+                    ui.set_opacity(before);
                 }
                 None => open_clicked = self.empty_state(ui, card),
             }
@@ -1514,6 +1576,41 @@ mod tests {
                 assert!(reach <= DOT / 2.0, "symbol {symbol} scale {scale}: {reach}");
             }
         }
+    }
+
+    #[test]
+    fn a_badge_has_no_disc_behind_its_icon_or_emoji() {
+        fn circles(shape: &Shape, out: &mut Vec<f32>) {
+            match shape {
+                Shape::Circle(c) => out.push(c.radius),
+                Shape::Vec(v) => v.iter().for_each(|s| circles(s, out)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let rect = Rect::from_center_size(pos2(50.0, 50.0), vec2(20.0, 20.0));
+            for symbol in [
+                Symbol::Icon(crate::spaces::ICONS[0].0.into()),
+                Symbol::Emoji("d".into()),
+            ] {
+                paint_badge(
+                    ui.painter(),
+                    rect,
+                    Some(&symbol),
+                    Color32::RED,
+                    Color32::RED,
+                );
+            }
+        });
+        let mut radii = Vec::new();
+        for clipped in &output.shapes {
+            circles(&clipped.shape, &mut radii);
+        }
+        assert!(
+            radii.iter().all(|r| *r < 4.0),
+            "a disc behind the badge: {radii:?}"
+        );
     }
 
     #[test]

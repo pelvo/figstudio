@@ -78,6 +78,10 @@ pub struct Tab {
     /// Text layers matching the find bar, highlighted on the canvas (`find.rs`).
     pub find_hits: Vec<crate::find::Hit>,
     pub find_current: Option<usize>,
+    /// The find bar's presence (the highlights fade with it) and its search's number (new
+    /// matches fade in).
+    pub find_fade: f32,
+    pub find_search: u64,
 }
 
 impl Tab {
@@ -133,6 +137,8 @@ impl Tab {
             folder,
             find_hits: Vec::new(),
             find_current: None,
+            find_fade: 0.0,
+            find_search: 0,
         }
     }
 

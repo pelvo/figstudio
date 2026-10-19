@@ -244,15 +244,31 @@ fn keycap(ui: &Ui, text: &str, right: f32, y: f32, recording: bool) -> Rect {
     let cap = Rect::from_min_size(pos2(right - w, y - 12.0), vec2(w, 24.0));
     ui.painter()
         .rect_filled(cap, CornerRadius::same(5), Color32::WHITE);
-    let edge = if recording {
-        Stroke::new(2.0, ACCENT)
-    } else if look.dark {
-        Stroke::NONE
-    } else {
-        Stroke::new(1.0, Color32::from_black_alpha(36))
-    };
-    ui.painter()
-        .rect_stroke(cap, CornerRadius::same(5), edge, StrokeKind::Outside);
+    // The blue ring fades in while it waits for keys, and out after.
+    let ring = anim::fade(
+        ui.ctx(),
+        Id::new(("keycap-ring", right as i32, y as i32)),
+        if recording {
+            ACCENT
+        } else {
+            Color32::TRANSPARENT
+        },
+        0.15,
+    );
+    if !look.dark {
+        ui.painter().rect_stroke(
+            cap,
+            CornerRadius::same(5),
+            Stroke::new(1.0, Color32::from_black_alpha(36)),
+            StrokeKind::Outside,
+        );
+    }
+    ui.painter().rect_stroke(
+        cap,
+        CornerRadius::same(5),
+        Stroke::new(2.0, ring),
+        StrokeKind::Outside,
+    );
     ui.painter()
         .galley(cap.center() - galley.size() / 2.0, galley, ink);
     cap
@@ -667,25 +683,30 @@ impl App {
 
     /// Draws the settings window while it is open.
     pub(crate) fn settings_window(&mut self, ctx: &egui::Context) {
-        if !self.settings.open {
+        // It pops in, and after closing fades and shrinks away taking no input.
+        let open = self.settings.open;
+        let pop = anim::presence(ctx, Id::new("settings-pop"), open);
+        if !open && pop <= 0.001 {
             return;
         }
-        let recorded = self.record_shortcut(ctx);
+        let recorded = open && self.record_shortcut(ctx);
         let look = Look::new(theme::palette(ctx).dark);
-        let pop = anim::spring_from(ctx, Id::new("settings-pop"), 1.0, Some(0.0), Spring::BOUNCY);
         let screen = ctx.content_rect();
         let size = vec2(
             (screen.width() - 32.0).min(680.0),
             (screen.height() - 40.0).min(640.0),
         );
-        let mut close = !recorded
+        let mut close = open
+            && !recorded
             && self.settings.recording.is_none()
             && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
         egui::Area::new(Id::new("settings-backdrop"))
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
+            .interactable(open)
             .show(ctx, |ui| {
-                let response = ui.allocate_rect(screen, Sense::click());
+                let sense = if open { Sense::click() } else { Sense::hover() };
+                let response = ui.allocate_rect(screen, sense);
                 let alpha = (if look.dark { 90.0 } else { 36.0 } * pop.clamp(0.0, 1.0)) as u8;
                 ui.painter()
                     .rect_filled(screen, 0.0, Color32::from_black_alpha(alpha));
@@ -695,7 +716,12 @@ impl App {
             .order(egui::Order::Foreground)
             .pivot(Align2::CENTER_CENTER)
             .fixed_pos(screen.center())
+            .interactable(open)
+            .fade_in(false)
             .show(ctx, |ui| {
+                if !open {
+                    anim::inert(ui);
+                }
                 ui.multiply_opacity(pop.clamp(0.0, 1.0));
                 egui::Frame::new()
                     .fill(look.body)
@@ -711,15 +737,24 @@ impl App {
                         close |= self.settings_header(ui, frame);
                         // Arc keeps the page's content in a centred column.
                         let margin = ((frame.width() - 560.0) / 2.0).clamp(16.0, 60.0);
+                        // A tab's page fades in and settles from a few points down.
+                        let shown = anim::arrive(
+                            ui.ctx(),
+                            Id::new("settings-page"),
+                            self.settings.tab.label(),
+                            0.18,
+                        );
                         let body = Rect::from_min_max(
                             pos2(frame.left() + margin, frame.top() + TOOLBAR + 26.0),
                             pos2(frame.right() - margin, frame.bottom() - 26.0),
-                        );
+                        )
+                        .translate(vec2(0.0, (1.0 - shown) * 6.0));
                         let mut content = ui.new_child(
                             UiBuilder::new()
                                 .max_rect(body)
                                 .layout(Layout::top_down(Align::Min)),
                         );
+                        content.multiply_opacity(shown);
                         match self.settings.tab {
                             Tab::General => self.general_tab(&mut content),
                             Tab::Canvas => self.canvas_tab(&mut content),
@@ -1133,11 +1168,15 @@ impl App {
         );
         if let Some(notice) = &self.settings.notice {
             right.add_space(10.0);
-            right.label(
-                RichText::new(notice)
-                    .size(12.5)
-                    .color(theme::of(&right).warning),
-            );
+            let shown = anim::arrive(right.ctx(), Id::new("settings-notice"), notice, 0.2);
+            right.scope(|ui| {
+                ui.multiply_opacity(shown);
+                ui.label(
+                    RichText::new(notice)
+                        .size(12.5)
+                        .color(theme::of(ui).warning),
+                );
+            });
         }
         let column = right.max_rect();
         let mut foot = right.new_child(

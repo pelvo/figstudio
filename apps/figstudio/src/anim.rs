@@ -28,6 +28,11 @@ impl Spring {
         stiffness: 340.0,
         damping: 20.0,
     };
+    /// Leaving: quick and without a bounce (critically damped), about 0.15 s.
+    pub const EXIT: Spring = Spring {
+        stiffness: 700.0,
+        damping: 53.0,
+    };
 
     /// Advances `(x, v)` toward `target` by `dt` seconds. Semi-implicit Euler in steps of at
     /// most 4 ms, so it stays stable at any frame rate.
@@ -126,6 +131,68 @@ pub fn reset(ctx: &Context, id: Id, value: f32) {
             },
         );
     });
+}
+
+/// How present an overlay is, 0 (gone) to about 1: it pops in while `open` and eases out
+/// after it closes, so nothing just vanishes. Draw it while this is above 0, taking no input
+/// once it is closing ([`inert`]).
+pub fn presence(ctx: &Context, id: Id, open: bool) -> f32 {
+    let (target, spring) = if open {
+        (1.0, Spring::BOUNCY)
+    } else {
+        (0.0, Spring::EXIT)
+    };
+    let x = spring_from(ctx, id, target, Some(0.0), spring);
+    if open { x } else { x.max(0.0) }
+}
+
+/// Eases from 0 to 1 over `secs` each time `key` changes under `id`: something new (another
+/// page, a hover outline, a match) fading in. Always 1 with motion reduced.
+pub fn arrive(
+    ctx: &Context,
+    id: Id,
+    key: impl std::hash::Hash + std::fmt::Debug,
+    secs: f32,
+) -> f32 {
+    if reduced(ctx) {
+        return 1.0;
+    }
+    let key = Id::new(key);
+    let time = now(ctx);
+    let start = ctx.data_mut(|d| {
+        let s = d.get_temp_mut_or_insert_with(id, || (key, time));
+        if s.0 != key {
+            *s = (key, time);
+        }
+        s.1
+    });
+    let t = ((time - start) as f32 / secs.max(1e-3)).clamp(0.0, 1.0);
+    if t < 1.0 {
+        ctx.request_repaint();
+    }
+    egui::emath::easing::cubic_out(t)
+}
+
+/// Springs from 0 to 1, with a small overshoot, each time `key` changes under `id`: a pop
+/// for something that just became current (the find bar's match).
+pub fn pop_on(ctx: &Context, id: Id, key: impl std::hash::Hash + std::fmt::Debug) -> f32 {
+    let key = Id::new(key);
+    let changed = ctx.data_mut(|d| {
+        let slot = id.with("key");
+        let old = d.get_temp::<Id>(slot);
+        d.insert_temp(slot, key);
+        old != Some(key)
+    });
+    if changed {
+        reset(ctx, id, 0.0);
+    }
+    spring(ctx, id, 1.0, Spring::BOUNCY)
+}
+
+/// Makes `ui` ignore input without greying it out: an overlay fading away.
+pub fn inert(ui: &mut egui::Ui) {
+    ui.style_mut().visuals.disabled_alpha = 1.0;
+    ui.disable();
 }
 
 /// Springs each edge of `target` (a highlight sliding between rows).
@@ -256,5 +323,67 @@ mod tests {
         let mid = frame(&ctx, 3.2, |c| fade(c, id, blue, 0.3));
         assert!(mid != red && mid != blue, "{mid:?}");
         assert_eq!(frame(&ctx, 3.5, |c| fade(c, id, blue, 0.3)), blue);
+    }
+
+    #[test]
+    fn an_overlay_pops_in_eases_out_and_new_things_arrive_again() {
+        let ctx = Context::default();
+        set_reduced(&ctx, false);
+        let id = Id::new("overlay");
+        assert_eq!(
+            frame(&ctx, 0.0, |c| presence(c, id, false)),
+            0.0,
+            "never shown"
+        );
+        // Frames at 60 fps from `from` to `to`; the last value.
+        let run = |from: f64, to: f64, open: bool| {
+            let mut t = from;
+            let mut x = 0.0;
+            while t <= to {
+                x = frame(&ctx, t, |c| presence(c, id, open));
+                t += 1.0 / 60.0;
+            }
+            x
+        };
+        let opening = run(0.016, 0.02, true);
+        assert!(opening > 0.0 && opening < 1.0, "pops in: {opening}");
+        let open = run(0.03, 1.0, true);
+        assert!((open - 1.0).abs() < 0.01, "{open}");
+        let leaving = run(1.01, 1.04, false);
+        assert!(
+            leaving > 0.05 && leaving < 1.0,
+            "still there while closing: {leaving}"
+        );
+        assert_eq!(run(1.05, 1.6, false), 0.0, "then gone");
+
+        let id = Id::new("arrive");
+        assert_eq!(frame(&ctx, 2.0, |c| arrive(c, id, 1, 0.2)), 0.0, "starts");
+        let mid = frame(&ctx, 2.1, |c| arrive(c, id, 1, 0.2));
+        assert!(mid > 0.0 && mid < 1.0, "{mid}");
+        assert_eq!(frame(&ctx, 2.5, |c| arrive(c, id, 1, 0.2)), 1.0);
+        assert_eq!(
+            frame(&ctx, 2.6, |c| arrive(c, id, 2, 0.2)),
+            0.0,
+            "a new key again"
+        );
+
+        let id = Id::new("pop");
+        let first = frame(&ctx, 3.0, |c| pop_on(c, id, "a"));
+        let mut settled = first;
+        for i in 1..=60 {
+            settled = frame(&ctx, 3.0 + f64::from(i) / 60.0, |c| pop_on(c, id, "a"));
+        }
+        assert!(
+            first < 0.1 && (settled - 1.0).abs() < 0.01,
+            "{first} {settled}"
+        );
+        assert!(
+            frame(&ctx, 4.01, |c| pop_on(c, id, "b")) < 0.2,
+            "pops again"
+        );
+
+        set_reduced(&ctx, true);
+        assert_eq!(frame(&ctx, 5.0, |c| presence(c, Id::new("r"), true)), 1.0);
+        assert_eq!(frame(&ctx, 5.0, |c| arrive(c, Id::new("q"), 9, 0.2)), 1.0);
     }
 }

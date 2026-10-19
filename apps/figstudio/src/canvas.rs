@@ -218,17 +218,32 @@ pub fn show(
     };
     crate::labels::paint(&painter, &labels);
     find_highlights(&painter, tab, origin, &labels);
+    // Outlines fade in when they move to another layer.
+    let ctx = ui.ctx().clone();
     if let Some(h) = tab.hover.filter(|h| Some(*h) != tab.selection) {
+        let a = crate::anim::arrive(&ctx, egui::Id::new("hover-outline"), (tab.id, h), 0.12);
         outline(
             &painter,
             tab,
             origin,
             h,
-            Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.8)),
+            Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.8 * a)),
         );
     }
     if let Some(sel) = tab.selection {
-        outline(&painter, tab, origin, sel, Stroke::new(1.5, theme::ACCENT));
+        let a = crate::anim::arrive(
+            &ctx,
+            egui::Id::new("selection-outline"),
+            (tab.id, sel),
+            0.12,
+        );
+        outline(
+            &painter,
+            tab,
+            origin,
+            sel,
+            Stroke::new(1.5, theme::ACCENT.gamma_multiply(a)),
+        );
     }
     marquee::paint(&painter, tab, origin);
     tab.view = target;
@@ -279,6 +294,19 @@ fn find_highlights(
             r.left_bottom(),
         ]
     };
+    if tab.find_hits.is_empty() {
+        return;
+    }
+    // New matches fade in; all of them fade out with the closing bar; the current one pops
+    // (a little larger, settling), as Safari bounces the match it found.
+    let ctx = painter.ctx();
+    let alpha = tab.find_fade.clamp(0.0, 1.0)
+        * crate::anim::arrive(ctx, egui::Id::new("find-hits-in"), tab.find_search, 0.18);
+    let pop = crate::anim::pop_on(
+        ctx,
+        egui::Id::new("find-current-pop"),
+        (tab.id, tab.find_search, tab.find_current),
+    );
     for (i, hit) in tab.find_hits.iter().enumerate() {
         let c = match hit {
             crate::find::Hit::Node(id) => corners(tab, origin, *id),
@@ -306,14 +334,22 @@ fn find_highlights(
         let current = tab.find_current == Some(i);
         let (fill, stroke) = if current {
             (
-                crate::find::CURRENT.gamma_multiply(0.35),
-                Stroke::new(2.0, crate::find::CURRENT),
+                crate::find::CURRENT.gamma_multiply(0.35 * alpha),
+                Stroke::new(2.0, crate::find::CURRENT.gamma_multiply(alpha)),
             )
         } else {
             (
-                crate::find::HIT.gamma_multiply(0.3),
-                Stroke::new(1.0, crate::find::HIT),
+                crate::find::HIT.gamma_multiply(0.3 * alpha),
+                Stroke::new(1.0, crate::find::HIT.gamma_multiply(alpha)),
             )
+        };
+        let c = if current {
+            // Grown about its centre while it pops.
+            let mid = c.iter().fold(egui::Vec2::ZERO, |a, p| a + p.to_vec2()) / 4.0;
+            let grow = 1.0 + (1.0 - pop) * 0.35;
+            c.map(|p| (mid + (p.to_vec2() - mid) * grow).to_pos2())
+        } else {
+            c
         };
         painter.add(egui::Shape::convex_polygon(c.to_vec(), fill, stroke));
     }

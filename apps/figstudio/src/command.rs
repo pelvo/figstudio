@@ -48,9 +48,9 @@ impl CommandBar {
         anim::reset(ctx, Id::new("command-pop"), 0.0);
     }
 
+    /// Closes it. The results stay on screen while it fades away; `show` starts afresh.
     pub fn hide(&mut self) {
         self.open = false;
-        self.results.clear();
         self.results_for = None;
     }
 
@@ -296,7 +296,11 @@ fn layers(tab: &crate::tab::Tab, query: &str) -> Vec<Entry> {
 impl App {
     /// Draws the command bar while it is open, and runs what gets picked.
     pub(crate) fn command_bar(&mut self, ctx: &egui::Context) {
-        if !self.command.open {
+        // It pops in, and after closing fades and shrinks away taking no input.
+        let open = self.command.open;
+        let pop = anim::presence(ctx, Id::new("command-pop"), open);
+        if !open && pop <= 0.001 {
+            self.command.results.clear();
             return;
         }
         let key = (
@@ -304,19 +308,23 @@ impl App {
             self.tabs.get(self.active).map(|t| t.id),
             self.tabs.len(),
         );
-        if self.command.results_for.as_ref() != Some(&key) {
+        if open && self.command.results_for.as_ref() != Some(&key) {
             self.command.results = entries(self, &self.command.query);
             self.command.results_for = Some(key);
             self.command.selected = 0;
         }
-        let (down, up, enter, escape) = ctx.input_mut(|i| {
-            (
-                i.consume_key(Modifiers::NONE, Key::ArrowDown),
-                i.consume_key(Modifiers::NONE, Key::ArrowUp),
-                i.consume_key(Modifiers::NONE, Key::Enter),
-                i.consume_key(Modifiers::NONE, Key::Escape),
-            )
-        });
+        let (down, up, enter, escape) = if open {
+            ctx.input_mut(|i| {
+                (
+                    i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                    i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                    i.consume_key(Modifiers::NONE, Key::Enter),
+                    i.consume_key(Modifiers::NONE, Key::Escape),
+                )
+            })
+        } else {
+            (false, false, false, false)
+        };
         let bar = &mut self.command;
         let count = bar.results.len();
         let keyed = down || up;
@@ -332,13 +340,14 @@ impl App {
         let mut close = escape;
 
         let p = theme::palette(ctx);
-        let pop = anim::spring_from(ctx, Id::new("command-pop"), 1.0, Some(0.0), Spring::BOUNCY);
         let screen = ctx.content_rect();
         egui::Area::new(Id::new("command-backdrop"))
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
+            .interactable(open)
             .show(ctx, |ui| {
-                let response = ui.allocate_rect(screen, Sense::click());
+                let sense = if open { Sense::click() } else { Sense::hover() };
+                let response = ui.allocate_rect(screen, sense);
                 let dim = if p.dark { 110.0 } else { 40.0 };
                 let alpha = (dim * pop.clamp(0.0, 1.0)) as u8;
                 ui.painter()
@@ -351,7 +360,12 @@ impl App {
         let area = egui::Area::new(Id::new("command-bar"))
             .order(egui::Order::Foreground)
             .fixed_pos(pos2(screen.center().x - width / 2.0, top))
+            .interactable(open)
+            .fade_in(false)
             .show(ctx, |ui| {
+                if !open {
+                    anim::inert(ui);
+                }
                 ui.set_width(width);
                 ui.multiply_opacity(pop.clamp(0.0, 1.0));
                 egui::Frame::new()
@@ -474,6 +488,9 @@ impl App {
             ),
         );
 
+        if !open {
+            return;
+        }
         if let Some(entry) = run.and_then(|i| self.command.results.get(i)) {
             let target = entry.target;
             self.command.hide();

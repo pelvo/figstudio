@@ -32,6 +32,10 @@ pub struct FindBar {
     current: usize,
     /// Show the current match on the next canvas frame.
     reveal: bool,
+    /// How present the bar is: it slides in, and fades out with its highlights after closing.
+    fade: f32,
+    /// Counts searches, so new matches fade in.
+    search: u64,
 }
 
 impl FindBar {
@@ -45,10 +49,10 @@ impl FindBar {
         self.focus = true;
     }
 
+    /// Closes the bar. Its highlights fade out with it (`update`).
     pub fn hide(&mut self) {
         self.open = false;
         self.hits_for = None;
-        self.hits.clear();
     }
 
     /// Moves to the next match (`forward`) or the previous one, wrapping around.
@@ -67,7 +71,13 @@ impl FindBar {
 
     /// Searches `tab`'s page again when the query, file or page changed, then gives the tab
     /// the matches to highlight. Call before the canvas draws.
-    pub fn update(&mut self, tab: &mut Tab) {
+    pub fn update(&mut self, tab: &mut Tab, ctx: &egui::Context) {
+        self.fade = crate::anim::presence(ctx, egui::Id::new("find-bar"), self.open);
+        tab.find_fade = self.fade;
+        if !self.open && self.fade > 0.001 {
+            // Closing: the last highlights stay while they fade.
+            return;
+        }
         if !self.open || self.query.trim().is_empty() {
             self.hits.clear();
             self.hits_for = None;
@@ -79,10 +89,12 @@ impl FindBar {
         if self.hits_for.as_ref() != Some(&key) {
             self.hits = find_text(&tab.doc, tab.page, &self.query);
             self.hits_for = Some(key);
+            self.search += 1;
             self.current = 0;
             self.reveal = true;
         }
         tab.find_hits.clone_from(&self.hits);
+        tab.find_search = self.search;
         tab.find_current = (!self.hits.is_empty()).then_some(self.current);
         if std::mem::take(&mut self.reveal)
             && let Some(hit) = self.hits.get(self.current)
@@ -223,8 +235,16 @@ impl crate::App {
     /// The find bar at the top right of the canvas card. Returns its bottom, for whatever
     /// sits below it.
     pub(crate) fn find_bar(&mut self, ui: &mut Ui, card: Rect) -> f32 {
-        if !self.find.open {
+        let (open, t) = (self.find.open, self.find.fade);
+        if !open && t <= 0.001 {
             return card.top();
+        }
+        // Slides down into place and fades in; after closing fades back up, taking no input.
+        let mut ui = ui.new_child(UiBuilder::new().max_rect(ui.max_rect()));
+        let ui = &mut ui;
+        ui.multiply_opacity(t.clamp(0.0, 1.0));
+        if !open {
+            crate::anim::inert(ui);
         }
         let p = theme::of(ui);
         let bar = &mut self.find;
@@ -232,8 +252,11 @@ impl crate::App {
             pos2(card.right() - 12.0 - 340.0, card.top() + 12.0),
             vec2(340.0, 36.0),
         )
-        .intersect(card.shrink(8.0));
-        ui.interact(rect, egui::Id::new("find-bar"), Sense::click());
+        .intersect(card.shrink(8.0))
+        .translate(vec2(0.0, -(1.0 - t) * 10.0));
+        if open {
+            ui.interact(rect, egui::Id::new("find-bar"), Sense::click());
+        }
         let radius = CornerRadius::same(18);
         let painter = ui.painter();
         painter.add(card_shadow(&p, 14).as_shape(rect, radius));
@@ -322,12 +345,8 @@ impl crate::App {
         if let Some(forward) = step {
             bar.step(forward);
         }
-        if close {
+        if close && open {
             bar.hide();
-            if let Some(tab) = self.tabs.get_mut(self.active) {
-                tab.find_hits.clear();
-                tab.find_current = None;
-            }
         }
         rect.bottom()
     }

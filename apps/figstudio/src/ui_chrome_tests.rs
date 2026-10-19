@@ -989,3 +989,88 @@ fn the_name_pill_waits_for_the_pointer_to_rest_on_a_dot_then_follows_it_along_th
     h.run_steps(2);
     assert!(!pill(&h, 1), "a fresh hover waits again");
 }
+
+#[test]
+fn overlays_fade_away_instead_of_vanishing_and_then_are_gone() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE)]));
+    wait(&mut h, &mut Vec::new(), "the file to load", |a| {
+        a.tabs.len() == 1
+    });
+    let ctx = h.ctx.clone();
+    crate::anim::set_reduced(&ctx, false);
+    h.run_steps(10);
+    // Closed with Escape: still on screen two frames later, gone after 0.6 s.
+    let closes =
+        |h: &mut Harness<'_, App>, what: &str, there: &dyn Fn(&Harness<'_, App>) -> bool| {
+            h.run_steps(30);
+            assert!(there(h), "{what} opened");
+            h.key_press(Key::Escape);
+            h.run_steps(2);
+            assert!(there(h), "{what} fades out instead of vanishing");
+            h.run_steps(36);
+            assert!(!there(h), "{what} is gone afterwards");
+        };
+
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    closes(&mut h, "the command bar", &|h| {
+        h.query_by_label_contains("Esc to close").is_some()
+    });
+
+    h.state_mut().apply(crate::menu::Action::Settings, &ctx);
+    closes(&mut h, "Settings", &|h| {
+        h.query_by_label("Close settings").is_some()
+    });
+
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    h.run_steps(5);
+    h.event(egui::Event::Text("abc".into()));
+    closes(&mut h, "the find highlights", &|h| {
+        !h.state().tabs[0].find_hits.is_empty()
+    });
+
+    h.state_mut().apply(crate::menu::Action::RenameSpace, &ctx);
+    closes(&mut h, "the space popover", &|h| {
+        h.query_by_label("Space name").is_some()
+    });
+}
+
+#[test]
+fn the_name_pill_fades_out_after_the_pointer_leaves() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    let ctx = h.ctx.clone();
+    crate::anim::set_reduced(&ctx, false);
+    h.run_steps(30);
+    let visible = |h: &Harness<'_, App>| {
+        h.ctx
+            .data(|d| d.get_temp::<bool>(egui::Id::new("space-pill-visible")))
+            .unwrap_or(false)
+    };
+    let id = h.state().tabs[1].id;
+    let (_, dot) = *h
+        .state()
+        .space_dots
+        .iter()
+        .find(|(t, _)| *t == id)
+        .expect("a dot");
+    h.event(Event::PointerMoved(dot.center()));
+    h.run_steps(45);
+    assert!(visible(&h), "shown after resting on the dot");
+    let canvas = h.state().tabs[h.state().active]
+        .canvas_rect
+        .expect("laid out")
+        .center();
+    h.event(Event::PointerMoved(canvas));
+    h.run_steps(2);
+    assert!(visible(&h), "fading out, not gone at once");
+    h.run_steps(40);
+    assert!(!visible(&h), "gone once faded");
+}

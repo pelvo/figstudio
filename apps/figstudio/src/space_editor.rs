@@ -215,15 +215,39 @@ impl App {
             self.spaces
                 .remember(crate::spaces::FileId::of(tab, &title), &tab.style);
         }
+        self.space_leaving = Some(editor);
     }
 
     /// Shows the open space popover; saves the style when it closes.
     pub(crate) fn space_popover(&mut self, ctx: &egui::Context) {
-        let Some(editor) = &mut self.space_editing else {
+        // It pops in; after it closes (saved already) it fades and shrinks away, inert.
+        let open = self.space_editing.is_some();
+        if open {
+            self.space_leaving = None;
+        }
+        let Some(kind) = self
+            .space_editing
+            .as_ref()
+            .or(self.space_leaving.as_ref())
+            .map(|e| e.kind)
+        else {
+            return;
+        };
+        let pop = anim::presence(ctx, Id::new(("space-popover", kind)), open);
+        if !open && pop <= 0.001 {
+            self.space_leaving = None;
+            return;
+        }
+        let slot = if open {
+            &mut self.space_editing
+        } else {
+            &mut self.space_leaving
+        };
+        let Some(editor) = slot else {
             return;
         };
         let Some(tab) = self.tabs.iter_mut().find(|t| t.id == editor.tab) else {
-            self.space_editing = None;
+            *slot = None;
             return;
         };
         let p = theme::palette(ctx);
@@ -242,14 +266,6 @@ impl App {
                     .map_or(pos2(16.0, 52.0), |c| c.min + vec2(16.0, 16.0)),
             ),
         };
-        let kind = editor.kind;
-        let pop = anim::spring_from(
-            ctx,
-            Id::new(("space-popover", kind)),
-            1.0,
-            Some(0.0),
-            Spring::BOUNCY,
-        );
         let mut close = Close::Keep;
         let mut appearance = None;
         let area = egui::Area::new(Id::new("space-popover"))
@@ -257,7 +273,12 @@ impl App {
             .pivot(pivot)
             .fixed_pos(at)
             .constrain(true)
+            .interactable(open)
+            .fade_in(false)
             .show(ctx, |ui| {
+                if !open {
+                    anim::inert(ui);
+                }
                 ui.multiply_opacity(pop.clamp(0.0, 1.0));
                 egui::Frame::new()
                     .fill(ui.visuals().window_fill)
@@ -291,6 +312,9 @@ impl App {
             egui::emath::TSTransform::new(corner.to_vec2() * (1.0 - scale), scale),
         );
 
+        if !open {
+            return;
+        }
         let fresh = ctx.cumulative_frame_nr() <= editor.opened + 1;
         let pressed_outside = ctx.input(|i| i.pointer.any_pressed())
             && ctx
@@ -389,13 +413,12 @@ fn rename(ui: &mut egui::Ui, editor: &mut SpaceEditor, tab: &mut Tab) -> Close {
     ui.horizontal(|ui| {
         let tint = theme::space_tint(tab.colour(), ui.visuals().dark_mode);
         let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
-        let p = theme::of(ui);
         paint_badge(
             ui.painter(),
             r,
             tab.style.symbol.as_ref(),
             tint.accent,
-            p.text,
+            tint.accent,
         );
         let field = ui.add(
             egui::TextEdit::singleline(&mut editor.name)

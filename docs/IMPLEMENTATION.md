@@ -350,6 +350,17 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   `animate_bool*` for hover fades. All of it stops when `anim::reduced` (egui's
   `animation_time` is 0: View → Reduce motion, `prefers-reduced-motion` in the browser, the
   test harness). Widget-heavy lists keep one hover state per list (`panels::hover_fade`).
+- **Nothing just appears or vanishes.** Overlays (command bar, Settings, space popovers, the
+  find bar and its highlights, the space name pill) use `anim::presence`: they pop in, and
+  after closing keep drawing, `anim::inert` (no input), until they have faded and shrunk
+  away; their state must outlive the close (the command bar keeps its results, a closed
+  popover moves to `space_leaving`, find keeps its highlights). New content uses
+  `anim::arrive` (a short fade whenever its key changes: another file or page on the canvas,
+  another selection in the properties, hover and selection outlines, a Settings tab's page,
+  children of a layer just opened); `anim::pop_on` bounces what just became current (the
+  find bar's match). New file dots pop in, and the others slide over when one closes. A new
+  change of state on screen should use one of these. egui's own popups (menus, tooltips)
+  fade in but close at once.
 - macOS runs frameless (`with_fullsize_content_view`, no title bar): the sidebar header and
   the title strip leave room for the traffic lights and move the window
   (`ViewportCommand::StartDrag`). The window is transparent with a blur behind it
@@ -435,8 +446,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   marks the active one (no ring): the others are drained toward grey and faded
   (`chrome::drained`) until hovered. A dot the pointer rests on for 0.5 s shows Arc's dark
   pill with the space's name and its ⌃1…⌃9 keys as caps (`chrome::space_pill`, timed by
-  `pill_due`; right after one shows, the next dot's shows at once); closing is in its right-click menu
-  or a middle click. ⌃1…⌃9 are `Binding::Space(n)`, changeable like any shortcut.
+  `pill_due`; right after one shows, the next dot's shows at once; it rises and fades in,
+  glides between dots and fades out). Badges have nothing behind them, as Arc's. Closing is
+  in a dot's right-click menu or a middle click. ⌃1…⌃9 are `Binding::Space(n)`, changeable like any shortcut.
 - On the window gradient, small text uses `text_dim` (≥ 4.5:1 on every tint); `text_faint`
   is for hints (≥ 3:1). `theme::tests` checks both, for presets and custom colours.
 

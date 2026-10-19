@@ -150,19 +150,31 @@ pub fn layers(ui: &mut Ui, tab: &mut Tab, filter: &str) {
                     .children(tab.page)
                     .iter()
                     .rev()
-                    .map(|id| (*id, 0usize))
+                    .map(|id| (*id, 0usize, 1.0f32))
                     .collect();
-                while let Some((id, depth)) = stack.pop() {
+                let ctx = ui.ctx().clone();
+                while let Some((id, depth, shown)) = stack.pop() {
                     if doc.node(id).is_none() {
                         continue;
                     }
+                    // A layer's children fade in when it opens.
+                    let before = ui.opacity();
+                    ui.multiply_opacity(shown);
                     row(ui, tab, &doc, id, depth, true);
-                    if tab.expanded.contains(&id) {
+                    ui.set_opacity(before);
+                    let has_children = !doc.children(id).is_empty();
+                    let open = tab.expanded.contains(&id);
+                    let opening = if has_children {
+                        anim::arrive(&ctx, Id::new(("layer-open", id)), open, 0.18)
+                    } else {
+                        1.0
+                    };
+                    if open {
                         stack.extend(
                             doc.children(id)
                                 .iter()
                                 .rev()
-                                .map(|child| (*child, depth + 1)),
+                                .map(|child| (*child, depth + 1, shown.min(opening))),
                         );
                     }
                 }
