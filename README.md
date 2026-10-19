@@ -120,14 +120,15 @@ Agent skills for coding assistants are included under [`.agents/skills/`](.agent
 
 ## Development and checks
 
-Requires Rust **1.94+** (`edition = "2024"`). If your default `rustc` is older, set
-`FIGSTUDIO_TOOLCHAIN` (for example `FIGSTUDIO_TOOLCHAIN=1.99.0`).
+Requires Rust **1.95+** (`rust-version = "1.95"` in `Cargo.toml`; `egui` 0.36 requires
+Rust 1.95+). If your default `rustc` is older, set `FIGSTUDIO_TOOLCHAIN` (for example
+`FIGSTUDIO_TOOLCHAIN=1.99.0`).
 
 ```sh
-# Format check, clippy (-D warnings), workspace tests, and release build
+# Format check, clippy (-D warnings), workspace tests, release build, and wasm32 build of figstudio-mcp-core
 ./scripts/check.sh
 
-# Also run scripts/web-build.sh and wasm32 clippy
+# Also build the browser bundle via scripts/web-build.sh
 ./scripts/check.sh --web
 
 # Cloudflare Worker unit tests
