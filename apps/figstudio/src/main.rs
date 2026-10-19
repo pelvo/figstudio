@@ -274,6 +274,8 @@ struct App {
     shown_file: Option<u64>,
     /// The canvas card from the last frame (toasts and the drop overlay sit on it).
     card_rect: Option<egui::Rect>,
+    /// What the canvas showed, so another file or page fades in over it (`chrome.rs`).
+    crossfade: chrome::Crossfade,
     /// The hidden sidebar is peeking out over the canvas (`chrome.rs`).
     peek: bool,
     /// Saved colours, symbols and names of spaces (`spaces.rs`).
@@ -380,6 +382,7 @@ impl App {
             reduce_motion: anim::reduced(&cc.egui_ctx),
             shown_file: None,
             card_rect: None,
+            crossfade: chrome::Crossfade::default(),
             peek: false,
             // Tests never read or write the user's saved styles.
             spaces: if cfg!(test) {

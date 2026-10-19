@@ -159,7 +159,6 @@ impl Tiles {
         );
         let level = range.level;
         self.cache.begin_frame(doc, page, range);
-        let uv = tiles::uv();
         let mut stats: Option<Stats> = None;
         let mut elapsed = Duration::ZERO;
         let mut fallbacks = 0;
@@ -168,13 +167,11 @@ impl Tiles {
             let Some(entry) = self.cache.get(&key) else {
                 continue;
             };
-            let r = key.page_rect();
-            let corner = |x: f64, y: f64| view.to_screen(rect.min, Pos2::new(x as f32, y as f32));
-            paint_tile(
+            paint_key(
                 painter,
+                &key,
                 entry.value.texture.id(),
-                Rect::from_min_max(corner(r.x0, r.y0), corner(r.x1, r.y1)),
-                Rect::from_min_max(Pos2::new(uv[0], uv[0]), Pos2::new(uv[1], uv[1])),
+                view,
                 (rect, radius),
             );
             if key.level == level {
@@ -217,6 +214,54 @@ impl Tiles {
             Vec::new()
         };
     }
+}
+
+impl Tiles {
+    /// Paints the cached tiles of `doc`'s `page` where `view` puts them, coarser ones first,
+    /// without touching them or asking for more: the picture another file or page fades in
+    /// over (`chrome::Crossfade`).
+    pub fn paint_cached(
+        &self,
+        painter: &egui::Painter,
+        (rect, radius): (Rect, f32),
+        (doc, page): (u64, figstudio_fig::Guid),
+        view: crate::tab::View,
+        ppp: f32,
+    ) {
+        let visible = tiles::visible_page(view.zoom, view.pan.into(), rect.size().into());
+        let level = tiles::level_for(view.zoom * ppp);
+        for key in self.cache.draw_order(doc, page, level, visible) {
+            if let Some(entry) = self.cache.get(&key) {
+                paint_key(
+                    painter,
+                    &key,
+                    entry.value.texture.id(),
+                    view,
+                    (rect, radius),
+                );
+            }
+        }
+    }
+}
+
+/// Paints the tile `key` where `view` puts it on the card `rect`.
+fn paint_key(
+    painter: &egui::Painter,
+    key: &tiles::Key,
+    texture: egui::TextureId,
+    view: crate::tab::View,
+    (rect, radius): (Rect, f32),
+) {
+    let r = key.page_rect();
+    let corner = |x: f64, y: f64| view.to_screen(rect.min, Pos2::new(x as f32, y as f32));
+    let uv = tiles::uv();
+    paint_tile(
+        painter,
+        texture,
+        Rect::from_min_max(corner(r.x0, r.y0), corner(r.x1, r.y1)),
+        Rect::from_min_max(Pos2::new(uv[0], uv[0]), Pos2::new(uv[1], uv[1])),
+        (rect, radius),
+    );
 }
 
 /// Paints a tile at `screen`; where it reaches into a rounded corner of `card`, only the part

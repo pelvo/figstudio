@@ -1559,3 +1559,93 @@ fn the_command_bar_lists_the_layers_of_the_page_shown_now() {
     h.run_steps(3);
     assert_eq!(layers(&h), 0, "an empty page has none");
 }
+
+/// The colour the untextured fills give the point `at` in the last frame, laid over each
+/// other in paint order (tiles are textures and are left out).
+fn fill_at(h: &Harness<'_, App>, at: egui::Pos2) -> egui::Color32 {
+    fn walk(shape: &egui::Shape, at: egui::Pos2, acc: &mut [f32; 3]) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, at, acc)),
+            egui::Shape::Rect(r)
+                if r.brush.is_none() && r.blur_width == 0.0 && r.rect.contains(at) =>
+            {
+                // Premultiplied: what is under shows through by one minus alpha.
+                let [cr, cg, cb, ca] = r.fill.to_array().map(f32::from);
+                let keep = 1.0 - ca / 255.0;
+                *acc = [cr + acc[0] * keep, cg + acc[1] * keep, cb + acc[2] * keep];
+            }
+            _ => {}
+        }
+    }
+    let mut acc = [0.0; 3];
+    for clipped in &h.output().shapes {
+        if clipped.clip_rect.contains(at) {
+            walk(&clipped.shape, at, &mut acc);
+        }
+    }
+    let [r, g, b] = acc.map(|c| c.round().clamp(0.0, 255.0) as u8);
+    egui::Color32::from_rgb(r, g, b)
+}
+
+#[test]
+fn another_file_fades_in_over_the_last_one_never_over_the_bare_card() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    crate::anim::set_reduced(&h.ctx.clone(), false);
+    h.run_steps(30);
+    let page = |t: &crate::tab::Tab| {
+        crate::canvas::to_color32(figstudio_render::page_background(&t.doc, t.page))
+    };
+    let from = h.state().active;
+    let to = (from + 1) % 2;
+    let (old, new) = (page(&h.state().tabs[from]), page(&h.state().tabs[to]));
+    // Left of the middle, clear of the pills and of frame labels.
+    let card = h.state().card_rect.expect("laid out");
+    let at = egui::pos2(card.left() + 12.0, card.center().y);
+    assert_eq!(fill_at(&h, at), old, "settled on the first file's page");
+    h.state_mut().active = to;
+    let between = |c: egui::Color32| {
+        let (c, a, b) = (c.to_array(), old.to_array(), new.to_array());
+        (0..3).all(|i| c[i] + 2 >= a[i].min(b[i]) && c[i] <= a[i].max(b[i]) + 2)
+    };
+    for frame in 0..20 {
+        h.step();
+        let c = fill_at(&h, at);
+        assert!(
+            between(c),
+            "frame {frame}: {c:?}, not between {old:?} and {new:?}"
+        );
+    }
+    assert_eq!(fill_at(&h, at), new, "settled on the second file's page");
+}
+
+#[test]
+fn the_first_file_fades_in_over_its_own_page_colour() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE)]));
+    crate::anim::set_reduced(&h.ctx.clone(), false);
+    let start = std::time::Instant::now();
+    while h.state().tabs.is_empty() {
+        assert!(start.elapsed().as_secs() < 20, "the file did not load");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.step();
+    }
+    let tab = &h.state().tabs[0];
+    let page = crate::canvas::to_color32(figstudio_render::page_background(&tab.doc, tab.page));
+    let card = h.state().card_rect.expect("laid out");
+    let at = egui::pos2(card.left() + 12.0, card.center().y);
+    // The frame it arrived in is the first of its fade.
+    for frame in 0..20 {
+        let c = fill_at(&h, at);
+        let near = (0..3).all(|i| c.to_array()[i].abs_diff(page.to_array()[i]) <= 2);
+        assert!(near, "frame {frame}: {c:?}, not the page's {page:?}");
+        h.step();
+    }
+}

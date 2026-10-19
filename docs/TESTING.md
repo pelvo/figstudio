@@ -251,7 +251,7 @@ no snapshot images). `App::new` takes `eframe::CreationContext`, which kittest b
 wgpu state, so tiles render on the CPU path.
 
 ```sh
-cargo test -p figstudio ui_tests          # 44 tests, about 2 s
+cargo test -p figstudio ui_tests          # 46 tests, about 2 s
 ```
 
 How to write one: `harness()` returns a `Harness<App>` with the file loaded and fitted;

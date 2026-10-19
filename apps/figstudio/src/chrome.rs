@@ -415,6 +415,73 @@ pub(crate) fn paint_badge(
     }
 }
 
+/// What the canvas showed in a frame: enough to paint it again from the tile cache.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CanvasShot {
+    /// The file and page shown (`Tab::id`, `Tab::page`).
+    key: (u64, figstudio_fig::Guid),
+    /// `Document::instance`, which keys the tile cache.
+    doc: u64,
+    /// The view on screen (`Tab::shown`).
+    view: crate::tab::View,
+    background: Color32,
+}
+
+impl CanvasShot {
+    fn of(tab: &crate::tab::Tab) -> Self {
+        CanvasShot {
+            key: (tab.id, tab.page),
+            doc: tab.doc.instance,
+            view: tab.shown,
+            background: canvas::to_color32(figstudio_render::page_background(&tab.doc, tab.page)),
+        }
+    }
+}
+
+/// The canvas's crossfade: when the file or page changes, the new one fades in over the last
+/// picture (its page colour and cached tiles) instead of over the card, which is near black
+/// in the dark theme and flashed for a frame or two.
+#[derive(Debug, Default)]
+pub(crate) struct Crossfade {
+    /// The last frame's picture.
+    last: Option<CanvasShot>,
+    /// The picture being faded from, until the fade ends.
+    from: Option<CanvasShot>,
+}
+
+impl Crossfade {
+    /// Paints what `tab`'s canvas fades in over while `shown` < 1: the picture of the file or
+    /// page shown before, or with none (the first file), this page's own colour.
+    fn under(
+        &mut self,
+        painter: &egui::Painter,
+        tiles: &crate::tiles_view::Tiles,
+        tab: &crate::tab::Tab,
+        (rect, radius): (Rect, f32),
+        shown: f32,
+        ppp: f32,
+    ) {
+        if self.last.is_some_and(|s| s.key != (tab.id, tab.page)) {
+            self.from = self.last.take();
+        }
+        if shown >= 1.0 {
+            self.from = None;
+            return;
+        }
+        match self.from {
+            Some(from) => {
+                painter.rect_filled(rect, radius, from.background);
+                let page = (from.doc, from.key.1);
+                tiles.paint_cached(painter, (rect, radius), page, from.view, ppp);
+            }
+            None => {
+                let background = figstudio_render::page_background(&tab.doc, tab.page);
+                painter.rect_filled(rect, radius, canvas::to_color32(background));
+            }
+        }
+    }
+}
+
 /// The zoom the tool pill shows: the picture's (`Tab::shown`, which eases after a jump),
 /// not the jump's target, so the number matches what is on screen.
 fn zoom_percent(tab: Option<&crate::tab::Tab>) -> f32 {
@@ -1182,6 +1249,7 @@ impl App {
             ui.set_clip_rect(ui.clip_rect().intersect(card));
             match self.tabs.get_mut(self.active) {
                 Some(_) if self.render_worker_lost => {
+                    self.crossfade = Crossfade::default();
                     ui.centered_and_justified(|ui| {
                         ui.label(
                             RichText::new("Rendering is unavailable; restart the app.")
@@ -1197,14 +1265,23 @@ impl App {
                         frame_labels: self.prefs.frame_labels,
                         scroll_zooms: self.prefs.scroll_zooms,
                     };
-                    // Another file or page fades in instead of replacing the last at once.
+                    // Another file or page fades in over the last one, painted again from the
+                    // tile cache: a crossfade, never the bare card for a frame.
                     let shown = anim::arrive(&ctx, Id::new("canvas-in"), (tab.id, tab.page), 0.16);
+                    let ppp = ui.pixels_per_point();
+                    let under = (card, f32::from(CARD_RADIUS));
+                    (self.crossfade).under(ui.painter(), &self.tiles, tab, under, shown, ppp);
                     let before = ui.opacity();
                     ui.multiply_opacity(shown);
                     cursor = canvas::show(ui, tab, &mut self.workers, &mut self.tiles, options);
                     ui.set_opacity(before);
+                    self.crossfade.last = Some(CanvasShot::of(tab));
                 }
-                None => open_clicked = self.empty_state(ui, card),
+                None => {
+                    // The next file to open fades in over its own page colour.
+                    self.crossfade = Crossfade::default();
+                    open_clicked = self.empty_state(ui, card);
+                }
             }
             ui.painter().rect_stroke(
                 card,

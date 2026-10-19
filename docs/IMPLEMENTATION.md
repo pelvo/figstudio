@@ -364,7 +364,11 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   `anim::arrive` (a short fade whenever its key changes: another file or page on the canvas,
   another selection in the properties, hover and selection outlines, a Settings tab's page,
   children of a layer just opened); `anim::pop_on` bounces what just became current (the
-  find bar's match). New file dots pop in, and the others slide over when one closes. A new
+  find bar's match). The canvas crossfades: `chrome::Crossfade` keeps what the last frame
+  showed (file, page, view, page colour) and paints it again under the new file or page
+  while that fades in (`Tiles::paint_cached` draws cached tiles without touching or asking
+  for any). With nothing before it (the first file), a file fades in over its own page
+  colour. It never fades from the card, which is near black in the dark theme. New file dots pop in, and the others slide over when one closes. A new
   change of state on screen should use one of these. egui's own popups (menus, tooltips)
   fade in but close at once.
 - macOS runs frameless (`with_fullsize_content_view`, no title bar): the sidebar header and
