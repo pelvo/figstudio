@@ -59,6 +59,55 @@ fn component_boolean_and_swap_assignments_are_scoped_to_each_instance() {
 }
 
 #[test]
+fn parameter_consumption_map_binding_wins_over_a_stale_component_prop_ref() {
+    let mut symbol = node(2, 0, "SYMBOL");
+    symbol.data.set(
+        "componentPropDefs",
+        Val::Arr(vec![
+            obj(&[
+                ("id", id(91).to_val()),
+                ("initialValue", obj(&[("boolValue", Val::Bool(true))])),
+            ]),
+            obj(&[
+                ("id", id(92).to_val()),
+                ("initialValue", obj(&[("boolValue", Val::Bool(true))])),
+            ]),
+        ]),
+    );
+    // A copied layer: the legacy ref still names 91, the consumption map rebinds it to 92.
+    let mut rect = node(3, 2, "RECTANGLE");
+    rect.data.set("fillPaints", paint(1.0, 0.0, 0.0));
+    rect.data
+        .set("componentPropRefs", property_ref(91, "VISIBLE"));
+    rect.data.set(
+        "parameterConsumptionMap",
+        obj(&[(
+            "entries",
+            Val::Arr(vec![obj(&[
+                ("variableField", Val::Str("VISIBLE".into())),
+                (
+                    "variableData",
+                    obj(&[
+                        ("dataType", Val::Str("PROP_REF".into())),
+                        (
+                            "value",
+                            obj(&[("propRefValue", obj(&[("defId", id(92).to_val())]))]),
+                        ),
+                    ]),
+                ),
+            ])]),
+        )]),
+    );
+    let mut top = instance(4, 1, 2, vec![]);
+    top.data.set(
+        "componentPropAssignments",
+        Val::Arr(vec![assignment(91, "boolValue", Val::Bool(false))]),
+    );
+    let doc = document(vec![node(1, 0, "CANVAS"), symbol, rect, top]);
+    assert_eq!(pixel(&pixels(&doc), 10, 10), &[255, 0, 0, 255]);
+}
+
+#[test]
 fn property_text_uses_fresh_derived_glyphs_and_defaults_follow_parent_definitions() {
     let mut symbol = node(2, 0, "SYMBOL");
     symbol.data.set(
