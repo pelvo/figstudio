@@ -56,6 +56,11 @@ fn slow_structure(_: &[PathBuf], _: &FileHint) -> Vec<(PathBuf, Match)> {
     vec![(path, Match::Name)]
 }
 
+/// At once, the `structure` fixture spelled `fixtures/../fixtures/structure.fig`.
+fn listed_structure(_: &[PathBuf], _: &FileHint) -> Vec<(PathBuf, Match)> {
+    vec![(fixture("../fixtures/structure.fig"), Match::Name)]
+}
+
 /// An app with no file open.
 fn empty_app() -> Harness<'static, App> {
     Harness::builder()
@@ -603,4 +608,50 @@ fn closing_the_window_cancels_its_search() {
         "the closed window's search opened its file"
     );
     assert!(!app.link.window);
+}
+
+#[test]
+fn a_listing_waits_for_a_file_still_loading_before_it_opens_anything() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = listed_structure;
+    // The person has just opened the file: its load is in flight, it is no tab yet.
+    let opened = fixture("structure.fig");
+    assert!(h.state_mut().loading.begin(&opened));
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("structure", "1-4"), Some(done))
+    );
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    for _ in 0..5 {
+        h.step();
+    }
+    assert_eq!(
+        h.state().link.searching(),
+        1,
+        "the listing was used during the load"
+    );
+    assert_eq!(h.state().loading.iter().count(), 1, "a second load started");
+    assert!(rx.try_recv().is_err());
+    // The load runs and ends; the link then finds the new tab.
+    h.state_mut().loading.finish(&opened);
+    h.state_mut().open(opened);
+    searched(&mut h);
+    h.step();
+    let answer = rx.try_recv().unwrap().unwrap();
+    assert!(!answer.contains("opened"), "{answer}");
+    let app = h.state();
+    assert_eq!(app.tabs.len(), 1, "the file was loaded a second time");
+    assert_eq!(app.tabs[0].selection, Some(Guid(1, 4)));
+}
+
+#[test]
+fn a_node_id_the_file_lacks_still_replaces_the_window_search() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_for_one;
+    assert!(h.state_mut().go_to_link(&ctx, &figma("Slow", "0-1"), None));
+    assert!(!h.state_mut().go_to_link(&ctx, "999:1", None));
+    assert_eq!(h.state().link.searching(), 0, "the older search still runs");
 }

@@ -125,6 +125,9 @@ struct Search {
     node: Option<Guid>,
     done: Option<Done>,
     started: web_time::Instant,
+    /// What the listing found, once it is back. Held while a file is loading: that file is
+    /// not a tab yet, and its tab's real path is needed to tell it from a copy.
+    found: Option<Vec<Copy>>,
 }
 
 /// A link whose local copy is loading.
@@ -360,12 +363,12 @@ impl App {
             let active = self.tabs.get(self.active).map(|t| t.id);
             return match plan(&[], active, None, Vec::new(), &[]) {
                 Ok(target) => {
-                    let shown = self.go_to(ctx, target, parsed.node, done);
-                    if shown && window {
-                        // The window's link is now this one; its older search is moot.
+                    if window {
+                        // The window's link is now this one, shown or refused (a node the
+                        // file does not have); its older search is moot.
                         self.cancel_window_search();
                     }
-                    shown
+                    self.go_to(ctx, target, parsed.node, done)
                 }
                 Err(error) => {
                     self.answer(ctx, done, Err(error));
@@ -404,6 +407,7 @@ impl App {
             node: parsed.node,
             done,
             started: web_time::Instant::now(),
+            found: None,
         });
         true
     }
@@ -455,25 +459,35 @@ impl App {
         ctx.request_repaint();
     }
 
-    /// Each frame: fail the searches past their time, then finish the ones that came back. A
-    /// result for a search that is gone (timed out, or replaced by a newer window link) is
-    /// dropped.
+    /// Each frame: fail the searches past their time, then take in the listings that came
+    /// back, and finish them once no file is loading. A result for a search that is gone
+    /// (timed out, replaced or cancelled) is dropped.
     pub(crate) fn poll_link_searches(&mut self, ctx: &egui::Context) {
         let timeout = self.link.search_timeout;
         let (late, running): (Vec<Search>, Vec<Search>) = std::mem::take(&mut self.link.searches)
             .into_iter()
-            .partition(|s| s.started.elapsed() >= timeout);
+            .partition(|s| s.found.is_none() && s.started.elapsed() >= timeout);
         self.link.searches = running;
         for search in late {
             self.answer(ctx, search.done, Err(LinkError::SearchTimeout));
         }
         while let Ok((id, copies)) = self.link.found_rx.try_recv() {
             self.link.listings.retain(|(listing, _)| *listing != id);
-            let Some(i) = self.link.searches.iter().position(|s| s.id == id) else {
-                continue;
-            };
-            let search = self.link.searches.remove(i);
-            self.finish_search(ctx, search, copies);
+            if let Some(search) = self.link.searches.iter_mut().find(|s| s.id == id) {
+                search.found = Some(copies);
+            }
+        }
+        // A file still loading may be one of the copies under another spelling; once it is a
+        // tab, its real path tells. The worker wakes the UI when the load ends.
+        if self.loading.iter().next().is_none() {
+            let (ready, waiting): (Vec<Search>, Vec<Search>) =
+                std::mem::take(&mut self.link.searches)
+                    .into_iter()
+                    .partition(|s| s.found.is_some());
+            self.link.searches = waiting;
+            for search in ready {
+                self.finish_search(ctx, search);
+            }
         }
         if !self.link.searches.is_empty() {
             // Wake for the timeout even if the thread never reports.
@@ -481,7 +495,8 @@ impl App {
         }
     }
 
-    fn finish_search(&mut self, ctx: &egui::Context, search: Search, copies: Vec<Copy>) {
+    fn finish_search(&mut self, ctx: &egui::Context, mut search: Search) {
+        let copies = search.found.take().unwrap_or_default();
         // The tabs open now, not when the search started: one may have opened meanwhile.
         let tabs: Vec<(u64, &Path, &Path)> = self
             .tabs

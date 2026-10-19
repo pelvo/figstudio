@@ -577,13 +577,17 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   thread (`LinkOpen::search`, `local_copies` by default). The thread also resolves each
   copy's path (`real_paths`), and the loader resolves each tab's (`Tab::real_path`), so
   `plan`, run by `poll_link_searches` each frame against the tabs open then, recognises an
-  open copy without I/O, including one opened while the folders were listed. Reading a folder can block (a network drive, or macOS asking to allow reading
+  open copy without I/O, including one opened while the folders were listed. A listing
+  that comes back while any file is loading is held until the loads end (that file is no
+  tab yet, so it could not be told from a copy under another spelling); the timeout only
+  counts until the listing is back. Reading a folder can block (a network drive, or macOS asking to allow reading
   `~/Downloads`), and the window keeps drawing meanwhile. `start_search` requests a frame and
   each poll with a search running requests another in 250 ms, so the timeout fires even in
   an idle window. After `SEARCH_TIMEOUT` (20 s) the link fails ("could not be read in time",
   with a permission hint on macOS only) rather than the MCP call ending with "the app did
   not respond"; timeouts are checked before results, so a late result is never used. A new
-  link from the window (a file link or a node ID) replaces the window's older search, Go on
+  link from the window (a file link, or a node ID, shown or not in the file) replaces the
+  window's older search, Go on
   the link already being searched for starts nothing, and closing the window cancels its
   search; MCP calls each keep theirs. While a listing is still blocked past the timeout, new
   links fail at once instead of starting more blocked threads, and a link refused that way
@@ -599,7 +603,7 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   tab, a local copy loaded and answered, an MCP tie, the window and its pick list, a slow
   folder that neither blocks the window nor hangs the call, a replaced window search, a
   blocked listing, the frame a search schedules, a late result, a tab opened during the listing, a node ID or a refused link from the window,
-  closing the window),
+  closing the window, a listing held while a file loads),
   `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
 ### The browser app (`apps/figstudio` on wasm32)
