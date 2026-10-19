@@ -1,0 +1,60 @@
+# Releases with release-please. Every push to main updates one release PR (version bump in
+# Cargo.toml and Cargo.lock, CHANGELOG.md from the Conventional Commit titles). Merging that
+# PR tags vX.Y.Z and publishes a GitHub release; the job below then builds the macOS app and
+# attaches it to the release.
+#
+# The build runs in this workflow, not on `release: published`: a release made with
+# GITHUB_TOKEN does not start other workflows.
+#
+# Repo setting needed once: Settings > Actions > General > Workflow permissions >
+# "Allow GitHub Actions to create and approve pull requests".
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  macos:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    # Apple silicon runner: the build is arm64.
+    runs-on: macos-latest
+    env:
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build figstudio.app
+        run: scripts/macos-app.sh
+      - name: Package
+        run: |
+          mkdir -p dist
+          # ditto keeps the bundle's signature and symlinks intact (plain zip does not).
+          ditto -c -k --keepParent target/release/figstudio.app "dist/figstudio-$TAG-macos-arm64.zip"
+          tar -C target/release -czf "dist/figstudio-cli-mcp-$TAG-macos-arm64.tar.gz" \
+            figstudio-cli figstudio-mcp
+          (cd dist && shasum -a 256 * > SHA256SUMS)
+      - name: Attach to the release
+        run: gh release upload "$TAG" dist/* --clobber
