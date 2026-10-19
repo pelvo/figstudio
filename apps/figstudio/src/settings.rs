@@ -3,8 +3,9 @@
 //! General, Canvas, Shortcuts, Agents (agent access, the MCP server) and About.
 
 use egui::{
-    Align, Align2, Color32, CornerRadius, Id, Key, KeyboardShortcut, Layout, Margin, Modifiers,
-    Rect, Response, RichText, Sense, Stroke, Ui, UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
+    Align, Align2, Color32, CornerRadius, FontId, Id, Key, KeyboardShortcut, Layout, Margin,
+    Modifiers, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, WidgetInfo,
+    WidgetType, pos2, vec2,
 };
 
 use crate::anim::{self, Spring};
@@ -78,6 +79,17 @@ impl Renderer {
     }
 }
 
+/// What Settings → Agents changes on the desktop MCP server (`McpHost::access`); the
+/// browser has its own relay controls instead.
+#[derive(Debug)]
+pub struct Access<'a> {
+    pub on: &'a mut bool,
+    pub remote: &'a mut bool,
+    pub remote_addr: &'a mut String,
+    /// While it runs: where clients connect, and a remote bind's bearer token.
+    pub endpoint: Option<(String, Option<String>)>,
+}
+
 /// The settings window's state.
 #[derive(Debug, Default)]
 pub struct Settings {
@@ -121,15 +133,23 @@ impl Settings {
     }
 }
 
-/// Height of the title and the tab row.
-const HEADER: f32 = 96.0;
+/// Height of the toolbar (the title and the tabs), as Arc's.
+const TOOLBAR: f32 = 85.0;
+/// Where a list row's text starts and its control ends, from the list's edge.
+const INSET: f32 = 24.0;
+/// The window's corners.
+const RADIUS: u8 = 10;
+/// Arc's settings blue: the lit tab, the tiles, a keycap waiting for keys.
+const ACCENT: Color32 = Color32::from_rgb(52, 120, 246);
+/// Memory key: the next list row is the first of its section (no line above it).
+const FIRST_ROW: &str = "settings-first-row";
 
 /// Things done with the pointer or fixed keys: listed, not changeable.
 const FIXED: [(&str, &str); 7] = [
     ("Clear the selection", "Esc"),
     (
-        "Next or previous match while typing",
-        "Enter or Shift+Enter",
+        "Next or previous match",
+        "Enter or Shift+Enter in the find bar",
     ),
     ("Zoom around the pointer", "⌘ or Ctrl + scroll, or pinch"),
     ("Pan", "Scroll, Space + drag, or middle drag"),
@@ -138,36 +158,107 @@ const FIXED: [(&str, &str); 7] = [
     ("Peek at the hidden sidebar", "Point at the left edge"),
 ];
 
-/// A keycap: the keys on a light rounded box, as Arc draws them, ending at `right`.
-/// `recording` outlines it in the accent and asks for keys.
+/// Arc's settings colours, measured from its dark window; the light ones mirror them.
+#[derive(Clone, Copy, Debug)]
+struct Look {
+    dark: bool,
+    toolbar: Color32,
+    body: Color32,
+    toolbar_line: Color32,
+    edge: Color32,
+    search: Color32,
+    search_line: Color32,
+    row_line: Color32,
+    lit: Color32,
+    title: Color32,
+    text: Color32,
+    section: Color32,
+    dim: Color32,
+    button: Color32,
+    track: Color32,
+    segment: Color32,
+}
+
+impl Look {
+    fn of(ui: &Ui) -> Self {
+        Self::new(theme::of(ui).dark)
+    }
+
+    fn new(dark: bool) -> Self {
+        let c = Color32::from_rgb;
+        if dark {
+            Look {
+                dark,
+                toolbar: c(49, 48, 47),
+                body: c(42, 40, 39),
+                toolbar_line: c(57, 55, 54),
+                edge: c(62, 62, 62),
+                search: c(63, 61, 61),
+                search_line: c(36, 35, 34),
+                row_line: c(63, 61, 60),
+                lit: c(77, 76, 75),
+                title: c(173, 172, 171),
+                text: c(223, 222, 222),
+                section: c(159, 158, 158),
+                dim: c(145, 144, 143),
+                button: c(58, 56, 55),
+                track: c(62, 60, 59),
+                segment: c(104, 102, 101),
+            }
+        } else {
+            Look {
+                dark,
+                toolbar: c(236, 235, 234),
+                body: c(247, 246, 245),
+                toolbar_line: c(216, 215, 214),
+                edge: c(214, 213, 212),
+                search: c(234, 233, 232),
+                search_line: c(214, 213, 212),
+                row_line: c(228, 227, 226),
+                lit: c(220, 219, 218),
+                title: c(90, 89, 88),
+                text: c(30, 30, 30),
+                section: c(98, 97, 96),
+                dim: c(104, 103, 102),
+                button: c(226, 225, 224),
+                track: c(226, 225, 224),
+                segment: Color32::WHITE,
+            }
+        }
+    }
+}
+
+/// A keycap: the keys on a white rounded box, as Arc draws them, ending at `right`.
+/// `recording` outlines it in blue and asks for keys.
 fn keycap(ui: &Ui, text: &str, right: f32, y: f32, recording: bool) -> Rect {
-    let p = theme::of(ui);
-    let ink = Color32::from_rgb(40, 40, 46);
-    let shown = if recording { "Type keys…" } else { text };
+    let look = Look::of(ui);
+    let (shown, ink) = if recording {
+        ("Type keys…", ACCENT)
+    } else {
+        (text, Color32::from_gray(88))
+    };
     let galley = ui
         .painter()
-        .layout_no_wrap(shown.to_owned(), theme::semibold(12.0), ink);
-    let w = (galley.size().x + 20.0).max(54.0);
-    let cap = Rect::from_min_size(pos2(right - w, y - 11.0), vec2(w, 22.0));
-    let fill = if p.dark {
-        Color32::from_gray(236)
-    } else {
-        Color32::WHITE
-    };
-    ui.painter().rect_filled(cap, CornerRadius::same(6), fill);
+        .layout_no_wrap(shown.to_owned(), FontId::proportional(12.5), ink);
+    let w = (galley.size().x + 22.0).max(62.0);
+    let cap = Rect::from_min_size(pos2(right - w, y - 12.0), vec2(w, 24.0));
+    ui.painter()
+        .rect_filled(cap, CornerRadius::same(5), Color32::WHITE);
     let edge = if recording {
-        Stroke::new(2.0, theme::MENU_HIGHLIGHT)
+        Stroke::new(2.0, ACCENT)
+    } else if look.dark {
+        Stroke::NONE
     } else {
-        Stroke::new(1.0, Color32::from_black_alpha(30))
+        Stroke::new(1.0, Color32::from_black_alpha(36))
     };
     ui.painter()
-        .rect_stroke(cap, CornerRadius::same(6), edge, egui::StrokeKind::Outside);
+        .rect_stroke(cap, CornerRadius::same(5), edge, StrokeKind::Outside);
     ui.painter()
         .galley(cap.center() - galley.size() / 2.0, galley, ink);
     cap
 }
 
-/// A switch, macOS style: the knob slides, the track fills with the accent when on.
+/// A switch, macOS style: the knob slides, the track fills with blue when on.
 fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(34.0, 20.0), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, *on, label));
@@ -183,11 +274,11 @@ fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
         Spring::BOUNCY,
     );
     let off = if p.dark {
-        Color32::from_gray(70)
+        Color32::from_gray(84)
     } else {
-        Color32::from_gray(210)
+        Color32::from_gray(214)
     };
-    let track = off.lerp_to_gamma(theme::MENU_HIGHLIGHT, t.clamp(0.0, 1.0));
+    let track = off.lerp_to_gamma(ACCENT, t.clamp(0.0, 1.0));
     ui.painter()
         .rect_filled(rect, CornerRadius::same(10), track);
     let x = rect.left() + 10.0 + t * (rect.width() - 20.0);
@@ -200,45 +291,64 @@ fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     response
 }
 
-/// A row of choices; the chosen one is lit. Returns the one clicked.
+/// A row of choices, each as wide as its name; the chosen one is lit. Returns the one
+/// clicked.
 fn segmented<T: Copy + PartialEq>(
     ui: &mut Ui,
     id: &str,
     current: T,
     choices: &[(&str, T)],
 ) -> Option<T> {
+    if choices.is_empty() {
+        return None;
+    }
+    let look = Look::of(ui);
     let p = theme::of(ui);
-    let mut picked = None;
-    let width = 56.0;
-    let (rect, _) = ui.allocate_exact_size(
-        vec2(width * choices.len() as f32 + 4.0, 26.0),
-        Sense::hover(),
-    );
+    let font = FontId::proportional(12.5);
+    let widths: Vec<f32> = choices
+        .iter()
+        .map(|(label, _)| {
+            let w = ui
+                .painter()
+                .layout_no_wrap((*label).to_owned(), font.clone(), look.text)
+                .size()
+                .x;
+            (w + 22.0).max(50.0)
+        })
+        .collect();
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(widths.iter().sum::<f32>() + 4.0, 24.0), Sense::hover());
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(8), p.well);
-    let index = choices.iter().position(|(_, v)| *v == current).unwrap_or(0) as f32;
-    let x = anim::spring(
+        .rect_filled(rect, CornerRadius::same(7), look.track);
+    let mut lefts = Vec::with_capacity(widths.len());
+    let mut x = 2.0;
+    for w in &widths {
+        lefts.push(x);
+        x += w;
+    }
+    let index = choices.iter().position(|(_, v)| *v == current).unwrap_or(0);
+    let lx = anim::spring(
         ui.ctx(),
-        Id::new((id, "lit")),
-        index * width,
+        Id::new((id, "lit-x")),
+        lefts[index],
         Spring::SMOOTH,
     );
-    let lit = Rect::from_min_size(
-        pos2(rect.left() + 2.0 + x, rect.top() + 2.0),
-        vec2(width, 22.0),
+    let lw = anim::spring(
+        ui.ctx(),
+        Id::new((id, "lit-w")),
+        widths[index],
+        Spring::SMOOTH,
     );
-    let fill = if p.dark {
-        Color32::from_gray(78)
-    } else {
-        Color32::WHITE
-    };
+    let lit = Rect::from_min_size(pos2(rect.left() + lx, rect.top() + 2.0), vec2(lw, 20.0));
     ui.painter()
-        .add(crate::chrome::card_shadow(&p, 4).as_shape(lit, CornerRadius::same(6)));
-    ui.painter().rect_filled(lit, CornerRadius::same(6), fill);
+        .add(crate::chrome::card_shadow(&p, 3).as_shape(lit, CornerRadius::same(5)));
+    ui.painter()
+        .rect_filled(lit, CornerRadius::same(5), look.segment);
+    let mut picked = None;
     for (i, (label, value)) in choices.iter().enumerate() {
         let r = Rect::from_min_size(
-            pos2(rect.left() + 2.0 + i as f32 * width, rect.top() + 2.0),
-            vec2(width, 22.0),
+            pos2(rect.left() + lefts[i], rect.top() + 2.0),
+            vec2(widths[i], 20.0),
         );
         let response = ui.interact(r, Id::new((id, i)), Sense::click());
         response.widget_info(|| {
@@ -248,8 +358,8 @@ fn segmented<T: Copy + PartialEq>(
             r.center(),
             Align2::CENTER_CENTER,
             *label,
-            egui::FontId::proportional(12.5),
-            p.text,
+            font.clone(),
+            look.text,
         );
         if response.clicked() {
             picked = Some(*value);
@@ -258,71 +368,241 @@ fn segmented<T: Copy + PartialEq>(
     picked
 }
 
-/// A labelled row in a settings group: the label (and a note under it) left, `control` right.
-fn setting(ui: &mut Ui, label: &str, note: &str, control: impl FnOnce(&mut Ui)) {
-    let p = theme::of(ui);
-    ui.horizontal(|ui| {
-        ui.set_min_height(if note.is_empty() { 34.0 } else { 46.0 });
-        ui.vertical(|ui| {
-            ui.add_space(4.0);
-            ui.label(RichText::new(label).size(13.0));
-            if !note.is_empty() {
-                ui.label(RichText::new(note).size(11.5).color(p.text_faint));
-            }
-        });
-        ui.with_layout(Layout::right_to_left(Align::Center), control);
-    });
-}
-
-/// A rounded group of settings rows.
-fn group(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
-    let p = theme::of(ui);
-    if !title.is_empty() {
-        ui.label(
-            RichText::new(title)
-                .font(theme::semibold(12.0))
-                .color(p.text_faint),
-        );
-        ui.add_space(2.0);
-    }
-    egui::Frame::new()
-        .fill(p.well)
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(Margin::symmetric(14, 6))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            body(ui);
-        });
-    ui.add_space(14.0);
-}
-
-/// The right-hand column: a large icon, a title and what the tab is for.
-fn explain(ui: &mut Ui, icon: Icon, title: &str, text: &str) {
-    let p = theme::of(ui);
-    ui.add_space(8.0);
-    let (r, _) = ui.allocate_exact_size(vec2(72.0, 72.0), Sense::hover());
-    let tile = Rect::from_center_size(r.center(), vec2(64.0, 64.0));
-    ui.painter()
-        .add(crate::chrome::card_shadow(&p, 12).as_shape(tile, CornerRadius::same(16)));
-    ui.painter()
-        .rect_filled(tile, CornerRadius::same(16), theme::MENU_HIGHLIGHT);
-    ui.painter().rect_stroke(
-        tile.shrink(3.0),
-        CornerRadius::same(13),
-        Stroke::new(1.5, Color32::from_white_alpha(70)),
-        egui::StrokeKind::Inside,
+/// A grey rounded button, as Arc's "Reset All Shortcuts".
+fn pill(ui: &mut Ui, text: &str, enabled: bool) -> Response {
+    let look = Look::of(ui);
+    let galley =
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), FontId::proportional(13.0), look.text);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x + 28.0, 26.0), sense);
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
+    let lift = if enabled && response.hovered() {
+        0.08
+    } else {
+        0.0
+    };
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius::same(6),
+        look.button.lerp_to_gamma(look.text, lift),
     );
-    icons::paint(ui.painter(), icon, tile.shrink(17.0), Color32::WHITE);
-    ui.add_space(14.0);
-    ui.label(RichText::new(title).font(theme::semibold(17.0)));
-    ui.add_space(4.0);
-    ui.label(RichText::new(text).size(13.0).color(p.text_dim));
+    let ink = if enabled { look.text } else { look.dim };
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, ink);
+    response
 }
 
-/// The body split as Arc's settings: a wide list on the left, a narrower explanation right.
+/// Whether the next list row starts its section, and from now on it does not.
+fn first_row(ui: &Ui) -> bool {
+    ui.ctx().data_mut(|d| {
+        let id = Id::new(FIRST_ROW);
+        let first = d.get_temp::<bool>(id).unwrap_or(true);
+        d.insert_temp(id, false);
+        first
+    })
+}
+
+/// The line between list rows, from the text's start to near the list's edge.
+fn row_line(ui: &Ui, rect: Rect) {
+    if !first_row(ui) {
+        let look = Look::of(ui);
+        ui.painter().hline(
+            rect.left() + INSET..=rect.right() - 16.0,
+            rect.top(),
+            Stroke::new(1.0, look.row_line),
+        );
+    }
+}
+
+/// A section's title in a list ("Look", "Default Shortcuts").
+fn section(ui: &mut Ui, title: &str) {
+    let look = Look::of(ui);
+    // More room above a section that follows rows, as Arc's.
+    let at_top = ui.next_widget_position().y <= ui.max_rect().top() + 1.0;
+    let height = if at_top { 36.0 } else { 50.0 };
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, title));
+    ui.painter().text(
+        pos2(rect.left() + 16.0, rect.bottom() - 8.0),
+        Align2::LEFT_BOTTOM,
+        title,
+        theme::semibold(12.0),
+        look.section,
+    );
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(Id::new(FIRST_ROW), true));
+}
+
+/// A list row: the label (and a note under it) left, `control` right and centred. The text
+/// wraps short of the control, whose width is remembered from the last frame (a change
+/// redraws the frame), so the two never overlap.
+fn setting(ui: &mut Ui, label: &str, note: &str, control: impl FnOnce(&mut Ui)) {
+    let look = Look::of(ui);
+    let width = ui.available_width();
+    let remembered = Id::new(("settings-control-width", label));
+    let control_w = ui
+        .ctx()
+        .data(|d| d.get_temp::<f32>(remembered))
+        .unwrap_or(0.0);
+    let wrap = (width - 2.0 * INSET - control_w - 16.0).max(80.0);
+    let title = ui.painter().layout(
+        label.to_owned(),
+        FontId::proportional(13.0),
+        look.text,
+        wrap,
+    );
+    let note = (!note.is_empty()).then(|| {
+        ui.painter()
+            .layout(note.to_owned(), FontId::proportional(11.5), look.dim, wrap)
+    });
+    let text = vec2(
+        note.as_ref()
+            .map_or(title.size().x, |n| title.size().x.max(n.size().x)),
+        title.size().y + note.as_ref().map_or(0.0, |n| 2.0 + n.size().y),
+    );
+    let (rect, _) = ui.allocate_exact_size(vec2(width, (text.y + 20.0).max(48.0)), Sense::hover());
+    row_line(ui, rect);
+    let at = pos2(rect.left() + INSET, rect.center().y - text.y / 2.0);
+    let spoken = if note.is_some() {
+        format!("{label}. {}", note.as_ref().map_or("", |n| n.text()))
+    } else {
+        label.to_owned()
+    };
+    ui.interact(
+        Rect::from_min_size(at, text),
+        Id::new(("settings-text", label)),
+        Sense::hover(),
+    )
+    .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &spoken));
+    let title_h = title.size().y;
+    ui.painter().galley(at, title, look.text);
+    if let Some(note) = note {
+        ui.painter()
+            .galley(at + vec2(0.0, title_h + 2.0), note, look.dim);
+    }
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .max_rect(Rect::from_min_max(
+                rect.min,
+                pos2(rect.right() - INSET, rect.bottom()),
+            ))
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    control(&mut child);
+    let used = child.min_rect().width();
+    if (used - control_w).abs() > 0.5 {
+        ui.ctx().data_mut(|d| d.insert_temp(remembered, used));
+        ui.ctx().request_discard("a settings control changed width");
+    }
+}
+
+/// The list's thin rounded outline around `ui`; returns the space inside it.
+fn outline(ui: &Ui) -> Rect {
+    let look = Look::of(ui);
+    let rect = ui.max_rect();
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(8),
+        Stroke::new(1.0, look.edge),
+        StrokeKind::Inside,
+    );
+    rect.shrink(1.0)
+}
+
+/// A list as Arc's settings draw it: outlined, scrolling, rows touching.
+fn list(ui: &mut Ui, id: &str, body: impl FnOnce(&mut Ui)) {
+    let inside = outline(ui);
+    let mut inner = ui.new_child(
+        UiBuilder::new()
+            .max_rect(inside)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    inner.spacing_mut().item_spacing.y = 0.0;
+    egui::ScrollArea::vertical()
+        .id_salt(id)
+        .auto_shrink([false, false])
+        .show(&mut inner, |ui| {
+            body(ui);
+            ui.add_space(10.0);
+        });
+}
+
+/// What a tile in the right-hand column shows.
+#[derive(Clone, Copy, Debug)]
+enum Glyph {
+    Icon(Icon),
+    Text(&'static str),
+}
+
+/// A blue keycap tile, as the ones on Arc's settings pages.
+fn tile(painter: &egui::Painter, rect: Rect, glyph: Glyph) {
+    painter.rect_filled(
+        rect,
+        CornerRadius::same(14),
+        Color32::from_rgb(48, 103, 204),
+    );
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(14),
+        Stroke::new(1.0, ACCENT),
+        StrokeKind::Inside,
+    );
+    // The key's top: inset, a little higher than centred, as a key seen from the front.
+    let face = Rect::from_min_max(rect.min + vec2(4.0, 4.0), rect.max - vec2(4.0, 6.0));
+    painter.rect_filled(
+        face,
+        CornerRadius::same(11),
+        Color32::from_rgb(201, 215, 242),
+    );
+    painter.rect_stroke(
+        face,
+        CornerRadius::same(11),
+        Stroke::new(1.0, Color32::from_rgb(239, 243, 251)),
+        StrokeKind::Inside,
+    );
+    match glyph {
+        Glyph::Icon(icon) => icons::paint(painter, icon, face.shrink(13.0), ACCENT),
+        Glyph::Text(text) => {
+            painter.text(
+                face.center(),
+                Align2::CENTER_CENTER,
+                text,
+                theme::semibold(28.0),
+                ACCENT,
+            );
+        }
+    }
+}
+
+/// The right-hand column: blue tiles, a title and what the tab is for.
+fn explain(ui: &mut Ui, glyphs: &[Glyph], title: &str, text: &str) {
+    let look = Look::of(ui);
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::hover());
+    for (i, glyph) in glyphs.iter().enumerate() {
+        let at = Rect::from_min_size(pos2(r.left() + i as f32 * 67.0, r.top()), vec2(64.0, 64.0));
+        tile(ui.painter(), at, *glyph);
+    }
+    ui.add_space(22.0);
+    ui.label(
+        RichText::new(title)
+            .font(theme::semibold(16.0))
+            .color(look.text),
+    );
+    ui.add_space(6.0);
+    ui.label(RichText::new(text).size(13.0).color(look.dim));
+}
+
+/// The body split as Arc's settings: the list left (about three fifths), a narrower
+/// explanation right.
 fn columns(ui: &mut Ui) -> (Ui, Ui) {
     let r = ui.max_rect();
-    let gap = 28.0;
+    let gap = 16.0;
     let left = (r.width() - gap) * 0.62;
     let layout = Layout::top_down(Align::Min);
     let l = ui.new_child(
@@ -342,57 +622,61 @@ fn columns(ui: &mut Ui) -> (Ui, Ui) {
 }
 
 impl App {
+    /// Gives the next key press to the shortcut being recorded. Returns whether it took one.
+    fn record_shortcut(&mut self, ctx: &egui::Context) -> bool {
+        let Some(binding) = self.settings.recording else {
+            return false;
+        };
+        let pressed = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        let Some((key, modifiers)) = pressed else {
+            return false;
+        };
+        ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Key { .. })));
+        let plain = !(modifiers.command || modifiers.ctrl || modifiers.alt || modifiers.mac_cmd);
+        self.settings.notice = None;
+        match key {
+            Key::Escape if plain => {}
+            Key::Backspace | Key::Delete if plain => {
+                self.prefs.keymap.set(binding, None);
+            }
+            _ => {
+                let keys = KeyboardShortcut::new(modifiers, key);
+                if let Some(other) = self.prefs.keymap.set(binding, Some(keys)) {
+                    self.settings.notice = Some(format!(
+                        "{} moved here from “{}”, which now has none.",
+                        ctx.format_shortcut(&keys),
+                        other.label()
+                    ));
+                }
+            }
+        }
+        self.settings.recording = None;
+        true
+    }
+
     /// Draws the settings window while it is open.
     pub(crate) fn settings_window(&mut self, ctx: &egui::Context) {
         if !self.settings.open {
             return;
         }
-        // A shortcut being recorded takes the next key press.
-        let mut recorded = false;
-        if let Some(binding) = self.settings.recording {
-            let pressed = ctx.input(|i| {
-                i.events.iter().find_map(|e| match e {
-                    egui::Event::Key {
-                        key,
-                        pressed: true,
-                        repeat: false,
-                        modifiers,
-                        ..
-                    } => Some((*key, *modifiers)),
-                    _ => None,
-                })
-            });
-            if let Some((key, modifiers)) = pressed {
-                ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Key { .. })));
-                let plain =
-                    !(modifiers.command || modifiers.ctrl || modifiers.alt || modifiers.mac_cmd);
-                self.settings.notice = None;
-                match key {
-                    Key::Escape if plain => {}
-                    Key::Backspace | Key::Delete if plain => {
-                        self.prefs.keymap.set(binding, None);
-                    }
-                    _ => {
-                        let keys = KeyboardShortcut::new(modifiers, key);
-                        if let Some(other) = self.prefs.keymap.set(binding, Some(keys)) {
-                            self.settings.notice = Some(format!(
-                                "{} moved here from “{}”, which now has none.",
-                                ctx.format_shortcut(&keys),
-                                other.label()
-                            ));
-                        }
-                    }
-                }
-                self.settings.recording = None;
-                recorded = true;
-            }
-        }
-        let p = theme::palette(ctx);
+        let recorded = self.record_shortcut(ctx);
+        let look = Look::new(theme::palette(ctx).dark);
         let pop = anim::spring_from(ctx, Id::new("settings-pop"), 1.0, Some(0.0), Spring::BOUNCY);
         let screen = ctx.content_rect();
         let size = vec2(
-            (screen.width() - 32.0).min(700.0),
-            (screen.height() - 48.0).min(560.0),
+            (screen.width() - 32.0).min(680.0),
+            (screen.height() - 40.0).min(640.0),
         );
         let mut close = !recorded
             && self.settings.recording.is_none()
@@ -402,7 +686,7 @@ impl App {
             .fixed_pos(screen.min)
             .show(ctx, |ui| {
                 let response = ui.allocate_rect(screen, Sense::click());
-                let alpha = (if p.dark { 90.0 } else { 36.0 } * pop.clamp(0.0, 1.0)) as u8;
+                let alpha = (if look.dark { 90.0 } else { 36.0 } * pop.clamp(0.0, 1.0)) as u8;
                 ui.painter()
                     .rect_filled(screen, 0.0, Color32::from_black_alpha(alpha));
                 close |= response.clicked() && !self.settings.fresh;
@@ -414,21 +698,23 @@ impl App {
             .show(ctx, |ui| {
                 ui.multiply_opacity(pop.clamp(0.0, 1.0));
                 egui::Frame::new()
-                    .fill(ui.visuals().window_fill)
-                    .corner_radius(CornerRadius::same(14))
-                    .stroke(Stroke::new(1.0, p.card_stroke))
+                    .fill(look.body)
+                    .corner_radius(CornerRadius::same(RADIUS))
                     .shadow(egui::Shadow {
                         offset: [0, 18],
                         blur: 48,
                         spread: 0,
-                        color: Color32::from_black_alpha(if p.dark { 150 } else { 50 }),
+                        color: Color32::from_black_alpha(if look.dark { 150 } else { 50 }),
                     })
                     .show(ui, |ui| {
                         let (frame, _) = ui.allocate_exact_size(size, Sense::hover());
                         close |= self.settings_header(ui, frame);
-                        let body =
-                            Rect::from_min_max(pos2(frame.left(), frame.top() + HEADER), frame.max)
-                                .shrink2(vec2(26.0, 18.0));
+                        // Arc keeps the page's content in a centred column.
+                        let margin = ((frame.width() - 560.0) / 2.0).clamp(16.0, 60.0);
+                        let body = Rect::from_min_max(
+                            pos2(frame.left() + margin, frame.top() + TOOLBAR + 26.0),
+                            pos2(frame.right() - margin, frame.bottom() - 26.0),
+                        );
                         let mut content = ui.new_child(
                             UiBuilder::new()
                                 .max_rect(body)
@@ -441,6 +727,17 @@ impl App {
                             Tab::Agents => self.agents_tab(&mut content),
                             Tab::About => about_tab(&mut content),
                         }
+                        let rim = if look.dark {
+                            Color32::from_black_alpha(170)
+                        } else {
+                            Color32::from_black_alpha(40)
+                        };
+                        ui.painter().rect_stroke(
+                            frame,
+                            CornerRadius::same(RADIUS),
+                            Stroke::new(1.0, rim),
+                            StrokeKind::Outside,
+                        );
                     });
             });
         let layer = area.response.layer_id;
@@ -457,73 +754,103 @@ impl App {
         }
     }
 
-    /// The title, the close button and the tabs, sized to their names as Arc's. Returns
-    /// whether the close button was clicked.
+    /// The toolbar: the window buttons, the tab's name as the title, and the tabs (an icon
+    /// above each name, each as wide as its name) as Arc's. Returns whether close was
+    /// clicked.
     fn settings_header(&mut self, ui: &mut Ui, frame: Rect) -> bool {
-        let p = theme::of(ui);
+        let look = Look::of(ui);
         let tab = self.settings.tab;
+        let bar = Rect::from_min_max(frame.min, pos2(frame.right(), frame.top() + TOOLBAR));
+        ui.painter().rect_filled(
+            bar,
+            CornerRadius {
+                nw: RADIUS,
+                ne: RADIUS,
+                sw: 0,
+                se: 0,
+            },
+            look.toolbar,
+        );
+        ui.painter().hline(
+            frame.x_range(),
+            bar.bottom() - 0.5,
+            Stroke::new(1.0, look.toolbar_line),
+        );
         ui.painter().text(
-            pos2(frame.center().x, frame.top() + 20.0),
+            pos2(frame.center().x, frame.top() + 14.0),
             Align2::CENTER_CENTER,
             tab.label(),
             theme::semibold(13.0),
-            p.text,
+            look.title,
         );
-        let close_at = Rect::from_center_size(
-            pos2(frame.left() + 20.0, frame.top() + 20.0),
-            vec2(12.0, 12.0),
-        );
+        // The window buttons: close works; the other two are greyed, as macOS shows what a
+        // window cannot do.
+        let y = frame.top() + 14.0;
+        let close_at = pos2(frame.left() + 16.0, y);
         let close = ui.interact(
-            close_at.expand(5.0),
+            Rect::from_center_size(close_at, vec2(22.0, 22.0)),
             Id::new("settings-close"),
             Sense::click(),
         );
         close.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Close settings"));
         ui.painter()
-            .circle_filled(close_at.center(), 6.0, Color32::from_rgb(255, 95, 87));
+            .circle_filled(close_at, 6.5, Color32::from_rgb(255, 95, 87));
         if close.hovered() {
             icons::paint(
                 ui.painter(),
                 Icon::Close,
-                close_at.shrink(2.5),
+                Rect::from_center_size(close_at, vec2(8.0, 8.0)),
                 Color32::from_rgb(110, 20, 15),
             );
         }
-        // Each tab as wide as its name, like a macOS toolbar.
-        let font = egui::FontId::proportional(11.5);
+        for x in [39.0, 62.0] {
+            ui.painter()
+                .circle_filled(pos2(frame.left() + x, y), 6.5, look.lit);
+        }
+        // Each tab as wide as its name, touching, centred.
+        let font = FontId::proportional(12.5);
         let widths: Vec<f32> = Tab::ALL
             .iter()
             .map(|t| {
                 let w = ui
                     .painter()
-                    .layout_no_wrap(t.label().to_owned(), font.clone(), p.text)
+                    .layout_no_wrap(t.label().to_owned(), font.clone(), look.text)
                     .size()
                     .x;
-                (w + 22.0).max(58.0)
+                (w + 14.0).max(56.0)
             })
             .collect();
-        let total: f32 = widths.iter().sum::<f32>() + 4.0 * (widths.len() - 1) as f32;
+        let total: f32 = widths.iter().sum();
         let mut x = frame.center().x - total / 2.0;
-        let top = frame.top() + 38.0;
+        let top = frame.top() + 29.0;
         let mut rects = Vec::new();
         for w in &widths {
-            rects.push(Rect::from_min_size(pos2(x, top), vec2(*w, 46.0)));
-            x += w + 4.0;
+            rects.push(Rect::from_min_size(pos2(x, top), vec2(*w, 48.0)));
+            x += w;
         }
         let index = Tab::ALL.iter().position(|t| *t == tab).unwrap_or(0);
         let lit = rects[index];
         let ctx = ui.ctx().clone();
-        let lx = anim::spring(&ctx, Id::new("settings-tab-x"), lit.left(), Spring::SMOOTH);
+        let lx = anim::spring(
+            &ctx,
+            Id::new("settings-tab-x"),
+            lit.left() - frame.left(),
+            Spring::SMOOTH,
+        );
         let lw = anim::spring(&ctx, Id::new("settings-tab-w"), lit.width(), Spring::SMOOTH);
-        let fill = if p.dark {
-            Color32::from_white_alpha(20)
+        let lit = Rect::from_min_size(pos2(frame.left() + lx, lit.top()), vec2(lw, lit.height()));
+        ui.painter()
+            .rect_filled(lit, CornerRadius::same(7), look.lit);
+        let rim = if look.dark {
+            Color32::from_white_alpha(10)
         } else {
-            Color32::from_black_alpha(12)
+            Color32::from_black_alpha(14)
         };
-        ui.painter().rect_filled(
-            Rect::from_min_size(pos2(lx, lit.top()), vec2(lw, lit.height())),
-            CornerRadius::same(8),
-            fill,
+        ui.painter().rect_stroke(
+            lit,
+            CornerRadius::same(7),
+            Stroke::new(1.0, rim),
+            StrokeKind::Inside,
         );
         for (i, (t, r)) in Tab::ALL.into_iter().zip(rects).enumerate() {
             let response = ui.interact(r, Id::new(("settings-tab", i)), Sense::click());
@@ -531,18 +858,18 @@ impl App {
             response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, on, t.label()));
             let (hover, _) = icons::feedback(ui, &response);
             let color = if on {
-                theme::MENU_HIGHLIGHT.lerp_to_gamma(Color32::WHITE, if p.dark { 0.25 } else { 0.0 })
+                ACCENT
             } else {
-                p.text_dim.lerp_to_gamma(p.text, hover)
+                look.section.lerp_to_gamma(look.text, hover)
             };
             icons::paint(
                 ui.painter(),
                 t.icon(),
-                Rect::from_center_size(pos2(r.center().x, r.top() + 16.0), vec2(18.0, 18.0)),
+                Rect::from_center_size(pos2(r.center().x, r.top() + 17.0), vec2(21.0, 21.0)),
                 color,
             );
             ui.painter().text(
-                pos2(r.center().x, r.bottom() - 10.0),
+                pos2(r.center().x, r.top() + 37.0),
                 Align2::CENTER_CENTER,
                 t.label(),
                 font.clone(),
@@ -553,19 +880,14 @@ impl App {
                 self.settings.recording = None;
             }
         }
-        ui.painter().hline(
-            frame.x_range(),
-            frame.top() + HEADER - 4.0,
-            Stroke::new(1.0, p.separator),
-        );
         close.clicked()
     }
 
     fn general_tab(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
-        let (mut ui, mut right) = columns(ui);
-        let ui = &mut ui;
-        group(ui, "Look", |ui| {
+        let (mut left, mut right) = columns(ui);
+        list(&mut left, "general", |ui| {
+            section(ui, "Look");
             let mut picked = None;
             setting(ui, "Appearance", "", |ui| {
                 picked = segmented(
@@ -597,8 +919,7 @@ impl App {
                     switch(ui, &mut self.prefs.translucent, "Translucent sidebar");
                 },
             );
-        });
-        group(ui, "Window", |ui| {
+            section(ui, "Window");
             setting(ui, "Show the sidebar", "", |ui| {
                 switch(ui, &mut self.show_left, "Show the sidebar");
             });
@@ -608,40 +929,38 @@ impl App {
         });
         explain(
             &mut right,
-            Icon::Gear,
+            &[Glyph::Icon(Icon::Gear)],
             "General",
-            "How figstudio looks. The appearance can follow the system or stay light or dark; \
-             each space keeps its own colour (right-click its dot).",
+            "How figstudio looks. The appearance can follow the system or stay light or \
+             dark; each space keeps its own colour (right-click its dot).",
         );
     }
 
     fn canvas_tab(&mut self, ui: &mut Ui) {
-        let (mut ui, mut right) = columns(ui);
-        let ui = &mut ui;
-        #[cfg(not(target_arch = "wasm32"))]
-        group(ui, "Drawing", |ui| {
-            let note = format!(
-                "Now: {}. Applies the next time figstudio opens",
-                self.renderer
-            );
-            let mut picked = None;
-            setting(ui, "Renderer", &note, |ui| {
-                picked = segmented(
-                    ui,
-                    "renderer",
-                    self.prefs.renderer,
-                    &[
-                        ("Auto", Renderer::Automatic),
-                        ("GPU", Renderer::Gpu),
-                        ("CPU", Renderer::Cpu),
-                    ],
-                );
-            });
-            if let Some(r) = picked {
-                self.prefs.renderer = r;
+        let (mut left, mut right) = columns(ui);
+        list(&mut left, "canvas", |ui| {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                section(ui, "Drawing");
+                let note = format!("Now {}. Applies at the next start", self.renderer);
+                let mut picked = None;
+                setting(ui, "Renderer", &note, |ui| {
+                    picked = segmented(
+                        ui,
+                        "renderer",
+                        self.prefs.renderer,
+                        &[
+                            ("Auto", Renderer::Automatic),
+                            ("GPU", Renderer::Gpu),
+                            ("CPU", Renderer::Cpu),
+                        ],
+                    );
+                });
+                if let Some(r) = picked {
+                    self.prefs.renderer = r;
+                }
             }
-        });
-        group(ui, "On the canvas", |ui| {
+            section(ui, "On the canvas");
             setting(ui, "Frame names", "Above top-level frames", |ui| {
                 switch(ui, &mut self.prefs.frame_labels, "Frame names");
             });
@@ -665,7 +984,7 @@ impl App {
         });
         explain(
             &mut right,
-            Icon::Frame,
+            &[Glyph::Icon(Icon::Frame)],
             "Canvas",
             "How pages are drawn and moved around. The GPU draws faster; the CPU draws \
              everything figstudio supports and is used when the GPU cannot.",
@@ -674,17 +993,70 @@ impl App {
 
     /// Agent access (MCP), as the View menu's Agent access used to show it.
     fn agents_tab(&mut self, ui: &mut Ui) {
-        let (mut ui, mut right) = columns(ui);
-        group(&mut ui, "Agent access", |ui| {
-            ui.add_space(4.0);
-            self.mcp.menu(ui);
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| self.mcp.status(ui));
-            ui.add_space(4.0);
+        let (mut left, mut right) = columns(ui);
+        list(&mut left, "agents", |ui| {
+            section(ui, "MCP Server");
+            if let Some(access) = self.mcp.access() {
+                let on = *access.on;
+                setting(
+                    ui,
+                    "Agent access",
+                    "An MCP server for the open files. Off at every launch",
+                    |ui| {
+                        switch(ui, access.on, "Agent access");
+                    },
+                );
+                setting(
+                    ui,
+                    "Allow remote agents",
+                    "Listen on the address below, not only on this computer. Plain HTTP: \
+                     use Tailscale or an SSH tunnel",
+                    |ui| {
+                        ui.add_enabled_ui(!on, |ui| {
+                            switch(ui, access.remote, "Allow remote agents");
+                        });
+                    },
+                );
+                if *access.remote {
+                    setting(ui, "Address", "This computer's address and port", |ui| {
+                        ui.add_enabled_ui(!on, |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(access.remote_addr)
+                                    .hint_text("100.x.y.z:3845")
+                                    .desired_width(130.0),
+                            );
+                        });
+                    });
+                }
+                if let Some((address, token)) = access.endpoint {
+                    setting(ui, "Connect to", &address, |ui| {
+                        if let Some(token) = token
+                            && pill(ui, "Copy token", true)
+                                .on_hover_text("Send it as 'Authorization: Bearer <token>'.")
+                                .clicked()
+                        {
+                            ui.ctx().copy_text(token);
+                        }
+                    });
+                }
+            } else {
+                egui::Frame::new()
+                    .inner_margin(Margin {
+                        left: INSET as i8,
+                        right: INSET as i8,
+                        top: 6,
+                        bottom: 6,
+                    })
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 8.0;
+                        self.mcp.menu(ui);
+                        ui.horizontal_wrapped(|ui| self.mcp.status(ui));
+                    });
+            }
         });
         explain(
             &mut right,
-            Icon::Sparkle,
+            &[Glyph::Icon(Icon::Sparkle)],
             "Agents",
             "Let AI agents (Claude, Cursor, Codex…) read the files open here through MCP, \
              offline. Off at every launch; your MCP client connects to the address shown \
@@ -695,64 +1067,93 @@ impl App {
     /// The Shortcuts tab: the list (searchable by name or keys; a click on a shortcut records
     /// new keys) left, what it is and Reset All right.
     fn shortcuts_tab(&mut self, ui: &mut Ui) {
-        let (mut ui, mut right) = columns(ui);
-        let p = theme::of(&ui);
-        egui::Frame::new()
-            .fill(p.well)
-            .corner_radius(CornerRadius::same(10))
-            .show(&mut ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.set_min_height(ui.available_height());
-                egui::Frame::new()
-                    .inner_margin(Margin::symmetric(12, 8))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let (r, _) = ui.allocate_exact_size(vec2(14.0, 20.0), Sense::hover());
-                            icons::paint(
-                                ui.painter(),
-                                Icon::Search,
-                                Rect::from_center_size(r.center(), vec2(13.0, 13.0)),
-                                p.text_faint,
-                            );
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.settings.filter)
-                                    .hint_text("Type a feature name or shortcut")
-                                    .frame(egui::Frame::NONE)
-                                    .desired_width(f32::INFINITY),
-                            );
-                        });
-                    });
-                ui.painter().hline(
-                    ui.max_rect().x_range(),
-                    ui.cursor().top(),
-                    Stroke::new(1.0, p.separator),
-                );
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        egui::Frame::new()
-                            .inner_margin(Margin::symmetric(14, 6))
-                            .show(ui, |ui| {
-                                self.shortcut_list(ui);
-                            });
-                    });
+        let (mut left, mut right) = columns(ui);
+        let look = Look::of(&left);
+        let inside = outline(&left);
+        let band = Rect::from_min_size(inside.min, vec2(inside.width(), 40.0));
+        left.painter().rect_filled(
+            band,
+            CornerRadius {
+                nw: 7,
+                ne: 7,
+                sw: 0,
+                se: 0,
+            },
+            look.search,
+        );
+        left.painter().hline(
+            band.x_range(),
+            band.bottom() - 0.5,
+            Stroke::new(1.0, look.search_line),
+        );
+        icons::paint(
+            left.painter(),
+            Icon::Search,
+            Rect::from_center_size(pos2(band.left() + 18.0, band.center().y), vec2(14.0, 14.0)),
+            look.section,
+        );
+        let mut search = left.new_child(
+            UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    pos2(band.left() + 34.0, band.top()),
+                    pos2(band.right() - 12.0, band.bottom() - 1.0),
+                ))
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        search.add(
+            egui::TextEdit::singleline(&mut self.settings.filter)
+                .hint_text(RichText::new("Type a feature name or shortcut").color(look.section))
+                .font(FontId::proportional(13.5))
+                .text_color(look.text)
+                .frame(egui::Frame::NONE)
+                .desired_width(f32::INFINITY),
+        );
+        let mut rows = left.new_child(
+            UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    pos2(inside.left(), band.bottom()),
+                    inside.max,
+                ))
+                .layout(Layout::top_down(Align::Min)),
+        );
+        rows.spacing_mut().item_spacing.y = 0.0;
+        egui::ScrollArea::vertical()
+            .id_salt("shortcuts")
+            .auto_shrink([false, false])
+            .show(&mut rows, |ui| {
+                self.shortcut_list(ui);
+                ui.add_space(10.0);
             });
         explain(
             &mut right,
-            Icon::Keyboard,
-            "Custom shortcuts",
+            &[Glyph::Text("⌘"), Glyph::Icon(Icon::Keyboard)],
+            "Custom Shortcuts",
             "Click a shortcut, then press the keys you want. Backspace removes it, Escape \
              keeps it. Keys another shortcut had move to this one.",
         );
         if let Some(notice) = &self.settings.notice {
-            right.add_space(8.0);
-            right.label(RichText::new(notice).size(12.0).color(p.warning));
+            right.add_space(10.0);
+            right.label(
+                RichText::new(notice)
+                    .size(12.5)
+                    .color(theme::of(&right).warning),
+            );
         }
-        right.add_space(14.0);
-        let any = self.prefs.keymap.any_changed();
-        if right
-            .add_enabled(any, egui::Button::new("Reset All Shortcuts"))
-            .clicked()
+        let column = right.max_rect();
+        let mut foot = right.new_child(
+            UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    pos2(column.left(), column.bottom() - 26.0),
+                    column.max,
+                ))
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        if pill(
+            &mut foot,
+            "Reset All Shortcuts",
+            self.prefs.keymap.any_changed(),
+        )
+        .clicked()
         {
             self.prefs.keymap.reset_all();
             self.settings.notice = None;
@@ -760,7 +1161,7 @@ impl App {
     }
 
     fn shortcut_list(&mut self, ui: &mut Ui) {
-        let p = theme::of(ui);
+        let look = Look::of(ui);
         let ctx = ui.ctx().clone();
         let query = self.settings.filter.trim().to_lowercase();
         let keys_of = |b: Binding, map: &crate::keymap::Keymap| {
@@ -798,32 +1199,30 @@ impl App {
             if rows.is_empty() {
                 continue;
             }
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(title)
-                    .font(theme::semibold(12.0))
-                    .color(p.text_dim),
-            );
-            for (i, binding) in rows.into_iter().enumerate() {
-                if i > 0 {
-                    let y = ui.cursor().top();
-                    ui.painter()
-                        .hline(ui.max_rect().x_range(), y, Stroke::new(1.0, p.separator));
-                }
-                let (rect, response) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
-                response
-                    .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, binding.label()));
-                ui.painter().text(
-                    pos2(rect.left(), rect.center().y),
-                    Align2::LEFT_CENTER,
-                    binding.label(),
-                    egui::FontId::proportional(13.0),
-                    p.text,
-                );
+            section(ui, title);
+            for binding in rows {
+                let (rect, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
+                row_line(ui, rect);
                 let recording = self.settings.recording == Some(binding);
                 let keys = keys_of(binding, &self.prefs.keymap);
-                let cap = keycap(ui, &keys, rect.right(), rect.center().y, recording);
+                let cap = keycap(ui, &keys, rect.right() - INSET, rect.center().y, recording);
+                // The name wraps short of the keycap and its reset button.
+                let room = (cap.left() - 36.0 - rect.left() - INSET).max(60.0);
+                let galley = ui.painter().layout(
+                    binding.label().to_owned(),
+                    FontId::proportional(13.0),
+                    look.text,
+                    room,
+                );
+                let at = pos2(rect.left() + INSET, rect.center().y - galley.size().y / 2.0);
+                ui.interact(
+                    Rect::from_min_size(at, galley.size()),
+                    Id::new(("shortcut-name", binding)),
+                    Sense::hover(),
+                )
+                .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, binding.label()));
+                ui.painter().galley(at, galley, look.text);
                 let hit = ui.interact(cap, Id::new(("shortcut", binding)), Sense::click());
                 let label = format!("{} shortcut", binding.label());
                 hit.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
@@ -856,36 +1255,18 @@ impl App {
             .filter(|(what, how)| matches(what, how))
             .collect();
         if !fixed.is_empty() {
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new("Pointer and fixed keys")
-                    .font(theme::semibold(12.0))
-                    .color(p.text_dim),
-            );
+            section(ui, "Pointer and Fixed Keys");
             for (what, how) in fixed {
-                let (rect, response) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
-                response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, *what));
-                ui.painter().text(
-                    pos2(rect.left(), rect.center().y),
-                    Align2::LEFT_CENTER,
-                    *what,
-                    egui::FontId::proportional(13.0),
-                    p.text,
-                );
-                ui.painter().text(
-                    pos2(rect.right(), rect.center().y),
-                    Align2::RIGHT_CENTER,
-                    *how,
-                    egui::FontId::proportional(11.5),
-                    p.text_dim,
-                );
+                setting(ui, what, how, |_| {});
                 shown += 1;
             }
         }
         if shown == 0 {
-            ui.add_space(8.0);
-            ui.label(RichText::new("No shortcut matches").color(p.text_dim));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_space(INSET);
+                ui.label(RichText::new("No shortcut matches").color(look.dim));
+            });
         }
         if let Some(binding) = record {
             self.settings.recording = Some(binding);
@@ -900,6 +1281,7 @@ impl App {
 /// The About tab: the mark, the name and version, and what figstudio is.
 fn about_tab(ui: &mut Ui) {
     let p = theme::of(ui);
+    let look = Look::of(ui);
     ui.vertical_centered(|ui| {
         ui.add_space(12.0);
         let (r, _) = ui.allocate_exact_size(vec2(84.0, 84.0), Sense::hover());
@@ -920,19 +1302,23 @@ fn about_tab(ui: &mut Ui) {
             )));
         icons::paint(ui.painter(), Icon::Frame, tile.shrink(22.0), Color32::WHITE);
         ui.add_space(10.0);
-        ui.label(RichText::new(APP_NAME).font(theme::semibold(22.0)));
-        ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(p.text_dim));
+        ui.label(
+            RichText::new(APP_NAME)
+                .font(theme::semibold(22.0))
+                .color(look.text),
+        );
+        ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(look.dim));
         ui.add_space(10.0);
-        ui.label("Opens Figma .fig local copies offline.");
+        ui.label(RichText::new("Opens Figma .fig local copies offline.").color(look.text));
         ui.label(
             RichText::new("Nothing leaves this computer unless you turn on agent access.")
-                .color(p.text_dim),
+                .color(look.dim),
         );
         ui.add_space(16.0);
         ui.label(
             RichText::new("MIT or Apache-2.0 · sample files from fig2sketch (MIT)")
                 .small()
-                .color(p.text_faint),
+                .color(look.dim),
         );
     });
 }

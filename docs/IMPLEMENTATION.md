@@ -391,6 +391,13 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   command bar): a foreground window with Arc's tab row. Agent access (`mcp.menu`, `mcp.status`)
   and About live in it; View → Agent access… and Help → About open those tabs
   (`menu_windows.rs` only shows it now).
+- **Settings look like Arc's** (`settings.rs`). Colours come from `Look`, measured from Arc's
+  dark settings window (warm greys; light mirrors them), not from the app palette. A page is
+  an outlined `list` of `section`s and `setting` rows (label and note left, control right)
+  beside `explain` (blue keycap tiles, a title, a paragraph). `setting` wraps its text short
+  of the control, using the control's width from the last frame (a change discards the
+  frame), so text never runs under a control. Agent access on the desktop is rows too:
+  `McpHost::access` lends its switches; the browser keeps its relay `menu`.
 - **Shortcuts are data** (`keymap.rs`). A new shortcut is a `Binding` (label, group,
   default keys, the `Action` it runs); `App::shortcuts` runs every binding from the keymap
   (most modifiers first, keys without ⌘/Ctrl/Alt only while nothing takes typing), the drawn

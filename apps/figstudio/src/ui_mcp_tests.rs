@@ -1,4 +1,4 @@
-//! Agent access window: entering an address, starting and stopping the hosted server.
+//! Settings → Agents: entering an address, starting and stopping the hosted server.
 use super::*;
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
@@ -44,17 +44,19 @@ fn the_agent_window_types_an_address_and_starts_and_stops_the_server() {
     h.event(egui::Event::Text("127.0.0.1:0".into()));
     h.run_steps(3);
     assert_eq!(h.state().mcp.remote_addr, "127.0.0.1:0");
-    assert!(
-        h.query_by_label("Agent access (MCP server)").is_some(),
-        "editing stays in the window"
-    );
-    h.get_by_label("Agent access (MCP server)").click();
+    let switch = |h: &Harness<'_, App>| {
+        h.query_by_role_and_label(egui::accesskit::Role::CheckBox, "Agent access")
+            .map(|n| n.rect())
+    };
+    assert!(switch(&h).is_some(), "editing stays in the window");
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Agent access")
+        .click();
     h.run_steps(3);
     let addr: SocketAddr = wait_for(&mut h, "server address", |h| {
-        h.query_all_by_label_contains("MCP 127.0.0.1")
+        h.query_all_by_label_contains("Connect to. 127.0.0.1")
             .next()?
             .value()?
-            .strip_prefix("MCP ")?
+            .strip_prefix("Connect to. ")?
             .strip_suffix("/mcp")?
             .parse()
             .ok()
@@ -74,7 +76,8 @@ fn the_agent_window_types_an_address_and_starts_and_stops_the_server() {
         "structure"
     );
     runtime.block_on(client.cancel()).unwrap();
-    h.get_by_label("Agent access (MCP server)").click();
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Agent access")
+        .click();
     h.run_steps(3);
     assert!(!h.state().mcp.on);
     wait_for(&mut h, "port close", |_| {

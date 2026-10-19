@@ -873,3 +873,21 @@ fn a_shortcut_can_be_changed_removed_and_reset_and_the_app_follows_it() {
         Some(Binding::CommandBar.default_keys())
     );
 }
+
+#[test]
+fn a_setting_s_note_stays_clear_of_its_control() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut()
+        .settings
+        .show(Some(crate::settings::Tab::Canvas), &ctx);
+    h.run_steps(3);
+    let note = h.get_by_label_contains("Applies at the next start").rect();
+    for choice in ["Auto", "GPU", "CPU"] {
+        let control = h.get_by_role_and_label(Role::Button, choice).rect();
+        assert!(
+            !note.intersects(control),
+            "{choice} {control:?} drawn over the note {note:?}"
+        );
+    }
+}

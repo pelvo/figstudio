@@ -1,6 +1,11 @@
 //! Agent access controls for cloud execution and the existing opt-in local upload bridge.
 use super::*;
 impl McpHost {
+    /// The browser's controls are its own (`menu`), not the desktop switches.
+    pub fn access(&mut self) -> Option<crate::settings::Access<'_>> {
+        None
+    }
+
     pub fn menu(&mut self, ui: &mut egui::Ui) {
         let previous = self.relay;
         ui.horizontal(|ui| {
