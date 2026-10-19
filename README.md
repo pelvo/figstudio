@@ -4,14 +4,18 @@ Fast, offline-first Figma `.fig` viewer, renderer, version comparator, and Model
 Protocol (MCP) server, written in Rust.
 
 - **No Figma account or cloud upload required:** reads `.fig` archives directly from disk or
-  a browser `File` handle, with lazy image streaming so multi-gigabyte files open in a few
-  hundred milliseconds.
+  a browser `File` handle. Files above 256 MiB (`Document::open_auto`) and browser `File`
+  handles stream image entries lazily (~0.7 s desktop open and ~1.4 s browser open on a
+  1.7 GB file; single-file CLI commands other than `compare` cap eager reads at 1 GiB).
 - **Runs natively and in the browser:** the desktop app (`eframe` + `wgpu`) and the browser
   WebAssembly build share the same parser (`figstudio-fig`), 2D renderer (`figstudio-render`
-  on Vello + Parley), and MCP tool core (`figstudio-mcp-core`).
-- **Built-in AI agent access (MCP):** inspect node trees, design tokens, CSS/Tailwind/SVG
-  hints, and rendered PNG screenshots, compare `.fig` versions, or highlight nodes in the
-  live canvas from Claude Code, Cursor, Codex, or any MCP client.
+  on Vello CPU with optional `vello_gpu` and custom text layout on `fontdb` / `ttf-parser`),
+  and MCP tool core (`figstudio-mcp-core`).
+- **Built-in AI agent access (MCP):** inspect node trees (`get_metadata`), React + Tailwind
+  code hints (`get_design_context`), variables and tokens (`get_variable_defs`), rendered PNG
+  screenshots (`get_screenshot`), and embedded raster images (`download_assets`; offline SVG
+  and PDF export are not available), compare `.fig` versions, or highlight nodes in the live
+  canvas from Claude Code, Cursor, Codex, or any MCP client.
 
 ---
 
@@ -20,12 +24,12 @@ Protocol (MCP) server, written in Rust.
 | Crate / directory | Purpose |
 |---|---|
 | `crates/fig` (`figstudio-fig`) | `.fig` archive reader/writer, Kiwi binary schema decoder, node tree and property model |
-| `crates/render` (`figstudio-render`) | Vello + Parley 2D renderer (fills, strokes, effects, masks, auto-layout, text, vectors, PNG export) |
+| `crates/render` (`figstudio-render`) | Vello CPU (`vello_cpu`) + optional `vello_gpu` 2D renderer with text layout on `fontdb` / `ttf-parser` |
 | `crates/diff` (`figstudio-diff`) | Structural and pixel diff between two `.fig` files (`report.json`, self-contained `report.html`, per-page PNGs) |
 | `crates/mcp-core` (`figstudio-mcp-core`) | Shared MCP tool implementations and schemas used by both the native server and the browser Wasm build |
-| `apps/figstudio` (`figstudio`) | Interactive desktop (`wgpu`) and browser (`wasm32` + WebGPU/CPU tile workers) viewer |
+| `apps/figstudio` (`figstudio`) | Interactive desktop (`wgpu`) and browser (`wasm32` + WebGPU/CPU tile workers) viewer, including the in-process desktop MCP server |
 | `apps/figstudio-cli` (`figstudio-cli`) | Headless CLI for inspecting, rendering, stress-testing, and comparing `.fig` files |
-| `apps/figstudio-mcp` (`figstudio-mcp`) | MCP server (`stdio`, Streamable HTTP `--http`, local browser bridge/proxy, and live desktop connection) |
+| `apps/figstudio-mcp` (`figstudio-mcp`) | Standalone MCP server (`stdio`, Streamable HTTP `--http`, and local browser bridge `--bridge`) |
 | `web/` | Browser shell (`index.html`, `_headers`) and Cloudflare Worker + `McpRoom` Durable Object (`worker.mjs`) |
 
 ---
@@ -40,10 +44,25 @@ cargo run --release -p figstudio -- path/to/design.fig
 
 - Pan and zoom the canvas, switch pages, search layers, inspect properties, and export any
   selection or page to PNG.
-- When `figstudio` is open, it listens on a user-only local socket so `figstudio-mcp` can
-  query the live selection or reveal a node (`reveal_node`) directly in the window.
+- Agent access is off at launch. Enable **View → Agent access (MCP server)** to start the
+  in-process Streamable HTTP MCP server on loopback (`http://127.0.0.1:3845/mcp`, or
+  `3846–3855` if busy) so an MCP client can query open tabs, read the live selection, or
+  reveal a node (`reveal_node`) in the window.
 
 ### 2. Browser app (WebAssembly)
+
+Prerequisites for building `web/dist`:
+- The pinned nightly Rust toolchain with `rust-src` and `wasm32-unknown-unknown`:
+  ```sh
+  rustup toolchain install nightly-2026-10-09 --component rust-src --target wasm32-unknown-unknown
+  ```
+- `wasm-bindgen-cli` at the exact `wasm-bindgen` version in `Cargo.lock` (`0.2.129`):
+  ```sh
+  cargo install --locked wasm-bindgen-cli --version 0.2.129
+  ```
+- Python `fontTools` plus a system Noto Sans CJK collection for subsetting CJK fallback
+  fonts into `web/dist/fonts/` (or set `FIGSTUDIO_ALLOW_MISSING_CJK=1` to skip CJK font
+  subsetting during local development).
 
 Build and serve `web/dist` locally on `http://127.0.0.1:8765` (with the
 `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers required for Wasm
@@ -53,9 +72,9 @@ worker threads):
 ./scripts/web-build.sh --serve
 ```
 
-See [`apps/figstudio-mcp/README.md`](apps/figstudio-mcp/README.md) for deploying `web/dist`
-either as a static site (paired with a local `figstudio-mcp` process) or with the Cloudflare
-Worker + `McpRoom` Durable Object relay (`web/worker.mjs`).
+See [`apps/figstudio-mcp/README.md`](apps/figstudio-mcp/README.md) for connecting an MCP
+client via `--bridge` or deploying `web/dist` with the Cloudflare Worker + `McpRoom` Durable
+Object relay (`web/worker.mjs`).
 
 ### 3. Headless CLI (`figstudio-cli`)
 
@@ -99,13 +118,14 @@ Agent skills for coding assistants are included under [`.agents/skills/`](.agent
 
 ## Development and checks
 
-Run the full formatting, lint, and test gate before opening a pull request:
+Requires Rust **1.94+** (`edition = "2024"`). If your default `rustc` is older, set
+`FIGSTUDIO_TOOLCHAIN` (for example `FIGSTUDIO_TOOLCHAIN=1.99.0`).
 
 ```sh
-# Rust fmt, clippy (-D warnings), and workspace unit/integration tests
+# Format check, clippy (-D warnings), workspace tests, and release build
 ./scripts/check.sh
 
-# Include the wasm32 browser build and clippy checks
+# Also run scripts/web-build.sh and wasm32 clippy
 ./scripts/check.sh --web
 
 # Cloudflare Worker unit tests
@@ -118,9 +138,10 @@ node --test web/worker/*.test.mjs
 
 - Sample `.fig` fixtures under `tests/fixtures/` from `fig2sketch` are MIT-licensed; see
   [`tests/fixtures/LICENSE-fig2sketch`](tests/fixtures/LICENSE-fig2sketch).
-- Bundled fallback fonts in `crates/render/fonts/` include DejaVu Sans and Noto Sans /
-  Source Han Sans subsets under their respective open font licenses (see
-  `scripts/web-font.sh`).
+- Desktop text rendering uses installed system fonts via `fontdb` (`system-fonts`). For the
+  browser build, `scripts/web-font.sh` subsets Noto Sans CJK Regular (SIL Open Font License
+  1.1) at build time into `web/dist/fonts/` (`cjk-{jp,sc,tc,hk,kr}.otf` and
+  `cjk-LICENSE.txt`).
 
 ---
 
