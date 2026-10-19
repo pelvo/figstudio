@@ -24,24 +24,28 @@ step() { printf '\n== %s\n' "$*"; }
 step "toolchain"
 rustc $TC --version
 
+# Lints and tests use the `fast` profile (Cargo.toml): release optimisation, no LTO,
+# incremental. `--release` here would thin-LTO link every test binary (~20 min after a
+# change in crates/fig). The "release build" step below still checks the shipped LTO build.
+
 step "fmt"
 cargo $TC fmt --all -- --check
 
 step "clippy"
-cargo $TC clippy --release --workspace --all-targets -- -D warnings
+cargo $TC clippy --profile fast --workspace --all-targets -- -D warnings
 # The browser build's strip renderer (feature off on desktop).
-cargo $TC clippy --release -p figstudio-render --features parallel --all-targets -- -D warnings
+cargo $TC clippy --profile fast -p figstudio-render --features parallel --all-targets -- -D warnings
 # GPU tile replay (vello_gpu; the app wires it). Its pixel tests skip without a GPU adapter.
-cargo $TC clippy --release -p figstudio-render --features gpu --all-targets -- -D warnings
+cargo $TC clippy --profile fast -p figstudio-render --features gpu --all-targets -- -D warnings
 # The app without agent access (feature `mcp` off), as the browser build compiles it.
-cargo $TC clippy --release -p figstudio --no-default-features --all-targets -- -D warnings
+cargo $TC clippy --profile fast -p figstudio --no-default-features --all-targets -- -D warnings
 
 step "tests"
-cargo $TC test --release --workspace
+cargo $TC test --profile fast --workspace
 # `gpu` includes `parallel`: the replay tests plus the GPU-vs-CPU tile tests.
-cargo $TC test --release -p figstudio-render --features gpu
+cargo $TC test --profile fast -p figstudio-render --features gpu
 # mcp-core as the app and the browser use it: no files, no system fonts.
-cargo $TC test --release -p figstudio-mcp-core --no-default-features
+cargo $TC test --profile fast -p figstudio-mcp-core --no-default-features
 
 step "release build"
 cargo $TC build --release --workspace
