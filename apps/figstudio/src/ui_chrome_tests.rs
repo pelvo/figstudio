@@ -932,10 +932,60 @@ fn control_and_a_digit_go_to_that_space_and_hovering_a_dot_names_it_with_those_k
         .find(|(t, _)| *t == id)
         .expect("a dot");
     h.event(Event::PointerMoved(dot.center()));
-    h.run_steps(2);
+    h.run_steps(4);
     let shown = h.get_by_label_contains(&pill).rect();
     assert!(
         shown.bottom() <= dot.top(),
         "above the dot: {shown:?} over {dot:?}"
     );
+}
+
+#[test]
+fn the_name_pill_waits_for_the_pointer_to_rest_on_a_dot_then_follows_it_along_the_row() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(0.1)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    h.run_steps(3);
+    let dot = |h: &Harness<'_, App>, i: usize| {
+        let id = h.state().tabs[i].id;
+        h.state()
+            .space_dots
+            .iter()
+            .find(|(t, _)| *t == id)
+            .map(|(_, r)| *r)
+            .expect("a dot")
+    };
+    let pill = |h: &Harness<'_, App>, i: usize| {
+        let name = h.state().tabs[i].space_name();
+        h.query_by_label_contains(&format!("{name}, ")).is_some()
+    };
+    let (first, second) = (dot(&h, 0), dot(&h, 1));
+    h.event(Event::PointerMoved(second.center()));
+    h.run_steps(2);
+    assert!(
+        !pill(&h, 1),
+        "not at once: the pointer has to rest on the dot"
+    );
+    h.run_steps(5);
+    assert!(pill(&h, 1), "after a moment it shows");
+    // Moving along the row: the next dot's pill shows at once.
+    h.event(Event::PointerMoved(first.center()));
+    h.run_steps(1);
+    assert!(pill(&h, 0), "the neighbour's shows straight away");
+    assert!(!pill(&h, 1));
+    // Away for a while, then back: the wait starts again.
+    let canvas = h.state().tabs[h.state().active]
+        .canvas_rect
+        .expect("laid out")
+        .center();
+    h.event(Event::PointerMoved(canvas));
+    h.run_steps(10);
+    assert!(!pill(&h, 0) && !pill(&h, 1));
+    h.event(Event::PointerMoved(second.center()));
+    h.run_steps(2);
+    assert!(!pill(&h, 1), "a fresh hover waits again");
 }

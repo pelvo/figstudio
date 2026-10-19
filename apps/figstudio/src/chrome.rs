@@ -179,6 +179,42 @@ fn drained(c: Color32, away: f32) -> Color32 {
         .gamma_multiply(1.0 - 0.45 * away)
 }
 
+/// How long the pointer rests on a dot before its name pill shows, as in Arc (like a
+/// tooltip). Within `PILL_WARM` of one showing, the next dot's shows at once, so running
+/// along the row reads each name without waiting again.
+const PILL_DELAY: f64 = 0.5;
+const PILL_WARM: f64 = 0.4;
+
+/// Whether the pill of the dot `key`, which the pointer is on, is due. Asks for a repaint
+/// for when it will be.
+fn pill_due(ctx: &egui::Context, key: u64) -> bool {
+    let now = ctx.input(|i| i.time);
+    let (rest, shown) = (Id::new("space-pill-rest"), Id::new("space-pill-shown"));
+    let since = ctx.data_mut(|d| {
+        let last = d.get_temp::<f64>(shown).unwrap_or(f64::NEG_INFINITY);
+        match d.get_temp::<(u64, f64)>(rest) {
+            Some((k, since)) if k == key => since,
+            _ => {
+                let since = if now - last <= PILL_WARM {
+                    now - PILL_DELAY
+                } else {
+                    now
+                };
+                d.insert_temp(rest, (key, since));
+                since
+            }
+        }
+    });
+    let waited = now - since;
+    if waited >= PILL_DELAY {
+        ctx.data_mut(|d| d.insert_temp(shown, now));
+        true
+    } else {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(PILL_DELAY - waited));
+        false
+    }
+}
+
 /// Arc's hover card over a space: a dark pill with the space's name and its keys as caps,
 /// above `dot`. A screen reader hears the name and the keys.
 fn space_pill(ctx: &egui::Context, dot: Rect, name: &str, keys: Option<egui::KeyboardShortcut>) {
@@ -897,6 +933,7 @@ impl App {
         let p = theme::of(ui);
         let ctx = ui.ctx().clone();
         self.space_dots.clear();
+        let mut resting = false;
         for (i, tab) in self.tabs.iter().enumerate() {
             let active = i == self.active;
             let (rect, response) = ui.allocate_exact_size(vec2(DOT, DOT), Sense::click());
@@ -925,8 +962,12 @@ impl App {
                 response.scroll_to_me(None);
             }
             if response.hovered() && !response.context_menu_opened() {
-                let keys = crate::keymap::Binding::space(i).and_then(|b| self.prefs.keymap.get(b));
-                space_pill(&ctx, rect, &title, keys);
+                resting = true;
+                if pill_due(&ctx, tab.id) {
+                    let keys =
+                        crate::keymap::Binding::space(i).and_then(|b| self.prefs.keymap.get(b));
+                    space_pill(&ctx, rect, &title, keys);
+                }
             }
             if response.clicked() {
                 clicked.pick = Some(i);
@@ -954,6 +995,9 @@ impl App {
                     clicked.close = Some(i);
                 }
             });
+        }
+        if !resting {
+            ctx.data_mut(|d| d.remove::<(u64, f64)>(Id::new("space-pill-rest")));
         }
         self.dot_in_view = (
             self.tabs.get(self.active).map_or(0, |t| t.id),
