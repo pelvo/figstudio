@@ -641,11 +641,15 @@ impl App {
                     self.active = self.tabs.len() - 1;
                     self.link_loaded(ctx, &path, self.active);
                 }
-                Loaded::Err { path, message } => {
+                Loaded::Err {
+                    path,
+                    real_path,
+                    message,
+                } => {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
                     web::fail_upload(&path);
-                    self.link_failed(&path);
+                    self.link_failed(&path, real_path);
                     self.toast(
                         ctx,
                         format!("Could not open {}: {message}", path.display()),

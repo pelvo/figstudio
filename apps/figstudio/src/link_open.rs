@@ -69,6 +69,9 @@ pub(crate) struct LinkOpen {
     pub search: SearchFn,
     pub search_timeout: Duration,
     waiting: Vec<Waiting>,
+    /// Resolved paths of files that failed to load while searches ran: a copy that is one of
+    /// them is not opened again. Cleared once no search runs.
+    failed: Vec<PathBuf>,
     /// Answers kept until the frame has published the new tabs to the MCP server.
     answers: Vec<Answer>,
 }
@@ -91,6 +94,7 @@ impl Default for LinkOpen {
             search: local_copies,
             search_timeout: SEARCH_TIMEOUT,
             waiting: Vec::new(),
+            failed: Vec::new(),
             answers: Vec::new(),
         }
     }
@@ -176,6 +180,8 @@ pub(crate) enum LinkError {
     LoadFailed,
     /// Listing the link folders took longer than [`SEARCH_TIMEOUT`].
     SearchTimeout,
+    /// The folders answered, but a file the link may name was still loading at the timeout.
+    StillLoading,
 }
 
 impl LinkError {
@@ -220,6 +226,9 @@ impl LinkError {
                  figstudio window for permission to read them"
                     .to_owned()
             }
+            Self::StillLoading => "a file this link may name is still opening in figstudio; \
+                 try again once it has opened"
+                .to_owned(),
             Self::SearchTimeout => "the app's link folders could not be read in time (a slow \
                  or unreachable folder)"
                 .to_owned(),
@@ -313,6 +322,13 @@ pub(crate) fn real_paths(copies: Vec<(PathBuf, Match)>) -> Vec<Copy> {
             (path, real, rank)
         })
         .collect()
+}
+
+/// Whether `path`'s file name is one `hint` matches (no disk access).
+fn names(hint: &FileHint, path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| hint.match_stem(stem).is_some())
 }
 
 /// Make tab `i` active and show `node` there ([`Tab::show_node`]). The answer reads like
@@ -466,10 +482,15 @@ impl App {
         let timeout = self.link.search_timeout;
         let (late, running): (Vec<Search>, Vec<Search>) = std::mem::take(&mut self.link.searches)
             .into_iter()
-            .partition(|s| s.found.is_none() && s.started.elapsed() >= timeout);
+            .partition(|s| s.started.elapsed() >= timeout);
         self.link.searches = running;
         for search in late {
-            self.answer(ctx, search.done, Err(LinkError::SearchTimeout));
+            // Back but held for a load (below), or not back at all.
+            let error = match search.found {
+                Some(_) => LinkError::StillLoading,
+                None => LinkError::SearchTimeout,
+            };
+            self.answer(ctx, search.done, Err(error));
         }
         while let Ok((id, copies)) = self.link.found_rx.try_recv() {
             self.link.listings.retain(|(listing, _)| *listing != id);
@@ -477,26 +498,31 @@ impl App {
                 search.found = Some(copies);
             }
         }
-        // A file still loading may be one of the copies under another spelling; once it is a
-        // tab, its real path tells. The worker wakes the UI when the load ends.
-        if self.loading.iter().next().is_none() {
-            let (ready, waiting): (Vec<Search>, Vec<Search>) =
-                std::mem::take(&mut self.link.searches)
-                    .into_iter()
-                    .partition(|s| s.found.is_some());
-            self.link.searches = waiting;
-            for search in ready {
-                self.finish_search(ctx, search);
-            }
+        // A file still loading whose name the link matches may be one of the copies under
+        // another spelling; once it is a tab, its real path tells. The worker wakes the UI when
+        // the load ends; a load that never ends runs into the timeout above.
+        let loading: Vec<PathBuf> = self.loading.iter().cloned().collect();
+        let (ready, waiting): (Vec<Search>, Vec<Search>) = std::mem::take(&mut self.link.searches)
+            .into_iter()
+            .partition(|s| s.found.is_some() && !loading.iter().any(|p| names(&s.hint, p)));
+        self.link.searches = waiting;
+        for search in ready {
+            self.finish_search(ctx, search);
         }
-        if !self.link.searches.is_empty() {
+        if self.link.searches.is_empty() {
+            self.link.failed.clear();
+        } else {
             // Wake for the timeout even if the thread never reports.
             ctx.request_repaint_after(Duration::from_millis(250));
         }
     }
 
     fn finish_search(&mut self, ctx: &egui::Context, mut search: Search) {
-        let copies = search.found.take().unwrap_or_default();
+        let mut copies = search.found.take().unwrap_or_default();
+        // A copy that just failed to load is not decoded again.
+        let listed = copies.len();
+        copies.retain(|(_, real, _)| !self.link.failed.contains(real));
+        let failed = copies.len() < listed;
         // The tabs open now, not when the search started: one may have opened meanwhile.
         let tabs: Vec<(u64, &Path, &Path)> = self
             .tabs
@@ -520,6 +546,9 @@ impl App {
                 self.link.choice_node = search.node;
                 self.link.text = search.text;
                 self.link.window = true;
+            }
+            Err(LinkError::NotFound { .. }) if failed => {
+                self.answer(ctx, search.done, Err(LinkError::LoadFailed));
             }
             Err(error) => self.answer(ctx, search.done, Err(error)),
         }
@@ -569,7 +598,12 @@ impl App {
     }
 
     /// A file failed to load: the links waiting for it fail with it.
-    pub(crate) fn link_failed(&mut self, path: &Path) {
+    pub(crate) fn link_failed(&mut self, path: &Path, real_path: Option<PathBuf>) {
+        if !self.link.searches.is_empty() {
+            self.link
+                .failed
+                .push(real_path.unwrap_or_else(|| path.to_owned()));
+        }
         for waiting in self.take_waiting(path) {
             // Without `done` the load error is already a toast.
             if let Some(done) = waiting.done {

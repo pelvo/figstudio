@@ -199,6 +199,7 @@ fn public_messages_carry_no_paths_or_file_names() {
         LinkError::NoFile,
         LinkError::Unreadable,
         LinkError::SearchTimeout,
+        LinkError::StillLoading,
     ];
     for error in &errors {
         let text = error.public();
@@ -654,4 +655,79 @@ fn a_node_id_the_file_lacks_still_replaces_the_window_search() {
     assert!(h.state_mut().go_to_link(&ctx, &figma("Slow", "0-1"), None));
     assert!(!h.state_mut().go_to_link(&ctx, "999:1", None));
     assert_eq!(h.state().link.searching(), 0, "the older search still runs");
+}
+
+#[test]
+fn a_file_loading_that_the_link_cannot_name_does_not_hold_it() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = listed_structure;
+    assert!(
+        h.state_mut()
+            .loading
+            .begin(&PathBuf::from("/elsewhere/Other.fig"))
+    );
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("structure", "1-4"), Some(done))
+    );
+    // The copy opens while the unrelated load is still in flight.
+    wait(&mut h, &mut Vec::new(), "the copy to open", |a| {
+        a.tabs.len() == 1
+    });
+    searched(&mut h);
+    h.step();
+    assert!(rx.try_recv().unwrap().unwrap().contains("opened"));
+}
+
+#[test]
+fn a_listing_held_for_a_load_that_never_ends_fails_at_the_timeout() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = listed_structure;
+    h.state_mut().link.search_timeout = std::time::Duration::from_millis(300);
+    assert!(h.state_mut().loading.begin(&fixture("structure.fig")));
+    let (done, rx) = done();
+    let started = std::time::Instant::now();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("structure", "1-4"), Some(done))
+    );
+    searched(&mut h);
+    h.step();
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("still opening"), "{error}");
+    assert!(h.state().tabs.is_empty());
+}
+
+#[test]
+fn a_copy_whose_load_just_failed_is_not_loaded_again() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = listed_structure;
+    let opened = fixture("structure.fig");
+    assert!(h.state_mut().loading.begin(&opened));
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("structure", "1-4"), Some(done))
+    );
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    h.step();
+    // The load fails, as `poll` reports a `Loaded::Err`.
+    let real = std::fs::canonicalize(&opened).unwrap();
+    h.state_mut().loading.finish(&opened);
+    h.state_mut().link_failed(&opened, Some(real));
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("could not be opened"), "{error}");
+    let app = h.state();
+    assert_eq!(
+        app.loading.iter().count(),
+        0,
+        "the failed file was loaded again"
+    );
+    assert!(app.tabs.is_empty());
 }

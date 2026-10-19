@@ -78,6 +78,8 @@ pub enum Loaded {
     },
     Err {
         path: PathBuf,
+        /// As in `Ok`: the resolved path of a file on disk, so a link search can skip it.
+        real_path: Option<PathBuf>,
         message: String,
     },
 }
@@ -511,6 +513,7 @@ impl Workers {
                     }
                 }
                 Err(e) => Loaded::Err {
+                    real_path: on_disk.then(|| std::fs::canonicalize(&path).ok()).flatten(),
                     path,
                     message: e.to_string(),
                 },

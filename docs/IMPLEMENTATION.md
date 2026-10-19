@@ -578,9 +578,11 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   copy's path (`real_paths`), and the loader resolves each tab's (`Tab::real_path`), so
   `plan`, run by `poll_link_searches` each frame against the tabs open then, recognises an
   open copy without I/O, including one opened while the folders were listed. A listing
-  that comes back while any file is loading is held until the loads end (that file is no
-  tab yet, so it could not be told from a copy under another spelling); the timeout only
-  counts until the listing is back. Reading a folder can block (a network drive, or macOS asking to allow reading
+  that comes back while a file whose name the link matches is loading is held until that
+  load ends (the file is no tab yet, so it could not be told from a copy under another
+  spelling); other loads do not hold it. A held listing still fails at the timeout
+  (`StillLoading`). A copy whose load failed meanwhile (the worker sends its resolved path
+  with `Loaded::Err`) is not loaded again; the link then answers `LoadFailed`. Reading a folder can block (a network drive, or macOS asking to allow reading
   `~/Downloads`), and the window keeps drawing meanwhile. `start_search` requests a frame and
   each poll with a search running requests another in 250 ms, so the timeout fires even in
   an idle window. After `SEARCH_TIMEOUT` (20 s) the link fails ("could not be read in time",
@@ -603,7 +605,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   tab, a local copy loaded and answered, an MCP tie, the window and its pick list, a slow
   folder that neither blocks the window nor hangs the call, a replaced window search, a
   blocked listing, the frame a search schedules, a late result, a tab opened during the listing, a node ID or a refused link from the window,
-  closing the window, a listing held while a file loads),
+  closing the window, a listing held while a file loads, an unrelated load, a held listing
+  timing out, a copy whose load failed),
   `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
 ### The browser app (`apps/figstudio` on wasm32)
