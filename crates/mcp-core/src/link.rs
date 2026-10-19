@@ -30,23 +30,44 @@ pub enum FileHint {
     },
 }
 
+/// How strongly a file stem matches a [`FileHint`]; `Key` is the stronger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Match {
+    /// The stem is the link's file key (a figma.com key or a `figstudio://` key).
+    Key,
+    /// The stem is the file name in a figma.com link's slug.
+    Name,
+}
+
 impl FileHint {
-    /// Whether a local file with this stem is the file the link names.
+    /// How a local file with this stem matches the file the link names, if it does.
     ///
-    /// - `figstudio://<key>`: the stem equals the key.
-    /// - figma.com: the stem equals the file key, or with spaces turned into `-` equals the URL
-    ///   slug. A browser's ` (N)` suffix for a repeated download (`name (1)`) is ignored.
-    pub fn matches(&self, stem: &str) -> bool {
+    /// - `figstudio://<key>`: the stem equals the key ([`Match::Key`]).
+    /// - figma.com: the stem equals the file key ([`Match::Key`]), or with spaces turned into
+    ///   `-` equals the URL slug ([`Match::Name`]). The stem as it is is compared first, then
+    ///   without a browser's ` (N)` suffix for a repeated download (`name (1)`).
+    ///
+    /// A name match does not prove it is the same document: two files can share a name.
+    pub fn match_stem(&self, stem: &str) -> Option<Match> {
         match self {
-            Self::Exact(key) => stem == key,
+            Self::Exact(key) => (stem == key).then_some(Match::Key),
             Self::Figma { key, slug } => {
                 let base = without_copy_suffix(stem);
-                base == key
-                    || slug
-                        .as_deref()
-                        .is_some_and(|slug| base.replace(' ', "-") == slug)
+                if stem == key || base == key {
+                    return Some(Match::Key);
+                }
+                let named = |s: &str| {
+                    slug.as_deref()
+                        .is_some_and(|slug| s.replace(' ', "-") == slug)
+                };
+                (named(stem) || named(base)).then_some(Match::Name)
             }
         }
+    }
+
+    /// Whether a local file with this stem matches at all ([`FileHint::match_stem`]).
+    pub fn matches(&self, stem: &str) -> bool {
+        self.match_stem(stem).is_some()
     }
 
     /// The file name to show a person: the URL slug, else the key.
@@ -58,6 +79,20 @@ impl FileHint {
             } => slug,
         }
     }
+}
+
+/// The candidates that match best: all of them when several tie, none when there are none.
+/// The caller asks a person to pick when more than one is left, never guessing by date.
+pub fn best_matches<T>(candidates: impl IntoIterator<Item = (T, Match)>) -> Vec<T> {
+    let candidates: Vec<(T, Match)> = candidates.into_iter().collect();
+    let Some(best) = candidates.iter().map(|(_, rank)| *rank).min() else {
+        return Vec::new();
+    };
+    candidates
+        .into_iter()
+        .filter(|(_, rank)| *rank == best)
+        .map(|(candidate, _)| candidate)
+        .collect()
 }
 
 /// `name (1)` → `name`: the suffix browsers add to a download whose name is taken.

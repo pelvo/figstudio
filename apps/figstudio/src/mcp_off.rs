@@ -28,5 +28,20 @@ impl McpHost {
 
     pub fn sync(&mut self, _ctx: &egui::Context, _tabs: &[Tab], _active: usize) {}
 
+    /// [`Self::sync`], then send the link answers: an MCP caller told a file is open finds
+    /// it in the published snapshot.
+    pub fn sync_then_answer(
+        &mut self,
+        ctx: &egui::Context,
+        tabs: &[Tab],
+        active: usize,
+        answers: Vec<crate::link_open::Answer>,
+    ) {
+        self.sync(ctx, tabs, active);
+        for (done, result) in answers {
+            done(result);
+        }
+    }
+
     pub fn stop(&mut self) {}
 }

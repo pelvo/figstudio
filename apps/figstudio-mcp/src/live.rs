@@ -63,8 +63,9 @@ pub enum Command {
         /// `Ok`, or why it could not be done (such as "tab closed").
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
-    /// Open the local copy of a figma.com link whose file no tab shows (the app searches its
-    /// link folders), then reveal the link's node there.
+    /// Show a figma.com link's node: in the one open tab or local copy that matches it (the
+    /// app searches its link folders; a tie is an error), opening the copy first. Only sent
+    /// when [`LiveFiles::opens_links`].
     OpenLink {
         /// The link as the tool was given it.
         link: String,
@@ -78,6 +79,8 @@ pub struct LiveFiles {
     snapshot: Arc<RwLock<Arc<Snapshot>>>,
     commands: Sender<Command>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    /// The app finds figma.com links itself ([`Command::OpenLink`]); the browser bridge cannot.
+    opens_links: bool,
     /// Per [`Document::instance`]: its own image cache, never the app's (shared in-flight
     /// image requests could hang when the app closes a document).
     rendering: Mutex<HashMap<u64, Rendering>>,
@@ -117,8 +120,22 @@ impl LiveFiles {
             snapshot,
             commands,
             wake,
+            opens_links: false,
             rendering: Mutex::default(),
         }
+    }
+
+    /// The host answers [`Command::OpenLink`]: `reveal_node` lets it resolve every figma.com
+    /// link (open tabs and local copies alike) instead of matching tabs itself.
+    #[must_use]
+    pub fn with_link_opening(mut self) -> Self {
+        self.opens_links = true;
+        self
+    }
+
+    /// Whether the host answers [`Command::OpenLink`].
+    pub fn opens_links(&self) -> bool {
+        self.opens_links
     }
 
     fn current(&self) -> Arc<Snapshot> {

@@ -164,6 +164,40 @@ fn open_link_requests_wait_for_the_app_and_carry_its_answer() {
 }
 
 #[test]
+fn link_answers_go_out_after_the_snapshot_has_the_new_tab() {
+    let mut host = host(vec![]);
+    let (_commands, inbox) = mpsc::channel();
+    let (_events, news) = mpsc::channel();
+    let snapshot: Arc<RwLock<Arc<Snapshot>>> = Default::default();
+    host.on = true;
+    host.running = Some(Running {
+        addr: None,
+        cancel: CancellationToken::new(),
+        snapshot: snapshot.clone(),
+        commands: inbox,
+        events: news,
+        last_key: None,
+        token: None,
+        links: Vec::new(),
+    });
+    // The answer records how many tabs the server could see when it went out.
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let (watch, record) = (snapshot.clone(), seen.clone());
+    let done: crate::link_open::Done = Box::new(move |_| {
+        *record.lock().unwrap() = Some(watch.read().unwrap().tabs.len());
+    });
+    let tabs = vec![tab(1, "structure.fig"), tab(2, "sections.fig")];
+    host.sync_then_answer(
+        &egui::Context::default(),
+        &tabs,
+        1,
+        vec![(done, Ok("revealed".to_owned()))],
+    );
+    assert_eq!(*seen.lock().unwrap(), Some(2));
+    host.stop();
+}
+
+#[test]
 fn a_busy_port_falls_back_to_the_next() {
     let busy = TcpListener::bind(ANY_PORT).unwrap();
     let busy_addr = busy.local_addr().unwrap();

@@ -644,7 +644,7 @@ impl App {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
                     web::fail_upload(&path);
-                    self.link_failed(&path, &message);
+                    self.link_failed(&path);
                     self.toast(
                         ctx,
                         format!("Could not open {}: {message}", path.display()),
@@ -1084,8 +1084,9 @@ impl App {
         self.drop_overlay(&ctx, hovering_files);
         self.command_bar(&ctx);
         self.toasts(&ctx);
-        self.mcp.sync(&ctx, &self.tabs, self.active);
-        self.send_link_answers();
+        let answers = self.take_link_answers();
+        self.mcp
+            .sync_then_answer(&ctx, &self.tabs, self.active, answers);
         if let Some(tab) = self.tabs.get(self.active) {
             let title = format!("{} — {APP_NAME}", tab.title());
             if title != self.window_title {

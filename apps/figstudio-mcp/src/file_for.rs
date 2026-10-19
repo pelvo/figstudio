@@ -1,5 +1,5 @@
 use crate::{FigstudioServer, error::McpError, files::Files};
-use figstudio_mcp_core::link::{FileHint, parse_link};
+use figstudio_mcp_core::link::{FileHint, best_matches, parse_link};
 
 impl FigstudioServer {
     /// The `fileKey` a tool call should use: an explicit `file_key` wins, then the file named
@@ -16,6 +16,18 @@ impl FigstudioServer {
         }
         let hint = parse_link(node_id?).ok()?.file?;
         select(&self.files().keys(), &hint)
+    }
+
+    /// The file keys a figma.com or `figstudio://` link matches best: a key match beats a
+    /// name match, and every file that ties is listed (two files can share a name).
+    pub(crate) fn link_files(&self, link: &str) -> Vec<String> {
+        let Some(hint) = parse_link(link).ok().and_then(|link| link.file) else {
+            return Vec::new();
+        };
+        best_matches(self.files().keys().into_iter().filter_map(|key| {
+            let rank = hint.match_stem(stem_of(&key))?;
+            Some((key, rank))
+        }))
     }
 
     /// The file key and node ID of a call: `node_id`, or in live mode the selection of the tab
@@ -49,11 +61,13 @@ impl FigstudioServer {
 fn select(keys: &[String], hint: &FileHint) -> Option<String> {
     match hint {
         FileHint::Exact(key) => Some(key.clone()),
-        FileHint::Figma { key, .. } => keys
-            .iter()
-            .find(|k| stem_of(k) == key)
-            .or_else(|| keys.iter().find(|k| hint.matches(stem_of(k))))
-            .cloned(),
+        // A key match beats a name match; among ties the first, as before.
+        FileHint::Figma { .. } => best_matches(keys.iter().filter_map(|k| {
+            let rank = hint.match_stem(stem_of(k))?;
+            Some((k, rank))
+        }))
+        .first()
+        .map(|k| (*k).clone()),
     }
 }
 

@@ -116,3 +116,71 @@ fn help_opens_the_about_window() {
             .is_some()
     );
 }
+
+#[test]
+fn reveal_node_opens_a_local_copy_and_answers_after_the_new_tab_is_published() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fixture("sections.fig"), dir.path().join("My Design.fig")).unwrap();
+    let mut h = harness();
+    {
+        let app = h.state_mut();
+        app.link.dirs = vec![dir.path().to_owned()];
+        // A loopback "remote" address picks a free port, away from a running app on :3845.
+        app.mcp.remote = true;
+        app.mcp.remote_addr = "127.0.0.1:0".to_owned();
+        app.mcp.on = true;
+    }
+    let addr: SocketAddr = wait_for(&mut h, "server address", |h| {
+        h.query_all_by_label_contains("MCP 127.0.0.1")
+            .next()?
+            .value()?
+            .strip_prefix("MCP ")?
+            .strip_suffix("/mcp")?
+            .parse()
+            .ok()
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let client = runtime.block_on(async {
+        let transport = StreamableHttpClientTransport::from_uri(format!("http://{addr}/mcp"));
+        ().serve(transport).await.unwrap()
+    });
+    let link = "https://www.figma.com/design/KEY/My-Design?node-id=1-5";
+    let reveal = runtime.spawn(async move {
+        let args = serde_json::json!({ "nodeId": link });
+        let request = CallToolRequestParams::new("reveal_node")
+            .with_arguments(args.as_object().unwrap().clone());
+        let result = client.call_tool(request).await.unwrap();
+        (result, client)
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !reveal.is_finished() {
+        assert!(Instant::now() < deadline, "reveal_node did not finish");
+        h.step();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (result, client) = runtime.block_on(reveal).unwrap();
+    let text = serde_json::to_value(&result).unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(result.is_error, Some(true), "{text}");
+    let id = h.state().tabs[1].id;
+    assert_eq!(
+        text,
+        format!("revealed 1:5 in tab {id} (opened the local copy)")
+    );
+    // No frame has run since the reply: the snapshot already had the new tab.
+    let listed = runtime
+        .block_on(client.call_tool(CallToolRequestParams::new("list_open_tabs")))
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let tabs = listed["tabs"].as_array().unwrap();
+    assert_eq!(tabs.len(), 2, "{listed}");
+    assert_eq!(tabs[1]["fileKey"], "My Design");
+    assert_eq!(tabs[1]["selection"], "1:5");
+    assert_eq!(tabs[1]["active"], true);
+    runtime.block_on(client.cancel()).unwrap();
+    h.state_mut().mcp.on = false;
+    h.run_steps(3);
+}

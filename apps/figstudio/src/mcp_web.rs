@@ -200,6 +200,21 @@ impl McpHost {
         Vec::new()
     }
 
+    /// [`Self::sync`], then send the link answers: an MCP caller told a file is open finds
+    /// it in the published snapshot.
+    pub fn sync_then_answer(
+        &mut self,
+        ctx: &egui::Context,
+        tabs: &[Tab],
+        active: usize,
+        answers: Vec<crate::link_open::Answer>,
+    ) {
+        self.sync(ctx, tabs, active);
+        for (done, result) in answers {
+            done(result);
+        }
+    }
+
     pub fn sync(&mut self, ctx: &egui::Context, tabs: &[Tab], active: usize) {
         // Workers cannot wake egui from Wasm; poll while replies/image reads are pending,
         // even after disconnect, so snapshots finish and release their sources.

@@ -72,8 +72,18 @@ pub async fn call(client: &Client, tool: &'static str, args: Value) -> CallToolR
     client.call_tool(request).await.unwrap()
 }
 
-/// Serve `snapshot` in live mode over a duplex pipe, with a fake app loop on a thread.
+/// Serve `snapshot` in live mode over a duplex pipe, with a fake app loop on a thread. Like
+/// the browser bridge, the host does not resolve figma.com links ([`start_app`] does).
 pub async fn start(snapshot: Snapshot, answer: Answer) -> App {
+    serve(snapshot, answer, false).await
+}
+
+/// [`start`] for the desktop app: figma.com links go to the app as [`Command::OpenLink`].
+pub async fn start_app(snapshot: Snapshot, answer: Answer) -> App {
+    serve(snapshot, answer, true).await
+}
+
+async fn serve(snapshot: Snapshot, answer: Answer, opens_links: bool) -> App {
     let snapshot = Arc::new(RwLock::new(Arc::new(snapshot)));
     let (commands, inbox) = mpsc::channel::<Command>();
     let revealed = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -120,7 +130,11 @@ pub async fn start(snapshot: Snapshot, answer: Answer) -> App {
     let wake = Arc::new(move || {
         counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     });
-    let files = Arc::new(LiveFiles::new(snapshot.clone(), commands, wake));
+    let mut files = LiveFiles::new(snapshot.clone(), commands, wake);
+    if opens_links {
+        files = files.with_link_opening();
+    }
+    let files = Arc::new(files);
     let server = FigstudioServer::live(files, true)
         .with_assets(figstudio_mcp::tools::design::Assets::Inline);
     let (client_io, server_io) = tokio::io::duplex(1 << 24);

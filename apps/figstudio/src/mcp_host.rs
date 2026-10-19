@@ -179,6 +179,21 @@ impl McpHost {
         }
     }
 
+    /// [`Self::sync`], then send the link answers: an MCP caller told a file is open finds
+    /// it in the published snapshot.
+    pub fn sync_then_answer(
+        &mut self,
+        ctx: &egui::Context,
+        tabs: &[Tab],
+        active: usize,
+        answers: Vec<crate::link_open::Answer>,
+    ) {
+        self.sync(ctx, tabs, active);
+        for (done, result) in answers {
+            done(result);
+        }
+    }
+
     /// Cancel the server; its thread winds down on its own (never joined on the UI thread).
     pub fn stop(&mut self) {
         if let Some(running) = self.running.take() {
@@ -261,7 +276,7 @@ fn start(ctx: &egui::Context, addrs: Vec<SocketAddr>, access: HttpAccess) -> Run
     let cancel = CancellationToken::new();
     let wake_ctx = ctx.clone();
     let wake = Arc::new(move || wake_ctx.request_repaint());
-    let files = Arc::new(LiveFiles::new(snapshot.clone(), commands, wake));
+    let files = Arc::new(LiveFiles::new(snapshot.clone(), commands, wake).with_link_opening());
     let bearer = access.token().map(str::to_owned);
     let (token, ctx, failed) = (cancel.clone(), ctx.clone(), events.clone());
     let spawned = std::thread::Builder::new()

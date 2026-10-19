@@ -547,30 +547,39 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   calls `wake` (`ctx.request_repaint`). The next `frame` drains it: the tab becomes active and
   `Tab::show_node` selects the node and sets `Tab.fit_node` (a page ID switches page instead). `canvas::fit_node` fits it on the next draw. The reply is
   `Ok`, or `Err("tab closed")`. The server waits at most 5 s (`REVEAL_TIMEOUT`).
-- **Open link (server to app).** `reveal_node` with a figma.com link whose file no tab shows
-  sends `Command::OpenLink` and waits up to 60 s (`OPEN_TIMEOUT`). `drain` queues it;
-  `frame_ui` hands it to `App::go_to_link` (below) with a `Done` callback that answers the
-  server. Answers go out after `mcp.sync`, so the new tab is in the snapshot when the tool
-  returns. If the app cannot open it, the tool still tries the active tab, then reports the
-  open error. The browser bridge answers `OpenLink` with an error (no folders to search).
-- **Tests:** `src/mcp_host_tests.rs` (the key, reveal with a stale tab, an open-link request, a
-  busy-port fallback, no free port, and an HTTP client run).
+- **Open link (server to app).** The app's `LiveFiles` is built `with_link_opening`, so
+  `reveal_node` with a figma.com link (and no `fileKey`) always sends `Command::OpenLink` and
+  waits up to 60 s (`OPEN_TIMEOUT`): the app resolves the link against its tabs and local
+  copies alike. `drain` queues it; `frame_ui` hands it to `App::go_to_link` (below) with a
+  `Done` callback. Its answer is final: there is no fallback to the active tab, which could
+  hold the same node ID in another document. `McpHost::sync_then_answer` publishes the
+  snapshot and only then sends the answers, so a caller told a file is open finds it. The
+  browser bridge does not resolve links: there a figma.com link must name exactly one open
+  tab, else the call fails.
+- **Tests:** `src/mcp_host_tests.rs` (the key, reveal with a stale tab, an open-link request,
+  answers after the snapshot, a busy-port fallback, no free port, and an HTTP client run);
+  `src/ui_mcp_tests.rs` (`reveal_node` over HTTP opening a local copy in the real app).
 
 ### Open Figma link (`link_open.rs`)
 
 - **File > Open Figma link…** (Cmd+L) opens a window with one text field: a figma.com or
   `figstudio://` link, or a bare node ID. `parse` turns it into a `FileHint` and a node (an
   instance path names its outer instance; a page ID switches page).
-- **Which file** (`plan`, pure): the active tab when its file stem matches
-  (`FileHint::matches`: key, or slug with spaces as `-`, ignoring a ` (N)` download suffix),
-  else the first matching tab, else the newest matching `.fig` directly inside the link
-  folders (`figstudio_mcp_core::local_copy`: `FIGSTUDIO_LINK_DIRS`, else `~/Downloads`;
-  **Choose folder…** in the window replaces the list for the session). A `.fig` does not
-  store its figma.com key, so the file name is all there is to match.
+- **Which file** (`plan`): every open tab and every `.fig` directly inside the link folders
+  (`figstudio_mcp_core::local_copy`: `FIGSTUDIO_LINK_DIRS`, else `~/Downloads`; **Choose
+  folder…** in the window replaces the list for the session) is a candidate, ranked by
+  `FileHint::match_stem`: the figma.com key beats the name (the slug with spaces as `-`,
+  compared as is and then without a ` (N)` download suffix). A copy that is an open tab counts
+  once. One best match is used; when several distinct files tie (two documents can share a
+  name), the window lists them to pick, and an MCP request fails. Nothing is chosen by date.
+  A `.fig` does not store its figma.com key, so the file name is usually all there is.
+- **Messages:** `LinkError::local` (toasts, the window) names files and folders;
+  `LinkError::public` (MCP answers) never carries paths, folder names or file names.
 - **Opening** pushes a `Waiting` entry and calls `App::open`; `poll` calls `link_loaded` when
   that path finishes loading (select + `fit_node`), or `link_failed`.
-- **Tests:** `src/link_open_tests.rs` (parse, plan, an open tab, a local copy loaded and
-  answered, the window), `crates/mcp-core/tests/local_copy.rs` (matching, newest wins, folders).
+- **Tests:** `src/link_open_tests.rs` (parse, plan, ties and key wins, public messages, an open
+  tab, a local copy loaded and answered, an MCP tie, the window and its pick list),
+  `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
 ### The browser app (`apps/figstudio` on wasm32)
 
