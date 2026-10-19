@@ -184,34 +184,57 @@ fn drained(c: Color32, away: f32) -> Color32 {
 /// along the row reads each name without waiting again.
 const PILL_DELAY: f64 = 0.5;
 const PILL_WARM: f64 = 0.4;
+/// The widest a name gets in the pill before it is cut.
+const MAX_PILL_NAME: f32 = 280.0;
 
-/// Whether the pill of the dot `key`, which the pointer is on, is due. Asks for a repaint
-/// for when it will be.
+/// The dot the pointer rests on: since when, and whether its pill has shown.
+#[derive(Clone, Copy)]
+struct Rest {
+    key: u64,
+    since: f64,
+    due: bool,
+}
+
+/// Whether the pill of the dot `key`, which the pointer is on, is due. Like a tooltip, the
+/// wait counts from when the pointer stopped moving; once shown, the pill stays while the
+/// pointer is on the dot. Asks for a repaint for when it will be due.
 fn pill_due(ctx: &egui::Context, key: u64) -> bool {
-    let now = ctx.input(|i| i.time);
+    let (now, moved) = ctx.input(|i| {
+        (
+            i.time,
+            i.time - f64::from(i.pointer.time_since_last_movement()),
+        )
+    });
     let (rest, shown) = (Id::new("space-pill-rest"), Id::new("space-pill-shown"));
-    let since = ctx.data_mut(|d| {
+    let waited = ctx.data_mut(|d| {
         let last = d.get_temp::<f64>(shown).unwrap_or(f64::NEG_INFINITY);
-        match d.get_temp::<(u64, f64)>(rest) {
-            Some((k, since)) if k == key => since,
-            _ => {
-                let since = if now - last <= PILL_WARM {
-                    now - PILL_DELAY
-                } else {
-                    now
-                };
-                d.insert_temp(rest, (key, since));
-                since
-            }
+        let mut r = match d.get_temp::<Rest>(rest) {
+            Some(r) if r.key == key => r,
+            // Warm: one showed a moment ago, so this one shows straight away.
+            _ => Rest {
+                key,
+                since: now,
+                due: now - last <= PILL_WARM,
+            },
+        };
+        if !r.due {
+            r.since = r.since.max(moved);
+            r.due = now - r.since >= PILL_DELAY;
+        }
+        d.insert_temp(rest, r);
+        if r.due {
+            d.insert_temp(shown, now);
+            None
+        } else {
+            Some(now - r.since)
         }
     });
-    let waited = now - since;
-    if waited >= PILL_DELAY {
-        ctx.data_mut(|d| d.insert_temp(shown, now));
-        true
-    } else {
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(PILL_DELAY - waited));
-        false
+    match waited {
+        None => true,
+        Some(waited) => {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(PILL_DELAY - waited));
+            false
+        }
     }
 }
 
@@ -270,13 +293,23 @@ fn space_pill(ctx: &egui::Context, want: Option<PillContent>) {
         egui::Order::Tooltip,
         Id::new("space-pill"),
     ));
-    let title = painter.layout_no_wrap(name.clone(), theme::semibold(12.0), ink);
     let caps: Vec<_> = caps
         .into_iter()
         .map(|c| painter.layout_no_wrap(c, theme::semibold(11.0), cap_ink))
         .collect();
     let cap_w = |g: &std::sync::Arc<Galley>| (g.size().x + 8.0).max(17.0);
     let caps_w: f32 = caps.iter().map(|g| cap_w(g) + 3.0).sum();
+    let screen = ctx.content_rect();
+    // A long name (a file title, say) is cut with an ellipsis so the pill fits the window.
+    let room = (screen.width() - 8.0 - 12.0 - 8.0 - caps_w - 2.0).min(MAX_PILL_NAME);
+    let mut job = LayoutJob::simple_singleline(name.clone(), theme::semibold(12.0), ink);
+    job.wrap = TextWrapping {
+        max_width: room.max(1.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let title = painter.layout_job(job);
     let height = 26.0;
     let width = 12.0
         + title.size().x
@@ -291,11 +324,10 @@ fn space_pill(ctx: &egui::Context, want: Option<PillContent>) {
         anim::reset(ctx, glide, dot.center().x);
     }
     let centre = anim::spring(ctx, glide, dot.center().x, Spring::SMOOTH);
-    let screen = ctx.content_rect();
-    let x = (centre - width / 2.0).clamp(
-        screen.left() + 4.0,
-        (screen.right() - width - 4.0).max(screen.left()),
-    );
+    // Inside the window when it fits; from its left edge when even the cut pill does not.
+    let x = (centre - width / 2.0)
+        .min(screen.right() - width - 4.0)
+        .max(screen.left() + 4.0);
     let rect = Rect::from_min_size(pos2(x, dot.top() - 6.0 - height), vec2(width, height));
     let label = match keys {
         Some(keys) => format!("{name}, {}", ctx.format_shortcut(&keys)),
@@ -993,7 +1025,13 @@ impl App {
         let mut pill = None;
         for (i, tab) in self.tabs.iter().enumerate() {
             let active = i == self.active;
-            let (rect, response) = ui.allocate_exact_size(vec2(DOT, DOT), Sense::click());
+            // The slot in the row; the dot slides into it when one before it opens or closes,
+            // and is clicked, hovered and named where it is drawn, not where it is going.
+            let (slot_rect, _) = ui.allocate_exact_size(vec2(DOT, DOT), Sense::hover());
+            let slot = slot_rect.left() - ui.max_rect().left();
+            let slid = anim::spring(&ctx, Id::new(("dot-x", tab.id)), slot, Spring::SMOOTH);
+            let rect = slot_rect.translate(vec2(slid - slot, 0.0));
+            let response = ui.interact(rect, Id::new(("space-dot", tab.id)), Sense::click());
             let title = tab.space_name();
             response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, active, &title));
             let (hover, press) = icons::feedback(ui, &response);
@@ -1006,13 +1044,11 @@ impl App {
                 Some(0.0),
                 Spring::BOUNCY,
             );
-            let slot = rect.left() - ui.max_rect().left();
-            let slid = anim::spring(&ctx, Id::new(("dot-x", tab.id)), slot, Spring::SMOOTH);
             let scale = (1.0 + hover * 0.08 - press * 0.12) * appear.max(0.0);
             let lit = ctx.animate_bool_with_time(response.id.with("lit"), active, 0.18);
             let away = (1.0 - lit) * (1.0 - hover);
             let tint = theme::space_tint(tab.colour(), p.dark);
-            let c = rect.center() + vec2(slid - slot, 0.0);
+            let c = rect.center();
             let size = dot_size(tab.style.symbol.is_some(), scale);
             let badge = Rect::from_center_size(c, vec2(size, size));
             let colour = drained(tint.accent, away);
@@ -1069,7 +1105,7 @@ impl App {
             });
         }
         if !resting {
-            ctx.data_mut(|d| d.remove::<(u64, f64)>(Id::new("space-pill-rest")));
+            ctx.data_mut(|d| d.remove::<Rest>(Id::new("space-pill-rest")));
         }
         space_pill(&ctx, pill);
         self.dot_in_view = (

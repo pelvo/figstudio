@@ -454,9 +454,15 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   marks the active one (no ring): the others are drained toward grey and faded
   (`chrome::drained`) until hovered. A dot the pointer rests on for 0.5 s shows Arc's dark
   pill with the space's name and its ⌃1…⌃9 keys as caps (`chrome::space_pill`, timed by
-  `pill_due`; right after one shows, the next dot's shows at once; it rises and fades in,
-  glides between dots and fades out). Badges have nothing behind them, as Arc's. Closing is
-  in a dot's right-click menu or a middle click. ⌃1…⌃9 are `Binding::Space(n)`, changeable like any shortcut.
+  `pill_due`, counting from when the pointer last moved, as a tooltip, and asking for a
+  repaint for when it is due; right after one shows, the next dot's shows at once; it rises
+  and fades in, glides between dots and fades out). A long name is cut with an ellipsis so
+  the pill fits the window. A dot sliding to its new slot is hit-tested, named and anchored
+  where it is drawn (the layout slot is only allocated). Badges have nothing behind them, as
+  Arc's. Closing is in a dot's right-click menu or a middle click. ⌃1…⌃9 are
+  `Binding::Space(n)`, changeable like any shortcut.
+- The window title is sent only when it changes: a viewport command asks for another frame,
+  so sending it every frame kept the app redrawing while a file was open.
 - On the window gradient, small text uses `text_dim` (≥ 4.5:1 on every tint); `text_faint`
   is for hints (≥ 3:1). `theme::tests` checks both, for presets and custom colours.
 

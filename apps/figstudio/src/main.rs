@@ -286,6 +286,9 @@ struct App {
     /// Where each space's dot was drawn last frame (popovers open above it), the part of
     /// the footer they scroll in, and the file whose dot was last scrolled into view.
     space_dots: Vec<(u64, egui::Rect)>,
+    /// The window title last sent (a viewport command asks for another frame, so it is
+    /// sent only when it changes).
+    window_title: String,
     dots_clip: egui::Rect,
     dot_in_view: (u64, f32),
     /// ⌘F: find text on the page (`find.rs`).
@@ -388,6 +391,7 @@ impl App {
             slide: 0.0,
             page_width: 280.0,
             space_dots: Vec::new(),
+            window_title: String::new(),
             dots_clip: egui::Rect::NOTHING,
             dot_in_view: (0, 0.0),
             find: Default::default(),
@@ -1043,7 +1047,10 @@ impl App {
         self.mcp.sync(&ctx, &self.tabs, self.active);
         if let Some(tab) = self.tabs.get(self.active) {
             let title = format!("{} — {APP_NAME}", tab.title());
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+            if title != self.window_title {
+                self.window_title.clone_from(&title);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+            }
         }
         if !self.toasts.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));

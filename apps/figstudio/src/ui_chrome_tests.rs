@@ -991,8 +991,16 @@ fn the_name_pill_waits_for_the_pointer_to_rest_on_a_dot_then_follows_it_along_th
         !pill(&h, 1),
         "not at once: the pointer has to rest on the dot"
     );
-    h.run_steps(5);
+    // Still moving over the dot: the wait counts from when it stops, as a tooltip's.
+    h.run_steps(2);
+    h.event(Event::PointerMoved(second.center() + egui::vec2(3.0, 1.0)));
+    h.run_steps(3);
+    assert!(!pill(&h, 1), "moved 0.3 s ago: still waiting");
+    h.run_steps(3);
     assert!(pill(&h, 1), "after a moment it shows");
+    h.event(Event::PointerMoved(second.center()));
+    h.run_steps(1);
+    assert!(pill(&h, 1), "once shown, moving on the dot keeps it");
     // Moving along the row: the next dot's pill shows at once.
     h.event(Event::PointerMoved(first.center()));
     h.run_steps(1);
@@ -1197,4 +1205,99 @@ fn recording_takes_a_real_keyboard_chord_and_nothing_else_acts_on_it() {
     h.state_mut().prefs.keymap.set(Binding::CommandBar, None);
     h.run_steps(2);
     assert!(h.query_by_label("Command bar").is_some());
+}
+
+#[test]
+fn the_name_pill_wakes_the_app_and_a_long_name_stays_inside_a_narrow_window() {
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(720.0, 600.0))
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    // A name far wider than the window (a long file title shows the same way).
+    h.state_mut().tabs[1].style.name = Some("A very long space name ".repeat(12));
+    h.run_steps(10);
+    let id = h.state().tabs[1].id;
+    let (_, dot) = *h
+        .state()
+        .space_dots
+        .iter()
+        .find(|(t, _)| *t == id)
+        .expect("a dot");
+    h.event(Event::PointerMoved(dot.center()));
+    // Until the pointer has rested, nothing else asks for a frame; the app asks to be woken
+    // when the pill is due rather than waiting for the next event.
+    h.run();
+    let visible = |h: &Harness<'_, App>| {
+        h.ctx
+            .data(|d| d.get_temp::<bool>(egui::Id::new("space-pill-visible")))
+            .unwrap_or(false)
+    };
+    assert!(!visible(&h), "not yet");
+    let wake = h.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+    assert!(
+        wake <= std::time::Duration::from_millis(500),
+        "woken for the pill: {wake:?}"
+    );
+    h.run_steps(40);
+    assert!(visible(&h), "shown after the wait");
+    // The pill reads "{name}, {keys}"; the dot is the name alone.
+    let pill = h.get_by_label_contains("space name , ").rect();
+    let screen = h.ctx.content_rect();
+    assert!(
+        screen.contains_rect(pill),
+        "the cut pill fits the window: {pill:?} in {screen:?}"
+    );
+}
+
+#[test]
+fn a_dot_sliding_over_is_clicked_where_it_is_drawn() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    crate::anim::set_reduced(&h.ctx.clone(), false);
+    h.run_steps(60);
+    let dot = |h: &Harness<'_, App>, id: u64| {
+        h.state()
+            .space_dots
+            .iter()
+            .find(|(t, _)| *t == id)
+            .map(|(_, r)| *r)
+            .expect("a dot")
+    };
+    let second = h.state().tabs[1].id;
+    let before = dot(&h, second);
+    // Closing the first: the second slides into the middle of the row.
+    h.state_mut().active = 1;
+    h.state_mut().close(0);
+    h.run_steps(3);
+    let sliding = dot(&h, second);
+    h.run_steps(60);
+    let after = dot(&h, second);
+    assert!(
+        (after.center().x - before.center().x).abs() > 8.0,
+        "it moves: {before:?} → {after:?}"
+    );
+    assert!(
+        (sliding.center().x - before.center().x).abs()
+            < (after.center().x - before.center().x).abs() * 0.8,
+        "three frames in, the dot is still on its way: {sliding:?}"
+    );
+    let name = h.state().tabs[0].space_name();
+    let node = h
+        .get_all_by_label(&name)
+        .map(|n| n.rect())
+        .find(|r| (r.center().y - after.center().y).abs() < 1.0)
+        .expect("the dot's button");
+    assert!(
+        (node.center().x - after.center().x).abs() < 0.5,
+        "its button is where it is drawn: {node:?} vs {after:?}"
+    );
 }
