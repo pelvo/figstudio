@@ -29,10 +29,37 @@ pub enum Binding {
     ZoomTool,
     NextSpace,
     PreviousSpace,
+    /// Go to the space at this place in the footer (1 to 9), as Arc's ⌃1…⌃9.
+    Space(u8),
 }
 
+/// The keys ⌃1…⌃9 go to the spaces with.
+const DIGITS: [Key; 9] = [
+    Key::Num1,
+    Key::Num2,
+    Key::Num3,
+    Key::Num4,
+    Key::Num5,
+    Key::Num6,
+    Key::Num7,
+    Key::Num8,
+    Key::Num9,
+];
+
+const SPACE_LABELS: [&str; 9] = [
+    "Go to space 1",
+    "Go to space 2",
+    "Go to space 3",
+    "Go to space 4",
+    "Go to space 5",
+    "Go to space 6",
+    "Go to space 7",
+    "Go to space 8",
+    "Go to space 9",
+];
+
 impl Binding {
-    pub const ALL: [Binding; 18] = [
+    pub const ALL: [Binding; 27] = [
         Binding::CommandBar,
         Binding::FindOnPage,
         Binding::NextMatch,
@@ -51,7 +78,24 @@ impl Binding {
         Binding::ZoomTool,
         Binding::NextSpace,
         Binding::PreviousSpace,
+        Binding::Space(1),
+        Binding::Space(2),
+        Binding::Space(3),
+        Binding::Space(4),
+        Binding::Space(5),
+        Binding::Space(6),
+        Binding::Space(7),
+        Binding::Space(8),
+        Binding::Space(9),
     ];
+
+    /// The binding that goes to the space at `index` (0-based) in the footer, if any.
+    pub fn space(index: usize) -> Option<Binding> {
+        u8::try_from(index + 1)
+            .ok()
+            .filter(|n| (1..=9).contains(n))
+            .map(Binding::Space)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -73,6 +117,10 @@ impl Binding {
             Binding::ZoomTool => "Zoom tool (Alt to zoom out)",
             Binding::NextSpace => "Next space",
             Binding::PreviousSpace => "Previous space",
+            Binding::Space(n) => SPACE_LABELS
+                .get(usize::from(n).wrapping_sub(1))
+                .copied()
+                .unwrap_or("Go to a space"),
         }
     }
 
@@ -93,7 +141,7 @@ impl Binding {
             | Binding::ZoomIn
             | Binding::ZoomOut => "View",
             Binding::SelectTool | Binding::HandTool | Binding::ZoomTool => "Tools",
-            Binding::NextSpace | Binding::PreviousSpace => "Spaces",
+            Binding::NextSpace | Binding::PreviousSpace | Binding::Space(_) => "Spaces",
         }
     }
 
@@ -120,6 +168,13 @@ impl Binding {
             Binding::ZoomTool => k(Modifiers::NONE, Key::Z),
             Binding::NextSpace => k(Modifiers::CTRL, Key::Tab),
             Binding::PreviousSpace => k(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab),
+            Binding::Space(n) => k(
+                Modifiers::CTRL,
+                DIGITS
+                    .get(usize::from(n).wrapping_sub(1))
+                    .copied()
+                    .unwrap_or(Key::Num0),
+            ),
         }
     }
 
@@ -144,6 +199,7 @@ impl Binding {
             Binding::ZoomTool => Action::SelectTool(Tool::Zoom),
             Binding::NextSpace => Action::NextSpace,
             Binding::PreviousSpace => Action::PreviousSpace,
+            Binding::Space(n) => Action::GoToSpace(usize::from(n).saturating_sub(1)),
         }
     }
 

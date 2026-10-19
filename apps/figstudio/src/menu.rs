@@ -22,6 +22,8 @@ pub(crate) enum Action {
     FindPrevious,
     NextSpace,
     PreviousSpace,
+    /// The space at this place in the footer (0-based).
+    GoToSpace(usize),
     Settings,
     Appearance(Appearance),
     ReduceMotion,
@@ -254,6 +256,11 @@ impl App {
                         n - 1
                     };
                     self.active = (self.active + step) % n;
+                }
+            }
+            Action::GoToSpace(i) => {
+                if i < self.tabs.len() {
+                    self.active = i;
                 }
             }
             Action::Appearance(appearance) => {

@@ -163,15 +163,111 @@ pub(crate) const DOT: f32 = 26.0;
 /// Most a dot grows (the spring's overshoot plus hover).
 const DOT_MAX_SCALE: f32 = 1.15;
 
-/// The badge's size and the active ring's radius for a dot at `scale`: they stay inside the
-/// slot, so neighbouring dots never overlap.
-pub(crate) fn dot_metrics(symbol: bool, scale: f32) -> (f32, f32) {
+/// The badge's size for a dot at `scale`: it stays inside the slot, so neighbouring dots
+/// never overlap.
+pub(crate) fn dot_size(symbol: bool, scale: f32) -> f32 {
     let scale = scale.clamp(0.0, DOT_MAX_SCALE);
-    if symbol {
-        (17.0 * scale, 8.5 * scale + 1.8)
-    } else {
-        (13.0 * scale, 6.5 * scale + 3.0)
+    if symbol { 20.0 * scale } else { 13.0 * scale }
+}
+
+/// A colour drained toward grey and faded by `away` (0: as it is, 1: an inactive space's
+/// badge), as Arc shows the spaces you are not in.
+fn drained(c: Color32, away: f32) -> Color32 {
+    let grey = (0.3 * f32::from(c.r()) + 0.59 * f32::from(c.g()) + 0.11 * f32::from(c.b())) as u8;
+    let grey = Color32::from_rgba_unmultiplied(grey, grey, grey, c.a());
+    c.lerp_to_gamma(grey, 0.8 * away)
+        .gamma_multiply(1.0 - 0.45 * away)
+}
+
+/// Arc's hover card over a space: a dark pill with the space's name and its keys as caps,
+/// above `dot`. A screen reader hears the name and the keys.
+fn space_pill(ctx: &egui::Context, dot: Rect, name: &str, keys: Option<egui::KeyboardShortcut>) {
+    let mac = ctx.os() == egui::os::OperatingSystem::Mac;
+    let mut caps: Vec<String> = Vec::new();
+    if let Some(keys) = keys {
+        let m = keys.modifiers;
+        let names: [(bool, &str, &str); 4] = [
+            (m.ctrl && !(m.command && !mac), "⌃", "Ctrl"),
+            (m.alt, "⌥", "Alt"),
+            (m.shift, "⇧", "Shift"),
+            (m.command || m.mac_cmd, "⌘", "Ctrl"),
+        ];
+        for (on, symbol, word) in names {
+            if on {
+                caps.push(if mac { symbol } else { word }.to_owned());
+            }
+        }
+        caps.dedup();
+        caps.push(keys.logical_key.symbol_or_name().to_owned());
     }
+    let ink = Color32::from_gray(245);
+    let cap_ink = Color32::from_gray(30);
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        Id::new("space-pill"),
+    ));
+    let title = painter.layout_no_wrap(name.to_owned(), theme::semibold(12.0), ink);
+    let caps: Vec<_> = caps
+        .into_iter()
+        .map(|c| painter.layout_no_wrap(c, theme::semibold(11.0), cap_ink))
+        .collect();
+    let cap_w = |g: &std::sync::Arc<Galley>| (g.size().x + 8.0).max(17.0);
+    let caps_w: f32 = caps.iter().map(|g| cap_w(g) + 3.0).sum();
+    let height = 26.0;
+    let width = 12.0
+        + title.size().x
+        + if caps.is_empty() {
+            12.0
+        } else {
+            8.0 + caps_w + 2.0
+        };
+    let screen = ctx.content_rect();
+    let x = (dot.center().x - width / 2.0).clamp(
+        screen.left() + 4.0,
+        (screen.right() - width - 4.0).max(screen.left()),
+    );
+    let rect = Rect::from_min_size(pos2(x, dot.top() - 6.0 - height), vec2(width, height));
+    let label = match keys {
+        Some(keys) => format!("{name}, {}", ctx.format_shortcut(&keys)),
+        None => name.to_owned(),
+    };
+    egui::Area::new(Id::new("space-pill"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(rect.min)
+        .interactable(false)
+        .show(ctx, |ui| {
+            let (rect, response) = ui.allocate_exact_size(rect.size(), Sense::hover());
+            response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &label));
+            let painter = ui.painter();
+            painter.add(
+                Shadow {
+                    offset: [0, 3],
+                    blur: 10,
+                    spread: 0,
+                    color: Color32::from_black_alpha(60),
+                }
+                .as_shape(rect, CornerRadius::same(13)),
+            );
+            painter.rect_filled(
+                rect,
+                CornerRadius::same(13),
+                Color32::from_rgba_unmultiplied(22, 22, 24, 240),
+            );
+            let title_w = title.size().x;
+            painter.galley(
+                pos2(rect.left() + 12.0, rect.center().y - title.size().y / 2.0),
+                title,
+                ink,
+            );
+            let mut x = rect.left() + 12.0 + title_w + 8.0;
+            for cap in caps {
+                let w = cap_w(&cap);
+                let r = Rect::from_min_size(pos2(x, rect.center().y - 8.5), vec2(w, 17.0));
+                painter.rect_filled(r, CornerRadius::same(4), Color32::from_gray(222));
+                painter.galley(r.center() - cap.size() / 2.0, cap, cap_ink);
+                x += w + 3.0;
+            }
+        });
 }
 
 /// Paints a space's badge in the square `rect`: its emoji or icon on a soft disc of its
@@ -795,8 +891,8 @@ impl App {
         }
     }
 
-    /// One dot per open file (a × to close it on hover, a menu on right-click) and a spinner
-    /// per file still loading.
+    /// One dot per open file (Arc's name pill on hover, a menu on right-click; a middle
+    /// click closes it) and a spinner per file still loading.
     fn dots(&mut self, ui: &mut Ui, clicked: &mut Dots) {
         let p = theme::of(ui);
         let ctx = ui.ctx().clone();
@@ -807,57 +903,36 @@ impl App {
             let title = tab.space_name();
             response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, active, &title));
             let (hover, press) = icons::feedback(ui, &response);
-            let grow = anim::spring(
-                &ctx,
-                response.id.with("grow"),
-                if active { 1.0 } else { 0.7 },
-                Spring::BOUNCY,
-            );
-            let scale = grow + hover * 0.12 - press * 0.15;
+            // Every badge the same size, as Arc's; only the colour tells the active one.
+            let scale = 1.0 + hover * 0.08 - press * 0.12;
+            let lit = ctx.animate_bool_with_time(response.id.with("lit"), active, 0.18);
+            let away = (1.0 - lit) * (1.0 - hover);
             let tint = theme::space_tint(tab.colour(), p.dark);
             let c = rect.center();
-            let (size, ring) = dot_metrics(tab.style.symbol.is_some(), scale);
+            let size = dot_size(tab.style.symbol.is_some(), scale);
             let badge = Rect::from_center_size(c, vec2(size, size));
             paint_badge(
                 ui.painter(),
                 badge,
                 tab.style.symbol.as_ref(),
-                tint.accent,
-                p.text,
+                drained(tint.accent, away),
+                drained(p.text, away),
             );
-            if active {
-                ui.painter().circle_stroke(
-                    c,
-                    ring,
-                    Stroke::new(1.5, tint.accent.gamma_multiply(0.55)),
-                );
-            }
             self.space_dots.push((tab.id, rect));
             // Bring the active file's dot into view when it changes or the footer resizes;
             // otherwise the dots stay where the person scrolled them.
             if active && (tab.id, self.dots_clip.width()) != self.dot_in_view {
                 response.scroll_to_me(None);
             }
-            let response = response.on_hover_text(&title);
+            if response.hovered() && !response.context_menu_opened() {
+                let keys = crate::keymap::Binding::space(i).and_then(|b| self.prefs.keymap.get(b));
+                space_pill(&ctx, rect, &title, keys);
+            }
             if response.clicked() {
                 clicked.pick = Some(i);
             }
             if response.middle_clicked() {
                 clicked.close = Some(i);
-            }
-            // A visible way to close: a small × on the dot under the pointer.
-            if ui.rect_contains_pointer(rect) {
-                let x =
-                    Rect::from_center_size(rect.right_top() + vec2(-6.0, 6.0), vec2(12.0, 12.0));
-                let close = ui.interact(x, response.id.with("close"), Sense::click());
-                let label = format!("Close {title}");
-                close.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
-                let fill = if close.hovered() { p.text } else { p.text_dim };
-                ui.painter().circle_filled(x.center(), 6.0, fill);
-                icons::paint(ui.painter(), Icon::Close, x.shrink(3.0), p.card);
-                if close.clicked() {
-                    clicked.close = Some(i);
-                }
             }
             context_menu(&response, |ui| {
                 ui.set_min_width(200.0);
@@ -1388,14 +1463,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_dot_and_its_ring_stay_inside_their_slot() {
+    fn a_dot_stays_inside_its_slot() {
         for symbol in [false, true] {
-            for scale in [0.7, 1.0, 1.12, 1.3, 2.0] {
-                let (size, ring) = dot_metrics(symbol, scale);
-                let reach = (size / 2.0).max(ring + 0.75);
+            for scale in [0.7, 1.0, 1.08, 1.3, 2.0] {
+                let reach = dot_size(symbol, scale) / 2.0;
                 assert!(reach <= DOT / 2.0, "symbol {symbol} scale {scale}: {reach}");
             }
         }
+    }
+
+    #[test]
+    fn an_inactive_space_s_colour_is_drained_and_faded() {
+        let accent = Color32::from_rgb(230, 60, 40);
+        assert_eq!(drained(accent, 0.0), accent, "the active one as it is");
+        let away = drained(accent, 1.0);
+        let spread = |c: Color32| c.r().max(c.g()).max(c.b()) - c.r().min(c.g()).min(c.b());
+        assert!(spread(away) < spread(accent) / 3, "nearly grey: {away:?}");
+        assert!(away.a() < 160, "faded: {away:?}");
     }
 
     #[test]

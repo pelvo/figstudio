@@ -428,7 +428,11 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   the command bar switch files there.
 - The status pill (with the MCP address and Copy token) moves above the tool pill when the
   card is narrow; the tool pill drops − and + first, then the zoom percentage. The file dots
-  scroll sideways when they do not fit, and a hovered dot shows a × to close its file.
+  scroll sideways when they do not fit. As Arc's, every dot is the same size and only colour
+  marks the active one (no ring): the others are drained toward grey and faded
+  (`chrome::drained`) until hovered. A hovered dot shows Arc's dark pill with the space's
+  name and its ⌃1…⌃9 keys as caps (`chrome::space_pill`); closing is in its right-click menu
+  or a middle click. ⌃1…⌃9 are `Binding::Space(n)`, changeable like any shortcut.
 - On the window gradient, small text uses `text_dim` (≥ 4.5:1 on every tint); `text_faint`
   is for hints (≥ 3:1). `theme::tests` checks both, for presets and custom colours.
 

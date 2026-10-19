@@ -654,7 +654,7 @@ fn a_narrow_window_keeps_the_status_and_the_zoom_percentage() {
 }
 
 #[test]
-fn many_files_scroll_in_the_footer_and_a_hovered_dot_shows_a_close_button() {
+fn many_files_scroll_in_the_footer_and_a_dot_closes_from_its_menu_not_a_cross() {
     let names = [
         "structure.fig",
         "vector.fig",
@@ -713,11 +713,15 @@ fn many_files_scroll_in_the_footer_and_a_hovered_dot_shows_a_close_button() {
         "the active file's dot is scrolled into view, clear of the + button: {dot:?} in {:?}",
         app.dots_clip
     );
-    // Hovering a dot shows its close button.
+    // No close button on the dot (Arc has none); its right-click menu closes it.
     let name = app.tabs[app.active].space_name();
     h.event(Event::PointerMoved(dot.center()));
     h.run_steps(2);
-    h.get_by_label(&format!("Close {name}")).click();
+    assert!(h.query_by_label(&format!("Close {name}")).is_none());
+    h.get_by_role_and_label(Role::Button, &name)
+        .click_secondary();
+    h.run_steps(2);
+    h.get_by_label("Close space").click();
     h.run_steps(2);
     assert_eq!(h.state().tabs.len(), 6);
 }
@@ -890,4 +894,48 @@ fn a_setting_s_note_stays_clear_of_its_control() {
             "{choice} {control:?} drawn over the note {note:?}"
         );
     }
+}
+
+#[test]
+fn control_and_a_digit_go_to_that_space_and_hovering_a_dot_names_it_with_those_keys() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    h.run_steps(3);
+    h.state_mut().active = 0;
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::CTRL, Key::Num2);
+    h.run_steps(2);
+    assert_eq!(h.state().active, 1, "⌃2 goes to the second space");
+    h.key_press_modifiers(Modifiers::CTRL, Key::Num1);
+    h.run_steps(2);
+    assert_eq!(h.state().active, 0);
+    h.key_press_modifiers(Modifiers::CTRL, Key::Num9);
+    h.run_steps(2);
+    assert_eq!(h.state().active, 0, "no ninth space: nothing happens");
+
+    // Hovering the second dot: a pill with its name and ⌃2, as Arc's.
+    let name = h.state().tabs[1].space_name();
+    let keys = h
+        .ctx
+        .format_shortcut(&KeyboardShortcut::new(Modifiers::CTRL, Key::Num2));
+    let pill = format!("{name}, {keys}");
+    assert!(h.query_by_label_contains(&pill).is_none());
+    let id = h.state().tabs[1].id;
+    let (_, dot) = *h
+        .state()
+        .space_dots
+        .iter()
+        .find(|(t, _)| *t == id)
+        .expect("a dot");
+    h.event(Event::PointerMoved(dot.center()));
+    h.run_steps(2);
+    let shown = h.get_by_label_contains(&pill).rect();
+    assert!(
+        shown.bottom() <= dot.top(),
+        "above the dot: {shown:?} over {dot:?}"
+    );
 }
