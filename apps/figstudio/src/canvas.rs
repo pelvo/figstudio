@@ -211,13 +211,13 @@ pub fn show(
     );
 
     // Overlays.
-    if frame_labels {
-        crate::labels::paint(
-            &painter,
-            &crate::labels::labels(&tab.doc, tab.page, tab.view, origin, rect),
-        );
-    }
-    find_highlights(&painter, tab, origin);
+    let labels = if frame_labels {
+        crate::labels::labels(&tab.doc, tab.page, tab.view, origin, rect)
+    } else {
+        Vec::new()
+    };
+    crate::labels::paint(&painter, &labels);
+    find_highlights(&painter, tab, origin, &labels);
     if let Some(h) = tab.hover.filter(|h| Some(*h) != tab.selection) {
         outline(
             &painter,
@@ -265,10 +265,28 @@ fn corners(tab: &Tab, origin: Pos2, id: Guid) -> Option<[Pos2; 4]> {
 }
 
 /// The find bar's matches: a soft highlight on each, a stronger one on the current match.
-fn find_highlights(painter: &egui::Painter, tab: &Tab, origin: Pos2) {
+fn find_highlights(
+    painter: &egui::Painter,
+    tab: &Tab,
+    origin: Pos2,
+    labels: &[crate::labels::Label],
+) {
+    let quad = |r: Rect| {
+        [
+            r.left_top(),
+            r.right_top(),
+            r.right_bottom(),
+            r.left_bottom(),
+        ]
+    };
     for (i, hit) in tab.find_hits.iter().enumerate() {
         let c = match hit {
             crate::find::Hit::Node(id) => corners(tab, origin, *id),
+            // A name: on its label when one is drawn, else round the frame.
+            crate::find::Hit::Name(id) => match labels.iter().find(|l| l.id == *id) {
+                Some(label) => Some(quad(crate::labels::rect(painter, label).expand(2.0))),
+                None => corners(tab, origin, *id),
+            },
             crate::find::Hit::Inside(page) => {
                 let r = Rect::from_min_max(
                     tab.view.to_screen(origin, page.min),

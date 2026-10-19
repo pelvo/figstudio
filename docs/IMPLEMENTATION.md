@@ -119,7 +119,8 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   space_editor.rs        the space popovers: icon picker, rename, theme colour (pad + presets
                          + appearance), opened above the space's dot
   swipe.rs               two-finger sideways swipes over the sidebar switch spaces
-  find.rs                ⌘F find bar: text on the page, inside instances too; highlights
+  find.rs                ⌘F find bar: text on the page, inside instances too, and frame
+                         names; highlights
   settings.rs            Settings (⌘,), Arc's layout: General, Canvas, Shortcuts, Agents
                          (agent access, the MCP server), About
   keymap.rs              shortcuts the user can change: Binding (label, group, default,
@@ -409,7 +410,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   gestures are fixed.
 - **Find on page** (`find.rs`, ⌘F, View → Find on page…): matches text layers of the page
   and text drawn inside instances (`resolve::walk_instance` with overrides, boxed with
-  `Renderer::path_bounds`), sorted top to bottom. The canvas highlights them; Enter / ⌘G and
+  `Renderer::path_bounds`) and the names drawn above frames and sections (`Hit::Name`, the
+  frames `labels::named` lists), sorted top to bottom. The canvas highlights them (a name on
+  its label when the label is drawn, else round its frame); Enter / ⌘G and
   Shift for the previous one; a match is brought into view only when it is off screen or too
   small to read.
 - The canvas card has round corners: the page background is a rounded rect and tiles that

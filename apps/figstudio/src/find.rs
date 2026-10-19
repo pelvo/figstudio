@@ -1,5 +1,6 @@
-//! ⌘F: find text on the current page, the way a browser finds in a page. Matching text
-//! layers are highlighted on the canvas; Enter / ⌘G go to the next one, Shift for the
+//! ⌘F: find text on the current page, the way a browser finds in a page: text layers, text
+//! inside instances, and the frame and section names drawn above frames. Matches are
+//! highlighted on the canvas; Enter / ⌘G go to the next one, Shift for the
 //! previous; Escape closes the bar.
 
 use egui::{
@@ -97,13 +98,15 @@ impl FindBar {
 pub enum Hit {
     Node(Guid),
     Inside(Rect),
+    /// A frame or section whose name (drawn above it) matches.
+    Name(Guid),
 }
 
 impl Hit {
     /// The match's box on the page.
     pub fn bounds(&self, doc: &Document) -> Option<Rect> {
         match self {
-            Hit::Node(id) => figstudio_render::node_bounds(doc, *id).map(|b| {
+            Hit::Node(id) | Hit::Name(id) => figstudio_render::node_bounds(doc, *id).map(|b| {
                 Rect::from_min_max(
                     Pos2::new(b.x0 as f32, b.y0 as f32),
                     Pos2::new(b.x1 as f32, b.y1 as f32),
@@ -117,15 +120,20 @@ impl Hit {
 /// Most nodes looked at inside instances for one search (huge design-system pages).
 const MAX_INSIDE: usize = 200_000;
 
-/// Text on `page` containing `query` (ignoring case): text layers, and text inside
-/// instances as they show it. Top to bottom, then left to right.
+/// Text on `page` containing `query` (ignoring case): text layers, text inside instances as
+/// they show it, and the names drawn above frames and sections. Top to bottom, then left to
+/// right.
 pub fn find_text(doc: &Document, page: Guid, query: &str) -> Vec<Hit> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return Vec::new();
     }
     let matches = |text: &str| text.to_lowercase().contains(&query);
-    let mut hits = Vec::new();
+    let mut hits: Vec<Hit> = crate::labels::named(doc, page)
+        .into_iter()
+        .filter(|id| doc.node(*id).is_some_and(|n| matches(&n.name)))
+        .map(Hit::Name)
+        .collect();
     let mut instances = Vec::new();
     let mut stack: Vec<Guid> = doc.children(page).to_vec();
     while let Some(id) = stack.pop() {
@@ -348,9 +356,19 @@ mod tests {
         assert!(matches!(xyz[0], Hit::Inside(_)), "an override is found");
         assert!(find_text(&doc, page, "").is_empty());
         assert!(find_text(&doc, page, "nowhere on this page").is_empty());
+        // The names drawn above frames are found too, like any text on the page.
+        let named = find_text(&doc, page, "symbols AND images");
+        assert_eq!(named.len(), 1, "{named:?}");
+        let Hit::Name(frame) = named[0] else {
+            panic!("a frame name: {named:?}")
+        };
+        assert_eq!(
+            doc.node(frame).map(|n| n.name.as_str()),
+            Some("Symbols and images")
+        );
         assert!(
-            find_text(&doc, page, "Symbols").is_empty(),
-            "frame names are not text"
+            find_text(&doc, page, "Symbol and images").is_empty(),
+            "as in a browser, the words must appear as typed"
         );
     }
 
