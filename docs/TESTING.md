@@ -50,8 +50,11 @@ FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh   # if the default Rust is older tha
 It must end with `== all checks passed` before you commit. If clippy or rustfmt is missing:
 `rustup component add clippy rustfmt --toolchain <version>`.
 
-`check.sh` runs tests in release mode; use `--release` yourself too so the build is shared.
-Run one test with `cargo test --release -p <crate> <name>`.
+`check.sh` lints and tests with `--profile fast` (release optimisation, no LTO,
+incremental); use it yourself too so the build is shared. Run one test with
+`cargo test --profile fast -p <crate> <name>`. Avoid `cargo test --release`: it thin-LTO
+links each of the ~100 test binaries, so a change in `crates/fig` costs ~20 minutes instead
+of ~40 seconds.
 
 ## 2. What exists today (50 tests in the gate)
 

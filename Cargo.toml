@@ -72,3 +72,10 @@ opt-level = 1
 
 [profile.release]
 lto = "thin"
+
+# The profile scripts/check.sh tests and lints with: release speed without the LTO link.
+# Thin LTO on ~100 test binaries made a one-line change cost ~20 minutes of linking.
+[profile.fast]
+inherits = "release"
+lto = false
+incremental = true
