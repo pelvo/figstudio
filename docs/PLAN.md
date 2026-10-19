@@ -186,6 +186,9 @@ tiling would fix it); the Layers panel is not virtualised yet (fine at 9 000 row
       content view of a transparent window (`vibrancy.rs`; one `unsafe` block, approved by the
       owner); the gradient is 60% opaque over it. Checked by hand in light and dark
 - [x] errors shown as toasts (bad file stays non-fatal)
+- [x] File → Open Figma link… (Cmd+L): paste a figma.com link; the matching tab, or the newest
+      `<file name>.fig` in `~/Downloads` (`FIGSTUDIO_LINK_DIRS`, or a chosen folder), is opened
+      and the node selected and fitted
 - [ ] save dialog path checked by hand on a desktop (Xvfb has no portal, so the export
       menu was checked but the dialog itself was not exercised)
 - [ ] check on a real Wayland session and with a big file
@@ -236,6 +239,8 @@ requester confirms it runs.
 - [x] MCP inside the app (`docs/MCP-APP.md`, issue #9): L0–L9 done. Shared `crates/mcp-core`; right-click Copy and
       marquee Copy region (text and PNG) in the app; View → Agent access starts the live server on loopback
       (`list_open_tabs`, `get_selection`, `reveal_node`; nodeId defaults from the selection; `figstudio://` links)
+- [x] `reveal_node` with a figma.com link whose file no tab shows: the app opens the local copy from its
+      link folders, then reveals the node (`Command::OpenLink`)
 - [ ] MCP inside the app, open: a live client session (`claude mcp add`), clicking the toggle, the clipboard paths
       in a real window and browser, paste into Preview or an editor
 - [x] Web app + MCP bridge (`docs/WEB-MCP-PLAN.md`, L1–L4): `figstudio-mcp --bridge`, the browser tab pairs over a
@@ -801,3 +806,4 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-20 — PR #28 review note (comment 6281714626): `every_offered_emoji_and_icon_can_be_drawn` failed where a system font has a glyph for its "missing" emoji (U+1F9E9); its reference characters are now plane-16 private-use code points no font covers. Not reproduced here (no such glyph on this machine); the check still fails when the "missing" character has a glyph
 - 2026-10-20 — PR #28 review note (comment 6282033901): corrected the emoji test's explanation. Either member of its old reference pair could have a real glyph, including U+E000 in a UI font; the comment no longer claims the loaded fonts cover every emoji. No behaviour change
 
+- 2026-10-19 — Figma links: File → Open Figma link… (Cmd+L) and `reveal_node` open the local copy a figma.com link names (newest `<name>.fig` in `FIGSTUDIO_LINK_DIRS` or `~/Downloads`, ` (N)` download suffix ignored) and reveal the node. New tests (mcp-core `local_copy`, MCP live open-link, app `link_open_tests`, `mcp_host_tests`) each seen failing without their code. Not verified: a real MCP client session against the running app, the native menu accelerator in a real window, Windows/Linux folder dialogs.

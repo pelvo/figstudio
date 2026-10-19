@@ -16,6 +16,7 @@ pub enum Binding {
     NextMatch,
     PreviousMatch,
     Open,
+    OpenLink,
     CloseFile,
     ExportSelection,
     Settings,
@@ -59,12 +60,13 @@ const SPACE_LABELS: [&str; 9] = [
 ];
 
 impl Binding {
-    pub const ALL: [Binding; 27] = [
+    pub const ALL: [Binding; 28] = [
         Binding::CommandBar,
         Binding::FindOnPage,
         Binding::NextMatch,
         Binding::PreviousMatch,
         Binding::Open,
+        Binding::OpenLink,
         Binding::CloseFile,
         Binding::ExportSelection,
         Binding::Settings,
@@ -104,6 +106,7 @@ impl Binding {
             Binding::NextMatch => "Next match",
             Binding::PreviousMatch => "Previous match",
             Binding::Open => "Open a file",
+            Binding::OpenLink => "Open a Figma link",
             Binding::CloseFile => "Close the file",
             Binding::ExportSelection => "Export the selection at 2×",
             Binding::Settings => "Settings",
@@ -132,6 +135,7 @@ impl Binding {
             | Binding::NextMatch
             | Binding::PreviousMatch
             | Binding::Open
+            | Binding::OpenLink
             | Binding::CloseFile
             | Binding::ExportSelection
             | Binding::Settings => "General",
@@ -155,6 +159,7 @@ impl Binding {
             Binding::NextMatch => k(cmd, Key::G),
             Binding::PreviousMatch => k(shift_cmd, Key::G),
             Binding::Open => k(cmd, Key::O),
+            Binding::OpenLink => k(shift_cmd, Key::L),
             Binding::CloseFile => k(cmd, Key::W),
             Binding::ExportSelection => k(shift_cmd, Key::E),
             Binding::Settings => k(cmd, Key::Comma),
@@ -186,6 +191,7 @@ impl Binding {
             Binding::NextMatch => Action::FindNext,
             Binding::PreviousMatch => Action::FindPrevious,
             Binding::Open => Action::Open,
+            Binding::OpenLink => Action::OpenLink,
             Binding::CloseFile => Action::CloseTab,
             Binding::ExportSelection => Action::ExportSelection(2.0),
             Binding::Settings => Action::Settings,

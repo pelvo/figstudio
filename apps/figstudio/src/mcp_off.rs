@@ -22,6 +22,10 @@ impl McpHost {
         None
     }
 
+    pub fn take_links(&mut self) -> Vec<(String, crate::link_open::Done)> {
+        Vec::new()
+    }
+
     pub fn sync(&mut self, _ctx: &egui::Context, _tabs: &[Tab], _active: usize) {}
 
     pub fn stop(&mut self) {}

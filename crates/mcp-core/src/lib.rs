@@ -22,6 +22,8 @@ pub mod figjam;
 pub mod fs;
 /// `figstudio://` and figma.com links.
 pub mod link;
+/// The local `.fig` copy of a figma.com link, found by file name.
+pub mod local_copy;
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
 /// Accepted Figma node ID formats.

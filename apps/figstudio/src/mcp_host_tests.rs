@@ -87,6 +87,7 @@ fn reveal_selects_and_fits_or_answers_tab_closed() {
         events: news,
         last_key: None,
         token: None,
+        links: Vec::new(),
     };
     let mut tabs = vec![tab(1, "structure.fig"), tab(2, "structure.fig")];
     let mut active = 0;
@@ -118,6 +119,47 @@ fn reveal_selects_and_fits_or_answers_tab_closed() {
     assert_eq!(tabs[1].fit_node, Some(node));
     assert_eq!(tabs[0].selection, None);
     host.running = Some(running);
+    host.stop();
+}
+
+#[test]
+fn open_link_requests_wait_for_the_app_and_carry_its_answer() {
+    let mut host = host(vec![]);
+    let (commands, inbox) = mpsc::channel();
+    let (_events, news) = mpsc::channel();
+    host.running = Some(Running {
+        addr: None,
+        cancel: CancellationToken::new(),
+        snapshot: Default::default(),
+        commands: inbox,
+        events: news,
+        last_key: None,
+        token: None,
+        links: Vec::new(),
+    });
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    let link = "https://www.figma.com/design/K/Name?node-id=1-2".to_owned();
+    commands
+        .send(Command::OpenLink {
+            link: link.clone(),
+            reply,
+        })
+        .unwrap();
+    assert!(
+        host.take_links().is_empty(),
+        "nothing before the frame drains"
+    );
+    host.frame(&mut [], &mut 0);
+    let mut links = host.take_links();
+    assert_eq!(links.len(), 1);
+    assert!(host.take_links().is_empty());
+    let (got, done) = links.remove(0);
+    assert_eq!(got, link);
+    done(Err("no local copy".to_owned()));
+    assert_eq!(
+        answer.try_recv().unwrap().unwrap_err().to_string(),
+        "no local copy"
+    );
     host.stop();
 }
 

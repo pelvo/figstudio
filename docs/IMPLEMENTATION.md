@@ -15,6 +15,11 @@ open those tabs).
 `menu_dispatch.rs` drains queued ids with repaint and synchronizes changed flags.
 macOS owns Open, Close file, selection-export, command bar (⌘L), find (⌘F) and sidebar (⌘\)
 accelerators; egui retains Shift+1
+headless/native-attach fallback. `menu_windows.rs` hosts Agent access, About and Open Figma
+link (`link_open.rs`).
+`menu_native.rs` attaches muda on macOS/Windows in the eframe creation closure;
+`menu_dispatch.rs` drains queued ids with repaint and synchronizes changed flags.
+macOS owns Open, Open Figma link (Cmd+L), Close tab and selection-export accelerators; egui retains Shift+1
 and Shift+0 (only outside text editing). Windows keeps egui shortcuts (winit does
 not translate native accelerators). Context menus remain egui. Native attachment failure logs a
 warning and keeps the drawn bar.
@@ -542,8 +547,30 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   calls `wake` (`ctx.request_repaint`). The next `frame` drains it: the tab becomes active,
   is selected, and gets `Tab.fit_node`. `canvas::fit_node` fits it on the next draw. The reply is
   `Ok`, or `Err("tab closed")`. The server waits at most 5 s (`REVEAL_TIMEOUT`).
-- **Tests:** `src/mcp_host_tests.rs` (the key, reveal with a stale tab, a busy-port fallback, no
-  free port, and an HTTP client run).
+- **Open link (server to app).** `reveal_node` with a figma.com link whose file no tab shows
+  sends `Command::OpenLink` and waits up to 60 s (`OPEN_TIMEOUT`). `drain` queues it;
+  `frame_ui` hands it to `App::go_to_link` (below) with a `Done` callback that answers the
+  server. Answers go out after `mcp.sync`, so the new tab is in the snapshot when the tool
+  returns. If the app cannot open it, the tool still tries the active tab, then reports the
+  open error. The browser bridge answers `OpenLink` with an error (no folders to search).
+- **Tests:** `src/mcp_host_tests.rs` (the key, reveal with a stale tab, an open-link request, a
+  busy-port fallback, no free port, and an HTTP client run).
+
+### Open Figma link (`link_open.rs`)
+
+- **File > Open Figma link…** (Cmd+L) opens a window with one text field: a figma.com or
+  `figstudio://` link, or a bare node ID. `parse` turns it into a `FileHint` and a node (an
+  instance path names its outer instance; a page ID switches page).
+- **Which file** (`plan`, pure): the active tab when its file stem matches
+  (`FileHint::matches`: key, or slug with spaces as `-`, ignoring a ` (N)` download suffix),
+  else the first matching tab, else the newest matching `.fig` directly inside the link
+  folders (`figstudio_mcp_core::local_copy`: `FIGSTUDIO_LINK_DIRS`, else `~/Downloads`;
+  **Choose folder…** in the window replaces the list for the session). A `.fig` does not
+  store its figma.com key, so the file name is all there is to match.
+- **Opening** pushes a `Waiting` entry and calls `App::open`; `poll` calls `link_loaded` when
+  that path finishes loading (select + `fit_node`), or `link_failed`.
+- **Tests:** `src/link_open_tests.rs` (parse, plan, an open tab, a local copy loaded and
+  answered, the window), `crates/mcp-core/tests/local_copy.rs` (matching, newest wins, folders).
 
 ### The browser app (`apps/figstudio` on wasm32)
 

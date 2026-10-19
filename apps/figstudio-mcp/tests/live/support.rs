@@ -37,9 +37,10 @@ pub fn tab(id: u64, path: PathBuf, doc: Arc<Document>, selection: Option<Guid>) 
     }
 }
 
-/// How the fake app answers [`Command::Reveal`].
+/// How the fake app answers [`Command::Reveal`] and [`Command::OpenLink`].
 pub enum Answer {
-    /// `Ok` when the tab is open, else `Err("tab closed")`.
+    /// Reveal: `Ok` when the tab is open, else `Err("tab closed")`. Open: `Ok("opened <link>")`
+    /// when the link's file name is `Openable`, else `Err("no local copy")`.
     Reply,
     /// Keep the reply sender and never answer.
     Never,
@@ -50,6 +51,8 @@ pub struct App {
     pub client: Client,
     /// Every `(tab, node)` the app was asked to reveal.
     pub revealed: Arc<std::sync::Mutex<Vec<(u64, Guid)>>>,
+    /// Every link the app was asked to open.
+    pub opened: Arc<std::sync::Mutex<Vec<String>>>,
     pub wakes: Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -75,11 +78,30 @@ pub async fn start(snapshot: Snapshot, answer: Answer) -> App {
     let (commands, inbox) = mpsc::channel::<Command>();
     let revealed = Arc::new(std::sync::Mutex::new(Vec::new()));
     let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let opened = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = revealed.clone();
+    let seen_links = opened.clone();
     let shared = snapshot.clone();
     std::thread::spawn(move || {
         let mut kept = Vec::new();
-        while let Ok(Command::Reveal { tab, node, reply }) = inbox.recv() {
+        let mut kept_links = Vec::new();
+        while let Ok(command) = inbox.recv() {
+            let (tab, node, reply) = match command {
+                Command::Reveal { tab, node, reply } => (tab, node, reply),
+                Command::OpenLink { link, reply } => {
+                    seen_links.lock().unwrap().push(link.clone());
+                    match answer {
+                        Answer::Reply if link.contains("/Openable?") => {
+                            let _ = reply.send(Ok(format!("opened {link}")));
+                        }
+                        Answer::Reply => {
+                            let _ = reply.send(Err(anyhow::anyhow!("no local copy")));
+                        }
+                        Answer::Never => kept_links.push(reply),
+                    }
+                    continue;
+                }
+            };
             seen.lock().unwrap().push((tab, node));
             match answer {
                 Answer::Reply => {
@@ -108,6 +130,7 @@ pub async fn start(snapshot: Snapshot, answer: Answer) -> App {
         snapshot,
         client,
         revealed,
+        opened,
         wakes,
     }
 }

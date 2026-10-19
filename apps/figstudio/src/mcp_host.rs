@@ -60,6 +60,8 @@ struct Running {
     last_key: Option<Key>,
     /// The bearer token of a remote bind, for the Copy button.
     token: Option<String>,
+    /// `reveal_node` links whose file no tab shows, for `App::go_to_link` (`link_open.rs`).
+    links: Vec<(String, crate::link_open::Done)>,
 }
 
 impl McpHost {
@@ -150,6 +152,14 @@ impl McpHost {
         None
     }
 
+    /// The figma.com links `reveal_node` asked the app to open since the last call.
+    pub fn take_links(&mut self) -> Vec<(String, crate::link_open::Done)> {
+        self.running
+            .as_mut()
+            .map(|running| std::mem::take(&mut running.links))
+            .unwrap_or_default()
+    }
+
     /// End of each frame: start or stop as the toggle says, and publish the tabs when what
     /// the tools see changed.
     pub fn sync(&mut self, ctx: &egui::Context, tabs: &[Tab], active: usize) {
@@ -193,12 +203,23 @@ impl Running {
         }
     }
 
-    /// Answer `reveal_node`: make the tab active, select the node and fit it into view.
+    /// Answer `reveal_node`: make the tab active, select the node and fit it into view. Links
+    /// to open are kept for [`McpHost::take_links`].
     fn drain(&mut self, tabs: &mut [Tab], active: &mut usize) {
-        while let Ok(Command::Reveal { tab, node, reply }) = self.commands.try_recv() {
-            let result = reveal(tabs, active, tab, node).map_err(anyhow::Error::msg);
-            // The tool may have timed out and dropped its receiver; nothing to tell then.
-            let _ = reply.send(result);
+        while let Ok(command) = self.commands.try_recv() {
+            match command {
+                Command::Reveal { tab, node, reply } => {
+                    let result = reveal(tabs, active, tab, node).map_err(anyhow::Error::msg);
+                    // The tool may have timed out and dropped its receiver; nothing to tell then.
+                    let _ = reply.send(result);
+                }
+                Command::OpenLink { link, reply } => {
+                    let done: crate::link_open::Done = Box::new(move |result| {
+                        let _ = reply.send(result.map_err(anyhow::Error::msg));
+                    });
+                    self.links.push((link, done));
+                }
+            }
         }
     }
 
@@ -263,6 +284,7 @@ fn start(ctx: &egui::Context, addrs: Vec<SocketAddr>, access: HttpAccess) -> Run
         events: news,
         last_key: None,
         token: bearer,
+        links: Vec::new(),
     }
 }
 

@@ -208,6 +208,42 @@ async fn reveal_reaches_the_app() {
 }
 
 #[tokio::test]
+async fn a_figma_link_to_a_file_no_tab_shows_asks_the_app_to_open_it() {
+    let app = start(two_tabs(), Answer::Reply).await;
+    let figma = |name: &str, node: &str| json!({"nodeId": format!("https://www.figma.com/design/KEY/{name}?node-id={node}&t=x")});
+    // An open tab matches by name: revealed there, nothing opened.
+    let shown = app.call("reveal_node", figma("sections", "1-5")).await;
+    assert_ne!(shown.is_error, Some(true), "{}", texts(&shown));
+    // No tab matches: the app opens the local copy and its answer is the reply.
+    let opened = app.call("reveal_node", figma("Openable", "1-4")).await;
+    assert_ne!(opened.is_error, Some(true), "{}", texts(&opened));
+    assert!(texts(&opened).starts_with("opened https://www.figma.com/design/KEY/Openable?"));
+    // No local copy, but the active tab has the node: revealed there, as before.
+    let fallback = app.call("reveal_node", figma("Missing", "1-4")).await;
+    assert_ne!(fallback.is_error, Some(true), "{}", texts(&fallback));
+    // No local copy and no such node: the open error explains it.
+    let missing = app.call("reveal_node", figma("Missing", "999-1")).await;
+    assert_eq!(missing.is_error, Some(true));
+    assert_eq!(texts(&missing), "no local copy");
+    // An explicit fileKey or a link without a file part never opens anything.
+    let keyed = json!({"nodeId": "https://www.figma.com/design/KEY/Other?node-id=1-5", "fileKey": "sections"});
+    let keyed = app.call("reveal_node", keyed).await;
+    assert_ne!(keyed.is_error, Some(true), "{}", texts(&keyed));
+    let bare = json!({"nodeId": "https://www.figma.com/?node-id=1-4"});
+    assert_ne!(app.call("reveal_node", bare).await.is_error, Some(true));
+    assert_eq!(app.opened.lock().unwrap().len(), 3);
+    assert_eq!(
+        *app.revealed.lock().unwrap(),
+        vec![
+            (9, Guid(1, 5)),
+            (7, Guid(1, 4)),
+            (9, Guid(1, 5)),
+            (7, Guid(1, 4))
+        ]
+    );
+}
+
+#[tokio::test]
 async fn reveal_times_out_when_the_app_is_silent() {
     let app = start(two_tabs(), Answer::Never).await;
     let started = std::time::Instant::now();

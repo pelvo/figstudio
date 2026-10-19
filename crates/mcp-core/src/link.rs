@@ -30,6 +30,44 @@ pub enum FileHint {
     },
 }
 
+impl FileHint {
+    /// Whether a local file with this stem is the file the link names.
+    ///
+    /// - `figstudio://<key>`: the stem equals the key.
+    /// - figma.com: the stem equals the file key, or with spaces turned into `-` equals the URL
+    ///   slug. A browser's ` (N)` suffix for a repeated download (`name (1)`) is ignored.
+    pub fn matches(&self, stem: &str) -> bool {
+        match self {
+            Self::Exact(key) => stem == key,
+            Self::Figma { key, slug } => {
+                let base = without_copy_suffix(stem);
+                base == key
+                    || slug
+                        .as_deref()
+                        .is_some_and(|slug| base.replace(' ', "-") == slug)
+            }
+        }
+    }
+
+    /// The file name to show a person: the URL slug, else the key.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Exact(key) | Self::Figma { key, slug: None } => key,
+            Self::Figma {
+                slug: Some(slug), ..
+            } => slug,
+        }
+    }
+}
+
+/// `name (1)` → `name`: the suffix browsers add to a download whose name is taken.
+fn without_copy_suffix(stem: &str) -> &str {
+    stem.strip_suffix(')')
+        .and_then(|rest| rest.rsplit_once(" ("))
+        .filter(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .map_or(stem, |(base, _)| base)
+}
+
 /// A parsed `figstudio://` or figma.com link.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Link {

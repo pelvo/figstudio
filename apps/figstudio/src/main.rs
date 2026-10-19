@@ -23,6 +23,7 @@ mod gpu_tiles_web;
 mod icons;
 mod keymap;
 mod labels;
+mod link_open;
 mod marquee;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod mcp_heartbeat;
@@ -256,6 +257,8 @@ struct App {
     /// ⌘, (`settings.rs`).
     settings: settings::Settings,
     prefs: Prefs,
+    /// File > Open Figma link and pending link requests.
+    link: link_open::LinkOpen,
     #[cfg(any(target_os = "macos", windows))]
     native_menu: Option<menu_native::NativeMenu>,
     /// The shortcuts the native menu shows (`None` inside: none, while recording).
@@ -371,6 +374,7 @@ impl App {
             show_right: true,
             settings: Default::default(),
             prefs: saved.as_ref().map(|s| s.prefs.clone()).unwrap_or_default(),
+            link: Default::default(),
             #[cfg(any(target_os = "macos", windows))]
             native_menu: None,
             #[cfg(any(target_os = "macos", windows))]
@@ -610,7 +614,7 @@ impl App {
                     self.next_id += 1;
                     #[cfg(target_arch = "wasm32")]
                     web::bind_upload(&path, id);
-                    let mut tab = Tab::new(id, path, doc, source, elapsed).with_doc_key(doc_key);
+                    let mut tab = Tab::new(id, path.clone(), doc, source, elapsed).with_doc_key(doc_key);
                     tab.tint = theme::pick_tint(&tab.title(), self.tabs.iter().map(|t| t.tint));
                     let title = tab.title();
                     tab.style = self
@@ -619,11 +623,13 @@ impl App {
                         .unwrap_or_default();
                     self.tabs.push(tab);
                     self.active = self.tabs.len() - 1;
+                    self.link_loaded(ctx, &path, self.active);
                 }
                 Loaded::Err { path, message } => {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
                     web::fail_upload(&path);
+                    self.link_failed(&path, &message);
                     self.toast(
                         ctx,
                         format!("Could not open {}: {message}", path.display()),
@@ -952,6 +958,9 @@ impl App {
         }
         // A shortcut being recorded takes the keys before anything else sees them.
         self.record_shortcut(&ctx);
+        for (link, done) in self.mcp.take_links() {
+            self.go_to_link(&ctx, &link, Some(done));
+        }
         self.native_events(&ctx);
         // Ahead of the shortcuts: the dialog's Escape must be consumed first.
         self.mcp.confirm(&ctx);
@@ -1061,6 +1070,7 @@ impl App {
         self.command_bar(&ctx);
         self.toasts(&ctx);
         self.mcp.sync(&ctx, &self.tabs, self.active);
+        self.send_link_answers();
         if let Some(tab) = self.tabs.get(self.active) {
             let title = format!("{} — {APP_NAME}", tab.title());
             if title != self.window_title {

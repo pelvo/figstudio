@@ -7,7 +7,10 @@ use crate::{
     tools::tool_error,
 };
 use figstudio_fig::{Document, Guid};
-use figstudio_mcp_core::node_id::{NodeId, parse_node_id};
+use figstudio_mcp_core::{
+    link::{FileHint, parse_link},
+    node_id::{NodeId, parse_node_id},
+};
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -82,16 +85,27 @@ impl FigstudioServer {
     }
 
     #[tool(
-        description = "Select a node in the figstudio app and show it: the tab becomes active and the view fits the node. An instance path (I1:2;3:4) reveals its outer instance. Fails when the app does not answer within 5 s."
+        description = "Select a node in the figstudio app and show it: the tab becomes active and the view fits the node. An instance path (I1:2;3:4) reveals its outer instance. A figma.com link whose file no tab shows opens the newest local copy of that name (`<file name>.fig`) from the app's link folders (default ~/Downloads), then reveals the node; other tools can read it after that. Fails when the app does not answer within 5 s (60 s while opening a file)."
     )]
     async fn reveal_node(&self, Parameters(input): Parameters<RevealInput>) -> CallToolResult {
         let Some(live) = self.live_files() else {
             return tool_error(McpError::app("live mode only"));
         };
         let key = self.file_for(input.file_key.as_deref(), Some(&input.node_id));
+        // A figma.com file no tab shows: let the app open its local copy. When that fails, the
+        // active tab is still tried, as before, and the open error is what the caller sees.
+        let mut not_opened = None;
+        if key.is_none() && names_figma_file(&input.node_id) {
+            match live.open_link(&input.node_id).await {
+                Ok(done) => {
+                    return CallToolResult::success(vec![rmcp::model::ContentBlock::text(done)]);
+                }
+                Err(error) => not_opened = Some(error),
+            }
+        }
         let picked = match live.pick(key.as_deref()) {
             Ok(picked) => picked,
-            Err(error) => return tool_error(error),
+            Err(error) => return tool_error(not_opened.unwrap_or(error)),
         };
         let (node, note) = match parse_node_id(&input.node_id) {
             Ok(NodeId::Node(id)) => (id, ""),
@@ -103,7 +117,10 @@ impl FigstudioServer {
         };
         let tab = picked.tab();
         if tab.doc.node(node).is_none() {
-            return tool_error(McpError::app(format!("node {node} is not in this file")));
+            return tool_error(
+                not_opened
+                    .unwrap_or_else(|| McpError::app(format!("node {node} is not in this file"))),
+            );
         }
         match live.reveal(tab.id, node).await {
             Ok(()) => CallToolResult::success(vec![rmcp::model::ContentBlock::text(format!(
@@ -122,6 +139,14 @@ impl FigstudioServer {
             Files::Registry(_) => None,
         }
     }
+}
+
+/// Whether `link` is a figma.com link with a file part.
+fn names_figma_file(link: &str) -> bool {
+    matches!(
+        parse_link(link).ok().and_then(|link| link.file),
+        Some(FileHint::Figma { .. })
+    )
 }
 
 fn page(tab: &TabInfo) -> Value {

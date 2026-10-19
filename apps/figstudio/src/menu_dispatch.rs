@@ -21,6 +21,7 @@ pub(crate) fn native_owned(macos: bool, attached: bool, action: Action) -> bool 
         && matches!(
             action,
             Action::Open
+                | Action::OpenLink
                 | Action::CloseTab
                 | Action::ExportSelection(2.0)
                 | Action::CommandBar

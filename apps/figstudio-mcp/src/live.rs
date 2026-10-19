@@ -22,6 +22,9 @@ use tokio::sync::oneshot;
 /// How long `reveal_node` waits for the app.
 pub const REVEAL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long `reveal_node` waits for the app to open a local copy: a large file loads for seconds.
+pub const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// What the app shows, as the tools see it.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
@@ -59,6 +62,14 @@ pub enum Command {
         node: Guid,
         /// `Ok`, or why it could not be done (such as "tab closed").
         reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    /// Open the local copy of a figma.com link whose file no tab shows (the app searches its
+    /// link folders), then reveal the link's node there.
+    OpenLink {
+        /// The link as the tool was given it.
+        link: String,
+        /// What was done, one line, or why it could not be done.
+        reply: oneshot::Sender<anyhow::Result<String>>,
     },
 }
 
@@ -213,14 +224,30 @@ impl LiveFiles {
 
     /// Ask the app to show `node` in tab `tab` and wait up to [`REVEAL_TIMEOUT`].
     pub(crate) async fn reveal(&self, tab: u64, node: Guid) -> Result<(), McpError> {
+        self.ask(REVEAL_TIMEOUT, |reply| Command::Reveal { tab, node, reply })
+            .await
+    }
+
+    /// Ask the app to open the local copy `link` names and reveal its node; wait up to
+    /// [`OPEN_TIMEOUT`]. Returns the app's one-line answer.
+    pub(crate) async fn open_link(&self, link: &str) -> Result<String, McpError> {
+        let link = link.to_owned();
+        self.ask(OPEN_TIMEOUT, |reply| Command::OpenLink { link, reply })
+            .await
+    }
+
+    /// Send the command `make` builds, wake the app and wait up to `timeout` for its answer.
+    async fn ask<T>(
+        &self,
+        timeout: Duration,
+        make: impl FnOnce(oneshot::Sender<anyhow::Result<T>>) -> Command,
+    ) -> Result<T, McpError> {
         let (reply, answer) = oneshot::channel();
         let no_reply = || McpError::app("the app did not respond");
-        self.commands
-            .send(Command::Reveal { tab, node, reply })
-            .map_err(|_| no_reply())?;
+        self.commands.send(make(reply)).map_err(|_| no_reply())?;
         (self.wake)();
-        match tokio::time::timeout(REVEAL_TIMEOUT, answer).await {
-            Ok(Ok(Ok(()))) => Ok(()),
+        match tokio::time::timeout(timeout, answer).await {
+            Ok(Ok(Ok(value))) => Ok(value),
             Ok(Ok(Err(e))) => Err(McpError::app(figstudio_fig::one_line(e.as_ref()))),
             Ok(Err(_)) | Err(_) => Err(no_reply()),
         }

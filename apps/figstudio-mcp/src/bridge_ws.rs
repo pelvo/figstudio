@@ -135,7 +135,11 @@ async fn session(mut socket: WebSocket, bridge: Arc<Bridge>) {
             _ = bridge.wake.notified() => {
                 loop {
                     let command = bridge.commands.lock().unwrap_or_else(PoisonError::into_inner).try_recv();
-                    let Ok(Command::Reveal { tab, node, reply }) = command else { break; };
+                    let (tab, node, reply) = match command {
+                        Ok(Command::Reveal { tab, node, reply }) => (tab, node, reply),
+                        Ok(Command::OpenLink { reply, .. }) => { let _ = reply.send(Err(anyhow::anyhow!(NO_LOCAL_COPIES))); continue; }
+                        Err(_) => break,
+                    };
                     next_id += 1;
                     if send(&mut socket, ServerMessage::Reveal { id: next_id, tab, node: guid_string(node) }).await.is_err() {
                         let _ = reply.send(Err(anyhow::anyhow!("browser disconnected")));
@@ -177,12 +181,23 @@ async fn session(mut socket: WebSocket, bridge: Arc<Bridge>) {
             .reply
             .send(Err(anyhow::anyhow!("browser disconnected")));
     }
-    while let Ok(Command::Reveal { reply, .. }) = bridge
+    while let Ok(command) = bridge
         .commands
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .try_recv()
     {
-        let _ = reply.send(Err(anyhow::anyhow!("browser disconnected")));
+        match command {
+            Command::Reveal { reply, .. } => {
+                let _ = reply.send(Err(anyhow::anyhow!("browser disconnected")));
+            }
+            Command::OpenLink { reply, .. } => {
+                let _ = reply.send(Err(anyhow::anyhow!("browser disconnected")));
+            }
+        }
     }
 }
+
+/// The browser app has no folders to search for the local copy of a figma.com link.
+const NO_LOCAL_COPIES: &str =
+    "the browser app cannot open local copies; open the .fig file in the browser tab first";

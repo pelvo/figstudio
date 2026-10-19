@@ -5,5 +5,6 @@ use crate::App;
 impl App {
     pub(crate) fn menu_windows(&mut self, ctx: &egui::Context) {
         self.settings_window(ctx);
+        self.link_window(ctx);
     }
 }
