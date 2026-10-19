@@ -3,7 +3,8 @@
 # instead of a terminal. The app hosts the MCP server itself (View menu); the bundle also
 # carries the standalone figstudio-mcp and figstudio-cli next to it in Contents/MacOS.
 #
-#   scripts/macos-app.sh              build target/release/figstudio.app
+#   scripts/macos-app.sh              build target/release/figstudio.app (or under
+#                                     $CARGO_TARGET_DIR when set)
 #   scripts/macos-app.sh --install    then copy it to ~/Applications
 #
 # Needs: macOS with the Xcode command line tools. Uses the same toolchain as check.sh
@@ -12,18 +13,28 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+usage() { echo "usage: scripts/macos-app.sh [--install]" >&2; exit 2; }
+install=0
+case "$#:${1:-}" in
+  0:) ;;
+  1:--install) install=1 ;;
+  *) usage ;;
+esac
+
 [ "$(uname -s)" = Darwin ] || { echo "macos-app.sh: macOS only" >&2; exit 1; }
 
-TC=()
-[ -n "${FIGSTUDIO_TOOLCHAIN:-}" ] && TC=("+$FIGSTUDIO_TOOLCHAIN")
-cargo "${TC[@]}" build --release -p figstudio -p figstudio-mcp -p figstudio-cli
+# No arrays: an empty "${a[@]}" under set -u fails in macOS's Bash 3.2. The unquoted
+# expansion is no word without FIGSTUDIO_TOOLCHAIN, one word ("+<toolchain>") with it.
+# --locked: release binaries are built from the committed Cargo.lock, never a re-resolved one.
+cargo ${FIGSTUDIO_TOOLCHAIN:+"+$FIGSTUDIO_TOOLCHAIN"} build --release --locked \
+  -p figstudio -p figstudio-mcp -p figstudio-cli
 
+out="${CARGO_TARGET_DIR:-target}/release"
 version=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
-app=target/release/figstudio.app
+app="$out/figstudio.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/figstudio target/release/figstudio-mcp target/release/figstudio-cli \
-  "$app/Contents/MacOS/"
+cp "$out/figstudio" "$out/figstudio-mcp" "$out/figstudio-cli" "$app/Contents/MacOS/"
 
 cat >"$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -50,7 +61,7 @@ codesign --force --sign - "$app/Contents/MacOS/figstudio-mcp" "$app/Contents/Mac
 codesign --force --sign - "$app"
 echo "built $app"
 
-if [ "${1:-}" = --install ]; then
+if [ "$install" = 1 ]; then
   mkdir -p "$HOME/Applications"
   rm -rf "$HOME/Applications/figstudio.app"
   cp -R "$app" "$HOME/Applications/"
