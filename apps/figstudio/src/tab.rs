@@ -192,6 +192,17 @@ impl Tab {
         }
     }
 
+    /// Reveal `node` (MCP `reveal_node`, Open Figma link): switch to it when it is a page, else
+    /// select it and fit it into view on the next draw.
+    pub fn show_node(&mut self, node: Guid) {
+        if self.doc.pages.contains(&node) {
+            self.set_page(node);
+        } else {
+            self.select(Some(node));
+            self.fit_node = Some(node);
+        }
+    }
+
     /// Selects a node, switching page if needed and expanding its ancestors in the Layers tree.
     pub fn select(&mut self, id: Option<Guid>) {
         self.selection = id;

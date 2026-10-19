@@ -231,7 +231,25 @@ async fn a_figma_link_to_a_file_no_tab_shows_asks_the_app_to_open_it() {
     assert_ne!(keyed.is_error, Some(true), "{}", texts(&keyed));
     let bare = json!({"nodeId": "https://www.figma.com/?node-id=1-4"});
     assert_ne!(app.call("reveal_node", bare).await.is_error, Some(true));
+    // A missing or bad node-id fails before anything is opened, as it does for an open file.
+    for url in [
+        "https://www.figma.com/design/KEY/Openable",
+        "https://www.figma.com/design/KEY/Openable?node-id=not-a-guid",
+    ] {
+        let bad = app.call("reveal_node", json!({"nodeId": url})).await;
+        assert_eq!(bad.is_error, Some(true), "{url}");
+    }
     assert_eq!(app.opened.lock().unwrap().len(), 3);
+    // An instance path says its outer instance is shown, on the open path too.
+    let instance = app
+        .call("reveal_node", figma("Openable", "I1-38%3B1-35"))
+        .await;
+    assert!(
+        texts(&instance).ends_with("(an instance path: its outer instance is shown)"),
+        "{}",
+        texts(&instance)
+    );
+    assert_eq!(app.opened.lock().unwrap().len(), 4);
     assert_eq!(
         *app.revealed.lock().unwrap(),
         vec![
@@ -241,6 +259,25 @@ async fn a_figma_link_to_a_file_no_tab_shows_asks_the_app_to_open_it() {
             (7, Guid(1, 4))
         ]
     );
+}
+
+#[tokio::test]
+async fn a_figma_link_finds_its_tab_when_two_tabs_share_a_stem() {
+    // Two tabs named structure.fig: their keys are full paths, not stems.
+    let mut snapshot = two_tabs();
+    let elsewhere = std::path::PathBuf::from("/elsewhere/structure.fig");
+    snapshot
+        .tabs
+        .push(tab(11, elsewhere, doc("structure.fig"), None));
+    snapshot.active = Some(9);
+    let app = start(snapshot, Answer::Reply).await;
+    let link = "https://www.figma.com/design/KEY/structure?node-id=1-4";
+    let done = app.call("reveal_node", json!({"nodeId": link})).await;
+    assert_ne!(done.is_error, Some(true), "{}", texts(&done));
+    assert!(app.opened.lock().unwrap().is_empty(), "no open request");
+    assert_eq!(*app.revealed.lock().unwrap(), vec![(7, Guid(1, 4))]);
+    let meta = app.call("get_metadata", json!({"nodeId": link})).await;
+    assert_ne!(meta.is_error, Some(true), "{}", texts(&meta));
 }
 
 #[tokio::test]

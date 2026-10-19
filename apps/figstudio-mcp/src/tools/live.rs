@@ -91,22 +91,8 @@ impl FigstudioServer {
         let Some(live) = self.live_files() else {
             return tool_error(McpError::app("live mode only"));
         };
-        let key = self.file_for(input.file_key.as_deref(), Some(&input.node_id));
-        // A figma.com file no tab shows: let the app open its local copy. When that fails, the
-        // active tab is still tried, as before, and the open error is what the caller sees.
-        let mut not_opened = None;
-        if key.is_none() && names_figma_file(&input.node_id) {
-            match live.open_link(&input.node_id).await {
-                Ok(done) => {
-                    return CallToolResult::success(vec![rmcp::model::ContentBlock::text(done)]);
-                }
-                Err(error) => not_opened = Some(error),
-            }
-        }
-        let picked = match live.pick(key.as_deref()) {
-            Ok(picked) => picked,
-            Err(error) => return tool_error(not_opened.unwrap_or(error)),
-        };
+        // The node first: a link without a valid node-id fails the same way whether or not
+        // its file is open, and never makes the app open a file.
         let (node, note) = match parse_node_id(&input.node_id) {
             Ok(NodeId::Node(id)) => (id, ""),
             Ok(NodeId::InstancePath(path)) => (
@@ -114,6 +100,24 @@ impl FigstudioServer {
                 " (an instance path: its outer instance is shown)",
             ),
             Err(error) => return tool_error(error.into()),
+        };
+        let key = self.file_for(input.file_key.as_deref(), Some(&input.node_id));
+        // A figma.com file no tab shows: let the app open its local copy. When that fails, the
+        // active tab is still tried, as before, and the open error is what the caller sees.
+        let mut not_opened = None;
+        if key.is_none() && names_figma_file(&input.node_id) {
+            match live.open_link(&input.node_id).await {
+                Ok(done) => {
+                    return CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+                        format!("{done}{note}"),
+                    )]);
+                }
+                Err(error) => not_opened = Some(error),
+            }
+        }
+        let picked = match live.pick(key.as_deref()) {
+            Ok(picked) => picked,
+            Err(error) => return tool_error(not_opened.unwrap_or(error)),
         };
         let tab = picked.tab();
         if tab.doc.node(node).is_none() {

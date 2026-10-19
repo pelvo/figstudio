@@ -45,8 +45,7 @@ pub(crate) fn reveal(
     match tabs.iter().position(|t| t.id == tab) {
         Some(i) => {
             *active = i;
-            tabs[i].select(Some(node));
-            tabs[i].fit_node = Some(node);
+            tabs[i].show_node(node);
             Ok(())
         }
         None => Err("tab closed".to_owned()),

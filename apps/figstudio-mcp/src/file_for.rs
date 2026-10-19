@@ -46,13 +46,26 @@ impl FigstudioServer {
     }
 }
 
-fn select(stems: &[String], hint: &FileHint) -> Option<String> {
+fn select(keys: &[String], hint: &FileHint) -> Option<String> {
     match hint {
         FileHint::Exact(key) => Some(key.clone()),
-        FileHint::Figma { key, .. } => stems
+        FileHint::Figma { key, .. } => keys
             .iter()
-            .find(|stem| *stem == key)
-            .or_else(|| stems.iter().find(|stem| hint.matches(stem)))
+            .find(|k| stem_of(k) == key)
+            .or_else(|| keys.iter().find(|k| hint.matches(stem_of(k))))
             .cloned(),
+    }
+}
+
+/// A file key's stem: the key itself, or for the full path live mode uses when two tabs share
+/// a stem (`/a/name.fig`), that path's stem (`name`).
+fn stem_of(key: &str) -> &str {
+    let path = std::path::Path::new(key);
+    let is_fig = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("fig"));
+    match path.file_stem().and_then(|stem| stem.to_str()) {
+        Some(stem) if is_fig && path.parent().is_some_and(|p| !p.as_os_str().is_empty()) => stem,
+        _ => key,
     }
 }

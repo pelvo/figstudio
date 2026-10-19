@@ -132,8 +132,8 @@ pub(crate) fn plan(
     })
 }
 
-/// Make tab `i` active and show `node` there: select it and fit it, or switch to it when it
-/// is a page.
+/// Make tab `i` active and show `node` there ([`Tab::show_node`]). The answer reads like
+/// `reveal_node`'s: `revealed 1:2 in tab 3`.
 fn show(
     tabs: &mut [Tab],
     active: &mut usize,
@@ -141,21 +141,16 @@ fn show(
     node: Option<Guid>,
 ) -> Result<String, String> {
     let tab = &mut tabs[i];
-    let title = tab.title();
     let Some(node) = node else {
         *active = i;
-        return Ok(format!("Showing {title}"));
+        return Ok(format!("showing tab {}", tab.id));
     };
-    if tab.doc.pages.contains(&node) {
-        tab.set_page(node);
-    } else if tab.doc.node(node).is_some() {
-        tab.select(Some(node));
-        tab.fit_node = Some(node);
-    } else {
-        return Err(format!("Node {node} is not in {title}"));
+    if tab.doc.node(node).is_none() {
+        return Err(format!("node {node} is not in {}", tab.title()));
     }
+    tab.show_node(node);
     *active = i;
-    Ok(format!("Showing node {node} in {title}"))
+    Ok(format!("revealed {node} in tab {}", tab.id))
 }
 
 impl App {
@@ -201,8 +196,10 @@ impl App {
 
     /// A file finished loading as tab `i`: show the links that were waiting for it.
     pub(crate) fn link_loaded(&mut self, ctx: &egui::Context, path: &Path, i: usize) {
+        let opened = format!(" (opened {})", self.tabs[i].title());
         for waiting in self.take_waiting(path) {
-            let result = show(&mut self.tabs, &mut self.active, i, waiting.node);
+            let result =
+                show(&mut self.tabs, &mut self.active, i, waiting.node).map(|done| done + &opened);
             self.answer(ctx, waiting.done, result);
         }
     }

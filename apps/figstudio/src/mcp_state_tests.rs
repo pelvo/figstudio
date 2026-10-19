@@ -51,3 +51,13 @@ fn shared_reveal_selects_switches_page_and_fits_without_mutating_on_closed_tab()
     );
     assert_eq!(key(&tabs, active), before);
 }
+
+#[test]
+fn revealing_a_page_switches_to_it_instead_of_selecting_it() {
+    let mut tabs = tabs();
+    let mut active = 0;
+    tabs[1].set_page(Guid(0, 99));
+    reveal(&mut tabs, &mut active, 9, Guid(0, 1)).unwrap();
+    assert_eq!((active, tabs[1].page), (1, Guid(0, 1)));
+    assert_eq!((tabs[1].selection, tabs[1].fit_node), (None, None));
+}

@@ -544,8 +544,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   only for the `Arc` clone, so the UI thread never waits for a tool call. A call that holds an
   old `Arc<Document>` finishes even when the tab closes.
 - **Reveal (server to app).** A `reveal_node` call sends `Command::Reveal` over a channel and
-  calls `wake` (`ctx.request_repaint`). The next `frame` drains it: the tab becomes active,
-  is selected, and gets `Tab.fit_node`. `canvas::fit_node` fits it on the next draw. The reply is
+  calls `wake` (`ctx.request_repaint`). The next `frame` drains it: the tab becomes active and
+  `Tab::show_node` selects the node and sets `Tab.fit_node` (a page ID switches page instead). `canvas::fit_node` fits it on the next draw. The reply is
   `Ok`, or `Err("tab closed")`. The server waits at most 5 s (`REVEAL_TIMEOUT`).
 - **Open link (server to app).** `reveal_node` with a figma.com link whose file no tab shows
   sends `Command::OpenLink` and waits up to 60 s (`OPEN_TIMEOUT`). `drain` queues it;

@@ -88,7 +88,11 @@ fn a_link_to_a_local_copy_opens_it_then_shows_the_node_and_answers() {
     assert_eq!(app.tabs[1].selection, Some(Guid(1, 5)));
     // The answer goes out at the end of the frame that loaded the file.
     let answer = rx.try_recv().unwrap().unwrap();
-    assert_eq!(answer, "Showing node 1:5 in My Design.fig");
+    let id = h.state().tabs[1].id;
+    assert_eq!(
+        answer,
+        format!("revealed 1:5 in tab {id} (opened My Design.fig)")
+    );
     // The same link again finds the tab now open: no second copy.
     let ctx = h.ctx.clone();
     h.state_mut().active = 0;
