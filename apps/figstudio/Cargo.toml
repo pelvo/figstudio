@@ -69,6 +69,10 @@ fontdb = { workspace = true }
 ttf-parser = { workspace = true }
 # The platform's config folder for saved space styles (spaces.rs).
 dirs = "6"
+# Recents: reading the page pictures back (already built for figstudio-render).
+image = { workspace = true }
+# Recents: Show in Finder / in the file manager (reveal), not a hand-rolled per-OS launch.
+opener = { version = "0.9", features = ["reveal"] }
 # Saving them atomically: a uniquely named temporary file (created new, owner-only on Unix),
 # renamed over the store (spaces.rs).
 tempfile.workspace = true

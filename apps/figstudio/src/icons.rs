@@ -42,6 +42,8 @@ pub enum Icon {
     Keyboard,
     Sparkle,
     Info,
+    Grid,
+    List,
 }
 
 /// The icon for a node type in the layer tree.
@@ -324,6 +326,17 @@ pub fn paint(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
             painter.circle_stroke(g.p(8.0, 8.0), 6.2 * g.scale, stroke);
             painter.circle_filled(g.p(8.0, 4.9), 0.95 * g.scale, color);
             capsule((8.0, 7.3), (8.0, 11.4));
+        }
+        Icon::Grid => {
+            for (x, y) in [(2.0, 2.0), (9.0, 2.0), (2.0, 9.0), (9.0, 9.0)] {
+                round_rect(g.rect(x, y, x + 5.0, y + 5.0), 1.3);
+            }
+        }
+        Icon::List => {
+            for y in [3.5, 8.0, 12.5] {
+                painter.circle_filled(g.p(2.6, y), 0.95 * g.scale, color);
+                capsule((5.5, y), (14.0, y));
+            }
         }
         Icon::Warning => {
             path(&[(8.0, 2.0), (14.5, 13.5), (1.5, 13.5)], true);

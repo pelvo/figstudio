@@ -61,6 +61,8 @@ mod onboarding;
 mod panels;
 mod pick;
 mod pick_cache;
+#[cfg(not(target_arch = "wasm32"))]
+mod recents;
 mod recordings;
 mod region_copy;
 mod region_png;
@@ -237,6 +239,8 @@ struct Prefs {
     scroll_zooms: bool,
     /// Shortcuts changed in Settings → Shortcuts.
     keymap: keymap::Keymap,
+    /// The Recents page lists files in rows instead of cards.
+    recents_list: bool,
 }
 
 impl Default for Prefs {
@@ -247,6 +251,7 @@ impl Default for Prefs {
             frame_labels: true,
             scroll_zooms: false,
             keymap: keymap::Keymap::default(),
+            recents_list: false,
         }
     }
 }
@@ -346,6 +351,9 @@ struct App {
     mcp: mcp_host::McpHost,
     /// The welcome sheet and the one-time tips (`onboarding.rs`).
     onboarding: onboarding::Onboarding,
+    /// Files opened before: the Recents page when none is open (`recents.rs`).
+    #[cfg(not(target_arch = "wasm32"))]
+    recents: recents::Recents,
 }
 
 impl App {
@@ -451,6 +459,13 @@ impl App {
                     .unwrap_or_default(),
                 !cfg!(test),
             ),
+            // Tests never read or write the user's list.
+            #[cfg(not(target_arch = "wasm32"))]
+            recents: if cfg!(test) {
+                recents::Recents::memory()
+            } else {
+                recents::Recents::load()
+            },
         };
         if let Some(saved) = saved {
             app.show_left = saved.show_left;
@@ -660,6 +675,20 @@ impl App {
                         .spaces
                         .lookup(spaces::FileId::of(&tab, &title))
                         .unwrap_or_default();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        let images = self.workers.images();
+                        self.recents
+                            .note(&tab.path, tab.doc_key.as_deref(), recents::now());
+                        self.recents
+                            .paint_thumb(ctx, &tab.path, |out| recents::ThumbJob {
+                                doc: tab.doc.clone(),
+                                page: tab.page,
+                                images,
+                                source: tab.source.clone(),
+                                out,
+                            });
+                    }
                     self.tabs.push(tab);
                     self.active = self.tabs.len() - 1;
                     self.link_loaded(ctx, &path, self.active);

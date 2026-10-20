@@ -641,11 +641,12 @@ pub(crate) fn split_handle(ui: &mut Ui, share: &mut f32) {
     );
 }
 
-/// A rounded field with a magnifier and a clear button: the layer filter.
-fn filter_field(ui: &mut Ui, text: &mut String) {
+/// A rounded field with a magnifier and a clear button: the layer filter (`fill` is
+/// `Palette::field` on the gradient), the Recents filter (`Palette::well` on a card).
+pub(crate) fn filter_field(ui: &mut Ui, text: &mut String, hint: &str, fill: Color32) {
     let p = theme::of(ui);
     egui::Frame::new()
-        .fill(p.field)
+        .fill(fill)
         .corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::symmetric(8, 2))
         .show(ui, |ui| {
@@ -659,7 +660,7 @@ fn filter_field(ui: &mut Ui, text: &mut String) {
                 ui.add_sized(
                     vec2(width, 24.0),
                     egui::TextEdit::singleline(text)
-                        .hint_text("Filter layers")
+                        .hint_text(hint)
                         .vertical_align(Align::Center)
                         .frame(egui::Frame::NONE)
                         .margin(Margin::symmetric(2, 0)),
@@ -1135,7 +1136,8 @@ impl App {
             .show(ui, |ui| panels::pages(ui, tab));
         split_handle(ui, &mut self.pages_share);
         section_label(ui, "Layers", None);
-        filter_field(ui, &mut self.layer_filter);
+        let fill = theme::of(ui).field;
+        filter_field(ui, &mut self.layer_filter, "Filter layers", fill);
         ui.add_space(4.0);
         panels::layers(ui, tab, &self.layer_filter);
     }
@@ -1322,6 +1324,8 @@ impl App {
         let mut actions = Vec::new();
         let mut cursor = None;
         let mut open_clicked = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut recent = None;
         match self.tabs.get_mut(self.active) {
             Some(tab) => self.find.update(tab, &ctx),
             None => self.find.update_without_tab(&ctx),
@@ -1369,7 +1373,14 @@ impl App {
                 None => {
                     // The next file to open fades in over its own page colour.
                     self.crossfade = Crossfade::default();
-                    open_clicked = self.empty_state(ui, card);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        recent = self.recents_page(ui, card);
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        open_clicked = self.empty_state(ui, card);
+                    }
                 }
             }
             ui.painter().rect_stroke(
@@ -1396,6 +1407,17 @@ impl App {
         });
         for action in actions {
             self.apply(action, &ctx);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if !self.tabs.is_empty() {
+                self.recents.hidden();
+            }
+            match recent {
+                Some(crate::recents::Pick::OpenDialog) => open_clicked = true,
+                Some(pick) => self.recent_picked(&ctx, pick),
+                None => {}
+            }
         }
         if open_clicked {
             self.open_dialog(&ctx);
@@ -1645,7 +1667,7 @@ impl App {
 
     /// Shown in the canvas card when no file is open. Returns true when "Open file…" was
     /// clicked.
-    fn empty_state(&self, ui: &mut Ui, card: Rect) -> bool {
+    pub(crate) fn empty_state(&self, ui: &mut Ui, card: Rect) -> bool {
         let ctx = ui.ctx().clone();
         let p = theme::of(ui);
         let tint = self.tint_now(&ctx);

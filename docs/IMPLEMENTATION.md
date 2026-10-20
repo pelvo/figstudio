@@ -116,6 +116,8 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   command.rs             the ⌘L command bar: search over commands, files, pages and layers
   onboarding.rs          first run: the welcome sheet (three pages) and one-time tips beside
                          the command field, the space dots and the sidebar button
+  recents.rs             desktop: the Recents page in the empty canvas card (cards or rows,
+                         filter, page pictures drawn in the background, saved list)
   anim.rs                springs and colour fades in egui memory; Reduce motion
   icons.rs               line icons painted on a 16-unit grid; the icon button
   vibrancy.rs            macOS only: the blur view behind the transparent window
@@ -435,6 +437,21 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   Pages/Layers split, what onboarding was seen and Settings' `Prefs` (`UiState`): the
   translucent sidebar, the renderer (applied at the next start; `FIGSTUDIO_RENDERER` wins),
   frame names and whether the scroll wheel zooms (`canvas::Options`).
+- **Recents** (`recents.rs`, desktop only). With no file open the canvas card is the Recents
+  page instead of the plain empty state: a title, a filter, a cards/rows toggle
+  (`Prefs::recents_list`) and Open file…, then one card per file opened before, newest first.
+  A card is the file's space gradient (its saved colour, else the tint its name picks) with a
+  picture of the page it opened on, its badge, its name and "Opened 3 days ago". A click
+  opens it; the right-click menu has Open, Show in Finder (`opener::reveal`) and Remove from
+  recents. With nothing opened before, the page is the old empty state under "Recents".
+  The list is `<config>/figstudio/recents.json` (full paths, owner-only, at most 60, damaged
+  entries skipped, an unreadable list left alone as with spaces); each load notes the file
+  (`App::poll`) and queues its picture: one `thumbnails` thread renders the page to fit
+  640×400 over the page colour and writes `thumbs/<hash of the path>.png` owner-only. The
+  page reads at most three pictures a frame and reloads one when the thread reports it.
+  Files that are gone when the page appears are marked Missing and do not open (a toast
+  says why). The browser has no paths to open again and keeps the plain empty state. Tests
+  use `Recents::memory()` (no file, no pictures).
 - **Onboarding** (`onboarding.rs`). The first launch (and the first launch of a version
   that adds it: `UiState` without `onboarding`) opens the welcome sheet: a modal card over the
   dimmed window, a hero in the active space's gradient with a drawn picture, three pages (the
