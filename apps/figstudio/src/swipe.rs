@@ -142,10 +142,14 @@ impl Swipe {
                 }
                 // Moves in the frame their swipe started in have that frame's time too: they
                 // took at most the time since the last frame (a whole flick can land in one),
-                // and with nothing before them to smooth against, count in full.
+                // and with nothing before them to smooth against, count in full. That is a
+                // lower bound: in a long hitch a short flick may read as a drag and spring
+                // back, rather than a slow drag the stall batched turning a page. Between
+                // separate events, a gap of 0.1 s or more is stale and not a speed; here it
+                // is the only measure there is.
                 let same_frame = gap <= 0.0 && self.started == Some(frame);
                 let gap = if same_frame { now - self.frames.0 } else { gap };
-                if gap > 0.0 && gap < 0.1 {
+                if gap > 0.0 && (same_frame || gap < 0.1) {
                     let speed = delta.x / gap as f32;
                     self.velocity = if same_frame {
                         speed
@@ -287,6 +291,25 @@ mod tests {
         assert_eq!(end.offset, -100.0);
         assert!(end.velocity <= -FLICK_SPEED, "{}", end.velocity);
         assert_eq!(end.turn(400.0), -1, "a flick, not a slow drag");
+        // A hitch past 0.1 s still gives a speed: 110 points in 0.12 s is a flick on a wide
+        // sidebar, though short of a third of it.
+        let mut s = Swipe::default();
+        s.feed_frame(&[], 3.0, 10);
+        let mut flick = vec![(Vec2::ZERO, TouchPhase::Start)];
+        flick.extend([(vec2(-27.5, 0.0), TouchPhase::Move); 4]);
+        flick.push((Vec2::ZERO, TouchPhase::End));
+        let end = s.feed_frame(&flick, 3.12, 11).expect("ended");
+        assert!(end.velocity <= -FLICK_SPEED, "{}", end.velocity);
+        assert_eq!(end.turn(400.0), -1);
+        // The speed is a lower bound (the whole hitch): 60 points in 80 ms on the default
+        // sidebar (about 220 wide) reads as a short drag and springs back, by choice.
+        let mut s = Swipe::default();
+        s.feed_frame(&[], 4.0, 20);
+        let mut short = vec![(Vec2::ZERO, TouchPhase::Start)];
+        short.extend([(vec2(-15.0, 0.0), TouchPhase::Move); 4]);
+        short.push((Vec2::ZERO, TouchPhase::End));
+        let end = s.feed_frame(&short, 4.08, 21).expect("ended");
+        assert_eq!(end.turn(220.0), 0, "{end:?}");
         // A swipe that started in an earlier frame measures from that frame, as before.
         let mut s = Swipe::default();
         s.feed_frame(&[(Vec2::ZERO, TouchPhase::Start)], 2.0, 3);

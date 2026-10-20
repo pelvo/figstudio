@@ -413,7 +413,10 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   its own end; one momentum per lift, so a start after it is new fingers. The moves of one
   frame share its time, so `Swipe::feed_frame` counts them as one sample (their sum over the
   frame time) for the flick speed; in the frame a swipe started in, that is the time since
-  the last frame, counted in full, so a flick that lands whole in one frame still turns. A click on the next or previous dot turns a whole page
+  the last frame (with no 0.1 s ceiling), counted in full. It is a lower bound: a flick that
+  lands whole in one frame turns when it is fast over the whole hitch (100 points in 50 ms,
+  110 in 120 ms), while a short one in a long hitch (60 points in 80 ms) reads as a drag and
+  springs back, rather than a slow drag the stall batched turning a page. A click on the next or previous dot turns a whole page
   too, and both pages stay side by side until the spring settles; only a far jump's short
   nudge fades (`App::slide_nudge`, `chrome::sidebar_pages`). The lists scroll vertically
   only.
