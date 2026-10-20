@@ -8,7 +8,8 @@
 #
 # Retry: if the macOS build failed, or a release has no assets, run this workflow by hand
 # (Actions > release-please > Run workflow) with the release's tag. It rebuilds that tag and
-# replaces the assets.
+# replaces the assets. With "npm dry run" ticked instead, it builds the npm packages from the
+# chosen branch, checks the npm token and runs npm publish --dry-run: nothing is published.
 #
 # Token: GITHUB_TOKEN, which needs Settings > Actions > General > Workflow permissions >
 # "Allow GitHub Actions to create and approve pull requests" (on in the org and this repo).
@@ -32,8 +33,15 @@ on:
     inputs:
       tag:
         description: Existing release tag to rebuild and attach assets to (for example v0.1.0)
-        required: true
+        required: false
         type: string
+      dry_run:
+        description: >-
+          npm dry run: build the npm packages from the chosen branch, check the npm token
+          (npm whoami) and run npm publish --dry-run. Publishes nothing; the tag is not used.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -61,7 +69,7 @@ jobs:
     # !cancelled(): on a manual run the release-please job is skipped, which would skip this
     # job too without it.
     if: >-
-      !cancelled() && (github.event_name == 'workflow_dispatch'
+      !cancelled() && ((github.event_name == 'workflow_dispatch' && !inputs.dry_run)
       || needs.release-please.outputs.release_created == 'true')
     # Apple silicon runner: the build is arm64.
     runs-on: macos-latest
@@ -141,10 +149,12 @@ jobs:
         shell: bash
     steps:
       - name: Check the tag
+        if: ${{ !inputs.dry_run }}
         run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ env.TAG }}
+          # A dry run builds the branch it was started on.
+          ref: ${{ inputs.dry_run && github.ref || format('refs/tags/{0}', env.TAG) }}
           persist-credentials: false
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal --target "${{ matrix.target }}" && rustup default stable
@@ -176,11 +186,12 @@ jobs:
       id-token: write # npm provenance
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
+      DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
       NODE_AUTH_TOKEN: ${{ secrets.NPMAPIKEY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: ${{ inputs.dry_run && github.ref || format('refs/tags/{0}', env.TAG) }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -192,7 +203,9 @@ jobs:
           path: bins
       - name: Assemble the packages
         run: |
-          node scripts/npm-pack.mjs --version "${TAG#v}" --out dist/npm --require-all \
+          if [ "$DRY_RUN" = true ]; then v="0.0.0-dryrun.$GITHUB_RUN_NUMBER"; else v="${TAG#v}"; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          node scripts/npm-pack.mjs --version "$v" --out dist/npm --require-all \
             --bin linux-x64=bins/npm-bin-linux-x64/figstudio-mcp \
             --bin linux-arm64=bins/npm-bin-linux-arm64/figstudio-mcp \
             --bin darwin-arm64=bins/npm-bin-darwin-arm64/figstudio-mcp \
@@ -204,10 +217,18 @@ jobs:
             echo "::notice::NPMAPIKEY is not set in the npm_key environment; the packages were assembled but not published"
             exit 0
           fi
-          v="${TAG#v}"
+          v="$VERSION"
+          if [ "$DRY_RUN" = true ]; then
+            # Fails here if the token is wrong or expired.
+            echo "npm user: $(npm whoami)"
+          fi
           # Platform packages first, so the launcher never names a version that is not there.
           for dir in dist/npm/figstudio-mcp-* dist/npm/figstudio-mcp; do
             name=$(node -p "require('./$dir/package.json').name")
+            if [ "$DRY_RUN" = true ]; then
+              npm publish "./$dir" --access public --dry-run
+              continue
+            fi
             if npm view "$name@$v" version >/dev/null 2>&1; then
               echo "$name@$v is already on npm"
               continue
