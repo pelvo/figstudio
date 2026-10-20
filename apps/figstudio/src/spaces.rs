@@ -651,9 +651,8 @@ mod tests {
             .clear();
         let font = egui::FontId::proportional(14.0);
         ctx.fonts_mut(|fonts| {
-            // `has_glyph` misses egui's emoji font here; compare with the box drawn for a
-            // character no font has instead. Private-use characters of plane 16: the system
-            // fonts loaded too cover any emoji on some machines, but not these.
+            // Compare with the replacement glyph using plane-16 private-use characters.
+            // The old pair was font-dependent: a font may cover either U+E000 or U+1F9E9.
             let mut drawn = |s: &str| {
                 let galley = fonts.layout_no_wrap(s.into(), font.clone(), egui::Color32::WHITE);
                 galley.rows[0].glyphs[0].uv_rect
