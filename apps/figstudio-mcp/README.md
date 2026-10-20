@@ -12,6 +12,19 @@ app, a Figma account or a network connection.
   to that date.
 - Tools that cannot work offline are **not registered**. See [Not replicated](#not-replicated).
 
+## Install
+
+```sh
+cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp
+```
+
+That puts `figstudio-mcp` in `~/.cargo/bin`. To give it to Claude Code with the public
+browser app in one line (see [the browser proxy](#in-the-browser-local-zero-upload-proxy---browser-proxy)):
+
+```sh
+cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp && claude mcp add figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev
+```
+
 ## Build
 
 ```sh
@@ -128,8 +141,11 @@ upload, no Cloudflare Access bypass, and no manual token pasting.
 
 ```sh
 cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp
-claude mcp add figstudio -- figstudio-mcp --origin https://<your-deploy-domain>
+claude mcp add figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev
 ```
+
+`https://figstudio.pelvo.dev` is the public browser build (static, no cloud relay, no
+sign-in). Use your own deploy's origin in its place if you run one.
 
 Or in `.mcp.json` / Cursor / Windsurf:
 
@@ -138,14 +154,15 @@ Or in `.mcp.json` / Cursor / Windsurf:
   "mcpServers": {
     "figstudio": {
       "command": "figstudio-mcp",
-      "args": ["--origin", "https://<your-deploy-domain>"]
+      "args": ["--origin", "https://figstudio.pelvo.dev"]
     }
   }
 }
 ```
 
-- `figstudio-mcp --origin https://<your-deploy-domain>` (or `figstudio-mcp --browser-proxy`
-  for a local `http://127.0.0.1:8765` web build) speaks `stdio` to the agent, binds
+- `figstudio-mcp --origin https://figstudio.pelvo.dev` (or `figstudio-mcp --browser-proxy`
+  for a local `http://127.0.0.1:8765` web build; without `--origin` that local address is
+  what `open_figstudio_browser` opens) speaks `stdio` to the agent, binds
   `ws://127.0.0.1:<port>/bridge` on loopback (trying `3845..=3855` first, then an ephemeral
   port), and mints a 256-bit process token (never printed to `stderr`).
 - When the agent calls `open_figstudio_browser`, the proxy opens
@@ -309,8 +326,12 @@ command = "/path/to/figstudio-mcp"
 args = ["/path/to/design.fig"]
 ```
 
-These examples are written from each client's documented config format. No live client
-has been tested against this server yet.
+For the browser proxy instead of a file, replace the arguments with
+`["--origin", "https://figstudio.pelvo.dev"]` (Codex: `args = ["--origin", "https://figstudio.pelvo.dev"]`).
+
+These examples are written from each client's documented config format. The Claude Code
+`claude mcp add` line was run with Claude Code 2.1.304 and writes the stdio entry shown
+above; no client has been run against the server end to end yet.
 
 ## Files and IDs
 
