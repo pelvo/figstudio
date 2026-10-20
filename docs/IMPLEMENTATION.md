@@ -457,7 +457,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 - **Find on page** (`find.rs`, ⌘F, View → Find on page…): matches text layers of the page
   and text drawn inside instances (`resolve::walk_instance` with overrides, boxed with
   `Renderer::path_bounds`) and the names drawn above frames and sections (`Hit::Name`, the
-  frames `labels::named` lists), sorted top to bottom. The canvas highlights them (a name on
+  frames `labels::named` lists), sorted top to bottom. Only what is drawn: the page walk
+  skips hidden layers and everything in them, and `path_bounds` gives a layer hidden inside
+  an instance no box. The canvas highlights them (a name on
   its label when the label is drawn, else round its frame); Enter / ⌘G and
   Shift for the previous one; a match is brought into view only when it is off screen or too
   small to read in the target view (`Tab::view`, where an ease ends). At most 5000 matches

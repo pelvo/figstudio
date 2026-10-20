@@ -195,8 +195,13 @@ fn find_at_most(doc: &Document, page: Guid, query: &str, cap: usize) -> Vec<Hit>
     let mut instances = Vec::new();
     let mut stack: Vec<Guid> = doc.children(page).to_vec();
     while let Some(id) = stack.pop() {
+        let node = doc.node(id);
+        // A hidden layer is not drawn, and neither is anything inside it.
+        if node.is_some_and(|n| n.data.flag("visible") == Some(false)) {
+            continue;
+        }
         stack.extend(doc.children(id).iter().copied());
-        let Some(node) = doc.node(id) else { continue };
+        let Some(node) = node else { continue };
         if node.kind == "INSTANCE" {
             instances.push(placed(Hit::Node(id)));
         } else if crate::copy::text(node).is_some_and(matches) {
@@ -231,6 +236,7 @@ fn find_at_most(doc: &Document, page: Guid, query: &str, cap: usize) -> Vec<Hit>
             if !is_text || !text.is_some_and(matches) {
                 continue;
             }
+            // No bounds for a layer hidden in the instance, or under one: it is not drawn.
             if let Some(b) = renderer.path_bounds(doc, &inside.path) {
                 let rect = Rect::from_min_max(
                     Pos2::new(b.x0 as f32, b.y0 as f32),
@@ -439,6 +445,120 @@ mod tests {
             find_text(&doc, page, "Symbol and images").is_empty(),
             "as in a browser, the words must appear as typed"
         );
+    }
+
+    /// The fixture with every node `hide` picks set hidden.
+    fn fixture_hiding(hide: impl Fn(&figstudio_fig::Node) -> bool) -> Document {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/structure.fig");
+        let mut doc = Document::open(path).expect("fixture");
+        let mut nodes = doc.nodes.clone();
+        for node in nodes.iter_mut().filter(|n| hide(n)) {
+            if let figstudio_fig::Val::Obj(data) = &mut node.data {
+                data.insert("visible", figstudio_fig::Val::Bool(false));
+            }
+        }
+        doc.set_nodes(nodes).expect("nodes");
+        doc
+    }
+
+    #[test]
+    fn hidden_layers_and_what_is_inside_them_are_not_found() {
+        // The component's "ABC" text layer hidden: neither it nor the instances drawing it
+        // (one of them with its text overridden to "XYZ") show any text.
+        let abc = |n: &figstudio_fig::Node| crate::copy::text(n).is_some_and(|t| t == "ABC");
+        let doc = fixture_hiding(abc);
+        let page = doc.pages[0];
+        assert!(
+            find_text(&doc, page, "abc").is_empty(),
+            "the layer and an instance"
+        );
+        assert!(
+            find_text(&doc, page, "xyz").is_empty(),
+            "inside an instance"
+        );
+        // The instances hidden: the component's own layer is still found, theirs are not
+        // (they are not walked; `path_bounds` would give a hidden one no bounds either).
+        let doc = fixture_hiding(|n| n.kind == "INSTANCE");
+        let page = doc.pages[0];
+        let found = find_text(&doc, page, "abc");
+        assert!(matches!(found[..], [Hit::Node(_)]), "{found:?}");
+        assert!(find_text(&doc, page, "xyz").is_empty());
+        // On a page of its own: a visible "match", a hidden one, and one in a hidden frame.
+        let doc = hidden_and_shown();
+        let found = find_text(&doc, doc.pages[0], "match");
+        assert!(
+            matches!(found[..], [Hit::Node(id)] if id == Guid(9, 2)),
+            "{found:?}"
+        );
+    }
+
+    /// A page with a text layer "match" shown, one hidden, and one in a hidden frame.
+    fn hidden_and_shown() -> Document {
+        use figstudio_fig::{Node, Obj, Val};
+        let obj = |fields: &[(&str, Val)]| {
+            let mut o = Obj::new();
+            for (k, v) in fields {
+                o.insert(k, v.clone());
+            }
+            Val::Obj(o)
+        };
+        let (page, frame) = (Guid(9, 1), Guid(9, 5));
+        let layer = |id: Guid, kind: &str, under: Guid, y: f64, shown: bool| {
+            let mut fields = vec![
+                ("guid", id.to_val()),
+                ("type", Val::Str(kind.into())),
+                ("name", Val::Str(kind.into())),
+                (
+                    "parentIndex",
+                    obj(&[
+                        ("guid", under.to_val()),
+                        ("position", Val::Str(format!("{y}"))),
+                    ]),
+                ),
+                (
+                    "size",
+                    obj(&[("x", Val::Float(80.0)), ("y", Val::Float(20.0))]),
+                ),
+                (
+                    "transform",
+                    obj(&[
+                        ("m00", Val::Float(1.0)),
+                        ("m11", Val::Float(1.0)),
+                        ("m12", Val::Float(y)),
+                    ]),
+                ),
+                ("visible", Val::Bool(shown)),
+            ];
+            if kind == "TEXT" {
+                fields.push(("textData", obj(&[("characters", Val::Str("match".into()))])));
+            }
+            Node::from_data(obj(&fields)).expect("layer")
+        };
+        let nodes = vec![
+            Node::from_data(obj(&[
+                ("guid", page.to_val()),
+                ("type", Val::Str("CANVAS".into())),
+                ("name", Val::Str("Page".into())),
+                (
+                    "parentIndex",
+                    obj(&[
+                        ("guid", Guid(0, 0).to_val()),
+                        ("position", Val::Str("0".into())),
+                    ]),
+                ),
+            ]))
+            .expect("page"),
+            layer(Guid(9, 2), "TEXT", page, 0.0, true),
+            layer(Guid(9, 3), "TEXT", page, 40.0, false),
+            layer(frame, "FRAME", page, 80.0, false),
+            layer(Guid(9, 4), "TEXT", frame, 0.0, true),
+        ];
+        let bytes = include_bytes!("../../../tests/fixtures/structure.fig");
+        let mut doc = Document::from_bytes(bytes).expect("fixture");
+        doc.set_nodes(nodes).expect("nodes");
+        doc.pages = vec![page];
+        doc
     }
 
     /// A page of text layers "match" stacked top to bottom, listed bottom first in the
