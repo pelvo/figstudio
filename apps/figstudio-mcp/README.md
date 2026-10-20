@@ -165,11 +165,17 @@ Or in `.mcp.json` / Cursor / Windsurf:
   what `open_figstudio_browser` opens) speaks `stdio` to the agent, binds
   `ws://127.0.0.1:<port>/bridge` on loopback (trying `3845..=3855` first, then an ephemeral
   port), and mints a 256-bit process token (never printed to `stderr`).
-- When the agent calls `open_figstudio_browser`, the proxy opens
-  `https://<your-deploy-domain>/#mcpProxyPort=<port>&mcpProxyToken=<token>` in your default
-  browser (`$BROWSER`, `open`, `xdg-open`, or `rundll32 url.dll,FileProtocolHandler`), strips the `#fragment` immediately,
-  and waits up to 60 s for the tab's `ready` v2 frame before emitting
+- When the agent calls `open_figstudio_browser`, the proxy opens the first `--origin` as
+  `https://figstudio.pelvo.dev/#mcpProxyPort=<port>&mcpProxyToken=<token>` (your own
+  deploy's origin if you passed that instead) in your default browser (`$BROWSER`, `open`,
+  `xdg-open`, or `rundll32 url.dll,FileProtocolHandler`). The page strips the `#fragment`
+  immediately, and the proxy waits up to 60 s for the tab's `ready` v2 frame before emitting
   `notifications/tools/list_changed`.
+- **Safari cannot pair with an `https://` origin:** WebKit blocks `ws://127.0.0.1` from
+  `https://` pages as mixed content (Chromium, Edge and Firefox allow loopback). With
+  Safari as the default browser, set `BROWSER` to another one, for example
+  `claude mcp add figstudio -e 'BROWSER=open -a "Google Chrome"' -- figstudio-mcp --origin https://figstudio.pelvo.dev`,
+  or use `--browser-proxy` with the local `http://127.0.0.1:8765` build.
 - `list_sessions` and `select_session` work identically when multiple tabs connect.
 
 ### In the browser (cloud relay and multi-device sessions)
@@ -329,9 +335,25 @@ args = ["/path/to/design.fig"]
 For the browser proxy instead of a file, replace the arguments with
 `["--origin", "https://figstudio.pelvo.dev"]` (Codex: `args = ["--origin", "https://figstudio.pelvo.dev"]`).
 
-These examples are written from each client's documented config format. The Claude Code
-`claude mcp add` line was run with Claude Code 2.1.304 and writes the stdio entry shown
-above; no client has been run against the server end to end yet.
+These examples are written from each client's documented config format. With Claude Code
+2.1.304, `claude mcp add -s project figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev`
+writes this `.mcp.json` entry (without `-s project`, the default `local` scope stores the
+same entry privately for that project):
+
+```json
+{
+  "mcpServers": {
+    "figstudio": {
+      "type": "stdio",
+      "command": "figstudio-mcp",
+      "args": ["--origin", "https://figstudio.pelvo.dev"],
+      "env": {}
+    }
+  }
+}
+```
+
+No client has been run against the server end to end yet.
 
 ## Files and IDs
 
