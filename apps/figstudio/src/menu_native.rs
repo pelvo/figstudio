@@ -13,6 +13,7 @@ pub(crate) struct NativeMenu {
 }
 
 struct Entry {
+    label: &'static str,
     action: Option<Action>,
     kind: Kind,
     enabled: bool,
@@ -124,9 +125,20 @@ impl NativeMenu {
         for entry in &self.items {
             let Some(action) = entry.action else { continue };
             let accelerator = accelerator(action, keys);
+            let label = crate::menu_dispatch::native_label(
+                entry.label,
+                keys.and_then(|keys| keys.for_action(action)),
+                accelerator.is_some(),
+            );
             let set = match &entry.kind {
-                Kind::Item(i) => i.set_accelerator(accelerator),
-                Kind::Check(i) => i.set_accelerator(accelerator),
+                Kind::Item(i) => {
+                    i.set_text(&label);
+                    i.set_accelerator(accelerator)
+                }
+                Kind::Check(i) => {
+                    i.set_text(&label);
+                    i.set_accelerator(accelerator)
+                }
                 Kind::Group(_) => Ok(()),
             };
             if let Err(error) = set {
@@ -195,6 +207,7 @@ fn macos_app_menu(
     let quit = MenuItem::new("Quit figstudio", true, Some("Cmd+Q".parse()?));
     app_menu.append(&quit)?;
     entries.push(Entry {
+        label: "Quit figstudio",
         action: Some(Action::Quit),
         kind: Kind::Item(quit),
         enabled: true,
@@ -233,12 +246,11 @@ fn add(
     }
     let kind = if let Some(action) = item.action {
         let accelerator = accelerator(action, keys);
-        // The egui labels include textual hints; native menus render their own accelerators.
-        let label = if accelerator.is_some() {
-            item.label.split("   ").next().unwrap_or(item.label)
-        } else {
-            item.label
-        };
+        let label = crate::menu_dispatch::native_label(
+            item.label,
+            keys.and_then(|keys| keys.for_action(action)),
+            accelerator.is_some(),
+        );
         if let Some(checked) = item.checked {
             let i = CheckMenuItem::new(label, item.enabled, checked, accelerator);
             parent.append(&i)?;
@@ -257,6 +269,7 @@ fn add(
         Kind::Group(group)
     };
     entries.push(Entry {
+        label: item.label,
         action: item.action,
         kind,
         enabled: item.enabled,

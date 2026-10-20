@@ -31,6 +31,26 @@ pub(crate) fn native_owned(macos: bool, attached: bool, action: Action) -> bool 
         )
 }
 
+/// A native shortcut column is a hint only when no accelerator renders the binding.
+#[cfg_attr(not(any(target_os = "macos", windows, test)), expect(dead_code))]
+pub(crate) fn native_label(
+    label: &str,
+    shortcut: Option<egui::KeyboardShortcut>,
+    has_accelerator: bool,
+) -> String {
+    let label = label.split("   ").next().unwrap_or(label);
+    if !has_accelerator && let Some(shortcut) = shortcut {
+        let macos = cfg!(target_os = "macos");
+        let names = if macos {
+            egui::ModifierNames::SYMBOLS
+        } else {
+            egui::ModifierNames::NAMES
+        };
+        return format!("{label}\t{}", shortcut.format(&names, macos));
+    }
+    label.to_owned()
+}
+
 fn show_drawn_bar(attached: bool) -> bool {
     !attached
 }
@@ -123,6 +143,44 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_label_tracks_unowned_shortcuts() {
+        use crate::keymap::{Binding, Keymap};
+        use egui::{Key, KeyboardShortcut, ModifierNames, Modifiers};
+
+        let mut keys = Keymap::default();
+        let macos = cfg!(target_os = "macos");
+        let names = if macos {
+            ModifierNames::SYMBOLS
+        } else {
+            ModifierNames::NAMES
+        };
+        for (action, binding, label) in [
+            (Action::CopyText, Binding::Copy, "Copy text"),
+            (Action::SelectAllText, Binding::SelectAll, "Select all text"),
+        ] {
+            let shortcut = keys.for_action(action).unwrap();
+            assert_eq!(
+                native_label(label, Some(shortcut), false),
+                format!("{label}\t{}", shortcut.format(&names, macos)),
+            );
+            let rebound = KeyboardShortcut::new(Modifiers::ALT, Key::F8);
+            keys.set(binding, Some(rebound));
+            assert_eq!(
+                native_label(label, keys.for_action(action), false),
+                format!("{label}\t{}", rebound.format(&names, macos)),
+            );
+            keys.set(binding, None);
+            assert_eq!(native_label(label, keys.for_action(action), false), label);
+            assert_eq!(native_label(label, None, false), label, "recording");
+        }
+        assert_eq!(
+            native_label("Open…   Ctrl+O", keys.for_action(Action::Open), true),
+            "Open…",
+            "the accelerator supplies the owned action's shortcut",
+        );
+    }
 
     #[test]
     fn keys_a_menu_cannot_show_stay_with_egui() {
