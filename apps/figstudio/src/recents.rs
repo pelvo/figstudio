@@ -108,6 +108,8 @@ pub struct Recents {
     /// The page was drawn in the last frame.
     shown: bool,
     pub filter: String,
+    /// The space colour of the card under the pointer: the window takes it (`App::tint_now`).
+    pub hover: Option<theme::Colour>,
 }
 
 impl std::fmt::Debug for Recents {
@@ -132,6 +134,7 @@ impl Recents {
             missing: HashSet::new(),
             shown: false,
             filter: String::new(),
+            hover: None,
         }
     }
 
@@ -356,6 +359,7 @@ impl Recents {
     /// The page was not drawn this frame (a file is open).
     pub fn hidden(&mut self) {
         self.shown = false;
+        self.hover = None;
     }
 }
 
@@ -447,6 +451,7 @@ fn folder_label(path: &Path) -> String {
 /// What one card or row shows.
 struct Card {
     path: PathBuf,
+    colour: theme::Colour,
     name: String,
     when: String,
     style: Style,
@@ -462,6 +467,7 @@ impl App {
         let ctx = ui.ctx().clone();
         let p = theme::of(ui);
         self.recents.begin_frame();
+        self.recents.hover = None;
         let inner = card.shrink2(vec2(32.0, 26.0));
         let header = Rect::from_min_size(inner.min, vec2(inner.width(), 34.0));
         let mut title = ui.new_child(
@@ -561,6 +567,7 @@ impl App {
                 .unwrap_or(theme::Colour::Preset(theme::pick_tint(&file, [])));
             let texture = self.recents.texture(&ctx, &e.path, &mut budget);
             cards.push(Card {
+                colour,
                 missing: self.recents.is_missing(&e.path),
                 when: ago(now, e.opened),
                 tint: theme::space_tint(colour, dark),
@@ -592,11 +599,13 @@ impl App {
             .id_salt("recents-scroll")
             .auto_shrink([false, false])
             .show(&mut body_ui, |ui| {
+                let mut hovered = None;
                 let picked = if list {
-                    list_rows(ui, &cards)
+                    list_rows(ui, &cards, &mut hovered)
                 } else {
-                    grid(ui, &cards)
+                    grid(ui, &cards, &mut hovered)
                 };
+                self.recents.hover = hovered;
                 pick = picked.or(pick.take());
             });
         pick
@@ -630,7 +639,7 @@ impl App {
 }
 
 /// The cards in as many columns as fit.
-fn grid(ui: &mut Ui, cards: &[Card]) -> Option<Pick> {
+fn grid(ui: &mut Ui, cards: &[Card], hovered: &mut Option<theme::Colour>) -> Option<Pick> {
     let width = ui.available_width();
     let cols = ((width + CARD_GAP) / (CARD_MIN + CARD_GAP))
         .floor()
@@ -656,16 +665,22 @@ fn grid(ui: &mut Ui, cards: &[Card]) -> Option<Pick> {
         if !ui.is_rect_visible(rect) {
             continue;
         }
-        if let Some(p) = grid_card(ui, rect, preview, card) {
+        if let Some(p) = grid_card(ui, rect, preview, card, hovered) {
             pick = Some(p);
         }
     }
     pick
 }
 
-fn grid_card(ui: &mut Ui, rect: Rect, preview: f32, card: &Card) -> Option<Pick> {
+fn grid_card(
+    ui: &mut Ui,
+    rect: Rect,
+    preview: f32,
+    card: &Card,
+    hovered: &mut Option<theme::Colour>,
+) -> Option<Pick> {
     let p = theme::of(ui);
-    let response = card_response(ui, rect, card);
+    let response = card_response(ui, rect, card, hovered);
     let hover =
         ui.ctx()
             .animate_bool_with_time(response.id.with("hover"), response.hovered(), 0.14);
@@ -706,7 +721,7 @@ fn grid_card(ui: &mut Ui, rect: Rect, preview: f32, card: &Card) -> Option<Pick>
 }
 
 /// One row per file: a small picture, the name and folder, when it was opened.
-fn list_rows(ui: &mut Ui, cards: &[Card]) -> Option<Pick> {
+fn list_rows(ui: &mut Ui, cards: &[Card], hovered: &mut Option<theme::Colour>) -> Option<Pick> {
     let width = ui.available_width();
     let (area, _) = ui.allocate_exact_size(vec2(width, cards.len() as f32 * ROW), Sense::hover());
     let mut pick = None;
@@ -716,7 +731,7 @@ fn list_rows(ui: &mut Ui, cards: &[Card]) -> Option<Pick> {
             continue;
         }
         let p = theme::of(ui);
-        let response = card_response(ui, rect, card);
+        let response = card_response(ui, rect, card, hovered);
         let hover =
             ui.ctx()
                 .animate_bool_with_time(response.id.with("hover"), response.hovered(), 0.1);
@@ -771,8 +786,14 @@ fn list_rows(ui: &mut Ui, cards: &[Card]) -> Option<Pick> {
     pick
 }
 
-/// The clickable area of a card or row, named for screen readers.
-fn card_response(ui: &mut Ui, rect: Rect, card: &Card) -> Response {
+/// The clickable area of a card or row, named for screen readers. Notes its colour in
+/// `hovered` while the pointer is on it.
+fn card_response(
+    ui: &mut Ui,
+    rect: Rect,
+    card: &Card,
+    hovered: &mut Option<theme::Colour>,
+) -> Response {
     let response = ui.interact(rect, Id::new(("recent", &card.path)), Sense::click());
     let label = if card.missing {
         format!("{} (missing)", card.name)
@@ -782,6 +803,7 @@ fn card_response(ui: &mut Ui, rect: Rect, card: &Card) -> Response {
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        *hovered = Some(card.colour);
     }
     response
 }

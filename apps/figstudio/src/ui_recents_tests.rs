@@ -119,3 +119,31 @@ fn a_moved_file_says_so_and_does_not_open() {
     h.run_steps(3);
     assert!(h.state().recents.entries().is_empty());
 }
+
+#[test]
+fn the_window_is_slate_and_takes_the_colour_of_the_card_under_the_pointer() {
+    let mut h = with_recents(&[fixture(FIXTURE)]);
+    let dark = crate::theme::palette(&h.ctx).dark;
+    let tint = |h: &Harness<'_, App>| h.state().tint_now(&h.ctx);
+    let slate = crate::theme::tint(7, dark);
+    assert_eq!(crate::theme::TINT_NAMES[crate::theme::HOME_TINT], "Slate");
+    assert_eq!(tint(&h).accent, slate.accent, "no file open: slate");
+    let card = crate::theme::space_tint(
+        crate::theme::Colour::Preset(crate::theme::pick_tint(FIXTURE, [])),
+        dark,
+    );
+    assert_ne!(
+        card.accent, slate.accent,
+        "the test needs a card of another colour"
+    );
+    h.get_by_label(FIXTURE).hover();
+    h.run_steps(3);
+    assert_eq!(
+        tint(&h).accent,
+        card.accent,
+        "the hovered card's space colour"
+    );
+    h.event(egui::Event::PointerMoved(egui::pos2(5.0, SIZE.y - 5.0)));
+    h.run_steps(3);
+    assert_eq!(tint(&h).accent, slate.accent, "back to slate off the card");
+}

@@ -747,10 +747,15 @@ impl App {
     /// The gradient of the active file, crossfading when the file changes.
     pub(crate) fn tint_now(&self, ctx: &egui::Context) -> Tint {
         let dark = theme::palette(ctx).dark;
-        let colour = self
-            .tabs
-            .get(self.active)
-            .map_or(theme::Colour::Preset(theme::HOME_TINT), |t| t.colour());
+        // No file open: Slate, or the colour of the Recents card under the pointer.
+        #[cfg(not(target_arch = "wasm32"))]
+        let home = self
+            .recents
+            .hover
+            .unwrap_or(theme::Colour::Preset(theme::HOME_TINT));
+        #[cfg(target_arch = "wasm32")]
+        let home = theme::Colour::Preset(theme::HOME_TINT);
+        let colour = self.tabs.get(self.active).map_or(home, |t| t.colour());
         let mut target = theme::space_tint(colour, dark);
         // While two spaces' pages move side by side, their colours blend with the pages.
         let neighbour = self.neighbour(self.slide).and_then(|i| self.tabs.get(i));

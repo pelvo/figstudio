@@ -318,8 +318,9 @@ real app too; the tests do not see colours or placement beyond "right of the con
 `ui_recents_tests.rs` fills an in-memory recents list and checks the Recents page: the
 empty page keeps Open file…, a loaded file is listed and its card opens it again, the
 filter narrows the cards (any case) and says when none match, the rows toggle is kept in
-`Prefs`, Remove from recents takes a card away, and a moved file is marked missing and
-toasts instead of opening. The unit tests in `recents.rs` cover the list (front on reopen,
+`Prefs`, Remove from recents takes a card away, a moved file is marked missing and
+toasts instead of opening, and the window is Slate until the pointer is on a card, then
+takes that card's colour and goes back after. The unit tests in `recents.rs` cover the list (front on reopen,
 cap with pictures deleted, restart, damaged list left alone, owner-only file), the "Opened
 … ago" wording and the picture size. Each was seen failing with its part removed (no note
 on load, Remove ignored, missing opened anyway, filter ignored, toggle not kept, no

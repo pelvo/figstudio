@@ -444,6 +444,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   picture of the page it opened on, its badge, its name and "Opened 3 days ago". A click
   opens it; the right-click menu has Open, Show in Finder (`opener::reveal`) and Remove from
   recents. With nothing opened before, the page is the old empty state under "Recents".
+  With no file open the window is Slate (`theme::HOME_TINT`), neutral, so the page is not
+  taken for a space; the card under the pointer lends the window its colour
+  (`Recents::hover`, read by `App::tint_now`), crossfading as a file switch does.
   The list is `<config>/figstudio/recents.json` (full paths, owner-only, at most 60, damaged
   entries skipped, an unreadable list left alone as with spaces); each load notes the file
   (`App::poll`) and queues its picture: one `thumbnails` thread renders the page to fit
