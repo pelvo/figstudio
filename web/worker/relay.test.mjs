@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import worker from "../worker.mjs";
+import worker, * as workerModule from "../worker.mjs";
 import { roomToken, endpoint, rpc, post, Tab, setup, forward, reply, errorResponse,
   upgrade, bridgeRoom, bridgeUrl, executorHex } from "./test-support.mjs";
 import { EXEC_PROTOCOL } from "../executor-auth.mjs";
@@ -20,6 +20,44 @@ test("rooms are validated before DO lookup, and valid rooms are isolated", async
     assert.equal(await (await worker.fetch(new Request(`https://relay.example/mcp/${token}`), env)).text(), token);
   }
   assert.deepEqual(seen, [roomToken, `rm_${"b".repeat(64)}`]);
+});
+
+test("every named export is an entrypoint the Workers runtime accepts", () => {
+  // workerd rejects the main module when a named export is not a function, class or
+  // handler object ("Incorrect type for map entry"), so `wrangler dev` and deploys fail.
+  for (const [name, value] of Object.entries(workerModule)) {
+    const type = typeof value;
+    assert.ok(type === "function" || (type === "object" && value !== null), `${name} is a ${type}`);
+  }
+});
+
+// Mirrors RELAY_PROBE_HEADER in web/worker.mjs and apps/figstudio/src/mcp_wire.rs.
+const RELAY_PROBE_HEADER = "figstudio-relay";
+
+test("GET /mcp/ advertises the relay without naming a Durable Object", async () => {
+  const seen = [];
+  const env = {
+    MCP_ROOMS: { idFromName(name) { seen.push(name); return name; }, get() { throw new Error("no DO"); } },
+    ASSETS: { fetch() { throw new Error("the probe is not an asset"); } },
+  };
+  for (const method of ["GET", "HEAD"]) {
+    const response = await worker.fetch(new Request("https://relay.example/mcp/", { method }), env);
+    assert.equal(response.status, 204, method);
+    assert.equal(response.headers.get(RELAY_PROBE_HEADER), "1", method);
+    assert.equal(response.headers.get("Cache-Control"), "no-store", method);
+  }
+  // Only the exact path and read methods: everything else under /mcp stays a 404.
+  for (const request of [
+    new Request("https://relay.example/mcp/", { method: "POST", body: "{}" }),
+    new Request("https://relay.example/mcp"),
+    new Request("https://relay.example/bridge/"),
+    new Request("https://relay.example/mcp//"),
+  ]) {
+    const response = await worker.fetch(request, env);
+    assert.equal(response.status, 404, `${request.method} ${request.url}`);
+    assert.equal(response.headers.get(RELAY_PROBE_HEADER), null);
+  }
+  assert.deepEqual(seen, []);
 });
 
 test("the bridge names a Durable Object only behind a valid executor proof", async () => {

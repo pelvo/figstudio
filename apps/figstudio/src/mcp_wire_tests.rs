@@ -53,6 +53,70 @@ fn room_validation_and_urls() {
 }
 
 #[test]
+fn only_the_workers_probe_answer_makes_cloud_relay_usable() {
+    // The relay Worker's answer (web/worker.mjs: 204 + header).
+    assert_eq!(
+        CloudRelay::from_probe(Some(204), Some("1")),
+        CloudRelay::Available
+    );
+    assert_eq!(
+        CloudRelay::from_probe(Some(200), Some("1")),
+        CloudRelay::Available
+    );
+    // Static-only hosts: a missing asset, an SPA fallback page, an empty 204 from some
+    // other server, a redirect to a sign-in page, or a failed request.
+    for (status, header) in [
+        (Some(404), None),
+        (Some(200), None),
+        (Some(204), None),
+        (Some(204), Some("")),
+        (Some(204), Some("  ")),
+        (Some(302), Some("1")),
+        (Some(404), Some("1")),
+        (Some(500), Some("1")),
+        (None, None),
+        (None, Some("1")),
+    ] {
+        assert_eq!(
+            CloudRelay::from_probe(status, header),
+            CloudRelay::Absent,
+            "{status:?} {header:?}"
+        );
+    }
+}
+
+#[test]
+fn the_probe_path_and_header_match_the_relay_worker() {
+    // The page and the Worker must agree, or every deploy looks static-only.
+    let worker = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/worker.mjs"),
+    )
+    .unwrap();
+    assert!(
+        worker.contains(&format!("RELAY_PROBE_HEADER = \"{RELAY_PROBE_HEADER}\"")),
+        "web/worker.mjs must set the {RELAY_PROBE_HEADER} header"
+    );
+    assert!(
+        worker.contains(&format!("path === \"{RELAY_PROBE_PATH}\"")),
+        "web/worker.mjs must answer the probe at {RELAY_PROBE_PATH}"
+    );
+}
+
+#[test]
+fn cloud_relay_is_offered_until_known_absent_and_usable_only_when_available() {
+    assert_eq!(CloudRelay::default(), CloudRelay::Unknown);
+    let cases = [
+        (CloudRelay::Unknown, true, false),
+        (CloudRelay::Available, true, true),
+        (CloudRelay::Absent, false, false),
+    ];
+    for (state, offered, usable) in cases {
+        assert_eq!(state.offered(), offered, "{state:?}");
+        assert_eq!(state.usable(), usable, "{state:?}");
+    }
+}
+
+#[test]
 fn relay_rpc_round_trips_json_and_notifications() {
     use serde_json::{Value, json};
     let request = json!({"jsonrpc":"2.0", "id":7, "method":"ping"});

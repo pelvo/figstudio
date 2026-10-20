@@ -1,7 +1,7 @@
 //! Persist the executor capability (`figstudio.mcp.executor.v2`); storage denial is
 //! visible, never a weak fallback. The caller room is always derived, never stored.
 use crate::mcp_pair::{self, ExecutorPair, Load, pair_from_input, pair_link};
-use crate::mcp_wire::relay_urls;
+use crate::mcp_wire::{CloudRelay, RELAY_PROBE_HEADER, RELAY_PROBE_PATH, relay_urls};
 
 const STORAGE_KEY: &str = "figstudio.mcp.executor.v2";
 const LEGACY_KEY: &str = "figstudio.mcp.room";
@@ -222,6 +222,24 @@ pub(super) fn regenerate() -> Result<ExecutorPair, String> {
 pub(super) fn urls(room: &str) -> Option<(String, String)> {
     let location = web_sys::window()?.location();
     relay_urls(&location.protocol().ok()?, &location.host().ok()?, room)
+}
+
+/// Ask this origin once whether it runs the cloud relay Worker (`GET /mcp/`). Only the
+/// status and one header are read; the request carries no room or executor.
+pub(super) async fn probe() -> CloudRelay {
+    use wasm_bindgen::JsCast;
+    let Some(window) = web_sys::window() else {
+        return CloudRelay::from_probe(None, None);
+    };
+    let answer = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(RELAY_PROBE_PATH))
+        .await
+        .ok()
+        .and_then(|value| value.dyn_into::<web_sys::Response>().ok());
+    let Some(response) = answer else {
+        return CloudRelay::from_probe(None, None);
+    };
+    let header = response.headers().get(RELAY_PROBE_HEADER).ok().flatten();
+    CloudRelay::from_probe(Some(response.status()), header.as_deref())
 }
 
 /// `https://<host>/#room=<derived>&exec=<executor>`, the link that joins this room —

@@ -226,6 +226,48 @@ pub(crate) fn valid_room(room: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Same-origin path the page asks once per load to learn whether its origin runs the
+/// cloud relay Worker (`web/worker.mjs`). Root-relative, like the `/bridge/` socket URL.
+pub(crate) const RELAY_PROBE_PATH: &str = "/mcp/";
+/// Header only the relay Worker sets on its probe answer.
+pub(crate) const RELAY_PROBE_HEADER: &str = "figstudio-relay";
+
+/// Whether this page's origin runs the cloud relay. A static-only deploy (no Worker)
+/// answers the probe with a missing asset or a fallback page, neither with the header,
+/// so Cloud relay is hidden there instead of opening a socket that can never connect.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CloudRelay {
+    /// The probe has not answered yet: offer the choice, but do not connect.
+    #[default]
+    Unknown,
+    Available,
+    Absent,
+}
+
+impl CloudRelay {
+    /// `status` is `None` when the request itself failed (offline, a `file:` page, or a
+    /// sign-in redirect the page may not follow); that counts as absent, like a 404.
+    pub(crate) fn from_probe(status: Option<u16>, header: Option<&str>) -> Self {
+        let advertised = status.is_some_and(|s| (200..300).contains(&s))
+            && header.is_some_and(|value| !value.trim().is_empty());
+        if advertised {
+            Self::Available
+        } else {
+            Self::Absent
+        }
+    }
+
+    /// Cloud relay may connect only once the origin is known to run it.
+    pub(crate) fn usable(self) -> bool {
+        self == Self::Available
+    }
+
+    /// The menu offers Cloud relay unless the origin is known not to run it.
+    pub(crate) fn offered(self) -> bool {
+        self != Self::Absent
+    }
+}
+
 /// Location supplies the authority (including a development port), not a file name.
 /// The caller URL keeps its format; the room in it is now derived (mcp_pair.rs).
 pub(crate) fn relay_urls(protocol: &str, host: &str, room: &str) -> Option<(String, String)> {

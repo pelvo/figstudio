@@ -15,7 +15,7 @@ use crate::mcp_pair::ExecutorPair;
 use crate::mcp_state::{Key, key};
 use crate::mcp_upload::{Event, Shared, send, upload};
 use crate::mcp_wire::{
-    closed_message, connect_failed_message, reveal_wire, state_message, upload_name,
+    CloudRelay, closed_message, connect_failed_message, reveal_wire, state_message, upload_name,
 };
 use crate::tab::Tab;
 use crate::theme;
@@ -76,6 +76,12 @@ pub struct McpHost {
     /// Relay keepalive state: a ping's pong must come back within a deadline or the
     /// connection is dropped (see `mcp_heartbeat.rs`).
     heartbeat: Heartbeat<Instant>,
+    /// Whether this origin runs the cloud relay Worker; written by the probe task that
+    /// the first `sync` starts (it has the context to repaint with).
+    cloud: Rc<std::cell::Cell<CloudRelay>>,
+    probe_started: bool,
+    /// The page load chose Cloud relay; connect once the probe confirms the Worker.
+    cloud_wanted: bool,
 }
 
 impl Default for McpHost {
@@ -104,12 +110,15 @@ impl Default for McpHost {
                 || pair
                     .as_ref()
                     .is_some_and(|p| room::urls(&p.room()).is_some()));
+        // The local proxy and a `#mcp=` pairing connect now; Cloud relay waits for the
+        // probe, since a static-only deploy has no Worker to answer the socket.
+        let cloud_wanted = relay && link.proxy.is_none();
         Self {
             relay,
             pair,
             rpc: Default::default(),
             url: DEFAULT_URL.to_owned(),
-            want_connect: relay || link.token.is_some(),
+            want_connect: (relay && !cloud_wanted) || link.token.is_some(),
             token: link.token.unwrap_or_default(),
             conn: None,
             shared: Rc::default(),
@@ -129,6 +138,9 @@ impl Default for McpHost {
             instance: device.instance,
             last_focused: None,
             heartbeat: Heartbeat::fresh(0),
+            cloud: Rc::default(),
+            probe_started: false,
+            cloud_wanted,
         }
     }
 }
@@ -221,6 +233,14 @@ impl McpHost {
         if self.rpc.pending > 0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+        if !std::mem::replace(&mut self.probe_started, true) {
+            let cloud = self.cloud.clone();
+            let ctx = ctx.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                cloud.set(room::probe().await);
+                ctx.request_repaint();
+            });
+        }
         let change = self.link.borrow_mut().take();
         if let Some(change) = change {
             // A `#room=` key is consumed the moment it is read, whatever else it said.
@@ -255,6 +275,7 @@ impl McpHost {
                 }
             }
         }
+        self.settle_cloud();
         if std::mem::take(&mut self.want_connect) && self.conn.is_none() {
             if let Err(error) = self.connect(ctx) {
                 self.notices.push(error);
@@ -383,9 +404,41 @@ impl McpHost {
         ));
     }
 
+    /// Apply the probe's answer: the Cloud relay this load chose connects once the Worker
+    /// is confirmed; on an origin without it, the tab falls back to the local bridge
+    /// controls (the local proxy, which also runs the Wasm executor, is untouched).
+    fn settle_cloud(&mut self) {
+        let cloud_mode = self.relay && self.proxy.is_none();
+        match self.cloud.get() {
+            CloudRelay::Unknown => {}
+            CloudRelay::Available => {
+                if std::mem::take(&mut self.cloud_wanted) && cloud_mode {
+                    self.want_connect = true;
+                }
+            }
+            CloudRelay::Absent => {
+                self.cloud_wanted = false;
+                if cloud_mode {
+                    self.relay = false;
+                    if self.conn.is_some() {
+                        self.stop();
+                    }
+                }
+            }
+        }
+    }
+
     fn connect(&mut self, ctx: &egui::Context) -> Result<(), String> {
         if !self.relay && self.token.is_empty() {
             return Err("Enter the pairing token printed by figstudio-mcp --bridge".to_owned());
+        }
+        if self.relay && self.proxy.is_none() && !self.cloud.get().usable() {
+            return Err(if self.cloud.get().offered() {
+                "Still checking whether this site runs the cloud relay; try again".to_owned()
+            } else {
+                "This site has no cloud relay; use figstudio-mcp --browser-proxy or --bridge"
+                    .to_owned()
+            });
         }
         if self.relay && self.proxy.is_none() && self.pair.is_none() {
             return Err("No MCP executor token yet; Apply one or Regenerate".to_owned());
