@@ -2,7 +2,7 @@
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/pelvo)
 
-https://github.com/user-attachments/assets/6ac570f9-8a47-434b-a975-2d0255735d51
+https://github.com/user-attachments/assets/11158bc3-24a5-4692-b4e4-579f66d30f60
 
 Fast, offline-first Figma `.fig` viewer, renderer, version comparator, and Model Context
 Protocol (MCP) server, written in Rust.
