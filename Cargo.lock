@@ -1525,6 +1525,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-web",
+ "ttf-parser",
  "unicode-segmentation",
  "vello_gpu",
  "wasm-bindgen",

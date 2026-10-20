@@ -71,8 +71,10 @@ mod system {
     use ttf_parser::{Face, OutlineBuilder};
     use vello_cpu::kurbo::{Affine, BezPath};
 
-    /// Families tried, in order, for characters the requested font lacks.
-    const FALLBACK_FAMILIES: [&str; 10] = [
+    /// Families tried, in order, for characters the requested font lacks. Symbols and emoji
+    /// need faces that carry them and have outlines (bitmap-only color emoji fonts cannot be
+    /// drawn as paths, so they are skipped by `glyph_for`).
+    const FALLBACK_FAMILIES: &[&str] = &[
         "Inter",
         "Noto Sans",
         "Noto Sans CJK JP",
@@ -81,8 +83,14 @@ mod system {
         "Source Han Sans",
         "Hiragino Sans",
         "PingFang TC",
-        "Apple Color Emoji",
-        "Noto Color Emoji",
+        "Noto Sans Symbols",
+        "Noto Sans Symbols 2",
+        "Noto Sans Math",
+        "Segoe UI Symbol",
+        "Apple Symbols",
+        "Symbola",
+        "DejaVu Sans",
+        "Arial Unicode MS",
     ];
 
     /// Font file bytes and the face index inside it.
@@ -193,6 +201,11 @@ mod system {
                 let Ok(face) = Face::parse(&data, index) else {
                     continue;
                 };
+                // Bitmap-only faces (CBDT/sbix color emoji) map the character but cannot be
+                // outlined; accepting them would silently drop the character at draw time.
+                if face.tables().glyf.is_none() && face.tables().cff.is_none() {
+                    continue;
+                }
                 if let Some(g) = face.glyph_index(ch) {
                     let upem = f64::from(face.units_per_em());
                     let adv = face.glyph_hor_advance(g).map_or(0.0, f64::from) / upem;

@@ -640,6 +640,9 @@ struct SystemFonts {
     ui_semibold: Option<Face>,
     ui_variable: bool,
     cjk: Option<Face>,
+    /// Faces with the symbols the UI face lacks (⌞, ⚠, …), with real outlines. Several:
+    /// no single family covers them all.
+    symbols: Vec<Face>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -721,6 +724,37 @@ fn system_fonts() -> &'static SystemFonts {
                 index,
             })
         });
+        // Faces that carry the symbols the UI face lacks, appended all together: no single
+        // family covers every symbol (⌞ lives in Symbols/Math, ⚠★ in Symbols 2/DejaVu).
+        // Only outline-capable ones: a bitmap-only color emoji face maps the character but
+        // paints nothing (tofu).
+        const SYMBOLS: [&str; 7] = [
+            "Segoe UI Symbol",
+            "Apple Symbols",
+            "Noto Sans Symbols",
+            "Noto Sans Symbols 2",
+            "Noto Sans Math",
+            "Symbola",
+            "DejaVu Sans",
+        ];
+        fonts.symbols = SYMBOLS
+            .into_iter()
+            .filter_map(|name| {
+                let families = [fontdb::Family::Name(name)];
+                let id = db.query(&fontdb::Query {
+                    families: &families,
+                    ..Default::default()
+                })?;
+                db.with_face_data(id, |data, index| {
+                    let face = ttf_parser::Face::parse(data, index).ok()?;
+                    (face.tables().glyf.is_some() || face.tables().cff.is_some()).then(|| Face {
+                        bytes: data.to_vec(),
+                        index,
+                    })
+                })
+                .flatten()
+            })
+            .collect();
         fonts
     })
 }
@@ -751,17 +785,32 @@ pub fn install_fonts(ctx: &egui::Context) {
         }
     }
     add_semibold_family(&mut fonts, semibold);
-    if let Some(cjk) = &system.cjk {
-        fonts
-            .font_data
-            .insert("cjk".into(), Arc::new(cjk.data(None)));
+    let mut fallbacks = |name: &str| {
         for family in [
             FontFamily::Proportional,
             FontFamily::Monospace,
             FontFamily::Name(SEMIBOLD.into()),
         ] {
-            fonts.families.entry(family).or_default().push("cjk".into());
+            let names = fonts.families.entry(family).or_default();
+            names.retain(|n| n != name);
+            names.push(name.into());
         }
+    };
+    if let Some(cjk) = &system.cjk {
+        fonts
+            .font_data
+            .insert("cjk".into(), Arc::new(cjk.data(None)));
+        fallbacks("cjk");
+    }
+    // After the CJK face: symbol faces for ⌞/⚠/★ that the UI and CJK faces lack. egui's
+    // bundled emoji faces stay ahead of them in the chain, so plain emoji still come from
+    // them.
+    for (i, symbols) in system.symbols.iter().enumerate() {
+        let name = format!("symbols-{i}");
+        fonts
+            .font_data
+            .insert(name.clone(), Arc::new(symbols.data(None)));
+        fallbacks(&name);
     }
     ctx.set_fonts(fonts);
 }
@@ -928,6 +977,47 @@ mod tests {
                 }
             });
         }
+    }
+
+    /// The installed chain must cover symbols like ⌞ that the UI and CJK faces lack;
+    /// egui's bundled fonts do not have them, so without the symbols fallback they tofu.
+    /// Checked on the raw faces: egui's `has_glyph` reports false for any character that
+    /// lands on the same face as its replacement glyph ◻, even when that face draws it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn symbol_families_can_draw_corner_and_warning_marks() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        // Nothing paints here, so clear the texture deltas (epaint asserts on unapplied ones).
+        let frame = |ctx: &egui::Context| {
+            ctx.run_ui(Default::default(), |_| {})
+                .textures_delta
+                .clear();
+        };
+        frame(&ctx);
+        let (names, chain) = ctx.fonts(|f| {
+            let d: Vec<(String, Vec<u8>, u32)> = f
+                .definitions()
+                .font_data
+                .iter()
+                .map(|(name, data)| (name.clone(), data.font.as_ref().to_vec(), data.index))
+                .collect();
+            let c = f.definitions().families[&FontFamily::Proportional].clone();
+            (d, c)
+        });
+        for c in ['⌞', '⚠', '★', '香'] {
+            let drawn = chain.iter().any(|name| {
+                names
+                    .iter()
+                    .find(|(n, _, _)| n == name)
+                    .is_some_and(|(_, bytes, index)| {
+                        ttf_parser::Face::parse(bytes, *index)
+                            .is_ok_and(|face| face.glyph_index(c).is_some())
+                    })
+            });
+            assert!(drawn, "no face in the chain draws {c}");
+        }
+        frame(&ctx);
     }
 
     #[test]
