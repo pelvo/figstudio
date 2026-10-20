@@ -16,6 +16,22 @@ paired with this local server; open your `.fig` in that tab (Figma → File → 
 copy). The file stays in the tab and nothing is uploaded. If the browser asks to let the
 page reach devices on your local network, allow it: that is this server on `127.0.0.1`.
 
+**Safari cannot pair:** it blocks an `https://` page from reaching `ws://127.0.0.1`
+(Chrome, Edge and Firefox allow it). If Safari is your default browser, have this server
+open another one, for example Chrome (`open -a "Microsoft Edge"` or `open -a Firefox` for
+those):
+
+```sh
+claude mcp add figstudio -e 'BROWSER=open -a "Google Chrome"' -- npx -y figstudio-mcp --browser-proxy
+```
+
+Or, from a [figstudio](https://github.com/pelvo/figstudio) checkout, serve the local build
+with `scripts/web-build.sh --serve` and pair with it over plain `http`:
+
+```sh
+claude mcp add figstudio -- npx -y figstudio-mcp --origin http://127.0.0.1:8765
+```
+
 To serve files from disk instead, with no browser:
 
 ```sh

@@ -32,7 +32,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to rebuild and attach assets to (for example v0.1.0)
+        description: >-
+          Existing release tag to rebuild and attach assets to (for example v0.1.0). Leave
+          it empty only for a dry run; with neither, the run starts no jobs.
         required: false
         type: string
       dry_run:
@@ -70,9 +72,10 @@ jobs:
     needs: release-please
     # !cancelled(): on a manual run the release-please job is skipped, which would skip this
     # job too without it.
+    # A manual run with no tag and no dry run starts nothing.
     if: >-
-      !cancelled() && ((github.event_name == 'workflow_dispatch' && !inputs.dry_run)
-      || needs.release-please.outputs.release_created == 'true')
+      !cancelled() && ((github.event_name == 'workflow_dispatch' && !inputs.dry_run
+      && inputs.tag != '') || needs.release-please.outputs.release_created == 'true')
     # Apple silicon runner: the build is arm64.
     runs-on: macos-latest
     permissions:
@@ -121,8 +124,10 @@ jobs:
   # in npm/figstudio-mcp/bin/figstudio-mcp.js must agree (npm/figstudio-mcp/test checks it).
   npm-build:
     needs: release-please
+    # A manual run with no tag and no dry run starts nothing.
     if: >-
-      !cancelled() && (github.event_name == 'workflow_dispatch'
+      !cancelled() && ((github.event_name == 'workflow_dispatch'
+      && (inputs.dry_run || inputs.tag != ''))
       || needs.release-please.outputs.release_created == 'true')
     strategy:
       fail-fast: false
@@ -155,8 +160,9 @@ jobs:
         run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # A dry run builds the branch it was started on.
-          ref: ${{ inputs.dry_run && github.ref || format('refs/tags/{0}', env.TAG) }}
+          # A dry run builds the commit it was started on (github.sha, not the branch tip,
+          # so every job packs the same commit even if the branch moves meanwhile).
+          ref: ${{ inputs.dry_run && github.sha || format('refs/tags/{0}', env.TAG) }}
           persist-credentials: false
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal --target "${{ matrix.target }}" && rustup default stable
@@ -192,7 +198,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.dry_run && github.ref || format('refs/tags/{0}', env.TAG) }}
+          ref: ${{ inputs.dry_run && github.sha || format('refs/tags/{0}', env.TAG) }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -225,8 +231,10 @@ jobs:
           fi
           v="$VERSION"
           if [ "$DRY_RUN" = true ]; then
-            # Fails here if the token is wrong or expired.
-            echo "npm user: $(npm whoami)"
+            # Its own command, so a wrong or expired token fails the step: set -e does not
+            # see a failure inside `echo "$(...)"`, and npm publish --dry-run never checks
+            # the token.
+            npm whoami
           fi
           # Platform packages first, so the launcher never names a version that is not there.
           for dir in dist/npm/figstudio-mcp-* dist/npm/figstudio-mcp; do
