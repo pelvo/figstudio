@@ -486,13 +486,15 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 - The command bar is modal: `App::shortcuts` and the native menu ignore everything but its
   own shortcut (and Quit) while it is open or fading, and its results are keyed on the
   query, the active file and its page (an agent may turn the page meanwhile) and the number
-  of files. A pasted URL accepted by the shared `mcp-core::link::parse_link` offers one
-  **Open Figma link** result instead of a layer search. Enter or a click closes the bar and
+  of files. A pasted URL accepted by the shared `mcp-core::link::parse_link` with a file hint
+  offers one **Open Figma link** result instead of a layer search. File-less Figma URLs stay
+  ordinary searches, never revealing a node in an unrelated active file. Enter or a click closes the bar and
   submits that result's saved URL through `App::submit_link`, the same path as the link
   window's Go button. The window shows progress, keeps failed input, and offers file choices;
   links never fetch anything from Figma. Results refresh after editing too, before Enter
-  dispatches, so a paste and Enter in one frame cannot run an old result. Ordinary queries
-  still search commands, files, pages and layers. Layer search keeps only the best 60 as it
+  dispatches, so a paste and Enter in one frame cannot run an old result. A same-frame click
+  survives an edit only if the new row at that index has the same target, such as after adding
+  whitespace around a URL. Ordinary queries still search commands, files, pages and layers. Layer search keeps only the best 60 as it
   goes (ties in layer order). Ctrl+Tab does not reach the browser build (browsers keep it); the dots and
   the command bar switch files there.
 - The status pill (with the MCP address and Copy token) moves above the tool pill when the

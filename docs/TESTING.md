@@ -276,7 +276,15 @@ ordinary searches remain searches. Run `cargo test -p figstudio link_open::tests
 and the existing link-opening tests. For events that must arrive in one frame, use
 `h.input_mut().events`; `h.event` and the key helpers run a separate frame per queued event.
 The paste-plus-Enter regression uses raw input and must fail if the command bar's refresh
-before dispatch is removed.
+before dispatch is removed. File-less Figma URLs stay searches; submitting them must preserve
+both the query and the active document's selection. Coverage includes home, incomplete design,
+community, embed, prototype and slides URLs.
+
+Same-frame edit-and-click tests use raw input and an accessibility click to keep text focus.
+They accept a whitespace edit with an unchanged target and discard a click when its row's
+link changes. The latter must fail if the target-identity check is bypassed. The shortcut
+split test presses both Cmd/Ctrl+L and Cmd/Ctrl+Shift+L, checks which window opens, and must
+fail when the command-bar binding is missing.
 
 The answered-search tests also check that a held search stops deadline polling after its
 MCP caller receives an answer, while unanswered searches still request a 250 ms wake. An

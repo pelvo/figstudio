@@ -177,11 +177,11 @@ fn commands(
 }
 
 /// What the command bar lists for `query`, best first. An empty query lists the other open
-/// files, the pages, then the commands; layers need a query. A supported URL offers the
-/// existing local-link opener instead of searching layer names for the URL.
+/// files, the pages, then the commands; layers need a query. A supported URL naming a file
+/// offers the existing local-link opener instead of searching layer names for the URL.
 pub fn entries(app: &App, query: &str) -> Vec<Entry> {
     let query = query.trim();
-    if figstudio_mcp_core::link::parse_link(query).is_ok() {
+    if figstudio_mcp_core::link::parse_link(query).is_ok_and(|link| link.file.is_some()) {
         return vec![Entry {
             title: "Open Figma link".into(),
             detail: "Open the matching local .fig file".into(),
@@ -534,10 +534,21 @@ impl App {
         if !open {
             return;
         }
+        let clicked = run
+            .and_then(|i| self.command.results.get(i))
+            .map(|entry| entry.target.clone());
         if self.refresh_command_results() {
-            // The rows painted above were for the previous query. A click on them is stale;
-            // Enter submits the first result for the text just entered instead.
-            run = enter.then_some(0);
+            // Enter uses the new query; a click is valid only if its row still does the same thing.
+            run = if enter {
+                Some(0)
+            } else {
+                run.filter(|&i| {
+                    self.command
+                        .results
+                        .get(i)
+                        .is_some_and(|entry| Some(&entry.target) == clicked.as_ref())
+                })
+            };
             ctx.request_repaint();
         }
         if let Some(entry) = run.and_then(|i| self.command.results.get(i)) {

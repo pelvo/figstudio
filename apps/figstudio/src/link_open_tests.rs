@@ -1473,6 +1473,83 @@ fn a_link_pasted_with_enter_in_one_frame_uses_the_new_query() {
     assert!(!h.state().command.is_open());
 }
 
+/// Put the edit and the row's accessibility click in one frame, without moving text focus.
+fn edit_command_and_click(h: &mut Harness<'_, App>, text: &str) {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let (target_node, target_tree) = h.get_by_label("Open Figma link").accesskit_node().locate();
+    h.input_mut().events.extend([
+        egui::Event::Paste(text.to_owned()),
+        egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+            target_node,
+            target_tree,
+            action: egui::accesskit::Action::Click,
+            data: None,
+        }),
+    ]);
+    h.run_steps(3);
+}
+
+#[test]
+fn a_same_frame_command_edit_keeps_a_click_on_the_unchanged_link() {
+    let mut h = harness();
+    h.state_mut().link.dirs.clear();
+    paste_command_link(&mut h, &figma("structure", "1-25"));
+    h.run_steps(3);
+    edit_command_and_click(&mut h, " ");
+    searched(&mut h);
+    assert!(!h.state().command.is_open());
+    assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 25)));
+    assert!(!h.state().link.window);
+}
+
+#[test]
+fn a_same_frame_command_edit_discards_a_click_on_a_different_link() {
+    let mut h = harness();
+    h.state_mut().link.dirs.clear();
+    paste_command_link(&mut h, &figma("structure", "1-25"));
+    h.run_steps(3);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(3);
+    edit_command_and_click(&mut h, &figma("structure", "1-4"));
+    assert!(h.state().command.is_open());
+    assert_eq!(h.state().tabs[0].selection, None);
+    assert!(!h.state().link.window);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    searched(&mut h);
+    assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 4)));
+}
+
+#[test]
+fn fileless_figma_urls_do_not_submit_against_the_active_document() {
+    use egui_kittest::kittest::Queryable;
+    for text in [
+        "https://figma.com",
+        "https://www.figma.com/?node-id=1-25",
+        "https://figma.com/proto/KEY/structure?node-id=1-25",
+    ] {
+        let mut h = harness();
+        h.state_mut().link.dirs.clear();
+        h.state_mut().tabs[0].selection = Some(Guid(1, 4));
+        paste_command_link(&mut h, text);
+        h.run_steps(3);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(h.state().command.is_open(), "not submitted: {text}");
+        assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 4)), "{text}");
+        assert_eq!(h.state().tabs.len(), 1);
+        assert!(!h.state().link.window);
+        assert_eq!(h.state().link.searching(), 0);
+        assert!(
+            h.query_by(|n| {
+                n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some(text)
+            })
+            .is_some(),
+            "keep the query for editing: {text}"
+        );
+    }
+}
+
 #[test]
 fn the_command_bar_keeps_link_choices_and_errors_in_the_existing_link_window() {
     let dir = tempfile::tempdir().unwrap();
@@ -1537,6 +1614,13 @@ fn command_bar_links_use_the_shared_parser_and_do_not_replace_searches() {
         assert_eq!(rows[0].title, "Open Figma link");
     }
     for text in [
+        "https://figma.com",
+        "https://www.figma.com/design",
+        "https://www.figma.com/?node-id=1-25",
+        "https://figma.com/community/file/KEY",
+        "https://figma.com/embed?url=https://figma.com/design/KEY/structure",
+        "https://figma.com/proto/KEY/structure?node-id=1-25",
+        "https://figma.com/slides/KEY/structure?node-id=1-25",
         "https://figma.com.example/design/KEY/structure?node-id=1-25",
         "https://example.com/design/KEY/structure?node-id=1-25",
         "javascript:alert(1)",
@@ -1575,13 +1659,20 @@ fn open_link_shortcut_uses_the_keymap_without_taking_the_command_bar_keys() {
             Key::L
         ))
     );
-    assert_ne!(
-        shortcut,
+    assert_eq!(
         h.state()
             .prefs
             .keymap
-            .for_action(crate::menu::Action::CommandBar)
+            .for_action(crate::menu::Action::CommandBar),
+        Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::L))
     );
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(3);
+    assert!(h.state().command.is_open());
+    assert!(!h.state().link.window);
+    h.key_press(Key::Escape);
+    h.run_steps(3);
+    assert!(!h.state().command.is_open());
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::L);
     h.run_steps(3);
     assert!(h.state().link.window);
