@@ -318,11 +318,17 @@ unrelated preferences to update. The alias test checks manual focus, automatic s
 an early save and a later completion. All three tests failed at their intended assertions
 before the fixes. The deterministic write-failure setup is Unix-only.
 
-The corruption test also requires the warning to explain that workspace edits will not be
-saved until repair and restart. Removing damaged metadata does not re-enable writes in the
-same store; a fresh store can save after repair. The alias test includes selecting a third
-tab after either a manual or automatic alias completes while the saved target is still
-loading, and checks early-save focus and focus after that target finishes.
+The corruption test requires the warning to state that this session's workspace edits will
+not be saved. A synthetic pending file never enters legacy preferences or reappears after
+restart. Removing damaged metadata does not re-enable writes in the same store; a fresh
+store can save after repair.
+`workspace_unreadable_store_keeps_recovery_guidance_when_legacy_is_limited` combines corrupt
+private metadata with 503 synthetic legacy paths. It checks the 500-path cap, retained active
+file and original legacy backup, unchanged damaged bytes, and both recovery and skipped-file
+messages. Both warning regressions failed at their intended assertions on the old code.
+The alias test includes selecting a third tab after either a manual or automatic alias
+completes while the saved target is still loading, and checks early-save focus and focus
+after that target finishes.
 
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.

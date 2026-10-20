@@ -69,14 +69,21 @@ fn workspace_corruption_is_isolated_from_other_preferences_and_kept_for_repair()
     assert_eq!(app.prefs.renderer, crate::settings::Renderer::Cpu);
     let warning = app.workspace_store.take_problem().expect("read warning");
     assert!(
-        warning.contains("Workspace changes will not be saved until"),
-        "warning must explain that workspace edits will not persist: {warning}"
+        warning.contains("Workspace changes in this session will not be saved."),
+        "warning must say this session's edits are lost, not deferred until restart: {warning}"
     );
     assert!(
         warning.contains("repair") && warning.contains("restart the app"),
         "warning must explain repair and restart: {warning}"
     );
+    let changed = absolute(&PathBuf::from("session-only.fig"));
+    app.loading.begin(&changed);
+    assert_eq!(Session::capture(&app).files, [changed]);
     app.save(&mut memory);
+    assert!(
+        memory.0.values().all(|v| !v.contains("session-only.fig")),
+        "this session's changes cannot leak into legacy preferences"
+    );
     assert_eq!(
         std::fs::read(&path).expect("original damaged file"),
         damaged
@@ -91,9 +98,63 @@ fn workspace_corruption_is_isolated_from_other_preferences_and_kept_for_repair()
         "this process must not resume private writes"
     );
     let mut restarted = Store::at(path.clone());
-    restarted.read(Some(&memory));
+    assert!(
+        restarted.read(Some(&memory)).files.is_empty(),
+        "restart must not recover workspace edits from the disabled session"
+    );
     restarted.save(&Session::default());
     assert!(path.is_file(), "a fresh store can save after repair");
+}
+
+#[test]
+fn workspace_unreadable_store_keeps_recovery_guidance_when_legacy_is_limited() {
+    let dir = tempfile::tempdir().expect("workspace folder");
+    let path = dir.path().join("workspace.json");
+    let damaged = b"{\"files\":17}";
+    std::fs::write(&path, damaged).expect("damaged workspace fixture");
+    let files: Vec<_> = (0..MAX_SAVED_FILES + 3)
+        .map(|i| PathBuf::from(format!("fallback-{i}.fig")))
+        .collect();
+    let active = files.last().cloned();
+    let mut memory = Memory::default();
+    eframe::set_value(
+        &mut memory,
+        crate::UI_STATE_KEY,
+        &LegacyPreferences {
+            show_left: false,
+            show_right: true,
+            pages_share: 0.4,
+            prefs: crate::Prefs::default(),
+            workspace: Session { files, active },
+        },
+    );
+    let mut store = Store::at(path.clone());
+    let loaded = store.read(Some(&memory));
+    assert_eq!(loaded.files.len(), MAX_SAVED_FILES);
+    assert_eq!(loaded.active, Some(PathBuf::from("fallback-502.fig")));
+    assert_eq!(store.legacy_backup().files.len(), MAX_SAVED_FILES + 3);
+    let warning = store.take_problem().expect("combined workspace warning");
+    assert!(
+        warning.contains("Saved workspace is unreadable."),
+        "the limit must not replace the unreadable-store explanation: {warning}"
+    );
+    assert!(
+        warning.contains("Workspace changes in this session will not be saved."),
+        "the combined warning must disclose current-session loss: {warning}"
+    );
+    assert!(
+        warning.contains("repair") && warning.contains("restart the app"),
+        "the combined warning must retain recovery guidance: {warning}"
+    );
+    assert!(
+        warning.contains("3 saved files were skipped beyond the 500-file limit"),
+        "the combined warning must also disclose the cap: {warning}"
+    );
+    store.save(&Session::default());
+    assert_eq!(
+        std::fs::read(&path).expect("damaged metadata stays untouched"),
+        damaged
+    );
 }
 
 #[test]

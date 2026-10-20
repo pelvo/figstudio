@@ -501,9 +501,11 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   files. Unreadable private metadata can fall back to that legacy copy; unrelated preferences
   still save. The serialization-only backup is ignored when decoding `UiState`, so malformed
   workspace metadata cannot reset other preferences. A private read failure disables workspace
-  writes for the rest of the process, even if the file is repaired meanwhile. The warning says
-  workspace edits will not persist until the file is repaired and the app restarted; other
-  preferences still save. This avoids overwriting unreadable metadata.
+  writes for the rest of the process, even if the file is repaired meanwhile. The warning
+  says this session's workspace edits will not be saved; repair and restart enable future
+  writes, not recovery of those edits. Other preferences still save. An oversized legacy
+  fallback appends its skipped-file warning without hiding the read failure or recovery
+  instructions. This avoids overwriting unreadable metadata.
   Metadata is capped at 4 MiB and 500 saved paths, retaining the selected file and announcing
   skipped entries. Startup decodes at most four files concurrently; queued files survive an
   early save/quit. Worker-resolved canonical paths deduplicate aliases without lexically

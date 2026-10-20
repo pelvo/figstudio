@@ -52,7 +52,7 @@ impl Store {
                 }
                 Ok(None) => {}
                 Err(_) => {
-                    self.problem = Some("Saved workspace is unreadable. The original file was kept; other settings still save. Workspace changes will not be saved until you repair the file and restart the app.".to_owned());
+                    self.problem = Some("Saved workspace is unreadable. The original file was kept; other settings still save. Workspace changes in this session will not be saved. After you repair the file, restart the app before making further workspace changes.".to_owned());
                     self.path = None;
                 }
             }
@@ -90,10 +90,16 @@ impl Store {
         let skipped = session.limit();
         if skipped != 0 && !self.warned_limit {
             self.warned_limit = true;
-            self.problem = Some(format!(
+            let warning = format!(
                 "Workspace limit: {skipped} saved files were skipped beyond the {}-file limit.",
                 crate::session::MAX_SAVED_FILES
-            ));
+            );
+            if let Some(problem) = &mut self.problem {
+                problem.push(' ');
+                problem.push_str(&warning);
+            } else {
+                self.problem = Some(warning);
+            }
         }
     }
 
