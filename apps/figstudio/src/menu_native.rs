@@ -267,12 +267,15 @@ fn add(
 
 /// The native accelerator for `action` with the user's `keys` (`None` while a shortcut is
 /// being recorded, so the menu does not swallow it).
-fn accelerator(
+pub(crate) fn accelerator(
     action: Action,
     keys: Option<&crate::keymap::Keymap>,
 ) -> Option<muda::accelerator::Accelerator> {
     use muda::accelerator::{Accelerator, Modifiers};
-    if cfg!(target_os = "macos") && !crate::menu_dispatch::native_owned(true, true, action) {
+    // Field shortcuts must reach egui; native events cannot distinguish clicks from keys.
+    if matches!(action, Action::CopyText | Action::SelectAllText)
+        || (cfg!(target_os = "macos") && !crate::menu_dispatch::native_owned(true, true, action))
+    {
         return None;
     }
     let shortcut = keys?.for_action(action)?;

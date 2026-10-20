@@ -97,7 +97,7 @@ fn laid_out(data: &Val) -> Vec<Glyph> {
     glyphs
 }
 
-/// Hit a stored line; points past either end clamp to that line's text boundaries.
+/// Hit the nearest cluster boundary; points past either end clamp to that line's boundaries.
 /// `data` is the TEXT node's data, including its characters and derived glyphs.
 pub fn char_at(data: &Val, x: f64, y: f64) -> Option<(usize, char)> {
     if !x.is_finite() || !y.is_finite() {
@@ -118,7 +118,7 @@ pub fn char_at(data: &Val, x: f64, y: f64) -> Option<(usize, char)> {
         .filter(|g| g.rect.x0 <= x)
         .max_by(|a, b| a.rect.x0.total_cmp(&b.rect.x0))
         .unwrap_or(first);
-    if x < hit.rect.x1 {
+    if x < (hit.rect.x0 + hit.rect.x1) * 0.5 {
         Some((hit.index, hit.ch))
     } else {
         Some((hit.end, '\0'))

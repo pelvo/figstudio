@@ -22,7 +22,6 @@ pub(crate) fn native_owned(macos: bool, attached: bool, action: Action) -> bool 
             action,
             Action::Open
                 | Action::OpenLink
-                | Action::CopyText
                 | Action::CloseTab
                 | Action::ExportSelection(2.0)
                 | Action::CommandBar
@@ -95,11 +94,6 @@ impl App {
             if self.command.is_up(ctx) && !matches!(action, Action::CommandBar | Action::Quit) {
                 continue;
             }
-            if matches!(action, Action::CopyText | Action::SelectAllText)
-                && ctx.egui_wants_keyboard_input()
-            {
-                continue;
-            }
             self.apply(action, ctx);
         }
     }
@@ -154,7 +148,6 @@ mod tests {
         for action in [
             Action::Open,
             Action::OpenLink,
-            Action::CopyText,
             Action::CloseTab,
             Action::ExportSelection(2.0),
             Action::CommandBar,
@@ -173,6 +166,8 @@ mod tests {
             );
         }
         for action in [
+            Action::CopyText,
+            Action::SelectAllText,
             Action::ZoomFit,
             Action::ActualSize,
             Action::ExportSelection(1.0),

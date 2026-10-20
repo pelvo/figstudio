@@ -63,6 +63,16 @@ fn command_c_key_is_not_consumed_while_find_has_focus() {
 
 #[test]
 fn native_copy_and_select_all_leave_the_focused_field_alone() {
+    for attached in [false, true] {
+        for action in [Action::CopyText, Action::SelectAllText] {
+            assert!(!crate::menu_dispatch::native_owned(true, attached, action));
+            #[cfg(any(target_os = "macos", windows))]
+            assert!(
+                crate::menu_native::accelerator(action, Some(&crate::keymap::Keymap::default()),)
+                    .is_none()
+            );
+        }
+    }
     let (mut h, mut c) = (selected(), Vec::new());
     h.state_mut().tabs[0].text_select = Some(crate::text_select::Selection {
         node: TEXT,
@@ -70,13 +80,90 @@ fn native_copy_and_select_all_leave_the_focused_field_alone() {
         head: 2,
     });
     focus_find(&mut h, &mut c);
-    let ctx = h.ctx.clone();
-    h.state_mut()
-        .apply_native(vec![Action::CopyText, Action::SelectAllText], &ctx);
-    let tab = &h.state().tabs[0];
-    assert!(tab.pending_copy.is_none());
-    let s = tab.text_select.unwrap();
+    h.event(Event::Copy);
+    text_select::key(&mut h, &mut c, Key::A, Modifiers::COMMAND);
+    assert!(c.is_empty());
+    let s = h.state().tabs[0].text_select.unwrap();
     assert_eq!((s.anchor, s.head), (1, 2));
+    h.event(Event::Copy);
+    step(&mut h, &mut c);
+    assert_eq!(c, ["field text"]);
+    c.clear();
+    h.ctx
+        .memory_mut(|m| m.surrender_focus(m.focused().unwrap()));
+    text_select::key(&mut h, &mut c, Key::A, Modifiers::COMMAND);
+    h.event(Event::Copy);
+    step(&mut h, &mut c);
+    assert_eq!(c, ["ABC"]);
+}
+
+#[test]
+fn native_menu_clicks_explicitly_copy_the_canvas_even_with_field_focus() {
+    let (mut h, mut c) = (selected(), Vec::new());
+    focus_find(&mut h, &mut c);
+    let ctx = h.ctx.clone();
+    h.state_mut().apply_native(vec![Action::CopyText], &ctx);
+    assert_eq!(h.state().tabs[0].pending_copy.as_ref().unwrap().text, "ABC");
+}
+
+#[test]
+fn properties_copy_and_preview_copy_use_full_text_but_canvas_copy_uses_range() {
+    let (mut h, mut c) = (selected(), Vec::new());
+    h.state_mut().tabs[0].text_select = Some(crate::text_select::Selection {
+        node: TEXT,
+        anchor: 1,
+        head: 3,
+    });
+    step(&mut h, &mut c);
+    click_label(&mut h, &mut c, "Copy");
+    assert_eq!(c, ["ABC"]);
+    let at = h
+        .get_all_by_label("ABC")
+        .map(|node| node.rect().center())
+        .max_by(|a, b| a.x.total_cmp(&b.x))
+        .unwrap();
+    right_click(&mut h, &mut c, at);
+    step(&mut h, &mut c);
+    click_label(&mut h, &mut c, "Copy text");
+    assert_eq!(c, ["ABC", "ABC"]);
+    let at = centre_of(&h, TEXT);
+    right_click(&mut h, &mut c, at);
+    step(&mut h, &mut c);
+    click_label(&mut h, &mut c, "Copy text");
+    assert_eq!(c, ["ABC", "ABC", "BC"]);
+}
+
+#[test]
+fn resolved_preview_copies_full_characters_even_with_an_empty_canvas_caret() {
+    for head in [1, 3] {
+        let mut app = selected();
+        let mut tab = app.state_mut().tabs.remove(0);
+        tab.select(Some(Guid(1, 38)));
+        tab.set_inner(Some(
+            figstudio_fig::resolve::InstancePath::new(vec![Guid(1, 38), TEXT]).unwrap(),
+        ));
+        tab.text_select = Some(crate::text_select::Selection {
+            node: TEXT,
+            anchor: 1,
+            head,
+        });
+        let (id, _, data) = tab.text_layout().unwrap();
+        let mut node = tab.doc.node(id).unwrap().clone();
+        node.data = data;
+        let mut h = Harness::builder().build_ui_state(
+            move |ui, picked| crate::copy_menu::text_block(ui, &tab, &node, picked),
+            None,
+        );
+        h.get_by_label("Copy").click();
+        h.run();
+        assert_eq!(h.state().as_ref().unwrap().text, "XYZ");
+        *h.state_mut() = None;
+        h.get_by_label("XYZ").click_secondary();
+        h.run();
+        h.get_by_label("Copy text").click();
+        h.run();
+        assert_eq!(h.state().as_ref().unwrap().text, "XYZ");
+    }
 }
 
 #[test]

@@ -92,6 +92,18 @@ fn scalar_clusters_map_multibyte_and_supplementary_characters_to_utf8() {
 }
 
 #[test]
+fn cluster_midpoints_snap_to_whole_utf8_boundaries() {
+    let data = layout("é😀fiZ", &[0, 1, 2, 4]);
+    for (x, boundary) in [(10.0, 2), (14.0, 6), (18.0, 6), (22.0, 8)] {
+        let index = char_at(&data, x, 5.0).unwrap().0;
+        assert_eq!(index, boundary, "x={x}");
+        assert!(characters(&data).is_char_boundary(index));
+    }
+    assert_eq!(copied(&data, 18.0, 22.0), "fi");
+    assert_eq!(copied(&data, 22.0, 18.0), "fi");
+}
+
+#[test]
 fn truncation_ellipsis_and_hidden_glyphs_are_not_selectable() {
     let mut data = layout("abcdef", &[0, 1, 2, 2, 3, 4, 5]);
     // Two visible letters, a sourceless ellipsis, then stored but hidden glyphs.
@@ -141,10 +153,10 @@ fn stored_advances_define_the_last_glyph_and_trailing_space_edges() {
         f64::from(p.num("x").unwrap() + g.num("fontSize").unwrap() * g.num("advance").unwrap());
     assert_eq!(
         char_at(data, right - 0.01, f64::from(p.num("y").unwrap()) - 1.0),
-        Some((14, 'e'))
+        Some((15, '\0'))
     );
     let wide = layout("w", &[0]);
-    assert_eq!(char_at(&wide, 7.9, 5.0), Some((0, 'w')));
+    assert_eq!(char_at(&wide, 7.9, 5.0), Some((1, '\0')));
     assert_eq!(copied(&wide, 0.1, 8.1), "w");
     let mut data = layout("w ", &[0, 1]);
     if let Val::Arr(glyphs) = data
@@ -185,8 +197,8 @@ fn missing_or_invalid_advances_fall_back_to_neighbor_then_em_width() {
             glyphs[0].set("advance", advance.clone());
             glyphs[1].set("advance", advance);
         }
-        assert_eq!(char_at(&data, 7.0, 5.0), Some((0, 'a')));
-        assert_eq!(char_at(&data, 13.9, 5.0), Some((1, 'b')));
+        assert_eq!(char_at(&data, 7.0, 5.0), Some((1, '\0')));
+        assert_eq!(char_at(&data, 13.9, 5.0), Some((2, '\0')));
         assert_eq!(char_at(&data, 14.1, 5.0), Some((2, '\0')));
     }
 }
