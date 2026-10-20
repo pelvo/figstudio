@@ -450,8 +450,17 @@ pub(crate) struct Crossfade {
 }
 
 impl Crossfade {
+    /// Whether a fade may still paint `doc`'s tiles (the last picture, or the one fading).
+    fn paints(&self, doc: u64) -> bool {
+        [self.last, self.from]
+            .iter()
+            .flatten()
+            .any(|s| s.doc == doc)
+    }
+
     /// Paints what `tab`'s canvas fades in over while `shown` < 1: the picture of the file or
-    /// page shown before, or with none (the first file), this page's own colour.
+    /// page shown before, or with none (the first file), this page's own colour. Returns the
+    /// cached tiles painted.
     fn under(
         &mut self,
         painter: &egui::Painter,
@@ -460,23 +469,24 @@ impl Crossfade {
         (rect, radius): (Rect, f32),
         shown: f32,
         ppp: f32,
-    ) {
+    ) -> Vec<crate::tiles::Key> {
         if self.last.is_some_and(|s| s.key != (tab.id, tab.page)) {
             self.from = self.last.take();
         }
         if shown >= 1.0 {
             self.from = None;
-            return;
+            return Vec::new();
         }
         match self.from {
             Some(from) => {
                 painter.rect_filled(rect, radius, from.background);
                 let page = (from.doc, from.key.1);
-                tiles.paint_cached(painter, (rect, radius), page, from.view, ppp);
+                tiles.paint_cached(painter, (rect, radius), page, from.view, ppp)
             }
             None => {
                 let background = figstudio_render::page_background(&tab.doc, tab.page);
                 painter.rect_filled(rect, radius, canvas::to_color32(background));
+                Vec::new()
             }
         }
     }
@@ -1270,12 +1280,20 @@ impl App {
                     let shown = anim::arrive(&ctx, Id::new("canvas-in"), (tab.id, tab.page), 0.16);
                     let ppp = ui.pixels_per_point();
                     let under = (card, f32::from(CARD_RADIUS));
-                    (self.crossfade).under(ui.painter(), &self.tiles, tab, under, shown, ppp);
+                    let underlay =
+                        (self.crossfade).under(ui.painter(), &self.tiles, tab, under, shown, ppp);
                     let before = ui.opacity();
                     ui.multiply_opacity(shown);
                     cursor = canvas::show(ui, tab, &mut self.workers, &mut self.tiles, options);
                     ui.set_opacity(before);
-                    self.crossfade.last = Some(CanvasShot::of(tab));
+                    // Now that the new page has planned its tiles, so the underlay's count as
+                    // on screen and are not the first to go.
+                    self.tiles.keep_drawn(&underlay);
+                    // Only a picture shown in full is one to fade from: going back within a
+                    // fade fades from what was on screen, not from a page barely drawn.
+                    if shown >= 1.0 {
+                        self.crossfade.last = Some(CanvasShot::of(tab));
+                    }
                 }
                 None => {
                     // The next file to open fades in over its own page colour.
@@ -1295,6 +1313,15 @@ impl App {
                 let below = self.find_bar(ui, card);
                 self.gaps_chip(ui, card, below);
             }
+        });
+        // A closed file's tiles go once no fade paints them.
+        let (crossfade, tiles) = (&self.crossfade, &mut self.tiles);
+        self.tiles_closed.retain(|&doc| {
+            let needed = crossfade.paints(doc);
+            if !needed {
+                tiles.forget(doc);
+            }
+            needed
         });
         for action in actions {
             self.apply(action, &ctx);
@@ -1756,7 +1783,7 @@ mod tests {
             }
         }
         let ctx = egui::Context::default();
-        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let rect = Rect::from_center_size(pos2(50.0, 50.0), vec2(20.0, 20.0));
             for symbol in [
                 Symbol::Icon(crate::spaces::ICONS[0].0.into()),
@@ -1771,6 +1798,8 @@ mod tests {
                 );
             }
         });
+        // Cleared: epaint asserts (in debug builds) that no texture change is dropped unseen.
+        output.textures_delta.clear();
         let mut radii = Vec::new();
         for clipped in &output.shapes {
             circles(&clipped.shape, &mut radii);

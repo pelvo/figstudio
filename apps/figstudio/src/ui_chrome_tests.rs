@@ -1587,8 +1587,8 @@ fn fill_at(h: &Harness<'_, App>, at: egui::Pos2) -> egui::Color32 {
     egui::Color32::from_rgb(r, g, b)
 }
 
-#[test]
-fn another_file_fades_in_over_the_last_one_never_over_the_bare_card() {
+/// Two files open with motion on, each frame 1/60 s, the active one drawn in full.
+fn two_files_settled() -> Harness<'static, App> {
     let mut h = Harness::builder()
         .with_size(SIZE)
         .with_step_dt(1.0 / 60.0)
@@ -1597,31 +1597,186 @@ fn another_file_fades_in_over_the_last_one_never_over_the_bare_card() {
         a.tabs.len() == 2
     });
     crate::anim::set_reduced(&h.ctx.clone(), false);
+    wait(&mut h, &mut Vec::new(), "the file's tiles", |a| {
+        a.tiles.count(a.tabs[a.active].doc.instance).1 > 0
+    });
     h.run_steps(30);
+    h
+}
+
+/// Whether the last frame drew a texture other than egui's font atlas (a tile).
+fn drew_a_tile(h: &Harness<'_, App>) -> bool {
+    fn walk(shape: &egui::Shape) -> bool {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().any(walk),
+            egui::Shape::Mesh(m) => m.texture_id != egui::TextureId::default(),
+            egui::Shape::Rect(r) => r.brush.is_some(),
+            _ => false,
+        }
+    }
+    h.output().shapes.iter().any(|c| walk(&c.shape))
+}
+
+#[test]
+fn another_file_fades_in_over_the_last_one_never_over_the_bare_card() {
+    let mut h = two_files_settled();
     let page = |t: &crate::tab::Tab| {
         crate::canvas::to_color32(figstudio_render::page_background(&t.doc, t.page))
     };
     let from = h.state().active;
     let to = (from + 1) % 2;
     let (old, new) = (page(&h.state().tabs[from]), page(&h.state().tabs[to]));
+    let old_doc = h.state().tabs[from].doc.instance;
     // Left of the middle, clear of the pills and of frame labels.
     let card = h.state().card_rect.expect("laid out");
     let at = egui::pos2(card.left() + 12.0, card.center().y);
     assert_eq!(fill_at(&h, at), old, "settled on the first file's page");
     h.state_mut().active = to;
+    h.step();
+    // The new file is not drawn yet; what is drawn is the last one, from its cached tiles,
+    // and those count as on screen so the cache does not drop them first.
+    assert!(drew_a_tile(&h), "the last file's tiles under the new one");
+    assert!(
+        h.state().tiles.count(old_doc).1 > 0,
+        "kept as drawn this frame"
+    );
     let between = |c: egui::Color32| {
         let (c, a, b) = (c.to_array(), old.to_array(), new.to_array());
         (0..3).all(|i| c[i] + 2 >= a[i].min(b[i]) && c[i] <= a[i].max(b[i]) + 2)
     };
     for frame in 0..20 {
-        h.step();
         let c = fill_at(&h, at);
         assert!(
             between(c),
             "frame {frame}: {c:?}, not between {old:?} and {new:?}"
         );
+        h.step();
     }
     assert_eq!(fill_at(&h, at), new, "settled on the second file's page");
+}
+
+#[test]
+fn a_closed_file_fades_out_from_its_own_picture_then_its_tiles_go() {
+    let mut h = two_files_settled();
+    let active = h.state().active;
+    let closed = h.state().tabs[active].doc.instance;
+    h.state_mut().close(active);
+    h.step();
+    assert!(
+        h.state().tiles.count(closed).1 > 0,
+        "the closed file's picture is under the next one"
+    );
+    h.run_steps(30);
+    assert_eq!(
+        h.state().tiles.count(closed).0,
+        0,
+        "its tiles go after the fade"
+    );
+}
+
+/// A file of two empty pages, each with its own background colour.
+fn two_pages() -> (crate::tab::Tab, [figstudio_fig::Guid; 2]) {
+    use figstudio_fig::{Document, Guid, Node, Obj, Val};
+    let obj = |fields: &[(&str, Val)]| {
+        let mut o = Obj::new();
+        for (k, v) in fields {
+            o.insert(k, v.clone());
+        }
+        Val::Obj(o)
+    };
+    let pages = [Guid(9, 1), Guid(9, 2)];
+    let nodes = pages
+        .iter()
+        .zip([0.95, 0.3])
+        .enumerate()
+        .map(|(i, (page, grey))| {
+            let colour = obj(&[
+                ("r", Val::Float(grey)),
+                ("g", Val::Float(grey)),
+                ("b", Val::Float(grey)),
+                ("a", Val::Float(1.0)),
+            ]);
+            let parent = obj(&[
+                ("guid", Guid(0, 0).to_val()),
+                ("position", Val::Str(i.to_string())),
+            ]);
+            Node::from_data(obj(&[
+                ("guid", page.to_val()),
+                ("type", Val::Str("CANVAS".into())),
+                ("name", Val::Str(format!("Page {}", i + 1))),
+                ("backgroundColor", colour),
+                ("parentIndex", parent),
+            ]))
+            .expect("page")
+        })
+        .collect();
+    let mut doc = Document::from_bytes(include_bytes!("../../../tests/fixtures/structure.fig"))
+        .expect("fixture");
+    doc.set_nodes(nodes).expect("nodes");
+    doc.pages = pages.to_vec();
+    let mut tab = crate::tab::Tab::new(
+        900,
+        "pages.fig".into(),
+        std::sync::Arc::new(doc),
+        None,
+        std::time::Duration::ZERO,
+    );
+    tab.page = pages[0];
+    (tab, pages)
+}
+
+#[test]
+fn another_page_crossfades_from_the_last_and_going_back_fades_from_what_was_shown() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, Vec::new()));
+    crate::anim::set_reduced(&h.ctx.clone(), false);
+    let (tab, [one, two]) = two_pages();
+    let colour =
+        |page| crate::canvas::to_color32(figstudio_render::page_background(&tab.doc, page));
+    let (a, b) = (colour(one), colour(two));
+    h.state_mut().tabs.push(tab);
+    h.state_mut().active = 0;
+    h.run_steps(30);
+    let card = h.state().card_rect.expect("laid out");
+    let at = egui::pos2(card.left() + 12.0, card.center().y);
+    let towards = |c: egui::Color32, to: egui::Color32| -> u16 {
+        (0..3)
+            .map(|i| u16::from(c.to_array()[i].abs_diff(to.to_array()[i])))
+            .sum()
+    };
+    assert_eq!(fill_at(&h, at), a, "settled on page 1");
+    // The real path: it also asks for a fit, so the view changes on the first frame.
+    h.state_mut().tabs[0].set_page(two);
+    h.step();
+    assert_eq!(fill_at(&h, at), a, "page 2 is not there at once");
+    let mut last = a;
+    for frame in 0..20 {
+        h.step();
+        let c = fill_at(&h, at);
+        assert!(
+            towards(c, b) <= towards(last, b),
+            "frame {frame}: {c:?} after {last:?}"
+        );
+        last = c;
+        if frame == 2 {
+            assert!(towards(c, a) > 6 && towards(c, b) > 6, "a blend: {c:?}");
+        }
+    }
+    assert_eq!(last, b, "settled on page 2");
+    // Back to page 1 and, three frames in, to page 2 again: page 2 was nearly all that was
+    // shown, so the fade starts from it, not from page 1 barely drawn.
+    h.state_mut().tabs[0].set_page(one);
+    h.run_steps(3);
+    let shown = fill_at(&h, at);
+    h.state_mut().tabs[0].set_page(two);
+    h.step();
+    let c = fill_at(&h, at);
+    assert!(
+        towards(c, b) <= towards(shown, b),
+        "jumped to {c:?} from {shown:?}"
+    );
 }
 
 #[test]

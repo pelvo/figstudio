@@ -162,6 +162,14 @@ impl<T> Cache<T> {
             })
     }
 
+    /// How many tiles of `doc` are cached, and how many of them this frame drew.
+    #[cfg(test)]
+    pub fn count(&self, doc: u64) -> (usize, usize) {
+        let of_doc = || self.tiles.iter().filter(move |(k, _)| k.doc == doc);
+        let now = of_doc().filter(|(_, e)| e.frame == self.frame).count();
+        (of_doc().count(), now)
+    }
+
     /// Drops every tile `keep` refuses (a closed document).
     pub fn retain(&mut self, mut keep: impl FnMut(&Key) -> bool) {
         self.tiles.retain(|k, _| keep(k));

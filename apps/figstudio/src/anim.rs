@@ -305,7 +305,10 @@ mod tests {
             time: Some(time),
             ..Default::default()
         };
-        let _ = ctx.run_ui(input, |ui| out = Some(f(ui.ctx())));
+        // Cleared: epaint asserts (in debug builds) that no texture change is dropped unseen.
+        ctx.run_ui(input, |ui| out = Some(f(ui.ctx())))
+            .textures_delta
+            .clear();
         out.expect("ran")
     }
 

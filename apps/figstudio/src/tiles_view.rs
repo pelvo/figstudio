@@ -218,8 +218,8 @@ impl Tiles {
 
 impl Tiles {
     /// Paints the cached tiles of `doc`'s `page` where `view` puts them, coarser ones first,
-    /// without touching them or asking for more: the picture another file or page fades in
-    /// over (`chrome::Crossfade`).
+    /// without asking for more: the picture another file or page fades in over
+    /// (`chrome::Crossfade`). Returns the tiles painted, for [`Tiles::keep_drawn`].
     pub fn paint_cached(
         &self,
         painter: &egui::Painter,
@@ -227,20 +227,30 @@ impl Tiles {
         (doc, page): (u64, figstudio_fig::Guid),
         view: crate::tab::View,
         ppp: f32,
-    ) {
+    ) -> Vec<tiles::Key> {
         let visible = tiles::visible_page(view.zoom, view.pan.into(), rect.size().into());
         let level = tiles::level_for(view.zoom * ppp);
-        for key in self.cache.draw_order(doc, page, level, visible) {
-            if let Some(entry) = self.cache.get(&key) {
-                paint_key(
-                    painter,
-                    &key,
-                    entry.value.texture.id(),
-                    view,
-                    (rect, radius),
-                );
+        let keys = self.cache.draw_order(doc, page, level, visible);
+        for key in &keys {
+            if let Some(entry) = self.cache.get(key) {
+                paint_key(painter, key, entry.value.texture.id(), view, (rect, radius));
             }
         }
+        keys
+    }
+
+    /// Marks tiles painted outside [`Tiles::show`] as on screen this frame. Called after it,
+    /// once the frame's plan is set: a tile last drawn in an earlier frame is evicted first.
+    pub fn keep_drawn(&mut self, keys: &[tiles::Key]) {
+        for key in keys {
+            self.cache.touch(key);
+        }
+    }
+
+    /// How many tiles of `doc` are cached, and how many of them this frame drew.
+    #[cfg(test)]
+    pub fn count(&self, doc: u64) -> (usize, usize) {
+        self.cache.count(doc)
     }
 }
 

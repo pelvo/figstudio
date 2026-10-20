@@ -614,7 +614,10 @@ mod tests {
     fn every_offered_emoji_and_icon_can_be_drawn() {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx);
-        let _ = ctx.run_ui(Default::default(), |_| {});
+        // Cleared: epaint asserts (in debug builds) that no texture change is dropped unseen.
+        ctx.run_ui(Default::default(), |_| {})
+            .textures_delta
+            .clear();
         let font = egui::FontId::proportional(14.0);
         ctx.fonts_mut(|fonts| {
             // `has_glyph` misses egui's emoji font here; compare with the box drawn for a

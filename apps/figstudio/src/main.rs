@@ -276,6 +276,8 @@ struct App {
     card_rect: Option<egui::Rect>,
     /// What the canvas showed, so another file or page fades in over it (`chrome.rs`).
     crossfade: chrome::Crossfade,
+    /// Closed files whose tiles a fade may still paint; dropped once none does.
+    tiles_closed: Vec<u64>,
     /// The hidden sidebar is peeking out over the canvas (`chrome.rs`).
     peek: bool,
     /// Saved colours, symbols and names of spaces (`spaces.rs`).
@@ -383,6 +385,7 @@ impl App {
             shown_file: None,
             card_rect: None,
             crossfade: chrome::Crossfade::default(),
+            tiles_closed: Vec::new(),
             peek: false,
             // Tests never read or write the user's saved styles.
             spaces: if cfg!(test) {
@@ -500,7 +503,8 @@ impl App {
             let instance = closed.doc.instance;
             if !self.tabs.iter().any(|t| t.doc.instance == instance) {
                 self.workers.close_document(instance);
-                self.tiles.forget(instance);
+                // Its picture may be what the next file fades in over (`canvas_card`).
+                self.tiles_closed.push(instance);
             }
             if self.active >= self.tabs.len() {
                 self.active = self.tabs.len().saturating_sub(1);

@@ -58,6 +58,11 @@ incremental); use it yourself too so the build is shared. Run one test with
 links each of the ~100 test binaries, so a change in `crates/fig` costs ~20 minutes instead
 of ~40 seconds.
 
+The `fast` profile has no debug assertions, so egui's debug-only checks do not run in the
+gate. After changing app tests, also run `cargo test -p figstudio` (debug profile) once. A
+test that runs `egui::Context::run_ui` itself must clear the output's `textures_delta`, or
+epaint panics when the context drops ("Dropped TexturesDelta with 1 unapplied deltas").
+
 ## 2. What exists today (50 tests in the gate)
 
 | File | Test | Guards |
@@ -251,7 +256,7 @@ no snapshot images). `App::new` takes `eframe::CreationContext`, which kittest b
 wgpu state, so tiles render on the CPU path.
 
 ```sh
-cargo test -p figstudio ui_tests          # 46 tests, about 2 s
+cargo test -p figstudio ui_tests          # 48 tests, about 2 s
 ```
 
 How to write one: `harness()` returns a `Harness<App>` with the file loaded and fitted;
