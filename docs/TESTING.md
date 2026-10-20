@@ -254,7 +254,7 @@ Retina scaling, trackpad pinch, macOS menu and shortcuts (Cmd).
 
 ## 7b. Headless UI tests (egui_kittest)
 
-`apps/figstudio/src/ui_tests.rs` (+ `ui_copy_tests.rs`, `ui_mcp_tests.rs`, `ui_chrome_tests.rs`) run the real `App`
+`apps/figstudio/src/ui_tests.rs` (+ `ui_copy_tests.rs`, `ui_mcp_tests.rs`, `ui_chrome_tests.rs`, `ui_onboarding_tests.rs`) run the real `App`
 on `tests/fixtures/structure.fig` inside `cargo test`: no display, X server, GPU or xdotool, on
 macOS, Linux and CI. They use `egui_kittest` (dev-dependency, `eframe` feature only; no wgpu,
 no snapshot images). `App::new` takes `eframe::CreationContext`, which kittest builds with no
@@ -304,6 +304,16 @@ MCP caller receives an answer, while unanswered searches still request a 250 ms 
 older held search must not keep a failed load from being retried by a new link. Quiet-outcome
 regressions cover a failed best copy, a file tie and a missing node in an open tab; all three
 must fail if the `search.answered` branch in `finish_search` is bypassed.
+
+`ui_onboarding_tests.rs` turns onboarding on (it is off in tests) and walks the welcome
+sheet with clicks and keys, checks it is modal (⌘L does nothing until Escape skips it),
+that tips come one at a time beside their control and go after Got it, Skip tips or using
+the control, that Help → Welcome tour from the command bar brings it all back, and that the
+progress survives a restart and an older saved state. A tip's first frame is egui's sizing
+pass, laid out where it will not stay; `wait_label` steps a few more frames before a click.
+Each test was seen failing with its part removed (no modal return, no save, no `watch`, no
+`show_again`, no command-field target, Got it ignored). Look at the sheet and tips in the
+real app too; the tests do not see colours or placement beyond "right of the control".
 
 Cannot be covered here: the real OS clipboard (paste into an editor or Preview), a real
 window manager, native file dialogs, GPU tiles, HiDPI and trackpad gestures.

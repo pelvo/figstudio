@@ -57,6 +57,7 @@ mod menu_egui;
 #[cfg(any(target_os = "macos", windows))]
 mod menu_native;
 mod menu_windows;
+mod onboarding;
 mod panels;
 mod pick;
 mod pick_cache;
@@ -217,6 +218,9 @@ struct UiState {
     /// Settings → General and Canvas (absent in states saved before them).
     #[serde(default)]
     prefs: Prefs,
+    /// The welcome sheet and tips seen (absent before them: shown once more).
+    #[serde(default)]
+    onboarding: onboarding::Progress,
 }
 
 /// What Settings → General and Canvas set (the rest lives in egui's options and the panels).
@@ -340,6 +344,8 @@ struct App {
     renderer: String,
     /// Agent access: the MCP server, off at every launch (`mcp_host.rs`).
     mcp: mcp_host::McpHost,
+    /// The welcome sheet and the one-time tips (`onboarding.rs`).
+    onboarding: onboarding::Onboarding,
 }
 
 impl App {
@@ -437,6 +443,14 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             window_cap: None,
             mcp: Default::default(),
+            // Tests turn it on themselves; it would cover every other test's window.
+            onboarding: onboarding::Onboarding::new(
+                saved
+                    .as_ref()
+                    .map(|s| s.onboarding.clone())
+                    .unwrap_or_default(),
+                !cfg!(test),
+            ),
         };
         if let Some(saved) = saved {
             app.show_left = saved.show_left;
@@ -805,6 +819,11 @@ impl App {
         if self.settings.recording().is_some() {
             return;
         }
+        // The welcome sheet is modal: its own keys only.
+        if self.onboarding.sheet_up(ctx) {
+            self.welcome_keys(ctx);
+            return;
+        }
         let keys = |b: keymap::Binding| self.prefs.keymap.get(b);
         // The command bar is modal, also while it fades out (it still covers the app): only
         // its own shortcut (which closes or reopens it) gets through, so nothing changes the
@@ -960,6 +979,7 @@ impl eframe::App for App {
             show_right: self.show_right,
             pages_share: self.pages_share,
             prefs: self.prefs.clone(),
+            onboarding: self.onboarding.progress.clone(),
         };
         eframe::set_value(storage, UI_STATE_KEY, &state);
     }
@@ -1016,6 +1036,8 @@ impl App {
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
 
         self.note_active_file(&ctx);
+        // The sidebar records where the tips point as it draws.
+        self.onboarding.targets = Default::default();
         // The menu's check mark follows the real setting (a host may turn motion off too).
         self.reduce_motion = anim::reduced(&ctx);
         let p = theme::palette(&ctx);
@@ -1117,7 +1139,9 @@ impl App {
         self.peek_sidebar(&ctx);
         self.space_popover(&ctx);
         self.drop_overlay(&ctx, hovering_files);
+        self.tips(&ctx);
         self.command_bar(&ctx);
+        self.welcome_sheet(&ctx);
         self.toasts(&ctx);
         let answers = self.take_link_answers();
         self.mcp

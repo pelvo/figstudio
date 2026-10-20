@@ -36,7 +36,6 @@ pub struct CommandBar {
 }
 
 impl CommandBar {
-    #[cfg(test)]
     pub fn is_open(&self) -> bool {
         self.open
     }

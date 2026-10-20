@@ -114,6 +114,8 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
                          canvas card with tool / status pills and the warning chip, toasts,
                          empty state, drop overlay
   command.rs             the ⌘L command bar: search over commands, files, pages and layers
+  onboarding.rs          first run: the welcome sheet (three pages) and one-time tips beside
+                         the command field, the space dots and the sidebar button
   anim.rs                springs and colour fades in egui memory; Reduce motion
   icons.rs               line icons painted on a 16-unit grid; the icon button
   vibrancy.rs            macOS only: the blur view behind the transparent window
@@ -430,9 +432,25 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   (`chrome::SIDEBAR`) so a width inflated that way is not restored.
 - eframe's `persistence` keeps the window, the panel widths and egui's options (appearance,
   Reduce motion) between launches; `App::save` adds the sidebar / properties visibility, the
-  Pages/Layers split and Settings' `Prefs` (`UiState`): the translucent sidebar, the renderer
-  (applied at the next start; `FIGSTUDIO_RENDERER` wins), frame names and whether the scroll
-  wheel zooms (`canvas::Options`).
+  Pages/Layers split, what onboarding was seen and Settings' `Prefs` (`UiState`): the
+  translucent sidebar, the renderer (applied at the next start; `FIGSTUDIO_RENDERER` wins),
+  frame names and whether the scroll wheel zooms (`canvas::Options`).
+- **Onboarding** (`onboarding.rs`). The first launch (and the first launch of a version
+  that adds it: `UiState` without `onboarding`) opens the welcome sheet: a modal card over the
+  dimmed window, a hero in the active space's gradient with a drawn picture, three pages (the
+  app, spaces, the command field), Skip/Back, Continue/Get started, Escape skips, Enter and
+  the arrows page. While it is up `App::shortcuts` hands keys only to `welcome_keys`; a native
+  menu action closes it (`App::apply`), as the person has moved on. After it, once a file has
+  shown for 0.8 s, one tip at a time sits to the right of its control with an arrow; the
+  sidebar records where the controls are each frame (`Onboarding::targets`, cleared at the
+  start of the frame), so a hidden control means no tip. A tip is done after Got it, Skip
+  tips (all of them), or when the person does what it shows (`Onboarding::watch`: the
+  command bar opened, another space with the same files open, the sidebar toggled). What
+  was seen is `onboarding::Progress` in `UiState` (named bools: unknown fields are ignored,
+  missing ones are not seen). Help → Welcome tour (also in the command bar and Settings →
+  General) resets it and opens the sheet. Tests start with it off (`!cfg!(test)`, like
+  `spaces::Store::memory`) so the sheet does not cover every other test; the onboarding
+  tests turn it on.
 - **Settings** (`settings.rs`, ⌘, / the app menu on macOS / File → Settings… elsewhere / the
   command bar): a foreground window with Arc's tab row. Agent access (`mcp.menu`, `mcp.status`)
   and About live in it; View → Agent access… and Help → About open those tabs
