@@ -214,3 +214,57 @@ fn what_was_seen_is_kept_between_launches() {
     assert_eq!(app.onboarding.progress, Progress::default());
     assert!((app.pages_share - 0.3).abs() < 1e-6, "the rest loaded");
 }
+
+/// How opaque the last frame painted the text `text` (its strongest glyph), if it did. egui
+/// fades text by scaling its glyphs' colours, so that is what is read.
+fn text_opacity(h: &Harness<'_, App>, text: &str) -> Option<f32> {
+    fn walk(shape: &egui::Shape, text: &str) -> Option<f32> {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| walk(s, text)),
+            egui::Shape::Text(t) if t.galley.job.text == text => {
+                let alpha = (t.galley.rows.iter())
+                    .flat_map(|r| r.row.visuals.mesh.vertices.iter())
+                    .map(|v| v.color.a())
+                    .max()?;
+                Some(f32::from(alpha) / 255.0 * t.opacity_factor)
+            }
+            _ => None,
+        }
+    }
+    h.output().shapes.iter().find_map(|c| walk(&c.shape, text))
+}
+
+#[test]
+fn the_page_picture_fades_out_with_the_sheet() {
+    // Frames 1/60 s apart, so the fade spans several of them.
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, Vec::new()));
+    h.state_mut().onboarding = Onboarding::new(Progress::default(), true);
+    crate::anim::set_reduced(&h.ctx.clone(), false);
+    wait_label(&mut h, "Welcome to figstudio", true);
+    h.key_press(egui::Key::ArrowRight);
+    h.key_press(egui::Key::ArrowRight);
+    h.run_steps(40);
+    let picture = "Search or paste a Figma link";
+    assert_eq!(text_opacity(&h, picture), Some(1.0), "the picture is up");
+    h.key_press(egui::Key::Enter);
+    // Every frame of the fade: the picture is never brighter than the sheet's own title.
+    let mut faded = false;
+    for _ in 0..60 {
+        h.step();
+        let (Some(pic), Some(title)) =
+            (text_opacity(&h, picture), text_opacity(&h, "Find anything"))
+        else {
+            continue;
+        };
+        assert!(
+            pic <= title + 0.001,
+            "picture {pic} over a sheet at {title}"
+        );
+        faded |= pic < 0.9;
+    }
+    assert!(faded, "the picture faded with the sheet");
+    assert!(text_opacity(&h, picture).is_none(), "and is gone with it");
+}

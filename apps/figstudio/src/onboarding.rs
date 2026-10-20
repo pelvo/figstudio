@@ -495,8 +495,9 @@ impl App {
                         )));
                         let c = hero.center() + vec2((1.0 - words) * 24.0, 0.0);
                         let painter = ui.painter().clone().with_clip_rect(hero);
+                        // Multiplied, not set: the sheet's own fade-out (`shown`) applies too.
                         let mut faded = painter.clone();
-                        faded.set_opacity(words);
+                        faded.multiply_opacity(words);
                         illustration(&faded, &p, tint, page, c, command_keys.as_deref());
                         ui.add_space(22.0);
                         ui.horizontal(|ui| {

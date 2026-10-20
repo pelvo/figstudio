@@ -308,8 +308,10 @@ must fail if the `search.answered` branch in `finish_search` is bypassed.
 `ui_onboarding_tests.rs` turns onboarding on (it is off in tests) and walks the welcome
 sheet with clicks and keys, checks it is modal (⌘L does nothing until Escape skips it),
 that tips come one at a time beside their control and go after Got it, Skip tips or using
-the control, that Help → Welcome tour from the command bar brings it all back, and that the
-progress survives a restart and an older saved state. A tip's first frame is egui's sizing
+the control, that Help → Welcome tour from the command bar brings it all back, that the
+progress survives a restart and an older saved state, and that the page's picture fades
+out with the sheet (frames 1/60 s apart with motion on; egui fades text by scaling its glyph
+colours, so the test reads those). A tip's first frame is egui's sizing
 pass, laid out where it will not stay; `wait_label` steps a few more frames before a click.
 Each test was seen failing with its part removed (no modal return, no save, no `watch`, no
 `show_again`, no command-field target, Got it ignored). Look at the sheet and tips in the
