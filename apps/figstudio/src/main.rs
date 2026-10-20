@@ -630,7 +630,9 @@ impl App {
                     self.next_id += 1;
                     #[cfg(target_arch = "wasm32")]
                     web::bind_upload(&path, id);
-                    let mut tab = Tab::new(id, path.clone(), doc, source, elapsed).with_doc_key(doc_key).with_real_path(real_path);
+                    let mut tab = Tab::new(id, path.clone(), doc, source, elapsed)
+                        .with_doc_key(doc_key)
+                        .with_real_path(real_path);
                     tab.tint = theme::pick_tint(&tab.title(), self.tabs.iter().map(|t| t.tint));
                     let title = tab.title();
                     tab.style = self

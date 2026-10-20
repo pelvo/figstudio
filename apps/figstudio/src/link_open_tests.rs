@@ -1254,3 +1254,32 @@ fn an_answered_held_search_opens_its_copy_quietly() {
     assert!(app.toasts.is_empty(), "the answered search toasted");
     assert!(rx.try_recv().is_err());
 }
+
+#[test]
+fn open_link_shortcut_uses_the_keymap_without_taking_the_command_bar_keys() {
+    use egui::{Key, KeyboardShortcut, Modifiers};
+    let mut h = harness();
+    let shortcut = h
+        .state()
+        .prefs
+        .keymap
+        .for_action(crate::menu::Action::OpenLink);
+    assert_eq!(
+        shortcut,
+        Some(KeyboardShortcut::new(
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Key::L
+        ))
+    );
+    assert_ne!(
+        shortcut,
+        h.state()
+            .prefs
+            .keymap
+            .for_action(crate::menu::Action::CommandBar)
+    );
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::L);
+    h.run_steps(3);
+    assert!(h.state().link.window);
+    assert!(!h.state().command.is_open());
+}

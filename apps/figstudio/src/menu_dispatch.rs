@@ -147,6 +147,7 @@ mod tests {
     fn only_command_actions_are_native_owned_on_attached_macos() {
         for action in [
             Action::Open,
+            Action::OpenLink,
             Action::CloseTab,
             Action::ExportSelection(2.0),
             Action::CommandBar,

@@ -186,7 +186,7 @@ tiling would fix it); the Layers panel is not virtualised yet (fine at 9 000 row
       content view of a transparent window (`vibrancy.rs`; one `unsafe` block, approved by the
       owner); the gradient is 60% opaque over it. Checked by hand in light and dark
 - [x] errors shown as toasts (bad file stays non-fatal)
-- [x] File → Open Figma link… (Cmd+L): paste a figma.com link; the matching tab, or the
+- [x] File → Open Figma link… (Cmd+Shift+L by default): paste a figma.com link; the matching tab, or the
       `<file name>.fig` in `~/Downloads` (`FIGSTUDIO_LINK_DIRS`, or a chosen folder), is opened
       and the node selected and fitted; when several files match equally, the window lists them
 - [ ] save dialog path checked by hand on a desktop (Xvfb has no portal, so the export
@@ -826,3 +826,4 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-20 — Figma links, thirteenth review: an answered held search is no longer cut off by its 20 s search deadline (it waits for the load like a waiting load), answered searches and loads end quietly (no "Opening…" or node-missing toast, no window, no second answer), and the window's "Searching…" label counts only its own search. The end-to-end budget test holds the listing instead of sleeping and checks for a second answer. Each change has a test that failed with it reverted (5 mutations); the timing tests passed 6/6 and 3/3 runs.
 - 2026-10-20 — Figma links, approval nits: reaching the abandoned-listing cap now tells the caller to wait or restart figstudio, including after choosing a healthy folder. The cap regression failed without that guidance and passes with it; the new public message is covered by the redaction test. The already-answered timeout toast was already prevented by the answered-search guard; removing that guard made the existing regression fail. Not verified: recovery against a real hung network share.
 - 2026-10-20 — Cap-message follow-up: preserve the macOS permission hint alongside wait/restart guidance, clarify current-folder timeout versus abandoned-listing cap, and assert the exact cap error before and after switching folders. The platform-message test failed without the permission hint and passes with it. Live permission-dialog recovery was not rerun.
+- 2026-10-20 — Rebase integration with the Arc UI and browser proxy: preserve settings, command-bar shortcuts, tab colours, space styles and the link-open hooks. Open Figma link now uses configurable Cmd+Shift+L so Cmd+L stays with the command bar; its window reads the current theme palette. The shortcut regression failed with the conflicting Cmd+L binding and passes after restoration. Native menu interaction and the combined UI were not manually exercised.

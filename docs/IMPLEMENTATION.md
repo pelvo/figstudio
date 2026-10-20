@@ -10,16 +10,12 @@ commands from clicks and shortcuts. `menu_egui.rs` renders Linux/web menus and t
 headless/native-attach fallback behind the sidebar's "⋯" button (File, View and Help as
 submenus); the command bar (`command.rs`) lists the same enabled commands. `menu_windows.rs` draws the
 Settings window, where Agent access and About now live (View → Agent access… and Help → About
-open those tabs).
+open those tabs), and the Open Figma link window (`link_open.rs`).
 `menu_native.rs` attaches muda on macOS/Windows in the eframe creation closure;
 `menu_dispatch.rs` drains queued ids with repaint and synchronizes changed flags.
-macOS owns Open, Close file, selection-export, command bar (⌘L), find (⌘F) and sidebar (⌘\)
-accelerators; egui retains Shift+1
-headless/native-attach fallback. `menu_windows.rs` hosts Agent access, About and Open Figma
-link (`link_open.rs`).
-`menu_native.rs` attaches muda on macOS/Windows in the eframe creation closure;
-`menu_dispatch.rs` drains queued ids with repaint and synchronizes changed flags.
-macOS owns Open, Open Figma link (Cmd+L), Close tab and selection-export accelerators; egui retains Shift+1
+macOS owns Open, Open Figma link (Cmd+Shift+L), Close file, selection-export, command bar
+(⌘L), find (⌘F), settings and sidebar (⌘\) accelerators through the configurable keymap;
+egui retains Shift+1
 and Shift+0 (only outside text editing). Windows keeps egui shortcuts (winit does
 not translate native accelerators). Context menus remain egui. Native attachment failure logs a
 warning and keeps the drawn bar.
@@ -562,7 +558,7 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 
 ### Open Figma link (`link_open.rs`)
 
-- **File > Open Figma link…** (Cmd+L) opens a window with one text field: a figma.com or
+- **File > Open Figma link…** (Cmd+Shift+L by default) opens a window with one text field: a figma.com or
   `figstudio://` link, or a bare node ID. `parse` turns it into a `FileHint` and a node (an
   instance path names its outer instance; a page ID switches page).
 - **Which file** (`plan`): every open tab and every `.fig` directly inside the link folders

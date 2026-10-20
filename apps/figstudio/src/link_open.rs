@@ -874,7 +874,7 @@ impl App {
                 if self.link.window_searching() {
                     ui.label(
                         egui::RichText::new("Searching the link folders\u{2026}")
-                            .color(crate::theme::TEXT_DIM),
+                            .color(crate::theme::palette(ui.ctx()).text_dim),
                     );
                 }
                 picked = self.link_choices(ui);
@@ -938,7 +938,7 @@ impl App {
             ui.label(
                 egui::RichText::new(folder)
                     .small()
-                    .color(crate::theme::TEXT_DIM),
+                    .color(crate::theme::palette(ui.ctx()).text_dim),
             );
         }
         picked
@@ -949,10 +949,15 @@ impl App {
         ui.separator();
         ui.label("A file no tab shows is opened from its <file name>.fig in:");
         if self.link.dirs.is_empty() {
-            ui.label(egui::RichText::new("(no folder)").color(crate::theme::TEXT_DIM));
+            ui.label(
+                egui::RichText::new("(no folder)").color(crate::theme::palette(ui.ctx()).text_dim),
+            );
         }
         for dir in &self.link.dirs {
-            ui.label(egui::RichText::new(dir.display().to_string()).color(crate::theme::TEXT_DIM));
+            ui.label(
+                egui::RichText::new(dir.display().to_string())
+                    .color(crate::theme::palette(ui.ctx()).text_dim),
+            );
         }
         if ui.button("Choose folder\u{2026}").clicked()
             && let Some(dir) = rfd::FileDialog::new().pick_folder()
