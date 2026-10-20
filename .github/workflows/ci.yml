@@ -4,6 +4,16 @@
 # with the ruleset. The toolchain is pinned to the one docs/TESTING.md names; bump both
 # together.
 #
+# These two jobs are the whole workflow. Extra slice jobs showed up next to them and
+# compiled the same crates again, so the pull request waited just as long. In-job
+# `parallel` steps are not used either: a workflow that contained that key failed in
+# zero seconds with no jobs, so the required checks never reported.
+#
+# `prefix-key` is `v1-rust` because an exact hit of `v0-rust` does not save. Those
+# entries have no workspace crates, so a hit recompiled this repo and threw the
+# result away. The next miss saves them. `cache-all-crates` stays off: at this pin
+# it skips registry pruning.
+#
 # Third-party actions are pinned to commit SHAs; the comment names the release.
 
 name: CI
@@ -37,6 +47,9 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-rust
+          cache-workspace-crates: true
       - run: scripts/check.sh --lint
 
   test:
@@ -50,4 +63,7 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-rust
+          cache-workspace-crates: true
       - run: scripts/check.sh --test

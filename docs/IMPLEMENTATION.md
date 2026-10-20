@@ -384,7 +384,10 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   `theme::TRANSLUCENT_TINT` over it, opaque everywhere else.
 - **Spaces.** Each open file is a space: `Tab::tint` (picked from the name) unless
   `Tab::style` (`spaces::Style`) sets a preset or custom colour, an emoji or icon badge and a
-  display name. A space dot's right-click menu (and the Space menu, and the command bar)
+  display name. The Properties card takes half the space's top colour and its section
+  wells keep their neutral step from it (`Palette::on_tint`; `section` reads the well from
+  `faint_bg_color`, which the Properties panel sets). A space
+  dot's right-click menu (and the Space menu, and the command bar)
   opens Arc's three popovers above the dot: Change space icon, Rename space, Edit theme
   colour. Changes show at once; a click outside, Escape or Enter closes and saves them, and
   so do opening another popover, closing the file and quitting (`commit_space_editor`).
@@ -861,7 +864,7 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T14 | Browser: ~~CJK UI font~~ (done: fetched on demand), text without stored outlines | `apps/figstudio/src/web.rs`, `theme.rs` | Chinese layer names readable in the browser |
 | T15 | Faster walk for `render_parallel`: it is single-threaded and is most of the time at fit zoom (`patched()` clones node data) | `crates/render/src/lib.rs` | Stress page at fit: render time falls with more threads |
 | T10 | `render --all-pages`, `info --json` | CLI | Covered by T1-style tests |
-| T11 | CI running `scripts/check.sh` on Linux and macOS | `.github/workflows` | **Ask the owner first** (private-repo minutes). Green on both |
+| T11 | CI running `scripts/check.sh` on Linux and macOS | `.github/workflows` | **Ask the owner first** (private-repo minutes). Green on both. Linux CI is the two required jobs only |
 | T12 | Figma accepts our files | — | A person with Figma opens a `resave` output and a lightly edited file; result recorded in `docs/PLAN.md` |
 | T13 | Editing (P6) | all | **Not started until the requester asks** |
 | T14 | Live GUI check of export, load dedup and the worker-lost toast (Linux `scripts/gui-smoke.sh`, macOS by hand) | `apps/figstudio/src` | Export runs without blocking; a second open of a loading file makes one tab; recorded in `docs/PLAN.md` |

@@ -489,7 +489,8 @@ fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
     );
     ui.add_space(2.0);
     egui::Frame::new()
-        .fill(p.well)
+        // `theme::apply` sets this to `Palette::well`; the Properties card tints it.
+        .fill(ui.visuals().faint_bg_color)
         .corner_radius(CornerRadius::same(10))
         .inner_margin(Margin::symmetric(10, 8))
         .show(ui, |ui| {
@@ -522,7 +523,9 @@ fn kv(ui: &mut Ui, k: &str, v: String) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(k).color(p.text_faint));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(v);
+            // Truncated (full text on hover): a long value, such as a component name with
+            // all its variant properties, must not widen the panel past what the user set.
+            ui.add(egui::Label::new(v).truncate());
         });
     });
 }
@@ -609,4 +612,49 @@ fn effects(ui: &mut Ui, list: Option<&Val>) {
             });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn a_long_value_is_shortened_beside_its_key() {
+        // A component name with all its variant properties, far wider than the column.
+        let long = "Property 1=Page header, Property 2=Primary, Property 3=Checked ".repeat(3);
+        let value = long.clone();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(600.0, 200.0))
+            .build_ui_state(
+                move |ui, width: &mut f32| {
+                    *width = ui
+                        .scope(|ui| {
+                            ui.set_max_width(200.0);
+                            super::kv(ui, "Main", value.clone());
+                            ui.min_rect().width()
+                        })
+                        .inner;
+                },
+                0.0,
+            );
+        h.run();
+        let width = *h.state();
+        assert!(width <= 200.5, "the row grew to {width}");
+        let key = h.get_by_label("Main").rect();
+        let shown = h.get_by_label(&long).rect();
+        assert!(
+            shown.left() >= key.right(),
+            "the value {shown:?} overlaps its key {key:?}"
+        );
+        assert!(shown.right() <= key.left() + 200.5, "value {shown:?}");
+        // Shortened, so hovering shows the full text in a tooltip.
+        h.get_by_label(&long).hover();
+        h.run();
+        assert_eq!(
+            h.get_all_by_label(&long).count(),
+            2,
+            "no tooltip with the full value"
+        );
+    }
 }
