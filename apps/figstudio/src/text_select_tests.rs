@@ -1,7 +1,7 @@
 use super::*;
 use figstudio_fig::{Document, Obj};
 
-fn fixture(name: &str) -> Document {
+pub(super) fn fixture(name: &str) -> Document {
     Document::open(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures")

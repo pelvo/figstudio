@@ -37,6 +37,8 @@ mod pick;
 mod pick_bench;
 #[path = "ui_pick_cache_tests.rs"]
 mod pick_cache;
+#[path = "ui_text_drag_tests.rs"]
+mod text_drag;
 #[path = "ui_text_select_tests.rs"]
 mod text_select;
 // Without the `mcp` feature there is no View item (mcp_off.rs) and no tokio to test it with.

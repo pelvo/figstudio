@@ -4,14 +4,14 @@ use figstudio_render::{absolute_transform, kurbo::Point};
 
 const TEXT: Guid = Guid(1, 5);
 
-fn text_harness() -> Harness<'static, App> {
+pub(super) fn text_harness() -> Harness<'static, App> {
     let mut h = harness_fixture("noise_and_grain.fig", 1.0 / 60.0);
     h.state_mut().tabs[0].fit_node = Some(TEXT);
     h.run_steps(90);
     h
 }
 
-fn glyph_at(h: &Harness<'_, App>, index: usize) -> Pos2 {
+pub(super) fn glyph_at(h: &Harness<'_, App>, index: usize) -> Pos2 {
     let tab = &h.state().tabs[0];
     let data = &tab.doc.node(TEXT).expect("public text").data;
     let glyph = &data

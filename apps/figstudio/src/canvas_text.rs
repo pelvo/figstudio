@@ -58,6 +58,19 @@ pub fn input(
             head,
         });
     }
+    if response.drag_started_by(egui::PointerButton::Primary)
+        && let Some(selection) = tab.text_select
+        && let Some(index) = response
+            .ctx
+            .input(|i| i.pointer.press_origin())
+            .and_then(|p| at(tab, origin, p))
+    {
+        tab.text_select = Some(text_select::Selection {
+            anchor: index,
+            head: index,
+            ..selection
+        });
+    }
     if response.dragged_by(egui::PointerButton::Primary)
         && let Some(selection) = tab.text_select
         && let Some(index) = response
