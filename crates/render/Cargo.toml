@@ -31,6 +31,8 @@ rayon = { workspace = true }
 # tests/gpu.rs: a headless wgpu device (default backends) to read GPU tiles back.
 wgpu = { workspace = true }
 pollster = { workspace = true }
+# text.rs unit tests: fonts with known coverage, so fallback tests do not depend on the host.
+epaint_default_fonts = "0.36"
 
 [lints]
 workspace = true

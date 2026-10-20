@@ -724,43 +724,83 @@ fn system_fonts() -> &'static SystemFonts {
                 index,
             })
         });
-        // Faces that carry the symbols the UI face lacks, appended all together: no single
-        // family covers every symbol (⌞ lives in Symbols/Math, ⚠★ in Symbols 2/DejaVu).
-        // Only outline-capable ones: a bitmap-only color emoji face maps the character but
-        // paints nothing (tofu).
-        const SYMBOLS: [&str; 7] = [
+        // Faces for the symbols the UI face lacks. No single family covers them all (⌞ is in
+        // Symbols/Math, ⚠ ★ in Symbols 2/DejaVu), so each installed one is kept only when it
+        // adds symbol code points the earlier ones lack. fontdb matches names exactly, hence
+        // both spellings of Symbols 2.
+        const SYMBOLS: [&str; 8] = [
             "Segoe UI Symbol",
             "Apple Symbols",
             "Noto Sans Symbols",
             "Noto Sans Symbols 2",
+            "Noto Sans Symbols2",
             "Noto Sans Math",
             "Symbola",
             "DejaVu Sans",
         ];
-        fonts.symbols = SYMBOLS
-            .into_iter()
-            .filter_map(|name| {
-                let families = [fontdb::Family::Name(name)];
-                let id = db.query(&fontdb::Query {
-                    families: &families,
-                    ..Default::default()
-                })?;
-                db.with_face_data(id, |data, index| {
-                    let face = ttf_parser::Face::parse(data, index).ok()?;
-                    (face.tables().glyf.is_some() || face.tables().cff.is_some()).then(|| Face {
+        let mut covered = std::collections::HashSet::new();
+        for name in SYMBOLS {
+            let families = [fontdb::Family::Name(name)];
+            let Some(id) = db.query(&fontdb::Query {
+                families: &families,
+                ..Default::default()
+            }) else {
+                continue;
+            };
+            let face = db.with_face_data(id, |data, index| {
+                let added = new_symbols(data, index, &covered)?;
+                Some((
+                    added,
+                    Face {
                         bytes: data.to_vec(),
                         index,
-                    })
-                })
-                .flatten()
-            })
-            .collect();
+                    },
+                ))
+            });
+            if let Some(Some((added, face))) = face {
+                covered.extend(added);
+                fonts.symbols.push(face);
+            }
+        }
         fonts
     })
 }
 
-/// The platform's UI face in front of egui's own (with a [`SEMIBOLD`] variant), and an
-/// installed CJK-capable font as the last fallback so Chinese / Japanese layer names render.
+/// The symbol code points (General Punctuation to Misc Symbols and Arrows, and the emoji
+/// planes) that the face at `index` in `data` outlines and `covered` lacks. `None` when
+/// there are none, or the face has no outline tables (bitmap-only color emoji paints
+/// nothing in egui).
+#[cfg(not(target_arch = "wasm32"))]
+fn new_symbols(
+    data: &[u8],
+    index: u32,
+    covered: &std::collections::HashSet<u32>,
+) -> Option<Vec<u32>> {
+    let face = ttf_parser::Face::parse(data, index).ok()?;
+    let tables = face.tables();
+    if tables.glyf.is_none() && tables.cff.is_none() && tables.cff2.is_none() {
+        return None;
+    }
+    let mut added = Vec::new();
+    for subtable in tables.cmap?.subtables {
+        if !subtable.is_unicode() {
+            continue;
+        }
+        subtable.codepoints(|cp| {
+            // A face has several Unicode subtables that repeat code points.
+            if matches!(cp, 0x2000..=0x2BFF | 0x1F000..=0x1FAFF)
+                && !covered.contains(&cp)
+                && !added.contains(&cp)
+            {
+                added.push(cp);
+            }
+        });
+    }
+    (!added.is_empty()).then_some(added)
+}
+
+/// The platform's UI face in front of egui's own (with a [`SEMIBOLD`] variant), an installed
+/// CJK-capable font so Chinese / Japanese layer names render, and symbol faces (⌞ ⚠ ★) last.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn install_fonts(ctx: &egui::Context) {
     use std::sync::Arc;
@@ -785,12 +825,14 @@ pub fn install_fonts(ctx: &egui::Context) {
         }
     }
     add_semibold_family(&mut fonts, semibold);
-    let mut fallbacks = |name: &str| {
-        for family in [
+    let mut fallbacks = |name: &str, monospace: bool| {
+        let families = [
             FontFamily::Proportional,
-            FontFamily::Monospace,
             FontFamily::Name(SEMIBOLD.into()),
-        ] {
+            FontFamily::Monospace,
+        ];
+        for family in &families[..if monospace { 3 } else { 2 }] {
+            let family = family.clone();
             let names = fonts.families.entry(family).or_default();
             names.retain(|n| n != name);
             names.push(name.into());
@@ -800,17 +842,17 @@ pub fn install_fonts(ctx: &egui::Context) {
         fonts
             .font_data
             .insert("cjk".into(), Arc::new(cjk.data(None)));
-        fallbacks("cjk");
+        fallbacks("cjk", true);
     }
     // After the CJK face: symbol faces for ⌞/⚠/★ that the UI and CJK faces lack. egui's
-    // bundled emoji faces stay ahead of them in the chain, so plain emoji still come from
-    // them.
+    // bundled emoji faces stay ahead of them, so plain emoji still come from those. Not on
+    // Monospace: these are proportional faces.
     for (i, symbols) in system.symbols.iter().enumerate() {
         let name = format!("symbols-{i}");
         fonts
             .font_data
             .insert(name.clone(), Arc::new(symbols.data(None)));
-        fallbacks(&name);
+        fallbacks(&name, false);
     }
     ctx.set_fonts(fonts);
 }
@@ -979,45 +1021,20 @@ mod tests {
         }
     }
 
-    /// The installed chain must cover symbols like ⌞ that the UI and CJK faces lack;
-    /// egui's bundled fonts do not have them, so without the symbols fallback they tofu.
-    /// Checked on the raw faces: egui's `has_glyph` reports false for any character that
-    /// lands on the same face as its replacement glyph ◻, even when that face draws it.
+    /// A symbol face is kept only for symbols the earlier faces lack: egui's emoji-icon font
+    /// adds U+2605 ★ on top of Noto Emoji, and a second copy adds nothing. Bundled fonts, so
+    /// it does not depend on the host.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn symbol_families_can_draw_corner_and_warning_marks() {
-        let ctx = egui::Context::default();
-        install_fonts(&ctx);
-        // Nothing paints here, so clear the texture deltas (epaint asserts on unapplied ones).
-        let frame = |ctx: &egui::Context| {
-            ctx.run_ui(Default::default(), |_| {})
-                .textures_delta
-                .clear();
-        };
-        frame(&ctx);
-        let (names, chain) = ctx.fonts(|f| {
-            let d: Vec<(String, Vec<u8>, u32)> = f
-                .definitions()
-                .font_data
-                .iter()
-                .map(|(name, data)| (name.clone(), data.font.as_ref().to_vec(), data.index))
-                .collect();
-            let c = f.definitions().families[&FontFamily::Proportional].clone();
-            (d, c)
-        });
-        for c in ['⌞', '⚠', '★', '香'] {
-            let drawn = chain.iter().any(|name| {
-                names
-                    .iter()
-                    .find(|(n, _, _)| n == name)
-                    .is_some_and(|(_, bytes, index)| {
-                        ttf_parser::Face::parse(bytes, *index)
-                            .is_ok_and(|face| face.glyph_index(c).is_some())
-                    })
-            });
-            assert!(drawn, "no face in the chain draws {c}");
-        }
-        frame(&ctx);
+    fn a_symbol_face_is_kept_only_for_symbols_the_earlier_ones_lack() {
+        use epaint_default_fonts::{EMOJI_ICON, NOTO_EMOJI_REGULAR};
+        let mut covered = std::collections::HashSet::new();
+        covered.extend(new_symbols(NOTO_EMOJI_REGULAR, 0, &covered).unwrap());
+        assert!(!covered.contains(&0x2605));
+        let added = new_symbols(EMOJI_ICON, 0, &covered).unwrap();
+        assert!(added.contains(&0x2605), "★ comes from the second face");
+        covered.extend(added);
+        assert_eq!(new_symbols(EMOJI_ICON, 0, &covered), None, "nothing new");
     }
 
     #[test]
