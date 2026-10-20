@@ -14,6 +14,8 @@ pub enum Binding {
     CommandBar,
     Copy,
     SelectAll,
+    SelectChild,
+    SelectParent,
     FindOnPage,
     NextMatch,
     PreviousMatch,
@@ -62,10 +64,12 @@ const SPACE_LABELS: [&str; 9] = [
 ];
 
 impl Binding {
-    pub const ALL: [Binding; 30] = [
+    pub const ALL: [Binding; 32] = [
         Binding::CommandBar,
         Binding::Copy,
         Binding::SelectAll,
+        Binding::SelectChild,
+        Binding::SelectParent,
         Binding::FindOnPage,
         Binding::NextMatch,
         Binding::PreviousMatch,
@@ -108,6 +112,8 @@ impl Binding {
             Binding::CommandBar => "Command bar",
             Binding::Copy => "Copy the text of the selection",
             Binding::SelectAll => "Select all text",
+            Binding::SelectChild => "Select child",
+            Binding::SelectParent => "Select parent",
             Binding::FindOnPage => "Find on page",
             Binding::NextMatch => "Next match",
             Binding::PreviousMatch => "Previous match",
@@ -139,6 +145,8 @@ impl Binding {
             Binding::CommandBar
             | Binding::Copy
             | Binding::SelectAll
+            | Binding::SelectChild
+            | Binding::SelectParent
             | Binding::FindOnPage
             | Binding::NextMatch
             | Binding::PreviousMatch
@@ -165,6 +173,8 @@ impl Binding {
             Binding::CommandBar => k(cmd, Key::L),
             Binding::Copy => k(cmd, Key::C),
             Binding::SelectAll => k(cmd, Key::A),
+            Binding::SelectChild => k(Modifiers::NONE, Key::Enter),
+            Binding::SelectParent => k(Modifiers::SHIFT, Key::Enter),
             Binding::FindOnPage => k(cmd, Key::F),
             Binding::NextMatch => k(cmd, Key::G),
             Binding::PreviousMatch => k(shift_cmd, Key::G),
@@ -199,6 +209,8 @@ impl Binding {
             Binding::CommandBar => Action::CommandBar,
             Binding::Copy => Action::CopyText,
             Binding::SelectAll => Action::SelectAllText,
+            Binding::SelectChild => Action::SelectChild,
+            Binding::SelectParent => Action::SelectParent,
             Binding::FindOnPage => Action::FindOnPage,
             Binding::NextMatch => Action::FindNext,
             Binding::PreviousMatch => Action::FindPrevious,

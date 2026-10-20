@@ -479,7 +479,13 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   selection.
 - The canvas card has round corners: the page background is a rounded rect and tiles that
   reach into a corner are drawn as a polygon cut to it (`tiles_view::rounded_clip`).
-- View jumps (fit, zoom buttons and keys, the Zoom tool, double-click) ease over 0.28 s:
+- Canvas picking uses `hit_chain` and `pick.rs`: plain click keeps the selected layer or
+  its sibling depth, starting at the page's child (inside a top-level FRAME, its direct
+  child). Hover and right-click use the same target; Cmd/Ctrl-click selects deepest.
+  Double-click drills one level and enters read-only text selection upon reaching TEXT,
+  never zooming. Rebindable Enter selects the first visible child; Shift+Enter selects
+  the parent without crossing the page. Both wait while a field, find or command bar is up.
+- View jumps (fit, zoom buttons and keys, the Zoom tool) ease over 0.28 s:
   `Tab::view` is the target (the MCP and the next jump see it); `canvas::show` takes the
   eased `shown_view` (kept in `Tab::shown`), which zooms geometrically around the page point
   both views share (`view_between`), and uses it for hover, clicks, the marquee and the

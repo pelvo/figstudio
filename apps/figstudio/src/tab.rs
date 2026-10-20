@@ -236,6 +236,20 @@ impl Tab {
         }
     }
 
+    pub fn select_relative(&mut self, down: bool) {
+        let Some(selected) = self.selection else {
+            return;
+        };
+        let next = if down {
+            crate::pick::child(&self.doc, selected)
+        } else {
+            crate::pick::parent(&self.doc, self.page, selected)
+        };
+        if let Some(next) = next {
+            self.select(Some(next));
+        }
+    }
+
     /// Selects a node, switching page if needed and expanding its ancestors in the Layers tree.
     pub fn select(&mut self, id: Option<Guid>) {
         if self.selection != id {

@@ -779,6 +779,12 @@ fn content_bounds_with_budget(
 
 /// Topmost, deepest visible node under `point` (page coordinates). Instances count as one layer.
 pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
+    hit_chain(doc, page, point).last().copied()
+}
+
+/// Topmost hit's ancestry, from the page's child to the deepest visible layer.
+/// Instances remain leaves; sections are traversed but never selected themselves.
+pub fn hit_chain(doc: &Document, page: Guid, point: Point) -> Vec<Guid> {
     fn walk(
         doc: &Document,
         parent: Guid,
@@ -786,7 +792,7 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
         point: Point,
         seen: &mut std::collections::HashSet<Guid>,
         depth: usize,
-    ) -> Option<Guid> {
+    ) -> Option<Vec<Guid>> {
         if depth >= 128 || !seen.insert(parent) {
             return None;
         }
@@ -812,12 +818,15 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
             let clips = clips_content(&node.kind, &node.data);
             if node.kind != "INSTANCE"
                 && (inside || !clips)
-                && let Some(hit) = walk(doc, *id, tf, point, seen, depth + 1)
+                && let Some(mut hit) = walk(doc, *id, tf, point, seen, depth + 1)
             {
+                if node.kind != "SECTION" {
+                    hit.insert(0, *id);
+                }
                 return Some(hit);
             }
             if inside && node.kind != "SECTION" {
-                return Some(*id);
+                return Some(vec![*id]);
             }
         }
         None
@@ -830,6 +839,7 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
         &mut std::collections::HashSet::new(),
         0,
     )
+    .unwrap_or_default()
 }
 
 /// How far (in local units) a node can draw outside its frame: strokes, effects, and text

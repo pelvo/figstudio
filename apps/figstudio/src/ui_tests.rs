@@ -19,6 +19,8 @@ use crate::App;
 mod chrome;
 #[path = "ui_copy_tests.rs"]
 mod copy;
+#[path = "ui_pick_tests.rs"]
+mod pick;
 #[path = "ui_text_select_tests.rs"]
 mod text_select;
 // Without the `mcp` feature there is no View item (mcp_off.rs) and no tokio to test it with.

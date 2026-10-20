@@ -55,6 +55,7 @@ mod menu_egui;
 mod menu_native;
 mod menu_windows;
 mod panels;
+mod pick;
 mod recordings;
 mod region_copy;
 mod region_png;
@@ -831,7 +832,9 @@ impl App {
             use keymap::Binding as B;
             let action = binding.action();
             let plain = keymap::Binding::is_plain(&shortcut);
-            if (plain && quiet)
+            if (matches!(binding, B::SelectChild | B::SelectParent)
+                && (quiet || self.find.is_open() || self.command.is_up(ctx)))
+                || (plain && quiet)
                 || (binding == B::SelectAll
                     && (quiet
                         || !self

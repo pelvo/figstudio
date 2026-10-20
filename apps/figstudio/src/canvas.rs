@@ -4,7 +4,7 @@ use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use figstudio_fig::Guid;
 use figstudio_render::kurbo::Point;
 use figstudio_render::{
-    absolute_transform, color::AlphaColor, content_bounds, geom, hit_test, page_background,
+    absolute_transform, color::AlphaColor, content_bounds, geom, hit_chain, page_background,
 };
 
 use crate::copy_menu;
@@ -147,20 +147,33 @@ pub fn show(
 
     // Input: selection / zoom tool.
     let cursor_page = response.hover_pos().map(|p| tab.view.to_page(origin, p));
+    let chain = cursor_page.map_or_else(Vec::new, |p| {
+        hit_chain(
+            &tab.doc,
+            tab.page,
+            Point::new(f64::from(p.x), f64::from(p.y)),
+        )
+    });
     if response.hovered() && !response.dragged() {
-        tab.hover = cursor_page.and_then(|p| {
-            hit_test(
-                &tab.doc,
-                tab.page,
-                Point::new(f64::from(p.x), f64::from(p.y)),
-            )
-        });
+        tab.hover = crate::pick::click(
+            &tab.doc,
+            &chain,
+            tab.selection,
+            ui.input(|i| i.modifiers.command),
+        );
     } else if !response.hovered() {
         tab.hover = None;
     }
     if response.clicked() && !panning {
         match tool {
-            Tool::Select => tab.select(tab.hover),
+            Tool::Select => {
+                let picked = if response.double_clicked() {
+                    crate::pick::deeper(&chain, tab.hover)
+                } else {
+                    tab.hover
+                };
+                tab.select(picked);
+            }
             Tool::Zoom => {
                 if let Some(p) = response.interact_pointer_pos() {
                     let alt = ui.input(|i| i.modifiers.alt);
@@ -294,30 +307,25 @@ fn text_input(response: &egui::Response, tab: &mut Tab, origin: Pos2, enabled: b
         });
     }
     if response.double_clicked()
-        && let Some(id) = tab.hover
+        && let Some(id) = tab.selection
+        && let Some(node) = tab.doc.node(id)
+        && node.kind == "TEXT"
     {
-        tab.select(Some(id));
-        if let Some(node) = tab.doc.node(id)
-            && node.kind == "TEXT"
-        {
-            let index = response
-                .interact_pointer_pos()
-                .and_then(|p| at(tab, id, p))
-                .unwrap_or(0);
-            let head = if crate::text_select::range_rects(&node.data, 0, 0).is_none() {
-                crate::text_select::characters(&node.data).len()
-            } else {
-                index
-            };
-            tab.marquee.clear();
-            tab.text_select = Some(crate::text_select::Selection {
-                node: id,
-                anchor: index,
-                head,
-            });
+        let index = response
+            .interact_pointer_pos()
+            .and_then(|p| at(tab, id, p))
+            .unwrap_or(0);
+        let head = if crate::text_select::range_rects(&node.data, 0, 0).is_none() {
+            crate::text_select::characters(&node.data).len()
         } else {
-            tab.fit_node = Some(id);
-        }
+            index
+        };
+        tab.marquee.clear();
+        tab.text_select = Some(crate::text_select::Selection {
+            node: id,
+            anchor: index,
+            head,
+        });
     }
     if response.dragged_by(egui::PointerButton::Primary)
         && let Some(selection) = tab.text_select

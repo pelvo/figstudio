@@ -7,6 +7,8 @@ pub(crate) enum Action {
     OpenLink,
     CopyText,
     SelectAllText,
+    SelectChild,
+    SelectParent,
     ExportPage(f64),
     ExportSelection(f64),
     CloseTab,
@@ -232,6 +234,11 @@ impl App {
                         "text",
                         text.to_owned(),
                     ));
+                }
+            }
+            Action::SelectChild | Action::SelectParent => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.select_relative(action == Action::SelectChild);
                 }
             }
             Action::SelectAllText => {

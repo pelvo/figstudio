@@ -30,7 +30,7 @@ fn glyph_at(h: &Harness<'_, App>, index: usize) -> Pos2 {
     )
 }
 
-fn double_click(h: &mut Harness<'_, App>, c: &mut Vec<String>, at: Pos2) {
+pub(super) fn double_click(h: &mut Harness<'_, App>, c: &mut Vec<String>, at: Pos2) {
     h.run_steps(60); // One second exceeds egui's double AND triple-click windows.
     h.event(Event::PointerMoved(at));
     step(h, c);
@@ -42,7 +42,7 @@ fn double_click(h: &mut Harness<'_, App>, c: &mut Vec<String>, at: Pos2) {
     }
 }
 
-fn key(h: &mut Harness<'_, App>, c: &mut Vec<String>, key: Key, modifiers: Modifiers) {
+pub(super) fn key(h: &mut Harness<'_, App>, c: &mut Vec<String>, key: Key, modifiers: Modifiers) {
     h.event(Event::ModifiersChanged(modifiers));
     step(h, c);
     for pressed in [true, false] {
@@ -126,7 +126,7 @@ fn escape_exits_mode_before_clearing_the_layer() {
 }
 
 #[test]
-fn missing_glyphs_select_all_and_non_text_still_fits() {
+fn missing_glyphs_select_all_and_non_text_never_fits() {
     let (mut h, mut c) = (harness_fixture(FIXTURE, 1.0 / 60.0), Vec::new());
     let text = Guid(1, 42);
     let at = centre_of(&h, text);
@@ -140,7 +140,8 @@ fn missing_glyphs_select_all_and_non_text_still_fits() {
     double_click(&mut h, &mut c, at);
     h.run_steps(90);
     assert!(h.state().tabs[0].text_select.is_none());
-    assert_ne!(h.state().tabs[0].view.zoom, before.zoom);
+    assert_eq!(h.state().tabs[0].view.zoom, before.zoom);
+    assert_eq!(h.state().tabs[0].view.pan, before.pan);
 }
 
 #[test]

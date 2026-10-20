@@ -163,11 +163,7 @@ fn a_plain_click_selects_and_does_not_start_a_marquee() {
 fn command_c_copies_the_characters_of_a_selected_text_layer() {
     let (mut h, mut c) = (harness(), Vec::new());
     let at = centre_of(&h, TEXT_NODE);
-    h.event(Event::PointerMoved(at));
-    step(&mut h, &mut c);
-    press(&h, at, PointerButton::Primary, true);
-    press(&h, at, PointerButton::Primary, false);
-    h.run_steps(3);
+    pick::click(&mut h, at, Modifiers::COMMAND);
     assert_eq!(h.state().tabs[0].selection, Some(TEXT_NODE));
     // One event per step: the CopyText output command is only in the frame that ran the
     // shortcut, and kittest's `output()` shows the last frame's alone.
