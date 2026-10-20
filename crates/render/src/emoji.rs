@@ -14,64 +14,131 @@ use crate::{Ctx, geom::GeomPath, paint, text};
     expect(dead_code, reason = "no font decoder in wasm")
 )]
 pub(crate) enum Glyph {
-    Bitmap(Arc<Pixmap>),
+    Bitmap {
+        image: Arc<Pixmap>,
+        x: i16,
+        y: i16,
+        ppem: u16,
+    },
     /// Outline in em units, y up.
     Mono(BezPath),
 }
 
+pub(crate) struct Placed {
+    glyph: Glyph,
+    transform: Affine,
+    pub(crate) rect: Rect,
+}
+
+fn fill(data: &Val) -> Option<&Val> {
+    data.get("fillPaints")?
+        .items()
+        .iter()
+        .find(|p| p.flag("visible") != Some(false) && p.num("opacity").unwrap_or(1.0) > 0.0)
+}
+
 impl Ctx<'_> {
-    pub(crate) fn draw_emojis(&mut self, data: &Val, world: Affine, w: f64, h: f64) {
-        let Some(fill) = data.get("fillPaints").and_then(|p| {
-            p.items()
-                .iter()
-                .find(|p| p.flag("visible") != Some(false) && p.num("opacity").unwrap_or(1.0) > 0.0)
-        }) else {
-            return;
-        };
+    /// Shared classification and placement for drawing and metadata, with no canvas work.
+    pub(crate) fn emojis(&mut self, data: &Val, world: Affine) -> Vec<Placed> {
+        if fill(data).is_none() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
         for glyph in text::visible_glyphs(data)
             .iter()
             .filter(|g| text::is_emoji(g))
         {
-            let points = glyph
+            let mut bases = glyph
                 .get("emojiCodePoints")
                 .map(Val::items)
-                .unwrap_or_default();
-            let base = points
+                .unwrap_or_default()
                 .iter()
                 .filter_map(Val::as_u32)
                 .filter_map(char::from_u32)
-                .find(|c| !matches!(*c as u32, 0x200D | 0xFE0E | 0xFE0F | 0x1F3FB..=0x1F3FF));
+                .filter(|c| !matches!(*c as u32, 0x200D | 0xFE0E | 0xFE0F | 0x1F3FB..=0x1F3FF));
+            let base = bases.next();
+            let sequence = bases.next().is_some();
             let size = f64::from(glyph.num("fontSize").unwrap_or(12.0));
+            let pos = glyph.get("position");
+            let x = f64::from(pos.and_then(|p| p.num("x")).unwrap_or(0.0));
+            let y = f64::from(pos.and_then(|p| p.num("y")).unwrap_or(0.0));
+            if !size.is_finite() || size <= 0.0 || !x.is_finite() || !y.is_finite() {
+                self.stats.emoji_skipped += 1;
+                continue;
+            }
             let pixels = (size * paint::linear_scale(world))
                 .round()
                 .clamp(1.0, f64::from(u16::MAX)) as u16;
             let resolved =
                 base.and_then(|ch| self.fonts.as_mut().and_then(|f| f.emoji(ch, pixels)));
-            let Some(resolved) = resolved.filter(|_| size.is_finite() && size > 0.0) else {
+            let Some(resolved) = resolved else {
                 self.stats.emoji_skipped += 1;
                 continue;
             };
-            let pos = glyph.get("position");
-            let x = f64::from(pos.and_then(|p| p.num("x")).unwrap_or(0.0));
-            let y = f64::from(pos.and_then(|p| p.num("y")).unwrap_or(0.0));
-            if !x.is_finite() || !y.is_finite() {
-                self.stats.emoji_skipped += 1;
-                continue;
-            }
             self.stats.emoji_approximated +=
-                usize::from(points.len() > 1 || matches!(resolved, Glyph::Mono(_)));
-            match resolved {
-                Glyph::Bitmap(pixmap) => {
-                    let rect = Rect::new(x, y - 0.93 * size, x + size, y + 0.07 * size);
-                    let transform = Affine::translate((rect.x0, rect.y0))
-                        * Affine::scale_non_uniform(
-                            size / f64::from(pixmap.width()),
-                            size / f64::from(pixmap.height()),
-                        );
+                usize::from(sequence || matches!(resolved, Glyph::Mono(_)));
+            let (transform, rect) = match &resolved {
+                Glyph::Bitmap {
+                    image,
+                    x: ox,
+                    y: oy,
+                    ppem,
+                } => {
+                    let scale = size / f64::from(*ppem);
+                    let left = x + f64::from(*ox) * scale;
+                    let top = y - (f64::from(*oy) + f64::from(image.height())) * scale;
+                    let rect = Rect::new(
+                        left,
+                        top,
+                        left + f64::from(image.width()) * scale,
+                        top + f64::from(image.height()) * scale,
+                    );
+                    (Affine::translate((left, top)) * Affine::scale(scale), rect)
+                }
+                Glyph::Mono(outline) => {
+                    let transform =
+                        Affine::translate((x, y)) * Affine::scale_non_uniform(size, -size);
+                    let rect = transform.transform_rect_bbox(outline.bounding_box());
+                    (transform, rect)
+                }
+            };
+            out.push(Placed {
+                glyph: resolved,
+                transform,
+                rect,
+            });
+        }
+        out
+    }
+
+    pub(crate) fn draw_emojis(&mut self, data: &Val, world: Affine, w: f64, h: f64) {
+        let emojis = self.emojis(data, world);
+        self.draw_placed_emojis(data, world, w, h, emojis);
+    }
+
+    pub(crate) fn draw_placed_emojis(
+        &mut self,
+        data: &Val,
+        world: Affine,
+        w: f64,
+        h: f64,
+        emojis: Vec<Placed>,
+    ) {
+        let Some(fill) = fill(data) else {
+            return;
+        };
+        for Placed {
+            glyph,
+            transform,
+            rect,
+        } in emojis
+        {
+            match glyph {
+                Glyph::Bitmap { image, .. } => {
                     self.rc.set_transform(world);
                     self.rc.set_fill_rule(Fill::NonZero);
                     self.rc.set_paint(PaintType::Image(Image {
-                        image: ImageSource::Pixmap(pixmap),
+                        image: ImageSource::Pixmap(image),
                         sampler: ImageSampler {
                             quality: ImageQuality::Medium,
                             alpha: (fill.num("opacity").unwrap_or(1.0)
@@ -85,9 +152,7 @@ impl Ctx<'_> {
                     self.rc.set_paint_transform(Affine::IDENTITY);
                 }
                 Glyph::Mono(mut outline) => {
-                    outline.apply_affine(
-                        Affine::translate((x, y)) * Affine::scale_non_uniform(size, -size),
-                    );
+                    outline.apply_affine(transform);
                     self.paint_paths(data, "fillPaints", &[GeomPath::plain(outline)], world, w, h);
                 }
             }

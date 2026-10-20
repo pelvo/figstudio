@@ -91,5 +91,87 @@ fn info_and_doctor_report_unavailable_emoji_as_counts() {
         assert!(!report.contains("10FFFF"));
         assert!(!report.contains("1114111"));
     }
+    // Two visible markers, a truncated one, and a hidden subtree. Metadata must not
+    // depend on host fonts or shrink the tiny text away while fitting a huge page.
+    let mut nodes = doc.nodes.clone();
+    let glyph = nodes[2]
+        .data
+        .path(&["derivedTextData", "glyphs"])
+        .unwrap()
+        .items()[0]
+        .clone();
+    let mut heart = glyph.clone();
+    heart.set(
+        "emojiCodePoints",
+        Val::Arr(vec![Val::Int(0x2764), Val::Int(0xFE0F)]),
+    );
+    nodes[2].data.set(
+        "derivedTextData",
+        obj(&[
+            (
+                "glyphs",
+                Val::Arr(vec![heart.clone(), glyph, heart.clone()]),
+            ),
+            ("truncationStartIndex", Val::Int(2)),
+        ]),
+    );
+    let mut distant = nodes[2].clone();
+    distant.data.set("guid", Guid(99, 3).to_val());
+    distant.data.set("type", Val::Enum("RECTANGLE"));
+    distant.data.set(
+        "transform",
+        obj(&[
+            ("m00", Val::Float(1.0)),
+            ("m01", Val::Float(0.0)),
+            ("m02", Val::Float(1e9)),
+            ("m10", Val::Float(0.0)),
+            ("m11", Val::Float(1.0)),
+            ("m12", Val::Float(0.0)),
+        ]),
+    );
+    nodes.push(Node::from_data(distant.data).unwrap());
+    let mut hidden = nodes[2].data.clone();
+    hidden.set("guid", Guid(99, 4).to_val());
+    hidden.set("type", Val::Enum("FRAME"));
+    hidden.set("visible", Val::Bool(false));
+    nodes.push(Node::from_data(hidden).unwrap());
+    let mut child = nodes[2].data.clone();
+    child.set("guid", Guid(99, 5).to_val());
+    child.set(
+        "parentIndex",
+        obj(&[
+            ("guid", Guid(99, 4).to_val()),
+            ("position", Val::Str("a".into())),
+        ]),
+    );
+    nodes.push(Node::from_data(child).unwrap());
+    doc.set_nodes(nodes).unwrap();
+    std::fs::write(&path, doc.to_bytes().unwrap()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_figstudio-cli"))
+        .arg("info")
+        .arg(&path)
+        .arg("--no-system-fonts")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        report.contains("emoji:    0 approximated, 2 skipped"),
+        "{report}"
+    );
+    let mut renderer = figstudio_render::Renderer::new();
+    renderer.system_fonts = false;
+    let frame = renderer.render(
+        &doc,
+        Guid(99, 1),
+        &figstudio_render::Viewport {
+            width: 80,
+            height: 80,
+            transform: figstudio_render::kurbo::Affine::IDENTITY,
+            background: None,
+        },
+    );
+    assert_eq!(frame.stats.emoji_skipped, 2);
+    assert_eq!(frame.stats.emoji_approximated, 0);
     std::fs::remove_dir_all(dir).unwrap();
 }

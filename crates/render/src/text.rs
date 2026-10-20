@@ -57,9 +57,9 @@ pub fn characters(data: &Val) -> &str {
 }
 
 #[cfg(feature = "system-fonts")]
-pub(crate) use system::Builder;
-#[cfg(feature = "system-fonts")]
 pub use system::SystemFonts;
+#[cfg(feature = "system-fonts")]
+pub(crate) use system::{Builder, SYMBOL_FAMILIES};
 
 /// Stand-in without the `system-fonts` feature (browser build): never finds a font.
 #[cfg(not(feature = "system-fonts"))]
@@ -102,6 +102,10 @@ mod system {
         "Source Han Sans",
         "Hiragino Sans",
         "PingFang TC",
+    ];
+
+    pub(crate) const SYMBOL_FAMILIES: &[&str] = &[
+        "Noto Emoji",
         "Noto Sans Symbols",
         "Noto Sans Symbols 2",
         "Noto Sans Symbols2",
@@ -219,7 +223,7 @@ mod system {
                 return list.clone();
             }
             let mut list = Vec::new();
-            for name in FALLBACK_FAMILIES {
+            for name in FALLBACK_FAMILIES.iter().chain(SYMBOL_FAMILIES) {
                 if let Some(id) = self.query(name, Weight::NORMAL, Style::Normal) {
                     list.push(id);
                 }

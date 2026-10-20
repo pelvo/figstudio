@@ -12,6 +12,8 @@ mod emoji;
 #[cfg(feature = "system-fonts")]
 mod emoji_font;
 #[cfg(all(test, feature = "system-fonts"))]
+mod emoji_review_tests;
+#[cfg(all(test, feature = "system-fonts"))]
 mod emoji_tests;
 mod focus;
 pub mod geom;
@@ -317,6 +319,8 @@ struct Ctx<'a> {
     /// How far (output pixels) the open filter layers of enclosing nodes spread what is drawn
     /// now: culling grows each node by it, so a blur still reaching the output keeps it.
     inherited_reach: f64,
+    /// Metadata walk: resolve visible stored emoji, but issue no drawing commands or culling.
+    emoji_only: bool,
 }
 
 impl Renderer {
@@ -630,8 +634,30 @@ impl Renderer {
             exhausted: false,
             screen,
             inherited_reach: 0.0,
+            emoji_only: false,
         }
     }
+    /// Counts visible stored emoji on every page using the draw walk's overrides, truncation
+    /// and font lookup, without geometry, layout, rasterisation or viewport culling. Counts
+    /// are lower bounds when `budget_exhausted` or `depth_skipped` is nonzero. Clipping and
+    /// masks do not remove glyphs from this metadata inventory.
+    pub fn emoji_counts(&mut self, doc: &Document) -> Stats {
+        // The shared walk needs a canvas, but metadata mode never issues canvas commands.
+        let mut canvas = RenderContext::new(1, 1);
+        let mut ctx = self.context(doc, &mut canvas, Rect::ZERO, MAX_RENDER_WORK, 0);
+        ctx.emoji_only = true;
+        for page in &doc.pages {
+            if let Some(node) = doc.node(*page) {
+                ctx.draw_children(node, &node.data, Affine::IDENTITY, None);
+            }
+            if ctx.exhausted {
+                break;
+            }
+        }
+        ctx.stats.attempted_work = MAX_RENDER_WORK.saturating_sub(ctx.work_left);
+        ctx.stats
+    }
+
     pub fn render_fit(
         &mut self,
         doc: &Document,
@@ -1059,6 +1085,20 @@ impl Ctx<'_> {
         }
         let kind = node.kind.as_str();
         let world = parent * affine(data.get("transform"));
+        if self.emoji_only {
+            if kind == "TEXT" {
+                if !stale_glyphs {
+                    self.emojis(data, world);
+                }
+            } else if kind == "INSTANCE" {
+                self.draw_instance(data, world, path);
+            } else {
+                let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
+                self.draw_children(node, data, world, child_path);
+            }
+            self.depth -= 1;
+            return;
+        }
         let (w, h) = size(data);
         if self.off_screen(node, kind, data, world, w, h) {
             self.stats.culled += 1;
@@ -1421,6 +1461,9 @@ impl Ctx<'_> {
             let (child_path, (child_data, stale_glyphs, approximate_ink)) =
                 self.child_patch(node, data, child, path);
             if child_data.flag("mask") == Some(true) && visible(&child_data) {
+                if self.emoji_only {
+                    continue;
+                }
                 if !self.charge_work() {
                     break;
                 }

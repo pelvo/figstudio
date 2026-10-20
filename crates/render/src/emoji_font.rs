@@ -21,7 +21,7 @@ const FAMILIES: &[&str] = &[
 
 pub(crate) fn resolve(db: &Database, ch: char, pixels: u16) -> Option<Glyph> {
     let mut mono = None;
-    for name in FAMILIES {
+    for name in FAMILIES.iter().chain(crate::text::SYMBOL_FAMILIES) {
         let Some(id) = db.query(&Query {
             families: &[Family::Name(name)],
             ..Default::default()
@@ -32,11 +32,18 @@ pub(crate) fn resolve(db: &Database, ch: char, pixels: u16) -> Option<Glyph> {
             .with_face_data(id, |bytes, index| {
                 let face = Face::parse(bytes, index).ok()?;
                 let id = face.glyph_index(ch)?;
-                if let Some(image) = closest_strike(&face, id, pixels)
-                    .filter(|i| i.format == RasterImageFormat::PNG)
-                    .and_then(|i| decode_png(i.data))
+                if let Some(strike) = closest_strike(&face, id, pixels)
+                    .filter(|i| i.format == RasterImageFormat::PNG && i.pixels_per_em > 0)
+                    && let Some(image) = decode_png(strike.data)
+                    && image.width() == strike.width
+                    && image.height() == strike.height
                 {
-                    return Some(Glyph::Bitmap(image));
+                    return Some(Glyph::Bitmap {
+                        image,
+                        x: strike.x,
+                        y: strike.y,
+                        ppem: strike.pixels_per_em,
+                    });
                 }
                 let mut outline = monochrome(&face, id)?;
                 outline.apply_affine(Affine::scale(1.0 / f64::from(face.units_per_em())));
@@ -44,7 +51,7 @@ pub(crate) fn resolve(db: &Database, ch: char, pixels: u16) -> Option<Glyph> {
             })
             .flatten();
         match glyph {
-            Some(Glyph::Bitmap(_)) => return glyph,
+            Some(Glyph::Bitmap { .. }) => return glyph,
             Some(Glyph::Mono(_)) if mono.is_none() => mono = glyph,
             _ => {}
         }
@@ -187,7 +194,7 @@ mod tests {
         assert_eq!(closest_strike(&face, id, 50).unwrap().pixels_per_em, 64);
         let mut db = Database::new();
         db.load_font_data(data);
-        let Some(Glyph::Bitmap(pixmap)) = resolve(&db, '❤', 30) else {
+        let Some(Glyph::Bitmap { image: pixmap, .. }) = resolve(&db, '❤', 30) else {
             panic!("missing sbix colour glyph")
         };
         assert_eq!(pixmap.width(), 2);

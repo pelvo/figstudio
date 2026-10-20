@@ -15,7 +15,7 @@ fn obj(fields: &[(&str, Val)]) -> Val {
     }))
 }
 
-fn document(points: &[i64]) -> Document {
+pub(super) fn document(points: &[i64]) -> Document {
     let mut doc = Document::open(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../tests/fixtures/structure.fig"
@@ -24,6 +24,13 @@ fn document(points: &[i64]) -> Document {
     let canvas = Node::from_data(obj(&[
         ("guid", Guid(99, 1).to_val()),
         ("type", Val::Str("CANVAS".into())),
+        (
+            "parentIndex",
+            obj(&[
+                ("guid", Guid(0, 0).to_val()),
+                ("position", Val::Str("a".into())),
+            ]),
+        ),
     ]))
     .unwrap();
     let text = Node::from_data(obj(&[
@@ -74,7 +81,12 @@ fn document(points: &[i64]) -> Document {
         ),
     ]))
     .unwrap();
-    doc.set_nodes(vec![canvas, text]).unwrap();
+    let root = Node::from_data(obj(&[
+        ("guid", Guid(0, 0).to_val()),
+        ("type", Val::Enum("DOCUMENT")),
+    ]))
+    .unwrap();
+    doc.set_nodes(vec![canvas, text, root]).unwrap();
     doc
 }
 
@@ -83,11 +95,18 @@ fn synthetic_colour_emoji_keeps_position_opacity_and_recording() {
     let mut png = Vec::new();
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(
-            &[
-                0, 0, 255, 128, 0, 255, 0, 255, 255, 255, 0, 255, 255, 0, 255, 255,
-            ],
-            2,
-            2,
+            &(0..256)
+                .flat_map(|i| {
+                    [
+                        [0, 0, 255, 128],
+                        [0, 255, 0, 255],
+                        [255, 255, 0, 255],
+                        [255, 0, 255, 255],
+                    ][usize::from(i % 16 >= 8) + 2 * usize::from(i / 16 >= 8)]
+                })
+                .collect::<Vec<_>>(),
+            16,
+            16,
             image::ExtendedColorType::Rgba8,
         )
         .unwrap();
@@ -114,7 +133,15 @@ fn synthetic_colour_emoji_keeps_position_opacity_and_recording() {
         .filter(|p| p[3] == 255)
         .map(|p| p.to_vec())
         .collect();
-    assert!(colours.len() >= 4);
+    assert!(colours.len() >= 3);
+    assert!(
+        full.pixmap
+            .data_as_u8_slice()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[2] > 0 && p[3] == 128)
+    );
     assert!(!colours.contains(&vec![255, 0, 0, 255]));
     assert_eq!(full.stats.emoji_approximated, 0);
     assert_eq!(full.stats.emoji_skipped, 0);
@@ -131,7 +158,7 @@ fn synthetic_colour_emoji_keeps_position_opacity_and_recording() {
     doc.set_nodes(nodes).unwrap();
     let moved = renderer.render(&doc, Guid(99, 1), &viewport);
     let at = |x: usize, y: usize| (y * 80 + x) * 4;
-    for (x, y) in [(20, 20), (30, 30), (40, 40)] {
+    for (x, y) in [(12, 42), (15, 45), (18, 48)] {
         let a = &full.pixmap.data_as_u8_slice()[at(x, y)..at(x, y) + 4];
         let b = &moved.pixmap.data_as_u8_slice()[at(x + 10, y + 5)..at(x + 10, y + 5) + 4];
         assert!(a[3] > 0);
@@ -165,7 +192,7 @@ fn synthetic_colour_emoji_keeps_position_opacity_and_recording() {
     frame.set("type", Val::Enum("FRAME"));
     frame.set(
         "size",
-        obj(&[("x", Val::Float(30.0)), ("y", Val::Float(30.0))]),
+        obj(&[("x", Val::Float(30.0)), ("y", Val::Float(60.0))]),
     );
     nodes[0] = Node::from_data(frame).unwrap();
     doc.set_nodes(nodes).unwrap();
@@ -187,7 +214,7 @@ fn synthetic_colour_emoji_keeps_position_opacity_and_recording() {
         .iter()
         .enumerate()
     {
-        if i % 80 >= 30 || i / 80 >= 30 {
+        if i % 80 >= 30 || i / 80 >= 60 {
             assert_eq!(p[3], 0, "emoji escaped its parent clip");
         }
     }
