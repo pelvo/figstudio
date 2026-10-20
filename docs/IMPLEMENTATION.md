@@ -109,6 +109,7 @@ apps/figstudio-mcp/tests/  protocol tests (stdio.rs, http.rs, prompts.rs, files.
                          user doc
 apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   main.rs                App: shortcuts, panel layout, message polling, export
+  session.rs             desktop workspace file list, startup restore order and active space
   chrome.rs              Arc-style chrome: window gradient, sidebar (window controls, command
                          field, pages, layers, file switcher), title strip, peeking sidebar,
                          canvas card with tool / status pills and the warning chip, toasts,
@@ -436,7 +437,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   Reduce motion) between launches; `App::save` adds the sidebar / properties visibility, the
   Pages/Layers split, what onboarding was seen and Settings' `Prefs` (`UiState`): the
   translucent sidebar, the renderer (applied at the next start; `FIGSTUDIO_RENDERER` wins),
-  frame names and whether the scroll wheel zooms (`canvas::Options`).
+  frame names and whether the scroll wheel zooms (`canvas::Options`), shortcuts and desktop
+  Agent access.
 - **Recents** (`recents.rs`, desktop only). With no file open the canvas card is the Recents
   page instead of the plain empty state: a title, a filter, a cards/rows toggle
   (`Prefs::recents_list`) and Open file…, then one card per file opened before, newest first.
@@ -489,6 +491,14 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   General) resets it and opens the sheet. Tests start with it off (`!cfg!(test)`, like
   `spaces::Store::memory`) so the sheet does not cover every other test; the onboarding
   tests turn it on.
+- Desktop workspace (`session.rs`): `UiState.workspace` saves the open file paths and active
+  space alongside preferences. Startup reopens them on the existing workers; completion order
+  does not change the saved space order. Explicit startup files merge without duplicate paths
+  and take focus. Switching to another space while decoding keeps that focus. Pending restored files
+  survive an early save/quit; failed files are omitted from the next snapshot, and closing
+  spaces updates the saved list. Existing space styles still load through `spaces::Store`.
+  Only local session metadata is stored, never file contents or changes to the `.fig`.
+  Browser file restoration is unchanged; page, zoom and selection are not restored.
 - **Settings** (`settings.rs`, ⌘, / the app menu on macOS / File → Settings… elsewhere / the
   command bar): a foreground window with Arc's tab row. Agent access (`mcp.menu`, `mcp.status`)
   and About live in it; View → Agent access… and Help → About open those tabs
@@ -611,8 +621,12 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 ### MCP inside the app (`mcp_host.rs`, desktop only)
 
 - **View → Agent access…** opens Settings → Agents; the **Agent access** switch there starts
-  the live server. It is off at every launch. `mcp_off.rs` is the same API with no thread, used when the `mcp` feature is off or on
-  wasm32, so the UI code does not change.
+  the live server. Desktop on/off, remote access and bind address are saved with the window's
+  preferences and restored before the first frame; fresh or older preferences default off.
+  Only these settings are stored, not the endpoint or bearer token. Normal `sync` starts the
+  server, validates the address and creates a fresh remote token. `mcp_off.rs` is the same API
+  with no thread when the `mcp` feature is off; the browser uses `mcp_web.rs` and keeps its
+  existing bridge/relay connection rules.
 - **Threads.** `McpHost::start` spawns one thread named `mcp`. It runs a 2-worker tokio runtime,
   binds the first free of 127.0.0.1:3845 to :3855 (`bind_first`), and serves `serve_http` with
   `FigstudioServer::live`. The runtime ends with `shutdown_background`, so a stuck stdin or SSE

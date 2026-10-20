@@ -66,6 +66,7 @@ mod recents;
 mod recordings;
 mod region_copy;
 mod region_png;
+mod session;
 mod settings;
 mod source;
 mod space_editor;
@@ -217,15 +218,18 @@ struct UiState {
     show_left: bool,
     show_right: bool,
     pages_share: f32,
-    /// Settings → General and Canvas (absent in states saved before them).
+    /// Settings preferences (absent in states saved before them).
     #[serde(default)]
     prefs: Prefs,
     /// The welcome sheet and tips seen (absent before them: shown once more).
     #[serde(default)]
     onboarding: onboarding::Progress,
+    #[serde(default)]
+    #[cfg_attr(target_arch = "wasm32", serde(skip))]
+    workspace: session::Session,
 }
 
-/// What Settings → General and Canvas set (the rest lives in egui's options and the panels).
+/// Settings preferences (the rest lives in egui's options and the panels).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct Prefs {
@@ -241,6 +245,9 @@ struct Prefs {
     keymap: keymap::Keymap,
     /// The Recents page lists files in rows instead of cards.
     recents_list: bool,
+    /// Desktop access only; browser bridge/relay connection rules are separate.
+    #[cfg_attr(target_arch = "wasm32", serde(skip))]
+    agents: settings::AgentPrefs,
 }
 
 impl Default for Prefs {
@@ -252,6 +259,7 @@ impl Default for Prefs {
             scroll_zooms: false,
             keymap: keymap::Keymap::default(),
             recents_list: false,
+            agents: settings::AgentPrefs::default(),
         }
     }
 }
@@ -347,13 +355,15 @@ struct App {
     window_cap: Option<f32>,
     /// What draws the canvas tiles ("GPU (Metal)", "CPU"), for the status bar.
     renderer: String,
-    /// Agent access: the MCP server, off at every launch (`mcp_host.rs`).
+    /// Agent access: the MCP server (`mcp_host.rs`).
     mcp: mcp_host::McpHost,
     /// The welcome sheet and the one-time tips (`onboarding.rs`).
     onboarding: onboarding::Onboarding,
     /// Files opened before: the Recents page when none is open (`recents.rs`).
     #[cfg(not(target_arch = "wasm32"))]
     recents: recents::Recents,
+    /// Startup files still arriving from the decode workers.
+    restoring: Option<session::Restore>,
 }
 
 impl App {
@@ -466,15 +476,23 @@ impl App {
             } else {
                 recents::Recents::load()
             },
+            restoring: None,
         };
+        let workspace = saved
+            .as_ref()
+            .map(|s| s.workspace.clone())
+            .unwrap_or_default();
         if let Some(saved) = saved {
             app.show_left = saved.show_left;
             app.show_right = saved.show_right;
             app.pages_share = saved.pages_share.clamp(0.05, 0.95);
         }
-        for f in files {
-            app.open(f);
+        if let Some(access) = app.mcp.access() {
+            *access.on = app.prefs.agents.on;
+            *access.remote = app.prefs.agents.remote;
+            access.remote_addr.clone_from(&app.prefs.agents.remote_addr);
         }
+        app.restore_workspace(workspace, files);
         app
     }
 
@@ -675,13 +693,16 @@ impl App {
                         .spaces
                         .lookup(spaces::FileId::of(&tab, &title))
                         .unwrap_or_default();
+                    let previous = self.tabs.get(self.active).map(|t| t.id);
                     self.tabs.push(tab);
                     self.active = self.tabs.len() - 1;
-                    let added = self.active;
-                    self.link_loaded(ctx, &path, added);
-                    // After the link: the picture is of the page it shows.
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.note_recent(ctx, added);
+                    self.workspace_finished(&path, previous);
+                    if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+                        self.link_loaded(ctx, &path, i);
+                        // After the link: the picture is of the page it shows.
+                        #[cfg(not(target_arch = "wasm32"))]
+                        self.note_recent(ctx, i);
+                    }
                 }
                 Loaded::Err {
                     path,
@@ -694,6 +715,7 @@ impl App {
                     #[cfg(not(target_arch = "wasm32"))]
                     self.recents.load_failed(&path);
                     self.link_failed(&path, real_path);
+                    self.workspace_finished(&path, self.tabs.get(self.active).map(|t| t.id));
                     self.toast(
                         ctx,
                         format!("Could not open {}: {message}", path.display()),
@@ -996,12 +1018,21 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let mut prefs = self.prefs.clone();
+        if let Some(access) = self.mcp.access() {
+            prefs.agents = settings::AgentPrefs {
+                on: *access.on,
+                remote: *access.remote,
+                remote_addr: access.remote_addr.clone(),
+            };
+        }
         let state = UiState {
             show_left: self.show_left,
             show_right: self.show_right,
             pages_share: self.pages_share,
-            prefs: self.prefs.clone(),
+            prefs,
             onboarding: self.onboarding.progress.clone(),
+            workspace: session::Session::capture(self),
         };
         eframe::set_value(storage, UI_STATE_KEY, &state);
     }

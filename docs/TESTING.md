@@ -279,6 +279,23 @@ send pointer events; `step` also collects what the frame sent to the clipboard (
 with `h.get_by_label("Copy link")` (plain `ui.label`s are matched by their accesskit value, see
 `shown_addr`). Menus open a frame or two after the click: use `wait_for`, not a fixed step count.
 Tests that start the MCP server use whatever port `bind_first` gives and read it from the status pill.
+`cargo test -p figstudio desktop_agent_access` covers all enabled/remote preference combinations,
+restores the bind address, restarts an enabled server on an ephemeral loopback port, and checks
+that saved state contains neither endpoints nor tokens. Older preferences without Agent access
+still load with access off. Prove these regressions by removing preference capture/restoration,
+and by removing `Prefs`' `#[serde(default)]` for the older-state case. These tests use in-memory
+eframe storage; real on-disk persistence across an OS app restart still needs a manual check.
+
+`cargo test --profile fast -p figstudio workspace` covers desktop session save/reload, saved
+file order and active space, existing space styles, saving before restores finish, missing
+files, duplicate/explicit startup files, and closing some or all spaces. A deterministic
+`session::tests` case feeds reverse completion order and checks that a later manual space
+selection wins. Both UI tests failed without restoration; removing `Restore::finished`'s
+`sort_by_key` makes the deterministic ordering test fail. Restore the mutation before checks.
+Use an isolated `CARGO_TARGET_DIR` if worktrees share a build cache, and confirm the named
+new tests actually appear in the output. Actual OS quit/relaunch and browser file retention
+remain manual checks; this feature changes desktop file reopening only.
+
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
 

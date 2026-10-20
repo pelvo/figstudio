@@ -1,6 +1,6 @@
 //! Agent access: the app hosts the figstudio MCP server (live mode) on loopback.
 //!
-//! Off at every launch; the Agent access window toggle starts it. The server runs on its own thread
+//! Off by default; the saved Agent access toggle starts it. The server runs on its own thread
 //! with a 2-worker tokio runtime, so the UI thread never waits on it: the snapshot it reads
 //! is swapped under a lock held only for an `Arc` store, and its `reveal_node` requests come
 //! back over a channel drained once per frame.
@@ -23,11 +23,11 @@ use crate::theme;
 type Event = anyhow::Result<SocketAddr>;
 
 pub struct McpHost {
-    /// The window toggle. Never saved: every launch starts off.
+    /// The window toggle, restored from the app's preferences.
     pub on: bool,
     /// Tried in order; the first free one is used (127.0.0.1:3845, then 3846 to 3855).
     addrs: Vec<SocketAddr>,
-    /// "Allow remote agents": listen on `remote_addr` with a bearer token. Never saved.
+    /// "Allow remote agents": listen on `remote_addr` with a per-start bearer token.
     pub remote: bool,
     /// A specific address of this computer, for example its Tailscale IP with a port.
     pub remote_addr: String,
@@ -88,7 +88,7 @@ impl McpHost {
         ui.checkbox(&mut self.on, "Agent access (MCP server)")
             .on_hover_text(
                 "Lets MCP clients read the open tabs and select nodes. Loopback only \
-             unless 'Allow remote agents' is on; off at every launch.",
+             unless 'Allow remote agents' is on. Remembered between launches.",
             );
         ui.add_enabled_ui(!self.on, |ui| {
             ui.checkbox(&mut self.remote, "Allow remote agents")

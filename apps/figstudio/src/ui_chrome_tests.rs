@@ -298,23 +298,248 @@ fn a_file_opens_with_the_style_saved_for_it() {
     );
 }
 
+#[derive(Default)]
+struct Memory(std::collections::HashMap<String, String>);
+
+impl eframe::Storage for Memory {
+    fn get_string(&self, key: &str) -> Option<String> {
+        self.0.get(key).cloned()
+    }
+    fn set_string(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
+    }
+    fn remove_string(&mut self, key: &str) {
+        self.0.remove(key);
+    }
+    fn flush(&mut self) {}
+}
+
+#[test]
+fn desktop_workspace_restores_order_active_space_and_pending_files() {
+    use crate::spaces::{Style, Symbol};
+    use eframe::App as _;
+
+    let mut first = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, vec![fixture("structure.fig"), fixture("vector.fig")]));
+    wait(&mut first, &mut Vec::new(), "both workspace files", |a| {
+        a.tabs.len() == 2
+    });
+    // Use a chosen order, not whichever decode happened to finish first.
+    first.state_mut().tabs.sort_by(|a, b| b.path.cmp(&a.path));
+    first.state_mut().active = 0;
+    let expected: Vec<_> = first.state().tabs.iter().map(|t| t.path.clone()).collect();
+    let style = Style {
+        name: Some("Workspace".to_owned()),
+        symbol: Some(Symbol::Icon("component".to_owned())),
+        ..Default::default()
+    };
+    let id = crate::spaces::FileId::of(&first.state().tabs[0], "vector.fig");
+    let key = id.key.map(str::to_owned);
+    let folder = id.folder.map(str::to_owned);
+    first.state_mut().spaces.remember(
+        crate::spaces::FileId {
+            key: key.as_deref(),
+            file: "vector.fig",
+            folder: folder.as_deref(),
+        },
+        &style,
+    );
+    let mut saved = Memory::default();
+    first.state_mut().save(&mut saved);
+
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&saved);
+    let mut interrupted = App::new(&cc, Vec::new());
+    assert_eq!(
+        interrupted.loading.len(),
+        2,
+        "restore starts without opening files manually"
+    );
+    let mut pending = Memory::default();
+    interrupted.save(&mut pending);
+
+    let spaces = std::mem::take(&mut first.state_mut().spaces);
+    let mut reopened = Harness::builder().with_size(SIZE).build_eframe(|cc| {
+        let mut saved_cc = eframe::CreationContext::_new_kittest(cc.egui_ctx.clone());
+        saved_cc.storage = Some(&pending);
+        let mut app = App::new(&saved_cc, Vec::new());
+        app.spaces = spaces;
+        app
+    });
+    wait(&mut reopened, &mut Vec::new(), "restored workspace", |a| {
+        a.tabs.len() == 2 && a.loading.len() == 0
+    });
+    assert_eq!(
+        reopened
+            .state()
+            .tabs
+            .iter()
+            .map(|t| t.path.clone())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(
+        reopened.state().tabs[reopened.state().active].path,
+        expected[0]
+    );
+    assert_eq!(
+        reopened.state().tabs[0].style,
+        style,
+        "existing space styling is reused"
+    );
+}
+
+#[test]
+fn desktop_workspace_skips_missing_files_merges_startup_files_and_forgets_closed_spaces() {
+    use eframe::App as _;
+    let dir = tempfile::tempdir().expect("workspace folder");
+    let missing = dir.path().join("missing.fig");
+    let kept = dir.path().join("kept.fig");
+    for path in [&missing, &kept] {
+        std::fs::copy(fixture("structure.fig"), path).expect("public fixture copy");
+    }
+    let mut first = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, vec![missing.clone(), kept.clone()]));
+    wait(&mut first, &mut Vec::new(), "saved files", |a| {
+        a.tabs.len() == 2
+    });
+    let mut saved = Memory::default();
+    first.state_mut().save(&mut saved);
+    std::fs::remove_file(&missing).expect("remove one saved file");
+    let extra = fixture("vector.fig");
+    let mut reopened = Harness::builder().with_size(SIZE).build_eframe(|cc| {
+        let mut saved_cc = eframe::CreationContext::_new_kittest(cc.egui_ctx.clone());
+        saved_cc.storage = Some(&saved);
+        let app = App::new(&saved_cc, vec![kept.clone(), extra.clone(), extra.clone()]);
+        assert_eq!(
+            app.loading.len(),
+            3,
+            "saved files plus one unique explicit file"
+        );
+        app
+    });
+    wait(&mut reopened, &mut Vec::new(), "surviving files", |a| {
+        a.tabs.len() == 2 && a.loading.len() == 0
+    });
+    assert_eq!(
+        reopened
+            .state()
+            .tabs
+            .iter()
+            .map(|t| &t.path)
+            .collect::<Vec<_>>(),
+        [&kept, &extra]
+    );
+    assert_eq!(
+        reopened.state().tabs[reopened.state().active].path,
+        extra,
+        "explicit file takes focus"
+    );
+    assert!(
+        reopened
+            .state()
+            .toasts
+            .iter()
+            .any(|t| t.error && t.text.contains("Could not open"))
+    );
+    reopened.state_mut().close(0);
+    let mut closed = Memory::default();
+    reopened.state_mut().save(&mut closed);
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&closed);
+    let only_open = App::new(&cc, Vec::new());
+    assert_eq!(only_open.loading.iter().collect::<Vec<_>>(), [&extra]);
+
+    reopened.state_mut().close(0);
+    reopened.state_mut().save(&mut closed);
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&closed);
+    assert_eq!(
+        App::new(&cc, Vec::new()).loading.len(),
+        0,
+        "closing every space saves an empty workspace"
+    );
+}
+
+#[cfg(feature = "mcp")]
+#[test]
+fn desktop_agent_access_preferences_survive_restart() {
+    use eframe::App as _;
+    for (on, remote) in [(true, false), (true, true), (false, true), (false, false)] {
+        let mut storage = Memory::default();
+        let cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+        let mut first = App::new(&cc, Vec::new());
+        let access = first.mcp.access().expect("desktop agent settings");
+        *access.on = on;
+        *access.remote = remote;
+        *access.remote_addr = "127.0.0.1:0".to_owned();
+        first.save(&mut storage);
+        let saved = &storage.0[crate::UI_STATE_KEY];
+        assert!(
+            !saved.contains("token"),
+            "bearer tokens are not preferences"
+        );
+        assert!(
+            !saved.contains("endpoint"),
+            "bound ports are not preferences"
+        );
+
+        let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+        cc.storage = Some(&storage);
+        let mut second = App::new(&cc, Vec::new());
+        let access = second
+            .mcp
+            .access()
+            .expect("restored desktop agent settings");
+        assert_eq!((*access.on, *access.remote), (on, remote));
+        assert_eq!(access.remote_addr, "127.0.0.1:0");
+        assert!(access.endpoint.is_none(), "only sync starts the server");
+        if on && remote {
+            second.mcp.sync(&cc.egui_ctx, &[], 0);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                assert_eq!(second.mcp.frame(&mut [], &mut 0), None);
+                let access = second.mcp.access().expect("agent settings");
+                if let Some((endpoint, _)) = access.endpoint
+                    && endpoint != "Starting…"
+                {
+                    assert!(endpoint.starts_with("127.0.0.1:"), "{endpoint}");
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "server did not restart"
+                );
+                std::thread::yield_now();
+            }
+            second.mcp.stop();
+        }
+    }
+}
+
+#[cfg(feature = "mcp")]
+#[test]
+fn desktop_agent_access_defaults_off_for_older_saved_preferences() {
+    let mut storage = Memory::default();
+    storage.0.insert(
+        crate::UI_STATE_KEY.to_owned(),
+        "(show_left:false,show_right:true,pages_share:0.3,prefs:(renderer:Cpu))".to_owned(),
+    );
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&storage);
+    let mut app = App::new(&cc, Vec::new());
+    assert!(!app.show_left, "the older state still loads");
+    assert_eq!(app.prefs.renderer, crate::settings::Renderer::Cpu);
+    let access = app.mcp.access().expect("desktop agent settings");
+    assert!(!*access.on && !*access.remote);
+    assert!(access.remote_addr.is_empty() && access.endpoint.is_none());
+}
+
 #[test]
 fn the_sidebar_and_panels_come_back_as_they_were_left() {
     use eframe::App as _;
-    #[derive(Default)]
-    struct Memory(std::collections::HashMap<String, String>);
-    impl eframe::Storage for Memory {
-        fn get_string(&self, key: &str) -> Option<String> {
-            self.0.get(key).cloned()
-        }
-        fn set_string(&mut self, key: &str, value: String) {
-            self.0.insert(key.to_owned(), value);
-        }
-        fn remove_string(&mut self, key: &str) {
-            self.0.remove(key);
-        }
-        fn flush(&mut self) {}
-    }
     let mut storage = Memory::default();
     let cc = eframe::CreationContext::_new_kittest(egui::Context::default());
     let mut first = App::new(&cc, Vec::new());

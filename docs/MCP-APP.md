@@ -22,7 +22,9 @@ with its own gate and one commit (Conventional Commits, PII check per AGENTS.md)
    - A figma.com link maps to a file when `<key>` equals a file's stem, or `<slug>` equals the stem with spaces turned
      into `-`. Otherwise its file part is ignored and today's rule applies (the single file, or the active tab).
      Existing figma.com links keep working.
-2. **The embedded server is off by default.** A toggle starts it. Its state is not saved: every launch starts off.
+2. **The embedded server is off by default.** A toggle starts it. Updated by the requester:
+   desktop on/off, remote access and bind address survive a restart. Bearer tokens remain
+   per-start and are not saved. Older preferences still default to access off.
 3. **Copy region copies everything:** the link, node IDs and names, and a PNG.
    - egui's clipboard holds one item, text **or** image: `ctx.copy_text` / `ctx.copy_image`.
      - Desktop: egui-winit → arboard set_image. `image-data` is already enabled; see `cargo tree -i arboard`.
