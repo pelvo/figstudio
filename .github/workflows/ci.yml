@@ -1,0 +1,60 @@
+# The scripts/check.sh gate on every pull request and push to main. The two job names
+# ("fmt + clippy", "build + test") are required status checks in the main ruleset; rename
+# them only together with the ruleset.
+#
+# Third-party actions are pinned to commit SHAs; the comment names the release.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --profile fast --workspace --all-targets -- -D warnings
+      - run: cargo clippy --profile fast -p figstudio-render --features parallel --all-targets -- -D warnings
+      - run: cargo clippy --profile fast -p figstudio-render --features gpu --all-targets -- -D warnings
+      - run: cargo clippy --profile fast -p figstudio --no-default-features --all-targets -- -D warnings
+
+  test:
+    name: build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup default stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo test --profile fast --workspace
+      - run: cargo test --profile fast -p figstudio-render --features gpu
+      - run: cargo test --profile fast -p figstudio-mcp-core --no-default-features
+      - run: cargo build --release --workspace
+      - run: cargo build -p figstudio-mcp-core --no-default-features --target wasm32-unknown-unknown
