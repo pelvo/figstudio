@@ -242,19 +242,6 @@ fn print_tree(doc: &Document, id: Guid, indent: usize, depth: usize) {
 }
 
 fn emoji_counts(doc: &Document, system_fonts: bool) -> figstudio_render::Stats {
-    let has_emoji = doc.nodes.iter().any(|node| {
-        node.data
-            .path(&["derivedTextData", "glyphs"])
-            .is_some_and(|glyphs| {
-                glyphs.items().iter().any(|g| {
-                    g.get("emojiCodePoints")
-                        .is_some_and(|v| !v.items().is_empty())
-                })
-            })
-    });
-    if !has_emoji {
-        return figstudio_render::Stats::default();
-    }
     let mut renderer = Renderer::new();
     renderer.system_fonts = system_fonts;
     renderer.emoji_counts(doc)

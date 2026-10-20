@@ -1082,7 +1082,10 @@ Debug spans (`RUST_LOG=debug`): `open`/`from_bytes` (bytes, node/page/image coun
 - **`Fonts::has_glyph` says no for egui's own emoji.** It misses the bundled NotoEmoji, which
   does draw them. `spaces` tests compare the glyph's atlas spot with the box drawn for a
   missing character instead. Apple's colour emoji are not drawn at all (egui draws outlines),
-  so the editor offers emoji from that font.
+  so the editor offers emoji from that font. Browser `symbols::missing` reads the actual
+  proportional font chain's cmaps (including bundled emoji), and scans `textData.characters`
+  as well as names. A failed symbol fetch can retry once on the next document load, never
+  from the frame poll; only the first failure produces a toast.
 - **`usize::MAX + 1` wraps to 0.** Limits in `read_limited` use saturating arithmetic. A limit
   of `usize::MAX` once made `take()` read nothing, with no error.
 

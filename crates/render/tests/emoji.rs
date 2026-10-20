@@ -170,6 +170,6 @@ fn installed_colour_emoji_is_not_the_text_paint() {
         );
     }
     let sequence = renderer.render(&emoji_document(&[0x1F4F1, 0xFE0F]), id(1), &viewport());
-    assert_eq!(sequence.stats.emoji_approximated, 1);
+    assert_eq!(sequence.stats.emoji_approximated, 0);
     assert_eq!(sequence.stats.emoji_skipped, 0);
 }

@@ -1,5 +1,5 @@
 //! Lazy browser fallback for symbols and outline emoji in UI names.
-use egui::{FontFamily, FontId};
+use egui::FontFamily;
 
 const FILES: [&str; 4] = ["symbols.ttf", "symbols2.ttf", "math.ttf", "emoji.ttf"];
 type Faces = [Vec<u8>; 4];
@@ -14,15 +14,30 @@ fn is_symbol(c: char) -> bool {
 }
 
 fn missing(ctx: &egui::Context, doc: &figstudio_fig::Document, file_name: &str) -> bool {
-    let names = std::iter::once(file_name)
+    let text = std::iter::once(file_name)
         .chain(doc.file_name.as_deref())
-        .chain(doc.nodes.iter().map(|n| n.name.as_str()));
-    ctx.fonts_mut(|fonts| {
-        names
-            .filter(|s| needs(s))
+        .chain(doc.nodes.iter().flat_map(|n| {
+            std::iter::once(n.name.as_str()).chain(
+                n.data
+                    .path(&["textData", "characters"])
+                    .and_then(figstudio_fig::Val::as_str),
+            )
+        }));
+    ctx.fonts(|fonts| {
+        let definitions = fonts.definitions();
+        // has_glyph misses egui's bundled emoji; query the actual proportional chain's cmap.
+        let faces: Vec<_> = definitions
+            .families
+            .get(&FontFamily::Proportional)
+            .into_iter()
+            .flatten()
+            .filter_map(|name| definitions.font_data.get(name))
+            .filter_map(|data| ttf_parser::Face::parse(&data.font, data.index).ok())
+            .collect();
+        text.filter(|s| needs(s))
             .flat_map(str::chars)
             .filter(|&c| is_symbol(c))
-            .any(|c| !fonts.has_glyph(&FontId::proportional(13.0), c))
+            .any(|c| !faces.iter().any(|face| face.glyph_index(c).is_some()))
     })
 }
 
@@ -59,10 +74,40 @@ fn install(ctx: &egui::Context, faces: Faces) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Default)]
+struct LoadState {
+    document: Option<u64>,
+    pending: bool,
+    installed: bool,
+    warned: bool,
+}
+
+impl LoadState {
+    fn begin(&mut self, document: u64) -> bool {
+        if self.pending || self.installed || self.document == Some(document) {
+            return false;
+        }
+        self.document = Some(document);
+        self.pending = true;
+        true
+    }
+
+    /// Complete an attempt and return whether its failure needs the session's one toast.
+    fn finish(&mut self, success: bool) -> bool {
+        self.pending = false;
+        self.installed = success;
+        if success || self.warned {
+            return false;
+        }
+        self.warned = true;
+        true
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 #[derive(Debug)]
 pub struct Loader {
-    started: bool,
+    state: LoadState,
     tx: std::sync::mpsc::Sender<anyhow::Result<Faces>>,
     rx: std::sync::mpsc::Receiver<anyhow::Result<Faces>>,
 }
@@ -72,7 +117,7 @@ impl Default for Loader {
     fn default() -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         Self {
-            started: false,
+            state: LoadState::default(),
             tx,
             rx,
         }
@@ -87,10 +132,13 @@ impl Loader {
         doc: &figstudio_fig::Document,
         file_name: &str,
     ) {
-        if self.started || !missing(ctx, doc, file_name) {
+        if self.state.installed
+            || self.state.pending
+            || !missing(ctx, doc, file_name)
+            || !self.state.begin(doc.instance)
+        {
             return;
         }
-        self.started = true;
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         wasm_bindgen_futures::spawn_local(async move {
@@ -108,98 +156,19 @@ impl Loader {
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) -> Option<anyhow::Error> {
-        self.rx
+        let result = self
+            .rx
             .try_recv()
             .ok()?
-            .and_then(|faces| install(ctx, faces))
-            .err()
+            .and_then(|faces| install(ctx, faces));
+        if self.state.finish(result.is_ok()) {
+            result.err()
+        } else {
+            None
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn symbols_and_emoji_need_the_font_but_latin_and_cjk_do_not() {
-        for name in [
-            "└ layer",
-            "→ next",
-            "⚠ status",
-            "📄 page",
-            "∑ formula",
-            "⠁ braille",
-        ] {
-            assert!(needs(name), "{name}");
-        }
-        for name in [
-            "",
-            "Page 12",
-            "Latin abc",
-            "漢字",
-            "かな",
-            "한글",
-            "。",
-            "\u{200d}\u{fe0f}",
-        ] {
-            assert!(!needs(name), "{name}");
-        }
-    }
-
-    fn tick(ctx: &egui::Context) {
-        ctx.run_ui(Default::default(), |_| {})
-            .textures_delta
-            .clear();
-    }
-
-    #[test]
-    fn fallback_preserves_cjk_in_either_load_order_and_rejects_bad_fonts() {
-        for cjk_first in [true, false] {
-            let ctx = egui::Context::default();
-            tick(&ctx);
-            let faces = std::array::from_fn(|_| epaint_default_fonts::EMOJI_ICON.to_vec());
-            if cjk_first {
-                crate::theme::add_cjk_font(&ctx, epaint_default_fonts::HACK_REGULAR.to_vec());
-                tick(&ctx);
-            }
-            install(&ctx, faces).unwrap();
-            tick(&ctx);
-            if !cjk_first {
-                crate::theme::add_cjk_font(&ctx, epaint_default_fonts::HACK_REGULAR.to_vec());
-                tick(&ctx);
-            }
-            ctx.fonts(|fonts| {
-                for family in [
-                    FontFamily::Proportional,
-                    FontFamily::Monospace,
-                    FontFamily::Name(crate::theme::SEMIBOLD.into()),
-                ] {
-                    let names = &fonts.definitions().families[&family];
-                    let cjk = names.iter().position(|n| n == "cjk").unwrap();
-                    assert!(
-                        names
-                            .iter()
-                            .position(|n| n.starts_with("web-symbols-"))
-                            .unwrap()
-                            > cjk
-                    );
-                }
-            });
-            assert!(install(&ctx, Default::default()).is_err());
-            tick(&ctx);
-        }
-    }
-
-    #[test]
-    fn covered_symbols_do_not_trigger_a_download() {
-        let ctx = egui::Context::default();
-        tick(&ctx);
-        let doc = figstudio_fig::Document::from_bytes(include_bytes!(
-            "../../../tests/fixtures/corners.fig"
-        ))
-        .unwrap();
-        assert!(!missing(&ctx, &doc, "Latin page"));
-        assert!(missing(&ctx, &doc, "📄 page └"));
-        assert!(!missing(&ctx, &doc, "★"));
-    }
-}
+#[path = "symbols_tests.rs"]
+mod tests;

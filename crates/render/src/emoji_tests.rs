@@ -8,7 +8,7 @@ use vello_cpu::kurbo::Rect;
 
 use crate::{Renderer, Viewport, text::SystemFonts};
 
-fn obj(fields: &[(&str, Val)]) -> Val {
+pub(super) fn obj(fields: &[(&str, Val)]) -> Val {
     Val::Obj(fields.iter().fold(Obj::new(), |mut o, (k, v)| {
         o.insert(k, v.clone());
         o

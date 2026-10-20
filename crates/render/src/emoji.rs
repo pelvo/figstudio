@@ -111,11 +111,6 @@ impl Ctx<'_> {
         out
     }
 
-    pub(crate) fn draw_emojis(&mut self, data: &Val, world: Affine, w: f64, h: f64) {
-        let emojis = self.emojis(data, world);
-        self.draw_placed_emojis(data, world, w, h, emojis);
-    }
-
     pub(crate) fn draw_placed_emojis(
         &mut self,
         data: &Val,

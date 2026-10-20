@@ -1133,16 +1133,27 @@ impl Ctx<'_> {
         {
             fill_paths.push(GeomPath::plain(shape));
         }
-        let casts = casts_shadow(data, &fill_paths);
+        let emojis = if kind == "TEXT" && !stale_glyphs {
+            self.emojis(data, world)
+        } else {
+            Vec::new()
+        };
+        // Emoji rectangles cast shadows, but must not be painted as ordinary text fills.
+        let fill_count = fill_paths.len();
+        fill_paths.extend(emojis.iter().map(|g| GeomPath::plain(g.rect.to_path(0.1))));
+        let shadow_paths = fill_paths;
+        let fill_paths = &shadow_paths[..fill_count];
+        let casts = casts_shadow(data, &shadow_paths);
         let mut shadows = Vec::new();
         let mut layers = 0;
         let mut shadow_layers = 0;
         let outer_reach = self.inherited_reach;
         let silhouette = casts
-            && effects::approximate_silhouette(
-                data,
-                !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
-            );
+            && (!emojis.is_empty()
+                || effects::approximate_silhouette(
+                    data,
+                    !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
+                ));
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
             if effect.flag("visible") == Some(false) {
@@ -1156,7 +1167,7 @@ impl Ctx<'_> {
                 Some("DROP_SHADOW" | "INNER_SHADOW") if casts => {
                     self.stats.approximated_effects += usize::from(effects::is_approximate(
                         effect,
-                        &fill_paths,
+                        &shadow_paths,
                         world,
                         silhouette,
                         false,
@@ -1208,20 +1219,18 @@ impl Ctx<'_> {
             .into_iter()
             .partition(|e| e.text("type") == Some("DROP_SHADOW"));
         for effect in behind {
-            self.draw_drop_shadow(effect, &fill_paths, world);
+            self.draw_drop_shadow(effect, &shadow_paths, world);
         }
-        self.paint_paths(data, "fillPaints", &fill_paths, world, w, h);
-        if kind == "TEXT" && !stale_glyphs {
-            self.draw_emojis(data, world, w, h);
-        }
+        self.paint_paths(data, "fillPaints", fill_paths, world, w, h);
+        self.draw_placed_emojis(data, world, w, h, emojis);
         for effect in above {
-            self.draw_inner_shadow(effect, &fill_paths, world);
+            self.draw_inner_shadow(effect, &shadow_paths, world);
         }
 
         // A frame that clips its content draws its stroke above its children; others below.
         let clips = kind != "TEXT" && clips_content(kind, data);
         if !clips {
-            self.draw_strokes(kind, data, &fill_paths, world, (w, h));
+            self.draw_strokes(kind, data, fill_paths, world, (w, h));
         }
 
         // Children.
@@ -1250,7 +1259,7 @@ impl Ctx<'_> {
                 self.rc.pop_layer();
             }
             if clips {
-                self.draw_strokes(kind, data, &fill_paths, world, (w, h));
+                self.draw_strokes(kind, data, fill_paths, world, (w, h));
             }
         }
         for _ in 0..layers {

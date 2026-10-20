@@ -173,5 +173,68 @@ fn info_and_doctor_report_unavailable_emoji_as_counts() {
     );
     assert_eq!(frame.stats.emoji_skipped, 2);
     assert_eq!(frame.stats.emoji_approximated, 0);
+    // The only marker now lives in an instance's derived patch, not on a raw node.
+    let mut nodes = doc.nodes[..3].to_vec();
+    nodes[2].data.set(
+        "parentIndex",
+        obj(&[
+            ("guid", Guid(99, 4).to_val()),
+            ("position", Val::Str("a".into())),
+        ]),
+    );
+    nodes[2]
+        .data
+        .set("derivedTextData", obj(&[("glyphs", Val::Arr(vec![]))]));
+    nodes[2] = Node::from_data(nodes[2].data.clone()).unwrap();
+    nodes.push(
+        Node::from_data(obj(&[
+            ("guid", Guid(99, 4).to_val()),
+            ("type", Val::Enum("SYMBOL")),
+        ]))
+        .unwrap(),
+    );
+    nodes.push(
+        Node::from_data(obj(&[
+            ("guid", Guid(99, 5).to_val()),
+            ("type", Val::Enum("INSTANCE")),
+            (
+                "parentIndex",
+                obj(&[
+                    ("guid", Guid(99, 1).to_val()),
+                    ("position", Val::Str("b".into())),
+                ]),
+            ),
+            (
+                "size",
+                obj(&[("x", Val::Float(40.0)), ("y", Val::Float(40.0))]),
+            ),
+            ("symbolData", obj(&[("symbolID", Guid(99, 4).to_val())])),
+            (
+                "derivedSymbolData",
+                Val::Arr(vec![obj(&[
+                    (
+                        "guidPath",
+                        obj(&[("guids", Val::Arr(vec![Guid(99, 2).to_val()]))]),
+                    ),
+                    ("derivedTextData", obj(&[("glyphs", Val::Arr(vec![heart]))])),
+                ])]),
+            ),
+        ]))
+        .unwrap(),
+    );
+    doc.set_nodes(nodes).unwrap();
+    std::fs::write(&path, doc.to_bytes().unwrap()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_figstudio-cli"))
+        .arg("info")
+        .arg(&path)
+        .arg("--no-system-fonts")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        report.contains("emoji:    0 approximated, 1 skipped"),
+        "override-only marker: {report}"
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }
