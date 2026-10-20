@@ -68,10 +68,11 @@ run_slice() {
     release)
       cargo $TC build --release --workspace
       ;;
-    # The npm launcher (npm/figstudio-mcp) and scripts/npm-pack.mjs.
+    # The npm launcher (npm/figstudio-mcp) and scripts/npm-pack.mjs. The files, not the
+    # folder: Node 22 (the CI runner's) loads a folder argument as a module and fails.
     tests-npm)
       if command -v node >/dev/null 2>&1; then
-        node --test npm/figstudio-mcp/test/
+        node --test npm/figstudio-mcp/test/*.test.mjs
       else
         echo "skipped: node is not installed"
       fi

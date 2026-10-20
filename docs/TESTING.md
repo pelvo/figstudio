@@ -54,7 +54,7 @@ scripts/check.sh --lint-one fmt   # one slice, for a local run
 # this repo's crates. A later exact hit does not update that snapshot.
 ```
 
-The `tests-npm` slice runs `node --test npm/figstudio-mcp/test/` (the npm launcher and
+The `tests-npm` slice runs `node --test npm/figstudio-mcp/test/*.test.mjs` (the npm launcher and
 `scripts/npm-pack.mjs`, including a check that the release workflow builds every platform
 the launcher knows); it is skipped when `node` is not installed.
 
