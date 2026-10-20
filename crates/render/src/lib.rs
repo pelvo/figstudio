@@ -21,6 +21,8 @@ mod record;
 mod replay;
 mod stroke;
 mod text;
+#[cfg(all(test, feature = "system-fonts"))]
+mod text_test_font;
 mod variables;
 
 use std::borrow::Cow;
