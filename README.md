@@ -38,12 +38,14 @@ Protocol (MCP) server, written in Rust.
   https://figstudio.pelvo.dev paired with the local server; open your `.fig` in that tab.
   If the browser asks to let the page reach devices on your local network, allow it: that
   is `figstudio-mcp` on `127.0.0.1`. **Safari cannot pair:** it blocks an `https://` page
-  from reaching `ws://127.0.0.1`. If Safari is your default browser, have `figstudio-mcp`
-  open another one, for example
+  from reaching `ws://127.0.0.1` (Chrome, Edge and Firefox allow it). If Safari is your
+  default browser, have `figstudio-mcp` open another one, for example Chrome:
   `claude mcp add figstudio -e 'BROWSER=open -a "Google Chrome"' -- figstudio-mcp --origin https://figstudio.pelvo.dev`
-  (Chrome, Edge or Firefox), or drop `--origin` and use the local build
-  (`scripts/web-build.sh --serve`, `http://127.0.0.1:8765`). To serve a file from disk
-  instead, with no browser: `claude mcp add figstudio -- figstudio-mcp /path/to/design.fig`.
+  (`open -a "Microsoft Edge"` or `open -a Firefox` for those). Or use the local build:
+  serve it with `scripts/web-build.sh --serve` and register
+  `claude mcp add figstudio -- figstudio-mcp --browser-proxy`, which opens
+  `http://127.0.0.1:8765`. To serve a file from disk instead, with no browser:
+  `claude mcp add figstudio -- figstudio-mcp /path/to/design.fig`.
 
 ---
 
