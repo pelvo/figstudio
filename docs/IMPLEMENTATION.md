@@ -606,7 +606,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
     included, gives up on every running listing so links search again. Only given-up listings
     that are stuck (past `SEARCH_TIMEOUT`, still not back) count towards `MAX_ABANDONED` (3),
     at which new links are refused with guidance to wait for the searches or restart
-    figstudio. Choosing a different folder cannot release those blocked threads. Slow
+    figstudio. On macOS this also mentions the permission dialog, since allowing folder
+    access can release the blocked reads. Choosing a different folder cannot release those
+    blocked threads. Slow
     listings do not count towards this cap.
   - **The window.** A new link from it (a file link, or a node ID, shown or not) replaces its
     older search; Go on the link already being searched for starts nothing; a link refused

@@ -293,9 +293,18 @@ impl LinkError {
                  figstudio window for permission to read them"
                     .to_owned()
             }
-            Self::ListingLimit => "too many folder searches are still stuck; wait for them to \
-                 finish or restart figstudio to try again"
-                .to_owned(),
+            Self::ListingLimit => {
+                let mut text = "too many folder searches are still stuck; wait for them to \
+                    finish or restart figstudio to try again"
+                    .to_owned();
+                if cfg!(target_os = "macos") {
+                    text.push_str(
+                        "; macOS may be asking in the figstudio window for permission \
+                        to read the link folders",
+                    );
+                }
+                text
+            }
             Self::StillLoading => "a file this link may name is still opening in figstudio; \
                  try again once it has opened"
                 .to_owned(),
@@ -510,8 +519,8 @@ impl App {
             return true;
         }
         if let Some(error) = self.link.blocked() {
-            // The folders still have not answered; another thread would block the same way.
-            // A refused link leaves the window's current search running.
+            // A stuck current listing reports a folder timeout; the abandoned-listing cap
+            // reports wait/restart guidance. Neither starts a thread or cancels the window's search.
             self.answer(ctx, done, Err(error));
             return false;
         }

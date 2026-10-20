@@ -209,13 +209,18 @@ fn public_messages_carry_no_paths_or_file_names() {
             "{text}"
         );
     }
-    // The permission hint is for macOS only; elsewhere a hung folder has other causes.
-    let timeout = LinkError::SearchTimeout.public();
-    assert_eq!(
-        timeout.contains("permission"),
-        cfg!(target_os = "macos"),
-        "{timeout}"
-    );
+    // Both kinds of stuck reads may be waiting on a macOS permission dialog.
+    for error in [LinkError::SearchTimeout, LinkError::ListingLimit] {
+        let text = error.public();
+        assert_eq!(
+            text.contains("permission"),
+            cfg!(target_os = "macos"),
+            "{text}"
+        );
+    }
+    let limit = LinkError::ListingLimit.public();
+    assert!(limit.contains("wait for them to finish"), "{limit}");
+    assert!(limit.contains("restart figstudio"), "{limit}");
     // The person at the computer still gets the details.
     assert!(errors[0].local().contains("Private Folder"));
     assert!(errors[2].local().contains(secret));
@@ -894,7 +899,7 @@ fn retries_cannot_pile_up_blocked_threads() {
     );
     h.step();
     let error = rx.try_recv().unwrap().unwrap_err();
-    assert!(error.contains("restart figstudio"), "{error}");
+    assert_eq!(error, LinkError::ListingLimit.public());
     // Choosing a healthy folder cannot release stuck threads; the cap still explains recovery.
     h.state_mut().link.set_dirs(vec![PathBuf::from("/healthy")]);
     let (refused, rx) = done();
@@ -904,7 +909,7 @@ fn retries_cannot_pile_up_blocked_threads() {
     );
     h.step();
     let error = rx.try_recv().unwrap().unwrap_err();
-    assert!(error.contains("restart figstudio"), "{error}");
+    assert_eq!(error, LinkError::ListingLimit.public());
     // Once they come back, links search again.
     std::thread::sleep(std::time::Duration::from_secs(2));
     h.step();
