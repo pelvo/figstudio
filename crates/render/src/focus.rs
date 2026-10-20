@@ -4,22 +4,23 @@ use std::borrow::Cow;
 
 use figstudio_fig::resolve::{self, InstancePath};
 use figstudio_fig::{Guid, Val};
-use vello_cpu::kurbo::{Affine, Rect};
+use vello_cpu::kurbo::Affine;
 
-use crate::geom::{affine, size, transformed_bounds};
+use crate::geom::{affine, size};
 use crate::{Ctx, absolute_transform_with_budget, visible};
 
 impl Ctx<'_> {
     /// Walks from the instance down to the node at `path` the way `draw_instance` and
     /// `draw_children` would, then draws only that node when `draw` is set. Returns the node's
-    /// box under `transform` (page space for the identity), or `None` when the path does not
+    /// captured layout under `transform`, or `None` when the path does not
     /// resolve or the node or one of its ancestors is hidden.
-    pub(crate) fn focus(
+    pub(crate) fn focus<T>(
         &mut self,
         path: &InstancePath,
         transform: Affine,
         draw: bool,
-    ) -> Option<Rect> {
+        capture: impl FnOnce(Affine, &Val, bool) -> T,
+    ) -> Option<T> {
         let doc = self.doc;
         let chain = resolve::tree_path(doc, path).ok()?;
         let (top, rest) = chain.split_first()?;
@@ -61,15 +62,12 @@ impl Ctx<'_> {
                 if !visible(&data) {
                     return None;
                 }
-                let (w, h) = size(&data);
-                let bounds = transformed_bounds(
-                    world * affine(data.get("transform")),
-                    Rect::new(0.0, 0.0, w, h),
-                );
+                let transform = world * affine(data.get("transform"));
+                let captured = capture(transform, &data, stale);
                 if draw {
                     self.draw_with_data(node, world, Some(&node_path), Some((data, stale, ink)));
                 }
-                return Some(bounds);
+                return Some(captured);
             }
             parent = node;
             parent_data = Cow::Owned(data.into_owned());

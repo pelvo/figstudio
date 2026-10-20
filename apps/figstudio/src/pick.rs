@@ -10,10 +10,13 @@ pub fn click(doc: &Document, chain: &[Guid], selected: Option<Guid>, deep: bool)
         if chain.contains(&selected) {
             return Some(selected);
         }
-        if let Some(parent) = doc.node(selected).and_then(|n| n.parent)
-            && let Some(index) = chain.iter().position(|id| *id == parent)
-        {
-            return chain.get(index + 1).copied().or(Some(parent));
+        let mut ancestor = doc.node(selected).and_then(|n| n.parent);
+        for _ in 0..128 {
+            let Some(parent) = ancestor else { break };
+            if let Some(index) = chain.iter().position(|id| *id == parent) {
+                return chain.get(index + 1).copied().or(Some(parent));
+            }
+            ancestor = doc.node(parent).and_then(|n| n.parent);
         }
     }
     let first = *chain.first()?;

@@ -54,6 +54,8 @@ pub struct Tab {
     /// Fit this node into view on the next canvas frame (`reveal_node` from an agent).
     pub fit_node: Option<Guid>,
     pub selection: Option<Guid>,
+    /// Inner canvas target; panels and MCP retain the outermost instance selection.
+    pub inner: Option<figstudio_fig::resolve::InstancePath>,
     pub text_select: Option<crate::text_select::Selection>,
     pub hover: Option<Guid>,
     pub expanded: HashSet<Guid>,
@@ -122,6 +124,7 @@ impl Tab {
             fit_pending: true,
             fit_node: None,
             selection: None,
+            inner: None,
             text_select: None,
             hover: None,
             expanded: HashSet::new(),
@@ -200,6 +203,7 @@ impl Tab {
         if self.page != page {
             self.page = page;
             self.selection = None;
+            self.inner = None;
             self.text_select = None;
             self.hover = None;
             self.fit_pending = true;
@@ -215,59 +219,5 @@ impl Tab {
             self.select(Some(node));
             self.fit_node = Some(node);
         }
-    }
-
-    /// Copy the active range, or the layer's characters outside text mode.
-    pub fn selected_text(&self) -> Option<&str> {
-        let id = self.selection?;
-        let text = crate::copy::text(self.doc.node(id)?)?;
-        let text = self.text_select.filter(|s| s.node == id).map_or(text, |s| {
-            crate::text_select::range_text(text, s.anchor, s.head)
-        });
-        (!text.is_empty()).then_some(text)
-    }
-
-    pub fn select_all_text(&mut self) {
-        if let Some(selection) = &mut self.text_select
-            && let Some(node) = self.doc.node(selection.node)
-        {
-            selection.anchor = 0;
-            selection.head = crate::text_select::characters(&node.data).len();
-        }
-    }
-
-    pub fn select_relative(&mut self, down: bool) {
-        let Some(selected) = self.selection else {
-            return;
-        };
-        let next = if down {
-            crate::pick::child(&self.doc, selected)
-        } else {
-            crate::pick::parent(&self.doc, self.page, selected)
-        };
-        if let Some(next) = next {
-            self.select(Some(next));
-        }
-    }
-
-    /// Selects a node, switching page if needed and expanding its ancestors in the Layers tree.
-    pub fn select(&mut self, id: Option<Guid>) {
-        if self.selection != id {
-            self.text_select = None;
-        }
-        self.selection = id;
-        let Some(id) = id else { return };
-        if let Some(page) = self.doc.page_of(id)
-            && page != self.page
-        {
-            self.page = page;
-            self.fit_pending = true;
-        }
-        let mut cur = self.doc.node(id).and_then(|n| n.parent);
-        while let Some(p) = cur {
-            self.expanded.insert(p);
-            cur = self.doc.node(p).and_then(|n| n.parent);
-        }
-        self.reveal = Some(id);
     }
 }

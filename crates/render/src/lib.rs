@@ -389,10 +389,35 @@ impl Renderer {
     /// The page-space box of the node at `path` as [`Renderer::render_path`] draws it; `None`
     /// when the path does not resolve or the node or an ancestor is hidden.
     pub fn path_bounds(&mut self, doc: &Document, path: &InstancePath) -> Option<Rect> {
+        self.inspect_path(doc, path, |transform, data, _| {
+            let (w, h) = size(data);
+            transformed_bounds(transform, Rect::new(0.0, 0.0, w, h))
+        })
+    }
+
+    /// Node-local to page transform and transient resolved data, including constraints and
+    /// uniform scale. Stale stored glyphs are removed, as they cannot locate the shown text.
+    /// Hidden or unresolvable paths return `None`; the writable document is never changed.
+    pub fn path_layout(&mut self, doc: &Document, path: &InstancePath) -> Option<(Affine, Val)> {
+        self.inspect_path(doc, path, |transform, data, stale| {
+            let mut data = data.clone();
+            if stale && let Val::Obj(fields) = &mut data {
+                fields.remove("derivedTextData");
+            }
+            (transform, data)
+        })
+    }
+
+    fn inspect_path<T>(
+        &mut self,
+        doc: &Document,
+        path: &InstancePath,
+        capture: impl FnOnce(Affine, &Val, bool) -> T,
+    ) -> Option<T> {
         let mut canvas = RenderContext::new_with(1, 1, RenderSettings::default());
         let screen = Rect::new(0.0, 0.0, 1.0, 1.0);
         let mut ctx = self.context(doc, &mut canvas, screen, MAX_RENDER_WORK, 0);
-        ctx.focus(path, Affine::IDENTITY, false)
+        ctx.focus(path, Affine::IDENTITY, false, capture)
     }
 
     // Span duration is the elapsed time (no `Instant`: this crate also builds for wasm).
@@ -523,7 +548,7 @@ impl Renderer {
         let root = match root {
             Target::Node(id) => id,
             Target::Path(path) => {
-                ctx.focus(path, transform, true);
+                ctx.focus(path, transform, true, |_, _, _| ());
                 ctx.stats.attempted_work = work.saturating_sub(ctx.work_left);
                 return (ctx.stats, ctx.wanted);
             }

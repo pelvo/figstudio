@@ -261,8 +261,16 @@ no snapshot images). `App::new` takes `eframe::CreationContext`, which kittest b
 wgpu state, so tiles render on the CPU path.
 
 ```sh
-cargo test -p figstudio ui_tests          # 48 tests, about 2 s
+cargo test -p figstudio ui_tests          # headless canvas and chrome behavior
 ```
+
+Selection cases live in `ui_pick_tests.rs`, `ui_pick_cousins.rs`, `ui_text_select_tests.rs`,
+`ui_inner_tests.rs`, `ui_inner_nested_tests.rs` and `ui_inner_hover_tests.rs`. They drive real
+pointer/key events,
+assert inner outlines in egui's output, and check clipboard commands rather than the OS
+clipboard. Synthetic nested definitions use only the public fixture schema. In the renderer,
+`tests/path_layout.rs` checks stale/fresh glyph provenance, unchanged writable data and
+resized/rotated nested layout against rendered pixels. `tests/hit_chain.rs` covers hit ancestry.
 
 How to write one: `harness()` returns a `Harness<App>` with the file loaded and fitted;
 `centre_of(&h, guid)` turns a node into a screen point; `right_click`, `drag`, `click_label`

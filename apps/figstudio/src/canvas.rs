@@ -164,15 +164,14 @@ pub fn show(
     } else if !response.hovered() {
         tab.hover = None;
     }
+    let point = cursor_page.map(|p| Point::new(f64::from(p.x), f64::from(p.y)));
+    let deep = ui.input(|i| i.modifiers.command);
+    let mut inner_changed = false;
     if response.clicked() && !panning {
         match tool {
             Tool::Select => {
-                let picked = if response.double_clicked() {
-                    crate::pick::deeper(&chain, tab.hover)
-                } else {
-                    tab.hover
-                };
-                tab.select(picked);
+                inner_changed =
+                    crate::canvas_pick::click(tab, &chain, point, deep, response.double_clicked());
             }
             Tool::Zoom => {
                 if let Some(p) = response.interact_pointer_pos() {
@@ -191,9 +190,15 @@ pub fn show(
     // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
     // canvas nothing is selected, so no menu opens. Any tool, as the spec says.
     if response.secondary_clicked() && !marquee::right_click(&response, tab, origin) {
-        tab.select(tab.hover);
+        crate::canvas_pick::click(tab, &chain, point, deep, false);
     }
-    text_input(&response, tab, origin, tool == Tool::Select && !panning);
+    crate::canvas_text::input(
+        &response,
+        tab,
+        origin,
+        tool == Tool::Select && !panning,
+        !inner_changed,
+    );
     marquee::update(
         ui,
         &response,
@@ -233,7 +238,21 @@ pub fn show(
     find_highlights(&painter, tab, origin, &labels);
     // Outlines fade in when they move to another layer.
     let ctx = ui.ctx().clone();
-    if let Some(h) = tab.hover.filter(|h| Some(*h) != tab.selection) {
+    let inner_hover = crate::canvas_pick::hover(tab, point, deep);
+    if let Some(path) = inner_hover
+        .as_ref()
+        .filter(|p| Some(*p) != tab.inner.as_ref())
+    {
+        crate::canvas_pick::outline(
+            &painter,
+            tab,
+            origin,
+            path,
+            Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.8)),
+        );
+    } else if inner_hover.is_none()
+        && let Some(h) = tab.hover.filter(|h| Some(*h) != tab.selection)
+    {
         let a = crate::anim::arrive(&ctx, egui::Id::new("hover-outline"), (tab.id, h), 0.12);
         outline(
             &painter,
@@ -250,15 +269,14 @@ pub fn show(
             (tab.id, sel),
             0.12,
         );
-        outline(
-            &painter,
-            tab,
-            origin,
-            sel,
-            Stroke::new(1.5, theme::ACCENT.gamma_multiply(a)),
-        );
+        let stroke = Stroke::new(1.5, theme::ACCENT.gamma_multiply(a));
+        if let Some(path) = &tab.inner {
+            crate::canvas_pick::outline(&painter, tab, origin, path, stroke);
+        } else {
+            outline(&painter, tab, origin, sel, stroke);
+        }
     }
-    text_overlay(&painter, tab, origin);
+    crate::canvas_text::overlay(&painter, tab, origin);
     marquee::paint(&painter, tab, origin);
     tab.view = target;
 
@@ -266,7 +284,11 @@ pub fn show(
         _ if panning => egui::CursorIcon::Grab,
         Tool::Zoom => egui::CursorIcon::ZoomIn,
         Tool::Hand => egui::CursorIcon::Grab,
-        Tool::Select if tab.text_select.is_some_and(|s| Some(s.node) == tab.hover) => {
+        Tool::Select
+            if tab.text_select.is_some()
+                && tab.selection == tab.hover
+                && (tab.inner.is_none() || inner_hover == tab.inner) =>
+        {
             egui::CursorIcon::Text
         }
         Tool::Select => egui::CursorIcon::Default,
@@ -279,97 +301,6 @@ pub fn show(
         });
     }
     cursor_page
-}
-
-fn text_input(response: &egui::Response, tab: &mut Tab, origin: Pos2, enabled: bool) {
-    if !enabled {
-        return;
-    }
-    let at = |tab: &Tab, id, pos: Pos2| {
-        let p = tab.view.to_page(origin, pos);
-        let tf = absolute_transform(&tab.doc, id);
-        if !tf.determinant().is_finite() || tf.determinant().abs() < f64::EPSILON {
-            return None;
-        }
-        let local = tf.inverse() * Point::new(f64::from(p.x), f64::from(p.y));
-        crate::text_select::char_at(&tab.doc.node(id)?.data, local.x, local.y).map(|(i, _)| i)
-    };
-    if response.clicked()
-        && let Some(selection) = tab.text_select
-        && let Some(index) = response
-            .interact_pointer_pos()
-            .and_then(|p| at(tab, selection.node, p))
-    {
-        tab.text_select = Some(crate::text_select::Selection {
-            anchor: index,
-            head: index,
-            ..selection
-        });
-    }
-    if response.double_clicked()
-        && let Some(id) = tab.selection
-        && let Some(node) = tab.doc.node(id)
-        && node.kind == "TEXT"
-    {
-        let index = response
-            .interact_pointer_pos()
-            .and_then(|p| at(tab, id, p))
-            .unwrap_or(0);
-        let head = if crate::text_select::range_rects(&node.data, 0, 0).is_none() {
-            crate::text_select::characters(&node.data).len()
-        } else {
-            index
-        };
-        tab.marquee.clear();
-        tab.text_select = Some(crate::text_select::Selection {
-            node: id,
-            anchor: index,
-            head,
-        });
-    }
-    if response.dragged_by(egui::PointerButton::Primary)
-        && let Some(selection) = tab.text_select
-        && let Some(index) = response
-            .interact_pointer_pos()
-            .and_then(|p| at(tab, selection.node, p))
-    {
-        tab.text_select = Some(crate::text_select::Selection {
-            head: index,
-            ..selection
-        });
-    }
-}
-
-fn text_overlay(painter: &egui::Painter, tab: &Tab, origin: Pos2) {
-    let Some(selection) = tab.text_select else {
-        return;
-    };
-    let Some(node) = tab.doc.node(selection.node) else {
-        return;
-    };
-    let rects = crate::text_select::range_rects(&node.data, selection.anchor, selection.head);
-    let quads = if let Some(rects) = rects {
-        let tf = absolute_transform(&tab.doc, selection.node);
-        rects
-            .into_iter()
-            .map(|r| {
-                [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)].map(|(x, y)| {
-                    let p = tf * Point::new(x, y);
-                    tab.view
-                        .to_screen(origin, Pos2::new(p.x as f32, p.y as f32))
-                })
-            })
-            .collect::<Vec<_>>()
-    } else {
-        corners(tab, origin, selection.node).into_iter().collect()
-    };
-    for quad in quads {
-        painter.add(egui::Shape::convex_polygon(
-            quad.to_vec(),
-            theme::ACCENT.gamma_multiply(0.25),
-            Stroke::NONE,
-        ));
-    }
 }
 
 /// The screen corners of a node's frame on the tab's page, following its rotation.

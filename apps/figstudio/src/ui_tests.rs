@@ -19,6 +19,16 @@ use crate::App;
 mod chrome;
 #[path = "ui_copy_tests.rs"]
 mod copy;
+#[path = "ui_pick_cousins.rs"]
+mod cousins;
+#[path = "ui_inner_tests.rs"]
+mod inner;
+#[path = "ui_inner_fixture.rs"]
+mod inner_fixture;
+#[path = "ui_inner_hover_tests.rs"]
+mod inner_hover;
+#[path = "ui_inner_nested_tests.rs"]
+mod inner_nested;
 #[path = "ui_pick_tests.rs"]
 mod pick;
 #[path = "ui_text_select_tests.rs"]

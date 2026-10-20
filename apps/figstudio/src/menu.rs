@@ -229,11 +229,7 @@ impl App {
                 if let Some(tab) = self.tabs.get_mut(self.active)
                     && let Some(text) = tab.selected_text()
                 {
-                    tab.pending_copy = Some(crate::copy::Item::text(
-                        "Copy text",
-                        "text",
-                        text.to_owned(),
-                    ));
+                    tab.pending_copy = Some(crate::copy::Item::text("Copy text", "text", text));
                 }
             }
             Action::SelectChild | Action::SelectParent => {

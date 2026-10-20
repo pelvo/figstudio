@@ -2,6 +2,8 @@
 
 mod anim;
 mod canvas;
+mod canvas_pick;
+mod canvas_text;
 mod chrome;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod cjk;
@@ -21,6 +23,7 @@ mod gpu_tiles;
 #[cfg(target_arch = "wasm32")]
 mod gpu_tiles_web;
 mod icons;
+mod instance_pick;
 mod keymap;
 mod labels;
 mod link_open;
@@ -66,6 +69,7 @@ mod spaces;
 mod state;
 mod swipe;
 mod tab;
+mod tab_selection;
 mod text_select;
 mod theme;
 mod tile_cache;

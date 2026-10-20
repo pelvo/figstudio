@@ -9,7 +9,7 @@ pub const NEST: Guid = Guid(99, 4);
 pub const TEXT: Guid = Guid(99, 5);
 pub const SIBLING: Guid = Guid(99, 6);
 
-fn object(fields: &[(&str, Val)]) -> Val {
+pub(super) fn object(fields: &[(&str, Val)]) -> Val {
     Val::Obj(fields.iter().fold(Obj::new(), |mut o, (key, value)| {
         o.insert(key, value.clone());
         o
