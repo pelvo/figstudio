@@ -150,9 +150,11 @@ impl Default for McpHost {
 impl McpHost {
     /// Start of each frame: apply what the bridge sent. Returns a message for a toast.
     pub fn frame(&mut self, tabs: &mut [Tab], active: &mut usize) -> Option<String> {
-        // Before the menu draws: a probe answer that arrived since the last frame applies
-        // now, so the menu never shows Cloud relay controls on an origin without it.
-        self.want_connect |= self.settle_cloud(false).connect;
+        // Before the menu draws: an origin the probe just ruled out leaves Cloud relay now,
+        // so the menu never shows cloud controls there.
+        let cloud_mode = self.relay && self.proxy.is_none();
+        let step = self.cloud_gate.before_menu(self.cloud.get(), cloud_mode);
+        self.apply_cloud(step);
         let mut toast = self.notices.pop();
         while let Ok(done) = self.rpc.rx.try_recv() {
             use crate::mcp_relay::Done;
@@ -426,6 +428,12 @@ impl McpHost {
     fn settle_cloud(&mut self, asked: bool) -> CloudStep {
         let cloud_mode = self.relay && self.proxy.is_none();
         let step = self.cloud_gate.step(self.cloud.get(), cloud_mode, asked);
+        self.apply_cloud(step);
+        step
+    }
+
+    /// Leave Cloud relay on an origin without the Worker, and queue the step's toast.
+    fn apply_cloud(&mut self, step: CloudStep) {
         if step.leave {
             self.relay = false;
             if self.conn.is_some() {
@@ -433,7 +441,6 @@ impl McpHost {
             }
         }
         self.notices.extend(step.notice.map(str::to_owned));
-        step
     }
 
     fn connect(&mut self, ctx: &egui::Context) -> Result<(), String> {

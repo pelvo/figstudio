@@ -234,20 +234,34 @@ pub(super) async fn probe() -> CloudRelay {
         return CloudRelay::from_probe(None, None);
     };
     // Past the deadline the race settles with `undefined`, which is not a Response: the
-    // same failed request as a thrown fetch.
+    // same failed request as a thrown fetch. The timer is always cleared, and a request
+    // the deadline beat is aborted, so Connects on a black-holed server never pile up
+    // open GETs.
+    let abort = web_sys::AbortController::new().ok();
+    let init = web_sys::RequestInit::new();
+    init.set_signal(abort.as_ref().map(|abort| abort.signal()).as_ref());
+    let mut timer = None;
     let deadline = js_sys::Promise::new(&mut |resolve, _| {
-        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-            resolve.unchecked_ref(),
-            RELAY_PROBE_TIMEOUT_MS,
-        );
+        timer = window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                resolve.unchecked_ref(),
+                RELAY_PROBE_TIMEOUT_MS,
+            )
+            .ok();
     });
-    let fetch = window.fetch_with_str(RELAY_PROBE_PATH);
+    let fetch = window.fetch_with_str_and_init(RELAY_PROBE_PATH, &init);
     let race = js_sys::Promise::race(&js_sys::Array::of2(&fetch, &deadline));
     let answer = wasm_bindgen_futures::JsFuture::from(race)
         .await
         .ok()
         .and_then(|value| value.dyn_into::<web_sys::Response>().ok());
+    if let Some(timer) = timer {
+        window.clear_timeout_with_handle(timer);
+    }
     let Some(response) = answer else {
+        if let Some(abort) = &abort {
+            abort.abort();
+        }
         return CloudRelay::from_probe(None, None);
     };
     let header = response.headers().get(RELAY_PROBE_HEADER).ok().flatten();

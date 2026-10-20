@@ -226,8 +226,9 @@ pub(crate) fn valid_room(room: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// Same-origin path the page asks once per load to learn whether its origin runs the
-/// cloud relay Worker (`web/worker.mjs`). Root-relative, like the `/bridge/` socket URL.
+/// Same-origin path the page asks once per load (and again on a Connect after a failed
+/// probe) to learn whether its origin runs the cloud relay Worker (`web/worker.mjs`).
+/// Root-relative, like the `/bridge/` socket URL.
 pub(crate) const RELAY_PROBE_PATH: &str = "/mcp/";
 /// Header only the relay Worker sets on its probe answer, and the one value it sets.
 pub(crate) const RELAY_PROBE_HEADER: &str = "figstudio-relay";
@@ -349,6 +350,17 @@ impl CloudGate {
             }
         }
         step
+    }
+
+    /// The part of [`Self::step`] that applies before the menu draws: an origin known to
+    /// lack the relay leaves Cloud relay. A waiting connect is released only by `step`,
+    /// after the menu, so switching to Local bridge in that frame still cancels it.
+    pub(crate) fn before_menu(&mut self, relay: CloudRelay, cloud_mode: bool) -> CloudStep {
+        if relay == CloudRelay::Absent {
+            self.step(relay, cloud_mode, false)
+        } else {
+            CloudStep::default()
+        }
     }
 
     /// A Cloud relay connect is waiting for the probe.

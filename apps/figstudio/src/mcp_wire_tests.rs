@@ -255,6 +255,35 @@ fn a_failed_probe_is_asked_again_on_the_next_connect_never_in_a_loop() {
 }
 
 #[test]
+fn a_mode_switch_in_the_frame_the_probe_answers_still_cancels_the_waiting_connect() {
+    // Frame start (before the menu) only applies an Absent answer; it never releases a
+    // connect, so Local bridge picked in this frame's menu cannot open the upload bridge.
+    let mut gate = CloudGate::page_load(true);
+    assert_eq!(
+        gate.before_menu(CloudRelay::Available, true),
+        CloudStep::default()
+    );
+    assert!(gate.waiting());
+    assert_eq!(
+        gate.step(CloudRelay::Available, false, false),
+        CloudStep::default()
+    );
+    // Without the switch, `sync` releases it in the same frame.
+    let mut gate = CloudGate::page_load(true);
+    gate.before_menu(CloudRelay::Available, true);
+    assert!(gate.step(CloudRelay::Available, true, false).connect);
+    // An Absent answer leaves Cloud relay before the menu draws.
+    let mut gate = CloudGate::page_load(true);
+    assert_eq!(
+        gate.before_menu(CloudRelay::Absent, true),
+        CloudStep {
+            leave: true,
+            ..CloudStep::default()
+        }
+    );
+}
+
+#[test]
 fn leaving_cloud_relay_drops_a_connect_still_waiting_for_the_probe() {
     let mut gate = CloudGate::default();
     gate.step(CloudRelay::Unknown, true, true);
