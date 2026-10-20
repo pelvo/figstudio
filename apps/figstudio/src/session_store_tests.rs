@@ -67,7 +67,15 @@ fn workspace_corruption_is_isolated_from_other_preferences_and_kept_for_repair()
     let mut app = App::with_workspace_store(&cc, Vec::new(), Store::at(path.clone()));
     assert!(!app.show_left && !app.prefs.frame_labels);
     assert_eq!(app.prefs.renderer, crate::settings::Renderer::Cpu);
-    assert!(app.workspace_store.take_problem().is_some());
+    let warning = app.workspace_store.take_problem().expect("read warning");
+    assert!(
+        warning.contains("Workspace changes will not be saved until"),
+        "warning must explain that workspace edits will not persist: {warning}"
+    );
+    assert!(
+        warning.contains("repair") && warning.contains("restart the app"),
+        "warning must explain repair and restart: {warning}"
+    );
     app.save(&mut memory);
     assert_eq!(
         std::fs::read(&path).expect("original damaged file"),
@@ -76,6 +84,16 @@ fn workspace_corruption_is_isolated_from_other_preferences_and_kept_for_repair()
     let saved: crate::UiState =
         eframe::get_value(&memory, crate::UI_STATE_KEY).expect("unrelated preferences still save");
     assert!(!saved.show_left && !saved.prefs.frame_labels);
+    std::fs::remove_file(&path).expect("repair by removing damaged metadata");
+    app.save(&mut memory);
+    assert!(
+        !path.exists(),
+        "this process must not resume private writes"
+    );
+    let mut restarted = Store::at(path.clone());
+    restarted.read(Some(&memory));
+    restarted.save(&Session::default());
+    assert!(path.is_file(), "a fresh store can save after repair");
 }
 
 #[test]

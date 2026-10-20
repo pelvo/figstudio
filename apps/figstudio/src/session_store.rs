@@ -52,7 +52,7 @@ impl Store {
                 }
                 Ok(None) => {}
                 Err(_) => {
-                    self.problem = Some("Saved workspace could not be read; other settings are unchanged. The original file was kept for repair.".to_owned());
+                    self.problem = Some("Saved workspace is unreadable. The original file was kept; other settings still save. Workspace changes will not be saved until you repair the file and restart the app.".to_owned());
                     self.path = None;
                 }
             }

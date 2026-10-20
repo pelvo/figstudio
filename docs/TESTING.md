@@ -318,6 +318,12 @@ unrelated preferences to update. The alias test checks manual focus, automatic s
 an early save and a later completion. All three tests failed at their intended assertions
 before the fixes. The deterministic write-failure setup is Unix-only.
 
+The corruption test also requires the warning to explain that workspace edits will not be
+saved until repair and restart. Removing damaged metadata does not re-enable writes in the
+same store; a fresh store can save after repair. The alias test includes selecting a third
+tab after either a manual or automatic alias completes while the saved target is still
+loading, and checks early-save focus and focus after that target finishes.
+
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
 

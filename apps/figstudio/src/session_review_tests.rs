@@ -75,7 +75,8 @@ fn workspace_re_review_manual_alias_keeps_focus_while_automatic_alias_preserves_
     let doc = Arc::clone(&h.state().tabs[0].doc);
     let paths = ["chosen.fig", "interim.fig", "target.fig"].map(PathBuf::from);
     let alias = PathBuf::from("alias.fig");
-    for manual in [true, false] {
+    let third = PathBuf::from("other.fig");
+    for (manual, select_third) in [(true, false), (false, false), (true, true), (false, true)] {
         let ctx = egui::Context::default();
         let cc = eframe::CreationContext::_new_kittest(ctx.clone());
         let mut app = App::new(&cc, Vec::new());
@@ -95,6 +96,14 @@ fn workspace_re_review_manual_alias_keeps_focus_while_automatic_alias_preserves_
             Some(absolute(expected)),
             "early save after alias completion"
         );
+        let expected = if select_third {
+            app.tabs.push(tab(40, &third, &doc));
+            app.active = app.tabs.len() - 1;
+            assert_eq!(Session::capture(&app).active, Some(absolute(&third)));
+            &third
+        } else {
+            expected
+        };
         let previous = app.tabs.get(app.active).map(|t| t.id);
         app.loading.finish(&paths[2]);
         app.tabs.push(tab(30, &paths[2], &doc));
@@ -104,7 +113,11 @@ fn workspace_re_review_manual_alias_keeps_focus_while_automatic_alias_preserves_
             &app.tabs[app.active].path, expected,
             "focus after remaining restore completes"
         );
-        assert_eq!(app.tabs.len(), 3, "alias must not create a duplicate");
+        assert_eq!(
+            app.tabs.len(),
+            if select_third { 4 } else { 3 },
+            "alias must not create a duplicate"
+        );
     }
 }
 
