@@ -908,10 +908,11 @@ and git-ignored). `web/index.html` loads the module, starts the Rayon pool
 - **JavaScript objects stay on the main thread.** A worker that needs bytes of a lazily
   opened file sends a request (`web::WebSource`) and polls for the answer; the main thread
   reads the slice asynchronously in `Inbox::serve_ranges`, called every frame.
-- No installed fonts: text without stored glyph outlines is not drawn (counted). egui's
-  built-in fonts are Latin only, so when a file's name, page or layer names or text contain
+- No installed fonts: text without stored glyph outlines and stored emoji markers are not
+  drawn on the browser canvas (counted). egui's built-in faces have limited non-Latin coverage,
+  so when a file's name, page or layer names or text contain
   CJK (`theme::cjk_need`, checked on the worker that opens it) the app fetches
-  `fonts/cjk-<variant>.otf` and adds it as the last fallback (`theme::add_cjk_font`).
+  `fonts/cjk-<variant>.otf` and adds it after bundled faces (`theme::add_cjk_font`).
   View → CJK font selects JP, SC, TC, HK or KR, remembered in localStorage under
   `figstudio.cjk_font`; the initial choice follows the browser language (otherwise JP).
   Switching after first need fetches and replaces the fallback; stale selections are ignored.
@@ -930,6 +931,18 @@ and git-ignored). `web/index.html` loads the module, starts the Rayon pool
   deployed again. Each variant is cached under `${CARGO_TARGET_DIR:-target}/web-font`.
   Without Noto CJK or fontTools the build fails (a deploy without the fonts shows CJK as
   boxes); `FIGSTUDIO_ALLOW_MISSING_CJK=1` opts out for a local dev build.
+  For file, page and layer names, `symbols::Loader` checks symbol/emoji blocks against the
+  loaded egui faces and fetches `symbols.ttf`, `symbols2.ttf`, `math.ttf` and `emoji.ttf`
+  only for a missing glyph. The group is validated as bounded outline fonts, installed after
+  CJK in all three UI families and retained across CJK switches. CJK and symbol results
+  received together are installed on separate frames because `set_fonts` takes effect on
+  the next frame. Failures produce a toast, not a panic; no retry until reload.
+  `web-symbol-font.py`, invoked by `web-font.sh`, subsets installed Noto Sans Symbols,
+  Symbols 2, Math and monochrome Noto Emoji. It instantiates variable defaults, removes
+  shaping/hinting, checks exact scalar coverage and rejects bitmap/colour tables.
+  It emits a full OFL notice with source copyright metadata. The four font-path overrides
+  and `FIGSTUDIO_ALLOW_MISSING_SYMBOLS=1` are documented in the README. This group is
+  UI-only and does not clear browser canvas `emoji_skipped` counts.
   The desktop app uses an installed CJK font
   (`theme::install_fonts`).
 

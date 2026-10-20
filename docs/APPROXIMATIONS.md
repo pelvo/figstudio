@@ -118,7 +118,10 @@ across tiles. As with other render counters, work-budget truncation makes totals
 
 **Exact fix:** shape complete emoji sequences and support the native colour-outline formats;
 provide a browser canvas colour font/decoder. UI-only monochrome fallback does not clear
-these canvas counters. Cross-platform colour faces and real COLR fonts remain to be checked.
+these canvas counters. Browser UI names now get four lazy monochrome outline subsets,
+validated before installation and kept after CJK fallbacks; their combined size is 1,705,404
+bytes for the checked source fonts. Cross-platform colour faces and real COLR fonts remain
+to be checked.
 
 ## Plan
 

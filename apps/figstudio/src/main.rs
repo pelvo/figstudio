@@ -87,6 +87,8 @@ mod space_editor;
 mod spaces;
 mod state;
 mod swipe;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod symbols;
 mod tab;
 mod tab_selection;
 mod text_select;
@@ -759,6 +761,10 @@ impl App {
                             self.web.load_cjk_font(ctx);
                         }
                     }
+                    #[cfg(target_arch = "wasm32")]
+                    self.web
+                        .symbols
+                        .load_if_needed(ctx, &doc, &path.to_string_lossy());
                     #[cfg(not(target_arch = "wasm32"))]
                     let _ = cjk;
                     if self.reuse_loaded_file(ctx, &path, real_path.as_deref()) {
@@ -888,6 +894,7 @@ impl App {
     #[cfg(target_arch = "wasm32")]
     fn poll_web(&mut self, ctx: &egui::Context) {
         self.web.serve_ranges(ctx);
+        let mut cjk_updated = false;
         while let Ok((variant, font)) = self.web.fonts.try_recv() {
             if variant != self.web.font_variant() {
                 continue;
@@ -895,6 +902,7 @@ impl App {
             match font {
                 Ok(bytes) => {
                     theme::add_cjk_font(ctx, bytes);
+                    cjk_updated = true;
                     self.web.font_state = web::FontState::Loaded;
                 }
                 Err(e) => {
@@ -909,6 +917,17 @@ impl App {
                     );
                 }
             }
+        }
+        // set_fonts applies next frame; don't overwrite a pending CJK update with old definitions.
+        if !cjk_updated && let Some(error) = self.web.symbols.poll(ctx) {
+            self.toast(
+                ctx,
+                format!(
+                    "Could not load symbol fonts: {}",
+                    figstudio_fig::one_line(error.as_ref())
+                ),
+                true,
+            );
         }
         while let Ok(picked) = self.web.files.try_recv() {
             match picked {

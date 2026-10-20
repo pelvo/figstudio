@@ -189,7 +189,18 @@ node --test web/worker/*.test.mjs
 - Desktop text rendering uses installed system fonts via `fontdb` (`system-fonts`). For the
   browser build, `scripts/web-font.sh` subsets Noto Sans CJK Regular (SIL Open Font License
   1.1) at build time into `web/dist/fonts/` (`cjk-{jp,sc,tc,hk,kr}.otf` and
-  `cjk-LICENSE.txt`).
+  `cjk-LICENSE.txt`). It also builds four UI-only monochrome fallbacks from Noto Sans
+  Symbols, Noto Sans Symbols 2, Noto Sans Math and **Noto Emoji** (not Noto Color Emoji):
+  `symbols.ttf`, `symbols2.ttf`, `math.ttf`, `emoji.ttf` plus `symbols-LICENSE.txt` (OFL 1.1).
+  Install these families before a web build; the outline Noto Emoji font is available from
+  [Google Fonts](https://github.com/google/fonts/tree/main/ofl/notoemoji). Override individual
+  sources with `FIGSTUDIO_SYMBOLS_FONT`, `FIGSTUDIO_SYMBOLS2_FONT`, `FIGSTUDIO_MATH_FONT`
+  or `FIGSTUDIO_EMOJI_FONT`. `FIGSTUDIO_ALLOW_MISSING_SYMBOLS=1` explicitly permits a local
+  build without the symbol group; missing sources otherwise fail the build. The app fetches
+  this group only when a file/page/layer name contains a symbol the active UI faces lack.
+  Fonts are appended after CJK in every UI family. This does not enable browser canvas emoji:
+  those remain skipped and counted. Subset output preserves every source scalar in the
+  requested symbol/emoji blocks; fontTools validates coverage and monochrome outlines.
 
 ---
 

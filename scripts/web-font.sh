@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Subset the five Noto Sans CJK Regular variants for the browser's lazy fallback.
-# Usage: scripts/web-font.sh <out-dir> (cjk-{jp,sc,tc,hk,kr}.otf + cjk-LICENSE.txt).
+# Subset CJK, symbol and monochrome emoji faces for the browser's lazy UI fallbacks.
+# Usage: scripts/web-font.sh <out-dir> (cjk-*.otf, symbols{,2}.ttf, math.ttf, emoji.ttf, licences).
 # Needs fontTools (pyftsubset) and Noto Sans CJK (Debian: fonts-noto-cjk;
 # Arch: noto-fonts-cjk; macOS: brew install --cask font-noto-sans-cjk).
 # FIGSTUDIO_CJK_FONT overrides the collection path: NotoSansCJK-Regular.ttc
@@ -9,6 +9,9 @@
 # source fails the build instead of shipping one face under five names.
 # Missing font or tool fails the build (a deploy without these fonts shows CJK
 # names as boxes); FIGSTUDIO_ALLOW_MISSING_CJK=1 opts out for a local dev build.
+# Symbol sources: Noto Sans Symbols, Symbols 2, Math and outline-only Noto Emoji.
+# scripts/web-symbol-font.py supports FIGSTUDIO_{SYMBOLS,SYMBOLS2,MATH,EMOJI}_FONT overrides
+# and FIGSTUDIO_ALLOW_MISSING_SYMBOLS=1 for a local build without the symbol group.
 # Cache: $CARGO_TARGET_DIR/web-font.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -32,6 +35,7 @@ fi
 # fontTools' own Python (pyftsubset may be a pipx/uv tool, not the system python3).
 py=$(sed -n '1s/^#! *//p' "$subset" 2>/dev/null || true)
 if [ -z "$py" ] || ! "$py" -c 'import fontTools' 2>/dev/null; then py=python3; fi
+"$py" scripts/web-symbol-font.py "$out"
 if [ ! -f "$src" ] || [ -z "$subset" ]; then
   if [ "${FIGSTUDIO_ALLOW_MISSING_CJK:-0}" = "1" ]; then
     echo "web-font: no Noto Sans CJK or no pyftsubset; CJK names will show as boxes" \

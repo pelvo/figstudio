@@ -502,6 +502,31 @@ regression over 20% needs a reason in the commit message. Do not commit stress f
 
 ### Browser
 
+Symbol/emoji fallback checks: `cargo test --profile fast -p figstudio symbols::tests` covers
+range detection, already-covered glyphs, corrupt fonts and both CJK/symbol installation
+orders. `scripts/web-font.sh <output-dir>` validates exact scalar coverage against each
+source and rejects bitmap/colour tables. Source overrides pointing at missing fonts fail;
+`FIGSTUDIO_ALLOW_MISSING_SYMBOLS=1` explicitly permits a local build without the group.
+
+The existing Playwright harness has a standalone font smoke test (no relay needed): build
+with `scripts/web-build.sh`, serve with `python3 scripts/web-serve.py web/dist 8765`, then
+`cd web/e2e && npm install --no-package-lock && npx playwright test symbols.spec.mjs`.
+It uses the public corners fixture with a synthetic filename, checks no startup font
+requests, then the four successful lazy fetches and no app panic, and writes a JPEG for
+visual inspection. Wait for egui's textbox and initial frames before sending Open: the
+HTML loading message clears before the app's handlers are installed.
+
+Canvas emoji checks: `cargo test --profile fast -p figstudio-render --features gpu emoji`
+runs synthetic sbix colour/strike/limit tests, empty-database and monochrome fallback,
+opacity, parent clipping and recording/GPU-refusal assertions. Add `--test emoji
+-- --include-ignored` to explicitly check an installed colour face. The ignored test is
+supplementary: synthetic colour-font tests run on fontless CI too. The no-default-features
+integration test proves the browser-style skip/no-box behavior. For negative controls,
+remove the marker filter (square/mixed-run regression), disable strike-neighbour selection
+(nearest-strike assertion), or remove image dimension limits (oversized PNG assertion).
+Restore each control before running the gate.
+
+
 `scripts/web-build.sh --serve` serves `web/dist` on http://127.0.0.1:8765 with the headers
 threads need. In a browser: the console shows no errors, `crossOriginIsolated` is true, drop
 a fixture on the page, and the status pill shows layers drawn and the render time. Compare
