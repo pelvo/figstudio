@@ -298,20 +298,108 @@ fn a_file_opens_with_the_style_saved_for_it() {
     );
 }
 
-#[derive(Default)]
-struct Memory(std::collections::HashMap<String, String>);
+#[test]
+fn workspace_malformed_legacy_payload_cannot_reset_other_preferences() {
+    let mut memory = Memory::default();
+    memory.0.insert(crate::UI_STATE_KEY.to_owned(), "(show_left:false,show_right:true,pages_share:0.3,prefs:(renderer:Cpu,frame_labels:false),workspace:\"invalid\")".to_owned());
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&memory);
+    let app = App::new(&cc, Vec::new());
+    assert!(
+        !app.show_left && !app.prefs.frame_labels,
+        "workspace decoding must not discard unrelated settings"
+    );
+    assert_eq!(app.prefs.renderer, crate::settings::Renderer::Cpu);
+}
 
-impl eframe::Storage for Memory {
-    fn get_string(&self, key: &str) -> Option<String> {
-        self.0.get(key).cloned()
-    }
-    fn set_string(&mut self, key: &str, value: String) {
-        self.0.insert(key.to_owned(), value);
-    }
-    fn remove_string(&mut self, key: &str) {
-        self.0.remove(key);
-    }
-    fn flush(&mut self) {}
+#[test]
+fn workspace_paths_are_not_written_into_eframe_preferences() {
+    use eframe::App as _;
+    let mut h = harness();
+    let mut memory = Memory::default();
+    h.state_mut().save(&mut memory);
+    assert!(
+        memory
+            .0
+            .values()
+            .all(|value| !value.contains("structure.fig")),
+        "file paths must not enter the non-private preferences store"
+    );
+}
+
+#[test]
+fn workspace_startup_bounds_decode_concurrency_and_retains_the_queue() {
+    let dir = tempfile::tempdir().expect("workspace folder");
+    let paths: Vec<_> = (0..5)
+        .map(|i| {
+            let path = dir.path().join(format!("copy-{i}.fig"));
+            std::fs::copy(fixture("structure.fig"), &path).expect("public fixture");
+            path
+        })
+        .collect();
+    let mut h = Harness::builder().with_size(SIZE).build_eframe(|cc| {
+        let app = App::new(cc, paths);
+        assert!(
+            app.loading.len() <= 4,
+            "startup must not spawn one decoder for every saved path"
+        );
+        let snapshot =
+            serde_json::to_value(crate::session::Session::capture(&app)).expect("snapshot");
+        assert_eq!(
+            snapshot["files"].as_array().expect("files").len(),
+            5,
+            "queued restores survive a save before decoding finishes"
+        );
+        app
+    });
+    wait(&mut h, &mut Vec::new(), "all queued files", |a| {
+        a.tabs.len() == 5 && a.loading.len() == 0
+    });
+}
+
+#[test]
+fn workspace_resolved_parent_aliases_open_only_one_space() {
+    let dir = tempfile::tempdir().expect("workspace folder");
+    std::fs::create_dir(dir.path().join("nested")).expect("nested folder");
+    let path = dir.path().join("design.fig");
+    std::fs::copy(fixture("structure.fig"), &path).expect("public fixture");
+    let alias = dir.path().join("nested").join("..").join("design.fig");
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, vec![path, alias]));
+    wait(&mut h, &mut Vec::new(), "alias loads", |a| {
+        a.loading.len() == 0
+    });
+    assert_eq!(
+        h.state().tabs.len(),
+        1,
+        "worker-resolved identity prevents duplicate spaces"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_alias_deduplication_preserves_symlink_parent_semantics() {
+    let dir = tempfile::tempdir().expect("workspace folder");
+    let real = dir.path().join("real");
+    let inner = real.join("inner");
+    std::fs::create_dir_all(&inner).expect("real folder");
+    let path = real.join("design.fig");
+    std::fs::copy(fixture("structure.fig"), &path).expect("public fixture");
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&inner, &link).expect("directory symlink");
+    let alias = link.join("..").join("design.fig");
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, vec![path, alias]));
+    wait(&mut h, &mut Vec::new(), "symlink alias loads", |a| {
+        a.loading.len() == 0
+    });
+    assert_eq!(h.state().tabs.len(), 1);
+    assert!(
+        !h.state().toasts.iter().any(|t| t.error),
+        "do not lexically resolve a symlink's parent to the wrong file"
+    );
 }
 
 #[test]
@@ -319,9 +407,15 @@ fn desktop_workspace_restores_order_active_space_and_pending_files() {
     use crate::spaces::{Style, Symbol};
     use eframe::App as _;
 
-    let mut first = Harness::builder()
-        .with_size(SIZE)
-        .build_eframe(|cc| App::new(cc, vec![fixture("structure.fig"), fixture("vector.fig")]));
+    let dir = tempfile::tempdir().expect("private workspace folder");
+    let workspace = dir.path().join("workspace.json");
+    let mut first = Harness::builder().with_size(SIZE).build_eframe(|cc| {
+        App::with_workspace_store(
+            cc,
+            vec![fixture("structure.fig"), fixture("vector.fig")],
+            crate::session_store::Store::at(workspace.clone()),
+        )
+    });
     wait(&mut first, &mut Vec::new(), "both workspace files", |a| {
         a.tabs.len() == 2
     });
@@ -350,7 +444,11 @@ fn desktop_workspace_restores_order_active_space_and_pending_files() {
 
     let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
     cc.storage = Some(&saved);
-    let mut interrupted = App::new(&cc, Vec::new());
+    let mut interrupted = App::with_workspace_store(
+        &cc,
+        Vec::new(),
+        crate::session_store::Store::at(workspace.clone()),
+    );
     assert_eq!(
         interrupted.loading.len(),
         2,
@@ -363,7 +461,11 @@ fn desktop_workspace_restores_order_active_space_and_pending_files() {
     let mut reopened = Harness::builder().with_size(SIZE).build_eframe(|cc| {
         let mut saved_cc = eframe::CreationContext::_new_kittest(cc.egui_ctx.clone());
         saved_cc.storage = Some(&pending);
-        let mut app = App::new(&saved_cc, Vec::new());
+        let mut app = App::with_workspace_store(
+            &saved_cc,
+            Vec::new(),
+            crate::session_store::Store::at(workspace.clone()),
+        );
         app.spaces = spaces;
         app
     });
@@ -396,12 +498,17 @@ fn desktop_workspace_skips_missing_files_merges_startup_files_and_forgets_closed
     let dir = tempfile::tempdir().expect("workspace folder");
     let missing = dir.path().join("missing.fig");
     let kept = dir.path().join("kept.fig");
+    let workspace = dir.path().join("workspace.json");
     for path in [&missing, &kept] {
         std::fs::copy(fixture("structure.fig"), path).expect("public fixture copy");
     }
-    let mut first = Harness::builder()
-        .with_size(SIZE)
-        .build_eframe(|cc| App::new(cc, vec![missing.clone(), kept.clone()]));
+    let mut first = Harness::builder().with_size(SIZE).build_eframe(|cc| {
+        App::with_workspace_store(
+            cc,
+            vec![missing.clone(), kept.clone()],
+            crate::session_store::Store::at(workspace.clone()),
+        )
+    });
     wait(&mut first, &mut Vec::new(), "saved files", |a| {
         a.tabs.len() == 2
     });
@@ -412,7 +519,11 @@ fn desktop_workspace_skips_missing_files_merges_startup_files_and_forgets_closed
     let mut reopened = Harness::builder().with_size(SIZE).build_eframe(|cc| {
         let mut saved_cc = eframe::CreationContext::_new_kittest(cc.egui_ctx.clone());
         saved_cc.storage = Some(&saved);
-        let app = App::new(&saved_cc, vec![kept.clone(), extra.clone(), extra.clone()]);
+        let app = App::with_workspace_store(
+            &saved_cc,
+            vec![kept.clone(), extra.clone(), extra.clone()],
+            crate::session_store::Store::at(workspace.clone()),
+        );
         assert_eq!(
             app.loading.len(),
             3,
@@ -449,7 +560,11 @@ fn desktop_workspace_skips_missing_files_merges_startup_files_and_forgets_closed
     reopened.state_mut().save(&mut closed);
     let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
     cc.storage = Some(&closed);
-    let only_open = App::new(&cc, Vec::new());
+    let only_open = App::with_workspace_store(
+        &cc,
+        Vec::new(),
+        crate::session_store::Store::at(workspace.clone()),
+    );
     assert_eq!(only_open.loading.iter().collect::<Vec<_>>(), [&extra]);
 
     reopened.state_mut().close(0);
@@ -457,7 +572,9 @@ fn desktop_workspace_skips_missing_files_merges_startup_files_and_forgets_closed
     let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
     cc.storage = Some(&closed);
     assert_eq!(
-        App::new(&cc, Vec::new()).loading.len(),
+        App::with_workspace_store(&cc, Vec::new(), crate::session_store::Store::at(workspace))
+            .loading
+            .len(),
         0,
         "closing every space saves an empty workspace"
     );

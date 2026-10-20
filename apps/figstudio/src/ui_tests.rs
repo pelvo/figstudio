@@ -16,6 +16,22 @@ use figstudio_fig::Guid;
 
 use crate::App;
 
+#[derive(Debug, Default)]
+pub(crate) struct Memory(pub(crate) std::collections::HashMap<String, String>);
+
+impl eframe::Storage for Memory {
+    fn get_string(&self, key: &str) -> Option<String> {
+        self.0.get(key).cloned()
+    }
+    fn set_string(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
+    }
+    fn remove_string(&mut self, key: &str) {
+        self.0.remove(key);
+    }
+    fn flush(&mut self) {}
+}
+
 #[path = "ui_chrome_tests.rs"]
 mod chrome;
 #[path = "ui_copy_tests.rs"]

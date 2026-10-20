@@ -109,7 +109,8 @@ apps/figstudio-mcp/tests/  protocol tests (stdio.rs, http.rs, prompts.rs, files.
                          user doc
 apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   main.rs                App: shortcuts, panel layout, message polling, export
-  session.rs             desktop workspace file list, startup restore order and active space
+  session.rs             bounded desktop restore queue, canonical aliases and active-space intent
+  session_store.rs       private atomic workspace JSON, independent of eframe preferences
   chrome.rs              Arc-style chrome: window gradient, sidebar (window controls, command
                          field, pages, layers, file switcher), title strip, peeking sidebar,
                          canvas card with tool / status pills and the warning chip, toasts,
@@ -491,14 +492,21 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   General) resets it and opens the sheet. Tests start with it off (`!cfg!(test)`, like
   `spaces::Store::memory`) so the sheet does not cover every other test; the onboarding
   tests turn it on.
-- Desktop workspace (`session.rs`): `UiState.workspace` saves the open file paths and active
-  space alongside preferences. Startup reopens them on the existing workers; completion order
-  does not change the saved space order. Explicit startup files merge without duplicate paths
-  and take focus. Switching to another space while decoding keeps that focus. Pending restored files
-  survive an early save/quit; failed files are omitted from the next snapshot, and closing
-  spaces updates the saved list. Existing space styles still load through `spaces::Store`.
-  Only local session metadata is stored, never file contents or changes to the `.fig`.
-  Browser file restoration is unchanged; page, zoom and selection are not restored.
+- Desktop workspace (`session.rs`, `session_store.rs`): file paths and the active space live
+  in `<config>/figstudio/workspace.json`, not eframe's `app.ron`. The store reuses the private
+  atomic writer from `spaces.rs` (Unix mode 0600); read/parse errors leave the original file
+  for repair without resetting sidebar, keymap or agent preferences. Legacy embedded metadata
+  is imported independently and removed from eframe preferences on the first frame.
+  Metadata is capped at 4 MiB and 500 saved paths, retaining the selected file and announcing
+  skipped entries. Startup decodes at most four files concurrently; queued files survive an
+  early save/quit. Worker-resolved canonical paths deduplicate aliases without lexically
+  rewriting a symlink's `..`; completion order does not change the saved space order.
+  Explicit startup files merge and take focus. Switching spaces while loading keeps that
+  focus; closing an automatically selected interim tab does not cancel the saved target.
+  Failed active files record the displayed fallback. Closed spaces stay closed, and existing
+  styles still load through `spaces::Store`. Only local metadata is stored, never file
+  contents or changes to the `.fig`. Browser file restoration is unchanged; page, zoom and
+  selection are not restored.
 - **Settings** (`settings.rs`, ⌘, / the app menu on macOS / File → Settings… elsewhere / the
   command bar): a foreground window with Arc's tab row. Agent access (`mcp.menu`, `mcp.status`)
   and About live in it; View → Agent access… and Help → About open those tabs
@@ -630,8 +638,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 - **Threads.** `McpHost::start` spawns one thread named `mcp`. It runs a 2-worker tokio runtime,
   binds the first free of 127.0.0.1:3845 to :3855 (`bind_first`), and serves `serve_http` with
   `FigstudioServer::live`. The runtime ends with `shutdown_background`, so a stuck stdin or SSE
-  stream cannot block the app. A bind or runtime error comes back as an event, turns the toggle
-  off, and shows a toast.
+  stream cannot block the app. A plan, bind or runtime error stops the current attempt and
+  shows a toast without changing the requested on/off preference. A failure latch prevents
+  per-frame retries; off/on or the next app launch retries the retained request.
 - **Snapshot (app to server).** Each frame while running, `sync` builds a `Key` from the tab ids,
   the document pointers (`Arc<Document>`), page, selection and the viewport in whole units. It publishes a new
   `Arc<Snapshot>` only when the key changes. The server reads the snapshot under a lock held

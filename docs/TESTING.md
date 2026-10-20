@@ -285,6 +285,10 @@ that saved state contains neither endpoints nor tokens. Older preferences withou
 still load with access off. Prove these regressions by removing preference capture/restoration,
 and by removing `Prefs`' `#[serde(default)]` for the older-state case. These tests use in-memory
 eframe storage; real on-disk persistence across an OS app restart still needs a manual check.
+`mcp_host::tests::persistence` also saves after a failed bind and retries the retained access
+choice in a new app. Its credential test mints real remote bearer rules, starts a loopback-only
+test listener with those rules, and checks the actual token value is absent from every stored
+preference value. Injecting that token into storage must make the regression fail.
 
 `cargo test --profile fast -p figstudio workspace` covers desktop session save/reload, saved
 file order and active space, existing space styles, saving before restores finish, missing
@@ -295,6 +299,16 @@ selection wins. Both UI tests failed without restoration; removing `Restore::fin
 Use an isolated `CARGO_TARGET_DIR` if worktrees share a build cache, and confirm the named
 new tests actually appear in the output. Actual OS quit/relaunch and browser file retention
 remain manual checks; this feature changes desktop file reopening only.
+
+Workspace tests now use an explicit temporary private store, not embedded file paths in the
+eframe fixture. Coverage includes Unix 0600 permissions on new/replaced files, atomic-writer
+reuse, malformed/oversized metadata preserving other preferences and the original file,
+legacy import and path removal, 500 saved paths retaining the active file, four concurrent
+startup decodes with a retained queue, parent/symlink alias deduplication, interim-tab closure,
+and a failed active file's displayed fallback. Privacy/focus/alias/concurrency regressions
+failed before the fixes. Replacing the private writer with `std::fs::write`, disabling the
+saved-file limit, or persisting the live token must fail their dedicated tests. Always restore
+these mutations before running the full gate or committing.
 
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.

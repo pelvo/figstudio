@@ -1,9 +1,13 @@
-//! Desktop workspace persistence. Documents still open on workers; no file contents are saved.
+//! Desktop workspace restoration; documents open on bounded workers, metadata stays private.
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{App, tab::Tab};
+
+pub(crate) const MAX_SAVED_FILES: usize = 500;
+const MAX_LOADING: usize = 4;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -15,7 +19,8 @@ pub(crate) struct Session {
 #[derive(Debug)]
 pub(crate) struct Restore {
     session: Session,
-    /// Distinguishes our automatic focus from a space selected while files were loading.
+    waiting: VecDeque<PathBuf>,
+    /// Distinguishes automatic focus from a different space selected while loading.
     last_active: Option<u64>,
 }
 
@@ -24,6 +29,24 @@ fn absolute(path: &Path) -> PathBuf {
 }
 
 impl Session {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// Bounds stored metadata, retaining the selected file if it was beyond the cap.
+    pub(crate) fn limit(&mut self) -> usize {
+        let before = self.files.len();
+        self.active = self.active.take().filter(|p| self.files.contains(p));
+        self.files.truncate(MAX_SAVED_FILES);
+        if let Some(active) = &self.active
+            && !self.files.contains(active)
+        {
+            self.files.pop();
+            self.files.push(active.clone());
+        }
+        before.saturating_sub(self.files.len())
+    }
+
     fn push(&mut self, path: &Path) {
         let path = absolute(path);
         if !self.files.contains(&path) {
@@ -37,7 +60,9 @@ impl Session {
         let mut active = current.map(|t| t.path.clone());
         if let Some(restore) = &app.restoring {
             for path in &restore.session.files {
-                if app.tabs.iter().any(|t| t.path == *path) || app.loading.iter().any(|p| p == path)
+                if app.tabs.iter().any(|t| t.path == *path)
+                    || app.loading.iter().any(|p| p == path)
+                    || restore.waiting.contains(path)
                 {
                     session.push(path);
                 }
@@ -51,12 +76,50 @@ impl Session {
         }
         session.active = active
             .map(|p| absolute(&p))
-            .filter(|p| session.files.contains(p));
+            .filter(|p| session.files.contains(p))
+            .or_else(|| {
+                current
+                    .map(|t| absolute(&t.path))
+                    .filter(|p| session.files.contains(p))
+            });
         session
     }
 }
 
 impl Restore {
+    fn new(session: Session) -> Self {
+        Self {
+            waiting: session.files.iter().cloned().collect(),
+            session,
+            last_active: None,
+        }
+    }
+
+    fn alias(&mut self, from: &Path, to: &Path) {
+        let files = std::mem::take(&mut self.session.files);
+        for path in files {
+            let path = if path == from { to.to_path_buf() } else { path };
+            if !self.session.files.contains(&path) {
+                self.session.files.push(path);
+            }
+        }
+        self.waiting.retain(|p| p != from && p != to);
+        if self.session.active.as_deref() == Some(from) {
+            self.session.active = Some(to.to_path_buf());
+        }
+    }
+
+    fn closed(&mut self, closed: &Tab, previous: Option<u64>, current: Option<&Tab>) {
+        self.session.files.retain(|p| *p != closed.path);
+        self.waiting.retain(|p| *p != closed.path);
+        if self.session.active.as_ref() == Some(&closed.path) {
+            self.session.active = current.map(|t| t.path.clone());
+        }
+        if previous == self.last_active && previous == Some(closed.id) {
+            self.last_active = current.map(|t| t.id);
+        }
+    }
+
     fn finished(
         &mut self,
         tabs: &mut [Tab],
@@ -75,6 +138,12 @@ impl Restore {
         }
         if !loaded {
             self.session.files.retain(|p| p != path);
+            if self.session.active.as_deref() == Some(path) {
+                self.session.active = tabs
+                    .iter()
+                    .find(|t| Some(t.id) == previous)
+                    .map(|t| t.path.clone());
+            }
         }
         tabs.sort_by_key(|t| {
             self.session
@@ -95,7 +164,8 @@ impl Restore {
 }
 
 impl App {
-    pub(crate) fn restore_workspace(&mut self, saved: Session, files: Vec<PathBuf>) {
+    pub(crate) fn restore_workspace(&mut self, mut saved: Session, files: Vec<PathBuf>) {
+        saved.limit();
         let mut session = Session::default();
         for path in &saved.files {
             session.push(path);
@@ -105,74 +175,75 @@ impl App {
             session.push(&path);
             session.active = Some(absolute(&path));
         }
-        for path in &session.files {
-            self.open(path.clone());
-        }
-        self.restoring = (!session.files.is_empty()).then_some(Restore {
-            session,
-            last_active: None,
-        });
+        session.active = session.active.or_else(|| session.files.first().cloned());
+        self.restoring = (!session.is_empty()).then(|| Restore::new(session));
+        self.pump_workspace();
     }
 
-    pub(crate) fn workspace_finished(&mut self, path: &Path, previous: Option<u64>) {
-        let Some(restore) = self.restoring.as_mut() else {
-            return;
-        };
-        restore.finished(&mut self.tabs, &mut self.active, path, previous);
-        if !self
-            .loading
-            .iter()
-            .any(|p| restore.session.files.contains(p))
+    fn pump_workspace(&mut self) {
+        while self.loading.len() < MAX_LOADING {
+            let Some(path) = self.restoring.as_mut().and_then(|r| r.waiting.pop_front()) else {
+                break;
+            };
+            if !self.tabs.iter().any(|t| t.path == path) {
+                self.open(path);
+            }
+        }
+        if let Some(restore) = &self.restoring
+            && restore.waiting.is_empty()
+            && !self
+                .loading
+                .iter()
+                .any(|p| restore.session.files.contains(p))
         {
             self.restoring = None;
         }
     }
+
+    pub(crate) fn workspace_finished(&mut self, path: &Path, previous: Option<u64>) {
+        if let Some(restore) = &mut self.restoring {
+            restore.finished(&mut self.tabs, &mut self.active, path, previous);
+            self.pump_workspace();
+        }
+    }
+
+    pub(crate) fn workspace_closed(&mut self, closed: &Tab, previous: Option<u64>) {
+        if let Some(restore) = &mut self.restoring {
+            restore.closed(closed, previous, self.tabs.get(self.active));
+        }
+    }
+
+    /// Compare worker-resolved identities, never lexically rewrite a symlink's `..`.
+    pub(crate) fn reuse_loaded_file(
+        &mut self,
+        ctx: &egui::Context,
+        path: &Path,
+        real: Option<&Path>,
+    ) -> bool {
+        let Some(i) = real.and_then(|p| self.tabs.iter().position(|t| t.real_path == p)) else {
+            return false;
+        };
+        let previous = self.tabs.get(self.active).map(|t| t.id);
+        let id = self.tabs[i].id;
+        let kept = self.tabs[i].path.clone();
+        if let Some(restore) = &mut self.restoring {
+            restore.alias(path, &kept);
+        }
+        self.active = i;
+        self.workspace_finished(path, previous);
+        if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+            self.link_loaded(ctx, path, i);
+        }
+        true
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    use super::*;
-
-    #[test]
-    fn workspace_order_is_independent_of_decode_order_and_respects_a_new_focus() {
-        let h = crate::ui_tests::harness();
-        let doc = Arc::clone(&h.state().tabs[0].doc);
-        let paths: Vec<_> = ["first.fig", "second.fig", "third.fig"]
-            .map(PathBuf::from)
-            .into();
-        for manually_selected in [false, true] {
-            let mut restore = Restore {
-                session: Session {
-                    files: paths.clone(),
-                    active: Some(paths[1].clone()),
-                },
-                last_active: None,
-            };
-            let mut tabs = Vec::new();
-            let mut active = 0;
-            for i in [2, 0, 1] {
-                let previous = tabs.get(active).map(|t: &Tab| t.id);
-                tabs.push(Tab::new(
-                    i as u64,
-                    paths[i].clone(),
-                    Arc::clone(&doc),
-                    None,
-                    Duration::ZERO,
-                ));
-                active = tabs.len() - 1;
-                restore.finished(&mut tabs, &mut active, &paths[i], previous);
-                if i == 0 && manually_selected {
-                    active = 0;
-                }
-            }
-            assert_eq!(
-                tabs.iter().map(|t| &t.path).collect::<Vec<_>>(),
-                paths.iter().collect::<Vec<_>>()
-            );
-            assert_eq!(tabs[active].path, paths[usize::from(!manually_selected)]);
-        }
-    }
-}
+#[path = "session_review_tests.rs"]
+mod review_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "session_store_tests.rs"]
+mod store_tests;
+#[cfg(test)]
+#[path = "session_tests.rs"]
+mod tests;

@@ -67,6 +67,7 @@ mod recordings;
 mod region_copy;
 mod region_png;
 mod session;
+mod session_store;
 mod settings;
 mod source;
 mod space_editor;
@@ -224,9 +225,6 @@ struct UiState {
     /// The welcome sheet and tips seen (absent before them: shown once more).
     #[serde(default)]
     onboarding: onboarding::Progress,
-    #[serde(default)]
-    #[cfg_attr(target_arch = "wasm32", serde(skip))]
-    workspace: session::Session,
 }
 
 /// Settings preferences (the rest lives in egui's options and the panels).
@@ -364,10 +362,24 @@ struct App {
     recents: recents::Recents,
     /// Startup files still arriving from the decode workers.
     restoring: Option<session::Restore>,
+    workspace_store: session_store::Store,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
+        let store = if cfg!(test) {
+            session_store::Store::memory()
+        } else {
+            session_store::Store::load()
+        };
+        Self::with_workspace_store(cc, files, store)
+    }
+
+    fn with_workspace_store(
+        cc: &eframe::CreationContext<'_>,
+        files: Vec<PathBuf>,
+        mut workspace_store: session_store::Store,
+    ) -> Self {
         theme::apply(&cc.egui_ctx);
         theme::install_fonts(&cc.egui_ctx);
         // What the window looked like when it was last closed (eframe's storage).
@@ -401,6 +413,7 @@ impl App {
             tiles.gpu = web_gpu;
             (Workers::with_gpu(&cc.egui_ctx, gpu), label, tiles)
         };
+        let workspace = workspace_store.read(cc.storage);
         let mut app = App {
             workers,
             renderer,
@@ -477,11 +490,8 @@ impl App {
                 recents::Recents::load()
             },
             restoring: None,
+            workspace_store,
         };
-        let workspace = saved
-            .as_ref()
-            .map(|s| s.workspace.clone())
-            .unwrap_or_default();
         if let Some(saved) = saved {
             app.show_left = saved.show_left;
             app.show_right = saved.show_right;
@@ -565,6 +575,7 @@ impl App {
 
     fn close(&mut self, i: usize) {
         if i < self.tabs.len() {
+            let previous = self.tabs.get(self.active).map(|t| t.id);
             // A space popover on this file saves first: its style lives only on the tab.
             if self.space_editing.as_ref().map(|e| e.tab) == Some(self.tabs[i].id) {
                 self.commit_space_editor();
@@ -584,6 +595,7 @@ impl App {
             } else if self.active > i {
                 self.active -= 1;
             }
+            self.workspace_closed(&closed, previous);
         }
     }
 
@@ -650,6 +662,9 @@ impl App {
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
+        if let Some(problem) = self.workspace_store.take_problem() {
+            self.toast(ctx, problem, true);
+        }
         loop {
             let msg = match classify(self.workers.load_rx.try_recv()) {
                 Poll::Msg(msg) => msg,
@@ -680,6 +695,9 @@ impl App {
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     let _ = cjk;
+                    if self.reuse_loaded_file(ctx, &path, real_path.as_deref()) {
+                        continue;
+                    }
                     let id = self.next_id;
                     self.next_id += 1;
                     #[cfg(target_arch = "wasm32")]
@@ -1026,13 +1044,14 @@ impl eframe::App for App {
                 remote_addr: access.remote_addr.clone(),
             };
         }
+        let workspace = session::Session::capture(self);
+        self.workspace_store.save(&workspace);
         let state = UiState {
             show_left: self.show_left,
             show_right: self.show_right,
             pages_share: self.pages_share,
             prefs,
             onboarding: self.onboarding.progress.clone(),
-            workspace: session::Session::capture(self),
         };
         eframe::set_value(storage, UI_STATE_KEY, &state);
     }
@@ -1042,7 +1061,13 @@ impl eframe::App for App {
         self.mcp.stop();
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if self.workspace_store.take_migration()
+            && let Some(storage) = frame.storage_mut()
+        {
+            self.save(storage);
+            storage.flush();
+        }
         let started = web_time::Instant::now();
         self.frame_ui(ui);
         #[cfg(not(target_arch = "wasm32"))]

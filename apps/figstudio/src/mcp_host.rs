@@ -23,7 +23,7 @@ use crate::theme;
 type Event = anyhow::Result<SocketAddr>;
 
 pub struct McpHost {
-    /// The window toggle, restored from the app's preferences.
+    /// Requested access, restored from preferences; a runtime failure never changes it.
     pub on: bool,
     /// Tried in order; the first free one is used (127.0.0.1:3845, then 3846 to 3855).
     addrs: Vec<SocketAddr>,
@@ -33,6 +33,8 @@ pub struct McpHost {
     pub remote_addr: String,
     /// A start-up problem found in `sync`, returned as a toast by the next `frame`.
     problem: Option<String>,
+    /// A failed start stays stopped until off/on or the next launch, without losing intent.
+    failed: bool,
     running: Option<Running>,
 }
 
@@ -44,6 +46,7 @@ impl Default for McpHost {
             remote: false,
             remote_addr: String::new(),
             problem: None,
+            failed: false,
             running: None,
         }
     }
@@ -145,7 +148,7 @@ impl McpHost {
         let running = self.running.as_mut()?;
         if let Err(error) = running.poll_events() {
             self.stop();
-            self.on = false;
+            self.failed = true;
             return Some(figstudio_fig::one_line(error.as_ref()));
         }
         running.drain(tabs, active);
@@ -163,15 +166,18 @@ impl McpHost {
     /// End of each frame: start or stop as the toggle says, and publish the tabs when what
     /// the tools see changed.
     pub fn sync(&mut self, ctx: &egui::Context, tabs: &[Tab], active: usize) {
-        match (self.on, self.running.is_some()) {
-            (true, false) => match self.plan() {
+        match (self.on, self.running.is_some(), self.failed) {
+            (true, false, false) => match self.plan() {
                 Ok((addrs, access)) => self.running = Some(start(ctx, addrs, access)),
                 Err(problem) => {
-                    self.on = false;
+                    self.failed = true;
                     self.problem = Some(problem);
                 }
             },
-            (false, true) => self.stop(),
+            (false, _, _) => {
+                self.failed = false;
+                self.stop();
+            }
             _ => {}
         }
         if let Some(running) = self.running.as_mut() {

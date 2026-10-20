@@ -12,6 +12,9 @@ use serde_json::{Value, json};
 
 use super::*;
 
+#[path = "mcp_persistence_tests.rs"]
+mod persistence;
+
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures")
@@ -214,7 +217,7 @@ fn a_busy_port_falls_back_to_the_next() {
 }
 
 #[test]
-fn no_free_port_turns_the_toggle_off_with_an_error() {
+fn no_free_port_keeps_access_enabled_with_an_error() {
     let busy = TcpListener::bind(ANY_PORT).unwrap();
     let mut host = host(vec![busy.local_addr().unwrap()]);
     let ctx = egui::Context::default();
@@ -228,7 +231,10 @@ fn no_free_port_turns_the_toggle_off_with_an_error() {
         std::thread::sleep(Duration::from_millis(10));
     };
     assert!(error.contains("no free port"), "{error}");
-    assert!(!host.on);
+    assert!(
+        host.on,
+        "startup failure must not overwrite the requested setting"
+    );
     assert!(host.running.is_none());
 }
 
@@ -317,7 +323,7 @@ fn remote_agents_are_off_by_default_and_a_remote_plan_carries_a_token() {
 }
 
 #[test]
-fn a_bad_remote_address_turns_the_toggle_off_with_a_message() {
+fn a_bad_remote_address_keeps_access_enabled_with_a_message() {
     for bad in ["", "tailscale", "100.64.0.1", "0.0.0.0:3845", "[::]:3845"] {
         let mut host = McpHost {
             on: true,
@@ -326,7 +332,7 @@ fn a_bad_remote_address_turns_the_toggle_off_with_a_message() {
             ..Default::default()
         };
         host.sync(&egui::Context::default(), &[], 0);
-        assert!(!host.on && host.running.is_none(), "{bad}");
+        assert!(host.on && host.running.is_none(), "{bad}");
         let error = host
             .frame(&mut [], &mut 0)
             .unwrap_or_else(|| panic!("no message for {bad:?}"));
