@@ -834,6 +834,7 @@ fn a_load_that_outlasts_the_callers_budget_is_answered_and_still_shown() {
         node: Some(Guid(1, 4)),
         done: Some(done),
         asked: web_time::Instant::now(),
+        answered: false,
     });
     h.step();
     assert!(rx.try_recv().is_err(), "answered before its time");
@@ -1076,6 +1077,7 @@ fn lexical_folding_keeps_parents_after_a_rootless_drive() {
 
 #[test]
 fn a_held_search_past_the_budget_is_answered_and_still_shows_the_node() {
+    use egui_kittest::kittest::Queryable;
     let mut h = empty_app();
     let ctx = h.ctx.clone();
     h.state_mut().link.search = listed_structure;
@@ -1102,6 +1104,23 @@ fn a_held_search_past_the_budget_is_answered_and_still_shows_the_node() {
     );
     // Not the window's: the window would show "Searching…" and a window link would cancel it.
     assert!(!h.state().link.window_searching());
+    h.state_mut().link.window = true;
+    h.step();
+    assert!(
+        h.query_by_label("Searching the link folders\u{2026}")
+            .is_none(),
+        "the window shows an answered MCP search as its own"
+    );
+    h.state_mut().link.window = false;
+    // Its own search deadline passes too: it keeps waiting for the load, quietly.
+    h.state_mut().link.search_timeout = std::time::Duration::ZERO;
+    h.step();
+    assert_eq!(
+        h.state().link.searching(),
+        1,
+        "the answered search was cut off"
+    );
+    assert!(h.state().toasts.is_empty(), "a second answer was toasted");
     // The load ends: the node is shown, and the caller is not answered twice.
     h.state_mut().loading.finish(&opened);
     h.state_mut().open(opened);
@@ -1115,6 +1134,7 @@ fn a_held_search_past_the_budget_is_answered_and_still_shows_the_node() {
         "the node was not shown"
     );
     assert!(rx.try_recv().is_err());
+    assert!(app.toasts.is_empty(), "the answered search toasted");
 }
 
 #[test]
@@ -1122,9 +1142,9 @@ fn a_request_past_its_budget_while_loading_is_answered_and_the_node_shown() {
     let mut h = empty_app();
     let ctx = h.ctx.clone();
     h.state_mut().link.search = listed_structure;
-    h.state_mut().link.answer_by = std::time::Duration::from_secs(5);
-    // Asked 10 s ago; the listing is back before the first frame polls it, so the search
-    // finishes and its load starts in that frame, already past the caller's budget.
+    // Hold the listing (a file with the link's name is opening elsewhere) to see it in hand.
+    let other = PathBuf::from("/elsewhere/structure.fig");
+    assert!(h.state_mut().loading.begin(&other));
     let asked = web_time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(10))
         .unwrap();
@@ -1133,14 +1153,88 @@ fn a_request_past_its_budget_while_loading_is_answered_and_the_node_shown() {
         h.state_mut()
             .go_to_link_at(&ctx, &figma("structure", "1-4"), Some(done), asked)
     );
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    wait(&mut h, &mut Vec::new(), "the listing to be held", |a| {
+        a.link.searches.iter().any(|s| s.found.is_some())
+    });
+    // Release it with the caller 10 s in against a 5 s budget: the search finishes first in
+    // the next frame, starts the copy's load, and that load is past the budget.
+    h.state_mut().link.answer_by = std::time::Duration::from_secs(5);
+    h.state_mut().loading.finish(&other);
     h.step();
     let error = rx.try_recv().unwrap().unwrap_err();
     assert!(error.contains("still opening"), "{error}");
-    // The copy still opens and shows the node.
+    // The copy still opens and shows the node, with no second answer.
     wait(&mut h, &mut Vec::new(), "the copy to open", |a| {
         a.tabs.len() == 1
     });
     h.step();
     assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 4)));
+    assert!(rx.try_recv().is_err(), "the caller was answered twice");
+}
+
+#[test]
+fn a_load_answered_early_says_nothing_more_when_it_ends() {
+    let mut h = empty_app();
+    let opened = fixture("structure.fig");
+    let (done, rx) = done();
+    // Waiting for a node the file does not have; the budget answers first.
+    h.state_mut().link.waiting.push(super::Waiting {
+        path: opened.clone(),
+        node: Some(Guid(999, 1)),
+        done: Some(done),
+        asked: web_time::Instant::now(),
+        answered: false,
+    });
+    h.state_mut().link.answer_by = std::time::Duration::ZERO;
+    h.step();
+    assert!(
+        rx.try_recv()
+            .unwrap()
+            .unwrap_err()
+            .contains("still opening")
+    );
+    h.state_mut().open(opened);
+    wait(&mut h, &mut Vec::new(), "the file to open", |a| {
+        a.tabs.len() == 1
+    });
+    h.step();
+    assert!(
+        h.state().toasts.is_empty(),
+        "an answered load toasted its outcome"
+    );
+}
+
+#[test]
+fn an_answered_held_search_opens_its_copy_quietly() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = listed_structure;
+    let other = PathBuf::from("/elsewhere/structure.fig");
+    assert!(h.state_mut().loading.begin(&other));
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("structure", "1-4"), Some(done))
+    );
+    wait(&mut h, &mut Vec::new(), "the listing to be held", |a| {
+        a.link.searches.iter().any(|s| s.found.is_some())
+    });
+    h.state_mut().link.answer_by = std::time::Duration::ZERO;
+    h.step();
+    assert!(
+        rx.try_recv()
+            .unwrap()
+            .unwrap_err()
+            .contains("still opening")
+    );
+    // Released: the copy opens and shows the node, with no "Opening…" toast or answer.
+    h.state_mut().loading.finish(&other);
+    wait(&mut h, &mut Vec::new(), "the copy to open", |a| {
+        a.tabs.len() == 1
+    });
+    h.step();
+    let app = h.state();
+    assert_eq!(app.tabs[0].selection, Some(Guid(1, 4)));
+    assert!(app.toasts.is_empty(), "the answered search toasted");
+    assert!(rx.try_recv().is_err());
 }

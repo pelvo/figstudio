@@ -597,8 +597,10 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
     `ANSWER_BY` (55 s from `asked`, under the server's 60 s `OPEN_TIMEOUT`, queueing included)
     a request is answered whatever it is waiting for: still listing ("could not be read in
     time"; the search ends), or held for a load or loading its copy ("still opening"; the
-    search or load carries on without its `done` and still shows the node). An answered
-    search is marked `answered`, so it is never taken for the window's own search.
+    search or load carries on without its `done` and still shows the node). Answered searches
+    and loads are marked `answered`: they are never taken for the window's search (nor shown
+    as "Searching…" in it), have no search deadline of their own, and end quietly: no toast,
+    no window, no second answer (`show_quietly`).
   - **Stuck folders.** While a listing is blocked past the timeout, new links fail at once
     rather than start another blocked thread. Choosing a folder (`set_dirs`), the same one
     included, gives up on every running listing so links search again. Only given-up listings
@@ -625,7 +627,7 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   again, the cap on given-up listings, the budget counted from the caller's send time,
   `lexical` folding, a key tie with one file failed, a failed best match with a resolved
   path, slow given-up listings, the budget running out while listing, while held for a load, and
-  while loading),
+  while loading; answered searches and loads staying quiet),
   `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
 ### The browser app (`apps/figstudio` on wasm32)

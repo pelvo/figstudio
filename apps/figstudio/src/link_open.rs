@@ -131,6 +131,7 @@ impl Default for LinkOpen {
 
 impl LinkOpen {
     /// How many folder searches are still running.
+    #[cfg(test)]
     pub(crate) fn searching(&self) -> usize {
         self.searches.len()
     }
@@ -196,6 +197,8 @@ struct Waiting {
     done: Option<Done>,
     /// When the link was asked for, for [`ANSWER_BY`].
     asked: web_time::Instant,
+    /// Its MCP caller was answered already: show the node, say nothing more.
+    answered: bool,
 }
 
 /// A local copy of a link: the path it was listed under (opened and shown), the same path
@@ -602,6 +605,12 @@ impl App {
         // its folders are still being listed).
         let answer_by = self.link.answer_by;
         for mut search in std::mem::take(&mut self.link.searches) {
+            if search.answered {
+                // Its caller was told; it only waits for the load to show the node, as a
+                // waiting load does (no timeout of its own, no second answer).
+                self.link.searches.push(search);
+                continue;
+            }
             let over_budget = search.done.is_some() && search.asked.elapsed() >= answer_by;
             if search.started.elapsed() >= timeout || (over_budget && search.found.is_none()) {
                 // Held for a load past its time, or not back (in time) at all: give up.
@@ -631,7 +640,11 @@ impl App {
             .waiting
             .iter_mut()
             .filter(|w| w.asked.elapsed() >= answer_by)
-            .filter_map(|w| w.done.take())
+            .filter_map(|w| {
+                let done = w.done.take()?;
+                w.answered = true;
+                Some(done)
+            })
             .collect();
         for done in overdue {
             self.answer(ctx, Some(done), Err(LinkError::StillLoading));
@@ -664,17 +677,18 @@ impl App {
             .map(|t| (t.id, t.path.as_path(), t.real_path.as_path()))
             .collect();
         let active = self.tabs.get(self.active).map(|t| t.id);
-        match plan(&tabs, active, Some(&search.hint), copies, &self.link.dirs) {
+        let planned = plan(&tabs, active, Some(&search.hint), copies, &self.link.dirs);
+        if search.answered {
+            // Its caller was told already: show the node if there is one file to show it in,
+            // and otherwise stay quiet (no toast, no window, no second answer).
+            self.show_quietly(planned, &failed, search.node, search.asked);
+            return;
+        }
+        match planned {
             Ok(Target::Open(path)) if failed.contains(&path) => {
                 // Not decoded again; its load error is already a toast.
                 self.answer(ctx, search.done, Err(LinkError::LoadFailed));
             }
-            // Already answered: show the node if there is one file, and otherwise say nothing
-            // more (no toast, no window for a caller that was told already).
-            Ok(target) if search.answered => {
-                self.go_to(ctx, target, search.node, None, search.asked);
-            }
-            Err(_) if search.answered => {}
             Ok(target) => {
                 let window = search.is_window();
                 if self.go_to(ctx, target, search.node, search.done, search.asked) && window {
@@ -692,6 +706,34 @@ impl App {
                 self.link.window = true;
             }
             Err(error) => self.answer(ctx, search.done, Err(error)),
+        }
+    }
+
+    /// For an answered search: show `node` in the planned file, with no toast and no answer.
+    fn show_quietly(
+        &mut self,
+        planned: Result<Target, LinkError>,
+        failed: &[PathBuf],
+        node: Option<Guid>,
+        asked: web_time::Instant,
+    ) {
+        match planned {
+            Ok(Target::Tab(id)) => {
+                if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+                    let _ = show(&mut self.tabs, &mut self.active, i, node);
+                }
+            }
+            Ok(Target::Open(path)) if !failed.contains(&path) => {
+                self.link.waiting.push(Waiting {
+                    path: path.clone(),
+                    node,
+                    done: None,
+                    asked,
+                    answered: true,
+                });
+                self.open(path);
+            }
+            _ => {}
         }
     }
 
@@ -724,6 +766,7 @@ impl App {
                     node,
                     done,
                     asked,
+                    answered: false,
                 });
                 self.open(path);
                 true
@@ -736,7 +779,9 @@ impl App {
         for waiting in self.take_waiting(path) {
             let result = show(&mut self.tabs, &mut self.active, i, waiting.node)
                 .map(|done| done + " (opened the local copy)");
-            self.answer(ctx, waiting.done, result);
+            if !waiting.answered {
+                self.answer(ctx, waiting.done, result);
+            }
         }
     }
 
@@ -807,7 +852,7 @@ impl App {
                 let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let filled = !self.link.text.trim().is_empty();
                 go = ui.add_enabled(filled, egui::Button::new("Go")).clicked() || (enter && filled);
-                if self.link.searching() > 0 {
+                if self.link.window_searching() {
                     ui.label(
                         egui::RichText::new("Searching the link folders\u{2026}")
                             .color(crate::theme::TEXT_DIM),
