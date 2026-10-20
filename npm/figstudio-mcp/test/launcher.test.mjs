@@ -58,8 +58,9 @@ test("the launcher passes argv, stdin, stdout and the exit code through", { skip
 
 // Runs the launcher on a fake binary that prints "ready <pid>", sends it `signals` 200 ms
 // apart, and returns its exit code and the time from the first signal to its exit. A
-// launcher that never exits is reported as "stuck" after 8 s, and both processes are
-// killed so a regression fails the test instead of hanging the run.
+// launcher that never exits is reported as "stuck" after 8 s and killed, and the fake is
+// always killed afterwards, so a regression fails the test instead of hanging the run or
+// leaving a signal-ignoring process behind.
 async function signalled(script, signals) {
   const dir = mkdtempSync(join(tmpdir(), "figstudio-npm-"));
   const fake = join(dir, "fake-mcp");
@@ -81,10 +82,8 @@ async function signalled(script, signals) {
   const stuck = new Promise((resolve) => { deadline = setTimeout(resolve, 8000, "stuck"); });
   const code = await Promise.race([exited, stuck]);
   clearTimeout(deadline);
-  if (code === "stuck") {
-    child.kill("SIGKILL");
-    try { process.kill(fakePid, "SIGKILL"); } catch { /* already gone */ }
-  }
+  if (code === "stuck") child.kill("SIGKILL");
+  try { process.kill(fakePid, "SIGKILL"); } catch { /* already gone (ESRCH) */ }
   child.stdout.destroy();
   return { code, ms: Date.now() - start };
 }

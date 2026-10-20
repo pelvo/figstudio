@@ -74,14 +74,17 @@ function run(argv = process.argv.slice(2)) {
       // A read-only store keeps its own modes; spawn reports a real problem below.
     }
   }
-  const child = spawn(bin, argv, { stdio: "inherit", windowsHide: true });
   // These handlers turn off Node's own exit on the signals, so the launcher waits for the
   // child. The first signal is passed on; a second one, or a child still running
   // KILL_AFTER_MS later, gets SIGKILL, so a host that gives up and kills the launcher does
-  // not leave a stuck child behind.
+  // not leave a stuck child behind. They are installed before spawn(): a signal landing
+  // between the two would otherwise get Node's default action, killing the launcher and
+  // orphaning the child. Their callbacks run after this function returns, so `child` is
+  // set by then; the check only guards that order.
+  let child;
   let forwarded = false;
   const forward = (signal) => {
-    if (child.exitCode !== null || child.signalCode !== null) return;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
     if (forwarded) {
       child.kill("SIGKILL");
       return;
@@ -91,6 +94,7 @@ function run(argv = process.argv.slice(2)) {
     setTimeout(() => child.kill("SIGKILL"), KILL_AFTER_MS).unref();
   };
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, forward);
+  child = spawn(bin, argv, { stdio: "inherit", windowsHide: true });
   child.on("error", (error) => {
     process.stderr.write(`figstudio-mcp: could not start ${bin}: ${error.message}\n`);
     process.exit(1);
