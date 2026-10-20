@@ -10,7 +10,7 @@
 #                               thin-LTO build was 3 of the 12 minutes on the last green CI.
 #   scripts/check.sh --lint-one NAME
 #   scripts/check.sh --test-one NAME
-#                               one independent slice (CI runs slices in parallel)
+#                               one slice, for a local run. CI does not call these.
 #
 # Toolchain: not pinned. egui 0.36 needs Rust 1.95+. If your default toolchain is older,
 # set FIGSTUDIO_TOOLCHAIN, e.g. FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh
@@ -35,9 +35,7 @@ rustc $TC --version
 # incremental. `--release` here would thin-LTO link every test binary (~20 min after a
 # change in crates/fig). The "release build" step below still checks the shipped LTO build.
 
-# Each slice is one cargo invocation. CI runs the slices of one half in parallel,
-# each with its own CARGO_TARGET_DIR (cargo locks one target dir). A local run walks
-# them in order in the shared target dir.
+# Each slice is one cargo invocation. A local run walks them in order in one target dir.
 run_slice() {
   case "$1" in
     fmt)
@@ -90,8 +88,19 @@ run_slice() {
 
 MODE="${1:-}"
 SLICE="${2:-}"
+lint_names="fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp"
+test_names="tests-workspace tests-gpu tests-mcp-core release wasm32"
 if [ "$MODE" = "--lint-one" ] || [ "$MODE" = "--test-one" ]; then
   [ -n "$SLICE" ] || { echo "$MODE needs a slice name" >&2; exit 2; }
+  case "$MODE" in
+    --lint-one) allowed="$lint_names" ;;
+    --test-one) allowed="$test_names" ;;
+  esac
+  ok=""
+  for name in $allowed; do
+    [ "$name" = "$SLICE" ] && ok=1
+  done
+  [ -n "$ok" ] || { echo "$MODE does not run $SLICE" >&2; echo "allowed: $allowed" >&2; exit 2; }
   step "$SLICE"
   run_slice "$SLICE"
   exit 0

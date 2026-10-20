@@ -287,8 +287,9 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-20 — CI is the two required jobs again (`fmt + clippy`, `build + test`). Slice
   jobs compiled the same crates ten times and the pull request waited on the slowest of
   them, so they are gone. In-job `parallel` steps failed the workflow in zero seconds with
-  no jobs. The cache step now keeps this repo's crates. The macOS release job caches by
-  tag. `scripts/check.sh --test` no longer runs the release rebuild or the wasm32 build.
+  no jobs. The cache step now keeps this repo's crates. The macOS release job uses the
+  default cache key, which already includes the job id. `scripts/check.sh --test` no longer
+  runs the release rebuild or the wasm32 build.
   On the last green CI those two steps were 3 minutes after the tests had already passed.
   The full local gate still runs both. Not timed on a new run.
 
