@@ -392,8 +392,10 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   stored too, so it sticks. Writes go to a new uniquely named temporary file (`tempfile`)
   renamed over the store, readable by its owner only on Unix (0600; no ACL on Windows), so
   two figstudios writing at once never tear it. Reads are capped while reading and skip
-  damaged entries; a store that cannot be read (too big, no permission) is kept as it is and
-  this session's styles stay in memory, so nothing unread is written over. The store is
+  damaged entries; a store that cannot be read (too big, no permission) or does not parse
+  (cut short, not text, not a JSON list) is kept as it is and this session's styles stay in
+  memory, so nothing unread is written over and it can be repaired. An empty file is an
+  empty store. The store is
   `<config dir>/figstudio/spaces.json` on the desktop and `localStorage` in the browser; tests
   use an in-memory store and never touch it. It holds file names, so it stays local: nothing
   (doctor included) prints or uploads it. Custom colours go through `theme::space_tint`,

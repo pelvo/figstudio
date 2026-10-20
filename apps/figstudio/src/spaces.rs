@@ -195,8 +195,8 @@ impl Store {
     }
 
     /// The store of this computer: `<config>/figstudio/spaces.json` on the desktop,
-    /// `localStorage` in the browser. Unreadable data starts an empty store; damaged entries
-    /// are skipped one by one.
+    /// `localStorage` in the browser. Damaged entries are skipped one by one; a store that
+    /// cannot be read or does not parse is left as it is (see [`Store::at`]).
     pub fn load() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -207,16 +207,20 @@ impl Store {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            // The browser hands over the whole string; one too big (or storage that refuses
-            // to be read) is kept as it is, and this session's styles stay in memory.
-            match local_storage().map(|s| s.get_item(STORAGE_KEY)) {
-                Some(Ok(text)) if text.as_ref().is_none_or(|t| t.len() as u64 <= MAX_BYTES) => {
-                    Self {
-                        entries: text.as_deref().map(parse).unwrap_or_default(),
-                        backend: Backend::LocalStorage,
-                    }
-                }
-                _ => {
+            // The browser hands over the whole string; one too big, one that does not parse
+            // (or storage that refuses to be read) is kept as it is, and this session's
+            // styles stay in memory.
+            let entries = match local_storage().map(|s| s.get_item(STORAGE_KEY)) {
+                Some(Ok(None)) => Some(Vec::new()),
+                Some(Ok(Some(text))) if text.len() as u64 <= MAX_BYTES => parse(&text),
+                _ => None,
+            };
+            match entries {
+                Some(entries) => Self {
+                    entries,
+                    backend: Backend::LocalStorage,
+                },
+                None => {
                     tracing::warn!("space styles not read, kept in memory this time");
                     Self::memory()
                 }
@@ -225,8 +229,9 @@ impl Store {
     }
 
     /// The store kept in the file at `path` (read now; written on every change). A file
-    /// that cannot be read (too big, no permission) is left as it is: this session keeps its
-    /// styles in memory only, so what was not read is never written over.
+    /// that cannot be read (too big, no permission) or does not parse (not text, not a JSON
+    /// list) is left as it is: this session keeps its styles in memory only, so what was not
+    /// read is never written over, and stays there to be repaired.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn at(path: std::path::PathBuf) -> Self {
         use std::io::Read as _;
@@ -241,10 +246,15 @@ impl Store {
             }
             Ok(bytes)
         });
+        let read = read.and_then(|bytes| {
+            std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(parse)
+                .ok_or_else(|| std::io::Error::other("not a list of space styles"))
+        });
         match read {
-            // Not text or not JSON: nothing in it can be used, so it is started over.
-            Ok(bytes) => Self {
-                entries: std::str::from_utf8(&bytes).map(parse).unwrap_or_default(),
+            Ok(entries) => Self {
+                entries,
                 backend: Backend::File(path),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self {
@@ -341,11 +351,15 @@ fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
 
 /// The entries in `text`: each damaged or oversized one is skipped, not the whole list, and
 /// at most the newest [`MAX_ENTRIES`] are kept.
-fn parse(text: &str) -> Vec<Entry> {
-    let items: Vec<serde_json::Value> = serde_json::from_str(text).unwrap_or_else(|e| {
-        tracing::warn!("space styles ignored: {e}");
-        Vec::new()
-    });
+/// The entries of a saved store, skipping damaged ones one by one; `None` when the text is
+/// not a JSON list at all. Empty text is an empty store (writing over it loses nothing).
+fn parse(text: &str) -> Option<Vec<Entry>> {
+    if text.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    let items: Vec<serde_json::Value> = serde_json::from_str(text)
+        .inspect_err(|e| tracing::warn!("space styles not read: {e}"))
+        .ok()?;
     let mut entries: Vec<Entry> = items
         .into_iter()
         .filter_map(|item| serde_json::from_value::<Entry>(item).ok())
@@ -353,7 +367,7 @@ fn parse(text: &str) -> Vec<Entry> {
         .collect();
     let extra = entries.len().saturating_sub(MAX_ENTRIES);
     entries.drain(..extra);
-    entries
+    Some(entries)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -547,8 +561,25 @@ mod tests {
             assert_eq!(Store::at(path.clone()).lookup(a), Some(rose()));
             let _ = std::fs::remove_file(&stale);
         }
-        std::fs::write(&path, "{ not json").expect("write");
-        assert!(Store::at(path.clone()).entries.is_empty(), "starts over");
+        // A store that does not parse (cut short, not text) is not written over: what was
+        // not read stays there to be repaired.
+        let cut = br#"[{"key":"k1","file":"a.fig","style":{"name":"Cut"#.to_vec();
+        for bytes in [cut, b"[\xff\xfe]".to_vec()] {
+            std::fs::write(&path, &bytes).expect("write");
+            let mut damaged = Store::at(path.clone());
+            assert!(damaged.entries.is_empty());
+            damaged.remember(a, &rose());
+            assert_eq!(damaged.lookup(a), Some(rose()), "kept for this session");
+            assert_eq!(
+                std::fs::read(&path).expect("read"),
+                bytes,
+                "the file is as it was"
+            );
+        }
+        // An empty file is an empty store, written as usual.
+        std::fs::write(&path, "").expect("write");
+        Store::at(path.clone()).remember(a, &rose());
+        assert_eq!(Store::at(path.clone()).lookup(a), Some(rose()));
         // One bad entry (and an oversized one) is skipped, not the whole list.
         let long = "x".repeat(MAX_FILE + 1);
         let text = format!(
