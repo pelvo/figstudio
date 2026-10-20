@@ -48,11 +48,15 @@ scripts/check.sh            # fmt --check, clippy -D warnings, all tests, releas
 scripts/check.sh --cross    # also cargo check for aarch64-apple-darwin
 FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh   # if the default Rust is older than 1.95
 scripts/check.sh --lint     # only fmt + clippy; CI runs --lint and --test as its two jobs
-scripts/check.sh --test     # tests, release build, wasm32; CI job "build + test"
+scripts/check.sh --test     # tests, npm launcher tests, release build, wasm32; CI job "build + test"
 scripts/check.sh --lint-one fmt   # one slice, for a local run
 # CI is the two required jobs. The cache prefix is `v1-rust` so the next miss saves
 # this repo's crates. A later exact hit does not update that snapshot.
 ```
+
+The `tests-npm` slice runs `node --test npm/figstudio-mcp/test/` (the npm launcher and
+`scripts/npm-pack.mjs`, including a check that the release workflow builds every platform
+the launcher knows); it is skipped when `node` is not installed.
 
 It must end with `== all checks passed` before you commit. If clippy or rustfmt is missing:
 `rustup component add clippy rustfmt --toolchain <version>`.

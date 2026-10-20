@@ -28,17 +28,21 @@ Protocol (MCP) server, written in Rust.
 - **Website:** https://pelvo.dev
 - **In the browser, nothing to install:** https://figstudio.pelvo.dev. Open or drop a `.fig`
   (Figma → File → Save local copy); it stays in the tab and nothing is uploaded.
-- **Give it to Claude Code in one line** (needs Rust 1.95 or newer for `cargo`):
+- **Give it to Claude Code in one line** (needs Node.js; npm fetches a prebuilt binary for
+  Linux, macOS or Windows, nothing is compiled):
 
   ```sh
-  cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp && claude mcp add figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev
+  claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
   ```
 
   The first time the agent needs a file it calls `open_figstudio_browser`, which opens
   https://figstudio.pelvo.dev paired with the local server; open your `.fig` in that tab.
   If the browser asks to let the page reach devices on your local network, allow it: that
   is `figstudio-mcp` on `127.0.0.1`. To serve a file from disk instead, with no browser:
-  `claude mcp add figstudio -- figstudio-mcp /path/to/design.fig`.
+  `claude mcp add figstudio -- npx -y figstudio-mcp /path/to/design.fig`.
+
+  Without Node, build it with Rust 1.95 or newer:
+  `cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp && claude mcp add figstudio -- figstudio-mcp --browser-proxy`.
 
 ---
 
@@ -124,17 +128,17 @@ cargo run --release -p figstudio-cli -- doctor path/to/design.fig
 
 ### 4. MCP server (`figstudio-mcp`)
 
-Install the server on its own with
+Run the server with `npx -y figstudio-mcp` (prebuilt binaries on npm), or install it with
 `cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp` (or
 `cargo build --release -p figstudio-mcp` in a checkout). Full setup and tool documentation
 is in [`apps/figstudio-mcp/README.md`](apps/figstudio-mcp/README.md):
 
 ```sh
-# Browser proxy (zero upload): the agent opens figstudio in your browser and pairs with it
-claude mcp add figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev
+# Browser proxy (zero upload): the agent opens https://figstudio.pelvo.dev and pairs with it
+claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
 
 # Offline file mode (stdio): serve files from disk, no browser
-claude mcp add figstudio -- figstudio-mcp /path/to/design.fig
+claude mcp add figstudio -- npx -y figstudio-mcp /path/to/design.fig
 
 # Desktop app: turn on Settings → Agents → Agent access, then
 claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp

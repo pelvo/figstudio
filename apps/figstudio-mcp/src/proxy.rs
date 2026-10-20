@@ -46,6 +46,11 @@ const AMBIGUOUS_SESSION_CODE: i32 = -32002;
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_OPEN_TIMEOUT_SECS: u64 = 60;
 
+/// The public browser build (static, no cloud relay, no sign-in). `open_figstudio_browser`
+/// opens it unless `--origin` or `FIGSTUDIO_WEB_ORIGIN` names another; the local web build
+/// on `http://127.0.0.1:8765` stays allowed to pair for development.
+pub const PUBLIC_ORIGIN: &str = "https://figstudio.pelvo.dev";
+
 /// Configuration for [`ProxyState`]. `Debug` redacts the secret token.
 #[derive(Clone)]
 pub struct ProxyConfig {
@@ -71,12 +76,17 @@ impl std::fmt::Debug for ProxyConfig {
 
 impl ProxyConfig {
     /// Build a configuration from extra `--origin` flags (and `FIGSTUDIO_WEB_ORIGIN`).
+    /// Without either, the launch URL is [`PUBLIC_ORIGIN`].
     ///
     /// # Errors
     /// Returns [`getrandom::Error`] if OS entropy fails.
     pub fn new(extra_origins: &[String], launch_browser: bool) -> Result<Self, getrandom::Error> {
         let token = pairing_token()?;
-        let mut origins: Vec<String> = DEFAULT_ORIGINS.iter().map(|s| (*s).to_owned()).collect();
+        let mut origins: Vec<String> = DEFAULT_ORIGINS
+            .iter()
+            .chain(std::iter::once(&PUBLIC_ORIGIN))
+            .map(|s| (*s).to_owned())
+            .collect();
         if let Ok(env_origin) = std::env::var("FIGSTUDIO_WEB_ORIGIN") {
             let trimmed = env_origin.trim().trim_end_matches('/').to_owned();
             if !trimmed.is_empty() && !origins.contains(&trimmed) {
@@ -99,7 +109,7 @@ impl ProxyConfig {
                     .map(|s| s.trim().trim_end_matches('/').to_owned())
                     .filter(|s| !s.is_empty())
             })
-            .unwrap_or_else(|| DEFAULT_ORIGINS[0].to_owned());
+            .unwrap_or_else(|| PUBLIC_ORIGIN.to_owned());
         Ok(Self {
             token,
             origins,

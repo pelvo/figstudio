@@ -14,16 +14,26 @@ app, a Figma account or a network connection.
 
 ## Install
 
+Nothing to install with Node.js: `npx -y figstudio-mcp` runs a prebuilt binary (Linux x64
+and arm64, macOS arm64 and x64, Windows x64) from the
+[`figstudio-mcp`](https://www.npmjs.com/package/figstudio-mcp) npm package. Give it to Claude
+Code with the public browser app in one line (see
+[the browser proxy](#in-the-browser-local-zero-upload-proxy---browser-proxy)):
+
+```sh
+claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
+```
+
+Or build it with Rust 1.95 or newer; that puts `figstudio-mcp` in `~/.cargo/bin`:
+
 ```sh
 cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp
 ```
 
-That puts `figstudio-mcp` in `~/.cargo/bin`. To give it to Claude Code with the public
-browser app in one line (see [the browser proxy](#in-the-browser-local-zero-upload-proxy---browser-proxy)):
-
-```sh
-cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp && claude mcp add figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev
-```
+How the npm packages are made: `npm/figstudio-mcp` is a small launcher that runs the binary
+from one of the `@pelvo/figstudio-mcp-<os>-<cpu>` packages, which npm installs as optional
+dependencies matching your computer (no install script). `scripts/npm-pack.mjs` assembles
+them and the release workflow publishes them.
 
 ## Build
 
@@ -137,15 +147,16 @@ whenever `--origin` is passed without `FILE.fig` or `--bridge`) combines the zer
 Wasm RPC executor with a local `stdio` proxy inspired by `googlecolab/colab-mcp` — no `.fig`
 upload, no Cloudflare Access bypass, and no manual token pasting.
 
-**One-line install and setup (`colab-mcp` style):**
+**One-line setup (`colab-mcp` style):**
 
 ```sh
-cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp
-claude mcp add figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev
+claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
 ```
 
-`https://figstudio.pelvo.dev` is the public browser build (static, no cloud relay, no
-sign-in). Use your own deploy's origin in its place if you run one.
+It opens `https://figstudio.pelvo.dev`, the public browser build (static, no cloud relay,
+no sign-in). For your own deploy, pass `--origin https://<your-deploy-domain>` instead of
+`--browser-proxy`; for the local web build (`scripts/web-build.sh --serve`),
+`--origin http://127.0.0.1:8765`.
 
 Or in `.mcp.json` / Cursor / Windsurf:
 
@@ -153,16 +164,15 @@ Or in `.mcp.json` / Cursor / Windsurf:
 {
   "mcpServers": {
     "figstudio": {
-      "command": "figstudio-mcp",
-      "args": ["--origin", "https://figstudio.pelvo.dev"]
+      "command": "npx",
+      "args": ["-y", "figstudio-mcp", "--browser-proxy"]
     }
   }
 }
 ```
 
-- `figstudio-mcp --origin https://figstudio.pelvo.dev` (or `figstudio-mcp --browser-proxy`
-  for a local `http://127.0.0.1:8765` web build; without `--origin` that local address is
-  what `open_figstudio_browser` opens) speaks `stdio` to the agent, binds
+- `figstudio-mcp --browser-proxy` (or `--origin <URL>` for another web app; the local web
+  build at `http://127.0.0.1:8765` may always pair) speaks `stdio` to the agent, binds
   `ws://127.0.0.1:<port>/bridge` on loopback (trying `3845..=3855` first, then an ephemeral
   port), and mints a 256-bit process token (never printed to `stderr`).
 - When the agent calls `open_figstudio_browser`, the proxy opens
@@ -326,11 +336,12 @@ command = "/path/to/figstudio-mcp"
 args = ["/path/to/design.fig"]
 ```
 
-For the browser proxy instead of a file, replace the arguments with
-`["--origin", "https://figstudio.pelvo.dev"]` (Codex: `args = ["--origin", "https://figstudio.pelvo.dev"]`).
+For the browser proxy instead of a file, run it through npm:
+`"command": "npx", "args": ["-y", "figstudio-mcp", "--browser-proxy"]` (Codex:
+`command = "npx"`, `args = ["-y", "figstudio-mcp", "--browser-proxy"]`).
 
 These examples are written from each client's documented config format. The Claude Code
-`claude mcp add` line was run with Claude Code 2.1.304 and writes the stdio entry shown
+`claude mcp add` lines were run with Claude Code 2.1.304 and write the stdio entries shown
 above; no client has been run against the server end to end yet.
 
 ## Files and IDs

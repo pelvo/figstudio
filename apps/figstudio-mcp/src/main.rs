@@ -45,7 +45,8 @@ struct Args {
     /// Pair a browser with a local live MCP server (no FILE required).
     #[arg(long, conflicts_with_all = ["files", "assets", "assets_dir", "browser_proxy"])]
     bridge: bool,
-    /// Zero-upload local browser proxy over stdio (no FILE required).
+    /// Zero-upload local browser proxy over stdio (no FILE required). Opens
+    /// https://figstudio.pelvo.dev unless --origin names another web app.
     #[arg(long, conflicts_with_all = ["files", "assets", "assets_dir", "bridge", "http"])]
     browser_proxy: bool,
     /// Additional exact browser Origin allowed to pair (also sets the launch URL for --browser-proxy).

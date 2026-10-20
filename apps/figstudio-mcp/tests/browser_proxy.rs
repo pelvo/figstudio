@@ -1,6 +1,6 @@
 //! Integration tests for `figstudio-mcp --browser-proxy` (zero-upload Wasm RPC proxy).
 use figstudio_mcp::proxy::{
-    EXEC_PROTOCOL, ProxyConfig, ProxyState, bind_proxy_listener, derive_session_id,
+    EXEC_PROTOCOL, PUBLIC_ORIGIN, ProxyConfig, ProxyState, bind_proxy_listener, derive_session_id,
     parse_browser_entry, serve_proxy_ws, split_browser_list,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -24,6 +24,42 @@ async fn start_in_process_proxy() -> (u16, String, std::sync::Arc<ProxyState>, C
         let _ = serve_proxy_ws(listener, server_state).await;
     });
     (port, token, state, shutdown)
+}
+
+#[test]
+fn without_an_origin_the_proxy_opens_the_public_build_and_still_pairs_the_local_one() {
+    // `npx figstudio-mcp --browser-proxy` must open a page a user can reach, not the local
+    // development server.
+    if std::env::var_os("FIGSTUDIO_WEB_ORIGIN").is_some() {
+        eprintln!("skipped: FIGSTUDIO_WEB_ORIGIN is set in this environment");
+        return;
+    }
+    assert_eq!(PUBLIC_ORIGIN, "https://figstudio.pelvo.dev");
+    let config = ProxyConfig::new(&[], false).unwrap();
+    assert_eq!(config.launch_origin, PUBLIC_ORIGIN);
+    let url = config.launch_url(3845);
+    assert!(url.starts_with("https://figstudio.pelvo.dev/#mcpProxyPort=3845&mcpProxyToken="));
+    for origin in [
+        PUBLIC_ORIGIN,
+        "http://127.0.0.1:8765",
+        "http://localhost:8765",
+    ] {
+        assert!(
+            config.origins.iter().any(|o| o == origin),
+            "{origin} must be allowed"
+        );
+    }
+
+    // `--origin` still wins, and the public build stays allowed next to it.
+    let custom = ProxyConfig::new(&["https://figstudio.example.com/".to_owned()], false).unwrap();
+    assert_eq!(custom.launch_origin, "https://figstudio.example.com");
+    assert!(custom.origins.iter().any(|o| o == PUBLIC_ORIGIN));
+    assert!(
+        custom
+            .origins
+            .iter()
+            .any(|o| o == "https://figstudio.example.com")
+    );
 }
 
 async fn connect_ws(
