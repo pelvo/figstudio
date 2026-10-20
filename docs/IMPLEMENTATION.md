@@ -589,7 +589,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   - **Loads.** A listing is held while a file whose name the link matches is loading (it is
     no tab yet, so it could not be told from a copy spelled differently); other loads do not
     hold it. A copy whose load failed meanwhile (`Loaded::Err` carries its resolved path;
-    failing that, `.`/`..` are folded by text) still takes part in the ranking, so a worse
+    failing that, `.`/`..` are folded by text, `lexical`: a `..` removes only a normal segment,
+    stacks otherwise, and is dropped after a root) still takes part in the ranking, so a worse
     match or the other half of a tie never takes its place; if it is chosen, the link
     answers `LoadFailed` and it is not loaded again.
   - **MCP budget.** `Command::OpenLink` carries when the tool sent it (`asked`). A request
@@ -618,7 +619,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   closing the window, a listing held while a file loads, an unrelated load, a held listing
   timing out, a copy whose load failed, a better match that failed, a listing stuck in old
   folders, a listing polled late, a load past the caller's budget, the same stuck folder chosen
-  again, the cap on given-up listings, the budget counted from the caller's send time),
+  again, the cap on given-up listings, the budget counted from the caller's send time,
+  `lexical` folding, a key tie with one file failed, a failed best match with a resolved
+  path),
   `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
 ### The browser app (`apps/figstudio` on wasm32)

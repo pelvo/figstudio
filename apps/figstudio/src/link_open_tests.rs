@@ -923,3 +923,87 @@ fn the_callers_budget_counts_from_when_it_asked_not_when_the_app_took_it() {
     h.step();
     assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 4)));
 }
+
+#[test]
+fn lexical_folding_stacks_parents_it_cannot_remove() {
+    use super::lexical;
+    let fold = |p: &str| lexical(Path::new(p));
+    assert_eq!(fold("dir/sub/../KEY.fig"), PathBuf::from("dir/KEY.fig"));
+    assert_eq!(fold("./a/./b.fig"), PathBuf::from("a/b.fig"));
+    // Parents with nothing left to remove stack up, so these stay distinct files.
+    assert_eq!(fold("../../KEY.fig"), PathBuf::from("../../KEY.fig"));
+    assert_eq!(fold("a/../../../KEY.fig"), PathBuf::from("../../KEY.fig"));
+    assert_ne!(fold("../../KEY.fig"), fold("KEY.fig"));
+    // Above a root there is nothing: `/..` is `/`.
+    assert_eq!(fold("/../KEY.fig"), PathBuf::from("/KEY.fig"));
+    assert_eq!(fold("/../../KEY.fig"), PathBuf::from("/KEY.fig"));
+}
+
+/// `KEY.fig` and its browser download copy `KEY (1).fig` in [`key_dir`]: both key matches.
+fn key_tie(_: &[PathBuf], _: &FileHint) -> Vec<(PathBuf, Match)> {
+    let dir = key_dir();
+    let copy = dir.join("KEY (1).fig");
+    if !copy.exists() {
+        std::fs::copy(fixture("structure.fig"), &copy).unwrap();
+    }
+    vec![(dir.join("KEY.fig"), Match::Key), (copy, Match::Key)]
+}
+
+#[test]
+fn a_key_tie_stays_a_tie_when_one_of_the_files_just_failed() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = key_tie;
+    let failed = key_dir().join("KEY.fig");
+    assert!(h.state_mut().loading.begin(&failed));
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("structure", "1-4"), Some(done))
+    );
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    h.step();
+    h.state_mut().loading.finish(&failed);
+    let real = std::fs::canonicalize(&failed).unwrap();
+    h.state_mut().link_failed(&failed, Some(real));
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("several files match"), "{error}");
+    let app = h.state();
+    assert_eq!(app.loading.iter().count(), 0, "the other copy was opened");
+    assert!(app.tabs.is_empty());
+}
+
+/// As `local_copies` lists them: `KEY.fig` by its plain path (it resolves; on macOS the temp
+/// folder resolves to another spelling, `/private/var`), and a worse name match.
+fn key_listed_plainly(_: &[PathBuf], _: &FileHint) -> Vec<(PathBuf, Match)> {
+    vec![
+        (key_dir().join("KEY.fig"), Match::Key),
+        (fixture("structure.fig"), Match::Name),
+    ]
+}
+
+#[test]
+fn a_failed_best_match_with_a_resolved_path_does_not_open_a_worse_one() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = key_listed_plainly;
+    let opened = key_dir().join("KEY.fig");
+    assert!(h.state_mut().loading.begin(&opened));
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("structure", "1-4"), Some(done))
+    );
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    h.step();
+    h.state_mut().loading.finish(&opened);
+    let real = std::fs::canonicalize(&opened).unwrap();
+    h.state_mut().link_failed(&opened, Some(real));
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("could not be opened"), "{error}");
+    let app = h.state();
+    assert_eq!(app.loading.iter().count(), 0, "the worse match was loaded");
+    assert!(app.tabs.is_empty());
+}

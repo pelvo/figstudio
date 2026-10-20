@@ -373,17 +373,22 @@ pub(crate) fn real_paths(copies: Vec<(PathBuf, Match)>) -> Vec<Copy> {
 }
 
 /// `path` with `.` and `..` folded away by its text alone (no disk access, so symlinks are
-/// not followed): how a failed load is matched when the worker could not resolve it.
-fn lexical(path: &Path) -> PathBuf {
+/// not followed): how a failed load is matched when the worker could not resolve it. A `..`
+/// removes a normal segment before it, stays when there is none (`../../a` keeps both), and
+/// is dropped right after a root (`/..` is `/`).
+pub(crate) fn lexical(path: &Path) -> PathBuf {
+    use std::path::Component;
     let mut out = PathBuf::new();
     for part in path.components() {
         match part {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
+            Component::CurDir => {}
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
                 }
-            }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => out.push(".."),
+            },
             other => out.push(other),
         }
     }
