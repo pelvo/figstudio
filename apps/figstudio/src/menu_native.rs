@@ -126,6 +126,8 @@ impl NativeMenu {
             let Some(action) = entry.action else { continue };
             let accelerator = accelerator(action, keys);
             let label = crate::menu_dispatch::native_label(
+                cfg!(target_os = "macos"),
+                action,
                 entry.label,
                 keys.and_then(|keys| keys.for_action(action)),
                 accelerator.is_some(),
@@ -247,6 +249,8 @@ fn add(
     let kind = if let Some(action) = item.action {
         let accelerator = accelerator(action, keys);
         let label = crate::menu_dispatch::native_label(
+            cfg!(target_os = "macos"),
+            action,
             item.label,
             keys.and_then(|keys| keys.for_action(action)),
             accelerator.is_some(),
@@ -286,7 +290,7 @@ pub(crate) fn accelerator(
 ) -> Option<muda::accelerator::Accelerator> {
     use muda::accelerator::{Accelerator, Modifiers};
     // Field shortcuts must reach egui; native events cannot distinguish clicks from keys.
-    if matches!(action, Action::CopyText | Action::SelectAllText)
+    if crate::menu_dispatch::hint_only(action)
         || (cfg!(target_os = "macos") && !crate::menu_dispatch::native_owned(true, true, action))
     {
         return None;

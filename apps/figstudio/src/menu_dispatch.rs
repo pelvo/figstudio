@@ -31,22 +31,33 @@ pub(crate) fn native_owned(macos: bool, attached: bool, action: Action) -> bool 
         )
 }
 
-/// A native shortcut column is a hint only when no accelerator renders the binding.
+/// These field shortcuts deliberately have no native accelerator.
+#[cfg_attr(not(any(target_os = "macos", windows, test)), expect(dead_code))]
+pub(crate) fn hint_only(action: Action) -> bool {
+    matches!(action, Action::CopyText | Action::SelectAllText)
+}
+
+/// Win32 draws tab-separated hints without owning the keys.
 #[cfg_attr(not(any(target_os = "macos", windows, test)), expect(dead_code))]
 pub(crate) fn native_label(
+    macos: bool,
+    action: Action,
     label: &str,
     shortcut: Option<egui::KeyboardShortcut>,
     has_accelerator: bool,
 ) -> String {
     let label = label.split("   ").next().unwrap_or(label);
-    if !has_accelerator && let Some(shortcut) = shortcut {
-        let macos = cfg!(target_os = "macos");
-        let names = if macos {
-            egui::ModifierNames::SYMBOLS
-        } else {
-            egui::ModifierNames::NAMES
-        };
-        return format!("{label}\t{}", shortcut.format(&names, macos));
+    // AppKit needs keyEquivalent for its column; keep it empty so fields retain Cmd+C.
+    // An attributed title would need unsafe objc2 calls, so macOS gets no hint.
+    if !macos
+        && hint_only(action)
+        && !has_accelerator
+        && let Some(shortcut) = shortcut
+    {
+        return format!(
+            "{label}\t{}",
+            shortcut.format(&egui::ModifierNames::NAMES, false)
+        );
     }
     label.to_owned()
 }
@@ -145,41 +156,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_label_tracks_unowned_shortcuts() {
+    fn native_labels_only_hint_copy_on_windows() {
         use crate::keymap::{Binding, Keymap};
-        use egui::{Key, KeyboardShortcut, ModifierNames, Modifiers};
+        use egui::{Key, KeyboardShortcut, Modifiers};
 
-        let mut keys = Keymap::default();
-        let macos = cfg!(target_os = "macos");
-        let names = if macos {
-            ModifierNames::SYMBOLS
-        } else {
-            ModifierNames::NAMES
-        };
-        for (action, binding, label) in [
-            (Action::CopyText, Binding::Copy, "Copy text"),
-            (Action::SelectAllText, Binding::SelectAll, "Select all text"),
-        ] {
-            let shortcut = keys.for_action(action).unwrap();
+        for macos in [false, true] {
+            let mut keys = Keymap::default();
+            for (action, label) in [
+                (Action::ZoomBy(1.25), "Zoom in"),
+                (Action::ZoomBy(0.8), "Zoom out"),
+                (Action::ZoomFit, "Zoom to fit"),
+                (Action::ActualSize, "Actual size"),
+                (Action::NextSpace, "Next space"),
+                (Action::PreviousSpace, "Previous space"),
+            ] {
+                let shortcut = keys.for_action(action);
+                assert!(shortcut.is_some(), "exercise a bound row: {label}");
+                assert_eq!(native_label(macos, action, label, shortcut, false), label);
+            }
+            for (action, binding, label, hint) in [
+                (
+                    Action::CopyText,
+                    Binding::Copy,
+                    "Copy text",
+                    "Copy text\tCtrl+C",
+                ),
+                (
+                    Action::SelectAllText,
+                    Binding::SelectAll,
+                    "Select all text",
+                    "Select all text\tCtrl+A",
+                ),
+            ] {
+                assert_eq!(
+                    native_label(macos, action, label, keys.for_action(action), false),
+                    if macos { label } else { hint },
+                );
+                let rebound = KeyboardShortcut::new(Modifiers::ALT, Key::F8);
+                keys.set(binding, Some(rebound));
+                assert_eq!(
+                    native_label(macos, action, label, keys.for_action(action), false),
+                    if macos {
+                        label.to_owned()
+                    } else {
+                        format!("{label}\tAlt+F8")
+                    },
+                );
+                keys.set(binding, None);
+                assert_eq!(
+                    native_label(macos, action, label, keys.for_action(action), false),
+                    label,
+                    "cleared binding",
+                );
+                assert_eq!(
+                    native_label(macos, action, label, None, false),
+                    label,
+                    "recording"
+                );
+            }
             assert_eq!(
-                native_label(label, Some(shortcut), false),
-                format!("{label}\t{}", shortcut.format(&names, macos)),
+                native_label(
+                    macos,
+                    Action::Open,
+                    "Open…   Ctrl+O",
+                    keys.for_action(Action::Open),
+                    true
+                ),
+                "Open…",
+                "the accelerator supplies the owned action's shortcut",
             );
-            let rebound = KeyboardShortcut::new(Modifiers::ALT, Key::F8);
-            keys.set(binding, Some(rebound));
-            assert_eq!(
-                native_label(label, keys.for_action(action), false),
-                format!("{label}\t{}", rebound.format(&names, macos)),
-            );
-            keys.set(binding, None);
-            assert_eq!(native_label(label, keys.for_action(action), false), label);
-            assert_eq!(native_label(label, None, false), label, "recording");
         }
-        assert_eq!(
-            native_label("Open…   Ctrl+O", keys.for_action(Action::Open), true),
-            "Open…",
-            "the accelerator supplies the owned action's shortcut",
-        );
     }
 
     #[test]
