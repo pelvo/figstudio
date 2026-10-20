@@ -83,6 +83,13 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # A release rebuilds the same tag. Keep this repo's crates so a retry does not
+          # compile them again. `shared-key` is the tag: the default key includes the
+          # job id only, and a rebuilt tag must hit the cache from the first build.
+          shared-key: ${{ env.TAG }}
+          cache-all-crates: true
+          cache-workspace-crates: true
       - name: Build figstudio.app
         run: scripts/macos-app.sh
       - name: Package

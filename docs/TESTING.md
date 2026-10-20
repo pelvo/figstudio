@@ -48,6 +48,9 @@ scripts/check.sh            # fmt --check, clippy -D warnings, all tests, releas
 scripts/check.sh --cross    # also cargo check for aarch64-apple-darwin
 FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh   # if the default Rust is older than 1.95
 scripts/check.sh --lint     # only fmt + clippy; CI runs --lint and --test as its two jobs
+scripts/check.sh --lint-one fmt   # one slice; CI runs the slices of a job in parallel
+# CI caches each slice directory (target/ci-*) plus workspace crates. A warm run still
+# relinks; it should not recompile unchanged crates.
 ```
 
 It must end with `== all checks passed` before you commit. If clippy or rustfmt is missing:

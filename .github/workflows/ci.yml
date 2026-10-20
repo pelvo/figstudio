@@ -4,6 +4,14 @@
 # with the ruleset. The toolchain is pinned to the one docs/TESTING.md names; bump both
 # together.
 #
+# Inside each job, independent slices run at once (GitHub Actions `parallel`). Each slice
+# gets its own CARGO_TARGET_DIR: cargo locks one target directory, so sharing it would
+# serialize the group. The job name is unchanged, so the ruleset still sees one check.
+#
+# Swatinem/rust-cache only saves `target/` unless `cache-directories` lists the others.
+# Each slice therefore has its own cache entry. `cache-workspace-crates` keeps this
+# repo's crates too, not only crates.io dependencies, so a second run skips the compile.
+#
 # Third-party actions are pinned to commit SHAs; the comment names the release.
 
 name: CI
@@ -37,7 +45,37 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: scripts/check.sh --lint
+        with:
+          cache-all-crates: true
+          cache-workspace-crates: true
+          cache-directories: |
+            target/ci-fmt
+            target/ci-clippy-workspace
+            target/ci-clippy-parallel
+            target/ci-clippy-gpu
+            target/ci-clippy-app
+      - name: Lint slices
+        parallel:
+          - name: fmt
+            env:
+              CARGO_TARGET_DIR: target/ci-fmt
+            run: scripts/check.sh --lint-one fmt
+          - name: clippy workspace
+            env:
+              CARGO_TARGET_DIR: target/ci-clippy-workspace
+            run: scripts/check.sh --lint-one clippy-workspace
+          - name: clippy parallel feature
+            env:
+              CARGO_TARGET_DIR: target/ci-clippy-parallel
+            run: scripts/check.sh --lint-one clippy-parallel
+          - name: clippy gpu feature
+            env:
+              CARGO_TARGET_DIR: target/ci-clippy-gpu
+            run: scripts/check.sh --lint-one clippy-gpu
+          - name: clippy app without mcp
+            env:
+              CARGO_TARGET_DIR: target/ci-clippy-app
+            run: scripts/check.sh --lint-one clippy-app-no-mcp
 
   test:
     name: build + test
@@ -50,4 +88,34 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: scripts/check.sh --test
+        with:
+          cache-all-crates: true
+          cache-workspace-crates: true
+          cache-directories: |
+            target/ci-tests
+            target/ci-tests-gpu
+            target/ci-tests-mcp
+            target/ci-release
+            target/ci-wasm32
+      - name: Test and build slices
+        parallel:
+          - name: workspace tests
+            env:
+              CARGO_TARGET_DIR: target/ci-tests
+            run: scripts/check.sh --test-one tests-workspace
+          - name: gpu feature tests
+            env:
+              CARGO_TARGET_DIR: target/ci-tests-gpu
+            run: scripts/check.sh --test-one tests-gpu
+          - name: mcp-core no-default-features tests
+            env:
+              CARGO_TARGET_DIR: target/ci-tests-mcp
+            run: scripts/check.sh --test-one tests-mcp-core
+          - name: release build
+            env:
+              CARGO_TARGET_DIR: target/ci-release
+            run: scripts/check.sh --test-one release
+          - name: wasm32 mcp-core
+            env:
+              CARGO_TARGET_DIR: target/ci-wasm32
+            run: scripts/check.sh --test-one wasm32
