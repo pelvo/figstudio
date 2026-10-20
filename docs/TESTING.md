@@ -50,8 +50,8 @@ FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh   # if the default Rust is older tha
 scripts/check.sh --lint     # only fmt + clippy; CI runs --lint and --test as its two jobs
 scripts/check.sh --test     # tests only. The release rebuild stays on the full gate
 scripts/check.sh --lint-one fmt   # one slice, for a local run
-# CI is the two required jobs. It caches this repo's crates. A warm run still relinks;
-# it should not recompile unchanged crates.
+# CI is the two required jobs. The cache prefix is `v1-rust` so the next miss saves
+# this repo's crates. A later exact hit does not update that snapshot.
 ```
 
 It must end with `== all checks passed` before you commit. If clippy or rustfmt is missing:
