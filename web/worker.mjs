@@ -190,8 +190,19 @@ function parseReadyV2(reply, order) {
   };
 }
 
+// The page asks `GET /mcp/` whether its origin runs this relay (CloudRelay in
+// apps/figstudio/src/mcp_wire.rs). Only this Worker sets the header; a static-only
+// deploy answers the same path with a missing asset or a fallback page, so the app hides
+// Cloud relay there instead of opening a socket that cannot connect. Not exported: the
+// Workers runtime takes every named export of the main module as an entrypoint and
+// refuses to start on a string.
+const RELAY_PROBE_HEADER = "figstudio-relay";
+
 function route(request) {
   const path = new URL(request.url).pathname;
+  if (path === "/mcp/" && (request.method === "GET" || request.method === "HEAD")) {
+    return { probe: true };
+  }
   const match = /^\/(mcp|bridge)\/([^/]+)$/.exec(path);
   if (match && ROOM.test(match[2])) return { kind: match[1], room: match[2] };
   if (/^\/(mcp|bridge)(\/|$)/.test(path)) return { invalid: true };
@@ -202,6 +213,12 @@ export default {
   async fetch(request, env) {
     const target = route(request);
     if (!target) return env.ASSETS.fetch(request);
+    if (target.probe) {
+      return new Response(null, {
+        status: 204,
+        headers: { [RELAY_PROBE_HEADER]: "1", "Cache-Control": "no-store" },
+      });
+    }
     if (target.invalid) return new Response("Not found", { status: 404 });
     // The bridge is the executor capability: prove the executor secret before the room
     // names a Durable Object, so a caller that only knows the room (the MCP URL) cannot
