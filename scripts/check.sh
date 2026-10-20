@@ -69,10 +69,14 @@ run_slice() {
       cargo $TC build --release --workspace
       ;;
     # The npm launcher (npm/figstudio-mcp) and scripts/npm-pack.mjs. The files, not the
-    # folder: Node 22 (the CI runner's) loads a folder argument as a module and fails.
+    # folder: Node 22 (the CI runner's) loads a folder argument as a module and fails. An
+    # unmatched pattern would reach node literally and pass with zero tests, so no match
+    # is an error.
     tests-npm)
       if command -v node >/dev/null 2>&1; then
-        node --test npm/figstudio-mcp/test/*.test.mjs
+        npm_tests=(npm/figstudio-mcp/test/*.test.mjs)
+        [ -e "${npm_tests[0]}" ] || { echo "no npm tests in npm/figstudio-mcp/test" >&2; exit 1; }
+        node --test "${npm_tests[@]}"
       else
         echo "skipped: node is not installed"
       fi
