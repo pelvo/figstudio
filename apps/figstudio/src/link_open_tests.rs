@@ -199,6 +199,7 @@ fn public_messages_carry_no_paths_or_file_names() {
         LinkError::NoFile,
         LinkError::Unreadable,
         LinkError::SearchTimeout,
+        LinkError::ListingLimit,
         LinkError::StillLoading,
     ];
     for error in &errors {
@@ -893,7 +894,17 @@ fn retries_cannot_pile_up_blocked_threads() {
     );
     h.step();
     let error = rx.try_recv().unwrap().unwrap_err();
-    assert!(error.contains("could not be read in time"), "{error}");
+    assert!(error.contains("restart figstudio"), "{error}");
+    // Choosing a healthy folder cannot release stuck threads; the cap still explains recovery.
+    h.state_mut().link.set_dirs(vec![PathBuf::from("/healthy")]);
+    let (refused, rx) = done();
+    assert!(
+        !h.state_mut()
+            .go_to_link(&ctx, &figma("A", "1-1"), Some(refused))
+    );
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("restart figstudio"), "{error}");
     // Once they come back, links search again.
     std::thread::sleep(std::time::Duration::from_secs(2));
     h.step();

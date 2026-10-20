@@ -141,13 +141,18 @@ impl LinkOpen {
         self.searches.iter().any(Search::is_window)
     }
 
-    /// Whether new links must not start a listing: one of the current folders' listings is
+    /// Why a new link must not start a listing: one of the current folders' listings is
     /// past the timeout and still blocked, or [`MAX_ABANDONED`] given-up ones are.
-    fn blocked(&self) -> bool {
+    fn blocked(&self) -> Option<LinkError> {
         let timeout = self.search_timeout;
         let stuck = |(_, started): &&(u64, web_time::Instant)| started.elapsed() >= timeout;
-        self.abandoned.iter().filter(stuck).count() >= MAX_ABANDONED
-            || self.listings.iter().any(|l| stuck(&l))
+        if self.abandoned.iter().filter(stuck).count() >= MAX_ABANDONED {
+            Some(LinkError::ListingLimit)
+        } else if self.listings.iter().any(|l| stuck(&l)) {
+            Some(LinkError::SearchTimeout)
+        } else {
+            None
+        }
     }
 
     /// Search `dirs` from now on. Every running listing is given up on, the same folder's
@@ -240,6 +245,8 @@ pub(crate) enum LinkError {
     LoadFailed,
     /// Listing the link folders took longer than [`SEARCH_TIMEOUT`].
     SearchTimeout,
+    /// Too many abandoned folder listings are still stuck; no more threads may start.
+    ListingLimit,
     /// The folders answered, but a file the link may name was still loading at the timeout.
     StillLoading,
 }
@@ -286,6 +293,9 @@ impl LinkError {
                  figstudio window for permission to read them"
                     .to_owned()
             }
+            Self::ListingLimit => "too many folder searches are still stuck; wait for them to \
+                 finish or restart figstudio to try again"
+                .to_owned(),
             Self::StillLoading => "a file this link may name is still opening in figstudio; \
                  try again once it has opened"
                 .to_owned(),
@@ -499,10 +509,10 @@ impl App {
             // Go again on the link being searched for: keep that search, start no thread.
             return true;
         }
-        if self.link.blocked() {
+        if let Some(error) = self.link.blocked() {
             // The folders still have not answered; another thread would block the same way.
             // A refused link leaves the window's current search running.
-            self.answer(ctx, done, Err(LinkError::SearchTimeout));
+            self.answer(ctx, done, Err(error));
             return false;
         }
         if window {
