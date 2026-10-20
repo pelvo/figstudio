@@ -1,5 +1,7 @@
 # figstudio
 
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/polve)
+
 Fast, offline-first Figma `.fig` viewer, renderer, version comparator, and Model Context
 Protocol (MCP) server, written in Rust.
 
@@ -146,6 +148,13 @@ node --test web/worker/*.test.mjs
   browser build, `scripts/web-font.sh` subsets Noto Sans CJK Regular (SIL Open Font License
   1.1) at build time into `web/dist/fonts/` (`cjk-{jp,sc,tc,hk,kr}.otf` and
   `cjk-LICENSE.txt`).
+
+---
+
+## Support
+
+If `figstudio` saved you time or made your workflow smoother, you can support ongoing
+development on [Buy Me a Coffee](https://buymeacoffee.com/polve).
 
 ---
 
