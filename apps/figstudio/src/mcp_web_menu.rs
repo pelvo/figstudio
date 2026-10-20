@@ -141,6 +141,9 @@ impl McpHost {
             if ui.button("Connect").clicked() {
                 self.want_connect = true;
             }
+            if self.relay && self.proxy.is_none() && self.cloud_gate.waiting() {
+                ui.label("Checking that this site runs the cloud relay…");
+            }
         } else if ui.button("Disconnect").clicked() {
             self.stop();
         }

@@ -53,33 +53,46 @@ fn room_validation_and_urls() {
 }
 
 #[test]
-fn only_the_workers_probe_answer_makes_cloud_relay_usable() {
-    // The relay Worker's answer (web/worker.mjs: 204 + header).
-    assert_eq!(
-        CloudRelay::from_probe(Some(204), Some("1")),
-        CloudRelay::Available
-    );
-    assert_eq!(
-        CloudRelay::from_probe(Some(200), Some("1")),
-        CloudRelay::Available
-    );
-    // Static-only hosts: a missing asset, an SPA fallback page, an empty 204 from some
-    // other server, a redirect to a sign-in page, or a failed request.
+fn only_the_workers_probe_answer_makes_cloud_relay_available() {
+    // The relay Worker's answer (web/worker.mjs: 204 + `figstudio-relay: 1`).
+    for status in [200, 204] {
+        assert_eq!(
+            CloudRelay::from_probe(Some(status), Some("1")),
+            CloudRelay::Available
+        );
+    }
+    // Static-only hosts answer for good: a missing asset, an SPA fallback page, an empty
+    // 204 from some other server, a header value the Worker never sends.
     for (status, header) in [
-        (Some(404), None),
-        (Some(200), None),
-        (Some(204), None),
-        (Some(204), Some("")),
-        (Some(204), Some("  ")),
-        (Some(302), Some("1")),
-        (Some(404), Some("1")),
-        (Some(500), Some("1")),
+        (404, None),
+        (200, None),
+        (204, None),
+        (204, Some("")),
+        (204, Some("  ")),
+        (204, Some("0")),
+        (204, Some("true")),
+        (302, Some("1")),
+        (404, Some("1")),
+    ] {
+        assert_eq!(
+            CloudRelay::from_probe(Some(status), header),
+            CloudRelay::Absent,
+            "{status} {header:?}"
+        );
+    }
+    // A failed request (offline, timed out, a sign-in redirect the page may not follow)
+    // or a server error may pass: the next connect asks again.
+    for (status, header) in [
         (None, None),
         (None, Some("1")),
+        (Some(500), Some("1")),
+        (Some(502), None),
+        (Some(503), None),
+        (Some(429), None),
     ] {
         assert_eq!(
             CloudRelay::from_probe(status, header),
-            CloudRelay::Absent,
+            CloudRelay::Unreachable,
             "{status:?} {header:?}"
         );
     }
@@ -97,23 +110,164 @@ fn the_probe_path_and_header_match_the_relay_worker() {
         "web/worker.mjs must set the {RELAY_PROBE_HEADER} header"
     );
     assert!(
+        worker.contains(&format!("[RELAY_PROBE_HEADER]: \"{RELAY_PROBE_VALUE}\"")),
+        "web/worker.mjs must send {RELAY_PROBE_HEADER}: {RELAY_PROBE_VALUE}"
+    );
+    assert!(
         worker.contains(&format!("path === \"{RELAY_PROBE_PATH}\"")),
         "web/worker.mjs must answer the probe at {RELAY_PROBE_PATH}"
     );
 }
 
 #[test]
-fn cloud_relay_is_offered_until_known_absent_and_usable_only_when_available() {
+fn cloud_relay_is_offered_until_the_origin_is_known_to_lack_it() {
     assert_eq!(CloudRelay::default(), CloudRelay::Unknown);
     let cases = [
-        (CloudRelay::Unknown, true, false),
-        (CloudRelay::Available, true, true),
-        (CloudRelay::Absent, false, false),
+        (CloudRelay::Unknown, true),
+        (CloudRelay::Available, true),
+        (CloudRelay::Absent, false),
+        (CloudRelay::Unreachable, true),
     ];
-    for (state, offered, usable) in cases {
+    for (state, offered) in cases {
         assert_eq!(state.offered(), offered, "{state:?}");
-        assert_eq!(state.usable(), usable, "{state:?}");
     }
+}
+
+#[test]
+fn a_cloud_connect_asked_before_the_probe_answers_waits_for_it() {
+    // Connect, Join or Apply pressed before `GET /mcp/` answered.
+    let mut gate = CloudGate::default();
+    assert_eq!(
+        gate.step(CloudRelay::Unknown, true, true),
+        CloudStep::default()
+    );
+    assert!(gate.waiting());
+    assert_eq!(
+        gate.step(CloudRelay::Unknown, true, false),
+        CloudStep::default()
+    );
+    let connect = CloudStep {
+        connect: true,
+        ..CloudStep::default()
+    };
+    assert_eq!(gate.step(CloudRelay::Available, true, false), connect);
+    assert!(!gate.waiting());
+    // Answered once: later frames do not connect again on their own, and a new request
+    // goes straight through.
+    assert_eq!(
+        gate.step(CloudRelay::Available, true, false),
+        CloudStep::default()
+    );
+    assert_eq!(gate.step(CloudRelay::Available, true, true), connect);
+}
+
+#[test]
+fn the_page_loads_own_connect_waits_and_is_quiet_on_a_static_only_origin() {
+    // A deploy with the Worker: the page load's connect opens once the probe answers.
+    let mut gate = CloudGate::page_load(true);
+    assert!(gate.waiting());
+    assert_eq!(
+        gate.step(CloudRelay::Unknown, true, false),
+        CloudStep::default()
+    );
+    assert!(gate.step(CloudRelay::Available, true, false).connect);
+    // A static-only deploy answers every load: leave Cloud relay without a toast.
+    let mut gate = CloudGate::page_load(true);
+    assert_eq!(
+        gate.step(CloudRelay::Absent, true, false),
+        CloudStep {
+            leave: true,
+            ..CloudStep::default()
+        }
+    );
+    // A failed probe may hide a deploy with the Worker: say so.
+    let mut gate = CloudGate::page_load(true);
+    assert_eq!(
+        gate.step(CloudRelay::Unreachable, true, false).notice,
+        Some(CLOUD_RELAY_UNREACHABLE)
+    );
+    // A page load that did not choose Cloud relay never connects it.
+    let mut gate = CloudGate::page_load(false);
+    assert!(!gate.waiting());
+    assert_eq!(
+        gate.step(CloudRelay::Available, true, false),
+        CloudStep::default()
+    );
+}
+
+#[test]
+fn a_cloud_connect_on_an_origin_without_the_worker_leaves_cloud_relay() {
+    let leave = |notice| CloudStep {
+        leave: true,
+        notice,
+        ..CloudStep::default()
+    };
+    // Connect pressed while the page load's own connect waits, or a Join of a
+    // `#room=&exec=` link after the answer: no socket of either kind, and a toast.
+    let mut gate = CloudGate::page_load(true);
+    gate.step(CloudRelay::Unknown, true, true);
+    assert_eq!(
+        gate.step(CloudRelay::Absent, true, false),
+        leave(Some(NO_CLOUD_RELAY))
+    );
+    assert_eq!(
+        gate.step(CloudRelay::Absent, true, true),
+        leave(Some(NO_CLOUD_RELAY))
+    );
+    // Nobody asked: leave quietly.
+    assert_eq!(gate.step(CloudRelay::Absent, true, false), leave(None));
+    // The local bridge and the local proxy still connect on such an origin.
+    assert_eq!(
+        gate.step(CloudRelay::Absent, false, true),
+        CloudStep {
+            connect: true,
+            ..CloudStep::default()
+        }
+    );
+}
+
+#[test]
+fn a_failed_probe_is_asked_again_on_the_next_connect_never_in_a_loop() {
+    let mut gate = CloudGate::default();
+    gate.step(CloudRelay::Unknown, true, true);
+    // The waiting connect gets one toast; nothing probes again on its own.
+    assert_eq!(
+        gate.step(CloudRelay::Unreachable, true, false),
+        CloudStep {
+            notice: Some(CLOUD_RELAY_UNREACHABLE),
+            ..CloudStep::default()
+        }
+    );
+    assert_eq!(
+        gate.step(CloudRelay::Unreachable, true, false),
+        CloudStep::default()
+    );
+    // Connect asks the origin again and waits for that answer.
+    assert_eq!(
+        gate.step(CloudRelay::Unreachable, true, true),
+        CloudStep {
+            probe: true,
+            ..CloudStep::default()
+        }
+    );
+    assert!(gate.waiting());
+    assert!(gate.step(CloudRelay::Available, true, false).connect);
+}
+
+#[test]
+fn leaving_cloud_relay_drops_a_connect_still_waiting_for_the_probe() {
+    let mut gate = CloudGate::default();
+    gate.step(CloudRelay::Unknown, true, true);
+    // Local bridge picked (or a `#mcp=` pairing arrived) before the answer.
+    assert_eq!(
+        gate.step(CloudRelay::Unknown, false, false),
+        CloudStep::default()
+    );
+    assert!(!gate.waiting());
+    assert_eq!(
+        gate.step(CloudRelay::Available, true, false),
+        CloudStep::default()
+    );
 }
 
 #[test]

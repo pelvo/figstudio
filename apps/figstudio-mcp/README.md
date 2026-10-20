@@ -113,7 +113,9 @@ Build the browser bundle first with `scripts/web-build.sh` (output in `web/dist`
    - Nothing to configure for the app: once per page load it asks `GET /mcp/`, which only
      the relay Worker answers (`204` with a `figstudio-relay` header). Anywhere else that
      path is a missing asset, so **Settings → Agents** hides **Cloud relay** and opens no
-     relay socket; **Local bridge** and `--browser-proxy` links work as usual.
+     relay socket; **Local bridge** and `--browser-proxy` links work as usual. If the
+     check itself fails (offline, a server error, no answer within 5 s), Cloud relay stays
+     offered and **Connect** asks again.
 2. **Cloud relay Worker deployment (for remote agents and multi-device HTTP MCP):**
    - Deploy `web/worker.mjs` and the `McpRoom` Durable Object alongside `web/dist` using
      the repo's `wrangler.jsonc` (`npx wrangler deploy`).

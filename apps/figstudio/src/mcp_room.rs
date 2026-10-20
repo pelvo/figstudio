@@ -1,7 +1,9 @@
 //! Persist the executor capability (`figstudio.mcp.executor.v2`); storage denial is
 //! visible, never a weak fallback. The caller room is always derived, never stored.
 use crate::mcp_pair::{self, ExecutorPair, Load, pair_from_input, pair_link};
-use crate::mcp_wire::{CloudRelay, RELAY_PROBE_HEADER, RELAY_PROBE_PATH, relay_urls};
+use crate::mcp_wire::{
+    CloudRelay, RELAY_PROBE_HEADER, RELAY_PROBE_PATH, RELAY_PROBE_TIMEOUT_MS, relay_urls,
+};
 
 const STORAGE_KEY: &str = "figstudio.mcp.executor.v2";
 const LEGACY_KEY: &str = "figstudio.mcp.room";
@@ -224,14 +226,24 @@ pub(super) fn urls(room: &str) -> Option<(String, String)> {
     relay_urls(&location.protocol().ok()?, &location.host().ok()?, room)
 }
 
-/// Ask this origin once whether it runs the cloud relay Worker (`GET /mcp/`). Only the
-/// status and one header are read; the request carries no room or executor.
+/// Ask this origin whether it runs the cloud relay Worker (`GET /mcp/`). Only the status
+/// and one header are read; the request carries no room or executor.
 pub(super) async fn probe() -> CloudRelay {
     use wasm_bindgen::JsCast;
     let Some(window) = web_sys::window() else {
         return CloudRelay::from_probe(None, None);
     };
-    let answer = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(RELAY_PROBE_PATH))
+    // Past the deadline the race settles with `undefined`, which is not a Response: the
+    // same failed request as a thrown fetch.
+    let deadline = js_sys::Promise::new(&mut |resolve, _| {
+        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+            resolve.unchecked_ref(),
+            RELAY_PROBE_TIMEOUT_MS,
+        );
+    });
+    let fetch = window.fetch_with_str(RELAY_PROBE_PATH);
+    let race = js_sys::Promise::race(&js_sys::Array::of2(&fetch, &deadline));
+    let answer = wasm_bindgen_futures::JsFuture::from(race)
         .await
         .ok()
         .and_then(|value| value.dyn_into::<web_sys::Response>().ok());
