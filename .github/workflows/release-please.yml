@@ -83,6 +83,13 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Keep this repo's crates so a retry of this job does not compile them again.
+          # `v1-rust` misses the old entries, which have no workspace crates. An exact
+          # hit does not save. Do not set `shared-key`: at this pin it replaces the job
+          # id, so another job using the same tag would share this target directory.
+          prefix-key: v1-rust
+          cache-workspace-crates: true
       - name: Build figstudio.app
         run: scripts/macos-app.sh
       - name: Package

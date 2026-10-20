@@ -20,7 +20,8 @@ picking up work. Read the three documents below before changing code.
    `docs/PLAN.md`). Keep to its scope; do not refactor unrelated code.
 2. **Run `scripts/check.sh` before every commit.** It must end with `all checks passed`
    (fmt, clippy `-D warnings`, all tests, release build). If your default Rust is older than
-   1.95: `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` (any 1.95+ works).
+   1.95: `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` (any 1.95+ works). CI runs the same
+   halves (`--lint`, `--test`) as the two required checks.
 3. **Every behaviour change comes with a test**, and you must have seen that test fail
    without your change (see "Prove the test" in `docs/TESTING.md`).
 4. **Rendering changes need a picture.** Run `scripts/thumb-sheet.py` and look at the sheet.
