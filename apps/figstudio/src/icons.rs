@@ -42,7 +42,15 @@ pub enum Icon {
     Keyboard,
     Sparkle,
     Info,
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "only the desktop Recents page draws them")
+    )]
     Grid,
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "only the desktop Recents page draws them")
+    )]
     List,
 }
 
