@@ -1255,6 +1255,157 @@ fn an_answered_held_search_opens_its_copy_quietly() {
     assert!(rx.try_recv().is_err());
 }
 
+/// Paste into the focused command bar, without submitting or stepping the frame yet.
+fn paste_command_link(h: &mut Harness<'_, App>, text: &str) {
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::L);
+    h.run_steps(3);
+    assert!(h.state().command.is_open());
+    h.event(egui::Event::Paste(text.to_owned()));
+}
+
+#[test]
+fn the_command_bar_opens_pasted_links_on_enter_or_click() {
+    use egui_kittest::kittest::Queryable;
+    for (text, enter) in [
+        (figma("structure", "1-25"), true),
+        ("figstudio://structure?node-id=1-25".into(), false),
+    ] {
+        let mut h = harness();
+        h.state_mut().link.dirs.clear();
+        paste_command_link(&mut h, &format!("  {text}  "));
+        h.run_steps(3);
+        assert!(
+            h.state().tabs[0].selection.is_none(),
+            "paste does not navigate"
+        );
+        assert!(!h.state().link.window);
+        assert!(
+            h.query_by_label("Open Figma link").is_some(),
+            "a link result"
+        );
+        if enter {
+            h.key_press(egui::Key::Enter);
+        } else {
+            h.get_by_label("Open Figma link").click();
+        }
+        h.run_steps(3);
+        searched(&mut h);
+        assert!(!h.state().command.is_open());
+        assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 25)));
+        assert!(!h.state().link.window, "the link was shown");
+        assert!(h.state().link.text.is_empty());
+    }
+}
+
+#[test]
+fn a_link_pasted_with_enter_in_one_frame_uses_the_new_query() {
+    let mut h = harness();
+    h.state_mut().link.dirs.clear();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::L);
+    h.run_steps(3);
+    // Harness::event runs a separate frame per event. RawInput puts both in one frame.
+    h.input_mut().events.extend([
+        egui::Event::Paste(figma("structure", "1-25")),
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ]);
+    h.run_steps(3);
+    searched(&mut h);
+    assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 25)));
+    assert!(!h.state().command.is_open());
+}
+
+#[test]
+fn the_command_bar_keeps_link_choices_and_errors_in_the_existing_link_window() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["My Design.fig", "My Design (1).fig"] {
+        std::fs::copy(fixture("sections.fig"), dir.path().join(name)).unwrap();
+    }
+    let mut h = harness();
+    h.state_mut().link.dirs = vec![dir.path().to_owned()];
+    paste_command_link(&mut h, SLUG_LINK);
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    searched(&mut h);
+    assert!(!h.state().command.is_open());
+    assert!(h.state().link.window);
+    assert_eq!(h.state().link.text, SLUG_LINK);
+    assert_eq!(
+        h.state().link.choices.len(),
+        2,
+        "no guess between namesakes"
+    );
+    assert_eq!(h.state().tabs.len(), 1);
+
+    // Another link replaces this one; failure keeps its text for editing or choosing a folder.
+    let missing = figma("No-Such-File", "1-5");
+    paste_command_link(&mut h, &missing);
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    searched(&mut h);
+    assert!(h.state().link.window);
+    assert_eq!(h.state().link.text, missing);
+    assert!(h.state().link.choices.is_empty());
+    assert!(h.state().toasts.last().is_some_and(|t| t.error));
+    assert_eq!(h.state().tabs.len(), 1);
+}
+
+#[test]
+fn the_command_bar_opens_a_local_copy_and_shows_the_linked_node() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fixture("sections.fig"), dir.path().join("My Design.fig")).unwrap();
+    let mut h = empty_app();
+    h.state_mut().link.dirs = vec![dir.path().to_owned()];
+    paste_command_link(&mut h, SLUG_LINK);
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    wait(&mut h, &mut Vec::new(), "the linked copy to load", |a| {
+        a.tabs.len() == 1 && a.tabs[0].selection == Some(Guid(1, 5))
+    });
+    assert_eq!(h.state().active, 0);
+    assert!(!h.state().command.is_open());
+    assert!(!h.state().link.window);
+}
+
+#[test]
+fn command_bar_links_use_the_shared_parser_and_do_not_replace_searches() {
+    let h = harness();
+    for text in [SLUG_LINK, "figstudio://structure?node-id=1-25"] {
+        let rows = crate::command::entries(h.state(), text);
+        assert_eq!(rows.len(), 1, "one link action");
+        assert_eq!(rows[0].title, "Open Figma link");
+    }
+    for text in [
+        "https://figma.com.example/design/KEY/structure?node-id=1-25",
+        "https://example.com/design/KEY/structure?node-id=1-25",
+        "javascript:alert(1)",
+        "file:///tmp/a.fig",
+        "https://figma.com/design/KEY/structure?node-id=bad",
+        "https://figma.com/design/KEY/structure?node-id=1-25&node-id=1-4",
+        "1:25",
+    ] {
+        assert!(
+            crate::command::entries(h.state(), text)
+                .iter()
+                .all(|e| e.title != "Open Figma link"),
+            "not a supported URL: {text}"
+        );
+    }
+    assert!(
+        crate::command::entries(h.state(), "zoom to fit")
+            .iter()
+            .any(|e| e.title == "Zoom to fit")
+    );
+}
+
 #[test]
 fn open_link_shortcut_uses_the_keymap_without_taking_the_command_bar_keys() {
     use egui::{Key, KeyboardShortcut, Modifiers};

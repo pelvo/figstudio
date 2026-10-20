@@ -269,6 +269,15 @@ Tests that start the MCP server use whatever port `bind_first` gives and read it
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
 
+`link_open_tests.rs` also drives the real command bar: paste a Figma or figstudio URL, submit
+with Enter or a click, reveal a node in an open tab or a newly loaded local copy, and keep
+file choices and failed input in the link window. Unsupported URLs never become link actions;
+ordinary searches remain searches. Run `cargo test -p figstudio link_open::tests` for these
+and the existing link-opening tests. For events that must arrive in one frame, use
+`h.input_mut().events`; `h.event` and the key helpers run a separate frame per queued event.
+The paste-plus-Enter regression uses raw input and must fail if the command bar's refresh
+before dispatch is removed.
+
 Cannot be covered here: the real OS clipboard (paste into an editor or Preview), a real
 window manager, native file dialogs, GPU tiles, HiDPI and trackpad gestures.
 

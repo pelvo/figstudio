@@ -850,6 +850,16 @@ impl App {
         std::mem::take(&mut self.link.answers)
     }
 
+    /// Submit the link field, from its window or the command bar. Keep the text while
+    /// searching and after a failure, and close the window once the link is shown or loading.
+    pub(crate) fn submit_link(&mut self, ctx: &egui::Context) {
+        let text = self.link.text.clone();
+        if self.go_to_link(ctx, &text, None) && !self.link.window_searching() {
+            self.link.window = false;
+            self.link.text.clear();
+        }
+    }
+
     pub(crate) fn link_window(&mut self, ctx: &egui::Context) {
         let mut open = self.link.window;
         let mut go = false;
@@ -894,13 +904,7 @@ impl App {
                 self.link.text.clear();
             }
         } else if go {
-            // The window stays open (with the text) while its link is searched for, and on a
-            // failure; it closes once the link is shown or loading.
-            let text = self.link.text.clone();
-            if self.go_to_link(ctx, &text, None) && !self.link.window_searching() {
-                self.link.window = false;
-                self.link.text.clear();
-            }
+            self.submit_link(ctx);
         }
     }
 

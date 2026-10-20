@@ -486,8 +486,14 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 - The command bar is modal: `App::shortcuts` and the native menu ignore everything but its
   own shortcut (and Quit) while it is open or fading, and its results are keyed on the
   query, the active file and its page (an agent may turn the page meanwhile) and the number
-  of files. Layer search scores names during the walk and keeps only the best 60 as it goes
-  (ties in layer order). Ctrl+Tab does not reach the browser build (browsers keep it); the dots and
+  of files. A pasted URL accepted by the shared `mcp-core::link::parse_link` offers one
+  **Open Figma link** result instead of a layer search. Enter or a click closes the bar and
+  submits that result's saved URL through `App::submit_link`, the same path as the link
+  window's Go button. The window shows progress, keeps failed input, and offers file choices;
+  links never fetch anything from Figma. Results refresh after editing too, before Enter
+  dispatches, so a paste and Enter in one frame cannot run an old result. Ordinary queries
+  still search commands, files, pages and layers. Layer search keeps only the best 60 as it
+  goes (ties in layer order). Ctrl+Tab does not reach the browser build (browsers keep it); the dots and
   the command bar switch files there.
 - The status pill (with the MCP address and Copy token) moves above the tool pill when the
   card is narrow; the tool pill drops − and + first, then the zoom percentage. The file dots
@@ -559,7 +565,10 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 ### Open Figma link (`link_open.rs`)
 
 - **File > Open Figma link…** (Cmd+Shift+L by default) opens a window with one text field: a figma.com or
-  `figstudio://` link, or a bare node ID. `parse` turns it into a `FileHint` and a node (an
+  `figstudio://` link, or a bare node ID. Alternatively, paste a URL into the Cmd+L command
+  bar and pick **Open Figma link** with Enter or a click. Bare node IDs remain in the link
+  window so they do not replace ordinary command-bar searches. `parse` turns input into a
+  `FileHint` and a node (an
   instance path names its outer instance; a page ID switches page).
 - **Which file** (`plan`): every open tab and every `.fig` directly inside the link folders
   (`figstudio_mcp_core::local_copy`: `FIGSTUDIO_LINK_DIRS`, else `~/Downloads`; **Choose

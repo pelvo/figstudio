@@ -77,8 +77,10 @@ impl CommandBar {
 }
 
 /// What a row does when picked.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Target {
+    /// The URL this result was made for, independent of later edits to the search field.
+    Link(String),
     Action(Action),
     Settings(crate::settings::Tab),
     File(usize),
@@ -175,8 +177,21 @@ fn commands(
 }
 
 /// What the command bar lists for `query`, best first. An empty query lists the other open
-/// files, the pages, then the commands; layers need a query.
+/// files, the pages, then the commands; layers need a query. A supported URL offers the
+/// existing local-link opener instead of searching layer names for the URL.
 pub fn entries(app: &App, query: &str) -> Vec<Entry> {
+    let query = query.trim();
+    if figstudio_mcp_core::link::parse_link(query).is_ok() {
+        return vec![Entry {
+            title: "Open Figma link".into(),
+            detail: "Open the matching local .fig file".into(),
+            icon: Icon::Page,
+            target: Target::Link(query.to_owned()),
+            shortcut: None,
+            space: None,
+            score: 0,
+        }];
+    }
     let mut all = Vec::new();
     for (i, tab) in app.tabs.iter().enumerate() {
         let renamed = tab.style.name.is_some();
@@ -240,7 +255,6 @@ pub fn entries(app: &App, query: &str) -> Vec<Entry> {
             score: 0,
         });
     }
-    let query = query.trim();
     let mut kept: Vec<Entry> = all
         .into_iter()
         .filter_map(|mut e| {
@@ -313,6 +327,23 @@ fn layers(tab: &crate::tab::Tab, query: &str) -> Vec<Entry> {
 }
 
 impl App {
+    /// Refresh the results when their query or file changed. Returns whether the selection
+    /// was reset; called again after editing so paste and Enter in one frame use that paste.
+    fn refresh_command_results(&mut self) -> bool {
+        let key = (
+            self.command.query.clone(),
+            self.tabs.get(self.active).map(|t| (t.id, t.page)),
+            self.tabs.len(),
+        );
+        if self.command.results_for.as_ref() == Some(&key) {
+            return false;
+        }
+        self.command.results = entries(self, &self.command.query);
+        self.command.results_for = Some(key);
+        self.command.selected = 0;
+        true
+    }
+
     /// Draws the command bar while it is open, and runs what gets picked.
     pub(crate) fn command_bar(&mut self, ctx: &egui::Context) {
         // It pops in, and after closing fades and shrinks away taking no input.
@@ -322,15 +353,8 @@ impl App {
             self.command.results.clear();
             return;
         }
-        let key = (
-            self.command.query.clone(),
-            self.tabs.get(self.active).map(|t| (t.id, t.page)),
-            self.tabs.len(),
-        );
-        if open && self.command.results_for.as_ref() != Some(&key) {
-            self.command.results = entries(self, &self.command.query);
-            self.command.results_for = Some(key);
-            self.command.selected = 0;
+        if open {
+            self.refresh_command_results();
         }
         let (down, up, enter, escape) = if open {
             ctx.input_mut(|i| {
@@ -408,7 +432,7 @@ impl App {
                             let edit = ui.add_sized(
                                 vec2(ui.available_width() - 8.0, 44.0),
                                 egui::TextEdit::singleline(&mut bar.query)
-                                    .hint_text("Search commands, files, pages and layers")
+                                    .hint_text("Search or paste a Figma link")
                                     .font(egui::FontId::proportional(17.0))
                                     .vertical_align(egui::Align::Center)
                                     .frame(egui::Frame::NONE)
@@ -510,8 +534,14 @@ impl App {
         if !open {
             return;
         }
+        if self.refresh_command_results() {
+            // The rows painted above were for the previous query. A click on them is stale;
+            // Enter submits the first result for the text just entered instead.
+            run = enter.then_some(0);
+            ctx.request_repaint();
+        }
         if let Some(entry) = run.and_then(|i| self.command.results.get(i)) {
-            let target = entry.target;
+            let target = entry.target.clone();
             self.command.hide();
             self.run_target(target, ctx);
         } else if close {
@@ -521,6 +551,11 @@ impl App {
 
     fn run_target(&mut self, target: Target, ctx: &egui::Context) {
         match target {
+            Target::Link(link) => {
+                self.link.text = link;
+                self.apply(Action::OpenLink, ctx);
+                self.submit_link(ctx);
+            }
             Target::Action(action) => self.apply(action, ctx),
             Target::Settings(tab) => self.settings.show(Some(tab), ctx),
             Target::File(i) => {
@@ -720,8 +755,8 @@ mod tests {
         );
         let fit = entries(app, "zoom to fit");
         assert_eq!(
-            fit.first().map(|e| e.target),
-            Some(Target::Action(Action::ZoomFit))
+            fit.first().map(|e| &e.target),
+            Some(&Target::Action(Action::ZoomFit))
         );
         assert!(
             titles("export page")
@@ -732,7 +767,7 @@ mod tests {
         );
         let layer = entries(app, "symbols and images");
         assert!(
-            matches!(layer.first().map(|e| e.target), Some(Target::Layer(_))),
+            matches!(layer.first().map(|e| &e.target), Some(Target::Layer(_))),
             "{layer:?}"
         );
         assert!(titles("no such thing anywhere").is_empty());

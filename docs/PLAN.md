@@ -176,6 +176,9 @@ tiling would fix it); the Layers panel is not virtualised yet (fine at 9 000 row
       saved per file on this computer, never in the `.fig`; two-finger swipes over the
       sidebar move between spaces
 - [x] ⌘F finds text on the page (inside instances too), highlighted; ⌘L opens the command bar
+- [x] paste a figma.com or `figstudio://` URL into the command bar, then Enter or click
+      **Open Figma link** to open the matching local copy and reveal its node; use the existing
+      link window for progress, ambiguous matches and failures
 - [x] Settings (⌘,) in Arc's layout: General (appearance, Reduce motion, translucent sidebar,
       panels), Canvas (renderer for the next start, frame names, scroll wheel pans or zooms),
       Shortcuts (searchable, keycaps; every shortcut can be changed, removed or reset),
@@ -827,3 +830,4 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-20 — Figma links, approval nits: reaching the abandoned-listing cap now tells the caller to wait or restart figstudio, including after choosing a healthy folder. The cap regression failed without that guidance and passes with it; the new public message is covered by the redaction test. The already-answered timeout toast was already prevented by the answered-search guard; removing that guard made the existing regression fail. Not verified: recovery against a real hung network share.
 - 2026-10-20 — Cap-message follow-up: preserve the macOS permission hint alongside wait/restart guidance, clarify current-folder timeout versus abandoned-listing cap, and assert the exact cap error before and after switching folders. The platform-message test failed without the permission hint and passes with it. Live permission-dialog recovery was not rerun.
 - 2026-10-20 — Rebase integration with the Arc UI and browser proxy: preserve settings, command-bar shortcuts, tab colours, space styles and the link-open hooks. Open Figma link now uses configurable Cmd+Shift+L so Cmd+L stays with the command bar; its window reads the current theme palette. The shortcut regression failed with the conflicting Cmd+L binding and passes after restoration. Native menu interaction and the combined UI were not manually exercised.
+- 2026-10-20 — Command-bar links on PR #27: a pasted Figma or figstudio URL offers **Open Figma link**; Enter or a click submits its saved URL through the existing link opener. The link window keeps progress, ambiguous choices and failed input; ordinary searches remain searches. Five regressions failed before implementation and pass after it. Paste and Enter in one frame uses raw input and fails if the post-edit result refresh is removed. All 318 app tests passed in fast and debug profiles. Real native-menu paste and browser interaction were not manually exercised.
