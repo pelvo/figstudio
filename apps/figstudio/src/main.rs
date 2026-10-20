@@ -981,8 +981,8 @@ impl App {
         // Polled first, so a listing that came back this frame is not still counted as
         // blocked for the links taken next.
         self.poll_link_searches(&ctx);
-        for (link, done) in self.mcp.take_links() {
-            self.go_to_link(&ctx, &link, Some(done));
+        for ask in self.mcp.take_links() {
+            self.go_to_link_at(&ctx, &ask.link, Some(ask.done), ask.asked);
         }
         self.native_events(&ctx);
         // Ahead of the shortcuts: the dialog's Escape must be consumed first.

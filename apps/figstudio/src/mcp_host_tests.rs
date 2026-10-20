@@ -139,9 +139,11 @@ fn open_link_requests_wait_for_the_app_and_carry_its_answer() {
     });
     let (reply, mut answer) = tokio::sync::oneshot::channel();
     let link = "https://www.figma.com/design/K/Name?node-id=1-2".to_owned();
+    let asked = std::time::Instant::now();
     commands
         .send(Command::OpenLink {
             link: link.clone(),
+            asked,
             reply,
         })
         .unwrap();
@@ -153,9 +155,11 @@ fn open_link_requests_wait_for_the_app_and_carry_its_answer() {
     let mut links = host.take_links();
     assert_eq!(links.len(), 1);
     assert!(host.take_links().is_empty());
-    let (got, done) = links.remove(0);
-    assert_eq!(got, link);
-    done(Err("no local copy".to_owned()));
+    let got = links.remove(0);
+    assert_eq!(got.link, link);
+    // The caller's send time, not when the frame took it: the app's deadline counts from it.
+    assert_eq!(got.asked, asked);
+    (got.done)(Err("no local copy".to_owned()));
     assert_eq!(
         answer.try_recv().unwrap().unwrap_err().to_string(),
         "no local copy"

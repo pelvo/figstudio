@@ -98,7 +98,7 @@ async fn serve(snapshot: Snapshot, answer: Answer, opens_links: bool) -> App {
         while let Ok(command) = inbox.recv() {
             let (tab, node, reply) = match command {
                 Command::Reveal { tab, node, reply } => (tab, node, reply),
-                Command::OpenLink { link, reply } => {
+                Command::OpenLink { link, reply, .. } => {
                     seen_links.lock().unwrap().push(link.clone());
                     match answer {
                         Answer::Reply if link.contains("/Openable?") => {

@@ -72,6 +72,9 @@ pub enum Command {
     OpenLink {
         /// The link as the tool was given it.
         link: String,
+        /// When the tool sent this; its [`OPEN_TIMEOUT`] counts from here, so the app measures
+        /// its own deadline from here too (time queued before the app takes it included).
+        asked: std::time::Instant,
         /// What was done, one line, or why it could not be done.
         reply: oneshot::Sender<anyhow::Result<String>>,
     },
@@ -251,9 +254,13 @@ impl LiveFiles {
     /// Ask the app to open the local copy `link` names and reveal its node; wait up to
     /// [`OPEN_TIMEOUT`]. Returns the app's one-line answer.
     pub(crate) async fn open_link(&self, link: &str) -> Result<String, McpError> {
-        let link = link.to_owned();
-        self.ask(OPEN_TIMEOUT, |reply| Command::OpenLink { link, reply })
-            .await
+        let (link, asked) = (link.to_owned(), std::time::Instant::now());
+        self.ask(OPEN_TIMEOUT, |reply| Command::OpenLink {
+            link,
+            asked,
+            reply,
+        })
+        .await
     }
 
     /// Send the command `make` builds, wake the app and wait up to `timeout` for its answer.

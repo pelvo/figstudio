@@ -22,7 +22,7 @@ impl McpHost {
         None
     }
 
-    pub fn take_links(&mut self) -> Vec<(String, crate::link_open::Done)> {
+    pub fn take_links(&mut self) -> Vec<crate::link_open::LinkAsk> {
         Vec::new()
     }
 

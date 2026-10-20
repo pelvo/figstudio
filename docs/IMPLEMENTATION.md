@@ -574,37 +574,39 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   name), the window lists them to pick, and an MCP request fails. Nothing is chosen by date.
   A `.fig` does not store its figma.com key, so the file name is usually all there is.
 - **Off the UI thread:** a link that names a file starts a folder search on a `link-search`
-  thread (`LinkOpen::search`, `local_copies` by default). The thread also resolves each
-  copy's path (`real_paths`), and the loader resolves each tab's (`Tab::real_path`), so
-  `plan`, run by `poll_link_searches` each frame against the tabs open then, recognises an
-  open copy without I/O, including one opened while the folders were listed. A listing
-  that comes back while a file whose name the link matches is loading is held until that
-  load ends (the file is no tab yet, so it could not be told from a copy under another
-  spelling); other loads do not hold it. A held listing still fails at the timeout
-  (`StillLoading`). A copy whose load failed meanwhile (the worker sends its resolved path
-  with `Loaded::Err`; failing that, the path's `.`/`..` are folded by text) still takes part
-  in the ranking, so a worse match or the other half of a tie never takes its place; when it
-  is the one chosen, the link answers `LoadFailed` and it is not loaded again. A listing
-  that finished before its deadline is used even when the frame that polls it comes later
-  (the thread stamps its result); one that finished after it never is. Choosing another
-  folder forgets the listings of the old folders, so one stuck there no longer blocks
-  links. An MCP request whose copy is still loading at `ANSWER_BY` (55 s from the request,
-  under the server's 60 s `OPEN_TIMEOUT`) is answered "still opening"; the file still opens
-  and shows the node. Reading a folder can block (a network drive, or macOS asking to allow reading
-  `~/Downloads`), and the window keeps drawing meanwhile. `start_search` requests a frame and
-  each poll with a search running requests another in 250 ms, so the timeout fires even in
-  an idle window. After `SEARCH_TIMEOUT` (20 s) the link fails ("could not be read in time",
-  with a permission hint on macOS only) rather than the MCP call ending with "the app did
-  not respond"; timeouts are checked before results, so a late result is never used. A new
-  link from the window (a file link, or a node ID, shown or not in the file) replaces the
-  window's older search, Go on
-  the link already being searched for starts nothing, and closing the window cancels its
-  search; MCP calls each keep theirs. While a listing is still blocked past the timeout, new
-  links fail at once instead of starting more blocked threads, and a link refused that way
-  leaves the running search alone. `frame_ui` polls before taking MCP links, so a listing
-  that has just come back no longer counts as blocked. The window stays open with its text while searching and
-  after a miss, and closes once the link is shown or loading. In the browser the search runs
-  inline (there are no folders).
+  thread (`LinkOpen::search`, `local_copies` by default), so the window keeps drawing while a
+  folder is slow (a network drive, or macOS asking to allow reading `~/Downloads`). In the
+  browser the search runs inline (there are no folders).
+  - **Paths.** The thread resolves each copy's path (`real_paths`) and the loader resolves
+    each tab's (`Tab::real_path`), so `plan` recognises an open copy without I/O.
+  - **Each frame** `poll_link_searches`, in this order: drains finished listings and keeps a
+    result only if the thread's finish stamp is before its deadline (a result polled late
+    is still used; one that finished late never is); finishes the ready searches with
+    `plan`, against the tabs open now; then fails the searches past `SEARCH_TIMEOUT` (20 s):
+    "could not be read in time" (a permission hint on macOS only), or `StillLoading` for a
+    listing held for a load. `start_search` requests a frame, and each poll with work left
+    requests another in 250 ms, so the timeouts fire in an idle window too.
+  - **Loads.** A listing is held while a file whose name the link matches is loading (it is
+    no tab yet, so it could not be told from a copy spelled differently); other loads do not
+    hold it. A copy whose load failed meanwhile (`Loaded::Err` carries its resolved path;
+    failing that, `.`/`..` are folded by text) still takes part in the ranking, so a worse
+    match or the other half of a tie never takes its place; if it is chosen, the link
+    answers `LoadFailed` and it is not loaded again.
+  - **MCP budget.** `Command::OpenLink` carries when the tool sent it (`asked`). A request
+    still waiting for its copy to load at `ANSWER_BY` (55 s from `asked`, under the server's
+    60 s `OPEN_TIMEOUT`, queueing included) is answered "still opening"; the file still opens
+    and shows the node.
+  - **Stuck folders.** While a listing is blocked past the timeout, new links fail at once
+    rather than start another blocked thread. Choosing a folder (`set_dirs`), the same one
+    included, gives up on every running listing so links search again; at most
+    `MAX_ABANDONED` (3) given-up listings may still be waiting before links are refused.
+  - **The window.** A new link from it (a file link, or a node ID, shown or not) replaces its
+    older search; Go on the link already being searched for starts nothing; a link refused
+    because a listing is blocked leaves the running search alone; closing it cancels its
+    search. It stays open with its text while searching and after a miss, and closes once
+    the link is shown or loading. MCP calls each keep their own search. `frame_ui` polls
+    before taking MCP links, so a listing that has just come back no longer counts as
+    blocked.
 - **Messages:** `LinkError::local` (toasts, the window) names files and folders;
   `LinkError::public` (MCP answers) never carries paths, folder names or file names.
 - **Opening** pushes a `Waiting` entry and calls `App::open`; `poll` calls `link_loaded` when
@@ -615,7 +617,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   blocked listing, the frame a search schedules, a late result, a tab opened during the listing, a node ID or a refused link from the window,
   closing the window, a listing held while a file loads, an unrelated load, a held listing
   timing out, a copy whose load failed, a better match that failed, a listing stuck in old
-  folders, a listing polled late, a load past the caller's budget),
+  folders, a listing polled late, a load past the caller's budget, the same stuck folder chosen
+  again, the cap on given-up listings, the budget counted from the caller's send time),
   `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
 ### The browser app (`apps/figstudio` on wasm32)

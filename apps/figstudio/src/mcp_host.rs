@@ -61,7 +61,7 @@ struct Running {
     /// The bearer token of a remote bind, for the Copy button.
     token: Option<String>,
     /// `reveal_node` links whose file no tab shows, for `App::go_to_link` (`link_open.rs`).
-    links: Vec<(String, crate::link_open::Done)>,
+    links: Vec<crate::link_open::LinkAsk>,
 }
 
 impl McpHost {
@@ -153,7 +153,7 @@ impl McpHost {
     }
 
     /// The figma.com links `reveal_node` asked the app to open since the last call.
-    pub fn take_links(&mut self) -> Vec<(String, crate::link_open::Done)> {
+    pub fn take_links(&mut self) -> Vec<crate::link_open::LinkAsk> {
         self.running
             .as_mut()
             .map(|running| std::mem::take(&mut running.links))
@@ -228,11 +228,12 @@ impl Running {
                     // The tool may have timed out and dropped its receiver; nothing to tell then.
                     let _ = reply.send(result);
                 }
-                Command::OpenLink { link, reply } => {
+                Command::OpenLink { link, asked, reply } => {
                     let done: crate::link_open::Done = Box::new(move |result| {
                         let _ = reply.send(result.map_err(anyhow::Error::msg));
                     });
-                    self.links.push((link, done));
+                    self.links
+                        .push(crate::link_open::LinkAsk { link, asked, done });
                 }
             }
         }

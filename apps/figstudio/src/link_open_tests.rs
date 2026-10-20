@@ -850,3 +850,76 @@ fn a_load_that_outlasts_the_callers_budget_is_answered_and_still_shown() {
 fn mcp_requests_are_answered_before_the_server_gives_up() {
     assert!(super::ANSWER_BY < figstudio_mcp::live::OPEN_TIMEOUT);
 }
+
+#[test]
+fn choosing_the_same_stuck_folder_again_lets_links_search_again() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_search;
+    h.state_mut().link.search_timeout = std::time::Duration::from_millis(200);
+    assert!(h.state_mut().go_to_link(&ctx, &figma("A", "1-1"), None));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    h.step();
+    assert!(!h.state_mut().go_to_link(&ctx, &figma("B", "1-1"), None));
+    // The only folder (a share that has woken, say) is chosen again: a fresh search starts.
+    let dirs = h.state().link.dirs.clone();
+    h.state_mut().link.set_dirs(dirs);
+    assert!(h.state_mut().go_to_link(&ctx, &figma("B", "1-1"), None));
+    assert_eq!(h.state().link.searching(), 1);
+}
+
+#[test]
+fn retries_cannot_pile_up_blocked_threads() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_search;
+    let dirs = h.state().link.dirs.clone();
+    for i in 0..super::MAX_ABANDONED {
+        assert!(
+            h.state_mut()
+                .go_to_link(&ctx, &figma("A", "1-1"), Some(Box::new(|_| ()))),
+            "retry {i}"
+        );
+        h.state_mut().link.set_dirs(dirs.clone());
+    }
+    // Every listing so far is still hung: no further thread is started.
+    let (refused, rx) = done();
+    assert!(
+        !h.state_mut()
+            .go_to_link(&ctx, &figma("A", "1-1"), Some(refused))
+    );
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("could not be read in time"), "{error}");
+    // Once they come back, links search again.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    h.step();
+    assert!(h.state_mut().go_to_link(&ctx, &figma("A", "1-1"), None));
+}
+
+#[test]
+fn the_callers_budget_counts_from_when_it_asked_not_when_the_app_took_it() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = listed_structure;
+    h.state_mut().link.answer_by = std::time::Duration::from_secs(5);
+    // The request waited 10 s before a frame took it (a busy or hidden window).
+    let asked = web_time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(10))
+        .unwrap();
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link_at(&ctx, &figma("structure", "1-4"), Some(done), asked)
+    );
+    searched(&mut h);
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("still opening"), "{error}");
+    // The copy still opens and shows the node.
+    wait(&mut h, &mut Vec::new(), "the copy to open", |a| {
+        a.tabs.len() == 1
+    });
+    h.step();
+    assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 4)));
+}

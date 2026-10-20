@@ -43,6 +43,18 @@ pub(crate) const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 /// the file still opens and shows the node afterwards.
 pub(crate) const ANSWER_BY: Duration = Duration::from_secs(55);
 
+/// A link an MCP caller asked the app to show, and when it asked (its deadline counts from
+/// then, not from when the app took the request).
+pub(crate) struct LinkAsk {
+    pub link: String,
+    pub asked: web_time::Instant,
+    pub done: Done,
+}
+
+/// How many listings may be given up on (their folders chosen again or away from) while
+/// still blocked, before new links are refused rather than start yet another thread.
+pub(crate) const MAX_ABANDONED: usize = 3;
+
 /// A finished listing: its search id, what it found, and when it finished.
 type Found = (u64, Vec<Copy>, web_time::Instant);
 
@@ -69,7 +81,10 @@ pub(crate) struct LinkOpen {
     next_search: u64,
     /// Listings still running (search id, start), timed-out ones included: one that is past
     /// [`SEARCH_TIMEOUT`] and still blocked makes new links fail at once.
-    listings: Vec<(u64, web_time::Instant, Vec<PathBuf>)>,
+    listings: Vec<(u64, web_time::Instant)>,
+    /// Listings given up on by choosing folders, not back yet: they no longer block links, but
+    /// at [`MAX_ABANDONED`] new links are refused (each would leave another thread waiting).
+    abandoned: Vec<u64>,
     /// Finished searches: the search id and what it found.
     found_tx: Sender<Found>,
     found_rx: Receiver<Found>,
@@ -99,6 +114,7 @@ impl Default for LinkOpen {
             searches: Vec::new(),
             next_search: 0,
             listings: Vec::new(),
+            abandoned: Vec::new(),
             found_tx,
             found_rx,
             search: local_copies,
@@ -122,23 +138,27 @@ impl LinkOpen {
         self.searches.iter().any(|s| s.done.is_none())
     }
 
-    /// Whether a listing has run past the timeout and is still blocked. Only listings of
-    /// the current folders are kept here ([`Self::set_dirs`]).
+    /// Whether new links must not start a listing: one is past the timeout and still
+    /// blocked, or too many were given up on and are still blocked.
     fn blocked(&self) -> bool {
         let timeout = self.search_timeout;
-        self.listings
-            .iter()
-            .any(|(_, started, _)| started.elapsed() >= timeout)
+        self.abandoned.len() >= MAX_ABANDONED
+            || self
+                .listings
+                .iter()
+                .any(|(_, started)| started.elapsed() >= timeout)
     }
 
-    /// Search `dirs` from now on. Listings of other folders are forgotten, so one stuck in
-    /// a folder chosen away from no longer blocks links (its late result is still dropped).
+    /// Search `dirs` from now on. Every running listing is given up on, the same folder's
+    /// too: choosing a folder is how a person retries one that hung (a share that has woken),
+    /// so a stuck listing no longer blocks links. Up to [`MAX_ABANDONED`] may be waiting.
     #[cfg_attr(
         target_arch = "wasm32",
         expect(dead_code, reason = "the browser has no link folders to choose")
     )]
     pub(crate) fn set_dirs(&mut self, dirs: Vec<PathBuf>) {
-        self.listings.retain(|(_, _, listed)| *listed == dirs);
+        self.abandoned
+            .extend(self.listings.drain(..).map(|(id, _)| id));
         self.dirs = dirs;
     }
 }
@@ -151,7 +171,10 @@ struct Search {
     hint: FileHint,
     node: Option<Guid>,
     done: Option<Done>,
+    /// When the listing started, for [`SEARCH_TIMEOUT`].
     started: web_time::Instant,
+    /// When the link was asked for (an MCP caller's send time), for [`ANSWER_BY`].
+    asked: web_time::Instant,
     /// What the listing found, once it is back. Held while a file is loading: that file is
     /// not a tab yet, and its tab's real path is needed to tell it from a copy.
     found: Option<Vec<Copy>>,
@@ -409,6 +432,18 @@ impl App {
         text: &str,
         done: Option<Done>,
     ) -> bool {
+        self.go_to_link_at(ctx, text, done, web_time::Instant::now())
+    }
+
+    /// [`Self::go_to_link`] for a link asked for at `asked`: an MCP request, whose
+    /// [`ANSWER_BY`] counts from when the caller sent it.
+    pub(crate) fn go_to_link_at(
+        &mut self,
+        ctx: &egui::Context,
+        text: &str,
+        done: Option<Done>,
+        asked: web_time::Instant,
+    ) -> bool {
         self.link.choices.clear();
         let parsed = match parse(text) {
             Ok(parsed) => parsed,
@@ -427,7 +462,7 @@ impl App {
                         // file does not have); its older search is moot.
                         self.cancel_window_search();
                     }
-                    self.go_to(ctx, target, parsed.node, done, web_time::Instant::now())
+                    self.go_to(ctx, target, parsed.node, done, asked)
                 }
                 Err(error) => {
                     self.answer(ctx, done, Err(error));
@@ -466,6 +501,7 @@ impl App {
             node: parsed.node,
             done,
             started: web_time::Instant::now(),
+            asked,
             found: None,
         });
         true
@@ -483,9 +519,7 @@ impl App {
         let search = self.link.search;
         let dirs = self.link.dirs.clone();
         let found = self.link.found_tx.clone();
-        self.link
-            .listings
-            .push((id, web_time::Instant::now(), dirs.clone()));
+        self.link.listings.push((id, web_time::Instant::now()));
         let list = move || {
             let copies = real_paths(search(&dirs, &hint));
             // The app may have quit meanwhile; nobody to tell then.
@@ -528,7 +562,8 @@ impl App {
     pub(crate) fn poll_link_searches(&mut self, ctx: &egui::Context) {
         let timeout = self.link.search_timeout;
         while let Ok((id, copies, finished)) = self.link.found_rx.try_recv() {
-            self.link.listings.retain(|(listing, _, _)| *listing != id);
+            self.link.listings.retain(|(listing, _)| *listing != id);
+            self.link.abandoned.retain(|listing| *listing != id);
             if let Some(search) = self.link.searches.iter_mut().find(|s| s.id == id)
                 && finished.saturating_duration_since(search.started) < timeout
             {
@@ -609,7 +644,7 @@ impl App {
             }
             Ok(target) => {
                 let window = search.done.is_none();
-                if self.go_to(ctx, target, search.node, search.done, search.started) && window {
+                if self.go_to(ctx, target, search.node, search.done, search.asked) && window {
                     // Shown or loading: the window's job is done.
                     self.link.window = false;
                     if self.link.text.trim() == search.text {

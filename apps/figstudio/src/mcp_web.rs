@@ -196,7 +196,7 @@ impl McpHost {
     /// End of each frame: connect when asked, upload new tabs, tell the bridge about closed
     /// tabs and publish the view when it changed.
     /// The browser has no folders to open a link's local copy from (`reveal_node` refuses it).
-    pub fn take_links(&mut self) -> Vec<(String, crate::link_open::Done)> {
+    pub fn take_links(&mut self) -> Vec<crate::link_open::LinkAsk> {
         Vec::new()
     }
 
