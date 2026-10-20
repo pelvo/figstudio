@@ -38,6 +38,9 @@ const CARD_MIN: f32 = 210.0;
 const CARD_GAP: f32 = 20.0;
 /// A list row's height.
 const ROW: f32 = 54.0;
+/// Seconds between looks for moved or deleted files while the page is up (at most 60
+/// `stat` calls).
+const RECHECK: f64 = 1.0;
 /// The header: room kept for the title, Open file…'s width (and the narrowest it gets
 /// before it goes; ⌘O and the sidebar's + still open files), the view toggle's width.
 const HEADER_TITLE: f32 = 150.0;
@@ -105,18 +108,24 @@ pub struct Recents {
     file: Option<PathBuf>,
     /// Where the pictures are; `None` draws none.
     thumbs: Option<PathBuf>,
-    painter: Option<mpsc::Sender<ThumbJob>>,
+    painter: Option<mpsc::Sender<(u64, ThumbJob)>>,
     /// Pictures written since the last frame: their textures are loaded again.
     fresh: Arc<Mutex<Vec<PathBuf>>>,
     /// Picture files still wanted: a job finishing after its file was removed from the
     /// list writes nothing (checked and written under this lock).
-    wanted: Arc<Mutex<HashSet<PathBuf>>>,
+    /// Each maps to the newest job for it: an older job still rendering writes nothing, so
+    /// the last open's page wins.
+    wanted: Arc<Mutex<HashMap<PathBuf, u64>>>,
+    /// The number the next picture job gets.
+    next_job: u64,
     /// By picture file; `None` for none (yet).
     textures: HashMap<PathBuf, Option<egui::TextureHandle>>,
-    /// Files not found when the page last appeared.
+    /// Files not found when the page last looked.
     missing: HashSet<PathBuf>,
     /// The page was drawn in the last frame.
     shown: bool,
+    /// When the page last looked for moved or deleted files (`egui` time).
+    checked: f64,
     pub filter: String,
     /// The space colour of the card under the pointer: the window takes it (`App::tint_now`).
     pub hover: Option<theme::Colour>,
@@ -141,9 +150,11 @@ impl Recents {
             painter: None,
             fresh: Arc::default(),
             wanted: Arc::default(),
+            next_job: 0,
             textures: HashMap::new(),
             missing: HashSet::new(),
             shown: false,
+            checked: 0.0,
             filter: String::new(),
             hover: None,
         }
@@ -280,18 +291,18 @@ impl Recents {
             return;
         };
         if self.painter.is_none() {
-            let (tx, rx) = mpsc::channel::<ThumbJob>();
+            let (tx, rx) = mpsc::channel::<(u64, ThumbJob)>();
             let fresh = self.fresh.clone();
             let wanted = self.wanted.clone();
             let ctx = ctx.clone();
             let spawned = std::thread::Builder::new()
                 .name("thumbnails".into())
                 .spawn(move || {
-                    for job in rx {
+                    for (number, job) in rx {
                         // As in `Workers::export`: a picture that panics is skipped, not the
                         // thread; it only reads an immutable document.
                         let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            write_thumb(&job, &wanted)
+                            write_thumb(&job, number, &wanted)
                         }));
                         match done {
                             Ok(Ok(false)) => {}
@@ -311,15 +322,22 @@ impl Recents {
             }
             self.painter = Some(tx);
         }
-        self.wanted
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(out.clone());
+        let number = self.want(&out);
         if let Some(tx) = &self.painter
-            && tx.send(job(out)).is_err()
+            && tx.send((number, job(out))).is_err()
         {
             self.painter = None;
         }
+    }
+
+    /// Marks picture file `out` as wanted from a new job, and returns that job's number.
+    fn want(&mut self, out: &Path) -> u64 {
+        self.next_job += 1;
+        self.wanted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(out.to_path_buf(), self.next_job);
+        self.next_job
     }
 
     fn save(&self) {
@@ -371,10 +389,13 @@ impl Recents {
         texture
     }
 
-    /// Called each frame the page shows: on appearing it looks for moved or deleted files;
-    /// a freshly drawn picture is loaded again.
-    fn begin_frame(&mut self) {
-        if !self.shown {
+    /// Called each frame the page shows: on appearing, and every [`RECHECK`] seconds while
+    /// it stays up (a frame comes with any pointer move), it looks for moved or deleted
+    /// files, so a card, its label and its menu follow the disk; a freshly drawn picture is
+    /// loaded again.
+    fn begin_frame(&mut self, time: f64) {
+        if !self.shown || time - self.checked >= RECHECK {
+            self.checked = time;
             self.missing = self
                 .entries
                 .iter()
@@ -415,13 +436,18 @@ fn parse(bytes: &[u8]) -> Option<Vec<Entry>> {
     Some(entries)
 }
 
-/// Renders the job's page to fit [`THUMB_SIZE`] over the page's colour and saves it, if its
-/// file is still `wanted` (false: it was removed meanwhile, nothing written).
-fn write_thumb(job: &ThumbJob, wanted: &Mutex<HashSet<PathBuf>>) -> anyhow::Result<bool> {
+/// Renders the job's page to fit [`THUMB_SIZE`] over the page's colour and saves it, if job
+/// `number` is still the one `wanted` for its file (false: the file was removed, or opened
+/// again since; nothing written).
+fn write_thumb(
+    job: &ThumbJob,
+    number: u64,
+    wanted: &Mutex<HashMap<PathBuf, u64>>,
+) -> anyhow::Result<bool> {
     use anyhow::Context as _;
     let png = thumb_png(job)?;
     let wanted = wanted.lock().unwrap_or_else(|e| e.into_inner());
-    if !wanted.contains(&job.out) {
+    if wanted.get(&job.out) != Some(&number) {
         return Ok(false);
     }
     spaces::write_private(&job.out, &png).context("save the picture")?;
@@ -509,7 +535,7 @@ impl App {
     pub(crate) fn recents_page(&mut self, ui: &mut Ui, card: Rect) -> Option<Pick> {
         let ctx = ui.ctx().clone();
         let p = theme::of(ui);
-        self.recents.begin_frame();
+        self.recents.begin_frame(ctx.input(|i| i.time));
         self.recents.hover = None;
         let inner = card.shrink2(vec2(32.0, 26.0));
         let header = Rect::from_min_size(inner.min, vec2(inner.width(), 34.0));
@@ -1101,15 +1127,33 @@ mod tests {
         r.note(path, None, 1);
         let out = r.thumb_file(path).unwrap();
         // Queued (wanted), then removed before the job got to it.
-        r.wanted.lock().unwrap().insert(out.clone());
+        let first = r.want(&out);
         r.remove(path);
-        assert!(!write_thumb(&structure_job(out.clone()), &r.wanted).unwrap());
+        assert!(!write_thumb(&structure_job(out.clone()), first, &r.wanted).unwrap());
         assert!(!out.exists(), "Remove from recents sticks on disk");
         // Still wanted: written.
         r.note(path, None, 2);
-        r.wanted.lock().unwrap().insert(out.clone());
-        assert!(write_thumb(&structure_job(out.clone()), &r.wanted).unwrap());
+        let second = r.want(&out);
+        assert!(write_thumb(&structure_job(out.clone()), second, &r.wanted).unwrap());
         assert!(out.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn of_two_jobs_for_one_file_only_the_newest_writes() {
+        let dir = temp_dir("twice");
+        std::fs::create_dir_all(dir.join("thumbs")).unwrap();
+        let mut r = Recents::at(dir.join("recents.json"), Some(dir.join("thumbs")));
+        let path = Path::new("/z/a.fig");
+        r.note(path, None, 1);
+        let out = r.thumb_file(path).unwrap();
+        let older = r.want(&out);
+        let newer = r.want(&out);
+        assert!(write_thumb(&structure_job(out.clone()), newer, &r.wanted).unwrap());
+        assert!(
+            !write_thumb(&structure_job(out.clone()), older, &r.wanted).unwrap(),
+            "the older job, finishing last, does not replace the newer picture"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

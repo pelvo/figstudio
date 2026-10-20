@@ -1,5 +1,6 @@
 //! The Recents page through the real app (`recents.rs`). The list lives in memory here.
 use egui::accesskit::Role;
+use egui_kittest::kittest::NodeT as _;
 
 use super::*;
 
@@ -219,4 +220,29 @@ fn a_narrow_window_keeps_the_header_inside_the_card() {
             );
         }
     }
+}
+
+#[test]
+fn a_file_put_back_while_the_page_shows_is_offered_again_in_the_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = temp_copy(&dir, "back.fig");
+    let mut h = with_recents(std::slice::from_ref(&path));
+    std::fs::remove_file(&path).unwrap();
+    // The page sees it gone (the next time it looks).
+    h.run_steps(90);
+    h.event(egui::Event::PointerMoved(Pos2::new(5.0, 5.0)));
+    h.run_steps(2);
+    assert!(has(&h, "back.fig (missing)"));
+    temp_copy(&dir, "back.fig");
+    h.run_steps(90);
+    h.event(egui::Event::PointerMoved(Pos2::new(6.0, 5.0)));
+    h.run_steps(2);
+    assert!(has(&h, "back.fig"), "the card no longer says missing");
+    h.get_by_label("back.fig").click_secondary();
+    h.run_steps(3);
+    let open = h.get_by_label("Open");
+    assert!(
+        !open.accesskit_node().is_disabled(),
+        "the menu opens it again"
+    );
 }

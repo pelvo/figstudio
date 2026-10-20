@@ -453,11 +453,13 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   path are not listed) notes it and queues its picture: one `thumbnails` thread renders the
   page with its own image cache (never the canvas's: that would share its eviction clock,
   in-flight reads and failed marks) to fit 640×400 over the page colour, and writes
-  `thumbs/<hash of the path>.png` owner-only, only if that file is still wanted (Remove from
-  recents wins over a job in flight). The page reads at most three pictures a frame and
+  `thumbs/<hash of the path>.png` owner-only, only if that job is still the newest wanted for
+  the file (Remove from recents wins over a job in flight, and of two jobs for one file the
+  later one does). The page reads at most three pictures a frame and
   reloads one when the thread reports it. Files gone when the page appears are marked
-  Missing; a click looks at the disk again, opening a file that is back and marking one that
-  went, with a toast. The header keeps to the card: a narrow one drops the filter, then the
+  Missing, and looked for again each second while the page is up (with the next frame), so
+  a card's label and menu follow the disk; a click also looks, opening a file that is back
+  and marking one that went, with a toast. The header keeps to the card: a narrow one drops the filter, then the
   view toggle, then narrows Open. The browser has no paths to open again and keeps the plain empty state. Tests
   use `Recents::memory()` (no file, no pictures).
 - **Onboarding** (`onboarding.rs`). The first launch (and the first launch of a version
@@ -472,7 +474,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   shown for 0.8 s, one tip at a time sits to the right of its control with an arrow; the
   sidebar records where the controls are each frame (`Onboarding::targets`, cleared at the
   start of the frame): a tip whose control is hidden waits, and the next one shows (with the
-  sidebar closed, the sidebar tip comes first). A tip is done after Got it, Skip
+  sidebar closed, the sidebar tip comes first, says how to show it and is "Tip 1 of 3":
+  tips are numbered in the order they are met). A tip is done after Got it, Skip
   tips (all of them), or when the person does what it shows (`Onboarding::watch`: the
   command bar opened, another space with the same files open, the sidebar toggled). What
   was seen is `onboarding::Progress` in `UiState` (named bools: unknown fields are ignored,

@@ -368,4 +368,12 @@ fn with_the_sidebar_hidden_the_sidebar_tip_comes_first() {
     h.state_mut().onboarding.progress.tip_sidebar = false;
     wait_label(&mut h, "Make room", true);
     assert!(h.query_by_label("Search everything").is_none());
+    assert!(
+        h.query_by_label("Tip 1 of 3").is_some(),
+        "it is the first tip shown"
+    );
+    assert!(
+        h.query_by_label_contains("to show the sidebar").is_some(),
+        "the text says how to bring it back, not how to hide it"
+    );
 }

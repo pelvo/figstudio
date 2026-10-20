@@ -311,7 +311,8 @@ that tips come one at a time beside their control and go after Got it, Skip tips
 the control, that Help → Welcome tour from the command bar brings it all back, that the
 progress survives a restart and an older saved state, that the sheet keeps the wheel, a
 pinch, a sideways swipe and typing from what is under it and stops being modal as it fades,
-that with the sidebar hidden the sidebar tip comes first, and that the page's picture fades
+that with the sidebar hidden the sidebar tip comes first, numbered 1 and saying how to
+show it, and that the page's picture fades
 out with the sheet (frames 1/60 s apart with motion on; egui fades text by scaling its glyph
 colours, so the test reads those). A tip's first frame is egui's sizing
 pass, laid out where it will not stay; `wait_label` steps a few more frames before a click.
@@ -323,11 +324,12 @@ real app too; the tests do not see colours or placement beyond "right of the con
 empty page keeps Open file…, a loaded file is listed and its card opens it again, the
 filter narrows the cards (any case) and says when none match, the rows toggle is kept in
 `Prefs`, Remove from recents takes a card away, a moved file is marked missing and
-toasts instead of opening, a file deleted and put back while the page shows opens again,
+toasts instead of opening, a file deleted and put back while the page shows opens again (its card label and menu
+follow the disk too),
 bytes dropped without a path are not listed, the header stays inside a narrow card, and the
 window is Slate until the pointer is on a card, then takes that card's colour and goes back
-after. A unit test checks that a picture finished after Remove from recents is not
-written. The unit tests in `recents.rs` cover the list (front on reopen,
+after. Unit tests check that a picture finished after Remove from recents is not
+written, and that of two jobs for one file only the newest writes. The unit tests in `recents.rs` cover the list (front on reopen,
 cap with pictures deleted, restart, damaged list left alone, owner-only file), the "Opened
 … ago" wording and the picture size. Each was seen failing with its part removed (no note
 on load, Remove ignored, missing opened anyway, filter ignored, toggle not kept, no

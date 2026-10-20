@@ -71,9 +71,18 @@ impl Tip {
         }
     }
 
-    /// The text, with the person's own shortcut when the action has one.
-    fn body(self, keys: Option<&str>) -> String {
+    /// The text, with the person's own shortcut when the action has one. `sidebar_hidden`:
+    /// the sidebar tip says how to bring it back.
+    fn body(self, keys: Option<&str>, sidebar_hidden: bool) -> String {
         match (self, keys) {
+            (Tip::Sidebar, Some(k)) if sidebar_hidden => format!(
+                "Click here or press {k} to show the sidebar. Point at the window's left \
+                 edge to peek at it while it is hidden."
+            ),
+            (Tip::Sidebar, None) if sidebar_hidden => "Click here to show the sidebar. Point \
+                                                       at the window's left edge to peek at \
+                                                       it while it is hidden."
+                .to_owned(),
             (Tip::Command, Some(k)) => format!(
                 "Click here or press {k} to find pages, layers and commands, or paste a Figma \
                  link to jump to it."
@@ -109,6 +118,15 @@ impl Tip {
 
     fn index(self) -> usize {
         Tip::ALL.iter().position(|t| *t == self).unwrap_or(0)
+    }
+
+    /// Where it falls among the tips as the person meets them (one waiting for a hidden
+    /// control can come first): one more than the others already learned.
+    fn number(self, progress: &Progress) -> usize {
+        1 + Tip::ALL
+            .iter()
+            .filter(|t| **t != self && progress.done(**t))
+            .count()
     }
 }
 
@@ -717,9 +735,13 @@ impl App {
                         ui.set_width(TIP_WIDTH - 28.0);
                         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                         ui.label(
-                            RichText::new(format!("Tip {} of {}", tip.index() + 1, Tip::ALL.len()))
-                                .size(11.0)
-                                .color(tint.accent),
+                            RichText::new(format!(
+                                "Tip {} of {}",
+                                tip.number(&self.onboarding.progress),
+                                Tip::ALL.len()
+                            ))
+                            .size(11.0)
+                            .color(tint.accent),
                         );
                         ui.add_space(4.0);
                         ui.label(
@@ -730,7 +752,9 @@ impl App {
                         ui.add_space(4.0);
                         ui.add(
                             egui::Label::new(
-                                RichText::new(tip.body(keys)).size(12.5).color(p.text_dim),
+                                RichText::new(tip.body(keys, !self.show_left))
+                                    .size(12.5)
+                                    .color(p.text_dim),
                             )
                             .wrap(),
                         );
@@ -921,8 +945,10 @@ mod tests {
     fn every_tip_and_page_has_words_with_and_without_keys() {
         for tip in Tip::ALL {
             assert!(!tip.title().is_empty());
-            assert!(tip.body(Some("⌘K")).contains("⌘K"));
-            assert!(!tip.body(None).contains("press"));
+            for hidden in [false, true] {
+                assert!(tip.body(Some("⌘K"), hidden).contains("⌘K"));
+                assert!(!tip.body(None, hidden).contains("press"));
+            }
         }
         for page in Page::ALL {
             assert!(!page.title().is_empty());
