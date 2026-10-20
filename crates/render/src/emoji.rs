@@ -1,0 +1,96 @@
+//! Emoji markers use a colour strike or a counted outline fallback, never their blob.
+use std::sync::Arc;
+
+use figstudio_fig::Val;
+use vello_cpu::kurbo::{Affine, BezPath, Rect, Shape};
+use vello_cpu::peniko::{Fill, ImageQuality, ImageSampler};
+use vello_cpu::{Image, ImageSource, PaintType, Pixmap};
+
+use crate::{Ctx, geom::GeomPath, paint, text};
+
+#[derive(Clone, Debug)]
+#[cfg_attr(
+    not(feature = "system-fonts"),
+    expect(dead_code, reason = "no font decoder in wasm")
+)]
+pub(crate) enum Glyph {
+    Bitmap(Arc<Pixmap>),
+    /// Outline in em units, y up.
+    Mono(BezPath),
+}
+
+impl Ctx<'_> {
+    pub(crate) fn draw_emojis(&mut self, data: &Val, world: Affine, w: f64, h: f64) {
+        let Some(fill) = data.get("fillPaints").and_then(|p| {
+            p.items()
+                .iter()
+                .find(|p| p.flag("visible") != Some(false) && p.num("opacity").unwrap_or(1.0) > 0.0)
+        }) else {
+            return;
+        };
+        for glyph in text::visible_glyphs(data)
+            .iter()
+            .filter(|g| text::is_emoji(g))
+        {
+            let points = glyph
+                .get("emojiCodePoints")
+                .map(Val::items)
+                .unwrap_or_default();
+            let base = points
+                .iter()
+                .filter_map(Val::as_u32)
+                .filter_map(char::from_u32)
+                .find(|c| !matches!(*c as u32, 0x200D | 0xFE0E | 0xFE0F | 0x1F3FB..=0x1F3FF));
+            let size = f64::from(glyph.num("fontSize").unwrap_or(12.0));
+            let pixels = (size * paint::linear_scale(world))
+                .round()
+                .clamp(1.0, f64::from(u16::MAX)) as u16;
+            let resolved =
+                base.and_then(|ch| self.fonts.as_mut().and_then(|f| f.emoji(ch, pixels)));
+            let Some(resolved) = resolved.filter(|_| size.is_finite() && size > 0.0) else {
+                self.stats.emoji_skipped += 1;
+                continue;
+            };
+            let pos = glyph.get("position");
+            let x = f64::from(pos.and_then(|p| p.num("x")).unwrap_or(0.0));
+            let y = f64::from(pos.and_then(|p| p.num("y")).unwrap_or(0.0));
+            if !x.is_finite() || !y.is_finite() {
+                self.stats.emoji_skipped += 1;
+                continue;
+            }
+            self.stats.emoji_approximated +=
+                usize::from(points.len() > 1 || matches!(resolved, Glyph::Mono(_)));
+            match resolved {
+                Glyph::Bitmap(pixmap) => {
+                    let rect = Rect::new(x, y - 0.93 * size, x + size, y + 0.07 * size);
+                    let transform = Affine::translate((rect.x0, rect.y0))
+                        * Affine::scale_non_uniform(
+                            size / f64::from(pixmap.width()),
+                            size / f64::from(pixmap.height()),
+                        );
+                    self.rc.set_transform(world);
+                    self.rc.set_fill_rule(Fill::NonZero);
+                    self.rc.set_paint(PaintType::Image(Image {
+                        image: ImageSource::Pixmap(pixmap),
+                        sampler: ImageSampler {
+                            quality: ImageQuality::Medium,
+                            alpha: (fill.num("opacity").unwrap_or(1.0)
+                                * fill.get("color").and_then(|c| c.num("a")).unwrap_or(1.0))
+                            .clamp(0.0, 1.0),
+                            ..Default::default()
+                        },
+                    }));
+                    self.rc.set_paint_transform(transform);
+                    self.rc.fill_path(&rect.to_path(0.1));
+                    self.rc.set_paint_transform(Affine::IDENTITY);
+                }
+                Glyph::Mono(mut outline) => {
+                    outline.apply_affine(
+                        Affine::translate((x, y)) * Affine::scale_non_uniform(size, -size),
+                    );
+                    self.paint_paths(data, "fillPaints", &[GeomPath::plain(outline)], world, w, h);
+                }
+            }
+        }
+    }
+}

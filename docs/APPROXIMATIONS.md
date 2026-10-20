@@ -94,6 +94,32 @@ Code: the text path in `Ctx::draw_node` (`crates/render/src/lib.rs`). Text with
 
 **Exact fix:** in the system-font layout fallback, cut the last visible line and add "…".
 
+### C7. emoji approximated / emoji skipped
+
+Code: `text::stored_glyphs`, `Ctx::draw_emojis`, `emoji_font::resolve` (`crates/render/src`).
+Counts are per visible stored emoji glyph, not per text node; not included in the older totals above.
+`emojiCodePoints` marks an editor placeholder, so its stored square is never painted.
+
+- `emoji_approximated`: an outline-only face (including flattened COLR layers) drawn with the
+  text paint, or a multi-code-point sequence drawn using its first base scalar. A glyph with
+  both limitations is counted once. COLR palette, clips and compositing are not reproduced.
+- `emoji_skipped`: no usable installed face, invalid marker, unsupported or malformed strike,
+  or a build without `system-fonts`. Skipped glyphs leave no box. Truncated-away markers do
+  not count. Browser canvas remains skipped; the browser's lazy monochrome font is UI-only.
+- Native colour PNG strikes use the existing `ttf-parser` and `image` crates, bounded to
+  1024 pixels per side and 8 MiB decoder allocation; encoded strikes are capped at 4 MiB.
+  Draws use the stored glyph's em box, node transform, parent clip and paint/node opacity.
+  Recordings replay the same image paint; GPU-unsupported image tiles fall back to CPU and
+  increment the existing `gpu_fallback_tiles` counter.
+
+The warning chip, copied-image warning, CLI render/doctor counts, CLI info emoji summary,
+MCP screenshot notes and diff JSON carry these counters. `Stats::max_with` retains them
+across tiles. As with other render counters, work-budget truncation makes totals lower bounds.
+
+**Exact fix:** shape complete emoji sequences and support the native colour-outline formats;
+provide a browser canvas colour font/decoder. UI-only monochrome fallback does not clear
+these canvas counters. Cross-platform colour faces and real COLR fonts remain to be checked.
+
 ## Plan
 
 One fix at a time (they all touch `crates/render/src/lib.rs`), each with a synthetic test

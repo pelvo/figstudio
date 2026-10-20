@@ -77,10 +77,15 @@ fn gaps_keep_only_what_the_status_bar_warns_about() {
     let stats = Stats {
         nodes: 4,
         skipped_effects: 2,
+        emoji_approximated: 3,
+        emoji_skipped: 4,
         masks: 1,
         ..Stats::default()
     };
-    assert_eq!(gaps(&stats), "2 effects skipped");
+    assert_eq!(
+        gaps(&stats),
+        "3 emoji approximated, 4 emoji skipped, 2 effects skipped"
+    );
     assert_eq!(gaps(&Stats::default()), "");
 }
 

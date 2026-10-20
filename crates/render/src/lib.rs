@@ -8,6 +8,11 @@ pub use child_layout::{ChildLayout, InspectionWork};
 pub use paint_order::children_topmost_first;
 mod connector;
 mod effects;
+mod emoji;
+#[cfg(feature = "system-fonts")]
+mod emoji_font;
+#[cfg(all(test, feature = "system-fonts"))]
+mod emoji_tests;
 mod focus;
 pub mod geom;
 #[cfg(feature = "gpu")]
@@ -72,6 +77,10 @@ pub struct Stats {
     /// Truncated text (`textTruncation`) without usable stored glyphs: the fallback layout
     /// draws every line instead of ending with an ellipsis.
     pub text_truncation_ignored: usize,
+    /// Stored emoji drawn monochromatically or as the first base of a sequence.
+    pub emoji_approximated: usize,
+    /// Stored emoji not drawn because no usable font glyph was available.
+    pub emoji_skipped: usize,
     pub missing_images: usize,
     /// Image paints drawn with a placeholder or a blurrier copy while the image is read
     /// (lazily opened documents; see [`Frame::wanted`]).
@@ -119,6 +128,8 @@ impl Stats {
             text_system_fonts,
             text_missing,
             text_truncation_ignored,
+            emoji_approximated,
+            emoji_skipped,
             missing_images,
             images_loading,
             missing_symbols,
@@ -147,6 +158,8 @@ impl Stats {
         self.text_system_fonts = self.text_system_fonts.max(*text_system_fonts);
         self.text_missing = self.text_missing.max(*text_missing);
         self.text_truncation_ignored = self.text_truncation_ignored.max(*text_truncation_ignored);
+        self.emoji_approximated = self.emoji_approximated.max(*emoji_approximated);
+        self.emoji_skipped = self.emoji_skipped.max(*emoji_skipped);
         self.missing_images = self.missing_images.max(*missing_images);
         self.images_loading = self.images_loading.max(*images_loading);
         self.missing_symbols = self.missing_symbols.max(*missing_symbols);
@@ -187,6 +200,8 @@ impl fmt::Display for Stats {
         note(self.text_system_fonts, "text (system fonts)")?;
         note(self.text_missing, "text not drawn")?;
         note(self.text_truncation_ignored, "text truncation ignored")?;
+        note(self.emoji_approximated, "emoji approximated")?;
+        note(self.emoji_skipped, "emoji skipped")?;
         note(self.masks, "masks")?;
         note(self.shadows, "drop shadows")?;
         note(self.inner_shadows, "inner shadows")?;
@@ -1156,6 +1171,9 @@ impl Ctx<'_> {
             self.draw_drop_shadow(effect, &fill_paths, world);
         }
         self.paint_paths(data, "fillPaints", &fill_paths, world, w, h);
+        if kind == "TEXT" && !stale_glyphs {
+            self.draw_emojis(data, world, w, h);
+        }
         for effect in above {
             self.draw_inner_shadow(effect, &fill_paths, world);
         }
@@ -1302,7 +1320,7 @@ impl Ctx<'_> {
     fn text_paths(&mut self, data: &Val, stale_glyphs: bool) -> Vec<BezPath> {
         if !stale_glyphs {
             let stored = text::stored_glyphs(data, &self.doc.blobs);
-            if !stored.is_empty() {
+            if !stored.is_empty() || text::visible_glyphs(data).iter().any(text::is_emoji) {
                 self.stats.text_stored_glyphs += 1;
                 return stored;
             }

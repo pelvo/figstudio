@@ -311,6 +311,8 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-20 — Stored emoji markers no longer paint their placeholder blobs. Native rendering uses bounded PNG colour strikes or counted monochrome/base-scalar approximations; missing faces and browser canvas glyphs are counted as skipped. Added `emoji_approximated`/`emoji_skipped` through tile summaries, app warnings, CLI info/doctor, MCP notes and diff JSON. Synthetic sbix, empty-database, outline fallback, opacity/clip/replay and decoder-limit tests pass; square and colour regressions failed before the fix, limit/strike negative controls failed as expected. All seven public fixture renders match the baseline byte for byte; thumbnail sheet viewed. `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed. Reused `ttf-parser` and `image`; no new dependency or unsafe. Applied M-PANIC-IS-STOP (bounded untrusted image decoding), M-PUBLIC-DEBUG (glyph type), M-ERR-ERROR-TYPES (existing optional-font error boundary). Not verified: macOS/Windows colour faces, real COLR fonts, browser UI fallback (next lane), or runtime profiling.
+
 - 2026-10-20 — CI is the two required jobs again (`fmt + clippy`, `build + test`). Slice
   jobs compiled the same crates ten times and the pull request waited on the slowest of
   them, so they are gone. In-job `parallel` steps failed the workflow in zero seconds with

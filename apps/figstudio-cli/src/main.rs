@@ -241,6 +241,32 @@ fn print_tree(doc: &Document, id: Guid, indent: usize, depth: usize) {
     }
 }
 
+fn emoji_counts(doc: &Document) -> (usize, usize) {
+    let has_emoji = doc.nodes.iter().any(|node| {
+        node.data
+            .path(&["derivedTextData", "glyphs"])
+            .is_some_and(|glyphs| {
+                glyphs.items().iter().any(|g| {
+                    g.get("emojiCodePoints")
+                        .is_some_and(|v| !v.items().is_empty())
+                })
+            })
+    });
+    if !has_emoji {
+        return (0, 0);
+    }
+    let mut renderer = Renderer::new();
+    doc.pages
+        .iter()
+        .filter_map(|page| renderer.render_fit(doc, *page, 0.1, 0.0, None))
+        .fold((0, 0), |(approximated, skipped), frame| {
+            (
+                approximated + frame.stats.emoji_approximated,
+                skipped + frame.stats.emoji_skipped,
+            )
+        })
+}
+
 fn run(args: Args) -> Result<()> {
     if args.command == "doctor" {
         // Opens the file itself, to time it and to keep the path out of any error.
@@ -289,6 +315,8 @@ fn run(args: Args) -> Result<()> {
             }
             let components = doc.nodes.iter().filter(|n| n.kind == "SYMBOL").count();
             println!("components: {components}");
+            let (approximated, skipped) = emoji_counts(&doc);
+            println!("emoji:    {approximated} approximated, {skipped} skipped");
         }
         "tree" => {
             let page = pick_page(&doc, args.page.as_deref())?;
