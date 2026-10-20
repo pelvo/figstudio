@@ -180,20 +180,20 @@ pub fn show(
     if response.secondary_clicked() && !marquee::right_click(&response, tab, origin) {
         tab.select(tab.hover);
     }
-    marquee::update(ui, &response, tab, origin, tool == Tool::Select && !panning);
+    text_input(&response, tab, origin, tool == Tool::Select && !panning);
+    marquee::update(
+        ui,
+        &response,
+        tab,
+        origin,
+        tool == Tool::Select && !panning && tab.text_select.is_none(),
+    );
     if tab.marquee.menu {
         marquee::context(&response, tab);
     } else if let Some(id) = tab.selection {
         let mut picked = None;
         copy_menu::on_context(&response, tab, id, &mut picked);
         tab.pending_copy = picked.or(tab.pending_copy.take());
-    }
-    if response.double_clicked()
-        && tool == Tool::Select
-        && let Some(sel) = tab.selection
-    {
-        // Fitted from the target on the next frame, then eased to.
-        tab.fit_node = Some(sel);
     }
 
     // Rendering: cached tiles for the view on screen; missing tiles are requested for the
@@ -245,6 +245,7 @@ pub fn show(
             Stroke::new(1.5, theme::ACCENT.gamma_multiply(a)),
         );
     }
+    text_overlay(&painter, tab, origin);
     marquee::paint(&painter, tab, origin);
     tab.view = target;
 
@@ -252,6 +253,9 @@ pub fn show(
         _ if panning => egui::CursorIcon::Grab,
         Tool::Zoom => egui::CursorIcon::ZoomIn,
         Tool::Hand => egui::CursorIcon::Grab,
+        Tool::Select if tab.text_select.is_some_and(|s| Some(s.node) == tab.hover) => {
+            egui::CursorIcon::Text
+        }
         Tool::Select => egui::CursorIcon::Default,
     };
     if response.hovered() {
@@ -262,6 +266,102 @@ pub fn show(
         });
     }
     cursor_page
+}
+
+fn text_input(response: &egui::Response, tab: &mut Tab, origin: Pos2, enabled: bool) {
+    if !enabled {
+        return;
+    }
+    let at = |tab: &Tab, id, pos: Pos2| {
+        let p = tab.view.to_page(origin, pos);
+        let tf = absolute_transform(&tab.doc, id);
+        if !tf.determinant().is_finite() || tf.determinant().abs() < f64::EPSILON {
+            return None;
+        }
+        let local = tf.inverse() * Point::new(f64::from(p.x), f64::from(p.y));
+        crate::text_select::char_at(&tab.doc.node(id)?.data, local.x, local.y).map(|(i, _)| i)
+    };
+    if response.clicked()
+        && let Some(selection) = tab.text_select
+        && let Some(index) = response
+            .interact_pointer_pos()
+            .and_then(|p| at(tab, selection.node, p))
+    {
+        tab.text_select = Some(crate::text_select::Selection {
+            anchor: index,
+            head: index,
+            ..selection
+        });
+    }
+    if response.double_clicked()
+        && let Some(id) = tab.hover
+    {
+        tab.select(Some(id));
+        if let Some(node) = tab.doc.node(id)
+            && node.kind == "TEXT"
+        {
+            let index = response
+                .interact_pointer_pos()
+                .and_then(|p| at(tab, id, p))
+                .unwrap_or(0);
+            let head = if crate::text_select::range_rects(&node.data, 0, 0).is_none() {
+                crate::text_select::characters(&node.data).len()
+            } else {
+                index
+            };
+            tab.marquee.clear();
+            tab.text_select = Some(crate::text_select::Selection {
+                node: id,
+                anchor: index,
+                head,
+            });
+        } else {
+            tab.fit_node = Some(id);
+        }
+    }
+    if response.dragged_by(egui::PointerButton::Primary)
+        && let Some(selection) = tab.text_select
+        && let Some(index) = response
+            .interact_pointer_pos()
+            .and_then(|p| at(tab, selection.node, p))
+    {
+        tab.text_select = Some(crate::text_select::Selection {
+            head: index,
+            ..selection
+        });
+    }
+}
+
+fn text_overlay(painter: &egui::Painter, tab: &Tab, origin: Pos2) {
+    let Some(selection) = tab.text_select else {
+        return;
+    };
+    let Some(node) = tab.doc.node(selection.node) else {
+        return;
+    };
+    let rects = crate::text_select::range_rects(&node.data, selection.anchor, selection.head);
+    let quads = if let Some(rects) = rects {
+        let tf = absolute_transform(&tab.doc, selection.node);
+        rects
+            .into_iter()
+            .map(|r| {
+                [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)].map(|(x, y)| {
+                    let p = tf * Point::new(x, y);
+                    tab.view
+                        .to_screen(origin, Pos2::new(p.x as f32, p.y as f32))
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        corners(tab, origin, selection.node).into_iter().collect()
+    };
+    for quad in quads {
+        painter.add(egui::Shape::convex_polygon(
+            quad.to_vec(),
+            theme::ACCENT.gamma_multiply(0.25),
+            Stroke::NONE,
+        ));
+    }
 }
 
 /// The screen corners of a node's frame on the tab's page, following its rotation.

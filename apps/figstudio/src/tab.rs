@@ -54,6 +54,7 @@ pub struct Tab {
     /// Fit this node into view on the next canvas frame (`reveal_node` from an agent).
     pub fit_node: Option<Guid>,
     pub selection: Option<Guid>,
+    pub text_select: Option<crate::text_select::Selection>,
     pub hover: Option<Guid>,
     pub expanded: HashSet<Guid>,
     pub reveal: Option<Guid>,
@@ -121,6 +122,7 @@ impl Tab {
             fit_pending: true,
             fit_node: None,
             selection: None,
+            text_select: None,
             hover: None,
             expanded: HashSet::new(),
             reveal: None,
@@ -198,6 +200,7 @@ impl Tab {
         if self.page != page {
             self.page = page;
             self.selection = None;
+            self.text_select = None;
             self.hover = None;
             self.fit_pending = true;
         }
@@ -214,8 +217,30 @@ impl Tab {
         }
     }
 
+    /// Copy the active range, or the layer's characters outside text mode.
+    pub fn selected_text(&self) -> Option<&str> {
+        let id = self.selection?;
+        let text = crate::copy::text(self.doc.node(id)?)?;
+        let text = self.text_select.filter(|s| s.node == id).map_or(text, |s| {
+            crate::text_select::range_text(text, s.anchor, s.head)
+        });
+        (!text.is_empty()).then_some(text)
+    }
+
+    pub fn select_all_text(&mut self) {
+        if let Some(selection) = &mut self.text_select
+            && let Some(node) = self.doc.node(selection.node)
+        {
+            selection.anchor = 0;
+            selection.head = crate::text_select::characters(&node.data).len();
+        }
+    }
+
     /// Selects a node, switching page if needed and expanding its ancestors in the Layers tree.
     pub fn select(&mut self, id: Option<Guid>) {
+        if self.selection != id {
+            self.text_select = None;
+        }
         self.selection = id;
         let Some(id) = id else { return };
         if let Some(page) = self.doc.page_of(id)

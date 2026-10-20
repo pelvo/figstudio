@@ -19,6 +19,8 @@ use crate::App;
 mod chrome;
 #[path = "ui_copy_tests.rs"]
 mod copy;
+#[path = "ui_text_select_tests.rs"]
+mod text_select;
 // Without the `mcp` feature there is no View item (mcp_off.rs) and no tokio to test it with.
 #[cfg(feature = "mcp")]
 #[path = "ui_mcp_tests.rs"]
@@ -65,9 +67,14 @@ pub fn wait(
 
 /// The app on `structure.fig`, laid out and fitted (the canvas rect is known).
 pub fn harness() -> Harness<'static, App> {
+    harness_fixture(FIXTURE, 0.25)
+}
+
+pub fn harness_fixture(name: &str, step_dt: f32) -> Harness<'static, App> {
     let mut h = Harness::builder()
         .with_size(SIZE)
-        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE)]));
+        .with_step_dt(step_dt)
+        .build_eframe(|cc| App::new(cc, vec![fixture(name)]));
     wait(&mut h, &mut Vec::new(), "the file to load", |a| {
         a.tabs
             .first()

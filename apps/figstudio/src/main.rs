@@ -65,6 +65,7 @@ mod spaces;
 mod state;
 mod swipe;
 mod tab;
+mod text_select;
 mod theme;
 mod tile_cache;
 mod tile_queue;
@@ -831,6 +832,12 @@ impl App {
             let action = binding.action();
             let plain = keymap::Binding::is_plain(&shortcut);
             if (plain && quiet)
+                || (binding == B::SelectAll
+                    && (quiet
+                        || !self
+                            .tabs
+                            .get(self.active)
+                            .is_some_and(|t| t.text_select.is_some())))
                 || self.native_takes(action, Some(shortcut))
                 || (matches!(binding, B::NextMatch | B::PreviousMatch) && !self.find.is_open())
             {

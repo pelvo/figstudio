@@ -13,6 +13,7 @@ use crate::menu::Action;
 pub enum Binding {
     CommandBar,
     Copy,
+    SelectAll,
     FindOnPage,
     NextMatch,
     PreviousMatch,
@@ -61,9 +62,10 @@ const SPACE_LABELS: [&str; 9] = [
 ];
 
 impl Binding {
-    pub const ALL: [Binding; 29] = [
+    pub const ALL: [Binding; 30] = [
         Binding::CommandBar,
         Binding::Copy,
+        Binding::SelectAll,
         Binding::FindOnPage,
         Binding::NextMatch,
         Binding::PreviousMatch,
@@ -105,6 +107,7 @@ impl Binding {
         match self {
             Binding::CommandBar => "Command bar",
             Binding::Copy => "Copy the text of the selection",
+            Binding::SelectAll => "Select all text",
             Binding::FindOnPage => "Find on page",
             Binding::NextMatch => "Next match",
             Binding::PreviousMatch => "Previous match",
@@ -135,6 +138,7 @@ impl Binding {
         match self {
             Binding::CommandBar
             | Binding::Copy
+            | Binding::SelectAll
             | Binding::FindOnPage
             | Binding::NextMatch
             | Binding::PreviousMatch
@@ -160,6 +164,7 @@ impl Binding {
         match self {
             Binding::CommandBar => k(cmd, Key::L),
             Binding::Copy => k(cmd, Key::C),
+            Binding::SelectAll => k(cmd, Key::A),
             Binding::FindOnPage => k(cmd, Key::F),
             Binding::NextMatch => k(cmd, Key::G),
             Binding::PreviousMatch => k(shift_cmd, Key::G),
@@ -193,6 +198,7 @@ impl Binding {
         match self {
             Binding::CommandBar => Action::CommandBar,
             Binding::Copy => Action::CopyText,
+            Binding::SelectAll => Action::SelectAllText,
             Binding::FindOnPage => Action::FindOnPage,
             Binding::NextMatch => Action::FindNext,
             Binding::PreviousMatch => Action::FindPrevious,

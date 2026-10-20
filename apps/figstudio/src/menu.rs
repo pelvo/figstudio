@@ -6,6 +6,7 @@ pub(crate) enum Action {
     Open,
     OpenLink,
     CopyText,
+    SelectAllText,
     ExportPage(f64),
     ExportSelection(f64),
     CloseTab,
@@ -223,18 +224,19 @@ impl App {
                 self.link.focus = true;
             }
             Action::CopyText => {
-                // A selected TEXT layer copies its characters; anything else does nothing.
                 if let Some(tab) = self.tabs.get_mut(self.active)
-                    && let Some(id) = tab.selection
-                    && let Some(node) = tab.doc.node(id)
-                    && let Some(text) = crate::copy::text(node)
-                    && !text.is_empty()
+                    && let Some(text) = tab.selected_text()
                 {
                     tab.pending_copy = Some(crate::copy::Item::text(
                         "Copy text",
                         "text",
                         text.to_owned(),
                     ));
+                }
+            }
+            Action::SelectAllText => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.select_all_text();
                 }
             }
             Action::ExportPage(scale) => self.export_png(ctx, false, scale),
@@ -312,7 +314,9 @@ impl App {
                 }
             }
             Action::ClearSelection => {
-                if let Some(t) = self.tab() {
+                if let Some(t) = self.tab()
+                    && t.text_select.take().is_none()
+                {
                     t.select(None);
                 }
             }
