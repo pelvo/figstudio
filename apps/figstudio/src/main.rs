@@ -1046,8 +1046,10 @@ impl App {
 
         let has_tab = !self.tabs.is_empty();
         let mut show_right = has_tab && self.show_right;
+        // The Properties card follows the space's colour, crossfading with the window.
+        let card_p = p.on_tint(self.tint_now(&ctx));
         let card = egui::Frame::new()
-            .fill(p.card)
+            .fill(card_p.card)
             .corner_radius(egui::CornerRadius::same(theme::CARD_RADIUS))
             .stroke(egui::Stroke::new(1.0, p.card_stroke))
             .shadow(chrome::card_shadow(&p, 16))
@@ -1065,6 +1067,8 @@ impl App {
             .default_size(276.0)
             .size_range(220.0..=560.0)
             .show_collapsible(ui, &mut show_right, |ui| {
+                // The section wells (`panels::section`) read this.
+                ui.visuals_mut().faint_bg_color = card_p.well;
                 if let Some(tab) = self.tabs.get_mut(self.active) {
                     // Another selection's properties fade in.
                     ui.multiply_opacity(anim::arrive(

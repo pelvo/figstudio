@@ -2,7 +2,8 @@
 //!
 //! The window background is a gradient tinted per open file ([`Tint`], like Arc spaces). The
 //! sidebar sits straight on it with translucent rows; the canvas and the properties panel are
-//! opaque rounded cards. [`Palette`] holds the colours of one appearance; the app follows the
+//! opaque rounded cards, the properties card washed in the space's colour
+//! ([`Palette::on_tint`]). [`Palette`] holds the colours of one appearance; the app follows the
 //! system setting unless View > Appearance overrides it.
 
 use egui::{Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, Theme, Visuals};
@@ -88,6 +89,22 @@ pub const DARK: Palette = Palette {
     component: Color32::from_rgb(178, 150, 255),
     warning: Color32::from_rgb(240, 180, 70),
 };
+
+/// How much of a space's colour the properties card and its wells take.
+const CARD_TINT: f32 = 0.5;
+
+impl Palette {
+    /// This palette with the card and its wells washed in the space's `tint`, so the
+    /// properties card follows the space's colour. Text stays readable: the tint's own
+    /// colours already are, and these lie between them and the neutral card.
+    pub fn on_tint(self, tint: Tint) -> Palette {
+        Palette {
+            card: self.card.lerp_to_gamma(tint.top, CARD_TINT),
+            well: self.well.lerp_to_gamma(tint.top, CARD_TINT),
+            ..self
+        }
+    }
+}
 
 /// The palette of the context's current appearance.
 pub fn palette(ctx: &egui::Context) -> Palette {
@@ -764,6 +781,43 @@ mod tests {
             spread.len() >= TINTS - 1,
             "names spread over the tints: {spread:?}"
         );
+    }
+
+    #[test]
+    fn properties_card_takes_the_space_colour_and_stays_readable() {
+        let customs = [
+            [0, 0, 0],
+            [255, 230, 0],
+            [0, 40, 255],
+            [255, 0, 0],
+            [119, 119, 119],
+        ];
+        for p in [LIGHT, DARK] {
+            let spaces = (0..TINTS)
+                .map(Colour::Preset)
+                .chain(customs.map(Colour::Custom));
+            for colour in spaces {
+                let t = space_tint(colour, p.dark);
+                let card = p.on_tint(t);
+                for bg in [card.card, card.well] {
+                    assert!(contrast(p.text, bg) >= 7.0, "{colour:?} dark={}", p.dark);
+                    assert!(
+                        contrast(p.text_dim, bg) >= 4.5,
+                        "{colour:?} dark={}",
+                        p.dark
+                    );
+                    assert!(
+                        contrast(p.text_faint, bg) >= 3.0,
+                        "{colour:?} dark={}",
+                        p.dark
+                    );
+                }
+                // Wells still stand apart from the card they sit on.
+                assert_ne!(card.card, card.well, "{colour:?} dark={}", p.dark);
+            }
+            // A preset space shows: the card is no longer the neutral one.
+            assert_ne!(p.on_tint(tint(0, p.dark)).card, p.card, "dark={}", p.dark);
+        }
     }
 
     #[test]
