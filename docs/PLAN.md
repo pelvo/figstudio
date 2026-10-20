@@ -288,7 +288,9 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   jobs compiled the same crates ten times and the pull request waited on the slowest of
   them, so they are gone. In-job `parallel` steps failed the workflow in zero seconds with
   no jobs. The cache step now keeps this repo's crates. The macOS release job caches by
-  tag. Not timed. `scripts/check.sh --lint-one` and `--test-one` remain for a local slice.
+  tag. `scripts/check.sh --test` no longer runs the release rebuild or the wasm32 build.
+  On the last green CI those two steps were 3 minutes after the tests had already passed.
+  The full local gate still runs both. Not timed on a new run.
 
 - 2026-10-14 — Join an existing MCP room: Agent access gained Copy room link and Use room
   token (bare token, MCP URL or room link; invalid input toasts and changes nothing), and

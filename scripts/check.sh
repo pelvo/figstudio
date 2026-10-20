@@ -5,7 +5,9 @@
 #   scripts/check.sh --cross    also `cargo check` for macOS and Windows
 #   scripts/check.sh --web      also build the browser app (scripts/web-build.sh; nightly)
 #   scripts/check.sh --lint     only fmt and clippy (CI job "fmt + clippy")
-#   scripts/check.sh --test     only tests and builds (CI job "build + test")
+#   scripts/check.sh --test     tests only (CI job "build + test"). No release rebuild:
+#                               the test step already compiled the workspace, and a second
+#                               thin-LTO build was 3 of the 12 minutes on the last green CI.
 #   scripts/check.sh --lint-one NAME
 #   scripts/check.sh --test-one NAME
 #                               one independent slice (CI runs slices in parallel)
@@ -103,7 +105,16 @@ if [ "$MODE" != "--test" ]; then
 fi
 [ "$MODE" = "--lint" ] && { step "lint checks passed"; exit 0; }
 
-for name in tests-workspace tests-gpu tests-mcp-core release wasm32; do
+# --test stops after the tests. The release rebuild and the wasm32 build stay on the
+# full local gate. CI's macOS release job builds the binaries that ship.
+test_slices="tests-workspace tests-gpu tests-mcp-core"
+full_slices="$test_slices release wasm32"
+if [ "$MODE" = "--test" ]; then
+  slices="$test_slices"
+else
+  slices="$full_slices"
+fi
+for name in $slices; do
   step "$name"
   run_slice "$name"
 done
