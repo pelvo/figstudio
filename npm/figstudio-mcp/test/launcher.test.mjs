@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const launcher = join(here, "..", "bin", "figstudio-mcp.js");
 const root = join(here, "..", "..", "..");
-const { PLATFORMS, locate, packageName } = createRequire(import.meta.url)(launcher);
+const { KILL_AFTER_MS, PLATFORMS, locate, packageName } = createRequire(import.meta.url)(launcher);
 
 test("every platform has a release build, and the release builds only these", () => {
   const workflow = readFileSync(join(root, ".github", "workflows", "release-please.yml"), "utf8");
@@ -54,6 +54,60 @@ test("the launcher passes argv, stdin, stdout and the exit code through", { skip
   assert.equal(res.error, undefined, "the launcher finished");
   assert.equal(res.status, 7);
   assert.equal(res.stdout, 'args:--browser-proxy a b|{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+});
+
+// Runs the launcher on a fake binary that prints "ready <pid>", sends it `signals` 200 ms
+// apart, and returns its exit code and the time from the first signal to its exit. A
+// launcher that never exits is reported as "stuck" after 8 s, and both processes are
+// killed so a regression fails the test instead of hanging the run.
+async function signalled(script, signals) {
+  const dir = mkdtempSync(join(tmpdir(), "figstudio-npm-"));
+  const fake = join(dir, "fake-mcp");
+  writeFileSync(fake, script);
+  chmodSync(fake, 0o755);
+  const child = spawn(process.execPath, [launcher], {
+    env: { ...process.env, FIGSTUDIO_MCP_BINARY: fake },
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
+  const ready = String(await new Promise((resolve) => child.stdout.once("data", resolve)));
+  const fakePid = Number(ready.trim().split(" ")[1]);
+  const start = Date.now();
+  for (const [i, signal] of signals.entries()) {
+    if (i) await new Promise((resolve) => setTimeout(resolve, 200));
+    child.kill(signal);
+  }
+  let deadline;
+  const stuck = new Promise((resolve) => { deadline = setTimeout(resolve, 8000, "stuck"); });
+  const code = await Promise.race([exited, stuck]);
+  clearTimeout(deadline);
+  if (code === "stuck") {
+    child.kill("SIGKILL");
+    try { process.kill(fakePid, "SIGKILL"); } catch { /* already gone */ }
+  }
+  child.stdout.destroy();
+  return { code, ms: Date.now() - start };
+}
+
+const DIES = "#!/bin/sh\necho ready $$\nexec sleep 30\n";
+const IGNORES = "#!/bin/sh\ntrap '' INT TERM HUP\necho ready $$\nwhile :; do sleep 1; done\n";
+
+test("a signal reaches the binary and the launcher exits with it", { skip: process.platform === "win32", timeout: 10_000 }, async () => {
+  const { code, ms } = await signalled(DIES, ["SIGTERM"]);
+  assert.equal(code, 128 + 15, "SIGTERM");
+  assert.ok(ms < KILL_AFTER_MS, `exited at once (${ms} ms)`);
+});
+
+test("a second signal kills a binary that ignored the first", { skip: process.platform === "win32", timeout: 10_000 }, async () => {
+  const { code, ms } = await signalled(IGNORES, ["SIGTERM", "SIGTERM"]);
+  assert.equal(code, 128 + 9, "SIGKILL");
+  assert.ok(ms < KILL_AFTER_MS, `the second signal, not the timer (${ms} ms)`);
+});
+
+test("a binary still running after KILL_AFTER_MS is killed", { skip: process.platform === "win32", timeout: 10_000 }, async () => {
+  const { code, ms } = await signalled(IGNORES, ["SIGTERM"]);
+  assert.equal(code, 128 + 9, "SIGKILL");
+  assert.ok(ms >= KILL_AFTER_MS - 50 && ms < KILL_AFTER_MS + 3000, `after the grace time (${ms} ms)`);
 });
 
 test("a missing binary is reported on stderr with exit 1", () => {

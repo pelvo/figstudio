@@ -16,6 +16,9 @@ const PLATFORMS = {
   "win32-x64": { target: "x86_64-pc-windows-msvc", os: "win32", cpu: "x64" },
 };
 
+/** How long a child may run on after a forwarded signal before it gets SIGKILL. */
+const KILL_AFTER_MS = 2000;
+
 const CARGO_HINT =
   "Build it instead with: cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp";
 
@@ -72,8 +75,20 @@ function run(argv = process.argv.slice(2)) {
     }
   }
   const child = spawn(bin, argv, { stdio: "inherit", windowsHide: true });
+  // These handlers turn off Node's own exit on the signals, so the launcher waits for the
+  // child. The first signal is passed on; a second one, or a child still running
+  // KILL_AFTER_MS later, gets SIGKILL, so a host that gives up and kills the launcher does
+  // not leave a stuck child behind.
+  let forwarded = false;
   const forward = (signal) => {
-    if (!child.killed) child.kill(signal);
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    if (forwarded) {
+      child.kill("SIGKILL");
+      return;
+    }
+    forwarded = true;
+    child.kill(signal);
+    setTimeout(() => child.kill("SIGKILL"), KILL_AFTER_MS).unref();
   };
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, forward);
   child.on("error", (error) => {
@@ -85,6 +100,6 @@ function run(argv = process.argv.slice(2)) {
   });
 }
 
-module.exports = { SCOPE, PLATFORMS, packageName, binaryName, locate };
+module.exports = { SCOPE, PLATFORMS, KILL_AFTER_MS, packageName, binaryName, locate };
 
 if (require.main === module) run();
