@@ -4,18 +4,20 @@ use figstudio_fig::{
     Guid, Val,
     resolve::{self, InstancePath},
 };
-use figstudio_render::{Renderer, absolute_transform, kurbo::Affine};
+use figstudio_render::{absolute_transform, kurbo::Affine};
 
 impl Tab {
     /// Transient text data and its node-local to page transform, exactly as rendered.
     pub fn text_layout(&self) -> Option<(Guid, Affine, Val)> {
         if let Some(path) = &self.inner {
-            let resolved = resolve::resolve_path(&self.doc, path).ok()?;
-            if self.doc.node(resolved.node)?.kind != "TEXT" {
-                return None;
-            }
-            let (tf, data) = Renderer::new().path_layout(&self.doc, path)?;
-            return Some((resolved.node, tf, data));
+            return self.pick_cache.with(&self.doc, |renderer, definitions| {
+                let resolved = resolve::resolve_path_with(&self.doc, definitions, path).ok()?;
+                if self.doc.node(resolved.node)?.kind != "TEXT" {
+                    return None;
+                }
+                let (tf, data) = renderer.path_layout(&self.doc, path)?;
+                Some((resolved.node, tf, data))
+            });
         }
         let id = self.selection?;
         let node = self.doc.node(id)?;
@@ -59,13 +61,22 @@ impl Tab {
                 .is_some_and(|n| n.kind == "INSTANCE")
         {
             if down {
-                if let Some(path) =
-                    crate::instance_pick::first_child(&self.doc, selected, self.inner.as_ref())
-                {
+                let child = self.pick_cache.with(&self.doc, |_, definitions| {
+                    crate::instance_pick::first_child(
+                        &self.doc,
+                        definitions,
+                        selected,
+                        self.inner.as_ref(),
+                    )
+                });
+                if let Some(path) = child {
                     self.set_inner(Some(path));
                 }
             } else if let Some(path) = &self.inner {
-                self.set_inner(crate::instance_pick::parent(&self.doc, path));
+                let parent = self.pick_cache.with(&self.doc, |_, definitions| {
+                    crate::instance_pick::parent(&self.doc, definitions, path)
+                });
+                self.set_inner(parent);
             } else if let Some(parent) = crate::pick::parent(&self.doc, self.page, selected) {
                 self.select(Some(parent));
             }

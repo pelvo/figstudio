@@ -2,6 +2,8 @@
 //!
 //! The same code path serves the desktop app, the headless CLI and the browser build.
 
+mod child_layout;
+pub use child_layout::{ChildLayout, InspectionWork};
 mod connector;
 mod effects;
 mod focus;
@@ -237,6 +239,7 @@ enum Target<'p> {
 
 /// Holds caches (decoded images, system fonts) between renders of the same document.
 pub struct Renderer {
+    inspection_work: InspectionWork,
     images: Images,
     fonts: text::SystemFonts,
     /// Lay out text with installed fonts when the file has no stored glyph outlines.
@@ -272,6 +275,7 @@ impl Default for Renderer {
             fonts: text::SystemFonts::default(),
             system_fonts: true,
             indexes: None,
+            inspection_work: InspectionWork::default(),
         }
     }
 }
@@ -286,6 +290,8 @@ struct Ctx<'a> {
     /// Override scopes of the instances being drawn (the merge shared with `fig::resolve`).
     overrides: Overrides,
     variables: Arc<variables::Variables>,
+    definitions: Arc<resolve::Definitions>,
+    inspection_work: &'a mut InspectionWork,
     work_left: usize,
     depth: usize,
     exhausted: bool,
@@ -583,16 +589,7 @@ impl Renderer {
         preparation_skipped: usize,
     ) -> Ctx<'a> {
         self.images.begin_frame();
-        // Bounded by MAX_DECODED_NODES, so not charged to the per-frame work budget.
-        let (definitions, variables) = match &self.indexes {
-            Some((instance, d, v)) if *instance == doc.instance => (d.clone(), v.clone()),
-            _ => {
-                let d = Arc::new(resolve::definitions(doc));
-                let v = Arc::new(variables::Variables::new(doc));
-                self.indexes = Some((doc.instance, d.clone(), v.clone()));
-                (d, v)
-            }
-        };
+        let (definitions, variables) = self.document_indexes(doc);
         Ctx {
             doc,
             rc: canvas,
@@ -607,8 +604,10 @@ impl Renderer {
             } else {
                 None
             },
-            overrides: Overrides::new(definitions),
+            overrides: Overrides::new(definitions.clone()),
+            definitions,
             variables,
+            inspection_work: &mut self.inspection_work,
             work_left: work,
             depth: 0,
             exhausted: false,
@@ -1415,15 +1414,8 @@ impl Ctx<'_> {
             let Some(child) = self.doc.node(*id) else {
                 continue;
             };
-            let child_path = path.map(|p| {
-                let mut v = p.to_vec();
-                v.push(child.override_key());
-                v
-            });
-            let constraint_parent =
-                (path.is_some() && size(data) != size(&node.data)).then_some((&node.data, data));
-            let (child_data, stale_glyphs, approximate_ink) =
-                self.patched(child, child_path.as_deref(), constraint_parent);
+            let (child_path, (child_data, stale_glyphs, approximate_ink)) =
+                self.child_patch(node, data, child, path);
             if child_data.flag("mask") == Some(true) && visible(&child_data) {
                 if !self.charge_work() {
                     break;

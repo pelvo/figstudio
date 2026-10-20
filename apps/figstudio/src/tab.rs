@@ -43,6 +43,7 @@ pub struct Tab {
     /// recognised as this tab without disk access on the UI thread.
     pub real_path: PathBuf,
     pub doc: Arc<Document>,
+    pub pick_cache: crate::pick_cache::PickCache,
     /// First 16 hex of SHA-256 over the file size and first 4 MiB (`docs[].key`).
     #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     pub doc_key: Option<String>,
@@ -111,6 +112,7 @@ impl Tab {
         let folder = crate::spaces::folder_of(&path);
         Tab {
             id,
+            pick_cache: crate::pick_cache::PickCache::new(&doc),
             real_path: path.clone(),
             path,
             doc,

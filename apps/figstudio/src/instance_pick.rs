@@ -10,8 +10,12 @@ use std::sync::Arc;
 const BUDGET: usize = 2048;
 const DEPTH: usize = 128;
 
-pub fn parent(doc: &Document, path: &InstancePath) -> Option<InstancePath> {
-    let tree = resolve::tree_path(doc, path).ok()?;
+pub fn parent(
+    doc: &Document,
+    definitions: &Arc<resolve::Definitions>,
+    path: &InstancePath,
+) -> Option<InstancePath> {
+    let tree = resolve::tree_path_with(doc, definitions, path).ok()?;
     let parent = *tree.get(tree.len().checked_sub(2)?)?;
     if parent == path.instance() {
         return None;
@@ -44,19 +48,14 @@ fn children(
 
 pub fn first_child(
     doc: &Document,
+    definitions: &Arc<resolve::Definitions>,
     instance: Guid,
     path: Option<&InstancePath>,
 ) -> Option<InstancePath> {
-    children(
-        doc,
-        &Arc::new(resolve::definitions(doc)),
-        instance,
-        path,
-        BUDGET,
-    )
-    .into_iter()
-    .find(|n| n.data.flag("visible") != Some(false) && n.data.flag("mask") != Some(true))
-    .map(|n| n.path)
+    children(doc, definitions, instance, path, BUDGET)
+        .into_iter()
+        .find(|n| n.data.flag("visible") != Some(false) && n.data.flag("mask") != Some(true))
+        .map(|n| n.path)
 }
 
 fn reverse_order(doc: &Document, kind: &str, data: &Val) -> bool {
@@ -73,8 +72,7 @@ fn reverse_order(doc: &Document, kind: &str, data: &Val) -> bool {
 
 struct Hit<'a> {
     doc: &'a Document,
-    renderer: Renderer,
-    definitions: Arc<resolve::Definitions>,
+    renderer: &'a mut Renderer,
     left: usize,
 }
 
@@ -90,7 +88,9 @@ impl Hit<'_> {
         if self.left == 0 || depth >= DEPTH {
             return Vec::new();
         }
-        let mut nodes = children(self.doc, &self.definitions, instance, parent, self.left);
+        let mut nodes = self
+            .renderer
+            .child_layouts(self.doc, instance, parent, self.left);
         self.left = self.left.saturating_sub(nodes.len().max(1));
         if !reverse {
             nodes.reverse();
@@ -104,12 +104,7 @@ impl Hit<'_> {
             let Some(node) = self.doc.node(resolved.node) else {
                 continue;
             };
-            let Some(bounds) = self.renderer.path_bounds(self.doc, &resolved.path) else {
-                continue;
-            };
-            let Some((tf, data)) = self.renderer.path_layout(self.doc, &resolved.path) else {
-                continue;
-            };
+            let (bounds, tf, data) = (resolved.bounds, resolved.transform, resolved.data);
             if !tf.determinant().is_finite() || tf.determinant().abs() < f64::EPSILON {
                 continue;
             }
@@ -143,11 +138,20 @@ impl Hit<'_> {
     }
 }
 
+#[cfg(test)]
 pub fn hit_chain(doc: &Document, instance: Guid, point: Point) -> Vec<InstancePath> {
+    hit_chain_with(doc, &mut Renderer::new(), instance, point)
+}
+
+pub fn hit_chain_with(
+    doc: &Document,
+    renderer: &mut Renderer,
+    instance: Guid,
+    point: Point,
+) -> Vec<InstancePath> {
     Hit {
         doc,
-        renderer: Renderer::new(),
-        definitions: Arc::new(resolve::definitions(doc)),
+        renderer,
         left: BUDGET,
     }
     .walk(
@@ -162,6 +166,7 @@ pub fn hit_chain(doc: &Document, instance: Guid, point: Point) -> Vec<InstancePa
 
 pub fn click(
     doc: &Document,
+    definitions: &Arc<resolve::Definitions>,
     chain: &[InstancePath],
     selected: Option<&InstancePath>,
     deep: bool,
@@ -177,13 +182,13 @@ pub fn click(
                 .or(Some(selected))
                 .cloned();
         }
-        let mut ancestor = parent(doc, selected);
+        let mut ancestor = parent(doc, definitions, selected);
         for _ in 0..DEPTH {
             let Some(path) = ancestor else { break };
             if let Some(index) = chain.iter().position(|p| *p == path) {
                 return chain.get(index + 1).or(Some(&path)).cloned();
             }
-            ancestor = parent(doc, &path);
+            ancestor = parent(doc, definitions, &path);
         }
     }
     chain.first().cloned()

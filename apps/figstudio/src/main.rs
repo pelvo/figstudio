@@ -59,6 +59,7 @@ mod menu_native;
 mod menu_windows;
 mod panels;
 mod pick;
+mod pick_cache;
 mod recordings;
 mod region_copy;
 mod region_png;

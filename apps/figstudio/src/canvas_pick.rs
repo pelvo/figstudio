@@ -10,8 +10,7 @@ pub fn hover(tab: &Tab, point: Option<Point>, deep: bool) -> Option<InstancePath
     {
         return None;
     }
-    let hits = instance_pick::hit_chain(&tab.doc, instance, point?);
-    instance_pick::click(&tab.doc, &hits, tab.inner.as_ref(), deep, false)
+    tab.pick_cache.hover(tab, point?, deep)
 }
 
 pub fn outline(
@@ -21,7 +20,7 @@ pub fn outline(
     path: &InstancePath,
     stroke: egui::Stroke,
 ) {
-    if let Some(bounds) = figstudio_render::Renderer::new().path_bounds(&tab.doc, path) {
+    if let Some(bounds) = tab.pick_cache.bounds(&tab.doc, path) {
         let rect = egui::Rect::from_min_max(
             tab.view
                 .to_screen(origin, egui::pos2(bounds.x0 as f32, bounds.y0 as f32)),
@@ -47,8 +46,17 @@ pub fn click(tab: &mut Tab, chain: &[Guid], point: Option<Point>, deep: bool, dr
         && (deep || (previous == picked && (drill || tab.inner.is_some())))
         && let Some(point) = point
     {
-        let hits = instance_pick::hit_chain(&tab.doc, instance, point);
-        let path = instance_pick::click(&tab.doc, &hits, tab.inner.as_ref(), deep, drill);
+        let path = tab.pick_cache.with(&tab.doc, |renderer, definitions| {
+            let hits = instance_pick::hit_chain_with(&tab.doc, renderer, instance, point);
+            instance_pick::click(
+                &tab.doc,
+                definitions,
+                &hits,
+                tab.inner.as_ref(),
+                deep,
+                drill,
+            )
+        });
         tab.set_inner(path);
     }
     tab.inner != old_inner

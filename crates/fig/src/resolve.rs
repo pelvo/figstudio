@@ -22,7 +22,7 @@ pub use scale::{STROKE_LENGTHS, scale_inherited, uniform_scale};
 pub use swap::inherit_swapped;
 pub use walk::{
     InstancePath, MAX_RESOLVED_NODES, ResolveError, Resolved, Walk, resolve_instance, resolve_path,
-    tree_path, walk_instance, walk_path,
+    resolve_path_with, tree_path, tree_path_with, walk_instance, walk_path,
 };
 
 /// Instances nested deeper than this are not expanded. Guards against cycles and exponential

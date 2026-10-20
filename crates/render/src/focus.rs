@@ -3,13 +3,22 @@
 use std::borrow::Cow;
 
 use figstudio_fig::resolve::{self, InstancePath};
-use figstudio_fig::{Guid, Val};
+use figstudio_fig::{Guid, Node, Val};
 use vello_cpu::kurbo::Affine;
 
 use crate::geom::{affine, size};
 use crate::{Ctx, absolute_transform_with_budget, visible};
 
-impl Ctx<'_> {
+pub(super) struct Focus<'a> {
+    pub node: &'a Node,
+    pub data: Cow<'a, Val>,
+    pub parent: Affine,
+    pub path: Vec<Guid>,
+    pub stale: bool,
+    pub ink: bool,
+}
+
+impl<'a> Ctx<'a> {
     /// Walks from the instance down to the node at `path` the way `draw_instance` and
     /// `draw_children` would, then draws only that node when `draw` is set. Returns the node's
     /// captured layout under `transform`, or `None` when the path does not
@@ -21,8 +30,35 @@ impl Ctx<'_> {
         draw: bool,
         capture: impl FnOnce(Affine, &Val, bool) -> T,
     ) -> Option<T> {
+        let focused = self.focus_node(path.instance(), Some(path), transform)?;
+        let captured = capture(
+            focused.parent * affine(focused.data.get("transform")),
+            &focused.data,
+            focused.stale,
+        );
+        if draw {
+            self.draw_with_data(
+                focused.node,
+                focused.parent,
+                Some(&focused.path),
+                Some((focused.data, focused.stale, focused.ink)),
+            );
+        }
+        Some(captured)
+    }
+
+    pub(super) fn focus_node(
+        &mut self,
+        instance: Guid,
+        path: Option<&InstancePath>,
+        transform: Affine,
+    ) -> Option<Focus<'a>> {
+        self.inspection_work.focus_walks += 1;
         let doc = self.doc;
-        let chain = resolve::tree_path(doc, path).ok()?;
+        let chain = match path {
+            Some(path) => resolve::tree_path_with(doc, &self.definitions, path).ok()?,
+            None => vec![instance],
+        };
         let (top, rest) = chain.split_first()?;
         let mut parent = doc.node(*top)?;
         let mut parent_data: Cow<'_, Val> = Cow::Borrowed(&parent.data);
@@ -30,6 +66,16 @@ impl Ctx<'_> {
             Some(p) => transform * absolute_transform_with_budget(doc, p, &mut self.work_left)?,
             None => transform,
         };
+        if rest.is_empty() {
+            return visible(&parent_data).then_some(Focus {
+                node: parent,
+                data: parent_data,
+                parent: world,
+                path: Vec::new(),
+                stale: false,
+                ink: false,
+            });
+        }
         // Override path of `parent`; the outermost instance is drawn without one.
         let mut parent_path: Vec<Guid> = Vec::new();
         for (index, id) in rest.iter().enumerate() {
@@ -62,12 +108,14 @@ impl Ctx<'_> {
                 if !visible(&data) {
                     return None;
                 }
-                let transform = world * affine(data.get("transform"));
-                let captured = capture(transform, &data, stale);
-                if draw {
-                    self.draw_with_data(node, world, Some(&node_path), Some((data, stale, ink)));
-                }
-                return Some(captured);
+                return Some(Focus {
+                    node,
+                    data,
+                    parent: world,
+                    path: node_path,
+                    stale,
+                    ink,
+                });
             }
             parent = node;
             parent_data = Cow::Owned(data.into_owned());
