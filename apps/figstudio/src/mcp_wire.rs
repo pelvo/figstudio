@@ -226,6 +226,149 @@ pub(crate) fn valid_room(room: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Same-origin path the page asks once per load (and again on a Connect after a failed
+/// probe) to learn whether its origin runs the cloud relay Worker (`web/worker.mjs`).
+/// Root-relative, like the `/bridge/` socket URL.
+pub(crate) const RELAY_PROBE_PATH: &str = "/mcp/";
+/// Header only the relay Worker sets on its probe answer, and the one value it sets.
+pub(crate) const RELAY_PROBE_HEADER: &str = "figstudio-relay";
+pub(crate) const RELAY_PROBE_VALUE: &str = "1";
+/// A probe still unanswered by then counts as a failed request, so a request that never
+/// settles cannot hold a Cloud relay connect for the whole page load.
+#[cfg(target_arch = "wasm32")]
+pub(crate) const RELAY_PROBE_TIMEOUT_MS: i32 = 5_000;
+
+/// Whether this page's origin runs the cloud relay. A static-only deploy (no Worker)
+/// answers the probe with a missing asset or a fallback page, neither with the header,
+/// so Cloud relay is hidden there instead of opening a socket that can never connect.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CloudRelay {
+    /// The probe has not answered yet: offer the choice, but do not connect.
+    #[default]
+    Unknown,
+    Available,
+    /// The origin answered, without the Worker's header: a static-only deploy.
+    Absent,
+    /// The probe failed (offline, timed out, a server error, a sign-in redirect the page
+    /// may not follow): Cloud relay stays offered and the next connect asks again.
+    Unreachable,
+}
+
+impl CloudRelay {
+    /// `status` is `None` when the request itself failed. The browser follows redirects,
+    /// so a sign-in page that loads is judged like any other answer.
+    pub(crate) fn from_probe(status: Option<u16>, header: Option<&str>) -> Self {
+        match status {
+            None | Some(429 | 500..=599) => Self::Unreachable,
+            Some(200..=299) if header.is_some_and(|value| value.trim() == RELAY_PROBE_VALUE) => {
+                Self::Available
+            }
+            Some(_) => Self::Absent,
+        }
+    }
+
+    /// The menu offers Cloud relay unless the origin is known not to run it.
+    pub(crate) fn offered(self) -> bool {
+        self != Self::Absent
+    }
+}
+
+/// The toast for a Cloud relay connect on an origin without the relay Worker.
+pub(crate) const NO_CLOUD_RELAY: &str =
+    "This site has no cloud relay; use figstudio-mcp --browser-proxy or --bridge";
+/// The toast for a Cloud relay connect whose probe failed.
+pub(crate) const CLOUD_RELAY_UNREACHABLE: &str =
+    "Could not check whether this site runs the cloud relay; press Connect to try again";
+
+/// Holds a Cloud relay connect until the probe has answered, so none is dropped or sent
+/// down the local bridge: the page load's own connect, Connect, and Join / Apply /
+/// Regenerate all go through [`CloudGate::step`].
+#[derive(Debug, Default)]
+pub(crate) struct CloudGate {
+    waiting: Wait,
+}
+
+/// Who the waiting connect is for: a static-only deploy answers every page load, so only
+/// a connect the user asked for is told there is no relay.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Wait {
+    #[default]
+    None,
+    PageLoad,
+    Asked,
+}
+
+/// What the tab does about Cloud relay this frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CloudStep {
+    /// Open the socket now.
+    pub(crate) connect: bool,
+    /// Ask the origin again: the last probe failed and a connect was asked for.
+    pub(crate) probe: bool,
+    /// Leave Cloud relay: this origin has no relay Worker.
+    pub(crate) leave: bool,
+    /// A toast for a connect the probe's answer turned down.
+    pub(crate) notice: Option<&'static str>,
+}
+
+impl CloudGate {
+    /// The page load chose Cloud relay (`wanted`): connect once the probe confirms it.
+    pub(crate) fn page_load(wanted: bool) -> Self {
+        Self {
+            waiting: if wanted { Wait::PageLoad } else { Wait::None },
+        }
+    }
+
+    /// `cloud_mode`: the tab is on Cloud relay (not the local proxy or the upload bridge).
+    /// `asked`: a connect was asked for this frame. Outside Cloud relay the request passes
+    /// straight through, and a connect still waiting is dropped.
+    pub(crate) fn step(&mut self, relay: CloudRelay, cloud_mode: bool, asked: bool) -> CloudStep {
+        let waited = std::mem::take(&mut self.waiting);
+        if !cloud_mode {
+            return CloudStep {
+                connect: asked,
+                ..CloudStep::default()
+            };
+        }
+        let wait = if asked { Wait::Asked } else { waited };
+        let mut step = CloudStep::default();
+        match relay {
+            CloudRelay::Unknown => self.waiting = wait,
+            CloudRelay::Available => step.connect = wait != Wait::None,
+            CloudRelay::Absent => {
+                step.leave = true;
+                step.notice = (wait == Wait::Asked).then_some(NO_CLOUD_RELAY);
+            }
+            // Only a new request asks again, so one failed probe costs one toast and
+            // never becomes a probe loop.
+            CloudRelay::Unreachable if asked => {
+                step.probe = true;
+                self.waiting = Wait::Asked;
+            }
+            CloudRelay::Unreachable => {
+                step.notice = (wait != Wait::None).then_some(CLOUD_RELAY_UNREACHABLE);
+            }
+        }
+        step
+    }
+
+    /// The part of [`Self::step`] that applies before the menu draws: an origin known to
+    /// lack the relay leaves Cloud relay. A waiting connect is released only by `step`,
+    /// after the menu, so switching to Local bridge in that frame still cancels it.
+    pub(crate) fn before_menu(&mut self, relay: CloudRelay, cloud_mode: bool) -> CloudStep {
+        if relay == CloudRelay::Absent {
+            self.step(relay, cloud_mode, false)
+        } else {
+            CloudStep::default()
+        }
+    }
+
+    /// A Cloud relay connect is waiting for the probe.
+    pub(crate) fn waiting(&self) -> bool {
+        self.waiting != Wait::None
+    }
+}
+
 /// Location supplies the authority (including a development port), not a file name.
 /// The caller URL keeps its format; the room in it is now derived (mcp_pair.rs).
 pub(crate) fn relay_urls(protocol: &str, host: &str, room: &str) -> Option<(String, String)> {

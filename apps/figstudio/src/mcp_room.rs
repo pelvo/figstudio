@@ -1,7 +1,9 @@
 //! Persist the executor capability (`figstudio.mcp.executor.v2`); storage denial is
 //! visible, never a weak fallback. The caller room is always derived, never stored.
 use crate::mcp_pair::{self, ExecutorPair, Load, pair_from_input, pair_link};
-use crate::mcp_wire::relay_urls;
+use crate::mcp_wire::{
+    CloudRelay, RELAY_PROBE_HEADER, RELAY_PROBE_PATH, RELAY_PROBE_TIMEOUT_MS, relay_urls,
+};
 
 const STORAGE_KEY: &str = "figstudio.mcp.executor.v2";
 const LEGACY_KEY: &str = "figstudio.mcp.room";
@@ -222,6 +224,48 @@ pub(super) fn regenerate() -> Result<ExecutorPair, String> {
 pub(super) fn urls(room: &str) -> Option<(String, String)> {
     let location = web_sys::window()?.location();
     relay_urls(&location.protocol().ok()?, &location.host().ok()?, room)
+}
+
+/// Ask this origin whether it runs the cloud relay Worker (`GET /mcp/`). Only the status
+/// and one header are read; the request carries no room or executor.
+pub(super) async fn probe() -> CloudRelay {
+    use wasm_bindgen::JsCast;
+    let Some(window) = web_sys::window() else {
+        return CloudRelay::from_probe(None, None);
+    };
+    // Past the deadline the race settles with `undefined`, which is not a Response: the
+    // same failed request as a thrown fetch. The timer is always cleared, and a request
+    // the deadline beat is aborted, so Connects on a black-holed server never pile up
+    // open GETs.
+    let abort = web_sys::AbortController::new().ok();
+    let init = web_sys::RequestInit::new();
+    init.set_signal(abort.as_ref().map(|abort| abort.signal()).as_ref());
+    let mut timer = None;
+    let deadline = js_sys::Promise::new(&mut |resolve, _| {
+        timer = window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                resolve.unchecked_ref(),
+                RELAY_PROBE_TIMEOUT_MS,
+            )
+            .ok();
+    });
+    let fetch = window.fetch_with_str_and_init(RELAY_PROBE_PATH, &init);
+    let race = js_sys::Promise::race(&js_sys::Array::of2(&fetch, &deadline));
+    let answer = wasm_bindgen_futures::JsFuture::from(race)
+        .await
+        .ok()
+        .and_then(|value| value.dyn_into::<web_sys::Response>().ok());
+    if let Some(timer) = timer {
+        window.clear_timeout_with_handle(timer);
+    }
+    let Some(response) = answer else {
+        if let Some(abort) = &abort {
+            abort.abort();
+        }
+        return CloudRelay::from_probe(None, None);
+    };
+    let header = response.headers().get(RELAY_PROBE_HEADER).ok().flatten();
+    CloudRelay::from_probe(Some(response.status()), header.as_deref())
 }
 
 /// `https://<host>/#room=<derived>&exec=<executor>`, the link that joins this room —

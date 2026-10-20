@@ -15,10 +15,17 @@ impl McpHost {
             1u8
         };
         let mut mode = current_mode;
+        let cloud_offered = self.cloud.get().offered();
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut mode, 0, "Cloud relay");
+            if cloud_offered {
+                ui.selectable_value(&mut mode, 0, "Cloud relay");
+            }
             ui.selectable_value(&mut mode, 1, "Local bridge");
         });
+        if !cloud_offered && self.proxy.is_none() {
+            ui.label("This site has no cloud relay. For an agent on this computer, run");
+            ui.label("`figstudio-mcp --browser-proxy` (zero upload) or `--bridge`.");
+        }
         if mode != current_mode {
             self.proxy = None;
             self.relay = mode == 0;
@@ -133,6 +140,9 @@ impl McpHost {
         if self.conn.is_none() {
             if ui.button("Connect").clicked() {
                 self.want_connect = true;
+            }
+            if self.relay && self.proxy.is_none() && self.cloud_gate.waiting() {
+                ui.label("Checking that this site runs the cloud relay…");
             }
         } else if ui.button("Disconnect").clicked() {
             self.stop();
