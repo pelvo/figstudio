@@ -35,11 +35,13 @@ fi
 # fontTools' own Python (pyftsubset may be a pipx/uv tool, not the system python3).
 py=$(sed -n '1s/^#! *//p' "$subset" 2>/dev/null || true)
 if [ -z "$py" ] || ! "$py" -c 'import fontTools' 2>/dev/null; then py=python3; fi
-"$py" scripts/web-symbol-font.py "$out"
 if [ ! -f "$src" ] || [ -z "$subset" ]; then
   if [ "${FIGSTUDIO_ALLOW_MISSING_CJK:-0}" = "1" ]; then
     echo "web-font: no Noto Sans CJK or no pyftsubset; CJK names will show as boxes" \
       "(allowed by FIGSTUDIO_ALLOW_MISSING_CJK=1)" >&2
+    # The local-dev opt-out tolerates missing symbol inputs too (both need fontTools).
+    FIGSTUDIO_ALLOW_MISSING_SYMBOLS=${FIGSTUDIO_ALLOW_MISSING_SYMBOLS:-1} \
+      "$py" scripts/web-symbol-font.py "$out"
     exit 0
   fi
   echo "web-font: no Noto Sans CJK or no pyftsubset; CJK names would show as boxes," \
@@ -101,3 +103,6 @@ done
   echo "licensed under the SIL Open Font License 1.1 (https://openfontlicense.org)."
   if [ -n "$license" ]; then echo; cat "$license"; fi
 } >"$out/cjk-LICENSE.txt"
+# Built after the CJK group (and on its opt-out path above): a missing CJK input reports
+# itself first, and the symbol group has its own opt-out, FIGSTUDIO_ALLOW_MISSING_SYMBOLS.
+"$py" scripts/web-symbol-font.py "$out"
