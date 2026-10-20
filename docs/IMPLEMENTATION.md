@@ -8,7 +8,9 @@ do. Read `AGENTS.md` first. Testing is in `docs/TESTING.md`; status is in `docs/
 `apps/figstudio/src/menu.rs` defines menu state and `Action`; `App::apply` handles
 commands from clicks and shortcuts. `menu_egui.rs` renders Linux/web menus and the
 headless/native-attach fallback behind the sidebar's "⋯" button (File, View and Help as
-submenus); the command bar (`command.rs`) lists the same enabled commands. `menu_windows.rs` hosts Agent access and About.
+submenus); the command bar (`command.rs`) lists the same enabled commands. `menu_windows.rs` draws the
+Settings window, where Agent access and About now live (View → Agent access… and Help → About
+open those tabs).
 `menu_native.rs` attaches muda on macOS/Windows in the eframe creation closure;
 `menu_dispatch.rs` drains queued ids with repaint and synchronizes changed flags.
 macOS owns Open, Close file, selection-export, command bar (⌘L), find (⌘F) and sidebar (⌘\)
@@ -410,7 +412,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   25 ms, or in the very next frame up to 0.2 s when the UI thread hitched) is ignored up to
   its own end; one momentum per lift, so a start after it is new fingers. The moves of one
   frame share its time, so `Swipe::feed_frame` counts them as one sample (their sum over the
-  frame time) for the flick speed. A click on the next or previous dot turns a whole page
+  frame time) for the flick speed; in the frame a swipe started in, that is the time since
+  the last frame, counted in full, so a flick that lands whole in one frame still turns. A click on the next or previous dot turns a whole page
   too, and both pages stay side by side until the spring settles; only a far jump's short
   nudge fades (`App::slide_nudge`, `chrome::sidebar_pages`). The lists scroll vertically
   only.
@@ -519,8 +522,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 
 ### MCP inside the app (`mcp_host.rs`, desktop only)
 
-- The View menu item **Agent access (MCP server)** starts the live server. It is off at every
-  launch. `mcp_off.rs` is the same API with no thread, used when the `mcp` feature is off or on
+- **View → Agent access…** opens Settings → Agents; the **Agent access** switch there starts
+  the live server. It is off at every launch. `mcp_off.rs` is the same API with no thread, used when the `mcp` feature is off or on
   wasm32, so the UI code does not change.
 - **Threads.** `McpHost::start` spawns one thread named `mcp`. It runs a 2-worker tokio runtime,
   binds the first free of 127.0.0.1:3845 to :3855 (`bind_first`), and serves `serve_http` with

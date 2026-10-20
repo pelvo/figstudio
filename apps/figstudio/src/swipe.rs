@@ -63,6 +63,10 @@ pub struct Swipe {
     /// end it (macOS ends the momentum, then starts the new gesture).
     momentum: bool,
     last: f64,
+    /// The frame the swipe started in (a phased Start).
+    started: Option<u64>,
+    /// The times of the frame before this one and of this one.
+    frames: (f64, f64),
 }
 
 impl Swipe {
@@ -76,6 +80,9 @@ impl Swipe {
         now: f64,
         frame: u64,
     ) -> Option<End> {
+        if now > self.frames.1 {
+            self.frames = (self.frames.1, now);
+        }
         let mut ended = None;
         let mut moved: Option<Vec2> = None;
         for &(delta, phase) in events {
@@ -113,6 +120,7 @@ impl Swipe {
             }
             TouchPhase::Start => {
                 self.restart(true);
+                self.started = Some(frame);
                 None
             }
             TouchPhase::End | TouchPhase::Cancel if self.momentum => {
@@ -132,9 +140,18 @@ impl Swipe {
                     // A device without phases: the first event starts the swipe.
                     self.restart(false);
                 }
+                // Moves in the frame their swipe started in have that frame's time too: they
+                // took at most the time since the last frame (a whole flick can land in one),
+                // and with nothing before them to smooth against, count in full.
+                let same_frame = gap <= 0.0 && self.started == Some(frame);
+                let gap = if same_frame { now - self.frames.0 } else { gap };
                 if gap > 0.0 && gap < 0.1 {
                     let speed = delta.x / gap as f32;
-                    self.velocity = self.velocity * 0.6 + speed * 0.4;
+                    self.velocity = if same_frame {
+                        speed
+                    } else {
+                        self.velocity * 0.6 + speed * 0.4
+                    };
                 }
                 match self.axis {
                     None => {
@@ -179,6 +196,7 @@ impl Swipe {
             phased,
             last: self.last,
             lifted: self.lifted,
+            frames: self.frames,
             ..Self::default()
         };
     }
@@ -190,6 +208,7 @@ impl Swipe {
         });
         *self = Self {
             last: self.last,
+            frames: self.frames,
             lifted: self.lifted,
             ..Self::default()
         };
@@ -254,6 +273,32 @@ mod tests {
         assert_eq!(end.offset, -52.0);
         assert!(end.velocity <= -FLICK_SPEED, "{}", end.velocity);
         assert_eq!(end.turn(200.0), -1, "a flick, not a slow drag");
+    }
+
+    #[test]
+    fn a_flick_that_starts_moves_and_ends_in_one_frame_still_turns() {
+        let mut s = Swipe::default();
+        s.feed_frame(&[], 1.0, 1);
+        // A hitch: the whole flick arrives between two frames, all at the second's time.
+        let mut flick = vec![(Vec2::ZERO, TouchPhase::Start)];
+        flick.extend([(vec2(-25.0, 0.0), TouchPhase::Move); 4]);
+        flick.push((Vec2::ZERO, TouchPhase::End));
+        let end = s.feed_frame(&flick, 1.05, 2).expect("ended");
+        assert_eq!(end.offset, -100.0);
+        assert!(end.velocity <= -FLICK_SPEED, "{}", end.velocity);
+        assert_eq!(end.turn(400.0), -1, "a flick, not a slow drag");
+        // A swipe that started in an earlier frame measures from that frame, as before.
+        let mut s = Swipe::default();
+        s.feed_frame(&[(Vec2::ZERO, TouchPhase::Start)], 2.0, 3);
+        s.feed_frame(&[(vec2(-20.0, 0.0), TouchPhase::Move)], 2.016, 4);
+        let end = s
+            .feed_frame(&[(Vec2::ZERO, TouchPhase::End)], 2.032, 5)
+            .expect("ended");
+        assert!(
+            (end.velocity + 20.0 / 0.016 * 0.4).abs() < 1.0,
+            "{}",
+            end.velocity
+        );
     }
 
     #[test]
