@@ -193,7 +193,16 @@ fn enter_symbol<'d>(
 
 /// The node at `path` with every override applied.
 pub fn resolve_path(doc: &Document, path: &InstancePath) -> Result<Resolved, ResolveError> {
-    let mut overrides = Overrides::new(Arc::new(definitions(doc)));
+    resolve_path_with(doc, &Arc::new(definitions(doc)), path)
+}
+
+/// [`resolve_path`] with a definitions index shared by readers of the same document.
+pub fn resolve_path_with(
+    doc: &Document,
+    definitions: &Arc<Definitions>,
+    path: &InstancePath,
+) -> Result<Resolved, ResolveError> {
+    let mut overrides = Overrides::new(definitions.clone());
     let (_, node, data) = descend(doc, &mut overrides, path)?;
     Ok(Resolved {
         path: path.clone(),
@@ -207,7 +216,16 @@ pub fn resolve_path(doc: &Document, path: &InstancePath) -> Result<Resolved, Res
 /// The document nodes from the instance down to the node at `path`, both included: ordinary
 /// frames and groups, nested instances and the target, in tree order.
 pub fn tree_path(doc: &Document, path: &InstancePath) -> Result<Vec<Guid>, ResolveError> {
-    let mut overrides = Overrides::new(Arc::new(definitions(doc)));
+    tree_path_with(doc, &Arc::new(definitions(doc)), path)
+}
+
+/// [`tree_path`] with a definitions index shared by readers of the same document.
+pub fn tree_path_with(
+    doc: &Document,
+    definitions: &Arc<Definitions>,
+    path: &InstancePath,
+) -> Result<Vec<Guid>, ResolveError> {
+    let mut overrides = Overrides::new(definitions.clone());
     descend(doc, &mut overrides, path).map(|(chain, _, _)| chain)
 }
 

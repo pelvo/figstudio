@@ -479,7 +479,24 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   selection.
 - The canvas card has round corners: the page background is a rounded rect and tiles that
   reach into a corner are drawn as a polygon cut to it (`tiles_view::rounded_clip`).
-- View jumps (fit, zoom buttons and keys, the Zoom tool, double-click) ease over 0.28 s:
+- Canvas picking uses `hit_chain` and `pick.rs`: plain click keeps the selected layer or
+  its nearest common ancestor's child, starting at the page's child (inside a top-level
+  FRAME, its direct child). Hover and right-click use the same target; Cmd/Ctrl-click selects deepest.
+  Double-click drills one level and enters read-only text selection upon reaching TEXT,
+  never zooming. Rebindable Enter selects the first visible child; Shift+Enter selects
+  the parent without crossing the page. Both wait while a field, find or command bar is up.
+  `canvas_pick.rs` and `instance_pick.rs` extend this context rule through resolved instances.
+  `Tab.inner` stores the inner path while `Tab.selection` stays at the outer instance for
+  panels, MCP, export and context menus. Inner selection clears with selection/page changes
+  or Escape. Double-click drills one inner level, then another double-click on inner TEXT
+  enters read-only text mode; Shift+Enter visits both ordinary and nested-instance parents.
+  Walks have depth/node budgets, respect masks, visibility, clipping and paint order, and use
+  `Renderer::path_bounds` for selection and hover outlines. `canvas_text.rs` uses
+  `Renderer::path_layout` for renderer-patched data and transforms, including constraints, scale and text overrides.
+  Stale stored glyphs are discarded only in that transient layout, giving whole-text
+  fallback without modifying the writable document. Properties and copy menus remain
+  outer-instance based.
+- View jumps (fit, zoom buttons and keys, the Zoom tool) ease over 0.28 s:
   `Tab::view` is the target (the MCP and the next jump see it); `canvas::show` takes the
   eased `shown_view` (kept in `Tab::shown`), which zooms geometrically around the page point
   both views share (`view_between`), and uses it for hover, clicks, the marquee and the

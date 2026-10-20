@@ -19,6 +19,32 @@ use crate::App;
 mod chrome;
 #[path = "ui_copy_tests.rs"]
 mod copy;
+#[path = "ui_copy_shortcut_tests.rs"]
+mod copy_shortcuts;
+#[path = "ui_pick_cousins.rs"]
+mod cousins;
+#[path = "ui_inner_tests.rs"]
+mod inner;
+#[path = "ui_inner_fixture.rs"]
+mod inner_fixture;
+#[path = "ui_inner_hover_tests.rs"]
+mod inner_hover;
+#[path = "ui_inner_nested_tests.rs"]
+mod inner_nested;
+#[path = "ui_pick_tests.rs"]
+mod pick;
+#[path = "ui_pick_bench.rs"]
+mod pick_bench;
+#[path = "ui_pick_cache_tests.rs"]
+mod pick_cache;
+#[path = "ui_pick_drag_tests.rs"]
+mod pick_drag;
+#[path = "ui_pick_order_tests.rs"]
+mod pick_order;
+#[path = "ui_text_drag_tests.rs"]
+mod text_drag;
+#[path = "ui_text_select_tests.rs"]
+mod text_select;
 // Without the `mcp` feature there is no View item (mcp_off.rs) and no tokio to test it with.
 #[cfg(feature = "mcp")]
 #[path = "ui_mcp_tests.rs"]
@@ -65,9 +91,21 @@ pub fn wait(
 
 /// The app on `structure.fig`, laid out and fitted (the canvas rect is known).
 pub fn harness() -> Harness<'static, App> {
-    let mut h = Harness::builder()
-        .with_size(SIZE)
-        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE)]));
+    fixture_harness(FIXTURE, Harness::builder().with_size(SIZE))
+}
+
+pub fn harness_fixture(name: &str, step_dt: f32) -> Harness<'static, App> {
+    fixture_harness(
+        name,
+        Harness::builder().with_size(SIZE).with_step_dt(step_dt),
+    )
+}
+
+fn fixture_harness(
+    name: &str,
+    builder: egui_kittest::HarnessBuilder<App>,
+) -> Harness<'static, App> {
+    let mut h = builder.build_eframe(|cc| App::new(cc, vec![fixture(name)]));
     wait(&mut h, &mut Vec::new(), "the file to load", |a| {
         a.tabs
             .first()

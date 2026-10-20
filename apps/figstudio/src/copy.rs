@@ -44,12 +44,31 @@ pub fn items(tab: &Tab, id: Guid) -> Vec<Item> {
     let Some(node) = tab.doc.node(id) else {
         return Vec::new();
     };
+    let text = if tab.selection == Some(id) {
+        tab.selected_text()
+    } else {
+        text(node).filter(|t| !t.is_empty()).map(str::to_owned)
+    };
+    items_with_text(tab, node, text)
+}
+
+/// Properties copy the full preview, including resolved inner-layer overrides.
+pub fn layer_items(tab: &Tab, node: &Node) -> Vec<Item> {
+    items_with_text(
+        tab,
+        node,
+        text(node).filter(|t| !t.is_empty()).map(str::to_owned),
+    )
+}
+
+fn items_with_text(tab: &Tab, node: &Node, text: Option<String>) -> Vec<Item> {
+    let id = node.id;
     let mut out = Vec::new();
     if !node.name.is_empty() {
         out.push(item("Copy name", "name", node.name.clone()));
     }
-    if let Some(t) = text(node).filter(|t| !t.is_empty()) {
-        out.push(item("Copy text", "text", t.to_owned()));
+    if let Some(text) = text {
+        out.push(item("Copy text", "text", text));
     }
     out.push(item("Copy node ID", "node ID", id.to_string()));
     out.push(item("Copy link", "link", link(&file_key(tab), id)));

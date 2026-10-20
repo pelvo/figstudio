@@ -12,7 +12,11 @@ use crate::theme;
 
 /// Shows the Copy items for node `id` inside an open context menu.
 pub fn node_menu(ui: &mut egui::Ui, tab: &Tab, id: Guid, picked: &mut Option<Item>) {
-    for item in copy::items(tab, id) {
+    menu_items(ui, copy::items(tab, id), id, picked);
+}
+
+fn menu_items(ui: &mut egui::Ui, items: Vec<Item>, id: Guid, picked: &mut Option<Item>) {
+    for item in items {
         if ui.button(item.label).clicked() {
             *picked = Some(item);
             ui.close();
@@ -43,10 +47,10 @@ pub fn text_block(ui: &mut egui::Ui, tab: &Tab, node: &Node, picked: &mut Option
     let label = ui.add(egui::Label::new(
         egui::RichText::new(preview).color(theme::of(ui).text_dim),
     ));
-    on_context(&label, tab, node.id, picked);
-    if ui.small_button("Copy").clicked() {
-        *picked = copy::items(tab, node.id)
-            .into_iter()
-            .find(|i| i.label == "Copy text");
+    crate::chrome::context_menu(&label, |ui| {
+        menu_items(ui, copy::layer_items(tab, node), node.id, picked);
+    });
+    if ui.small_button("Copy").clicked() && !full.is_empty() {
+        *picked = Some(Item::text("Copy text", "text", full.to_owned()));
     }
 }

@@ -43,6 +43,7 @@ pub struct Tab {
     /// recognised as this tab without disk access on the UI thread.
     pub real_path: PathBuf,
     pub doc: Arc<Document>,
+    pub pick_cache: crate::pick_cache::PickCache,
     /// First 16 hex of SHA-256 over the file size and first 4 MiB (`docs[].key`).
     #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     pub doc_key: Option<String>,
@@ -54,6 +55,9 @@ pub struct Tab {
     /// Fit this node into view on the next canvas frame (`reveal_node` from an agent).
     pub fit_node: Option<Guid>,
     pub selection: Option<Guid>,
+    /// Inner canvas target; panels and MCP retain the outermost instance selection.
+    pub inner: Option<figstudio_fig::resolve::InstancePath>,
+    pub text_select: Option<crate::text_select::Selection>,
     pub hover: Option<Guid>,
     pub expanded: HashSet<Guid>,
     pub reveal: Option<Guid>,
@@ -108,6 +112,7 @@ impl Tab {
         let folder = crate::spaces::folder_of(&path);
         Tab {
             id,
+            pick_cache: crate::pick_cache::PickCache::new(&doc),
             real_path: path.clone(),
             path,
             doc,
@@ -121,6 +126,8 @@ impl Tab {
             fit_pending: true,
             fit_node: None,
             selection: None,
+            inner: None,
+            text_select: None,
             hover: None,
             expanded: HashSet::new(),
             reveal: None,
@@ -198,6 +205,8 @@ impl Tab {
         if self.page != page {
             self.page = page;
             self.selection = None;
+            self.inner = None;
+            self.text_select = None;
             self.hover = None;
             self.fit_pending = true;
         }
@@ -212,23 +221,5 @@ impl Tab {
             self.select(Some(node));
             self.fit_node = Some(node);
         }
-    }
-
-    /// Selects a node, switching page if needed and expanding its ancestors in the Layers tree.
-    pub fn select(&mut self, id: Option<Guid>) {
-        self.selection = id;
-        let Some(id) = id else { return };
-        if let Some(page) = self.doc.page_of(id)
-            && page != self.page
-        {
-            self.page = page;
-            self.fit_pending = true;
-        }
-        let mut cur = self.doc.node(id).and_then(|n| n.parent);
-        while let Some(p) = cur {
-            self.expanded.insert(p);
-            cur = self.doc.node(p).and_then(|n| n.parent);
-        }
-        self.reveal = Some(id);
     }
 }

@@ -5,6 +5,10 @@ use crate::{App, Tool};
 pub(crate) enum Action {
     Open,
     OpenLink,
+    CopyText,
+    SelectAllText,
+    SelectChild,
+    SelectParent,
     ExportPage(f64),
     ExportSelection(f64),
     CloseTab,
@@ -176,6 +180,13 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
     if cfg!(any(feature = "mcp", target_arch = "wasm32")) {
         view.push(Item::action("Agent access…", Action::AgentAccess, true));
     }
+    let edit = vec![Item::action(
+        "Copy text",
+        Action::CopyText,
+        app.tabs
+            .get(app.active)
+            .is_some_and(|t| t.selected_text().is_some()),
+    )];
     vec![
         Item::group(
             "File",
@@ -190,6 +201,7 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                 Item::action("Quit", Action::Quit, true),
             ],
         ),
+        Item::group("Edit", edit),
         Item::group("View", view),
         Item::group(
             "Space",
@@ -218,6 +230,23 @@ impl App {
             Action::OpenLink => {
                 self.link.window = true;
                 self.link.focus = true;
+            }
+            Action::CopyText => {
+                if let Some(tab) = self.tabs.get_mut(self.active)
+                    && let Some(text) = tab.selected_text()
+                {
+                    tab.pending_copy = Some(crate::copy::Item::text("Copy text", "text", text));
+                }
+            }
+            Action::SelectChild | Action::SelectParent => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.select_relative(action == Action::SelectChild);
+                }
+            }
+            Action::SelectAllText => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.select_all_text();
+                }
             }
             Action::ExportPage(scale) => self.export_png(ctx, false, scale),
             Action::ExportSelection(scale) => self.export_png(ctx, true, scale),
@@ -294,7 +323,9 @@ impl App {
                 }
             }
             Action::ClearSelection => {
-                if let Some(t) = self.tab() {
+                if let Some(t) = self.tab()
+                    && t.text_select.take().is_none()
+                {
                     t.select(None);
                 }
             }

@@ -2,6 +2,8 @@
 
 mod anim;
 mod canvas;
+mod canvas_pick;
+mod canvas_text;
 mod chrome;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod cjk;
@@ -21,6 +23,7 @@ mod gpu_tiles;
 #[cfg(target_arch = "wasm32")]
 mod gpu_tiles_web;
 mod icons;
+mod instance_pick;
 mod keymap;
 mod labels;
 mod link_open;
@@ -55,6 +58,8 @@ mod menu_egui;
 mod menu_native;
 mod menu_windows;
 mod panels;
+mod pick;
+mod pick_cache;
 mod recordings;
 mod region_copy;
 mod region_png;
@@ -65,6 +70,8 @@ mod spaces;
 mod state;
 mod swipe;
 mod tab;
+mod tab_selection;
+mod text_select;
 mod theme;
 mod tile_cache;
 mod tile_queue;
@@ -830,7 +837,15 @@ impl App {
             use keymap::Binding as B;
             let action = binding.action();
             let plain = keymap::Binding::is_plain(&shortcut);
-            if (plain && quiet)
+            if (matches!(binding, B::SelectChild | B::SelectParent)
+                && (quiet || self.find.is_open() || self.command.is_up(ctx)))
+                || ((plain || binding == B::Copy) && quiet)
+                || (binding == B::SelectAll
+                    && (quiet
+                        || !self
+                            .tabs
+                            .get(self.active)
+                            .is_some_and(|t| t.text_select.is_some())))
                 || self.native_takes(action, Some(shortcut))
                 || (matches!(binding, B::NextMatch | B::PreviousMatch) && !self.find.is_open())
             {
@@ -842,6 +857,12 @@ impl App {
                 // layouts), so the default also matches the physical key.
                 B::ZoomFit if default => shifted_digit(i, Key::Num1, Some(Key::Exclamationmark)),
                 B::ActualSize if default => shifted_digit(i, Key::Num0, None),
+                // Platform clipboard integrations send Copy without a key event.
+                B::Copy if default => {
+                    let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
+                    i.events.retain(|e| !matches!(e, egui::Event::Copy));
+                    i.consume_shortcut(&shortcut) || copy
+                }
                 // `+` where it needs no Shift (a keypad) zooms in too.
                 B::ZoomIn if default => {
                     i.consume_shortcut(&shortcut)

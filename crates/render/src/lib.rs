@@ -2,6 +2,10 @@
 //!
 //! The same code path serves the desktop app, the headless CLI and the browser build.
 
+mod child_layout;
+mod paint_order;
+pub use child_layout::{ChildLayout, InspectionWork};
+pub use paint_order::children_topmost_first;
 mod connector;
 mod effects;
 mod focus;
@@ -237,6 +241,7 @@ enum Target<'p> {
 
 /// Holds caches (decoded images, system fonts) between renders of the same document.
 pub struct Renderer {
+    inspection_work: InspectionWork,
     images: Images,
     fonts: text::SystemFonts,
     /// Lay out text with installed fonts when the file has no stored glyph outlines.
@@ -272,6 +277,7 @@ impl Default for Renderer {
             fonts: text::SystemFonts::default(),
             system_fonts: true,
             indexes: None,
+            inspection_work: InspectionWork::default(),
         }
     }
 }
@@ -286,6 +292,8 @@ struct Ctx<'a> {
     /// Override scopes of the instances being drawn (the merge shared with `fig::resolve`).
     overrides: Overrides,
     variables: Arc<variables::Variables>,
+    definitions: Arc<resolve::Definitions>,
+    inspection_work: &'a mut InspectionWork,
     work_left: usize,
     depth: usize,
     exhausted: bool,
@@ -389,10 +397,35 @@ impl Renderer {
     /// The page-space box of the node at `path` as [`Renderer::render_path`] draws it; `None`
     /// when the path does not resolve or the node or an ancestor is hidden.
     pub fn path_bounds(&mut self, doc: &Document, path: &InstancePath) -> Option<Rect> {
+        self.inspect_path(doc, path, |transform, data, _| {
+            let (w, h) = size(data);
+            transformed_bounds(transform, Rect::new(0.0, 0.0, w, h))
+        })
+    }
+
+    /// Node-local to page transform and transient resolved data, including constraints and
+    /// uniform scale. Stale stored glyphs are removed, as they cannot locate the shown text.
+    /// Hidden or unresolvable paths return `None`; the writable document is never changed.
+    pub fn path_layout(&mut self, doc: &Document, path: &InstancePath) -> Option<(Affine, Val)> {
+        self.inspect_path(doc, path, |transform, data, stale| {
+            let mut data = data.clone();
+            if stale && let Val::Obj(fields) = &mut data {
+                fields.remove("derivedTextData");
+            }
+            (transform, data)
+        })
+    }
+
+    fn inspect_path<T>(
+        &mut self,
+        doc: &Document,
+        path: &InstancePath,
+        capture: impl FnOnce(Affine, &Val, bool) -> T,
+    ) -> Option<T> {
         let mut canvas = RenderContext::new_with(1, 1, RenderSettings::default());
         let screen = Rect::new(0.0, 0.0, 1.0, 1.0);
         let mut ctx = self.context(doc, &mut canvas, screen, MAX_RENDER_WORK, 0);
-        ctx.focus(path, Affine::IDENTITY, false)
+        ctx.focus(path, Affine::IDENTITY, false, capture)
     }
 
     // Span duration is the elapsed time (no `Instant`: this crate also builds for wasm).
@@ -523,7 +556,7 @@ impl Renderer {
         let root = match root {
             Target::Node(id) => id,
             Target::Path(path) => {
-                ctx.focus(path, transform, true);
+                ctx.focus(path, transform, true, |_, _, _| ());
                 ctx.stats.attempted_work = work.saturating_sub(ctx.work_left);
                 return (ctx.stats, ctx.wanted);
             }
@@ -558,16 +591,7 @@ impl Renderer {
         preparation_skipped: usize,
     ) -> Ctx<'a> {
         self.images.begin_frame();
-        // Bounded by MAX_DECODED_NODES, so not charged to the per-frame work budget.
-        let (definitions, variables) = match &self.indexes {
-            Some((instance, d, v)) if *instance == doc.instance => (d.clone(), v.clone()),
-            _ => {
-                let d = Arc::new(resolve::definitions(doc));
-                let v = Arc::new(variables::Variables::new(doc));
-                self.indexes = Some((doc.instance, d.clone(), v.clone()));
-                (d, v)
-            }
-        };
+        let (definitions, variables) = self.document_indexes(doc);
         Ctx {
             doc,
             rc: canvas,
@@ -582,8 +606,10 @@ impl Renderer {
             } else {
                 None
             },
-            overrides: Overrides::new(definitions),
+            overrides: Overrides::new(definitions.clone()),
+            definitions,
             variables,
+            inspection_work: &mut self.inspection_work,
             work_left: work,
             depth: 0,
             exhausted: false,
@@ -779,6 +805,12 @@ fn content_bounds_with_budget(
 
 /// Topmost, deepest visible node under `point` (page coordinates). Instances count as one layer.
 pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
+    hit_chain(doc, page, point).last().copied()
+}
+
+/// Topmost hit's ancestry, from the page's child to the deepest visible layer.
+/// Instances remain leaves; sections are traversed but never selected themselves.
+pub fn hit_chain(doc: &Document, page: Guid, point: Point) -> Vec<Guid> {
     fn walk(
         doc: &Document,
         parent: Guid,
@@ -786,22 +818,13 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
         point: Point,
         seen: &mut std::collections::HashSet<Guid>,
         depth: usize,
-    ) -> Option<Guid> {
+    ) -> Option<Vec<Guid>> {
         if depth >= 128 || !seen.insert(parent) {
             return None;
         }
-        // Topmost painted child first: the reverse of drawing order (see `draw_children`).
-        let reverse = doc
-            .node(parent)
-            .is_some_and(|p| p.data.flag("stackReverseZIndex") == Some(true));
-        let children = doc.children(parent);
-        for index in 0..children.len() {
-            let id = &children[if reverse {
-                index
-            } else {
-                children.len() - 1 - index
-            }];
-            let Some(node) = doc.node(*id) else { continue };
+        let data = &doc.node(parent)?.data;
+        for id in children_topmost_first(doc.children(parent), data) {
+            let Some(node) = doc.node(id) else { continue };
             if !visible(&node.data) || node.data.flag("mask") == Some(true) {
                 continue;
             }
@@ -812,12 +835,15 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
             let clips = clips_content(&node.kind, &node.data);
             if node.kind != "INSTANCE"
                 && (inside || !clips)
-                && let Some(hit) = walk(doc, *id, tf, point, seen, depth + 1)
+                && let Some(mut hit) = walk(doc, id, tf, point, seen, depth + 1)
             {
+                if node.kind != "SECTION" {
+                    hit.insert(0, id);
+                }
                 return Some(hit);
             }
             if inside && node.kind != "SECTION" {
-                return Some(*id);
+                return Some(vec![id]);
             }
         }
         None
@@ -830,6 +856,7 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
         &mut std::collections::HashSet::new(),
         0,
     )
+    .unwrap_or_default()
 }
 
 /// How far (in local units) a node can draw outside its frame: strokes, effects, and text
@@ -1366,29 +1393,15 @@ impl Ctx<'_> {
     /// Draws children, turning mask layers into clips for the siblings above them.
     fn draw_children(&mut self, node: &Node, data: &Val, world: Affine, path: Option<&[Guid]>) {
         let mut mask_layers = 0;
-        let children = self.doc.children(node.id);
-        let reverse = data.flag("stackReverseZIndex") == Some(true);
-        for index in 0..children.len() {
-            let id = &children[if reverse {
-                children.len() - 1 - index
-            } else {
-                index
-            }];
+        for id in children_topmost_first(self.doc.children(node.id), data).rev() {
             if self.exhausted || !self.charge_work() {
                 break;
             }
-            let Some(child) = self.doc.node(*id) else {
+            let Some(child) = self.doc.node(id) else {
                 continue;
             };
-            let child_path = path.map(|p| {
-                let mut v = p.to_vec();
-                v.push(child.override_key());
-                v
-            });
-            let constraint_parent =
-                (path.is_some() && size(data) != size(&node.data)).then_some((&node.data, data));
-            let (child_data, stale_glyphs, approximate_ink) =
-                self.patched(child, child_path.as_deref(), constraint_parent);
+            let (child_path, (child_data, stale_glyphs, approximate_ink)) =
+                self.child_patch(node, data, child, path);
             if child_data.flag("mask") == Some(true) && visible(&child_data) {
                 if !self.charge_work() {
                     break;
