@@ -652,13 +652,18 @@ mod tests {
         let font = egui::FontId::proportional(14.0);
         ctx.fonts_mut(|fonts| {
             // `has_glyph` misses egui's emoji font here; compare with the box drawn for a
-            // character no font has instead.
+            // character no font has instead. Private-use characters of plane 16: the system
+            // fonts loaded too cover any emoji on some machines, but not these.
             let mut drawn = |s: &str| {
                 let galley = fonts.layout_no_wrap(s.into(), font.clone(), egui::Color32::WHITE);
                 galley.rows[0].glyphs[0].uv_rect
             };
-            let tofu = drawn("\u{E000}");
-            assert_eq!(drawn("\u{1F9E9}"), tofu, "the check sees a missing emoji");
+            let tofu = drawn("\u{10FFFD}");
+            assert_eq!(
+                drawn("\u{10FFFC}"),
+                tofu,
+                "the check sees a missing character"
+            );
             for e in EMOJI.into_iter().chain([EMOJI_HINT]) {
                 assert_ne!(drawn(e), tofu, "{e}");
             }
