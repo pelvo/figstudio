@@ -1,6 +1,6 @@
 # figstudio
 
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/polve)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/pelvo)
 
 Fast, offline-first Figma `.fig` viewer, renderer, version comparator, and Model Context
 Protocol (MCP) server, written in Rust.
@@ -154,7 +154,7 @@ node --test web/worker/*.test.mjs
 ## Support
 
 If `figstudio` saved you time or made your workflow smoother, you can support ongoing
-development on [Buy Me a Coffee](https://buymeacoffee.com/polve).
+development on [Buy Me a Coffee](https://buymeacoffee.com/pelvo).
 
 ---
 
