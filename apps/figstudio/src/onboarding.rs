@@ -215,12 +215,12 @@ impl Onboarding {
         }
     }
 
-    /// The sheet is open or still fading out: modal until it is gone.
+    /// The sheet is open or still fading out (it covers the window until it is gone).
     pub fn sheet_up(&self, ctx: &egui::Context) -> bool {
         self.sheet_open || anim::on_screen(ctx, Id::new(SHEET))
     }
 
-    #[cfg(test)]
+    /// The sheet is open: modal. Fading out it no longer takes input.
     pub fn sheet_open(&self) -> bool {
         self.sheet_open
     }
@@ -267,12 +267,21 @@ impl Onboarding {
 
     /// The tip to show at `time` (egui seconds): the first one not done, once the welcome
     /// is over and a file has been showing for [`TIP_DELAY`].
-    pub fn next_tip(&mut self, has_tab: bool, time: f64) -> Option<Tip> {
+    /// Tips whose control is not on screen (`shown` false: the sidebar is hidden) wait;
+    /// the next one that is takes its turn.
+    pub fn next_tip(
+        &mut self,
+        has_tab: bool,
+        time: f64,
+        shown: impl Fn(Tip) -> bool,
+    ) -> Option<Tip> {
         if !self.enabled || !self.progress.welcomed || self.sheet_open || !has_tab {
             self.tips_from = None;
             return None;
         }
-        let tip = Tip::ALL.into_iter().find(|t| !self.progress.done(*t))?;
+        let tip = Tip::ALL
+            .into_iter()
+            .find(|t| !self.progress.done(*t) && shown(*t))?;
         let from = *self.tips_from.get_or_insert(time);
         (time - from >= TIP_DELAY).then_some(tip)
     }
@@ -402,6 +411,29 @@ impl App {
         if !self.onboarding.sheet_open {
             return;
         }
+        // Nothing under the sheet hears the keyboard, the wheel or a pinch: a field that
+        // had focus loses it, a swipe over the sidebar does not switch spaces. Pointer moves
+        // and clicks stay for the sheet's own buttons.
+        if let Some(id) = ctx.memory(|m| m.focused()) {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        }
+        ctx.input_mut(|i| {
+            i.smooth_scroll_delta = egui::Vec2::ZERO;
+            i.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Text(_)
+                        | egui::Event::Paste(_)
+                        | egui::Event::Copy
+                        | egui::Event::Cut
+                        | egui::Event::Ime(_)
+                        | egui::Event::MouseWheel { .. }
+                        | egui::Event::Zoom(_)
+                        | egui::Event::Rotate(_)
+                        | egui::Event::Touch { .. }
+                )
+            });
+        });
         let (escape, enter, right, left) = ctx.input_mut(|i| {
             (
                 i.consume_key(Modifiers::NONE, Key::Escape),
@@ -580,14 +612,21 @@ impl App {
     /// Learns from what the person did this frame and draws the tip that is due, next to
     /// what it is about.
     pub(crate) fn tips(&mut self, ctx: &egui::Context) {
-        self.onboarding.watch(Seen {
-            active: self.tabs.get(self.active).map(|t| t.id),
-            tabs: self.tabs.len(),
-            show_left: self.show_left,
-            command_open: self.command.is_open(),
-        });
+        // Nothing done under the sheet counts as learned (it is modal; a menu that closes
+        // it is the person moving on, seen from the next frame).
+        if !self.onboarding.sheet_up(ctx) {
+            self.onboarding.watch(Seen {
+                active: self.tabs.get(self.active).map(|t| t.id),
+                tabs: self.tabs.len(),
+                show_left: self.show_left,
+                command_open: self.command.is_open(),
+            });
+        }
         let time = ctx.input(|i| i.time);
-        let due = self.onboarding.next_tip(!self.tabs.is_empty(), time);
+        let targets = self.onboarding.targets;
+        let due = self
+            .onboarding
+            .next_tip(!self.tabs.is_empty(), time, |t| targets.get(t).is_some());
         if let Some(wait) = self.onboarding.tip_wait(time) {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
         }
@@ -778,19 +817,47 @@ mod tests {
 
     #[test]
     fn tips_wait_for_the_welcome_a_file_and_the_delay_then_come_in_order() {
+        let all = |_| true;
         let mut o = Onboarding::new(Progress::default(), true);
-        assert_eq!(o.next_tip(true, 0.0), None, "the sheet is still open");
+        assert_eq!(o.next_tip(true, 0.0, all), None, "the sheet is still open");
         o.finish_welcome();
         assert!(o.progress.welcomed);
-        assert_eq!(o.next_tip(false, 1.0), None, "no file open");
-        assert_eq!(o.next_tip(true, 2.0), None, "the file only just showed");
-        assert_eq!(o.next_tip(true, 2.1 + TIP_DELAY), Some(Tip::Command));
+        assert_eq!(o.next_tip(false, 1.0, all), None, "no file open");
+        assert_eq!(
+            o.next_tip(true, 2.0, all),
+            None,
+            "the file only just showed"
+        );
+        assert_eq!(o.next_tip(true, 2.1 + TIP_DELAY, all), Some(Tip::Command));
         o.progress.learn(Tip::Command);
-        assert_eq!(o.next_tip(true, 3.0), Some(Tip::Spaces));
+        assert_eq!(o.next_tip(true, 3.0, all), Some(Tip::Spaces));
         o.progress.learn(Tip::Spaces);
-        assert_eq!(o.next_tip(true, 3.0), Some(Tip::Sidebar));
+        assert_eq!(o.next_tip(true, 3.0, all), Some(Tip::Sidebar));
         o.skip_tips();
-        assert_eq!(o.next_tip(true, 4.0), None);
+        assert_eq!(o.next_tip(true, 4.0, all), None);
+    }
+
+    #[test]
+    fn a_tip_whose_control_is_hidden_waits_and_the_next_one_shows() {
+        let mut o = Onboarding::new(Progress::default(), true);
+        o.finish_welcome();
+        let sidebar_hidden = |t| t == Tip::Sidebar;
+        assert_eq!(
+            o.next_tip(true, 0.0, sidebar_hidden),
+            None,
+            "the delay first"
+        );
+        assert_eq!(
+            o.next_tip(true, 1.0 + TIP_DELAY, sidebar_hidden),
+            Some(Tip::Sidebar)
+        );
+        o.progress.learn(Tip::Sidebar);
+        assert_eq!(o.next_tip(true, 2.0 + TIP_DELAY, sidebar_hidden), None);
+        assert_eq!(
+            o.next_tip(true, 2.0 + TIP_DELAY, |_| true),
+            Some(Tip::Command),
+            "the sidebar back: the waiting tips come"
+        );
     }
 
     #[test]

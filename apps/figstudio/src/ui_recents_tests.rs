@@ -147,3 +147,76 @@ fn the_window_is_slate_and_takes_the_colour_of_the_card_under_the_pointer() {
     h.run_steps(3);
     assert_eq!(tint(&h).accent, slate.accent, "back to slate off the card");
 }
+
+/// A copy of the fixture in its own temporary folder (deleted with the folder).
+fn temp_copy(dir: &tempfile::TempDir, name: &str) -> PathBuf {
+    let path = dir.path().join(name);
+    std::fs::copy(fixture(FIXTURE), &path).unwrap();
+    path
+}
+
+#[test]
+fn a_file_dropped_as_bytes_without_a_real_path_is_not_listed() {
+    let mut h = with_recents(&[]);
+    let bytes = std::fs::read(fixture(FIXTURE)).unwrap();
+    h.state()
+        .workers
+        .load_bytes(PathBuf::from("dropped-without-a-path.fig"), bytes);
+    wait(&mut h, &mut Vec::new(), "the dropped file", |a| {
+        a.tabs.len() == 1
+    });
+    assert!(
+        h.state().recents.entries().is_empty(),
+        "a card for it could never open"
+    );
+}
+
+#[test]
+fn a_file_deleted_and_put_back_while_the_page_shows_opens_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = temp_copy(&dir, "kept.fig");
+    let mut h = with_recents(std::slice::from_ref(&path));
+    std::fs::remove_file(&path).unwrap();
+    h.get_by_label("kept.fig").click();
+    h.run_steps(3);
+    assert!(h.state().tabs.is_empty());
+    assert!(has(&h, "kept.fig (missing)"), "the card now says so");
+    temp_copy(&dir, "kept.fig");
+    h.get_by_label("kept.fig (missing)").click();
+    wait(
+        &mut h,
+        &mut Vec::new(),
+        "the file back in place to open",
+        |a| a.tabs.len() == 1,
+    );
+}
+
+#[test]
+fn a_narrow_window_keeps_the_header_inside_the_card() {
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(560.0, 600.0))
+        .build_eframe(|cc| App::new(cc, Vec::new()));
+    let now = crate::recents::now();
+    h.state_mut().recents.note(&fixture(FIXTURE), None, now);
+    h.run_steps(3);
+    let card = h.state().card_rect.expect("the card is drawn");
+    let title = h.get_by_label("Recents").rect();
+    let open = h.get_by_label_contains("Open file… (").rect();
+    assert!(
+        card.contains_rect(open),
+        "Open file… inside the card: {open:?} in {card:?}"
+    );
+    assert!(
+        open.left() > title.right(),
+        "clear of the title: {open:?}, {title:?}"
+    );
+    for control in ["Grid view", "List view"] {
+        if let Some(n) = h.query_by_label(control) {
+            let r = n.rect();
+            assert!(
+                card.contains_rect(r) && r.left() > title.right(),
+                "{control}: {r:?}"
+            );
+        }
+    }
+}

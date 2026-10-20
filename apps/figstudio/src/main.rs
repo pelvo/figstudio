@@ -675,23 +675,13 @@ impl App {
                         .spaces
                         .lookup(spaces::FileId::of(&tab, &title))
                         .unwrap_or_default();
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        let images = self.workers.images();
-                        self.recents
-                            .note(&tab.path, tab.doc_key.as_deref(), recents::now());
-                        self.recents
-                            .paint_thumb(ctx, &tab.path, |out| recents::ThumbJob {
-                                doc: tab.doc.clone(),
-                                page: tab.page,
-                                images,
-                                source: tab.source.clone(),
-                                out,
-                            });
-                    }
                     self.tabs.push(tab);
                     self.active = self.tabs.len() - 1;
-                    self.link_loaded(ctx, &path, self.active);
+                    let added = self.active;
+                    self.link_loaded(ctx, &path, added);
+                    // After the link: the picture is of the page it shows.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.note_recent(ctx, added);
                 }
                 Loaded::Err {
                     path,
@@ -701,6 +691,8 @@ impl App {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
                     web::fail_upload(&path);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.recents.load_failed(&path);
                     self.link_failed(&path, real_path);
                     self.toast(
                         ctx,
@@ -848,8 +840,9 @@ impl App {
         if self.settings.recording().is_some() {
             return;
         }
-        // The welcome sheet is modal: its own keys only.
-        if self.onboarding.sheet_up(ctx) {
+        // The welcome sheet is modal while open: its own keys only (fading out it takes
+        // none, so a shortcut pressed right after closing it works).
+        if self.onboarding.sheet_open() {
             self.welcome_keys(ctx);
             return;
         }

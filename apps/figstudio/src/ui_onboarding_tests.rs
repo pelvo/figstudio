@@ -268,3 +268,104 @@ fn the_page_picture_fades_out_with_the_sheet() {
     assert!(faded, "the picture faded with the sheet");
     assert!(text_opacity(&h, picture).is_none(), "and is gone with it");
 }
+
+/// The welcome sheet up again over `files` (Help → Welcome tour), all loaded.
+fn sheet_over(files: &[&str]) -> Harness<'static, App> {
+    let paths: Vec<PathBuf> = files.iter().map(|f| fixture(f)).collect();
+    let n = paths.len();
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(move |cc| App::new(cc, paths));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while h.state().tabs.len() < n {
+        assert!(Instant::now() < deadline, "timed out loading {files:?}");
+        h.step();
+    }
+    h.run_steps(4);
+    h.state_mut().onboarding = Onboarding::new(Progress::default(), true);
+    wait_label(&mut h, "Welcome to figstudio", true);
+    h
+}
+
+fn wheel(delta: egui::Vec2, phase: egui::TouchPhase) -> egui::Event {
+    egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta,
+        phase,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+#[test]
+fn the_sheet_keeps_the_wheel_and_pinch_off_the_canvas() {
+    let mut h = sheet_over(&[FIXTURE]);
+    let canvas = h.state().tabs[0].canvas_rect.expect("laid out");
+    let before = h.state().tabs[0].view;
+    // On the canvas, beside the sheet.
+    h.event(egui::Event::PointerMoved(
+        canvas.left_bottom() + egui::vec2(40.0, -40.0),
+    ));
+    h.event(wheel(egui::vec2(0.0, -120.0), egui::TouchPhase::Move));
+    h.step();
+    h.event(egui::Event::Zoom(1.5));
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].view, before, "the page did not move");
+}
+
+#[test]
+fn the_sheet_keeps_a_swipe_off_the_spaces() {
+    let mut h = sheet_over(&[FIXTURE, "vector.fig"]);
+    let active = h.state().active;
+    h.event(egui::Event::PointerMoved(Pos2::new(120.0, 400.0)));
+    h.event(wheel(egui::Vec2::ZERO, egui::TouchPhase::Start));
+    for _ in 0..4 {
+        h.event(wheel(egui::vec2(30.0, 0.0), egui::TouchPhase::Move));
+        h.step();
+    }
+    h.event(wheel(egui::Vec2::ZERO, egui::TouchPhase::End));
+    h.run_steps(3);
+    assert_eq!(h.state().active, active, "no space switch under the sheet");
+    assert!(!h.state().onboarding.progress.tip_spaces);
+}
+
+#[test]
+fn the_sheet_keeps_typing_out_of_a_field_under_it() {
+    let mut h = harness();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    h.run_steps(3);
+    assert!(h.state().find.is_open());
+    h.state_mut().onboarding = Onboarding::new(Progress::default(), true);
+    wait_label(&mut h, "Welcome to figstudio", true);
+    h.event(egui::Event::Text("abc".into()));
+    h.key_press(Key::Space);
+    h.run_steps(3);
+    assert_eq!(
+        h.state().find.query,
+        "",
+        "the find field under the sheet got nothing"
+    );
+}
+
+#[test]
+fn shortcuts_work_again_while_the_sheet_fades_out() {
+    let mut h = sheet_over(&[FIXTURE]);
+    crate::anim::set_reduced(&h.ctx.clone(), false);
+    h.key_press(Key::Escape);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::L);
+    h.run_steps(2);
+    assert!(
+        h.state().command.is_open(),
+        "the command bar opens right away"
+    );
+}
+
+#[test]
+fn with_the_sidebar_hidden_the_sidebar_tip_comes_first() {
+    let mut h = welcomed();
+    h.state_mut().show_left = false;
+    // The toggle itself is not a lesson here: it was hidden before the tips began.
+    h.run_steps(2);
+    h.state_mut().onboarding.progress.tip_sidebar = false;
+    wait_label(&mut h, "Make room", true);
+    assert!(h.query_by_label("Search everything").is_none());
+}

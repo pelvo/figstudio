@@ -448,22 +448,31 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   taken for a space; the card under the pointer lends the window its colour
   (`Recents::hover`, read by `App::tint_now`), crossfading as a file switch does.
   The list is `<config>/figstudio/recents.json` (full paths, owner-only, at most 60, damaged
-  entries skipped, an unreadable list left alone as with spaces); each load notes the file
-  (`App::poll`) and queues its picture: one `thumbnails` thread renders the page to fit
-  640×400 over the page colour and writes `thumbs/<hash of the path>.png` owner-only. The
-  page reads at most three pictures a frame and reloads one when the thread reports it.
-  Files that are gone when the page appears are marked Missing and do not open (a toast
-  says why). The browser has no paths to open again and keeps the plain empty state. Tests
+  entries skipped, an unreadable list left alone as with spaces); each load of a file on disk
+  (`App::note_recent`, after any link moved it to its node's page; bytes dropped without a
+  path are not listed) notes it and queues its picture: one `thumbnails` thread renders the
+  page with its own image cache (never the canvas's: that would share its eviction clock,
+  in-flight reads and failed marks) to fit 640×400 over the page colour, and writes
+  `thumbs/<hash of the path>.png` owner-only, only if that file is still wanted (Remove from
+  recents wins over a job in flight). The page reads at most three pictures a frame and
+  reloads one when the thread reports it. Files gone when the page appears are marked
+  Missing; a click looks at the disk again, opening a file that is back and marking one that
+  went, with a toast. The header keeps to the card: a narrow one drops the filter, then the
+  view toggle, then narrows Open. The browser has no paths to open again and keeps the plain empty state. Tests
   use `Recents::memory()` (no file, no pictures).
 - **Onboarding** (`onboarding.rs`). The first launch (and the first launch of a version
   that adds it: `UiState` without `onboarding`) opens the welcome sheet: a modal card over the
   dimmed window, a hero in the active space's gradient with a drawn picture, three pages (the
   app, spaces, the command field), Skip/Back, Continue/Get started, Escape skips, Enter and
   the arrows page. While it is up `App::shortcuts` hands keys only to `welcome_keys`; a native
-  menu action closes it (`App::apply`), as the person has moved on. After it, once a file has
+  menu action closes it (`App::apply`), as the person has moved on. While open it also takes
+  the wheel, pinches, touches, typing and clipboard events and the keyboard focus, so a
+  swipe or a field under it does nothing, and what happens under it teaches no tip; fading
+  out it takes nothing. After it, once a file has
   shown for 0.8 s, one tip at a time sits to the right of its control with an arrow; the
   sidebar records where the controls are each frame (`Onboarding::targets`, cleared at the
-  start of the frame), so a hidden control means no tip. A tip is done after Got it, Skip
+  start of the frame): a tip whose control is hidden waits, and the next one shows (with the
+  sidebar closed, the sidebar tip comes first). A tip is done after Got it, Skip
   tips (all of them), or when the person does what it shows (`Onboarding::watch`: the
   command bar opened, another space with the same files open, the sidebar toggled). What
   was seen is `onboarding::Progress` in `UiState` (named bools: unknown fields are ignored,
