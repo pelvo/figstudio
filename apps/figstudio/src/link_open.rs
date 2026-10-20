@@ -137,7 +137,7 @@ impl LinkOpen {
 
     /// Whether the window's own link is being searched for.
     fn window_searching(&self) -> bool {
-        self.searches.iter().any(|s| s.done.is_none())
+        self.searches.iter().any(Search::is_window)
     }
 
     /// Whether new links must not start a listing: one of the current folders' listings is
@@ -177,6 +177,16 @@ struct Search {
     /// What the listing found, once it is back. Held while a file is loading: that file is
     /// not a tab yet, and its tab's real path is needed to tell it from a copy.
     found: Option<Vec<Copy>>,
+    /// An MCP search already answered (its budget ran out while it was held for a load); its
+    /// `done` is gone but it is not the window's. It still shows the node when it finishes.
+    answered: bool,
+}
+
+impl Search {
+    /// Whether this is the Open Figma link window's own search.
+    fn is_window(&self) -> bool {
+        self.done.is_none() && !self.answered
+    }
 }
 
 /// A link whose local copy is loading.
@@ -481,7 +491,7 @@ impl App {
                 .link
                 .searches
                 .iter()
-                .any(|s| s.done.is_none() && s.text == text)
+                .any(|s| s.is_window() && s.text == text)
         {
             // Go again on the link being searched for: keep that search, start no thread.
             return true;
@@ -508,6 +518,7 @@ impl App {
             started: web_time::Instant::now(),
             asked,
             found: None,
+            answered: false,
         });
         true
     }
@@ -515,7 +526,7 @@ impl App {
     /// Drop the window's search, if any: its result is then ignored when it comes (MCP
     /// searches are untouched).
     pub(crate) fn cancel_window_search(&mut self) {
-        self.link.searches.retain(|s| s.done.is_some());
+        self.link.searches.retain(|s| !s.is_window());
     }
 
     /// List the link folders for `hint` off the UI thread (in the browser there are none,
@@ -590,20 +601,25 @@ impl App {
         // asked, so a request that waited before a frame took it is answered in time even while
         // its folders are still being listed).
         let answer_by = self.link.answer_by;
-        let (late, running): (Vec<Search>, Vec<Search>) = std::mem::take(&mut self.link.searches)
-            .into_iter()
-            .partition(|s| {
-                s.started.elapsed() >= timeout
-                    || (s.done.is_some() && s.asked.elapsed() >= answer_by)
-            });
-        self.link.searches = running;
-        for search in late {
-            // Back but held for a load, or not back (in time) at all.
-            let error = match search.found {
-                Some(_) => LinkError::StillLoading,
-                None => LinkError::SearchTimeout,
-            };
-            self.answer(ctx, search.done, Err(error));
+        for mut search in std::mem::take(&mut self.link.searches) {
+            let over_budget = search.done.is_some() && search.asked.elapsed() >= answer_by;
+            if search.started.elapsed() >= timeout || (over_budget && search.found.is_none()) {
+                // Held for a load past its time, or not back (in time) at all: give up.
+                let error = match search.found {
+                    Some(_) => LinkError::StillLoading,
+                    None => LinkError::SearchTimeout,
+                };
+                self.answer(ctx, search.done, Err(error));
+            } else if over_budget {
+                // The listing is in hand and a matching file is still opening: answer the
+                // caller now, and still show the node once the load ends (as for a load
+                // already waiting).
+                self.answer(ctx, search.done.take(), Err(LinkError::StillLoading));
+                search.answered = true;
+                self.link.searches.push(search);
+            } else {
+                self.link.searches.push(search);
+            }
         }
         if self.link.searches.is_empty() {
             self.link.failed.clear();
@@ -653,8 +669,14 @@ impl App {
                 // Not decoded again; its load error is already a toast.
                 self.answer(ctx, search.done, Err(LinkError::LoadFailed));
             }
+            // Already answered: show the node if there is one file, and otherwise say nothing
+            // more (no toast, no window for a caller that was told already).
+            Ok(target) if search.answered => {
+                self.go_to(ctx, target, search.node, None, search.asked);
+            }
+            Err(_) if search.answered => {}
             Ok(target) => {
-                let window = search.done.is_none();
+                let window = search.is_window();
                 if self.go_to(ctx, target, search.node, search.done, search.asked) && window {
                     // Shown or loading: the window's job is done.
                     self.link.window = false;
@@ -663,7 +685,7 @@ impl App {
                     }
                 }
             }
-            Err(LinkError::Several(choices)) if search.done.is_none() => {
+            Err(LinkError::Several(choices)) if search.is_window() => {
                 self.link.choices = choices;
                 self.link.choice_node = search.node;
                 self.link.text = search.text;

@@ -596,8 +596,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   - **MCP budget.** `Command::OpenLink` carries when the tool sent it (`asked`). At
     `ANSWER_BY` (55 s from `asked`, under the server's 60 s `OPEN_TIMEOUT`, queueing included)
     a request is answered whatever it is waiting for: still listing ("could not be read in
-    time"), held for a load, or loading its copy ("still opening"; the file still opens and
-    shows the node).
+    time"; the search ends), or held for a load or loading its copy ("still opening"; the
+    search or load carries on without its `done` and still shows the node). An answered
+    search is marked `answered`, so it is never taken for the window's own search.
   - **Stuck folders.** While a listing is blocked past the timeout, new links fail at once
     rather than start another blocked thread. Choosing a folder (`set_dirs`), the same one
     included, gives up on every running listing so links search again. Only given-up listings
@@ -623,7 +624,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   folders, a listing polled late, a load past the caller's budget, the same stuck folder chosen
   again, the cap on given-up listings, the budget counted from the caller's send time,
   `lexical` folding, a key tie with one file failed, a failed best match with a resolved
-  path, slow given-up listings, the budget running out while listing),
+  path, slow given-up listings, the budget running out while listing, while held for a load, and
+  while loading),
   `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
 ### The browser app (`apps/figstudio` on wasm32)

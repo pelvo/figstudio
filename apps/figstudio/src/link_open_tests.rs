@@ -1073,3 +1073,74 @@ fn lexical_folding_keeps_parents_after_a_rootless_drive() {
     // With a root there is nothing above it.
     assert_eq!(fold(r"C:\..\KEY.fig"), PathBuf::from(r"C:\KEY.fig"));
 }
+
+#[test]
+fn a_held_search_past_the_budget_is_answered_and_still_shows_the_node() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = listed_structure;
+    // The file the link names is already opening (not a tab yet), so the listing is held.
+    let opened = fixture("structure.fig");
+    assert!(h.state_mut().loading.begin(&opened));
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("structure", "1-4"), Some(done))
+    );
+    wait(&mut h, &mut Vec::new(), "the listing to be held", |a| {
+        a.link.searches.iter().any(|s| s.found.is_some())
+    });
+    // The caller's budget runs out while the listing is held.
+    h.state_mut().link.answer_by = std::time::Duration::ZERO;
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("still opening"), "{error}");
+    assert_eq!(
+        h.state().link.searching(),
+        1,
+        "the held listing was dropped"
+    );
+    // Not the window's: the window would show "Searching…" and a window link would cancel it.
+    assert!(!h.state().link.window_searching());
+    // The load ends: the node is shown, and the caller is not answered twice.
+    h.state_mut().loading.finish(&opened);
+    h.state_mut().open(opened);
+    searched(&mut h);
+    h.step();
+    let app = h.state();
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(
+        app.tabs[0].selection,
+        Some(Guid(1, 4)),
+        "the node was not shown"
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn a_request_past_its_budget_while_loading_is_answered_and_the_node_shown() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = listed_structure;
+    h.state_mut().link.answer_by = std::time::Duration::from_secs(5);
+    // Asked 10 s ago; the listing is back before the first frame polls it, so the search
+    // finishes and its load starts in that frame, already past the caller's budget.
+    let asked = web_time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(10))
+        .unwrap();
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link_at(&ctx, &figma("structure", "1-4"), Some(done), asked)
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("still opening"), "{error}");
+    // The copy still opens and shows the node.
+    wait(&mut h, &mut Vec::new(), "the copy to open", |a| {
+        a.tabs.len() == 1
+    });
+    h.step();
+    assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 4)));
+}
