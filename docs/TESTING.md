@@ -278,6 +278,12 @@ and the existing link-opening tests. For events that must arrive in one frame, u
 The paste-plus-Enter regression uses raw input and must fail if the command bar's refresh
 before dispatch is removed.
 
+The answered-search tests also check that a held search stops deadline polling after its
+MCP caller receives an answer, while unanswered searches still request a 250 ms wake. An
+older held search must not keep a failed load from being retried by a new link. Quiet-outcome
+regressions cover a failed best copy, a file tie and a missing node in an open tab; all three
+must fail if the `search.answered` branch in `finish_search` is bypassed.
+
 Cannot be covered here: the real OS clipboard (paste into an editor or Preview), a real
 window manager, native file dialogs, GPU tiles, HiDPI and trackpad gestures.
 

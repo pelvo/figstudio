@@ -96,9 +96,6 @@ pub(crate) struct LinkOpen {
     /// [`ANSWER_BY`] unless a test swaps it.
     pub answer_by: Duration,
     waiting: Vec<Waiting>,
-    /// Resolved paths of files that failed to load while searches ran: a copy that is one of
-    /// them is not opened again. Cleared once no search runs.
-    failed: Vec<PathBuf>,
     /// Answers kept until the frame has published the new tabs to the MCP server.
     answers: Vec<Answer>,
 }
@@ -123,7 +120,6 @@ impl Default for LinkOpen {
             search_timeout: SEARCH_TIMEOUT,
             answer_by: ANSWER_BY,
             waiting: Vec::new(),
-            failed: Vec::new(),
             answers: Vec::new(),
         }
     }
@@ -186,6 +182,9 @@ struct Search {
     /// An MCP search already answered (its budget ran out while it was held for a load); its
     /// `done` is gone but it is not the window's. It still shows the node when it finishes.
     answered: bool,
+    /// Loads that failed while this search ran, resolved where possible. Only this search
+    /// refuses those copies; a later link can retry a file that has since been repaired.
+    failed: Vec<PathBuf>,
 }
 
 impl Search {
@@ -541,6 +540,7 @@ impl App {
             asked,
             found: None,
             answered: false,
+            failed: Vec::new(),
         });
         true
     }
@@ -610,7 +610,8 @@ impl App {
         }
         // A file still loading whose name the link matches may be one of the copies under
         // another spelling; once it is a tab, its real path tells. The worker wakes the UI when
-        // the load ends; a load that never ends runs into the timeout below.
+        // the load ends. Only an unanswered search still needs a timeout; one answered early
+        // waits quietly for that worker wake.
         let loading: Vec<PathBuf> = self.loading.iter().cloned().collect();
         let (ready, waiting): (Vec<Search>, Vec<Search>) = std::mem::take(&mut self.link.searches)
             .into_iter()
@@ -649,9 +650,6 @@ impl App {
                 self.link.searches.push(search);
             }
         }
-        if self.link.searches.is_empty() {
-            self.link.failed.clear();
-        }
         // A load that outlasts the caller's budget: answer now; the file still opens and
         // shows the node (the entry stays, without its `done`).
         let overdue: Vec<Done> = self
@@ -668,7 +666,9 @@ impl App {
         for done in overdue {
             self.answer(ctx, Some(done), Err(LinkError::StillLoading));
         }
-        if !self.link.searches.is_empty() || self.link.waiting.iter().any(|w| w.done.is_some()) {
+        if self.link.searches.iter().any(|s| !s.answered)
+            || self.link.waiting.iter().any(|w| w.done.is_some())
+        {
             // Wake for the timeouts even if nothing else reports.
             ctx.request_repaint_after(Duration::from_millis(250));
         }
@@ -682,7 +682,7 @@ impl App {
         let failed: Vec<PathBuf> = copies
             .iter()
             .filter(|(path, real, _)| {
-                self.link.failed.iter().any(|f| {
+                search.failed.iter().any(|f| {
                     let f = lexical(f);
                     f == lexical(path) || f == lexical(real)
                 })
@@ -806,10 +806,10 @@ impl App {
 
     /// A file failed to load: the links waiting for it fail with it.
     pub(crate) fn link_failed(&mut self, path: &Path, real_path: Option<PathBuf>) {
-        if !self.link.searches.is_empty() {
-            self.link
+        for search in &mut self.link.searches {
+            search
                 .failed
-                .push(real_path.unwrap_or_else(|| path.to_owned()));
+                .push(real_path.as_deref().unwrap_or(path).to_owned());
         }
         for waiting in self.take_waiting(path) {
             // Without `done` the load error is already a toast.

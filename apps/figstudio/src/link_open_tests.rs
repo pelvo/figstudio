@@ -1255,6 +1255,159 @@ fn an_answered_held_search_opens_its_copy_quietly() {
     assert!(rx.try_recv().is_err());
 }
 
+/// Get a real MCP search answered while its listing is held for a same-named load.
+fn answered_held_search(
+    h: &mut Harness<'_, App>,
+    text: &str,
+    search: super::SearchFn,
+) -> (PathBuf, mpsc::Receiver<Result<String, String>>) {
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = search;
+    let hold = PathBuf::from("/elsewhere/structure.fig");
+    assert!(h.state_mut().loading.begin(&hold));
+    let (done, rx) = done();
+    assert!(h.state_mut().go_to_link(&ctx, text, Some(done)));
+    wait(h, &mut Vec::new(), "the listing to be held", |a| {
+        a.link.searches.iter().any(|s| s.found.is_some())
+    });
+    h.state_mut().link.answer_by = std::time::Duration::ZERO;
+    h.step();
+    assert!(
+        rx.try_recv()
+            .unwrap()
+            .unwrap_err()
+            .contains("still opening")
+    );
+    h.state_mut().link.answer_by = super::ANSWER_BY;
+    (hold, rx)
+}
+
+/// Poll without the rest of the UI, so only the search can request another repaint.
+fn link_poll_wake(app: &mut App) -> std::time::Duration {
+    let ctx = egui::Context::default();
+    let mut delay = std::time::Duration::ZERO;
+    for _ in 0..5 {
+        let mut output = ctx.run_ui(Default::default(), |ui| app.poll_link_searches(ui.ctx()));
+        delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        output.textures_delta.clear();
+    }
+    delay
+}
+
+#[test]
+fn an_answered_search_waits_for_the_loader_without_polling_its_old_deadline() {
+    let mut h = empty_app();
+    let (hold, rx) = answered_held_search(&mut h, &figma("structure", "1-4"), listed_structure);
+    assert!(link_poll_wake(h.state_mut()) > std::time::Duration::from_millis(250));
+    assert_eq!(
+        h.state().link.searching(),
+        1,
+        "the load still has its search"
+    );
+    // An unanswered held search still needs the deadline wake.
+    h.state_mut().link.searches[0].answered = false;
+    let wake = link_poll_wake(h.state_mut());
+    // egui subtracts its predicted frame time from request_repaint_after's delay.
+    assert!(
+        wake > std::time::Duration::ZERO && wake <= std::time::Duration::from_millis(250),
+        "{wake:?}"
+    );
+    h.state_mut().loading.finish(&hold);
+    assert!(rx.try_recv().is_err());
+}
+
+fn listed_sections(_: &[PathBuf], _: &FileHint) -> Vec<(PathBuf, Match)> {
+    vec![(fixture("sections.fig"), Match::Name)]
+}
+
+#[test]
+fn an_answered_search_does_not_keep_an_old_failure_against_a_new_link() {
+    let mut h = empty_app();
+    let (_, old_rx) = answered_held_search(&mut h, &figma("structure", "1-4"), listed_structure);
+    // Another load fails while that search waits forever. It is repaired before a new link
+    // asks for it, so a failure recorded for the earlier search must not refuse this one.
+    h.state_mut().link_failed(&fixture("sections.fig"), None);
+    h.state_mut().link.search = listed_sections;
+    let ctx = h.ctx.clone();
+    let (done, rx) = done();
+    assert!(
+        h.state_mut()
+            .go_to_link(&ctx, &figma("sections", "1-5"), Some(done))
+    );
+    wait(&mut h, &mut Vec::new(), "the repaired file to load", |a| {
+        a.tabs.iter().any(|t| t.path == fixture("sections.fig"))
+    });
+    let answer = rx.try_recv().unwrap().unwrap();
+    assert!(answer.starts_with("revealed 1:5 in tab"), "{answer}");
+    assert!(
+        old_rx.try_recv().is_err(),
+        "the old caller is not answered twice"
+    );
+}
+
+fn listed_namesakes(_: &[PathBuf], _: &FileHint) -> Vec<(PathBuf, Match)> {
+    vec![
+        (fixture("structure.fig"), Match::Name),
+        (fixture("sections.fig"), Match::Name),
+    ]
+}
+
+#[derive(Clone, Copy, Debug)]
+enum QuietOutcome {
+    FailedCopy,
+    Tie,
+    MissingNode,
+}
+
+fn check_answered_search_stays_quiet(outcome: QuietOutcome) {
+    let mut h = match outcome {
+        QuietOutcome::MissingNode => harness(),
+        _ => empty_app(),
+    };
+    let node = if matches!(outcome, QuietOutcome::MissingNode) {
+        "999-1"
+    } else {
+        "1-4"
+    };
+    let search = if matches!(outcome, QuietOutcome::Tie) {
+        listed_namesakes
+    } else {
+        listed_structure
+    };
+    let before = h.state().tabs.len();
+    let (hold, rx) = answered_held_search(&mut h, &figma("structure", node), search);
+    if matches!(outcome, QuietOutcome::FailedCopy) {
+        h.state_mut().link_failed(&fixture("structure.fig"), None);
+    }
+    h.state_mut().loading.finish(&hold);
+    h.run_steps(3);
+    assert_eq!(h.state().link.searching(), 0);
+    assert_eq!(h.state().loading.iter().count(), 0, "{outcome:?}: no retry");
+    assert_eq!(h.state().tabs.len(), before, "{outcome:?}: no new file");
+    assert!(h.state().toasts.is_empty(), "{outcome:?}: no toast");
+    assert!(!h.state().link.window, "{outcome:?}: no window");
+    assert!(
+        h.state().link.choices.is_empty(),
+        "{outcome:?}: no file chooser"
+    );
+    assert!(rx.try_recv().is_err(), "{outcome:?}: no second answer");
+}
+
+#[test]
+fn an_answered_search_with_a_failed_copy_stays_quiet() {
+    check_answered_search_stays_quiet(QuietOutcome::FailedCopy);
+}
+
+#[test]
+fn an_answered_search_with_a_tie_stays_quiet() {
+    check_answered_search_stays_quiet(QuietOutcome::Tie);
+}
+
+#[test]
+fn an_answered_search_with_a_missing_node_stays_quiet() {
+    check_answered_search_stays_quiet(QuietOutcome::MissingNode);
+}
+
 /// Paste into the focused command bar, without submitting or stepping the frame yet.
 fn paste_command_link(h: &mut Harness<'_, App>, text: &str) {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::L);

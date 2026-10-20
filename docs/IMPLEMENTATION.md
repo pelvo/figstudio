@@ -589,15 +589,19 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
     is still used; one that finished late never is); finishes the ready searches with
     `plan`, against the tabs open now; then fails the searches past `SEARCH_TIMEOUT` (20 s):
     "could not be read in time" (a permission hint on macOS only), or `StillLoading` for a
-    listing held for a load. `start_search` requests a frame, and each poll with work left
-    requests another in 250 ms, so the timeouts fire in an idle window too.
+    listing held for a load. `start_search` requests a frame, and each poll with an
+    unanswered search or load requests another in 250 ms, so deadlines fire in an idle
+    window too. An answered search has no remaining deadline and waits for the loader's
+    repaint instead of waking the UI on a timer.
   - **Loads.** A listing is held while a file whose name the link matches is loading (it is
     no tab yet, so it could not be told from a copy spelled differently); other loads do not
     hold it. A copy whose load failed meanwhile (`Loaded::Err` carries its resolved path;
     failing that, `.`/`..` are folded by text, `lexical`: a `..` removes only a normal segment,
     is dropped above a root, and stacks otherwise, a rootless `C:..` included) still takes part in the ranking, so a worse
     match or the other half of a tie never takes its place; if it is chosen, the link
-    answers `LoadFailed` and it is not loaded again.
+    answers `LoadFailed` and that search does not load it again. Failure records belong to
+    each search, not to the shared link opener, so an old answered search waiting indefinitely
+    cannot prevent a later link from retrying a repaired file.
   - **MCP budget.** `Command::OpenLink` carries when the tool sent it (`asked`). At
     `ANSWER_BY` (55 s from `asked`, under the server's 60 s `OPEN_TIMEOUT`, queueing included)
     a request is answered whatever it is waiting for: still listing ("could not be read in
