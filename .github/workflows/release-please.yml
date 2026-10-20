@@ -37,6 +37,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
+      actions: write # gh workflow run ci.yml
       contents: write
       pull-requests: write
     outputs:
@@ -49,6 +50,14 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      # A PR pushed with GITHUB_TOKEN starts no pull_request workflows, so the required CI
+      # checks would never report on it. workflow_dispatch is exempt from that rule.
+      - name: Run CI on the release PR
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+        run: gh workflow run ci.yml -R "$GITHUB_REPOSITORY" --ref "$BRANCH"
 
   macos:
     needs: release-please
