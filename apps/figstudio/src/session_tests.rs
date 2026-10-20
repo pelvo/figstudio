@@ -27,7 +27,7 @@ fn workspace_order_is_independent_of_decode_order_and_respects_a_new_focus() {
                 Duration::ZERO,
             ));
             active = tabs.len() - 1;
-            restore.finished(&mut tabs, &mut active, &paths[i], previous);
+            restore.finished(&mut tabs, &mut active, &paths[i], previous, None);
             if i == 0 && manually_selected {
                 active = 0;
             }

@@ -126,8 +126,13 @@ impl Restore {
         active: &mut usize,
         path: &Path,
         previous: Option<u64>,
+        alias: Option<&Path>,
     ) {
         let restored = self.session.files.iter().any(|p| p == path);
+        if let Some(kept) = alias {
+            self.alias(path, kept);
+        }
+        let path = alias.unwrap_or(path);
         let loaded = tabs.iter().any(|t| t.path == path);
         if loaded && !restored {
             self.session.active = Some(path.to_path_buf());
@@ -200,9 +205,14 @@ impl App {
         }
     }
 
-    pub(crate) fn workspace_finished(&mut self, path: &Path, previous: Option<u64>) {
+    pub(crate) fn workspace_finished(
+        &mut self,
+        path: &Path,
+        previous: Option<u64>,
+        alias: Option<&Path>,
+    ) {
         if let Some(restore) = &mut self.restoring {
-            restore.finished(&mut self.tabs, &mut self.active, path, previous);
+            restore.finished(&mut self.tabs, &mut self.active, path, previous, alias);
             self.pump_workspace();
         }
     }
@@ -226,11 +236,8 @@ impl App {
         let previous = self.tabs.get(self.active).map(|t| t.id);
         let id = self.tabs[i].id;
         let kept = self.tabs[i].path.clone();
-        if let Some(restore) = &mut self.restoring {
-            restore.alias(path, &kept);
-        }
         self.active = i;
-        self.workspace_finished(path, previous);
+        self.workspace_finished(path, previous, Some(&kept));
         if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
             self.link_loaded(ctx, path, i);
         }

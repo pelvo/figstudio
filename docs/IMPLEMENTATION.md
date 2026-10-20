@@ -493,16 +493,22 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   `spaces::Store::memory`) so the sheet does not cover every other test; the onboarding
   tests turn it on.
 - Desktop workspace (`session.rs`, `session_store.rs`): file paths and the active space live
-  in `<config>/figstudio/workspace.json`, not eframe's `app.ron`. The store reuses the private
-  atomic writer from `spaces.rs` (Unix mode 0600); read/parse errors leave the original file
-  for repair without resetting sidebar, keymap or agent preferences. Legacy embedded metadata
-  is imported independently and removed from eframe preferences on the first frame.
+  in `<config>/figstudio/workspace.json`. The store reuses the private atomic writer from
+  `spaces.rs` (Unix mode 0600); read/parse errors leave the original file for repair without
+  resetting sidebar, keymap or agent preferences. Legacy embedded metadata is imported
+  independently and removed from eframe preferences only after private persistence succeeds.
+  Until then, preference saves retain the original legacy paths without adding newly opened
+  files. Unreadable private metadata can fall back to that legacy copy; unrelated preferences
+  still save. The serialization-only backup is ignored when decoding `UiState`, so malformed
+  workspace metadata cannot reset other preferences.
   Metadata is capped at 4 MiB and 500 saved paths, retaining the selected file and announcing
   skipped entries. Startup decodes at most four files concurrently; queued files survive an
   early save/quit. Worker-resolved canonical paths deduplicate aliases without lexically
   rewriting a symlink's `..`; completion order does not change the saved space order.
-  Explicit startup files merge and take focus. Switching spaces while loading keeps that
-  focus; closing an automatically selected interim tab does not cancel the saved target.
+  A successful alias retains its original automatic/manual classification and uses the kept
+  tab's path for focus. Explicit startup files merge and take focus. Switching spaces while
+  loading keeps that focus; closing an automatically selected interim tab does not cancel the
+  saved target.
   Failed active files record the displayed fallback. Closed spaces stay closed, and existing
   styles still load through `spaces::Store`. Only local metadata is stored, never file
   contents or changes to the `.fig`. Browser file restoration is unchanged; page, zoom and

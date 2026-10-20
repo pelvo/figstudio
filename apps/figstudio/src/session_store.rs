@@ -14,6 +14,8 @@ pub(crate) struct Store {
     problem: Option<String>,
     cleanup_eframe: bool,
     #[cfg(not(target_arch = "wasm32"))]
+    legacy: Option<Session>,
+    #[cfg(not(target_arch = "wasm32"))]
     warned_limit: bool,
 }
 
@@ -40,19 +42,18 @@ impl Store {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn read(&mut self, storage: Option<&dyn eframe::Storage>) -> Session {
-        // Re-save preferences on the first frame without the legacy workspace payload.
-        self.cleanup_eframe = storage.is_some();
+        self.cleanup_eframe = false;
         if let Some(path) = &self.path {
             match read_file(path) {
                 Ok(Some(mut session)) => {
                     self.limit(&mut session);
+                    self.cleanup_eframe = storage.is_some();
                     return session;
                 }
                 Ok(None) => {}
                 Err(_) => {
                     self.problem = Some("Saved workspace could not be read; other settings are unchanged. The original file was kept for repair.".to_owned());
                     self.path = None;
-                    return Session::default();
                 }
             }
         }
@@ -63,6 +64,7 @@ impl Store {
         }
         let legacy = storage.and_then(|s| eframe::get_value::<Legacy>(s, crate::UI_STATE_KEY));
         if legacy.is_none()
+            && self.problem.is_none()
             && storage
                 .and_then(|s| s.get_string(crate::UI_STATE_KEY))
                 .is_some()
@@ -70,6 +72,7 @@ impl Store {
             self.problem = Some("Previous workspace metadata could not be read.".to_owned());
         }
         let mut session = legacy.unwrap_or_default().workspace;
+        self.legacy = (!session.is_empty()).then(|| session.clone());
         self.limit(&mut session);
         if !session.is_empty() {
             self.save(&session);
@@ -117,10 +120,18 @@ impl Store {
                 self.problem = Some(
                     "Workspace could not be saved; the previous snapshot was kept.".to_owned(),
                 );
+            } else if self.legacy.take().is_some() {
+                self.cleanup_eframe = true;
             }
         }
         #[cfg(target_arch = "wasm32")]
         let _ = session;
+    }
+
+    /// Preserve only the old copy until private persistence has committed it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn legacy_backup(&self) -> Session {
+        self.legacy.clone().unwrap_or_default()
     }
 
     pub(crate) fn take_problem(&mut self) -> Option<String> {

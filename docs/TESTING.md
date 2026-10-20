@@ -310,6 +310,14 @@ failed before the fixes. Replacing the private writer with `std::fs::write`, dis
 saved-file limit, or persisting the live token must fail their dedicated tests. Always restore
 these mutations before running the full gate or committing.
 
+`workspace_re_review` covers failed legacy migration and successful alias focus. A dangling
+config-directory symlink makes the first private write fail even for root; legacy paths
+survive preference saves without adding new paths, and a repaired directory permits private
+commit and cleanup. A non-file private store retains a restorable legacy copy and allows
+unrelated preferences to update. The alias test checks manual focus, automatic saved intent,
+an early save and a later completion. All three tests failed at their intended assertions
+before the fixes. The deterministic write-failure setup is Unix-only.
+
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
 

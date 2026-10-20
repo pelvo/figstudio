@@ -225,6 +225,14 @@ struct UiState {
     /// The welcome sheet and tips seen (absent before them: shown once more).
     #[serde(default)]
     onboarding: onboarding::Progress,
+    /// Retain existing legacy paths only while their private migration cannot commit.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[serde(
+        rename = "workspace",
+        skip_deserializing,
+        skip_serializing_if = "session::Session::is_empty"
+    )]
+    legacy_workspace: session::Session,
 }
 
 /// Settings preferences (the rest lives in egui's options and the panels).
@@ -714,7 +722,7 @@ impl App {
                     let previous = self.tabs.get(self.active).map(|t| t.id);
                     self.tabs.push(tab);
                     self.active = self.tabs.len() - 1;
-                    self.workspace_finished(&path, previous);
+                    self.workspace_finished(&path, previous, None);
                     if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
                         self.link_loaded(ctx, &path, i);
                         // After the link: the picture is of the page it shows.
@@ -733,7 +741,7 @@ impl App {
                     #[cfg(not(target_arch = "wasm32"))]
                     self.recents.load_failed(&path);
                     self.link_failed(&path, real_path);
-                    self.workspace_finished(&path, self.tabs.get(self.active).map(|t| t.id));
+                    self.workspace_finished(&path, self.tabs.get(self.active).map(|t| t.id), None);
                     self.toast(
                         ctx,
                         format!("Could not open {}: {message}", path.display()),
@@ -1052,6 +1060,8 @@ impl eframe::App for App {
             pages_share: self.pages_share,
             prefs,
             onboarding: self.onboarding.progress.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            legacy_workspace: self.workspace_store.legacy_backup(),
         };
         eframe::set_value(storage, UI_STATE_KEY, &state);
     }

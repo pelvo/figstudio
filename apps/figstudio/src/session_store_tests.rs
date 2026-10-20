@@ -180,6 +180,114 @@ fn workspace_legacy_metadata_migrates_privately_and_leaves_preferences_path_free
     assert!(memory.0.values().all(|v| !v.contains("structure.fig")));
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LegacyPreferences {
+    show_left: bool,
+    show_right: bool,
+    pages_share: f32,
+    prefs: crate::Prefs,
+    #[serde(default)]
+    workspace: Session,
+}
+
+fn legacy_preferences() -> (Memory, PathBuf) {
+    let file = crate::ui_tests::fixture("structure.fig");
+    let mut memory = Memory::default();
+    eframe::set_value(
+        &mut memory,
+        crate::UI_STATE_KEY,
+        &LegacyPreferences {
+            show_left: false,
+            show_right: true,
+            pages_share: 0.4,
+            prefs: crate::Prefs::default(),
+            workspace: Session {
+                files: vec![file.clone()],
+                active: Some(file.clone()),
+            },
+        },
+    );
+    (memory, file)
+}
+
+#[test]
+fn workspace_re_review_unreadable_private_store_keeps_legacy_preferences() {
+    let dir = tempfile::tempdir().expect("workspace folder");
+    let path = dir.path().join("workspace.json");
+    std::fs::create_dir(&path).expect("non-file private metadata");
+    let (mut memory, file) = legacy_preferences();
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&memory);
+    let mut app = App::with_workspace_store(&cc, Vec::new(), Store::at(path.clone()));
+    app.show_left = true;
+    app.save(&mut memory);
+    let saved: LegacyPreferences =
+        eframe::get_value(&memory, crate::UI_STATE_KEY).expect("preferences still save");
+    assert_eq!(
+        saved.workspace.files,
+        [file],
+        "retain the only readable workspace copy"
+    );
+    assert!(saved.show_left, "unrelated preferences still update");
+    assert!(!app.workspace_store.take_migration(), "no unsafe cleanup");
+    assert!(path.is_dir(), "unreadable private metadata stays untouched");
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&memory);
+    let reopened = App::with_workspace_store(&cc, Vec::new(), Store::at(path));
+    assert!(reopened.show_left);
+    assert_eq!(
+        Session::capture(&reopened).files.len(),
+        1,
+        "legacy remains restorable after restart"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_re_review_failed_private_import_keeps_legacy_until_retry_succeeds() {
+    let dir = tempfile::tempdir().expect("workspace folder");
+    let link = dir.path().join("config");
+    std::os::unix::fs::symlink(dir.path().join("missing"), &link)
+        .expect("dangling config directory blocks creation even for root");
+    let path = link.join("workspace.json");
+    assert_eq!(
+        std::fs::metadata(&path)
+            .expect_err("private snapshot missing")
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    let (mut memory, file) = legacy_preferences();
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&memory);
+    let mut app = App::with_workspace_store(&cc, Vec::new(), Store::at(path.clone()));
+    app.show_left = true;
+    let extra = absolute(&PathBuf::from("new-file.fig"));
+    app.loading.begin(&extra);
+    app.save(&mut memory);
+    let saved: LegacyPreferences =
+        eframe::get_value(&memory, crate::UI_STATE_KEY).expect("preferences still save");
+    assert!(
+        memory.0.values().all(|v| !v.contains("new-file.fig")),
+        "never add new paths to legacy preferences"
+    );
+    assert_eq!(
+        saved.workspace.files.as_slice(),
+        std::slice::from_ref(&file),
+        "failed import must retain legacy paths"
+    );
+    assert!(saved.show_left);
+    assert!(!app.workspace_store.take_migration());
+    assert!(app.workspace_store.take_problem().is_some());
+    std::fs::remove_file(&link).expect("repair config directory");
+    std::fs::create_dir(&link).expect("writable config directory");
+    app.save(&mut memory);
+    assert_eq!(Store::at(path).read(None).files, [file, extra]);
+    assert!(
+        memory.0.values().all(|v| !v.contains("structure.fig")),
+        "cleanup only after private success"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn workspace_failed_serialization_keeps_the_previous_private_snapshot() {
