@@ -38,7 +38,12 @@ Protocol (MCP) server, written in Rust.
   The first time the agent needs a file it calls `open_figstudio_browser`, which opens
   https://figstudio.pelvo.dev paired with the local server; open your `.fig` in that tab.
   If the browser asks to let the page reach devices on your local network, allow it: that
-  is `figstudio-mcp` on `127.0.0.1`. To serve a file from disk instead, with no browser:
+  is `figstudio-mcp` on `127.0.0.1`. **Safari cannot pair:** it blocks an `https://` page
+  from reaching `ws://127.0.0.1`. If Safari is your default browser, have `figstudio-mcp`
+  open another one, for example
+  `claude mcp add figstudio -e 'BROWSER=open -a "Google Chrome"' -- npx -y figstudio-mcp --browser-proxy`
+  (Chrome, Edge or Firefox), or use the local build (`scripts/web-build.sh --serve`, then
+  `--origin http://127.0.0.1:8765`). To serve a file from disk instead, with no browser:
   `claude mcp add figstudio -- npx -y figstudio-mcp /path/to/design.fig`.
 
   Without Node, build it with Rust 1.95 or newer:
@@ -140,7 +145,8 @@ claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
 # Offline file mode (stdio): serve files from disk, no browser
 claude mcp add figstudio -- npx -y figstudio-mcp /path/to/design.fig
 
-# Desktop app: turn on Settings → Agents → Agent access, then
+# Desktop app: turn on Settings → Agents → Agent access, then use the address the status
+# pill shows (3845, or the first free port of 3846–3855 when 3845 is busy)
 claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp
 
 # Cloud relay: only on your own deploy of web/worker.mjs (https://figstudio.pelvo.dev has none)
