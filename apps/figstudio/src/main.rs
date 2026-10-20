@@ -839,7 +839,7 @@ impl App {
             let plain = keymap::Binding::is_plain(&shortcut);
             if (matches!(binding, B::SelectChild | B::SelectParent)
                 && (quiet || self.find.is_open() || self.command.is_up(ctx)))
-                || (plain && quiet)
+                || ((plain || binding == B::Copy) && quiet)
                 || (binding == B::SelectAll
                     && (quiet
                         || !self
@@ -857,6 +857,12 @@ impl App {
                 // layouts), so the default also matches the physical key.
                 B::ZoomFit if default => shifted_digit(i, Key::Num1, Some(Key::Exclamationmark)),
                 B::ActualSize if default => shifted_digit(i, Key::Num0, None),
+                // Platform clipboard integrations send Copy without a key event.
+                B::Copy if default => {
+                    let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
+                    i.events.retain(|e| !matches!(e, egui::Event::Copy));
+                    i.consume_shortcut(&shortcut) || copy
+                }
                 // `+` where it needs no Shift (a keypad) zooms in too.
                 B::ZoomIn if default => {
                     i.consume_shortcut(&shortcut)

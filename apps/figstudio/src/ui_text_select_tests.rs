@@ -43,6 +43,11 @@ pub(super) fn double_click(h: &mut Harness<'_, App>, c: &mut Vec<String>, at: Po
 }
 
 pub(super) fn key(h: &mut Harness<'_, App>, c: &mut Vec<String>, key: Key, modifiers: Modifiers) {
+    if key == Key::C && modifiers == Modifiers::COMMAND {
+        h.event(Event::Copy);
+        step(h, c);
+        return;
+    }
     h.event(Event::ModifiersChanged(modifiers));
     step(h, c);
     for pressed in [true, false] {

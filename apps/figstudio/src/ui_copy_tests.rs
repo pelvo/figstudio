@@ -1,5 +1,5 @@
 //! Right-click Copy menus, the marquee, click-to-select and Hand-tool pan, through the real canvas.
-use egui::{Key, Modifiers, vec2};
+use egui::{Modifiers, vec2};
 use figstudio_mcp_core::link::parse_link;
 
 use super::*;
@@ -165,26 +165,7 @@ fn command_c_copies_the_characters_of_a_selected_text_layer() {
     let at = centre_of(&h, TEXT_NODE);
     pick::click(&mut h, at, Modifiers::COMMAND);
     assert_eq!(h.state().tabs[0].selection, Some(TEXT_NODE));
-    // One event per step: the CopyText output command is only in the frame that ran the
-    // shortcut, and kittest's `output()` shows the last frame's alone.
-    h.event(Event::ModifiersChanged(Modifiers::COMMAND));
-    step(&mut h, &mut c);
-    h.event(Event::Key {
-        key: Key::C,
-        pressed: true,
-        modifiers: Modifiers::COMMAND,
-        repeat: false,
-        physical_key: None,
-    });
-    step(&mut h, &mut c);
-    h.event(Event::Key {
-        key: Key::C,
-        pressed: false,
-        modifiers: Modifiers::COMMAND,
-        repeat: false,
-        physical_key: None,
-    });
-    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    h.event(Event::Copy);
     step(&mut h, &mut c);
     assert_eq!(c, ["ABC"], "⌘C copies the text layer's characters");
 }
@@ -199,22 +180,7 @@ fn command_c_does_nothing_without_a_text_layer_selected() {
     press(&h, at, PointerButton::Primary, false);
     h.run_steps(3);
     assert_eq!(h.state().tabs[0].selection, Some(NODE));
-    h.event(Event::ModifiersChanged(Modifiers::COMMAND));
-    h.event(Event::Key {
-        key: Key::C,
-        pressed: true,
-        modifiers: Modifiers::COMMAND,
-        repeat: false,
-        physical_key: None,
-    });
-    h.event(Event::Key {
-        key: Key::C,
-        pressed: false,
-        modifiers: Modifiers::COMMAND,
-        repeat: false,
-        physical_key: None,
-    });
-    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    h.event(Event::Copy);
     step(&mut h, &mut c);
     assert!(c.is_empty(), "a non-text selection copies nothing: {c:?}");
 }

@@ -95,6 +95,11 @@ impl App {
             if self.command.is_up(ctx) && !matches!(action, Action::CommandBar | Action::Quit) {
                 continue;
             }
+            if matches!(action, Action::CopyText | Action::SelectAllText)
+                && ctx.egui_wants_keyboard_input()
+            {
+                continue;
+            }
             self.apply(action, ctx);
         }
     }

@@ -180,7 +180,13 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
     if cfg!(any(feature = "mcp", target_arch = "wasm32")) {
         view.push(Item::action("Agent access…", Action::AgentAccess, true));
     }
-    let edit = vec![Item::action("Copy text", Action::CopyText, selection)];
+    let edit = vec![Item::action(
+        "Copy text",
+        Action::CopyText,
+        app.tabs
+            .get(app.active)
+            .is_some_and(|t| t.selected_text().is_some()),
+    )];
     vec![
         Item::group(
             "File",

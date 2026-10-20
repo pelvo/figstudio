@@ -19,6 +19,8 @@ use crate::App;
 mod chrome;
 #[path = "ui_copy_tests.rs"]
 mod copy;
+#[path = "ui_copy_shortcut_tests.rs"]
+mod copy_shortcuts;
 #[path = "ui_pick_cousins.rs"]
 mod cousins;
 #[path = "ui_inner_tests.rs"]
@@ -83,14 +85,21 @@ pub fn wait(
 
 /// The app on `structure.fig`, laid out and fitted (the canvas rect is known).
 pub fn harness() -> Harness<'static, App> {
-    harness_fixture(FIXTURE, 0.25)
+    fixture_harness(FIXTURE, Harness::builder().with_size(SIZE))
 }
 
 pub fn harness_fixture(name: &str, step_dt: f32) -> Harness<'static, App> {
-    let mut h = Harness::builder()
-        .with_size(SIZE)
-        .with_step_dt(step_dt)
-        .build_eframe(|cc| App::new(cc, vec![fixture(name)]));
+    fixture_harness(
+        name,
+        Harness::builder().with_size(SIZE).with_step_dt(step_dt),
+    )
+}
+
+fn fixture_harness(
+    name: &str,
+    builder: egui_kittest::HarnessBuilder<App>,
+) -> Harness<'static, App> {
+    let mut h = builder.build_eframe(|cc| App::new(cc, vec![fixture(name)]));
     wait(&mut h, &mut Vec::new(), "the file to load", |a| {
         a.tabs
             .first()
