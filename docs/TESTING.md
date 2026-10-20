@@ -48,8 +48,8 @@ scripts/check.sh            # fmt --check, clippy -D warnings, all tests, releas
 scripts/check.sh --cross    # also cargo check for aarch64-apple-darwin
 FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh   # if the default Rust is older than 1.95
 scripts/check.sh --lint     # only fmt + clippy; CI runs --lint and --test as its two jobs
-scripts/check.sh --lint-one fmt   # one slice; CI runs each slice as its own job
-# CI caches each slice job's target/ and this repo's crates. A warm run still relinks;
+scripts/check.sh --lint-one fmt   # one slice, for a local run
+# CI is the two required jobs. It caches this repo's crates. A warm run still relinks;
 # it should not recompile unchanged crates.
 ```
 

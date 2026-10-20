@@ -284,13 +284,11 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
-- 2026-10-20 — CI still reports `fmt + clippy` and `build + test`. Each slice is its own
-  job. The two named jobs only check that every slice succeeded, so the ruleset names stay
-  the same. An earlier revision used in-job `parallel` steps. That workflow failed in zero
-  seconds with no jobs, so the required checks never reported. Local `scripts/check.sh` is
-  still sequential. `cargo fmt --all -- --check` already fails here: `crates/diff` cannot
-  inherit `figstudio-render` because `default-features = false` cannot override the
-  workspace dependency. That is outside this change. Not timed.
+- 2026-10-20 — CI is the two required jobs again (`fmt + clippy`, `build + test`). Slice
+  jobs compiled the same crates ten times and the pull request waited on the slowest of
+  them, so they are gone. In-job `parallel` steps failed the workflow in zero seconds with
+  no jobs. The cache step now keeps this repo's crates. The macOS release job caches by
+  tag. Not timed. `scripts/check.sh --lint-one` and `--test-one` remain for a local slice.
 
 - 2026-10-14 — Join an existing MCP room: Agent access gained Copy room link and Use room
   token (bare token, MCP URL or room link; invalid input toasts and changes nothing), and

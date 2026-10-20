@@ -4,13 +4,12 @@
 # with the ruleset. The toolchain is pinned to the one docs/TESTING.md names; bump both
 # together.
 #
-# Each slice is its own job, so the slices run at once on separate runners. A slice job
-# is not a required check. The two named jobs only wait, and they fail if any slice
-# failed. In-job `parallel` steps are not used: a workflow that contained that key
-# failed in zero seconds with no jobs, so the required checks never reported.
+# These two jobs are the whole workflow. Extra slice jobs showed up next to them and
+# compiled the same crates again, so the pull request waited just as long. In-job
+# `parallel` steps are not used either: a workflow that contained that key failed in
+# zero seconds with no jobs, so the required checks never reported.
 #
-# Swatinem/rust-cache keys on the job id and saves that job's target/ when
-# `cache-workspace-crates` is set. Each slice therefore has its own cache entry.
+# `cache-workspace-crates` keeps this repo's crates, not only crates.io dependencies.
 #
 # Third-party actions are pinned to commit SHAs; the comment names the release.
 
@@ -34,93 +33,8 @@ env:
   FIGSTUDIO_TOOLCHAIN: 1.99.0
 
 jobs:
-  fmt:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Rust toolchain
-        run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal --component rustfmt
-      - run: scripts/check.sh --lint-one fmt
-
-  clippy-workspace:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Rust toolchain
-        run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal --component clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-all-crates: true
-          cache-workspace-crates: true
-      - run: scripts/check.sh --lint-one clippy-workspace
-
-  clippy-parallel:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Rust toolchain
-        run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal --component clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-all-crates: true
-          cache-workspace-crates: true
-      - run: scripts/check.sh --lint-one clippy-parallel
-
-  clippy-gpu:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Rust toolchain
-        run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal --component clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-all-crates: true
-          cache-workspace-crates: true
-      - run: scripts/check.sh --lint-one clippy-gpu
-
-  clippy-app-no-mcp:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Rust toolchain
-        run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal --component clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-all-crates: true
-          cache-workspace-crates: true
-      - run: scripts/check.sh --lint-one clippy-app-no-mcp
-
   lint:
     name: fmt + clippy
-    needs: [fmt, clippy-workspace, clippy-parallel, clippy-gpu, clippy-app-no-mcp]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Every lint slice passed
-        run: |
-          test "${{ needs.fmt.result }}" = success
-          test "${{ needs.clippy-workspace.result }}" = success
-          test "${{ needs.clippy-parallel.result }}" = success
-          test "${{ needs.clippy-gpu.result }}" = success
-          test "${{ needs.clippy-app-no-mcp.result }}" = success
-
-  tests-workspace:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -128,59 +42,15 @@ jobs:
         with:
           persist-credentials: false
       - name: Rust toolchain
-        run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal
+        run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-all-crates: true
           cache-workspace-crates: true
-      - run: scripts/check.sh --test-one tests-workspace
+      - run: scripts/check.sh --lint
 
-  tests-gpu:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Rust toolchain
-        run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-all-crates: true
-          cache-workspace-crates: true
-      - run: scripts/check.sh --test-one tests-gpu
-
-  tests-mcp-core:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Rust toolchain
-        run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-all-crates: true
-          cache-workspace-crates: true
-      - run: scripts/check.sh --test-one tests-mcp-core
-
-  release:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Rust toolchain
-        run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-all-crates: true
-          cache-workspace-crates: true
-      - run: scripts/check.sh --test-one release
-
-  wasm32:
+  test:
+    name: build + test
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -193,19 +63,4 @@ jobs:
         with:
           cache-all-crates: true
           cache-workspace-crates: true
-      - run: scripts/check.sh --test-one wasm32
-
-  test:
-    name: build + test
-    needs: [tests-workspace, tests-gpu, tests-mcp-core, release, wasm32]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Every test slice passed
-        run: |
-          test "${{ needs.tests-workspace.result }}" = success
-          test "${{ needs.tests-gpu.result }}" = success
-          test "${{ needs.tests-mcp-core.result }}" = success
-          test "${{ needs.release.result }}" = success
-          test "${{ needs.wasm32.result }}" = success
+      - run: scripts/check.sh --test
