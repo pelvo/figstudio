@@ -162,19 +162,21 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Needs the repo secret NPM_TOKEN (an npm automation token that can publish figstudio-mcp
-  # and the @pelvo/figstudio-mcp-* packages). Without it this job assembles the packages
-  # and skips the publish. A version already on npm is skipped, so a retry is safe.
+  # Publishes from the `npm_key` environment, whose secret NPMAPIKEY is an npm automation
+  # token that can publish figstudio-mcp and the @pelvo/figstudio-mcp-* packages. Without
+  # it this job assembles the packages and skips the publish. A version already on npm is
+  # skipped, so a retry is safe.
   npm-publish:
     needs: [release-please, npm-build]
     if: ${{ !cancelled() && needs.npm-build.result == 'success' }}
     runs-on: ubuntu-latest
+    environment: npm_key
     permissions:
       contents: read
       id-token: write # npm provenance
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPMAPIKEY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -199,7 +201,7 @@ jobs:
       - name: Publish
         run: |
           if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::notice::NPM_TOKEN is not set; the packages were assembled but not published"
+            echo "::notice::NPMAPIKEY is not set in the npm_key environment; the packages were assembled but not published"
             exit 0
           fi
           v="${TAG#v}"
