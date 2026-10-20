@@ -47,6 +47,7 @@ and verify the menu does not outlive its HWND. Native behavior is not headless-t
 scripts/check.sh            # fmt --check, clippy -D warnings, all tests, release build
 scripts/check.sh --cross    # also cargo check for aarch64-apple-darwin
 FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh   # if the default Rust is older than 1.95
+scripts/check.sh --lint     # only fmt + clippy; CI runs --lint and --test as its two jobs
 ```
 
 It must end with `== all checks passed` before you commit. If clippy or rustfmt is missing:
