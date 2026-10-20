@@ -19,9 +19,10 @@ fn empty_app_disables_document_commands_and_tracks_panels() {
     assert!(!find(&tree, Action::ZoomFit).unwrap().enabled);
     assert!(!find(&tree, Action::ActualSize).unwrap().enabled);
     assert!(find(&tree, Action::Open).unwrap().enabled);
-    assert!(!tree[0].children[1].enabled, "page export needs a tab");
+    assert!(find(&tree, Action::OpenLink).unwrap().enabled);
+    assert!(!tree[0].children[2].enabled, "page export needs a tab");
     assert!(
-        !tree[0].children[2].enabled,
+        !tree[0].children[3].enabled,
         "selection export needs a selection"
     );
     assert_eq!(
@@ -49,10 +50,10 @@ fn empty_app_disables_document_commands_and_tracks_panels() {
 #[test]
 fn export_selection_follows_selection_on_the_active_tab() {
     let mut h = crate::ui_tests::harness();
-    assert!(tree(h.state())[0].children[1].enabled);
-    assert!(!tree(h.state())[0].children[2].enabled);
-    h.state_mut().tabs[0].select(Some(figstudio_fig::Guid(1, 25)));
     assert!(tree(h.state())[0].children[2].enabled);
+    assert!(!tree(h.state())[0].children[3].enabled);
+    h.state_mut().tabs[0].select(Some(figstudio_fig::Guid(1, 25)));
+    assert!(tree(h.state())[0].children[3].enabled);
     h.state_mut().tabs[0].select(None);
-    assert!(!tree(h.state())[0].children[2].enabled);
+    assert!(!tree(h.state())[0].children[3].enabled);
 }

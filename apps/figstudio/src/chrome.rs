@@ -969,7 +969,8 @@ impl App {
         let at = pos2(r.left() + 34.0, r.center().y - g.size().y / 2.0);
         painter.galley(at, g, color);
         painter.galley(hint_at, hint, p.text_faint);
-        let response = response.on_hover_text("Search commands, files, pages and layers");
+        let response = response
+            .on_hover_text("Search commands, files, pages and layers, or paste a Figma link");
         if response.clicked() {
             self.command.show(ui.ctx());
         }

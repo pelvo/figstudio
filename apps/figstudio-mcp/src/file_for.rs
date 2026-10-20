@@ -1,5 +1,5 @@
 use crate::{FigstudioServer, error::McpError, files::Files};
-use figstudio_mcp_core::link::{FileHint, parse_link};
+use figstudio_mcp_core::link::{FileHint, best_matches, parse_link};
 
 impl FigstudioServer {
     /// The `fileKey` a tool call should use: an explicit `file_key` wins, then the file named
@@ -8,13 +8,40 @@ impl FigstudioServer {
     /// - `figstudio://<key>?…` names the registered file `<key>`; an unknown key is passed on
     ///   as is, so the tool fails with the usual file-key error.
     /// - A figma.com link selects the file whose stem equals its `<key>`, or whose stem with
-    ///   spaces turned into `-` equals its `<slug>`. With no such file its file part is ignored.
-    pub fn file_for(&self, file_key: Option<&str>, node_id: Option<&str>) -> Option<String> {
+    ///   spaces turned into `-` equals its `<slug>` ([`FileHint::matches`]; a ` (N)` download
+    ///   suffix is ignored). A key match beats a name match. With no such file its file part
+    ///   is ignored.
+    ///
+    /// # Errors
+    /// Several files tie for a figma.com link (two files can share a name): guessing could
+    /// read the wrong document, so the caller has to pass `fileKey`.
+    pub fn file_for(
+        &self,
+        file_key: Option<&str>,
+        node_id: Option<&str>,
+    ) -> Result<Option<String>, McpError> {
         if let Some(key) = file_key {
-            return Some(key.to_owned());
+            return Ok(Some(key.to_owned()));
         }
-        let hint = parse_link(node_id?).ok()?.file?;
+        let Some(hint) = node_id
+            .and_then(|n| parse_link(n).ok())
+            .and_then(|l| l.file)
+        else {
+            return Ok(None);
+        };
         select(&self.files().keys(), &hint)
+    }
+
+    /// The file keys a figma.com or `figstudio://` link matches best: a key match beats a
+    /// name match, and every file that ties is listed (two files can share a name).
+    pub(crate) fn link_files(&self, link: &str) -> Vec<String> {
+        let Some(hint) = parse_link(link).ok().and_then(|link| link.file) else {
+            return Vec::new();
+        };
+        best_matches(self.files().keys().into_iter().filter_map(|key| {
+            let rank = hint.match_stem(stem_of(&key))?;
+            Some((key, rank))
+        }))
     }
 
     /// The file key and node ID of a call: `node_id`, or in live mode the selection of the tab
@@ -45,16 +72,31 @@ impl FigstudioServer {
     }
 }
 
-fn select(stems: &[String], hint: &FileHint) -> Option<String> {
+fn select(keys: &[String], hint: &FileHint) -> Result<Option<String>, McpError> {
     match hint {
-        FileHint::Exact(key) => Some(key.clone()),
-        FileHint::Figma { key, slug } => stems
-            .iter()
-            .find(|stem| *stem == key)
-            .or_else(|| {
-                let slug = slug.as_deref()?;
-                stems.iter().find(|stem| stem.replace(' ', "-") == slug)
-            })
-            .cloned(),
+        FileHint::Exact(key) => Ok(Some(key.clone())),
+        FileHint::Figma { .. } => {
+            let mut best = best_matches(keys.iter().filter_map(|k| {
+                let rank = hint.match_stem(stem_of(k))?;
+                Some((k, rank))
+            }));
+            match best.len() {
+                0 | 1 => Ok(best.pop().cloned()),
+                _ => Err(McpError::link_tie()),
+            }
+        }
+    }
+}
+
+/// A file key's stem: the key itself, or for the full path live mode uses when two tabs share
+/// a stem (`/a/name.fig`), that path's stem (`name`).
+fn stem_of(key: &str) -> &str {
+    let path = std::path::Path::new(key);
+    let is_fig = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("fig"));
+    match path.file_stem().and_then(|stem| stem.to_str()) {
+        Some(stem) if is_fig && path.parent().is_some_and(|p| !p.as_os_str().is_empty()) => stem,
+        _ => key,
     }
 }

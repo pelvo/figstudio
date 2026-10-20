@@ -7,7 +7,7 @@ use figstudio_mcp::{FigstudioServer, bind_first, live::Snapshot};
 use rmcp::ServiceExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use support::{Answer, call, doc, fixture, start, tab, texts};
+use support::{Answer, call, doc, fixture, start, start_app, tab, texts};
 
 fn two_tabs() -> Snapshot {
     Snapshot {
@@ -205,6 +205,88 @@ async fn reveal_reaches_the_app() {
         vec![(7, Guid(1, 4)), (7, Guid(1, 38)), (9, Guid(1, 5))]
     );
     assert_eq!(app.wakes.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+fn figma(name: &str, node: &str) -> Value {
+    json!({"nodeId": format!("https://www.figma.com/design/KEY/{name}?node-id={node}&t=x")})
+}
+
+#[tokio::test]
+async fn the_app_resolves_every_figma_link_and_its_answer_is_final() {
+    let app = start_app(two_tabs(), Answer::Reply).await;
+    // The app picks the file (tab or local copy); its answer is the reply.
+    let opened = app.call("reveal_node", figma("Openable", "1-4")).await;
+    assert_ne!(opened.is_error, Some(true), "{}", texts(&opened));
+    assert!(texts(&opened).starts_with("opened https://www.figma.com/design/KEY/Openable?"));
+    // A link the app cannot place fails, even though the active tab has node 1:4: no
+    // fallback that could reveal the same ID in another document.
+    let missing = app.call("reveal_node", figma("Missing", "1-4")).await;
+    assert_eq!(missing.is_error, Some(true));
+    assert_eq!(texts(&missing), "no local copy");
+    // A missing or bad node-id fails before the app is asked anything.
+    for url in [
+        "https://www.figma.com/design/KEY/Openable",
+        "https://www.figma.com/design/KEY/Openable?node-id=not-a-guid",
+    ] {
+        let bad = app.call("reveal_node", json!({"nodeId": url})).await;
+        assert_eq!(bad.is_error, Some(true), "{url}");
+    }
+    // An instance path says its outer instance is shown.
+    let instance = app
+        .call("reveal_node", figma("Openable", "I1-38%3B1-35"))
+        .await;
+    assert!(
+        texts(&instance).ends_with("(an instance path: its outer instance is shown)"),
+        "{}",
+        texts(&instance)
+    );
+    // An explicit fileKey, or a link without a file part, is revealed directly.
+    let keyed = json!({"nodeId": "https://www.figma.com/design/KEY/Other?node-id=1-5", "fileKey": "sections"});
+    let keyed = app.call("reveal_node", keyed).await;
+    assert_ne!(keyed.is_error, Some(true), "{}", texts(&keyed));
+    let bare = json!({"nodeId": "https://www.figma.com/?node-id=1-4"});
+    assert_ne!(app.call("reveal_node", bare).await.is_error, Some(true));
+    assert_eq!(app.opened.lock().unwrap().len(), 3);
+    assert_eq!(
+        *app.revealed.lock().unwrap(),
+        vec![(9, Guid(1, 5)), (7, Guid(1, 4))]
+    );
+}
+
+#[tokio::test]
+async fn without_the_app_a_figma_link_must_name_exactly_one_open_tab() {
+    // Two tabs named structure.fig (their keys are full paths) and sections.fig.
+    let mut snapshot = two_tabs();
+    let elsewhere = std::path::PathBuf::from("/elsewhere/structure.fig");
+    snapshot
+        .tabs
+        .push(tab(11, elsewhere, doc("structure.fig"), None));
+    let app = start(snapshot, Answer::Reply).await;
+    let shown = app.call("reveal_node", figma("sections", "1-5")).await;
+    assert_ne!(shown.is_error, Some(true), "{}", texts(&shown));
+    // The file key beats a name: key "sections" wins over the slug "structure".
+    let url = "https://www.figma.com/design/sections/structure?node-id=1-5";
+    let keyed = app.call("reveal_node", json!({"nodeId": url})).await;
+    assert_ne!(keyed.is_error, Some(true), "{}", texts(&keyed));
+    // No tab shows it: an error, not the active tab.
+    let missing = app.call("reveal_node", figma("Missing", "1-4")).await;
+    assert_eq!(
+        texts(&missing),
+        "no open tab shows the file this link names"
+    );
+    // Two files share the name: nobody guesses.
+    let tie = app.call("reveal_node", figma("structure", "1-4")).await;
+    assert_eq!(tie.is_error, Some(true));
+    assert!(
+        texts(&tie).starts_with("several open tabs match"),
+        "{}",
+        texts(&tie)
+    );
+    assert!(app.opened.lock().unwrap().is_empty(), "no open requests");
+    assert_eq!(
+        *app.revealed.lock().unwrap(),
+        vec![(9, Guid(1, 5)), (9, Guid(1, 5))]
+    );
 }
 
 #[tokio::test]

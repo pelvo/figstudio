@@ -48,6 +48,9 @@ cargo run --release -p figstudio -- path/to/design.fig
 
 - Pan and zoom the canvas, switch pages, search layers, inspect properties, and export any
   selection or page to PNG.
+- Paste a `figma.com` or `figstudio://` URL into the command bar (⌘L, Ctrl+L elsewhere), then
+  press Enter to open its matching local `.fig` copy and reveal the linked node. No download
+  from Figma is needed. If several copies match, pick one in the link window.
 - Agent access is off at launch. **View → Agent access…** opens Settings at its Agents tab;
   turn on **Agent access** there to start the in-process Streamable HTTP MCP server on
   loopback (`http://127.0.0.1:3845/mcp`, or `3846–3855` if busy) so an MCP client can

@@ -19,6 +19,8 @@ enum Kind {
     },
     /// The app side of live mode: no open tab, a closed tab, or no reply.
     App(String),
+    /// A figma.com link matches several files equally well.
+    LinkTie,
 }
 
 impl McpError {
@@ -46,6 +48,10 @@ impl McpError {
 
     pub(crate) fn node_id_required(live: bool) -> Self {
         Self::new(Kind::NodeIdRequired { live })
+    }
+
+    pub(crate) fn link_tie() -> Self {
+        Self::new(Kind::LinkTie)
     }
 
     pub(crate) fn app(message: impl Into<String>) -> Self {
@@ -86,6 +92,10 @@ impl fmt::Display for McpError {
                 f.write_str("nodeId is required: nothing is selected in this tab")
             }
             Kind::App(message) => f.write_str(message),
+            Kind::LinkTie => f.write_str(
+                "several files match this link equally; pass fileKey (see list_files, or \
+                 list_open_tabs in live mode)",
+            ),
         }
     }
 }
@@ -95,7 +105,7 @@ impl std::error::Error for McpError {
         match &self.kind {
             Kind::Core(error) => std::error::Error::source(error),
             Kind::LoadTask(cause) | Kind::TokenTask(cause) => Some(cause),
-            Kind::NodeIdRequired { .. } | Kind::App(_) => None,
+            Kind::NodeIdRequired { .. } | Kind::App(_) | Kind::LinkTie => None,
         }
     }
 }

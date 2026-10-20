@@ -4,6 +4,7 @@ use crate::{App, Tool};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Action {
     Open,
+    OpenLink,
     ExportPage(f64),
     ExportSelection(f64),
     CloseTab,
@@ -180,6 +181,7 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
             "File",
             vec![
                 Item::action("Open…", Action::Open, true),
+                Item::action("Open Figma link…", Action::OpenLink, true),
                 export("Export page as PNG", false),
                 export("Export selection as PNG", true),
                 Item::separator(),
@@ -213,6 +215,10 @@ impl App {
     pub(crate) fn apply(&mut self, action: Action, ctx: &egui::Context) {
         match action {
             Action::Open => self.open_dialog(ctx),
+            Action::OpenLink => {
+                self.link.window = true;
+                self.link.focus = true;
+            }
             Action::ExportPage(scale) => self.export_png(ctx, false, scale),
             Action::ExportSelection(scale) => self.export_png(ctx, true, scale),
             Action::CloseTab => self.close(self.active),

@@ -63,10 +63,13 @@ impl FigstudioServer {
         Parameters(mut input): Parameters<AssetsInput>,
     ) -> CallToolResult {
         // A link in the first node ID picks the file for the whole call.
-        let mut key = self.file_for(
+        let mut key = match self.file_for(
             input.file_key.as_deref(),
             input.node_ids.first().map(String::as_str),
-        );
+        ) {
+            Ok(key) => key,
+            Err(error) => return tool_error(error),
+        };
         // Standalone, an empty list stays empty: the usual "1 to 20 ids" error.
         if input.node_ids.is_empty()
             && let crate::files::Files::Live(_) = self.files()

@@ -10,11 +10,12 @@ commands from clicks and shortcuts. `menu_egui.rs` renders Linux/web menus and t
 headless/native-attach fallback behind the sidebar's "⋯" button (File, View and Help as
 submenus); the command bar (`command.rs`) lists the same enabled commands. `menu_windows.rs` draws the
 Settings window, where Agent access and About now live (View → Agent access… and Help → About
-open those tabs).
+open those tabs), and the Open Figma link window (`link_open.rs`).
 `menu_native.rs` attaches muda on macOS/Windows in the eframe creation closure;
 `menu_dispatch.rs` drains queued ids with repaint and synchronizes changed flags.
-macOS owns Open, Close file, selection-export, command bar (⌘L), find (⌘F) and sidebar (⌘\)
-accelerators; egui retains Shift+1
+macOS owns Open, Open Figma link (Cmd+Shift+L), Close file, selection-export, command bar
+(⌘L), find (⌘F), settings and sidebar (⌘\) accelerators through the configurable keymap;
+egui retains Shift+1
 and Shift+0 (only outside text editing). Windows keeps egui shortcuts (winit does
 not translate native accelerators). Context menus remain egui. Native attachment failure logs a
 warning and keeps the drawn bar.
@@ -485,8 +486,16 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 - The command bar is modal: `App::shortcuts` and the native menu ignore everything but its
   own shortcut (and Quit) while it is open or fading, and its results are keyed on the
   query, the active file and its page (an agent may turn the page meanwhile) and the number
-  of files. Layer search scores names during the walk and keeps only the best 60 as it goes
-  (ties in layer order). Ctrl+Tab does not reach the browser build (browsers keep it); the dots and
+  of files. A pasted URL accepted by the shared `mcp-core::link::parse_link` with a file hint
+  offers one **Open Figma link** result instead of a layer search. File-less Figma URLs stay
+  ordinary searches, never revealing a node in an unrelated active file. Enter or a click closes the bar and
+  submits that result's saved URL through `App::submit_link`, the same path as the link
+  window's Go button. The window shows progress, keeps failed input, and offers file choices;
+  links never fetch anything from Figma. Results refresh after editing too, before Enter
+  dispatches, so a paste and Enter in one frame cannot run an old result. A same-frame click
+  survives an edit only if the new row at that index has the same target, such as after adding
+  whitespace around a URL. Ordinary queries still search commands, files, pages and layers. Layer search keeps only the best 60 as it
+  goes (ties in layer order). Ctrl+Tab does not reach the browser build (browsers keep it); the dots and
   the command bar switch files there.
 - The status pill (with the MCP address and Copy token) moves above the tool pill when the
   card is narrow; the tool pill drops − and + first, then the zoom percentage. The file dots
@@ -539,11 +548,102 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   only for the `Arc` clone, so the UI thread never waits for a tool call. A call that holds an
   old `Arc<Document>` finishes even when the tab closes.
 - **Reveal (server to app).** A `reveal_node` call sends `Command::Reveal` over a channel and
-  calls `wake` (`ctx.request_repaint`). The next `frame` drains it: the tab becomes active,
-  is selected, and gets `Tab.fit_node`. `canvas::fit_node` fits it on the next draw. The reply is
+  calls `wake` (`ctx.request_repaint`). The next `frame` drains it: the tab becomes active and
+  `Tab::show_node` selects the node and sets `Tab.fit_node` (a page ID switches page instead). `canvas::fit_node` fits it on the next draw. The reply is
   `Ok`, or `Err("tab closed")`. The server waits at most 5 s (`REVEAL_TIMEOUT`).
-- **Tests:** `src/mcp_host_tests.rs` (the key, reveal with a stale tab, a busy-port fallback, no
-  free port, and an HTTP client run).
+- **Open link (server to app).** The app's `LiveFiles` is built `with_link_opening`, so
+  `reveal_node` with a figma.com link (and no `fileKey`) always sends `Command::OpenLink` and
+  waits up to 60 s (`OPEN_TIMEOUT`): the app resolves the link against its tabs and local
+  copies alike. `drain` queues it; `frame_ui` hands it to `App::go_to_link` (below) with a
+  `Done` callback. Its answer is final: there is no fallback to the active tab, which could
+  hold the same node ID in another document. `McpHost::sync_then_answer` publishes the
+  snapshot and only then sends the answers, so a caller told a file is open finds it. The
+  browser bridge does not resolve links: there a figma.com link must name exactly one open
+  tab, else the call fails.
+- **Tests:** `src/mcp_host_tests.rs` (the key, reveal with a stale tab, an open-link request,
+  answers after the snapshot, a busy-port fallback, no free port, and an HTTP client run);
+  `src/ui_mcp_tests.rs` (`reveal_node` over HTTP opening a local copy in the real app).
+
+### Open Figma link (`link_open.rs`)
+
+- **File > Open Figma link…** (Cmd+Shift+L by default) opens a window with one text field: a figma.com or
+  `figstudio://` link, or a bare node ID. Alternatively, paste a URL into the Cmd+L command
+  bar and pick **Open Figma link** with Enter or a click. Bare node IDs remain in the link
+  window so they do not replace ordinary command-bar searches. `parse` turns input into a
+  `FileHint` and a node (an
+  instance path names its outer instance; a page ID switches page).
+- **Which file** (`plan`): every open tab and every `.fig` directly inside the link folders
+  (`figstudio_mcp_core::local_copy`: `FIGSTUDIO_LINK_DIRS`, else `~/Downloads`; **Choose
+  folder…** in the window replaces the list for the session) is a candidate, ranked by
+  `FileHint::match_stem`: the figma.com key beats the name (the slug with spaces as `-`,
+  compared as is and then without a ` (N)` download suffix). A copy that is an open tab counts
+  once. One best match is used; when several distinct files tie (two documents can share a
+  name), the window lists them to pick, and an MCP request fails. Nothing is chosen by date.
+  A `.fig` does not store its figma.com key, so the file name is usually all there is.
+- **Off the UI thread:** a link that names a file starts a folder search on a `link-search`
+  thread (`LinkOpen::search`, `local_copies` by default), so the window keeps drawing while a
+  folder is slow (a network drive, or macOS asking to allow reading `~/Downloads`). In the
+  browser the search runs inline (there are no folders).
+  - **Paths.** The thread resolves each copy's path (`real_paths`) and the loader resolves
+    each tab's (`Tab::real_path`), so `plan` recognises an open copy without I/O.
+  - **Each frame** `poll_link_searches`, in this order: drains finished listings and keeps a
+    result only if the thread's finish stamp is before its deadline (a result polled late
+    is still used; one that finished late never is); finishes the ready searches with
+    `plan`, against the tabs open now; then fails the searches past `SEARCH_TIMEOUT` (20 s):
+    "could not be read in time" (a permission hint on macOS only), or `StillLoading` for a
+    listing held for a load. `start_search` requests a frame, and each poll with an
+    unanswered search or load requests another in 250 ms, so deadlines fire in an idle
+    window too. An answered search has no remaining deadline and waits for the loader's
+    repaint instead of waking the UI on a timer.
+  - **Loads.** A listing is held while a file whose name the link matches is loading (it is
+    no tab yet, so it could not be told from a copy spelled differently); other loads do not
+    hold it. A copy whose load failed meanwhile (`Loaded::Err` carries its resolved path;
+    failing that, `.`/`..` are folded by text, `lexical`: a `..` removes only a normal segment,
+    is dropped above a root, and stacks otherwise, a rootless `C:..` included) still takes part in the ranking, so a worse
+    match or the other half of a tie never takes its place; if it is chosen, the link
+    answers `LoadFailed` and that search does not load it again. Failure records belong to
+    each search, not to the shared link opener, so an old answered search waiting indefinitely
+    cannot prevent a later link from retrying a repaired file.
+  - **MCP budget.** `Command::OpenLink` carries when the tool sent it (`asked`). At
+    `ANSWER_BY` (55 s from `asked`, under the server's 60 s `OPEN_TIMEOUT`, queueing included)
+    a request is answered whatever it is waiting for: still listing ("could not be read in
+    time"; the search ends), or held for a load or loading its copy ("still opening"; the
+    search or load carries on without its `done` and still shows the node). Answered searches
+    and loads are marked `answered`: they are never taken for the window's search (nor shown
+    as "Searching…" in it), have no search deadline of their own, and end quietly: no toast,
+    no window, no second answer (`show_quietly`).
+  - **Stuck folders.** While a listing is blocked past the timeout, new links fail at once
+    rather than start another blocked thread. Choosing a folder (`set_dirs`), the same one
+    included, gives up on every running listing so links search again. Only given-up listings
+    that are stuck (past `SEARCH_TIMEOUT`, still not back) count towards `MAX_ABANDONED` (3),
+    at which new links are refused with guidance to wait for the searches or restart
+    figstudio. On macOS this also mentions the permission dialog, since allowing folder
+    access can release the blocked reads. Choosing a different folder cannot release those
+    blocked threads. Slow
+    listings do not count towards this cap.
+  - **The window.** A new link from it (a file link, or a node ID, shown or not) replaces its
+    older search; Go on the link already being searched for starts nothing; a link refused
+    because a listing is blocked leaves the running search alone; closing it cancels its
+    search. It stays open with its text while searching and after a miss, and closes once
+    the link is shown or loading. MCP calls each keep their own search. `frame_ui` polls
+    before taking MCP links, so a listing that has just come back no longer counts as
+    blocked.
+- **Messages:** `LinkError::local` (toasts, the window) names files and folders;
+  `LinkError::public` (MCP answers) never carries paths, folder names or file names.
+- **Opening** pushes a `Waiting` entry and calls `App::open`; `poll` calls `link_loaded` when
+  that path finishes loading (select + `fit_node`), or `link_failed`.
+- **Tests:** `src/link_open_tests.rs` (parse, plan, ties and key wins, public messages, an open
+  tab, a local copy loaded and answered, an MCP tie, the window and its pick list, a slow
+  folder that neither blocks the window nor hangs the call, a replaced window search, a
+  blocked listing, the frame a search schedules, a late result, a tab opened during the listing, a node ID or a refused link from the window,
+  closing the window, a listing held while a file loads, an unrelated load, a held listing
+  timing out, a copy whose load failed, a better match that failed, a listing stuck in old
+  folders, a listing polled late, a load past the caller's budget, the same stuck folder chosen
+  again, the cap on given-up listings, the budget counted from the caller's send time,
+  `lexical` folding, a key tie with one file failed, a failed best match with a resolved
+  path, slow given-up listings, the budget running out while listing, while held for a load, and
+  while loading; answered searches and loads staying quiet),
+  `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
 ### The browser app (`apps/figstudio` on wasm32)
 

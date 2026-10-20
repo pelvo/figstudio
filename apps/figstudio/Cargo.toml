@@ -35,6 +35,8 @@ unicode-segmentation = "1.13"
 [dev-dependencies]
 # Only the export test decodes PNGs.
 image = { workspace = true }
+# link_open tests: a folder with a local copy of a fixture.
+tempfile = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # mcp_host tests: an MCP client over HTTP against the hosted server.

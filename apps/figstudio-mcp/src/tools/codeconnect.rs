@@ -66,7 +66,10 @@ impl FigstudioServer {
         &self,
         Parameters(input): Parameters<ContextInput>,
     ) -> CallToolResult {
-        let key = self.file_for(input.file_key.as_deref(), input.node_id.as_deref());
+        let key = match self.file_for(input.file_key.as_deref(), input.node_id.as_deref()) {
+            Ok(key) => key,
+            Err(error) => return tool_error(error),
+        };
         let (key, node_id) = match self.target(key, input.node_id) {
             Ok(target) => target,
             Err(error) => return tool_error(error),
@@ -118,7 +121,10 @@ impl FigstudioServer {
     }
 
     async fn codeconnect_map(&self, input: MapInput, add: Option<Mapping>) -> CallToolResult {
-        let key = self.file_for(input.file_key.as_deref(), input.node_id.as_deref());
+        let key = match self.file_for(input.file_key.as_deref(), input.node_id.as_deref()) {
+            Ok(key) => key,
+            Err(error) => return tool_error(error),
+        };
         let (doc, _, path) = match self.files().open_picked(key.as_deref()).await {
             Ok(picked) => picked,
             Err(error) => return tool_error(error),

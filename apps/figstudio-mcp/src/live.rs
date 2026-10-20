@@ -22,6 +22,12 @@ use tokio::sync::oneshot;
 /// How long `reveal_node` waits for the app.
 pub const REVEAL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long `reveal_node` waits for the app to open a local copy: a large file loads for seconds.
+/// The whole request shares it: the app may list its link folders for up to 20 s first, and
+/// answers "still opening" a few seconds before this runs out if the load has not finished
+/// (the file still opens and shows the node afterwards).
+pub const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// What the app shows, as the tools see it.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
@@ -60,6 +66,18 @@ pub enum Command {
         /// `Ok`, or why it could not be done (such as "tab closed").
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
+    /// Show a figma.com link's node: in the one open tab or local copy that matches it (the
+    /// app searches its link folders; a tie is an error), opening the copy first. Only sent
+    /// when [`LiveFiles::opens_links`].
+    OpenLink {
+        /// The link as the tool was given it.
+        link: String,
+        /// When the tool sent this; its [`OPEN_TIMEOUT`] counts from here, so the app measures
+        /// its own deadline from here too (time queued before the app takes it included).
+        asked: std::time::Instant,
+        /// What was done, one line, or why it could not be done.
+        reply: oneshot::Sender<anyhow::Result<String>>,
+    },
 }
 
 /// The app side of live mode, shared by every MCP session.
@@ -67,6 +85,8 @@ pub struct LiveFiles {
     snapshot: Arc<RwLock<Arc<Snapshot>>>,
     commands: Sender<Command>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    /// The app finds figma.com links itself ([`Command::OpenLink`]); the browser bridge cannot.
+    opens_links: bool,
     /// Per [`Document::instance`]: its own image cache, never the app's (shared in-flight
     /// image requests could hang when the app closes a document).
     rendering: Mutex<HashMap<u64, Rendering>>,
@@ -106,8 +126,22 @@ impl LiveFiles {
             snapshot,
             commands,
             wake,
+            opens_links: false,
             rendering: Mutex::default(),
         }
+    }
+
+    /// The host answers [`Command::OpenLink`]: `reveal_node` lets it resolve every figma.com
+    /// link (open tabs and local copies alike) instead of matching tabs itself.
+    #[must_use]
+    pub fn with_link_opening(mut self) -> Self {
+        self.opens_links = true;
+        self
+    }
+
+    /// Whether the host answers [`Command::OpenLink`].
+    pub fn opens_links(&self) -> bool {
+        self.opens_links
     }
 
     fn current(&self) -> Arc<Snapshot> {
@@ -213,14 +247,34 @@ impl LiveFiles {
 
     /// Ask the app to show `node` in tab `tab` and wait up to [`REVEAL_TIMEOUT`].
     pub(crate) async fn reveal(&self, tab: u64, node: Guid) -> Result<(), McpError> {
+        self.ask(REVEAL_TIMEOUT, |reply| Command::Reveal { tab, node, reply })
+            .await
+    }
+
+    /// Ask the app to open the local copy `link` names and reveal its node; wait up to
+    /// [`OPEN_TIMEOUT`]. Returns the app's one-line answer.
+    pub(crate) async fn open_link(&self, link: &str) -> Result<String, McpError> {
+        let (link, asked) = (link.to_owned(), std::time::Instant::now());
+        self.ask(OPEN_TIMEOUT, |reply| Command::OpenLink {
+            link,
+            asked,
+            reply,
+        })
+        .await
+    }
+
+    /// Send the command `make` builds, wake the app and wait up to `timeout` for its answer.
+    async fn ask<T>(
+        &self,
+        timeout: Duration,
+        make: impl FnOnce(oneshot::Sender<anyhow::Result<T>>) -> Command,
+    ) -> Result<T, McpError> {
         let (reply, answer) = oneshot::channel();
         let no_reply = || McpError::app("the app did not respond");
-        self.commands
-            .send(Command::Reveal { tab, node, reply })
-            .map_err(|_| no_reply())?;
+        self.commands.send(make(reply)).map_err(|_| no_reply())?;
         (self.wake)();
-        match tokio::time::timeout(REVEAL_TIMEOUT, answer).await {
-            Ok(Ok(Ok(()))) => Ok(()),
+        match tokio::time::timeout(timeout, answer).await {
+            Ok(Ok(Ok(value))) => Ok(value),
             Ok(Ok(Err(e))) => Err(McpError::app(figstudio_fig::one_line(e.as_ref()))),
             Ok(Err(_)) | Err(_) => Err(no_reply()),
         }

@@ -167,3 +167,26 @@ async fn other_tools_take_the_file_from_a_link_too() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn a_figma_link_two_files_match_equally_fails_instead_of_guessing() {
+    // `sections` and a browser's repeated download `sections (1)` both match the key.
+    let dir = tempfile::tempdir().unwrap();
+    let (first, copy) = (
+        dir.path().join("sections.fig"),
+        dir.path().join("sections (1).fig"),
+    );
+    std::fs::copy(fixture("sections.fig"), &first).unwrap();
+    std::fs::copy(fixture("sections.fig"), &copy).unwrap();
+    run(vec![copy, first], async |client| {
+        let url = "https://www.figma.com/design/sections/Any?node-id=0-1";
+        for tool in ["get_metadata", "get_screenshot", "get_variable_defs"] {
+            let result = call(client, tool, json!({"nodeId": url})).await;
+            assert_eq!(result.is_error, Some(true), "{tool}: {}", text(&result));
+            assert!(text(&result).contains("pass fileKey"), "{}", text(&result));
+        }
+        // Naming the file settles it.
+        page_names(client, json!({"nodeId": url, "fileKey": "sections"})).await;
+    })
+    .await;
+}

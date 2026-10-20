@@ -33,7 +33,10 @@ impl FigstudioServer {
         &self,
         Parameters(input): Parameters<RegionInput>,
     ) -> CallToolResult {
-        let key = self.file_for(input.file_key.as_deref(), input.region.as_deref());
+        let key = match self.file_for(input.file_key.as_deref(), input.region.as_deref()) {
+            Ok(key) => key,
+            Err(error) => return tool_error(error),
+        };
         let document = match self.files().open(key.as_deref()).await {
             Ok(document) => document,
             Err(error) => return tool_error(error),

@@ -7,7 +7,10 @@ use crate::{
     tools::tool_error,
 };
 use figstudio_fig::{Document, Guid};
-use figstudio_mcp_core::node_id::{NodeId, parse_node_id};
+use figstudio_mcp_core::{
+    link::{FileHint, parse_link},
+    node_id::{NodeId, parse_node_id},
+};
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -82,17 +85,14 @@ impl FigstudioServer {
     }
 
     #[tool(
-        description = "Select a node in the figstudio app and show it: the tab becomes active and the view fits the node. An instance path (I1:2;3:4) reveals its outer instance. Fails when the app does not answer within 5 s."
+        description = "Select a node in the figstudio app and show it: the tab becomes active and the view fits the node. An instance path (I1:2;3:4) reveals its outer instance. A figma.com link is shown only in the file it names: the open tab, or else the local copy `<file name>.fig` from the app's link folders (default ~/Downloads), which is opened first; other tools can read it after that. When several files match equally, it fails and asks for a pick in the app. Fails when the app does not answer within 5 s (60 s while opening a file)."
     )]
     async fn reveal_node(&self, Parameters(input): Parameters<RevealInput>) -> CallToolResult {
         let Some(live) = self.live_files() else {
             return tool_error(McpError::app("live mode only"));
         };
-        let key = self.file_for(input.file_key.as_deref(), Some(&input.node_id));
-        let picked = match live.pick(key.as_deref()) {
-            Ok(picked) => picked,
-            Err(error) => return tool_error(error),
-        };
+        // The node first: a link without a valid node-id fails the same way whether or not
+        // its file is open, and never makes the app open a file.
         let (node, note) = match parse_node_id(&input.node_id) {
             Ok(NodeId::Node(id)) => (id, ""),
             Ok(NodeId::InstancePath(path)) => (
@@ -100,6 +100,42 @@ impl FigstudioServer {
                 " (an instance path: its outer instance is shown)",
             ),
             Err(error) => return tool_error(error.into()),
+        };
+        // A figma.com link names a file. It is shown in that file or not at all: falling back
+        // to the active tab could reveal the same node ID in another document.
+        let figma = input.file_key.is_none() && names_figma_file(&input.node_id);
+        if figma && live.opens_links() {
+            // The app resolves it against its tabs and local copies (a tie is an error).
+            return match live.open_link(&input.node_id).await {
+                Ok(done) => CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+                    format!("{done}{note}"),
+                )]),
+                Err(error) => tool_error(error),
+            };
+        }
+        let key = if figma {
+            // The browser bridge has no folders: the link must name exactly one open tab.
+            let mut keys = self.link_files(&input.node_id);
+            match keys.len() {
+                1 => keys.pop(),
+                0 => {
+                    return tool_error(McpError::app("no open tab shows the file this link names"));
+                }
+                _ => {
+                    return tool_error(McpError::app(
+                        "several open tabs match this link; pass fileKey (see list_open_tabs)",
+                    ));
+                }
+            }
+        } else {
+            match self.file_for(input.file_key.as_deref(), Some(&input.node_id)) {
+                Ok(key) => key,
+                Err(error) => return tool_error(error),
+            }
+        };
+        let picked = match live.pick(key.as_deref()) {
+            Ok(picked) => picked,
+            Err(error) => return tool_error(error),
         };
         let tab = picked.tab();
         if tab.doc.node(node).is_none() {
@@ -122,6 +158,14 @@ impl FigstudioServer {
             Files::Registry(_) => None,
         }
     }
+}
+
+/// Whether `link` is a figma.com link with a file part.
+fn names_figma_file(link: &str) -> bool {
+    matches!(
+        parse_link(link).ok().and_then(|link| link.file),
+        Some(FileHint::Figma { .. })
+    )
 }
 
 fn page(tab: &TabInfo) -> Value {

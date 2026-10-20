@@ -128,7 +128,8 @@ fn relay_rpc_rejects_malformed_envelopes() {
 #[test]
 fn relay_reveal_applies_selection_fit_and_active_tab() {
     let mut tabs = tabs();
-    let node = tabs[1].page;
+    // A layer: a page ID switches page instead (mcp_state_tests.rs).
+    let node = Guid(1, 25);
     let mut active = 0;
     crate::mcp_state::reveal(&mut tabs, &mut active, 9, node).unwrap();
     assert_eq!(active, 1);

@@ -87,6 +87,7 @@ fn reveal_selects_and_fits_or_answers_tab_closed() {
         events: news,
         last_key: None,
         token: None,
+        links: Vec::new(),
     };
     let mut tabs = vec![tab(1, "structure.fig"), tab(2, "structure.fig")];
     let mut active = 0;
@@ -118,6 +119,85 @@ fn reveal_selects_and_fits_or_answers_tab_closed() {
     assert_eq!(tabs[1].fit_node, Some(node));
     assert_eq!(tabs[0].selection, None);
     host.running = Some(running);
+    host.stop();
+}
+
+#[test]
+fn open_link_requests_wait_for_the_app_and_carry_its_answer() {
+    let mut host = host(vec![]);
+    let (commands, inbox) = mpsc::channel();
+    let (_events, news) = mpsc::channel();
+    host.running = Some(Running {
+        addr: None,
+        cancel: CancellationToken::new(),
+        snapshot: Default::default(),
+        commands: inbox,
+        events: news,
+        last_key: None,
+        token: None,
+        links: Vec::new(),
+    });
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    let link = "https://www.figma.com/design/K/Name?node-id=1-2".to_owned();
+    let asked = std::time::Instant::now();
+    commands
+        .send(Command::OpenLink {
+            link: link.clone(),
+            asked,
+            reply,
+        })
+        .unwrap();
+    assert!(
+        host.take_links().is_empty(),
+        "nothing before the frame drains"
+    );
+    host.frame(&mut [], &mut 0);
+    let mut links = host.take_links();
+    assert_eq!(links.len(), 1);
+    assert!(host.take_links().is_empty());
+    let got = links.remove(0);
+    assert_eq!(got.link, link);
+    // The caller's send time, not when the frame took it: the app's deadline counts from it.
+    assert_eq!(got.asked, asked);
+    (got.done)(Err("no local copy".to_owned()));
+    assert_eq!(
+        answer.try_recv().unwrap().unwrap_err().to_string(),
+        "no local copy"
+    );
+    host.stop();
+}
+
+#[test]
+fn link_answers_go_out_after_the_snapshot_has_the_new_tab() {
+    let mut host = host(vec![]);
+    let (_commands, inbox) = mpsc::channel();
+    let (_events, news) = mpsc::channel();
+    let snapshot: Arc<RwLock<Arc<Snapshot>>> = Default::default();
+    host.on = true;
+    host.running = Some(Running {
+        addr: None,
+        cancel: CancellationToken::new(),
+        snapshot: snapshot.clone(),
+        commands: inbox,
+        events: news,
+        last_key: None,
+        token: None,
+        links: Vec::new(),
+    });
+    // The answer records how many tabs the server could see when it went out.
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let (watch, record) = (snapshot.clone(), seen.clone());
+    let done: crate::link_open::Done = Box::new(move |_| {
+        *record.lock().unwrap() = Some(watch.read().unwrap().tabs.len());
+    });
+    let tabs = vec![tab(1, "structure.fig"), tab(2, "sections.fig")];
+    host.sync_then_answer(
+        &egui::Context::default(),
+        &tabs,
+        1,
+        vec![(done, Ok("revealed".to_owned()))],
+    );
+    assert_eq!(*seen.lock().unwrap(), Some(2));
     host.stop();
 }
 

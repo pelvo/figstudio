@@ -39,6 +39,9 @@ pub const MAX_ZOOM: f32 = 256.0;
 pub struct Tab {
     pub id: u64,
     pub path: PathBuf,
+    /// `path` resolved (symlinks, `..`) by the loader, else `path`: how a link's local copy is
+    /// recognised as this tab without disk access on the UI thread.
+    pub real_path: PathBuf,
     pub doc: Arc<Document>,
     /// First 16 hex of SHA-256 over the file size and first 4 MiB (`docs[].key`).
     #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
@@ -105,6 +108,7 @@ impl Tab {
         let folder = crate::spaces::folder_of(&path);
         Tab {
             id,
+            real_path: path.clone(),
             path,
             doc,
             doc_key,
@@ -158,6 +162,13 @@ impl Tab {
             .unwrap_or_else(|| self.title())
     }
 
+    pub fn with_real_path(mut self, real_path: Option<PathBuf>) -> Self {
+        if let Some(real_path) = real_path {
+            self.real_path = real_path;
+        }
+        self
+    }
+
     pub fn with_doc_key(mut self, doc_key: Option<String>) -> Self {
         if doc_key.is_some() {
             self.doc_key = doc_key;
@@ -189,6 +200,17 @@ impl Tab {
             self.selection = None;
             self.hover = None;
             self.fit_pending = true;
+        }
+    }
+
+    /// Reveal `node` (MCP `reveal_node`, Open Figma link): switch to it when it is a page, else
+    /// select it and fit it into view on the next draw.
+    pub fn show_node(&mut self, node: Guid) {
+        if self.doc.pages.contains(&node) {
+            self.set_page(node);
+        } else {
+            self.select(Some(node));
+            self.fit_node = Some(node);
         }
     }
 
