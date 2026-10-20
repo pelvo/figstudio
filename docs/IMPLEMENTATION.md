@@ -384,7 +384,10 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   `theme::TRANSLUCENT_TINT` over it, opaque everywhere else.
 - **Spaces.** Each open file is a space: `Tab::tint` (picked from the name) unless
   `Tab::style` (`spaces::Style`) sets a preset or custom colour, an emoji or icon badge and a
-  display name. A space dot's right-click menu (and the Space menu, and the command bar)
+  display name. The Properties card takes half the space's top colour and its section
+  wells keep their neutral step from it (`Palette::on_tint`; `section` reads the well from
+  `faint_bg_color`, which the Properties panel sets). A space
+  dot's right-click menu (and the Space menu, and the command bar)
   opens Arc's three popovers above the dot: Change space icon, Rename space, Edit theme
   colour. Changes show at once; a click outside, Escape or Enter closes and saves them, and
   so do opening another popover, closing the file and quitting (`commit_space_editor`).
