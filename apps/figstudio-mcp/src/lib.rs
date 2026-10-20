@@ -15,6 +15,8 @@ pub mod live;
 /// Accepted Figma node ID formats.
 pub mod node_id;
 mod prompts;
+/// Local zero-upload browser proxy (`--browser-proxy`).
+pub mod proxy;
 pub mod tools;
 
 use files::{FileRegistry, Files};

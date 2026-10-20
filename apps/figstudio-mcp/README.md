@@ -93,6 +93,66 @@ Not verified: whether Safari or a newer Chrome blocks an `https://` page opening
 `ws://127.0.0.1` (mixed content / Local Network Access prompt). If your browser blocks it,
 use the local `--serve` build over `http://127.0.0.1:8765`.
 
+### Deploying the browser app (two methods)
+
+Build the browser bundle first with `scripts/web-build.sh` (output in `web/dist`, including
+`web/dist/_headers` which sets `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp` required for Wasm threads). You can deploy
+`web/dist` in two ways depending on where your MCP client runs:
+
+1. **Static-only deployment (for local `--browser-proxy` or `--bridge`):**
+   - Serve `web/dist` from any static host or Cloudflare Workers static assets
+     (`"assets": { "directory": "web/dist" }` in `wrangler.jsonc`, with no `main` Worker
+     script or Durable Object needed).
+   - If the site sits behind an access gateway (such as Cloudflare Access with Google
+     sign-in), keep the whole origin protected with **no `/mcp/*` bypass**: your local agent
+     spawns `figstudio-mcp --browser-proxy` over `stdio`, and your already-signed-in browser
+     connects outbound to `ws://127.0.0.1:<port>/bridge`.
+2. **Cloud relay Worker deployment (for remote agents and multi-device HTTP MCP):**
+   - Deploy `web/worker.mjs` and the `McpRoom` Durable Object alongside `web/dist` using
+     the repo's `wrangler.jsonc` (`npx wrangler deploy`).
+   - Browser tabs connect to `wss://<your-deploy-domain>/bridge/rm_<64 hex>` and MCP clients
+     call `https://<your-deploy-domain>/mcp/rm_<64 hex>` directly over Streamable HTTP
+     without running `figstudio-mcp` locally.
+
+### In the browser (local zero-upload proxy, `--browser-proxy`)
+
+When your coding agent and browser run on the same computer, `--browser-proxy` (implied
+whenever `--origin` is passed without `FILE.fig` or `--bridge`) combines the zero-upload
+Wasm RPC executor with a local `stdio` proxy inspired by `googlecolab/colab-mcp` — no `.fig`
+upload, no Cloudflare Access bypass, and no manual token pasting.
+
+**One-line install and setup (`colab-mcp` style):**
+
+```sh
+cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp
+claude mcp add figstudio -- figstudio-mcp --origin https://<your-deploy-domain>
+```
+
+Or in `.mcp.json` / Cursor / Windsurf:
+
+```json
+{
+  "mcpServers": {
+    "figstudio": {
+      "command": "figstudio-mcp",
+      "args": ["--origin", "https://<your-deploy-domain>"]
+    }
+  }
+}
+```
+
+- `figstudio-mcp --origin https://<your-deploy-domain>` (or `figstudio-mcp --browser-proxy`
+  for a local `http://127.0.0.1:8765` web build) speaks `stdio` to the agent, binds
+  `ws://127.0.0.1:<port>/bridge` on loopback (trying `3845..=3855` first, then an ephemeral
+  port), and mints a 256-bit process token (never printed to `stderr`).
+- When the agent calls `open_figstudio_browser`, the proxy opens
+  `https://<your-deploy-domain>/#mcpProxyPort=<port>&mcpProxyToken=<token>` in your default
+  browser (`$BROWSER`, `open`, `xdg-open`, or `rundll32 url.dll,FileProtocolHandler`), strips the `#fragment` immediately,
+  and waits up to 60 s for the tab's `ready` v2 frame before emitting
+  `notifications/tools/list_changed`.
+- `list_sessions` and `select_session` work identically when multiple tabs connect.
+
 ### In the browser (cloud relay and multi-device sessions)
 
 When deployed behind the Cloudflare Worker (`web/worker.mjs` with the `McpRoom` Durable
@@ -327,7 +387,8 @@ renderer), so the browser MCP build does not register them.
 | `get_selection` *(app only)* | `fileKey?` | `{fileKey, tabId, page, node: {nodeId, name, kind, bounds: {x, y, width, height}}}`, or `node: null` | The selected node of a tab (default the active tab). Bounds are in page units. |
 | `reveal_node` *(app only)* | `nodeId` (or a link), `fileKey?` | One line: the node is revealed in tab N | Selects the node in the app; the tab becomes active and the view fits the node. An instance path reveals its outer instance and says so. Waits 5 s for the app; then the error "the app did not respond" (a minimised window may not run frames, so the reveal can time out). |
 | `list_sessions` *(cloud relay only)* | none | `{sessions: [{session, device: {label}, focused, docs: [{tab, name, fileKey, key, pages}], secondsSinceReady}], selectedSession, socketsInUse, socketCap}` | Answered by the relay Durable Object even when no tab is connected. `docs[].fileKey` is the tool `fileKey` argument; `docs[].key` is the first 16 hex of SHA-256 over the 8-byte little-endian file size and first 4 MiB. `device.id` is never exposed. |
-| `select_session` *(cloud relay only)* | `session` (`s_…` or `""` to clear) | `{selected: <sessionSummary>}` or `{cleared: true, ...}` | Pins a target session in memory for subsequent tool calls from this MCP client (keyed by the `Mcp-Session-Id` header issued on `initialize`, capped at 64 clients). If the pinned tab disconnects, subsequent calls return `-32002`; if the isolate restarts or evicts the `Mcp-Session-Id`, requests carrying the stale header return HTTP 404 (`-32002`) so the client re-initializes instead of falling through to another device. |
+| `select_session` *(cloud relay / browser proxy)* | `session` (`s_…` or `""` to clear) | `{selected: <sessionSummary>}` or `{cleared: true, ...}` | Pins a target session in memory for subsequent tool calls from this MCP client (keyed by the `Mcp-Session-Id` header issued on `initialize`, capped at 64 clients). If the pinned tab disconnects, subsequent calls return `-32002`; if the isolate restarts or evicts the `Mcp-Session-Id`, requests carrying the stale header return HTTP 404 (`-32002`) so the client re-initializes instead of falling through to another device. |
+| `open_figstudio_browser` *(`--browser-proxy` only)* | `timeoutSeconds?` (1–120, default 60) | `{connected, launched, sessions}` | Opens `<origin>/#mcpProxyPort=<port>&mcpProxyToken=<token>` in the system browser if no tab is connected yet and waits for the tab to send `ready` v2. |
 
 ### Comparing versions
 

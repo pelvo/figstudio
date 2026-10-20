@@ -23,6 +23,7 @@ rmcp.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util"] }
 axum = { workspace = true, features = ["ws"] }
 getrandom = "0.4"
+sha2 = "0.10"
 # Constant-time bearer token comparison (access.rs).
 subtle = "2"
 futures-util.workspace = true

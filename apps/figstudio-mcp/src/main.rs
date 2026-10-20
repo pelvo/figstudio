@@ -43,15 +43,18 @@ struct Args {
     #[arg(long, requires = "http")]
     allow_any_interface: bool,
     /// Pair a browser with a local live MCP server (no FILE required).
-    #[arg(long, conflicts_with_all = ["files", "assets", "assets_dir"])]
+    #[arg(long, conflicts_with_all = ["files", "assets", "assets_dir", "browser_proxy"])]
     bridge: bool,
-    /// Additional exact browser Origin allowed to pair.
-    #[arg(long, requires = "bridge")]
+    /// Zero-upload local browser proxy over stdio (no FILE required).
+    #[arg(long, conflicts_with_all = ["files", "assets", "assets_dir", "bridge", "http"])]
+    browser_proxy: bool,
+    /// Additional exact browser Origin allowed to pair (also sets the launch URL for --browser-proxy).
+    #[arg(long, visible_alias = "origin", conflicts_with = "files")]
     allow_origin: Vec<String>,
     /// Maximum bytes per browser upload (default 2 GiB).
     #[arg(long, requires = "bridge", default_value_t = figstudio_mcp::bridge::DEFAULT_MAX_UPLOAD_BYTES)]
     max_upload_bytes: u64,
-    #[arg(required_unless_present = "bridge", value_name = "FILE.fig")]
+    #[arg(required_unless_present_any = ["bridge", "browser_proxy", "allow_origin"], value_name = "FILE.fig")]
     files: Vec<PathBuf>,
 }
 
@@ -107,6 +110,12 @@ fn main() -> anyhow::Result<()> {
 
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
+    if args.browser_proxy || (!args.bridge && args.files.is_empty()) {
+        if args.http.is_some() {
+            anyhow::bail!("--browser-proxy uses stdio only and cannot be combined with --http");
+        }
+        return run_browser_proxy(&args).await;
+    }
     if args.bridge {
         return run_bridge(&args).await;
     }
@@ -208,6 +217,33 @@ async fn run_bridge(args: &Args) -> anyhow::Result<()> {
     .await;
     signal.abort();
     result?;
+    Ok(())
+}
+
+async fn run_browser_proxy(args: &Args) -> anyhow::Result<()> {
+    use figstudio_mcp::proxy::{
+        ProxyConfig, ProxyState, bind_proxy_listener, serve_proxy_stdio, serve_proxy_ws,
+    };
+    let listener = bind_proxy_listener(None).await?;
+    let addr = listener.local_addr()?;
+    let config = ProxyConfig::new(&args.allow_origin, true)?;
+    // Never log the proxy token or full launch URL on stderr: MCP hosts record stderr logs.
+    eprintln!("Browser proxy: ws://127.0.0.1:{}/bridge", addr.port());
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let state = ProxyState::new(config, addr.port(), shutdown.clone());
+    let cancel = shutdown.clone();
+    let signal = tokio::spawn(async move {
+        let _ = shutdown_signal().await;
+        cancel.cancel();
+    });
+    let ws_state = state.clone();
+    let ws_task = tokio::spawn(async move {
+        let _ = serve_proxy_ws(listener, ws_state).await;
+    });
+    let stdio_res = serve_proxy_stdio(state).await;
+    ws_task.abort();
+    signal.abort();
+    stdio_res?;
     Ok(())
 }
 
