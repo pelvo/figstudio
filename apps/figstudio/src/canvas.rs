@@ -1,10 +1,10 @@
 //! The canvas: pan / zoom input, background rendering, selection and hover outlines.
 
-use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use figstudio_fig::Guid;
 use figstudio_render::kurbo::Point;
 use figstudio_render::{
-    absolute_transform, color::AlphaColor, content_bounds, geom, hit_chain, page_background,
+    absolute_transform, color::AlphaColor, content_bounds, geom, page_background,
 };
 
 use crate::copy_menu;
@@ -13,6 +13,17 @@ use crate::tab::{Tab, View};
 use crate::theme;
 use crate::tiles_view::Tiles;
 use crate::worker::Workers;
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static HIT_CHAIN_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn hit_chain(doc: &figstudio_fig::Document, page: Guid, point: Point) -> Vec<Guid> {
+    #[cfg(test)]
+    HIT_CHAIN_CALLS.with(|calls| calls.set(calls.get() + 1));
+    figstudio_render::hit_chain(doc, page, point)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
@@ -147,13 +158,19 @@ pub fn show(
 
     // Input: selection / zoom tool.
     let cursor_page = response.hover_pos().map(|p| tab.view.to_page(origin, p));
-    let chain = cursor_page.map_or_else(Vec::new, |p| {
-        hit_chain(
-            &tab.doc,
-            tab.page,
-            Point::new(f64::from(p.x), f64::from(p.y)),
-        )
-    });
+    let needs_chain = (response.hovered() && !response.dragged())
+        || response.clicked()
+        || response.double_clicked()
+        || response.secondary_clicked();
+    let chain = cursor_page
+        .filter(|_| needs_chain)
+        .map_or_else(Vec::new, |p| {
+            hit_chain(
+                &tab.doc,
+                tab.page,
+                Point::new(f64::from(p.x), f64::from(p.y)),
+            )
+        });
     if response.hovered() && !response.dragged() {
         tab.hover = crate::pick::click(
             &tab.doc,
@@ -399,18 +416,7 @@ fn outline(painter: &egui::Painter, tab: &Tab, origin: Pos2, id: Guid, stroke: S
     let Some(corners) = corners(tab, origin, id) else {
         return;
     };
-    let axis_aligned =
-        (corners[0].y - corners[1].y).abs() < 0.01 && (corners[0].x - corners[3].x).abs() < 0.01;
-    if axis_aligned {
-        painter.rect_stroke(
-            Rect::from_two_pos(corners[0], corners[2]),
-            0.0,
-            stroke,
-            StrokeKind::Middle,
-        );
-    } else {
-        painter.add(egui::Shape::closed_line(corners.to_vec(), stroke));
-    }
+    crate::canvas_pick::outline_corners(painter, corners, stroke);
 }
 
 /// How long a jump of the view (fit, zoom buttons and keys, the Zoom tool) eases; pans and

@@ -61,7 +61,7 @@ fn plain_click_inside_inner_target_keeps_it_and_siblings_keep_depth() {
 }
 
 #[test]
-fn inner_outline_uses_resolved_path_bounds() {
+fn inner_outline_uses_axis_aligned_resolved_bounds() {
     let mut h = inner_fixture::harness();
     let at = at(&h, &[103]);
     pick::click(&mut h, at, Modifiers::COMMAND);
@@ -78,6 +78,45 @@ fn inner_outline_uses_resolved_path_bounds() {
     );
     assert!(h.output().shapes.iter().any(|shape| matches!(&shape.shape,
         egui::Shape::Rect(r) if r.rect == rect && r.stroke.width == 1.5)));
+}
+
+#[test]
+fn inner_outline_uses_resolved_rotated_quad() {
+    use figstudio_fig::Val;
+    let mut h = inner_fixture::harness();
+    let mut doc = inner_fixture::document();
+    let mut nodes = doc.nodes.clone();
+    let tf = nodes
+        .iter_mut()
+        .find(|n| n.id == id(103))
+        .unwrap()
+        .data
+        .get_mut("transform")
+        .unwrap();
+    let c = std::f64::consts::FRAC_1_SQRT_2;
+    for (key, value) in [("m00", c), ("m01", -c), ("m10", c), ("m11", c)] {
+        tf.set(key, Val::Float(value));
+    }
+    doc.set_nodes(nodes).unwrap();
+    h.state_mut().tabs[0].doc = std::sync::Arc::new(doc);
+    h.state_mut().tabs[0].select(Some(id(200)));
+    h.state_mut().tabs[0].set_inner(Some(path(&[103])));
+    h.run_steps(1);
+    let tab = &h.state().tabs[0];
+    let (tf, data) = Renderer::new()
+        .path_layout(&tab.doc, &path(&[103]))
+        .unwrap();
+    let (w, height) = figstudio_render::geom::size(&data);
+    let expected = [(0.0, 0.0), (w, 0.0), (w, height), (0.0, height)].map(|p| {
+        let p = tf * figstudio_render::kurbo::Point::from(p);
+        tab.view.to_screen(
+            tab.canvas_rect.unwrap().min,
+            Pos2::new(p.x as f32, p.y as f32),
+        )
+    });
+    assert!(h.output().shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Path(p) if p.closed && p.stroke.width == 1.5
+            && p.points.len() == 4 && p.points.iter().zip(expected).all(|(a,b)| a.distance(b) < 0.01))));
 }
 
 #[test]

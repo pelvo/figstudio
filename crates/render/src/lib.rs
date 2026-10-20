@@ -3,7 +3,9 @@
 //! The same code path serves the desktop app, the headless CLI and the browser build.
 
 mod child_layout;
+mod paint_order;
 pub use child_layout::{ChildLayout, InspectionWork};
+pub use paint_order::children_topmost_first;
 mod connector;
 mod effects;
 mod focus;
@@ -820,18 +822,9 @@ pub fn hit_chain(doc: &Document, page: Guid, point: Point) -> Vec<Guid> {
         if depth >= 128 || !seen.insert(parent) {
             return None;
         }
-        // Topmost painted child first: the reverse of drawing order (see `draw_children`).
-        let reverse = doc
-            .node(parent)
-            .is_some_and(|p| p.data.flag("stackReverseZIndex") == Some(true));
-        let children = doc.children(parent);
-        for index in 0..children.len() {
-            let id = &children[if reverse {
-                index
-            } else {
-                children.len() - 1 - index
-            }];
-            let Some(node) = doc.node(*id) else { continue };
+        let data = &doc.node(parent)?.data;
+        for id in children_topmost_first(doc.children(parent), data) {
+            let Some(node) = doc.node(id) else { continue };
             if !visible(&node.data) || node.data.flag("mask") == Some(true) {
                 continue;
             }
@@ -842,15 +835,15 @@ pub fn hit_chain(doc: &Document, page: Guid, point: Point) -> Vec<Guid> {
             let clips = clips_content(&node.kind, &node.data);
             if node.kind != "INSTANCE"
                 && (inside || !clips)
-                && let Some(mut hit) = walk(doc, *id, tf, point, seen, depth + 1)
+                && let Some(mut hit) = walk(doc, id, tf, point, seen, depth + 1)
             {
                 if node.kind != "SECTION" {
-                    hit.insert(0, *id);
+                    hit.insert(0, id);
                 }
                 return Some(hit);
             }
             if inside && node.kind != "SECTION" {
-                return Some(vec![*id]);
+                return Some(vec![id]);
             }
         }
         None
@@ -1400,18 +1393,11 @@ impl Ctx<'_> {
     /// Draws children, turning mask layers into clips for the siblings above them.
     fn draw_children(&mut self, node: &Node, data: &Val, world: Affine, path: Option<&[Guid]>) {
         let mut mask_layers = 0;
-        let children = self.doc.children(node.id);
-        let reverse = data.flag("stackReverseZIndex") == Some(true);
-        for index in 0..children.len() {
-            let id = &children[if reverse {
-                children.len() - 1 - index
-            } else {
-                index
-            }];
+        for id in children_topmost_first(self.doc.children(node.id), data).rev() {
             if self.exhausted || !self.charge_work() {
                 break;
             }
-            let Some(child) = self.doc.node(*id) else {
+            let Some(child) = self.doc.node(id) else {
                 continue;
             };
             let (child_path, (child_data, stale_glyphs, approximate_ink)) =

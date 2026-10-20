@@ -61,10 +61,10 @@ impl Tab {
                 .is_some_and(|n| n.kind == "INSTANCE")
         {
             if down {
-                let child = self.pick_cache.with(&self.doc, |_, definitions| {
+                let child = self.pick_cache.with(&self.doc, |renderer, _| {
                     crate::instance_pick::first_child(
                         &self.doc,
-                        definitions,
+                        renderer,
                         selected,
                         self.inner.as_ref(),
                     )

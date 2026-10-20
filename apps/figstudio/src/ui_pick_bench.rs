@@ -65,13 +65,13 @@ fn instance_pick_release_benchmark() {
         black_box(canvas_pick::hover(&tab, Some(point), false));
     });
     let start = Instant::now();
-    assert!(black_box(tab.pick_cache.bounds(&tab.doc, &inner)).is_some());
+    assert!(black_box(tab.pick_cache.corners(&tab.doc, &inner)).is_some());
     println!(
         "first outline_ms={:.6}",
         start.elapsed().as_secs_f64() * 1000.0
     );
     measure("outline (batch=10000)", 10000, || {
-        black_box(tab.pick_cache.bounds(&tab.doc, &inner));
+        black_box(tab.pick_cache.corners(&tab.doc, &inner));
     });
     println!("work={:?}", tab.pick_cache.work(&tab.doc));
 }

@@ -35,14 +35,17 @@ fn click_builds_indexes_once_and_stationary_hover_and_outline_do_no_walks() {
         assert_eq!(canvas_pick::hover(&tab, Some(point), false), hover);
     }
     assert_eq!(tab.pick_cache.work(&tab.doc), warmed);
-    let bounds = tab.pick_cache.bounds(&tab.doc, tab.inner.as_ref().unwrap());
-    assert!(bounds.is_some());
+    let corners = tab
+        .pick_cache
+        .corners(&tab.doc, tab.inner.as_ref().unwrap());
+    assert!(corners.is_some());
     let outlined = tab.pick_cache.work(&tab.doc);
     assert_eq!(outlined.focus_walks, warmed.focus_walks + 1);
     for _ in 0..10 {
         assert_eq!(
-            tab.pick_cache.bounds(&tab.doc, tab.inner.as_ref().unwrap()),
-            bounds
+            tab.pick_cache
+                .corners(&tab.doc, tab.inner.as_ref().unwrap()),
+            corners
         );
     }
     assert_eq!(tab.pick_cache.work(&tab.doc), outlined);
@@ -98,7 +101,7 @@ fn document_identity_invalidates_indexes_hover_and_cached_outline_misses() {
         canvas_pick::hover(&tab, Some(point), true),
         Some(selected.clone())
     );
-    assert!(tab.pick_cache.bounds(&tab.doc, &selected).is_some());
+    assert!(tab.pick_cache.corners(&tab.doc, &selected).is_some());
     let old_index = tab
         .pick_cache
         .with(&tab.doc, |_, definitions| definitions.clone());
@@ -115,7 +118,7 @@ fn document_identity_invalidates_indexes_hover_and_cached_outline_misses() {
     };
     mutate(&mut tab, false);
     assert_eq!(canvas_pick::hover(&tab, Some(point), true), None);
-    assert_eq!(tab.pick_cache.bounds(&tab.doc, &selected), None);
+    assert_eq!(tab.pick_cache.corners(&tab.doc, &selected), None);
     let new_index = tab
         .pick_cache
         .with(&tab.doc, |_, definitions| definitions.clone());
@@ -126,5 +129,5 @@ fn document_identity_invalidates_indexes_hover_and_cached_outline_misses() {
         canvas_pick::hover(&tab, Some(point), true),
         Some(selected.clone())
     );
-    assert!(tab.pick_cache.bounds(&tab.doc, &selected).is_some());
+    assert!(tab.pick_cache.corners(&tab.doc, &selected).is_some());
 }

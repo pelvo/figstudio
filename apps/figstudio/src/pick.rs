@@ -32,9 +32,12 @@ pub fn deeper(chain: &[Guid], selected: Option<Guid>) -> Option<Guid> {
 }
 
 pub fn child(doc: &Document, selected: Guid) -> Option<Guid> {
-    doc.children(selected).iter().copied().find(|id| {
+    let data = &doc.node(selected)?.data;
+    figstudio_render::children_topmost_first(doc.children(selected), data).find(|id| {
         doc.node(*id).is_some_and(|n| {
-            n.data.flag("visible") != Some(false) && n.data.flag("mask") != Some(true)
+            n.kind != "SECTION"
+                && n.data.flag("visible") != Some(false)
+                && n.data.flag("mask") != Some(true)
         })
     })
 }

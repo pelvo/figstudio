@@ -61,7 +61,7 @@ impl Renderer {
     }
 
     /// Focus once at `parent` (or the outer instance), then lay out at most `max_nodes`
-    /// immediate children. In document order; consumers choose their own stacking direction.
+    /// immediate children, topmost first in the resolved parent's paint stack.
     /// Hidden parents, unresolved paths and expansion cycles return no children. Hidden
     /// children are included so a caller's traversal budget counts them too.
     pub fn child_layouts(
@@ -128,11 +128,11 @@ impl Ctx<'_> {
             (focus.node, focus.data, base)
         };
         let mut layouts = Vec::new();
-        for id in self.doc.children(node.id).iter().take(max_nodes) {
+        for id in crate::children_topmost_first(self.doc.children(node.id), &data).take(max_nodes) {
             if !self.charge_work() {
                 break;
             }
-            let Some(child) = self.doc.node(*id) else {
+            let Some(child) = self.doc.node(id) else {
                 continue;
             };
             let (path, (data, stale, _)) = self.child_patch(node, &data, child, Some(&base));

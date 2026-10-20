@@ -8,10 +8,7 @@ use figstudio_fig::{
     Document, Guid,
     resolve::{Definitions, InstancePath},
 };
-use figstudio_render::{
-    Renderer,
-    kurbo::{Point, Rect},
-};
+use figstudio_render::{Renderer, geom, kurbo::Point};
 
 #[derive(Debug, PartialEq)]
 struct HoverKey {
@@ -33,7 +30,7 @@ struct State {
     definitions: Arc<Definitions>,
     hover: Option<(HoverKey, Option<InstancePath>)>,
     // The canvas draws at most two inner outlines: selected and hovered.
-    outlines: [Option<(InstancePath, Option<Rect>)>; 2],
+    outlines: [Option<(InstancePath, Option<[Point; 4]>)>; 2],
 }
 
 impl State {
@@ -82,20 +79,23 @@ impl PickCache {
         self.with(doc, |renderer, _| renderer.inspection_work())
     }
 
-    pub fn bounds(&self, doc: &Document, path: &InstancePath) -> Option<Rect> {
+    pub fn corners(&self, doc: &Document, path: &InstancePath) -> Option<[Point; 4]> {
         let mut state = self.state(doc);
-        if let Some((_, bounds)) = state
+        if let Some((_, corners)) = state
             .outlines
             .iter()
             .flatten()
             .find(|(cached, _)| cached == path)
         {
-            return *bounds;
+            return *corners;
         }
-        let bounds = state.renderer.path_bounds(doc, path);
+        let corners = state.renderer.path_layout(doc, path).map(|(tf, data)| {
+            let (w, h) = geom::size(&data);
+            [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].map(|p| tf * Point::from(p))
+        });
         state.outlines[0] = state.outlines[1].take();
-        state.outlines[1] = Some((path.clone(), bounds));
-        bounds
+        state.outlines[1] = Some((path.clone(), corners));
+        corners
     }
 
     pub fn hover(&self, tab: &crate::tab::Tab, point: Point, deep: bool) -> Option<InstancePath> {

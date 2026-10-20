@@ -20,14 +20,27 @@ pub fn outline(
     path: &InstancePath,
     stroke: egui::Stroke,
 ) {
-    if let Some(bounds) = tab.pick_cache.bounds(&tab.doc, path) {
-        let rect = egui::Rect::from_min_max(
+    if let Some(corners) = tab.pick_cache.corners(&tab.doc, path) {
+        let corners = corners.map(|p| {
             tab.view
-                .to_screen(origin, egui::pos2(bounds.x0 as f32, bounds.y0 as f32)),
-            tab.view
-                .to_screen(origin, egui::pos2(bounds.x1 as f32, bounds.y1 as f32)),
+                .to_screen(origin, egui::pos2(p.x as f32, p.y as f32))
+        });
+        outline_corners(painter, corners, stroke);
+    }
+}
+
+pub fn outline_corners(painter: &egui::Painter, corners: [egui::Pos2; 4], stroke: egui::Stroke) {
+    let axis_aligned =
+        (corners[0].y - corners[1].y).abs() < 0.01 && (corners[0].x - corners[3].x).abs() < 0.01;
+    if axis_aligned {
+        painter.rect_stroke(
+            egui::Rect::from_two_pos(corners[0], corners[2]),
+            0.0,
+            stroke,
+            egui::StrokeKind::Middle,
         );
-        painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Middle);
+    } else {
+        painter.add(egui::Shape::closed_line(corners.to_vec(), stroke));
     }
 }
 

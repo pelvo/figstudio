@@ -1,8 +1,8 @@
 //! Bounded resolved-instance picking. Paths omit ordinary groups, so ascend via tree_path.
 
 use figstudio_fig::{
-    Document, Guid, Val,
-    resolve::{self, InstancePath, Resolved},
+    Document, Guid,
+    resolve::{self, InstancePath},
 };
 use figstudio_render::{Renderer, geom, kurbo::Point};
 use std::sync::Arc;
@@ -31,43 +31,21 @@ pub fn parent(
     InstancePath::new(ids)
 }
 
-fn children(
-    doc: &Document,
-    definitions: &Arc<resolve::Definitions>,
-    instance: Guid,
-    path: Option<&InstancePath>,
-    budget: usize,
-) -> Vec<Resolved> {
-    let walk = match path {
-        Some(path) => resolve::walk_path(doc, definitions, path, Some(1), budget),
-        None => resolve::walk_instance(doc, definitions, instance, Some(1), budget),
-    };
-    walk.map(|w| w.nodes.into_iter().filter(|n| n.level == 1).collect())
-        .unwrap_or_default()
-}
-
 pub fn first_child(
     doc: &Document,
-    definitions: &Arc<resolve::Definitions>,
+    renderer: &mut Renderer,
     instance: Guid,
     path: Option<&InstancePath>,
 ) -> Option<InstancePath> {
-    children(doc, definitions, instance, path, BUDGET)
+    renderer
+        .child_layouts(doc, instance, path, BUDGET)
         .into_iter()
-        .find(|n| n.data.flag("visible") != Some(false) && n.data.flag("mask") != Some(true))
+        .find(|n| {
+            doc.node(n.node).is_some_and(|node| node.kind != "SECTION")
+                && n.data.flag("visible") != Some(false)
+                && n.data.flag("mask") != Some(true)
+        })
         .map(|n| n.path)
-}
-
-fn reverse_order(doc: &Document, kind: &str, data: &Val) -> bool {
-    // Instance children are painted in the definition's stacking order.
-    let data = if kind == "INSTANCE" {
-        resolve::symbol_id(data)
-            .and_then(|id| doc.node(id))
-            .map_or(data, |n| &n.data)
-    } else {
-        data
-    };
-    data.flag("stackReverseZIndex") == Some(true)
 }
 
 struct Hit<'a> {
@@ -83,19 +61,18 @@ impl Hit<'_> {
         parent: Option<&InstancePath>,
         point: Point,
         depth: usize,
-        reverse: bool,
     ) -> Vec<InstancePath> {
         if self.left == 0 || depth >= DEPTH {
             return Vec::new();
         }
-        let mut nodes = self
+        let nodes = self
             .renderer
             .child_layouts(self.doc, instance, parent, self.left);
-        self.left = self.left.saturating_sub(nodes.len().max(1));
-        if !reverse {
-            nodes.reverse();
-        }
         for resolved in nodes {
+            if self.left == 0 {
+                break;
+            }
+            self.left -= 1;
             if resolved.data.flag("visible") == Some(false)
                 || resolved.data.flag("mask") == Some(true)
             {
@@ -116,13 +93,7 @@ impl Hit<'_> {
                 && local.x <= w
                 && local.y <= h;
             if inside || !geom::clips_content(&node.kind, &data) {
-                let mut hit = self.walk(
-                    instance,
-                    Some(&resolved.path),
-                    point,
-                    depth + 1,
-                    reverse_order(self.doc, &node.kind, &data),
-                );
+                let mut hit = self.walk(instance, Some(&resolved.path), point, depth + 1);
                 if !hit.is_empty() {
                     if node.kind != "SECTION" {
                         hit.insert(0, resolved.path);
@@ -154,14 +125,7 @@ pub fn hit_chain_with(
         renderer,
         left: BUDGET,
     }
-    .walk(
-        instance,
-        None,
-        point,
-        0,
-        doc.node(instance)
-            .is_some_and(|n| reverse_order(doc, &n.kind, &n.data)),
-    )
+    .walk(instance, None, point, 0)
 }
 
 pub fn click(
