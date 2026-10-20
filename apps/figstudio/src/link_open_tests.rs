@@ -1017,20 +1017,30 @@ fn a_key_tie_stays_a_tie_when_one_of_the_files_just_failed() {
     assert!(app.tabs.is_empty());
 }
 
-/// As `local_copies` lists them: `KEY.fig` by its plain path (it resolves; on macOS the temp
-/// folder resolves to another spelling, `/private/var`), and a worse name match.
-fn key_listed_plainly(_: &[PathBuf], _: &FileHint) -> Vec<(PathBuf, Match)> {
+/// `KEY.fig` listed through a symlink to [`key_dir`] (as a folder reached by a link would be),
+/// and a worse name match. Text folding cannot see through the link; only the copy's resolved
+/// path names the same file as a failure reported by its resolved path.
+#[cfg(unix)]
+fn key_through_a_link(_: &[PathBuf], _: &FileHint) -> Vec<(PathBuf, Match)> {
+    static LINK: std::sync::OnceLock<(tempfile::TempDir, PathBuf)> = std::sync::OnceLock::new();
+    let (_, alias) = LINK.get_or_init(|| {
+        let holder = tempfile::tempdir().unwrap();
+        let alias = holder.path().join("alias");
+        std::os::unix::fs::symlink(key_dir(), &alias).unwrap();
+        (holder, alias)
+    });
     vec![
-        (key_dir().join("KEY.fig"), Match::Key),
+        (alias.join("KEY.fig"), Match::Key),
         (fixture("structure.fig"), Match::Name),
     ]
 }
 
+#[cfg(unix)]
 #[test]
 fn a_failed_best_match_with_a_resolved_path_does_not_open_a_worse_one() {
     let mut h = empty_app();
     let ctx = h.ctx.clone();
-    h.state_mut().link.search = key_listed_plainly;
+    h.state_mut().link.search = key_through_a_link;
     let opened = key_dir().join("KEY.fig");
     assert!(h.state_mut().loading.begin(&opened));
     let (done, rx) = done();
@@ -1049,4 +1059,17 @@ fn a_failed_best_match_with_a_resolved_path_does_not_open_a_worse_one() {
     let app = h.state();
     assert_eq!(app.loading.iter().count(), 0, "the worse match was loaded");
     assert!(app.tabs.is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn lexical_folding_keeps_parents_after_a_rootless_drive() {
+    use super::lexical;
+    let fold = |p: &str| lexical(Path::new(p));
+    // `C:` alone is that drive's current folder, so its parent is somewhere else.
+    assert_eq!(fold(r"C:..\KEY.fig"), PathBuf::from(r"C:..\KEY.fig"));
+    assert_eq!(fold(r"C:foo\..\..\KEY.fig"), PathBuf::from(r"C:..\KEY.fig"));
+    assert_ne!(fold(r"C:..\KEY.fig"), fold(r"C:KEY.fig"));
+    // With a root there is nothing above it.
+    assert_eq!(fold(r"C:\..\KEY.fig"), PathBuf::from(r"C:\KEY.fig"));
 }

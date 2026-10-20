@@ -373,8 +373,9 @@ pub(crate) fn real_paths(copies: Vec<(PathBuf, Match)>) -> Vec<Copy> {
 
 /// `path` with `.` and `..` folded away by its text alone (no disk access, so symlinks are
 /// not followed): how a failed load is matched when the worker could not resolve it. A `..`
-/// removes a normal segment before it, stays when there is none (`../../a` keeps both), and
-/// is dropped right after a root (`/..` is `/`).
+/// removes a normal segment before it, is dropped when there is none above a root (`/..`
+/// is `/`, `C:\..` is `C:\`), and otherwise stays (`../../a` keeps both; so does Windows'
+/// rootless `C:..`, relative to that drive's current folder).
 pub(crate) fn lexical(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
@@ -385,7 +386,7 @@ pub(crate) fn lexical(path: &Path) -> PathBuf {
                 Some(Component::Normal(_)) => {
                     out.pop();
                 }
-                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ if out.has_root() => {}
                 _ => out.push(".."),
             },
             other => out.push(other),

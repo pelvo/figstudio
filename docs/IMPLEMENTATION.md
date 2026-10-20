@@ -590,7 +590,7 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
     no tab yet, so it could not be told from a copy spelled differently); other loads do not
     hold it. A copy whose load failed meanwhile (`Loaded::Err` carries its resolved path;
     failing that, `.`/`..` are folded by text, `lexical`: a `..` removes only a normal segment,
-    stacks otherwise, and is dropped after a root) still takes part in the ranking, so a worse
+    is dropped above a root, and stacks otherwise, a rootless `C:..` included) still takes part in the ranking, so a worse
     match or the other half of a tie never takes its place; if it is chosen, the link
     answers `LoadFailed` and it is not loaded again.
   - **MCP budget.** `Command::OpenLink` carries when the tool sent it (`asked`). At
