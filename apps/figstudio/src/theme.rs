@@ -738,13 +738,16 @@ fn system_fonts() -> &'static SystemFonts {
             "Symbola",
             "DejaVu Sans",
         ];
-        // Start from what the chain already draws ahead of these: the UI face, the CJK face
-        // and egui's bundled faces.
+        // Start from what the chain already draws ahead of these on the families they join:
+        // the UI face, the CJK face and egui's Proportional faces (not Hack: Monospace only).
         let mut covered = std::collections::HashSet::new();
         let ahead = fonts.ui.iter().chain(&fonts.cjk);
         let ahead = ahead.map(|f| (f.bytes.as_slice(), f.index));
-        let builtin = egui::FontDefinitions::default().font_data;
-        let builtin = builtin.values().map(|f| (f.font.as_ref(), f.index));
+        let defaults = egui::FontDefinitions::default();
+        let builtin = defaults.families[&FontFamily::Proportional]
+            .iter()
+            .filter_map(|name| defaults.font_data.get(name))
+            .map(|f| (f.font.as_ref(), f.index));
         for (data, index) in ahead.chain(builtin) {
             covered.extend(new_symbols(data, index, &covered).unwrap_or_default());
         }

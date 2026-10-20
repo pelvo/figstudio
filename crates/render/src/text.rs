@@ -396,6 +396,8 @@ mod system {
 #[cfg(all(test, feature = "system-fonts"))]
 mod tests {
     use epaint_default_fonts::{EMOJI_ICON, HACK_REGULAR};
+
+    use crate::text_test_font as test_font;
     use fontdb::{Database, ID};
 
     use super::SystemFonts;
@@ -439,5 +441,17 @@ mod tests {
         let (path, _, advance) = f.glyph_for(&ids, ' ').unwrap();
         assert!(path.elements().is_empty());
         assert!(advance > 0.0);
+    }
+
+    #[test]
+    fn a_bitmap_only_face_does_not_set_the_space_width() {
+        // A face without outline tables maps the space to a wide advance (2.55 em), like
+        // Noto Color Emoji; the space must come from the outline face after it.
+        let bitmap = test_font::bitmap_only(2550);
+        let (mut f, ids) = fonts(&[&bitmap, HACK_REGULAR]);
+        assert_eq!(ids.len(), 2, "both faces load");
+        let (_, upem, advance) = f.glyph_for(&ids, ' ').unwrap();
+        assert_eq!(upem, 2048.0, "Hack's space, not the bitmap face's");
+        assert!(advance < 1.0, "{advance} em");
     }
 }
