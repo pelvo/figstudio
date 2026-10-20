@@ -1,6 +1,5 @@
 //! Shared menu state and actions; renderers never implement the commands themselves.
 use crate::{App, Tool};
-use egui::{Key, KeyboardShortcut, Modifiers};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Action {
@@ -13,6 +12,21 @@ pub(crate) enum Action {
     ActualSize,
     ToggleLayers,
     ToggleProperties,
+    CommandBar,
+    SpaceIcon,
+    RenameSpace,
+    SpaceColour,
+    ResetSpace,
+    FindOnPage,
+    FindNext,
+    FindPrevious,
+    NextSpace,
+    PreviousSpace,
+    /// The space at this place in the footer (0-based).
+    GoToSpace(usize),
+    Settings,
+    Appearance(Appearance),
+    ReduceMotion,
     AgentAccess,
     About,
     SelectTool(Tool),
@@ -22,17 +36,40 @@ pub(crate) enum Action {
     CjkFont(crate::cjk::Variant),
 }
 
-impl Action {
-    pub(crate) fn shortcut(self) -> Option<KeyboardShortcut> {
-        let (modifiers, key) = match self {
-            Self::Open => (Modifiers::COMMAND, Key::O),
-            Self::CloseTab => (Modifiers::COMMAND, Key::W),
-            Self::ExportSelection(2.0) => (Modifiers::COMMAND | Modifiers::SHIFT, Key::E),
-            Self::ZoomFit => (Modifiers::SHIFT, Key::Num1),
-            Self::ActualSize => (Modifiers::SHIFT, Key::Num0),
-            _ => return None,
-        };
-        Some(KeyboardShortcut::new(modifiers, key))
+/// View > Appearance: follow the system, or force light or dark.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl From<egui::ThemePreference> for Appearance {
+    fn from(preference: egui::ThemePreference) -> Self {
+        match preference {
+            egui::ThemePreference::System => Self::System,
+            egui::ThemePreference::Light => Self::Light,
+            egui::ThemePreference::Dark => Self::Dark,
+        }
+    }
+}
+
+impl Appearance {
+    fn label(self) -> &'static str {
+        match self {
+            Self::System => "Match system",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+
+    fn preference(self) -> egui::ThemePreference {
+        match self {
+            Self::System => egui::ThemePreference::System,
+            Self::Light => egui::ThemePreference::Light,
+            Self::Dark => egui::ThemePreference::Dark,
+        }
     }
 }
 
@@ -107,11 +144,25 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
         )
     };
     let mut view = vec![
-        Item::action("Zoom to fit   ⇧1", Action::ZoomFit, has_tab),
-        Item::action("Actual size   ⇧0", Action::ActualSize, has_tab),
+        Item::action("Find on page…", Action::FindOnPage, has_tab),
         Item::separator(),
-        Item::checked("Layers panel", Action::ToggleLayers, app.show_left),
+        Item::action("Zoom to fit", Action::ZoomFit, has_tab),
+        Item::action("Actual size", Action::ActualSize, has_tab),
+        Item::action("Zoom in", Action::ZoomBy(1.25), has_tab),
+        Item::action("Zoom out", Action::ZoomBy(0.8), has_tab),
+        Item::separator(),
+        Item::checked("Sidebar", Action::ToggleLayers, app.show_left),
         Item::checked("Properties panel", Action::ToggleProperties, app.show_right),
+        Item::action("Command bar…", Action::CommandBar, true),
+        Item::separator(),
+        Item::group(
+            "Appearance",
+            [Appearance::System, Appearance::Light, Appearance::Dark]
+                .into_iter()
+                .map(|a| Item::checked(a.label(), Action::Appearance(a), app.appearance == a))
+                .collect(),
+        ),
+        Item::checked("Reduce motion", Action::ReduceMotion, app.reduce_motion),
     ];
     #[cfg(target_arch = "wasm32")]
     view.push(Item::group(
@@ -132,11 +183,25 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                 export("Export page as PNG", false),
                 export("Export selection as PNG", true),
                 Item::separator(),
-                Item::action("Close tab", Action::CloseTab, has_tab),
+                Item::action("Close file", Action::CloseTab, has_tab),
+                Item::action("Settings…", Action::Settings, true),
                 Item::action("Quit", Action::Quit, true),
             ],
         ),
         Item::group("View", view),
+        Item::group(
+            "Space",
+            vec![
+                Item::action("Change space icon…", Action::SpaceIcon, has_tab),
+                Item::action("Rename space…", Action::RenameSpace, has_tab),
+                Item::action("Edit theme colour…", Action::SpaceColour, has_tab),
+                Item::separator(),
+                Item::action("Reset space look", Action::ResetSpace, has_tab),
+                Item::separator(),
+                Item::action("Next space", Action::NextSpace, app.tabs.len() > 1),
+                Item::action("Previous space", Action::PreviousSpace, app.tabs.len() > 1),
+            ],
+        ),
         Item::group(
             "Help",
             vec![Item::action("About figstudio", Action::About, true)],
@@ -154,6 +219,58 @@ impl App {
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::ToggleLayers => self.show_left = !self.show_left,
             Action::ToggleProperties => self.show_right = !self.show_right,
+            Action::CommandBar => self.command.toggle(ctx),
+            Action::SpaceIcon | Action::RenameSpace | Action::SpaceColour => {
+                let kind = match action {
+                    Action::SpaceIcon => crate::space_editor::Popover::Icon,
+                    Action::RenameSpace => crate::space_editor::Popover::Rename,
+                    _ => crate::space_editor::Popover::Colour,
+                };
+                self.commit_space_editor();
+                self.space_editing = self
+                    .tabs
+                    .get(self.active)
+                    .map(|tab| crate::space_editor::SpaceEditor::new(tab, kind, ctx));
+            }
+            Action::ResetSpace => {
+                self.commit_space_editor();
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.style = Default::default();
+                    let title = tab.title();
+                    self.spaces
+                        .remember(crate::spaces::FileId::of(tab, &title), &tab.style);
+                }
+            }
+            Action::FindOnPage => self.find.show(),
+            Action::FindNext | Action::FindPrevious => {
+                if self.find.is_open() {
+                    self.find.step(action == Action::FindNext);
+                }
+            }
+            Action::NextSpace | Action::PreviousSpace => {
+                let n = self.tabs.len();
+                if n > 0 {
+                    let step = if action == Action::NextSpace {
+                        1
+                    } else {
+                        n - 1
+                    };
+                    self.active = (self.active + step) % n;
+                }
+            }
+            Action::GoToSpace(i) => {
+                if i < self.tabs.len() {
+                    self.active = i;
+                }
+            }
+            Action::Appearance(appearance) => {
+                self.appearance = appearance;
+                ctx.set_theme(appearance.preference());
+            }
+            Action::ReduceMotion => {
+                self.reduce_motion = !crate::anim::reduced(ctx);
+                crate::anim::set_reduced(ctx, self.reduce_motion);
+            }
             Action::SelectTool(tool) => self.tool = tool,
             Action::ZoomFit => {
                 if let Some(t) = self.tab() {
@@ -175,8 +292,9 @@ impl App {
                     t.select(None);
                 }
             }
-            Action::AgentAccess => self.agent_window = true,
-            Action::About => self.about_window = true,
+            Action::AgentAccess => self.settings.show(Some(crate::settings::Tab::Agents), ctx),
+            Action::About => self.settings.show(Some(crate::settings::Tab::About), ctx),
+            Action::Settings => self.settings.show(None, ctx),
             #[cfg(target_arch = "wasm32")]
             Action::CjkFont(v) => self.web.select_cjk_font(v, ctx),
         }

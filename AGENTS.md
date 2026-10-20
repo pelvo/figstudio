@@ -27,7 +27,7 @@ picking up work. Read the three documents below before changing code.
    Green tests do not mean the render is right.
 5. **Never panic on a bad file.** Malformed input returns `FigError`; the app shows a toast.
 6. **Unsupported means counted, not hidden.** Anything not drawn exactly increments a field
-   in `Stats` so the app status bar and the CLI show it.
+   in `Stats` so the app (warning chip and status pill) and the CLI show it.
 7. **Keep the document writable.** Do not drop fields when decoding; `crates/fig` must keep
    writing the fixtures back byte for byte (`encoded_message_matches_the_original_bytes`).
 8. **Privacy.** `figstudio-cli doctor` output is pasted publicly by users with private
@@ -40,7 +40,10 @@ picking up work. Read the three documents below before changing code.
    local paths. Describe a bug in neutral terms ("a table frame on a print-layout page").
    Test with public fixtures or documents built in the test, never a private file. Notes
    that need real names (such as a local gap list) stay untracked and git-ignored.
-10. **No new `unsafe`.** The workspace denies it; the one FFI call is in `doctor.rs`.
+10. **No new `unsafe`.** The workspace denies it. The only exceptions, each one block with a
+    SAFETY comment and `#[expect(unsafe_code)]`: the FFI call in `doctor.rs`, the Windows
+    menu attach in `menu_native.rs`, and the macOS blur view in `vibrancy.rs` (approved by
+    the owner). Ask before adding another.
 11. **Update `docs/PLAN.md`** when you finish something: tick the box only after its check
     really passed, and add one line to the progress log. Report what you did **not** verify.
 12. **Use trustworthy crates; do not hand-roll.** For protocols, formats and encodings

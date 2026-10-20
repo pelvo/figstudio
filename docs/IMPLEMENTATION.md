@@ -7,10 +7,14 @@ do. Read `AGENTS.md` first. Testing is in `docs/TESTING.md`; status is in `docs/
 
 `apps/figstudio/src/menu.rs` defines menu state and `Action`; `App::apply` handles
 commands from clicks and shortcuts. `menu_egui.rs` renders Linux/web menus and the
-headless/native-attach fallback. `menu_windows.rs` hosts Agent access and About.
+headless/native-attach fallback behind the sidebar's "⋯" button (File, View and Help as
+submenus); the command bar (`command.rs`) lists the same enabled commands. `menu_windows.rs` draws the
+Settings window, where Agent access and About now live (View → Agent access… and Help → About
+open those tabs).
 `menu_native.rs` attaches muda on macOS/Windows in the eframe creation closure;
 `menu_dispatch.rs` drains queued ids with repaint and synchronizes changed flags.
-macOS owns Open, Close tab and selection-export accelerators; egui retains Shift+1
+macOS owns Open, Close file, selection-export, command bar (⌘L), find (⌘F) and sidebar (⌘\)
+accelerators; egui retains Shift+1
 and Shift+0 (only outside text editing). Windows keeps egui shortcuts (winit does
 not translate native accelerators). Context menus remain egui. Native attachment failure logs a
 warning and keeps the drawn bar.
@@ -103,13 +107,33 @@ apps/figstudio-mcp/tests/  protocol tests (stdio.rs, http.rs, prompts.rs, files.
                          file per tool (see docs/TESTING.md "MCP server"); README.md is the
                          user doc
 apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
-  main.rs                App: menus, shortcuts, panel layout, message polling, export
+  main.rs                App: shortcuts, panel layout, message polling, export
+  chrome.rs              Arc-style chrome: window gradient, sidebar (window controls, command
+                         field, pages, layers, file switcher), title strip, peeking sidebar,
+                         canvas card with tool / status pills and the warning chip, toasts,
+                         empty state, drop overlay
+  command.rs             the ⌘L command bar: search over commands, files, pages and layers
+  anim.rs                springs and colour fades in egui memory; Reduce motion
+  icons.rs               line icons painted on a 16-unit grid; the icon button
+  vibrancy.rs            macOS only: the blur view behind the transparent window
+  spaces.rs              a space's colour / emoji or icon / name, saved per file on this
+                         computer (config folder JSON, localStorage in the browser)
+  space_editor.rs        the space popovers: icon picker, rename, theme colour (pad + presets
+                         + appearance), opened above the space's dot
+  swipe.rs               two-finger sideways swipes over the sidebar switch spaces
+  find.rs                ⌘F find bar: text on the page, inside instances too, and frame
+                         names; highlights
+  settings.rs            Settings (⌘,), Arc's layout: General, Canvas, Shortcuts, Agents
+                         (agent access, the MCP server), About
+  keymap.rs              shortcuts the user can change: Binding (label, group, default,
+                         action) and the Keymap of changes, saved in Prefs
   canvas.rs              canvas input, render requests, frame re-projection, outlines
-  tab.rs                 per-document state (Tab) and the page<->screen mapping (View)
-  panels.rs              Pages, Layers tree, Properties
+  tab.rs                 per-document state (Tab, with its tint) and the page<->screen mapping
+  panels.rs              Pages list, Layers tree, Properties card
   worker.rs              background threads: file loading, rendering (OS threads or Web Workers)
   web.rs                 browser only: start(), file picker, dropped files, downloads
-  theme.rs               colours, spacing, CJK font fallback (desktop) / detection (web)
+  theme.rs               light / dark palettes, per-file tints, visuals, UI font (system face
+                         + semibold), CJK font fallback (desktop) / detection (web)
 web/                     index.html (boot: init, thread pool, start), _headers (COOP/COEP)
 scripts/                 check.sh, thumb-sheet.py, gui-smoke.sh, web-build.sh, web-serve.py
 tests/fixtures/          7 sample .fig files (MIT, fig2sketch)
@@ -258,7 +282,8 @@ misses the output, or when a leaf is under a quarter pixel. **If you make anythi
 outside a node's frame, extend `overhang()`**, or culling will cut it off at the window edge.
 
 **Stats.** Every approximation or skip increments a `Stats` field. The CLI prints them and
-the app shows them in the status bar. Add a field when you add a new kind of gap.
+the app shows them in the warning chip on the canvas. Add a field when you add a new kind of
+gap.
 
 **Parallel strips (`render_parallel`, feature `parallel`).** The walk draws through the
 `record::Canvas` trait. `render` passes a `RenderContext`; `render_parallel` passes a
@@ -291,7 +316,7 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   its queued tiles, and closing a document marks it closed in the image cache
   (`Images::close_document`), which then refuses any image, failure or request for it under
   its lock, so a read or decode finishing late cannot store it back.
-  The status bar shows, per field, the largest count of any one sharp tile on screen
+  The warning chip shows, per field, the largest count of any one sharp tile on screen
   (`Stats::max_with`): a lower bound for the view, not a sum.
 - `Tab` holds the document (`Arc<Document>`), page, view, selection, hover, expanded tree
   nodes and stats. `Tab::select` switches page and expands ancestors so the Layers tree can
@@ -308,8 +333,178 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   filters too big for its intermediates, too many layers), render errors, a lost device or a
   device with textures under 4096 px fall back to CPU tiles, counted in
   `Stats::gpu_fallback_tiles` ("N tiles on the CPU"). `FIGSTUDIO_RENDERER=cpu` forces the CPU;
-  the status bar names the renderer ("GPU (Metal)" or "CPU"). The CLI, tests and export always
+  the status pill names the renderer ("GPU (Metal)" or "CPU"). The CLI, tests and export always
   use the CPU renderer, so their output stays reproducible.
+
+### The window chrome (`chrome.rs`, `theme.rs`, `anim.rs`, `icons.rs`, `command.rs`)
+
+- Layout, outside in: the window gradient (painted on the background layer, the active
+  file's `Tab::tint` crossfading on a file switch), a collapsible left panel (the sidebar) or,
+  when it is hidden, a top title strip; a collapsible right panel framed as the Properties
+  card; the central panel draws the canvas card (`App::canvas_card`) with the tool pill,
+  status pill and warning chip on top. Toasts, the drop overlay, the peeking sidebar and the
+  command bar are `Order::Foreground` areas.
+- Colours come from `theme::of(ui)` / `theme::palette(ctx)` (light or dark), never from
+  constants, except `theme::ACCENT` for canvas outlines. Tints are picked per file by name
+  (`pick_tint`), skipping ones open files have. `theme::tests` checks text contrast on
+  every tint: add a tint, run them.
+- Motion: `anim::spring*` for movement and pops, `anim::fade` for colour, egui's own
+  `animate_bool*` for hover fades. All of it stops when `anim::reduced` (egui's
+  `animation_time` is 0: View → Reduce motion, `prefers-reduced-motion` in the browser, the
+  test harness). Widget-heavy lists keep one hover state per list (`panels::hover_fade`).
+- **Nothing just appears or vanishes.** Overlays (command bar, Settings, space popovers, the
+  find bar and its highlights, the space name pill) use `anim::presence`: they pop in, and
+  after closing keep drawing, `anim::inert` (no input), until they have faded and shrunk
+  away; their state must outlive the close (the command bar keeps its results, a closed
+  popover moves to `space_leaving`, find keeps its highlights). While fading they stay
+  interactable areas, so a click or scroll on them reaches nothing underneath, and the
+  shortcut guards hold until they are gone (`CommandBar::is_up`, `Settings::is_up`,
+  `App::space_popover_up`, all via `anim::on_screen`). Each space popover has its own
+  presence and area, keyed by when it opened, so a new one pops in while the last fades.
+  Find's fading highlights stay only on the tab and page they were found on
+  (`FindBar::shown_on`), and the bar still fades with no file open. New content uses
+  `anim::arrive` (a short fade whenever its key changes: another file or page on the canvas,
+  another selection in the properties, hover and selection outlines, a Settings tab's page,
+  children of a layer just opened); `anim::pop_on` bounces what just became current (the
+  find bar's match). The canvas crossfades: `chrome::Crossfade` keeps the last picture
+  shown in full (file, page, view, page colour) and paints it again under the new file or
+  page while that fades in (`Tiles::paint_cached`, without asking for tiles). A picture
+  still fading in is never kept, so going back mid-fade fades from what was on screen.
+  The underlay's tiles are marked drawn after the new page plans its own
+  (`Tiles::keep_drawn`), so the cache does not evict them first, and a closed file's tiles
+  stay until no fade paints them (`App::tiles_closed`). The first file fades in over its
+  own page colour. It never fades from the card, which is near black in the dark theme. New file dots pop in, and the others slide over when one closes. A new
+  change of state on screen should use one of these. egui's own popups (menus, tooltips)
+  fade in but close at once.
+- macOS runs frameless (`with_fullsize_content_view`, no title bar): the sidebar header and
+  the title strip leave room for the traffic lights and move the window
+  (`ViewportCommand::StartDrag`). The window is transparent with a blur behind it
+  (`vibrancy.rs`, Sidebar material, following View → Appearance); the gradient is painted at
+  `theme::TRANSLUCENT_TINT` over it, opaque everywhere else.
+- **Spaces.** Each open file is a space: `Tab::tint` (picked from the name) unless
+  `Tab::style` (`spaces::Style`) sets a preset or custom colour, an emoji or icon badge and a
+  display name. A space dot's right-click menu (and the Space menu, and the command bar)
+  opens Arc's three popovers above the dot: Change space icon, Rename space, Edit theme
+  colour. Changes show at once; a click outside, Escape or Enter closes and saves them, and
+  so do opening another popover, closing the file and quitting (`commit_space_editor`).
+  Escape while renaming goes back; a reset closes the popover first. `spaces::Store` finds
+  a file by `Tab::doc_key`, else by its name in the same folder (`folder_of`: a hash of the
+  folder, never the path), else by its name in a row saved with no folder (before folders
+  were), so a new copy keeps its look and a same-named file elsewhere does not; a reset is
+  stored too, so it sticks. Writes go to a new uniquely named temporary file (`tempfile`)
+  renamed over the store, readable by its owner only on Unix (0600; no ACL on Windows), so
+  two figstudios writing at once never tear it. Reads are capped while reading and skip
+  damaged entries; a store that cannot be read (too big, no permission) or does not parse
+  (cut short, not text, not a JSON list) is kept as it is and this session's styles stay in
+  memory, so nothing unread is written over and it can be repaired. An empty file is an
+  empty store. The store is
+  `<config dir>/figstudio/spaces.json` on the desktop and `localStorage` in the browser; tests
+  use an in-memory store and never touch it. It holds file names, so it stays local: nothing
+  (doctor included) prints or uploads it. Custom colours go through `theme::space_tint`,
+  which mixes in only as much colour as keeps text readable.
+- Menus and right-click menus use `theme::menu_style` (macOS look: rounded, blue highlight,
+  white text); open new ones with `chrome::context_menu` or `.style(theme::menu_style)`.
+- Two-finger sideways swipes over the sidebar move between spaces (`swipe.rs`), Arc's pager:
+  the active space's page and its neighbour's sit side by side and follow the fingers, and
+  the window colour blends between theirs. Letting go past a third of the sidebar, or a
+  flick (900 pt/s, at least 40 pt), turns the page; the pages carry on from where the
+  fingers left them. The momentum the trackpad sends after a lift (as a new start within
+  25 ms, or in the very next frame up to 0.2 s when the UI thread hitched) is ignored up to
+  its own end; one momentum per lift, so a start after it is new fingers. The moves of one
+  frame share its time, so `Swipe::feed_frame` counts them as one sample (their sum over the
+  frame time) for the flick speed; in the frame a swipe started in, that is the time since
+  the last frame (with no 0.1 s ceiling), counted in full. It is a lower bound: a flick that
+  lands whole in one frame turns when it is fast over the whole hitch (100 points in 50 ms,
+  110 in 120 ms), while a short one in a long hitch (60 points in 80 ms) reads as a drag and
+  springs back, rather than a slow drag the stall batched turning a page. A click on the next or previous dot turns a whole page
+  too, and both pages stay side by side until the spring settles; only a far jump's short
+  nudge fades (`App::slide_nudge`, `chrome::sidebar_pages`). The lists scroll vertically
+  only.
+- **Pages moved sideways must not take room in the panel.** egui grows a panel to fit what
+  its content allocates, so a page drawn with `scope_builder` at an offset widened the
+  sidebar on every switch; they are `new_child` UIs. The panel id changed
+  (`chrome::SIDEBAR`) so a width inflated that way is not restored.
+- eframe's `persistence` keeps the window, the panel widths and egui's options (appearance,
+  Reduce motion) between launches; `App::save` adds the sidebar / properties visibility, the
+  Pages/Layers split and Settings' `Prefs` (`UiState`): the translucent sidebar, the renderer
+  (applied at the next start; `FIGSTUDIO_RENDERER` wins), frame names and whether the scroll
+  wheel zooms (`canvas::Options`).
+- **Settings** (`settings.rs`, ⌘, / the app menu on macOS / File → Settings… elsewhere / the
+  command bar): a foreground window with Arc's tab row. Agent access (`mcp.menu`, `mcp.status`)
+  and About live in it; View → Agent access… and Help → About open those tabs
+  (`menu_windows.rs` only shows it now).
+- **Settings look like Arc's** (`settings.rs`). Colours come from `Look`, measured from Arc's
+  dark settings window (warm greys; light mirrors them), not from the app palette. A page is
+  an outlined `list` of `section`s and `setting` rows (label and note left, control right)
+  beside `explain` (blue keycap tiles, a title, a paragraph). `setting` wraps its text short
+  of the control, using the control's width from the last frame (a change discards the
+  frame), so text never runs under a control. Agent access on the desktop is rows too:
+  `McpHost::access` lends its switches; the browser keeps its relay `menu`.
+- **Shortcuts are data** (`keymap.rs`). A new shortcut is a `Binding` (label, group,
+  default keys, the `Action` it runs); `App::shortcuts` runs every binding from the keymap
+  (most modifiers first, keys without ⌘/Ctrl/Alt only while nothing takes typing), the drawn
+  menus and the command bar show `keymap.for_action`, and the macOS/Windows menus get
+  accelerators from it (`NativeMenu::set_keys`, none while a shortcut is being recorded so
+  the menu does not swallow the keys; cleared in the same turn recording starts, and menu
+  actions are ignored while it lasts). A key a menu cannot show (`!`, F13, Insert) stays
+  with `App::shortcuts` even for a menu-owned action (`menu_dispatch::menu_runs`).
+  Settings → Shortcuts records the next key press, first thing in the frame
+  (`App::record_shortcut`, which takes every key and typed character meanwhile): modifier
+  keys alone do not end it (egui sends them as keys), ⌘X/⌘C/⌘V arrive as Cut/Copy/Paste and
+  are recorded too. Backspace removes, Escape keeps, keys another binding has move (it is
+  told). On a Mac Control is kept beside ⌘ (`ctrl` duplicates `command` only elsewhere).
+  Only changes are saved, so new defaults reach everyone else; they load leniently (an
+  unreadable entry is dropped, not the window state). Keys are given out against the
+  finished map, so a swap survives: saved changes first (a chord saved twice goes to the
+  first; the other change falls back to its default), then defaults (one whose chord a
+  change took has no shortcut). The sidebar's and the
+  empty state's key hints read the keymap. Escape, Enter in the find bar and pointer
+  gestures are fixed.
+- **Find on page** (`find.rs`, ⌘F, View → Find on page…): matches text layers of the page
+  and text drawn inside instances (`resolve::walk_instance` with overrides, boxed with
+  `Renderer::path_bounds`) and the names drawn above frames and sections (`Hit::Name`, the
+  frames `labels::named` lists), sorted top to bottom. Only what is drawn: the page walk
+  skips hidden layers and everything in them, and `path_bounds` gives a layer hidden inside
+  an instance no box. The canvas highlights them (a name on
+  its label when the label is drawn, else round its frame); Enter / ⌘G and
+  Shift for the previous one; a match is brought into view only when it is off screen or too
+  small to read in the target view (`Tab::view`, where an ease ends). At most 5000 matches
+  are kept, the top of the page (sorted before the cut); instances are searched top first
+  and the walk stops once the kept matches all sit above the next one (`find_at_most`).
+  Escape closes the bar whether or not its field has focus; the next Escape clears the
+  selection.
+- The canvas card has round corners: the page background is a rounded rect and tiles that
+  reach into a corner are drawn as a polygon cut to it (`tiles_view::rounded_clip`).
+- View jumps (fit, zoom buttons and keys, the Zoom tool, double-click) ease over 0.28 s:
+  `Tab::view` is the target (the MCP and the next jump see it); `canvas::show` takes the
+  eased `shown_view` (kept in `Tab::shown`), which zooms geometrically around the page point
+  both views share (`view_between`), and uses it for hover, clicks, the marquee and the
+  drawing, so they match the pixels; the tool pill's zoom percentage reads it too
+  (`chrome::zoom_percent`). Tiles are planned and requested for the target, so an ease does
+  not cancel batches as it crosses tiles. Drags, scrolls and pinches are never eased.
+- The command bar is modal: `App::shortcuts` and the native menu ignore everything but its
+  own shortcut (and Quit) while it is open or fading, and its results are keyed on the
+  query, the active file and its page (an agent may turn the page meanwhile) and the number
+  of files. Layer search scores names during the walk and keeps only the best 60 as it goes
+  (ties in layer order). Ctrl+Tab does not reach the browser build (browsers keep it); the dots and
+  the command bar switch files there.
+- The status pill (with the MCP address and Copy token) moves above the tool pill when the
+  card is narrow; the tool pill drops − and + first, then the zoom percentage. The file dots
+  scroll sideways when they do not fit. As Arc's, every dot is the same size and only colour
+  marks the active one (no ring): the others are drained toward grey and faded
+  (`chrome::drained`) until hovered. A dot the pointer rests on for 0.5 s shows Arc's dark
+  pill with the space's name and its ⌃1…⌃9 keys as caps (`chrome::space_pill`, timed by
+  `pill_due`, counting from when the pointer last moved, as a tooltip, and asking for a
+  repaint for when it is due; right after one shows, the next dot's shows at once; it rises
+  and fades in, glides between dots and fades out). A long name is cut with an ellipsis so
+  the pill fits the window. A dot sliding to its new slot is hit-tested, named and anchored
+  where it is drawn (the layout slot is only allocated). Badges have nothing behind them, as
+  Arc's. Closing is in a dot's right-click menu or a middle click. ⌃1…⌃9 are
+  `Binding::Space(n)`, changeable like any shortcut.
+- The window title is sent only when it changes: a viewport command asks for another frame,
+  so sending it every frame kept the app redrawing while a file was open.
+- On the window gradient, small text uses `text_dim` (≥ 4.5:1 on every tint); `text_faint`
+  is for hints (≥ 3:1). `theme::tests` checks both, for presets and custom colours.
 
 ### Copy menus, marquee and region copy (`apps/figstudio`)
 
@@ -330,8 +525,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 
 ### MCP inside the app (`mcp_host.rs`, desktop only)
 
-- The View menu item **Agent access (MCP server)** starts the live server. It is off at every
-  launch. `mcp_off.rs` is the same API with no thread, used when the `mcp` feature is off or on
+- **View → Agent access…** opens Settings → Agents; the **Agent access** switch there starts
+  the live server. It is off at every launch. `mcp_off.rs` is the same API with no thread, used when the `mcp` feature is off or on
   wasm32, so the UI code does not change.
 - **Threads.** `McpHost::start` spawns one thread named `mcp`. It runs a 2-worker tokio runtime,
   binds the first free of 127.0.0.1:3845 to :3855 (`bind_first`), and serves `serve_http` with
@@ -526,6 +721,22 @@ Debug spans (`RUST_LOG=debug`): `open`/`from_bytes` (bytes, node/page/image coun
   changed nodes are then invisible to `node()` and the renderer, with no error. Use
   `set_nodes`, which validates parent links and rebuilds the index. `to_bytes` reads `nodes`
   directly, so a test that only writes bytes can skip the index.
+- **A tooltip on a button kills its popup.** `on_hover_text` and `Popup::menu` on the same
+  response share the popup id; the menu never opens. The "⋯" button uses
+  `icons::raw_button` (no tooltip).
+- **Submenu labels carry an arrow.** In a popup, `ui.menu_button("View", …)` is a submenu
+  whose accessible label is "View ⏵"; tests use `get_by_label_contains`.
+- **The test harness turns egui's animations off before `App::new`.** `theme::apply` keeps a
+  zero `animation_time`, so kittest frames stay deterministic (springs jump to their target).
+- **A blur view inside the content view hides the whole UI under wgpu.** `window-vibrancy`
+  adds its `NSVisualEffectView` to the content view, above wgpu's Metal layer. `vibrancy.rs`
+  puts it in the window's frame view instead, below the content view; the window is
+  transparent and egui clears to transparent, so the gradient's alpha decides how much blur
+  shows. The one `unsafe` block turns eframe's raw `NSView` pointer into a reference.
+- **`Fonts::has_glyph` says no for egui's own emoji.** It misses the bundled NotoEmoji, which
+  does draw them. `spaces` tests compare the glyph's atlas spot with the box drawn for a
+  missing character instead. Apple's colour emoji are not drawn at all (egui draws outlines),
+  so the editor offers emoji from that font.
 - **`usize::MAX + 1` wraps to 0.** Limits in `read_limited` use saturating arithmetic. A limit
   of `usize::MAX` once made `take()` read nothing, with no error.
 

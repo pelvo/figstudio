@@ -55,11 +55,7 @@ impl Pending {
         self.0.iter()
     }
 
-    /// How many loads are in flight (the browser's status report).
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        expect(dead_code, reason = "only the browser status report counts loads")
-    )]
+    /// How many loads are in flight (the file switcher, the browser's status report).
     pub fn len(&self) -> usize {
         self.0.len()
     }

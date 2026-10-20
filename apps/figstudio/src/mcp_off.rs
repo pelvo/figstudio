@@ -6,7 +6,13 @@ use crate::tab::Tab;
 pub struct McpHost;
 
 impl McpHost {
-    pub fn menu(&mut self, _ui: &mut egui::Ui) {}
+    pub fn access(&mut self) -> Option<crate::settings::Access<'_>> {
+        None
+    }
+
+    pub fn menu(&mut self, ui: &mut egui::Ui) {
+        ui.label("This build has no agent access (built without the mcp feature).");
+    }
 
     pub fn status(&self, _ui: &mut egui::Ui) {}
 

@@ -27,6 +27,10 @@ form_urlencoded = "1.2"
 # trusted crate, synchronous on native and Wasm (no Web Crypto bridge needed).
 sha2 = "0.10"
 serde = { workspace = true }
+# Saved space styles (spaces.rs), and the bridge client's JSON frames in the browser.
+serde_json = { workspace = true }
+# A typed space icon keeps its first grapheme (one emoji, flags and skin tones included).
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
 # Only the export test decodes PNGs.
@@ -35,7 +39,6 @@ image = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # mcp_host tests: an MCP client over HTTP against the hosted server.
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
-serde_json = { workspace = true }
 # mcp_pair (executor entropy) is test- and wasm-only; the shipped desktop binary does
 # not compile it, so this stays a dev-dependency on native.
 getrandom = "0.3.4"
@@ -53,9 +56,15 @@ vello_gpu = { workspace = true }
 pollster = { workspace = true }
 # wgpu: eframe's wgpu renderer (Metal, Vulkan, DX12, GL fallback via egui-wgpu defaults), so
 # the GPU canvas (docs/GPU.md) can share its device.
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+# persistence: window size and place, panel widths and the sidebar state survive a restart.
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11", "persistence"] }
 rfd = { workspace = true }
 fontdb = { workspace = true }
+# The platform's config folder for saved space styles (spaces.rs).
+dirs = "6"
+# Saving them atomically: a uniquely named temporary file (created new, owner-only on Unix),
+# renamed over the store (spaces.rs).
+tempfile.workspace = true
 # Feature `mcp`: the app hosts the live MCP server on loopback (same crates as figstudio-mcp).
 figstudio-mcp = { path = "../figstudio-mcp", optional = true }
 tokio = { workspace = true, optional = true }
@@ -71,7 +80,7 @@ getrandom = { version = "0.3.4", features = ["wasm_js"] }
 figstudio-render = { path = "../../crates/render", default-features = false, features = ["parallel", "gpu"] }
 vello_gpu = { workspace = true }
 # wgpu: WebGPU where the browser has it, else WebGL2 (egui-wgpu enables wgpu/webgpu + webgl).
-eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "persistence"] }
 # file-handle-inner: the picked `File`, so big files are read in slices, not whole.
 rfd = { workspace = true, features = ["file-handle-inner"] }
 rayon = { workspace = true }
@@ -79,15 +88,21 @@ wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-rayon = { version = "1.3", features = ["no-bundler"] }
 js-sys = "0.3"
-# The bridge client's JSON frames (mcp_web.rs); the protocol types come from mcp-core.
-serde_json = { workspace = true }
-web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "File", "History", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "Location", "Navigator", "Response", "Storage", "Url", "Window", "WebSocket", "MessageEvent", "CloseEvent", "Event"] }
+web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "File", "History", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "Location", "MediaQueryList", "EventTarget", "Navigator", "Response", "Storage", "Url", "Window", "WebSocket", "MessageEvent", "CloseEvent", "Event"] }
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 muda = { version = "0.21.2", default-features = false }
 
 [target."cfg(windows)".dependencies]
 raw-window-handle = "0.6"
+
+# The blurred window background (vibrancy.rs): AppKit through the objc2 bindings eframe,
+# muda and rfd already use.
+[target.'cfg(target_os = "macos")'.dependencies]
+raw-window-handle = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSAppearance", "NSGraphics", "NSResponder", "NSView", "NSVisualEffectView", "NSWindow"] }
 
 [lints]
 workspace = true

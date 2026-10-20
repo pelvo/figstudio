@@ -1,5 +1,6 @@
-//! Agent access window: entering an address, starting and stopping the hosted server.
+//! Settings → Agents: entering an address, starting and stopping the hosted server.
 use super::*;
+use egui_kittest::kittest::NodeT as _;
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -25,7 +26,10 @@ fn wait_for<T>(
 fn the_agent_window_types_an_address_and_starts_and_stops_the_server() {
     let mut h = harness();
     assert!(!h.state().mcp.on, "off at launch");
-    h.get_by_label("View").click();
+    // No native menu here: File, View and Help sit behind the sidebar's "⋯" button.
+    h.get_by_label("Menu").click();
+    h.run_steps(3);
+    h.get_by_label_contains("View").click();
     h.run_steps(3);
     h.get_by_label("Agent access…").click();
     h.run_steps(3);
@@ -41,23 +45,41 @@ fn the_agent_window_types_an_address_and_starts_and_stops_the_server() {
     h.event(egui::Event::Text("127.0.0.1:0".into()));
     h.run_steps(3);
     assert_eq!(h.state().mcp.remote_addr, "127.0.0.1:0");
-    assert!(
-        h.query_by_label("Agent access (MCP server)").is_some(),
-        "editing stays in the window"
-    );
-    h.get_by_label("Agent access (MCP server)").click();
+    let switch = |h: &Harness<'_, App>| {
+        h.query_by_role_and_label(egui::accesskit::Role::CheckBox, "Agent access")
+            .map(|n| n.rect())
+    };
+    assert!(switch(&h).is_some(), "editing stays in the window");
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Agent access")
+        .click();
     h.run_steps(3);
     let addr: SocketAddr = wait_for(&mut h, "server address", |h| {
-        h.query_all_by_label_contains("MCP 127.0.0.1")
+        h.query_all_by_label_contains("Connect to. 127.0.0.1")
             .next()?
             .value()?
-            .strip_prefix("MCP ")?
+            .strip_prefix("Connect to. ")?
             .strip_suffix("/mcp")?
             .parse()
             .ok()
     });
     assert_ne!(addr.port(), 3845);
     assert!(TcpStream::connect(addr).is_ok());
+    // While it runs the remote switch cannot change, and says so (egui marks a widget in a
+    // disabled scope disabled); its note names the token.
+    let remote = h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Allow remote agents");
+    let disabled = h.query_by(|n| {
+        n.role() == egui::accesskit::Role::CheckBox
+            && n.is_disabled()
+            && n.bounding_box() == remote.accesskit_node().bounding_box()
+    });
+    assert!(
+        disabled.is_some(),
+        "reported disabled while the server runs"
+    );
+    assert!(
+        h.query_by_label_contains("send the access token").is_some(),
+        "the note says clients need the token"
+    );
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let client = runtime.block_on(async {
         let transport = StreamableHttpClientTransport::from_uri(format!("http://{addr}/mcp"));
@@ -71,7 +93,8 @@ fn the_agent_window_types_an_address_and_starts_and_stops_the_server() {
         "structure"
     );
     runtime.block_on(client.cancel()).unwrap();
-    h.get_by_label("Agent access (MCP server)").click();
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Agent access")
+        .click();
     h.run_steps(3);
     assert!(!h.state().mcp.on);
     wait_for(&mut h, "port close", |_| {
@@ -82,7 +105,9 @@ fn the_agent_window_types_an_address_and_starts_and_stops_the_server() {
 #[test]
 fn help_opens_the_about_window() {
     let mut h = harness();
-    h.get_by_label("Help").click();
+    h.get_by_label("Menu").click();
+    h.run_steps(3);
+    h.get_by_label_contains("Help").click();
     h.run_steps(3);
     h.get_by_label("About figstudio").click();
     h.run_steps(3);

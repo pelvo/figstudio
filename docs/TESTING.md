@@ -9,9 +9,9 @@ fail. Read `AGENTS.md` first.
 `egui_kittest` cannot instantiate it. The desktop window test covers the shared
 menu-to-window action, not the browser bridge controls. After a browser build:
 
-- View → Agent access opens the window directly (no nested bridge menu).
-- Click and type in both URL and pairing-token fields; neither closes the window.
-- Connect and Disconnect leave the window open; status reflects the connection.
+- View → Agent access opens Settings on its Agents tab directly (no nested bridge menu).
+- Click and type in both URL and pairing-token fields; neither closes Settings.
+- Connect and Disconnect leave Settings open; status reflects the connection.
 
 This browser GUI checklist remains unverified; a successful wasm build only proves
 compilation.
@@ -22,14 +22,16 @@ Use an extra instance with public fixtures, agent access off; do not disturb a l
 app or tunnel. Linux/web and headless tests retain the drawn bar. Check macOS:
 
 - App, File, View, Window and Help appear in the OS bar; the drawn bar is absent.
-- About opens the help window from both the app and Help menus; Hide/Hide Others/
+- About opens Settings on its About tab from both the app and Help menus; Hide/Hide Others/
   Show All and Window Minimize/Zoom work.
 - Open by click and Cmd+O opens exactly one picker; cancel it. Cmd+W closes one tab.
 - Export page at each scale; export selection only when selected. Cmd+Shift+E acts once.
 - No-tab and no-selection items are disabled; changing tabs updates them.
 - Shift+1 fits once and Shift+0 restores actual size via egui (native menu labels
   show hints only); text editing does not trigger zoom.
-- Panel checks follow state and clicks toggle once; Agent access opens its window.
+- Panel checks follow state and clicks toggle once; Agent access opens Settings → Agents.
+- Settings… (⌘,) sits in the app menu, not in File; a shortcut changed in Settings →
+  Shortcuts shows on its menu item.
 - Custom Quit / Cmd+Q closes through eframe; no orphan server is left.
 - Forced attach failure retains a usable drawn menu (build-time failure injection).
   `menu_dispatch::tests` covers the pure attached/fallback visibility decision and
@@ -55,6 +57,11 @@ incremental); use it yourself too so the build is shared. Run one test with
 `cargo test --profile fast -p <crate> <name>`. Avoid `cargo test --release`: it thin-LTO
 links each of the ~100 test binaries, so a change in `crates/fig` costs ~20 minutes instead
 of ~40 seconds.
+
+The `fast` profile has no debug assertions, so egui's debug-only checks do not run in the
+gate. After changing app tests, also run `cargo test -p figstudio` (debug profile) once. A
+test that runs `egui::Context::run_ui` itself must clear the output's `textures_delta`, or
+epaint panics when the context drops ("Dropped TexturesDelta with 1 unapplied deltas").
 
 ## 2. What exists today (50 tests in the gate)
 
@@ -233,7 +240,7 @@ GUI_SMOKE_CLICK="900 560" scripts/gui-smoke.sh /tmp/gui tests/fixtures/structure
 Runs the app on a virtual screen (Xvfb, 1400×880), clicks, zooms with Ctrl+wheel, presses
 Shift+1, and saves `1-open.png 2-select.png 3-zoom.png 4-fit.png` plus `profile.log`.
 Look at every screenshot: file loaded, selection outline and Properties filled after the
-click, zoom percentage changed in the status bar, fit restored. `GUI_SMOKE_SECONDS` and
+click, zoom percentage changed in the tool pill, fit restored. `GUI_SMOKE_SECONDS` and
 `GUI_SMOKE_LOAD_WAIT` adjust timing for big files.
 
 Manual checks only a real desktop can do (list them as unverified unless you did them):
@@ -242,14 +249,14 @@ Retina scaling, trackpad pinch, macOS menu and shortcuts (Cmd).
 
 ## 7b. Headless UI tests (egui_kittest)
 
-`apps/figstudio/src/ui_tests.rs` (+ `ui_copy_tests.rs`, `ui_mcp_tests.rs`) run the real `App`
+`apps/figstudio/src/ui_tests.rs` (+ `ui_copy_tests.rs`, `ui_mcp_tests.rs`, `ui_chrome_tests.rs`) run the real `App`
 on `tests/fixtures/structure.fig` inside `cargo test`: no display, X server, GPU or xdotool, on
 macOS, Linux and CI. They use `egui_kittest` (dev-dependency, `eframe` feature only; no wgpu,
 no snapshot images). `App::new` takes `eframe::CreationContext`, which kittest builds with no
 wgpu state, so tiles render on the CPU path.
 
 ```sh
-cargo test -p figstudio ui_tests          # 8 tests, about 1 s
+cargo test -p figstudio ui_tests          # 48 tests, about 2 s
 ```
 
 How to write one: `harness()` returns a `Harness<App>` with the file loaded and fitted;
@@ -258,7 +265,9 @@ send pointer events; `step` also collects what the frame sent to the clipboard (
 `OutputCommand::CopyText` / `CopyImage`), which is how tests read "copied" text. Find widgets
 with `h.get_by_label("Copy link")` (plain `ui.label`s are matched by their accesskit value, see
 `shown_addr`). Menus open a frame or two after the click: use `wait_for`, not a fixed step count.
-Tests that start the MCP server use whatever port `bind_first` gives and read it from the status bar.
+Tests that start the MCP server use whatever port `bind_first` gives and read it from the status pill.
+Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
+`get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
 
 Cannot be covered here: the real OS clipboard (paste into an editor or Preview), a real
 window manager, native file dialogs, GPU tiles, HiDPI and trackpad gestures.
@@ -290,7 +299,7 @@ regression over 20% needs a reason in the commit message. Do not commit stress f
 
 `scripts/web-build.sh --serve` serves `web/dist` on http://127.0.0.1:8765 with the headers
 threads need. In a browser: the console shows no errors, `crossOriginIsolated` is true, drop
-a fixture on the page, and the status bar shows layers drawn and the render time. Compare
+a fixture on the page, and the status pill shows layers drawn and the render time. Compare
 `?threads=1` with the default. Headless Chromium works (`--use-angle=swiftshader`); drop a file
 by dispatching `dragenter`/`dragover`/`drop` with a `DataTransfer` on the canvas.
 

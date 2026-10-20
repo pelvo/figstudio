@@ -51,9 +51,36 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
                 options.wgpu_options.wgpu_setup = crate::gpu::setup();
                 options
             },
-            Box::new(|cc| Ok(Box::new(crate::App::new(cc, Vec::new())))),
+            Box::new(|cc| {
+                // The system's "reduce motion" setting turns the UI's animations off.
+                follow_reduced_motion(&cc.egui_ctx);
+                Ok(Box::new(crate::App::new(cc, Vec::new())))
+            }),
         )
         .await
+}
+
+/// Follows the system's "reduce motion" (`prefers-reduced-motion: reduce`): applied now, and
+/// again whenever it changes while the page is open.
+fn follow_reduced_motion(ctx: &egui::Context) {
+    let Some(query) = web_sys::window().and_then(|w| {
+        w.match_media("(prefers-reduced-motion: reduce)")
+            .ok()
+            .flatten()
+    }) else {
+        return;
+    };
+    if query.matches() {
+        crate::anim::set_reduced(ctx, true);
+    }
+    let (ctx, watched) = (ctx.clone(), query.clone());
+    let on_change = Closure::<dyn FnMut()>::new(move || {
+        crate::anim::set_reduced(&ctx, watched.matches());
+        ctx.request_repaint();
+    });
+    let _ = query.add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
+    // Lives as long as the page.
+    on_change.forget();
 }
 
 /// Logs go to the browser console. No ANSI colours and no timestamps (the browser has no

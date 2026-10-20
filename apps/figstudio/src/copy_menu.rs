@@ -26,7 +26,7 @@ pub fn node_menu(ui: &mut egui::Ui, tab: &Tab, id: Guid, picked: &mut Option<Ite
 
 /// Right-click on `response` opens the node menu. Returns the item picked this frame.
 pub fn on_context(response: &egui::Response, tab: &Tab, id: Guid, picked: &mut Option<Item>) {
-    response.context_menu(|ui| node_menu(ui, tab, id, picked));
+    crate::chrome::context_menu(response, |ui| node_menu(ui, tab, id, picked));
 }
 
 /// Copies a picked item to the clipboard. Returns the toast text.
@@ -41,7 +41,7 @@ pub fn text_block(ui: &mut egui::Ui, tab: &Tab, node: &Node, picked: &mut Option
     let Some(full) = copy::text(node) else { return };
     let preview: String = full.chars().take(400).collect();
     let label = ui.add(egui::Label::new(
-        egui::RichText::new(preview).color(theme::TEXT_DIM),
+        egui::RichText::new(preview).color(theme::of(ui).text_dim),
     ));
     on_context(&label, tab, node.id, picked);
     if ui.small_button("Copy").clicked() {

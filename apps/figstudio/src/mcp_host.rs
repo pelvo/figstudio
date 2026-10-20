@@ -66,6 +66,22 @@ impl McpHost {
     /// Browser-only (a linked-room proposal); the native server has no links to confirm.
     pub fn confirm(&mut self, _ctx: &egui::Context) {}
 
+    /// The switches and the address, for Settings → Agents to draw as its rows.
+    pub fn access(&mut self) -> Option<crate::settings::Access<'_>> {
+        let endpoint = self.running.as_ref().map(|r| {
+            let address = r
+                .addr
+                .map_or_else(|| "Starting…".to_owned(), |a| format!("{a}/mcp"));
+            (address, r.token.clone())
+        });
+        Some(crate::settings::Access {
+            on: &mut self.on,
+            remote: &mut self.remote,
+            remote_addr: &mut self.remote_addr,
+            endpoint,
+        })
+    }
+
     pub fn menu(&mut self, ui: &mut egui::Ui) {
         ui.checkbox(&mut self.on, "Agent access (MCP server)")
             .on_hover_text(
@@ -106,7 +122,7 @@ impl McpHost {
         let text = running
             .addr
             .map_or_else(|| "MCP starting…".to_owned(), |a| format!("MCP {a}/mcp"));
-        ui.label(RichText::new(text).color(theme::TEXT_DIM))
+        ui.label(RichText::new(text).color(theme::of(ui).text_dim))
             .on_hover_text("Point your MCP client here.");
         if let Some(token) = &running.token
             && ui

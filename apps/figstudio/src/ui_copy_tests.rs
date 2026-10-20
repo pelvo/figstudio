@@ -159,7 +159,7 @@ fn a_plain_click_selects_and_does_not_start_a_marquee() {
 #[test]
 fn a_hand_tool_drag_pans_without_a_marquee() {
     let (mut h, mut c) = (harness(), Vec::new());
-    h.get_by_label("✋").click();
+    h.get_by_label("Hand tool").click();
     h.run_steps(3);
     let before = h.state().tabs[0].view;
     let at = centre_of(&h, NODE);

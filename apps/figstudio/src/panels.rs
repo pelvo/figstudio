@@ -1,30 +1,18 @@
-//! Side panels: Pages, Layers tree and Properties.
+//! Sidebar lists (Pages, the Layers tree) and the Properties card.
 
-use egui::{Color32, RichText, Sense, Ui, vec2};
+use egui::{Color32, CornerRadius, FontId, Id, Margin, RichText, Sense, Shape, Ui, vec2};
 use figstudio_fig::{Document, Guid, Node, Val};
 use figstudio_render::geom;
 
+use crate::anim::{self, Spring};
 use crate::copy::Item;
 use crate::copy_menu;
+use crate::icons::{self, Icon};
 use crate::tab::Tab;
-use crate::theme;
+use crate::theme::{self, Palette};
 
-/// Short glyph for a node type, shown before its name.
-fn type_icon(kind: &str) -> &'static str {
-    match kind {
-        "FRAME" => "#",
-        "SECTION" => "§",
-        "GROUP" => "▣",
-        "SYMBOL" => "❖",
-        "INSTANCE" => "◇",
-        "TEXT" => "T",
-        "VECTOR" | "BOOLEAN_OPERATION" | "STAR" | "REGULAR_POLYGON" | "LINE" => "✎",
-        "ELLIPSE" => "○",
-        "RECTANGLE" | "ROUNDED_RECTANGLE" => "□",
-        "SLICE" => "⊞",
-        _ => "·",
-    }
-}
+/// Height of a layer row.
+const ROW: f32 = 26.0;
 
 fn display_name(node: &Node) -> String {
     let name = node.data.text("name").unwrap_or("");
@@ -35,53 +23,158 @@ fn display_name(node: &Node) -> String {
     }
 }
 
+/// The selected-row pill: white with a soft shadow in light mode, a lighter fill in dark.
+fn selected_pill(p: &Palette, rect: egui::Rect) -> Shape {
+    let radius = CornerRadius::same(8);
+    let fill = Shape::rect_filled(rect, radius, p.selected);
+    if p.dark {
+        return fill;
+    }
+    let shadow = egui::Shadow {
+        offset: [0, 1],
+        blur: 6,
+        spread: 0,
+        color: Color32::from_black_alpha(22),
+    };
+    Shape::Vec(vec![shadow.as_shape(rect, radius).into(), fill])
+}
+
+/// Fade-in of the hovered row of a list: one state per list, not per row, so long trees do
+/// not keep an animation per row.
+fn hover_fade(ui: &Ui, list: Id, row: Id, hovered: bool) -> f32 {
+    if !hovered {
+        return 0.0;
+    }
+    let ctx = ui.ctx();
+    let time = ctx.input(|i| i.time);
+    let since = ctx.data_mut(|d| {
+        let state = d.get_temp_mut_or_insert_with(list, || (row, time));
+        if state.0 != row {
+            *state = (row, time);
+        }
+        state.1
+    });
+    let t = ((time - since) as f32 / 0.12).clamp(0.0, 1.0);
+    if t < 1.0 && !anim::reduced(ctx) {
+        ctx.request_repaint();
+        egui::emath::easing::cubic_out(t)
+    } else {
+        1.0
+    }
+}
+
+/// The page list; the selected page's pill slides when the page changes.
 pub fn pages(ui: &mut Ui, tab: &mut Tab) {
+    let p = theme::of(ui);
     let doc = tab.doc.clone();
+    ui.spacing_mut().item_spacing.y = 1.0;
+    let pill = ui.painter().add(Shape::Noop);
+    let origin = ui.min_rect().min.to_vec2();
+    let mut lit = None;
     for &page in &doc.pages {
         let name = doc.node(page).map(display_name).unwrap_or_default();
         let selected = tab.page == page;
-        if ui.selectable_label(selected, name).clicked() {
+        let (rect, response) =
+            ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
+        });
+        let hover = hover_fade(ui, Id::new("pages-hover"), response.id, response.hovered());
+        if selected {
+            lit = Some(rect);
+        } else {
+            icons::row_fill(ui, rect, hover, false);
+        }
+        let color = if selected {
+            p.text
+        } else {
+            p.text_dim.lerp_to_gamma(p.text, hover)
+        };
+        let icon = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 16.0, rect.center().y),
+            vec2(14.0, 14.0),
+        );
+        icons::paint(ui.painter(), Icon::Page, icon, color);
+        let font = if selected {
+            theme::semibold(13.0)
+        } else {
+            FontId::proportional(13.0)
+        };
+        let g = crate::chrome::elided(ui, &name, font, color, rect.width() - 44.0);
+        ui.painter().galley(
+            egui::pos2(rect.left() + 34.0, rect.center().y - g.size().y / 2.0),
+            g,
+            color,
+        );
+        if response.clicked() {
             tab.set_page(page);
         }
     }
+    if let Some(rect) = lit {
+        let r = anim::spring_rect(
+            ui.ctx(),
+            Id::new("page-pill"),
+            rect.translate(-origin),
+            Spring::SMOOTH,
+        )
+        .translate(origin);
+        ui.painter().set(pill, selected_pill(&p, r));
+    }
     if !doc.internal_pages.is_empty() {
-        ui.label(
-            RichText::new(format!(
-                "{} internal page(s) hidden",
-                doc.internal_pages.len()
-            ))
-            .color(theme::TEXT_FAINT)
-            .small(),
-        );
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(format!(
+                    "{} internal page(s) hidden",
+                    doc.internal_pages.len()
+                ))
+                .color(p.text_dim)
+                .small(),
+            );
+        });
     }
 }
 
 pub fn layers(ui: &mut Ui, tab: &mut Tab, filter: &str) {
     let doc = tab.doc.clone();
     let filter = filter.trim().to_lowercase();
-    egui::ScrollArea::both()
+    // Vertical only: sideways swipes over the sidebar switch spaces (`swipe.rs`).
+    egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.spacing_mut().item_spacing.y = 1.0;
             if filter.is_empty() {
                 // Figma lists the topmost layer first, so children are drawn in reverse.
                 let mut stack: Vec<_> = doc
                     .children(tab.page)
                     .iter()
                     .rev()
-                    .map(|id| (*id, 0usize))
+                    .map(|id| (*id, 0usize, 1.0f32))
                     .collect();
-                while let Some((id, depth)) = stack.pop() {
+                let ctx = ui.ctx().clone();
+                while let Some((id, depth, shown)) = stack.pop() {
                     if doc.node(id).is_none() {
                         continue;
                     }
-                    row(ui, tab, &doc, id, depth);
-                    if tab.expanded.contains(&id) {
+                    // A layer's children fade in when it opens.
+                    let before = ui.opacity();
+                    ui.multiply_opacity(shown);
+                    row(ui, tab, &doc, id, depth, true);
+                    ui.set_opacity(before);
+                    let has_children = !doc.children(id).is_empty();
+                    let open = tab.expanded.contains(&id);
+                    let opening = if has_children {
+                        anim::arrive(&ctx, Id::new(("layer-open", id)), open, 0.18)
+                    } else {
+                        1.0
+                    };
+                    if open {
                         stack.extend(
                             doc.children(id)
                                 .iter()
                                 .rev()
-                                .map(|child| (*child, depth + 1)),
+                                .map(|child| (*child, depth + 1, shown.min(opening))),
                         );
                     }
                 }
@@ -89,7 +182,11 @@ pub fn layers(ui: &mut Ui, tab: &mut Tab, filter: &str) {
                 let mut shown = 0;
                 search(ui, tab, &doc, tab.page, &filter, &mut shown);
                 if shown == 0 {
-                    ui.label(RichText::new("No matching layers").color(theme::TEXT_FAINT));
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("No matching layers").color(theme::of(ui).text_dim));
+                    });
                 }
             }
         });
@@ -111,90 +208,93 @@ fn search(
         };
         if *shown < 2000 && display_name(node).to_lowercase().contains(filter) {
             *shown += 1;
-            flat_row(ui, tab, node);
+            row(ui, tab, doc, child, 0, false);
         }
         stack.extend(doc.children(child).iter().rev().copied());
     }
 }
 
-fn flat_row(ui: &mut Ui, tab: &mut Tab, node: &Node) {
-    let selected = tab.selection == Some(node.id);
-    let text = format!("{} {}", type_icon(&node.kind), display_name(node));
-    let r = ui.add(egui::Button::selectable(selected, text).frame_when_inactive(false));
-    if r.clicked() {
-        tab.select(Some(node.id));
-    }
-    if r.hovered() {
-        tab.hover = Some(node.id);
-    }
-    let mut picked = None;
-    copy_menu::on_context(&r, tab, node.id, &mut picked);
-    tab.pending_copy = picked.or(tab.pending_copy.take());
-}
-
-fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize) {
+/// One layer row: chevron (when `tree` and it has children), type icon and name.
+fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize, tree: bool) {
     let Some(node) = doc.node(id) else { return };
-    let children = doc.children(id);
-    let has_children = !children.is_empty();
+    let p = theme::of(ui);
+    let has_children = tree && !doc.children(id).is_empty();
     let expanded = tab.expanded.contains(&id);
     let selected = tab.selection == Some(id);
     let hidden = node.data.flag("visible") == Some(false);
+    let name = display_name(node);
 
-    let height = 22.0;
-    let (rect, response) = ui.allocate_exact_size(
-        vec2(ui.available_width().max(160.0), height),
-        Sense::click(),
-    );
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(ui.available_width().max(180.0), ROW), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
+    });
     if tab.reveal == Some(id) {
         response.scroll_to_me(Some(egui::Align::Center));
     }
-    let painter = ui.painter();
-    if selected {
-        painter.rect_filled(rect, 0.0, theme::ROW_SELECTED);
-    } else if response.hovered() {
-        painter.rect_filled(rect, 0.0, theme::HOVER);
+    if !ui.is_rect_visible(rect) {
+        handle_row(tab, &response, id, has_children);
+        return;
     }
-    let indent = 8.0 + depth as f32 * 14.0;
+    let hover = hover_fade(ui, Id::new("layers-hover"), response.id, response.hovered());
+    if selected {
+        ui.painter().add(selected_pill(&p, rect));
+    } else {
+        icons::row_fill(ui, rect, hover, false);
+    }
+    let indent = 6.0 + depth as f32 * 14.0;
     let mid = rect.center().y;
     if has_children {
-        let arrow = if expanded { "⏷" } else { "⏵" };
-        let arrow_rect = egui::Rect::from_center_size(
-            egui::pos2(rect.left() + indent + 5.0, mid),
-            vec2(14.0, height),
+        let arrow = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + indent + 7.0, mid),
+            vec2(14.0, ROW),
         );
-        painter.text(
-            arrow_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            arrow,
-            egui::FontId::proportional(10.0),
-            theme::TEXT_DIM,
+        let turn = ui
+            .ctx()
+            .animate_bool_with_time(response.id.with("open"), expanded, 0.15);
+        let hit = ui.interact(arrow, ui.id().with(("arrow", id)), Sense::click());
+        let color = if hit.hovered() { p.text } else { p.text_faint };
+        icons::chevron(
+            ui.painter(),
+            egui::Rect::from_center_size(arrow.center(), vec2(10.0, 10.0)),
+            color,
+            turn,
         );
-        let arrow_hit = ui.interact(arrow_rect, ui.id().with(("arrow", id)), Sense::click());
-        if arrow_hit.clicked() {
+        if hit.clicked() {
             toggle(tab, id);
         }
     }
-    let color = if hidden {
-        theme::TEXT_FAINT
-    } else if node.kind == "SYMBOL" || node.kind == "INSTANCE" {
-        Color32::from_rgb(170, 140, 255)
+    let component = node.kind == "SYMBOL" || node.kind == "INSTANCE";
+    let (icon_color, color) = if hidden {
+        (p.text_faint, p.text_faint)
+    } else if component {
+        (p.component, p.component)
+    } else if selected {
+        (p.text_dim, p.text)
     } else {
-        theme::TEXT
+        (
+            p.text_faint,
+            p.text_dim.lerp_to_gamma(p.text, 0.6 + hover * 0.4),
+        )
     };
-    painter.text(
-        egui::pos2(rect.left() + indent + 14.0, mid),
-        egui::Align2::LEFT_CENTER,
-        type_icon(&node.kind),
-        egui::FontId::proportional(12.0),
-        theme::TEXT_DIM,
+    let icon = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + indent + 22.0, mid),
+        vec2(13.0, 13.0),
     );
-    painter.text(
-        egui::pos2(rect.left() + indent + 30.0, mid),
-        egui::Align2::LEFT_CENTER,
-        display_name(node),
-        egui::FontId::proportional(13.0),
-        color,
-    );
+    icons::paint(ui.painter(), icons::for_kind(&node.kind), icon, icon_color);
+    let font = if selected {
+        theme::semibold(12.5)
+    } else {
+        FontId::proportional(12.5)
+    };
+    let left = rect.left() + indent + 36.0;
+    let g = crate::chrome::elided(ui, &name, font, color, rect.right() - left - 6.0);
+    ui.painter()
+        .galley(egui::pos2(left, mid - g.size().y / 2.0), g, color);
+    handle_row(tab, &response, id, has_children);
+}
+
+fn handle_row(tab: &mut Tab, response: &egui::Response, id: Guid, has_children: bool) {
     if response.clicked() {
         tab.select(Some(id));
     }
@@ -205,7 +305,7 @@ fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize) {
         tab.hover = Some(id);
     }
     let mut picked = None;
-    copy_menu::on_context(&response, tab, id, &mut picked);
+    copy_menu::on_context(response, tab, id, &mut picked);
     tab.pending_copy = picked.or(tab.pending_copy.take());
 }
 
@@ -227,14 +327,27 @@ pub fn properties(ui: &mut Ui, tab: &Tab) -> Option<Item> {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let header = ui.label(RichText::new(display_name(node)).strong().size(14.0));
-            copy_menu::on_context(&header, tab, node.id, &mut picked);
-            ui.label(
-                RichText::new(format!("{}  ·  {}", node.kind, node.id))
-                    .color(theme::TEXT_FAINT)
-                    .small(),
+            let p = theme::of(ui);
+            let header = ui.add(
+                egui::Label::new(RichText::new(display_name(node)).font(theme::semibold(15.0)))
+                    .wrap(),
             );
-            ui.add_space(6.0);
+            copy_menu::on_context(&header, tab, node.id, &mut picked);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 5.0;
+                let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
+                icons::paint(ui.painter(), icons::for_kind(&node.kind), r, p.text_faint);
+                ui.label(
+                    RichText::new(format!(
+                        "{}  ·  {}",
+                        node.kind.to_lowercase().replace('_', " "),
+                        node.id
+                    ))
+                    .color(p.text_faint)
+                    .small(),
+                );
+            });
+            ui.add_space(8.0);
 
             section(ui, "Layout", |ui| {
                 let (w, h) = geom::size(d);
@@ -325,10 +438,10 @@ pub fn properties(ui: &mut Ui, tab: &Tab) -> Option<Item> {
             }
             let kids = doc.descendant_count(node.id);
             if kids > 0 {
-                ui.add_space(4.0);
+                ui.add_space(2.0);
                 ui.label(
                     RichText::new(format!("{kids} nested layers"))
-                        .color(theme::TEXT_FAINT)
+                        .color(theme::of(ui).text_faint)
                         .small(),
                 );
             }
@@ -337,46 +450,66 @@ pub fn properties(ui: &mut Ui, tab: &Tab) -> Option<Item> {
 }
 
 fn document_info(ui: &mut Ui, tab: &Tab) {
+    let p = theme::of(ui);
     let doc = &tab.doc;
-    ui.label(RichText::new(tab.title()).strong().size(14.0));
-    ui.add_space(6.0);
-    kv(ui, "Pages", doc.pages.len().to_string());
-    kv(ui, "Layers", doc.nodes.len().to_string());
-    kv(ui, "Images", doc.images.len().to_string());
-    kv(
-        ui,
-        "Format",
-        format!("{} v{}", doc.prelude, doc.format_version),
-    );
-    kv(
-        ui,
-        "Opened in",
-        format!("{:.0} ms", tab.load_time.as_secs_f64() * 1000.0),
-    );
+    ui.add(egui::Label::new(RichText::new(tab.title()).font(theme::semibold(15.0))).wrap());
+    ui.label(RichText::new("Document").color(p.text_faint).small());
     ui.add_space(8.0);
+    section(ui, "Overview", |ui| {
+        kv(ui, "Pages", doc.pages.len().to_string());
+        kv(ui, "Layers", doc.nodes.len().to_string());
+        kv(ui, "Images", doc.images.len().to_string());
+        kv(
+            ui,
+            "Format",
+            format!("{} v{}", doc.prelude, doc.format_version),
+        );
+        kv(
+            ui,
+            "Opened in",
+            format!("{:.0} ms", tab.load_time.as_secs_f64() * 1000.0),
+        );
+    });
+    ui.add_space(4.0);
     ui.label(
         RichText::new("Click a layer on the canvas or in the Layers panel.")
-            .color(theme::TEXT_FAINT)
+            .color(p.text_faint)
             .small(),
     );
 }
 
+/// A titled group of rows on a rounded well, like a settings pane.
 fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
-    ui.add_space(4.0);
-    ui.label(RichText::new(title).color(theme::TEXT_DIM).small().strong());
-    ui.separator();
-    body(ui);
-    ui.add_space(4.0);
+    let p = theme::of(ui);
+    ui.add_space(2.0);
+    ui.label(
+        RichText::new(title)
+            .font(theme::semibold(11.5))
+            .color(p.text_faint),
+    );
+    ui.add_space(2.0);
+    egui::Frame::new()
+        .fill(p.well)
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 6.0;
+            body(ui);
+        });
+    ui.add_space(8.0);
 }
 
+/// Label-value pairs, two per row.
 fn grid(ui: &mut Ui, id: &str, items: &[(&str, String)]) {
+    let p = theme::of(ui);
     egui::Grid::new(id)
         .num_columns(4)
-        .spacing(vec2(8.0, 4.0))
+        .spacing(vec2(8.0, 6.0))
         .show(ui, |ui| {
             for (i, (k, v)) in items.iter().enumerate() {
-                ui.label(RichText::new(*k).color(theme::TEXT_FAINT));
-                ui.label(v);
+                ui.label(RichText::new(*k).color(p.text_faint));
+                ui.add_sized(vec2(64.0, 18.0), egui::Label::new(v.as_str()));
                 if i % 2 == 1 {
                     ui.end_row();
                 }
@@ -385,8 +518,9 @@ fn grid(ui: &mut Ui, id: &str, items: &[(&str, String)]) {
 }
 
 fn kv(ui: &mut Ui, k: &str, v: String) {
+    let p = theme::of(ui);
     ui.horizontal(|ui| {
-        ui.label(RichText::new(k).color(theme::TEXT_FAINT));
+        ui.label(RichText::new(k).color(p.text_faint));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(v);
         });
@@ -418,19 +552,21 @@ fn paints(ui: &mut Ui, title: &str, list: Option<&Val>) {
                         .map(crate::canvas::to_color32),
                     _ => None,
                 };
-                let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                let p = theme::of(ui);
+                let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                let radius = CornerRadius::same(5);
                 match swatch {
                     Some(c) => {
-                        ui.painter().rect_filled(r, 2.0, c);
+                        ui.painter().rect_filled(r, radius, c);
                     }
                     None => {
-                        ui.painter().rect_filled(r, 2.0, Color32::from_gray(90));
+                        ui.painter().rect_filled(r, radius, Color32::from_gray(140));
                     }
                 }
                 ui.painter().rect_stroke(
                     r,
-                    2.0,
-                    egui::Stroke::new(1.0, theme::SEPARATOR),
+                    radius,
+                    egui::Stroke::new(1.0, p.card_stroke),
                     egui::StrokeKind::Inside,
                 );
                 let label = match (kind, swatch) {
@@ -441,12 +577,10 @@ fn paints(ui: &mut Ui, title: &str, list: Option<&Val>) {
                 ui.label(if visible {
                     text
                 } else {
-                    text.color(theme::TEXT_FAINT).strikethrough()
+                    text.color(p.text_faint).strikethrough()
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        RichText::new(format!("{:.0}%", opacity * 100.0)).color(theme::TEXT_DIM),
-                    );
+                    ui.label(RichText::new(format!("{:.0}%", opacity * 100.0)).color(p.text_dim));
                 });
             });
         }
@@ -471,7 +605,7 @@ fn effects(ui: &mut Ui, list: Option<&Val>) {
             ui.label(if visible {
                 text
             } else {
-                text.color(theme::TEXT_FAINT).strikethrough()
+                text.color(theme::of(ui).text_faint).strikethrough()
             });
         }
     });

@@ -1,6 +1,11 @@
 //! Agent access controls for cloud execution and the existing opt-in local upload bridge.
 use super::*;
 impl McpHost {
+    /// The browser's controls are its own (`menu`), not the desktop switches.
+    pub fn access(&mut self) -> Option<crate::settings::Access<'_>> {
+        None
+    }
+
     pub fn menu(&mut self, ui: &mut egui::Ui) {
         let current_mode = if self.proxy.is_some() {
             2u8
@@ -84,23 +89,29 @@ impl McpHost {
                     ui.ctx().copy_text(link);
                 }
             });
+            // Apply first, from the right, so the field takes only the room left: in Settings'
+            // narrow column a default-width field pushed the button out of view.
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.room_input)
-                        .password(true)
-                        .hint_text("executor token or room link"),
-                );
-                if ui.button("Apply").clicked() {
-                    match room::join(&self.room_input) {
-                        Ok(pair) => {
-                            // Typing or pasting a token here is already consent.
-                            self.adopt(pair);
-                            self.room_input.clear();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let apply = ui.button("Apply");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.room_input)
+                            .password(true)
+                            .hint_text("executor token or room link")
+                            .desired_width(ui.available_width()),
+                    );
+                    if apply.clicked() {
+                        match room::join(&self.room_input) {
+                            Ok(pair) => {
+                                // Typing or pasting a token here is already consent.
+                                self.adopt(pair);
+                                self.room_input.clear();
+                            }
+                            // An invalid entry changes nothing.
+                            Err(error) => self.notices.push(error),
                         }
-                        // An invalid entry changes nothing.
-                        Err(error) => self.notices.push(error),
                     }
-                }
+                });
             });
             if ui.button("Regenerate room token").clicked() {
                 // Saved before the old connection is dropped (`regenerate` persists first):
@@ -148,7 +159,7 @@ impl McpHost {
             (true, Some((sent, total))) => format!("MCP uploading {}%", sent * 100 / total.max(1)),
             (true, None) => self.connected_label().to_owned(),
         };
-        ui.label(RichText::new(text).color(theme::TEXT_DIM));
+        ui.label(RichText::new(text).color(theme::of(ui).text_dim));
         ui.separator();
     }
 }

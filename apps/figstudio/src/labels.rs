@@ -16,28 +16,45 @@ const MIN_FRAME_WIDTH: f32 = 220.0;
 /// Bound on labels laid out per frame, so pages with thousands of frames stay fast.
 const MAX_LABELS: usize = 2_000;
 
-/// A label to draw: its text, anchor (bottom-left, screen space) and whether it is a section.
+/// A label to draw: its frame, text, anchor (bottom-left, screen space) and whether it is
+/// a section.
 pub struct Label {
+    pub id: Guid,
     pub text: String,
     pub at: Pos2,
     pub max_width: f32,
     pub section: bool,
 }
 
-/// Labels for the page's top-level frames, and for frames directly inside its sections.
-pub fn labels(doc: &Document, page: Guid, view: View, origin: Pos2, screen: Rect) -> Vec<Label> {
+/// The frames and sections whose names the canvas shows (when they are big enough on
+/// screen): the page's top-level ones, and those directly inside its sections. Page order.
+pub fn named(doc: &Document, page: Guid) -> Vec<Guid> {
     let mut out = Vec::new();
     let mut stack: Vec<Guid> = doc.children(page).iter().rev().copied().collect();
     while let Some(id) = stack.pop() {
-        if out.len() >= MAX_LABELS {
-            break;
-        }
         let Some(node) = doc.node(id) else { continue };
         let section = node.kind == "SECTION";
         if !(section || geom::is_container(&node.kind)) || node.data.flag("visible") == Some(false)
         {
             continue;
         }
+        out.push(id);
+        if section {
+            stack.extend(doc.children(id).iter().rev().copied());
+        }
+    }
+    out
+}
+
+/// Labels for the page's top-level frames, and for frames directly inside its sections.
+pub fn labels(doc: &Document, page: Guid, view: View, origin: Pos2, screen: Rect) -> Vec<Label> {
+    let mut out = Vec::new();
+    for id in named(doc, page) {
+        if out.len() >= MAX_LABELS {
+            break;
+        }
+        let Some(node) = doc.node(id) else { continue };
+        let section = node.kind == "SECTION";
         let tf = absolute_transform(doc, id);
         let (w, _) = geom::size(&node.data);
         let a = tf * Point::new(0.0, 0.0);
@@ -51,43 +68,58 @@ pub fn labels(doc: &Document, page: Guid, view: View, origin: Pos2, screen: Rect
         };
         if width >= min && screen.expand(width).contains(at) {
             out.push(Label {
+                id,
                 text: node.name.clone(),
                 at,
                 max_width: width,
                 section,
             });
         }
-        if section {
-            stack.extend(doc.children(id).iter().rev().copied());
-        }
     }
     out
+}
+
+/// A label laid out: its text, where the text starts and its padding (sections' pill).
+fn layout(painter: &egui::Painter, l: &Label) -> (std::sync::Arc<egui::Galley>, Pos2, Vec2) {
+    let font = FontId::proportional(if l.section { 13.0 } else { 12.0 });
+    let color = if l.section {
+        Color32::WHITE
+    } else {
+        Color32::from_gray(150)
+    };
+    let mut job = egui::text::LayoutJob::simple_singleline(l.text.clone(), font, color);
+    job.wrap.max_width = l.max_width;
+    job.wrap.max_rows = 1;
+    job.wrap.overflow_character = Some('…');
+    let galley = painter.layout_job(job);
+    let pad = if l.section {
+        Vec2::new(6.0, 3.0)
+    } else {
+        Vec2::ZERO
+    };
+    let min = l.at - Vec2::new(0.0, galley.size().y + pad.y * 2.0 + 4.0);
+    (galley, min, pad)
+}
+
+/// Where a label is drawn on screen (its pill, for a section).
+pub fn rect(painter: &egui::Painter, l: &Label) -> Rect {
+    let (galley, min, pad) = layout(painter, l);
+    Rect::from_min_size(min, galley.size() + pad * 2.0)
 }
 
 /// Draws the labels: sections as a dark pill, frames as plain grey text, like Figma.
 pub fn paint(painter: &egui::Painter, labels: &[Label]) {
     for l in labels {
-        let font = FontId::proportional(if l.section { 13.0 } else { 12.0 });
+        let (galley, min, pad) = layout(painter, l);
+        if l.section {
+            let bg = Rect::from_min_size(min, galley.size() + pad * 2.0);
+            painter.rect_filled(bg, CornerRadius::same(4), Color32::from_gray(20));
+        }
         let color = if l.section {
             Color32::WHITE
         } else {
             Color32::from_gray(150)
         };
-        let mut job = egui::text::LayoutJob::simple_singleline(l.text.clone(), font, color);
-        job.wrap.max_width = l.max_width;
-        job.wrap.max_rows = 1;
-        job.wrap.overflow_character = Some('…');
-        let galley = painter.layout_job(job);
-        let pad = if l.section {
-            Vec2::new(6.0, 3.0)
-        } else {
-            Vec2::ZERO
-        };
-        let min = l.at - Vec2::new(0.0, galley.size().y + pad.y * 2.0 + 4.0);
-        if l.section {
-            let bg = Rect::from_min_size(min, galley.size() + pad * 2.0);
-            painter.rect_filled(bg, CornerRadius::same(4), Color32::from_gray(20));
-        }
         painter.galley(min + pad, galley, color);
     }
 }

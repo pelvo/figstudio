@@ -63,10 +63,25 @@ pub struct Tab {
     pub load_time: Duration,
     /// Canvas rect from the last frame, for keyboard zoom around the centre.
     pub canvas_rect: Option<egui::Rect>,
+    /// The view drawn last frame: `view`, or the ease toward it after a jump.
+    pub shown: View,
     /// A Copy menu item picked this frame; `main.rs` puts it on the clipboard.
     pub pending_copy: Option<crate::copy::Item>,
     /// The drag-drawn region (`marquee.rs`).
     pub marquee: crate::marquee::Marquee,
+    /// The preset tint picked for this file (`theme::pick_tint`), unless `style` sets one.
+    pub tint: usize,
+    /// The space's colour, symbol and name chosen by the user (`spaces.rs`).
+    pub style: crate::spaces::Style,
+    /// A hash of the file's folder (`spaces::folder_of`), to tell same-named files apart.
+    pub folder: Option<String>,
+    /// Text layers matching the find bar, highlighted on the canvas (`find.rs`).
+    pub find_hits: Vec<crate::find::Hit>,
+    pub find_current: Option<usize>,
+    /// The find bar's presence (the highlights fade with it) and its search's number (new
+    /// matches fade in).
+    pub find_fade: f32,
+    pub find_search: u64,
 }
 
 impl Tab {
@@ -87,6 +102,7 @@ impl Tab {
             .copied()
             .or(doc.root)
             .unwrap_or(figstudio_fig::Guid(0, 0));
+        let folder = crate::spaces::folder_of(&path);
         Tab {
             id,
             path,
@@ -110,9 +126,36 @@ impl Tab {
             render_time: Duration::ZERO,
             load_time,
             canvas_rect: None,
+            shown: View {
+                zoom: 1.0,
+                pan: egui::Vec2::ZERO,
+            },
             pending_copy: None,
             marquee: Default::default(),
+            tint: crate::theme::HOME_TINT,
+            style: Default::default(),
+            folder,
+            find_hits: Vec::new(),
+            find_current: None,
+            find_fade: 0.0,
+            find_search: 0,
         }
+    }
+
+    /// The space's colour: the user's, else the tint picked for the file.
+    pub fn colour(&self) -> crate::theme::Colour {
+        self.style
+            .colour
+            .unwrap_or(crate::theme::Colour::Preset(self.tint))
+    }
+
+    /// The space's name: the user's, else the file name.
+    pub fn space_name(&self) -> String {
+        self.style
+            .name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| self.title())
     }
 
     pub fn with_doc_key(mut self, doc_key: Option<String>) -> Self {
