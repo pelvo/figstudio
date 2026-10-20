@@ -280,31 +280,50 @@ enum Saved {
     Unreadable(serde::de::IgnoredAny),
 }
 
-/// The changes that can be read, each binding once, and no two with the same keys (the
-/// earlier one keeps them, as `Keymap::set` leaves it).
+/// The changes that can be read, each binding once, and no two bindings with the same keys.
+/// Keys are given out against the finished map, not against defaults that a later change
+/// replaces, so a swap survives: saved changes first, in order (a chord already given out
+/// sends that change back to its default), then the defaults left (one whose chord a change
+/// took has no shortcut, so a custom chord outlives a new default that clashes with it).
 fn lenient_changes<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Vec<(Binding, Option<Keys>)>, D::Error> {
     let saved = Vec::<Saved>::deserialize(d)?;
-    let mut map = Keymap::default();
+    let mut wanted: Vec<(Binding, Option<KeyboardShortcut>)> = Vec::new();
     for item in saved {
         let Saved::Change((binding, keys)) = item else {
             continue;
         };
         let real = Binding::ALL.contains(&binding);
         let readable = keys.as_ref().is_none_or(|k| k.to_shortcut().is_some());
-        if !real || !readable || map.is_changed(binding) {
+        if real && readable && !wanted.iter().any(|(b, _)| *b == binding) {
+            wanted.push((binding, keys.as_ref().and_then(Keys::to_shortcut)));
+        }
+    }
+    let mut taken: Vec<KeyboardShortcut> = Vec::new();
+    let free =
+        |taken: &[KeyboardShortcut], keys: &KeyboardShortcut| !taken.iter().any(|t| same(t, keys));
+    let mut map = Keymap::default();
+    let mut kept = Vec::new();
+    for (binding, keys) in wanted {
+        match keys {
+            Some(keys) if !free(&taken, &keys) => continue,
+            Some(keys) => taken.push(keys),
+            None => {}
+        }
+        map.put(binding, keys);
+        kept.push(binding);
+    }
+    for binding in Binding::ALL {
+        let keys = binding.default_keys();
+        if kept.contains(&binding) {
             continue;
         }
-        let shortcut = keys.as_ref().and_then(Keys::to_shortcut);
-        if shortcut.is_some_and(|s| {
-            Binding::ALL
-                .into_iter()
-                .any(|b| b != binding && map.get(b).is_some_and(|k| same(&k, &s)))
-        }) {
-            continue;
+        if free(&taken, &keys) {
+            taken.push(keys);
+        } else {
+            map.put(binding, None);
         }
-        map.put(binding, shortcut);
     }
     Ok(map.changes)
 }
@@ -380,6 +399,63 @@ pub fn same(a: &KeyboardShortcut, b: &KeyboardShortcut) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn round_trip(map: &Keymap) -> Keymap {
+        let text = serde_json::to_string(map).expect("saved");
+        serde_json::from_str(&text).expect("loaded")
+    }
+
+    #[test]
+    fn every_swap_of_two_shortcuts_survives_a_restart() {
+        let all = Binding::ALL;
+        for (i, &a) in all.iter().enumerate() {
+            for &b in &all[i + 1..] {
+                let (ka, kb) = (a.default_keys(), b.default_keys());
+                let mut map = Keymap::default();
+                map.set(a, Some(kb));
+                map.set(b, Some(ka));
+                let loaded = round_trip(&map);
+                assert_eq!(loaded, map, "{a:?} <-> {b:?}");
+                assert_eq!((loaded.get(a), loaded.get(b)), (Some(kb), Some(ka)));
+            }
+        }
+    }
+
+    #[test]
+    fn a_damaged_keymap_still_gives_each_chord_to_one_binding() {
+        let v = Keys::from_shortcut(&Binding::SelectTool.default_keys());
+        let j = Keys::from_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::J));
+        // Select's V on Hand with Select left at its default (or a new default that clashes
+        // with a custom chord), and ⌘J saved twice.
+        let saved = Keymap {
+            changes: vec![
+                (Binding::HandTool, Some(v)),
+                (Binding::CommandBar, Some(j.clone())),
+                (Binding::FindOnPage, Some(j)),
+            ],
+        };
+        let loaded = round_trip(&saved);
+        let v = Binding::SelectTool.default_keys();
+        assert_eq!(
+            loaded.get(Binding::HandTool),
+            Some(v),
+            "the saved change keeps it"
+        );
+        assert_eq!(
+            loaded.get(Binding::SelectTool),
+            None,
+            "the default gives it up"
+        );
+        assert_eq!(
+            loaded.get(Binding::FindOnPage),
+            Some(Binding::FindOnPage.default_keys()),
+            "the second ⌘J goes back to its default"
+        );
+        let chords: Vec<_> = Binding::ALL.iter().filter_map(|b| loaded.get(*b)).collect();
+        for (i, a) in chords.iter().enumerate() {
+            assert!(!chords[i + 1..].iter().any(|b| same(a, b)), "{a:?} twice");
+        }
+    }
 
     #[test]
     fn a_change_moves_the_keys_and_a_reset_brings_the_default_back() {

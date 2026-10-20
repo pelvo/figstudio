@@ -331,6 +331,14 @@ fn the_sidebar_and_panels_come_back_as_they_were_left() {
         .prefs
         .keymap
         .set(crate::keymap::Binding::CommandBar, Some(cmd_j));
+    // Hand and Select swap keys: each change clashes only with a default the other replaces.
+    let (hand, select) = (
+        crate::keymap::Binding::HandTool,
+        crate::keymap::Binding::SelectTool,
+    );
+    let (h_key, v_key) = (hand.default_keys(), select.default_keys());
+    first.prefs.keymap.set(hand, Some(v_key));
+    first.prefs.keymap.set(select, Some(h_key));
     first.save(&mut storage);
     // A saved shortcut this version cannot read (an unknown name, a key with no name, keys
     // another one has) is dropped on its own; the rest of the window state still loads.
@@ -359,6 +367,14 @@ fn the_sidebar_and_panels_come_back_as_they_were_left() {
         second.prefs.keymap.get(crate::keymap::Binding::CommandBar),
         Some(cmd_j),
         "changed shortcuts"
+    );
+    assert_eq!(
+        (
+            second.prefs.keymap.get(hand),
+            second.prefs.keymap.get(select)
+        ),
+        (Some(v_key), Some(h_key)),
+        "a swap"
     );
     assert_eq!(
         second.prefs.keymap.get(crate::keymap::Binding::Open),

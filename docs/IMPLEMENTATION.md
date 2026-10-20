@@ -446,7 +446,10 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   are recorded too. Backspace removes, Escape keeps, keys another binding has move (it is
   told). On a Mac Control is kept beside ⌘ (`ctrl` duplicates `command` only elsewhere).
   Only changes are saved, so new defaults reach everyone else; they load leniently (an
-  unreadable or clashing entry is dropped, not the window state). The sidebar's and the
+  unreadable entry is dropped, not the window state). Keys are given out against the
+  finished map, so a swap survives: saved changes first (a chord saved twice goes to the
+  first; the other change falls back to its default), then defaults (one whose chord a
+  change took has no shortcut). The sidebar's and the
   empty state's key hints read the keymap. Escape, Enter in the find bar and pointer
   gestures are fixed.
 - **Find on page** (`find.rs`, ⌘F, View → Find on page…): matches text layers of the page
