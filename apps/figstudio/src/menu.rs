@@ -5,6 +5,7 @@ use crate::{App, Tool};
 pub(crate) enum Action {
     Open,
     OpenLink,
+    CopyText,
     ExportPage(f64),
     ExportSelection(f64),
     CloseTab,
@@ -176,6 +177,7 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
     if cfg!(any(feature = "mcp", target_arch = "wasm32")) {
         view.push(Item::action("Agent access…", Action::AgentAccess, true));
     }
+    let edit = vec![Item::action("Copy text", Action::CopyText, selection)];
     vec![
         Item::group(
             "File",
@@ -190,6 +192,7 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                 Item::action("Quit", Action::Quit, true),
             ],
         ),
+        Item::group("Edit", edit),
         Item::group("View", view),
         Item::group(
             "Space",
@@ -218,6 +221,21 @@ impl App {
             Action::OpenLink => {
                 self.link.window = true;
                 self.link.focus = true;
+            }
+            Action::CopyText => {
+                // A selected TEXT layer copies its characters; anything else does nothing.
+                if let Some(tab) = self.tabs.get_mut(self.active)
+                    && let Some(id) = tab.selection
+                    && let Some(node) = tab.doc.node(id)
+                    && let Some(text) = crate::copy::text(node)
+                    && !text.is_empty()
+                {
+                    tab.pending_copy = Some(crate::copy::Item::text(
+                        "Copy text",
+                        "text",
+                        text.to_owned(),
+                    ));
+                }
             }
             Action::ExportPage(scale) => self.export_png(ctx, false, scale),
             Action::ExportSelection(scale) => self.export_png(ctx, true, scale),

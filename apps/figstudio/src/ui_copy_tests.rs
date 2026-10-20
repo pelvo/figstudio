@@ -1,11 +1,14 @@
 //! Right-click Copy menus, the marquee, click-to-select and Hand-tool pan, through the real canvas.
-use egui::vec2;
+use egui::{Key, Modifiers, vec2};
 use figstudio_mcp_core::link::parse_link;
 
 use super::*;
 
 /// A rounded rectangle ("social-twitter 1") on the only page, away from other nodes.
 const NODE: Guid = Guid(1, 34);
+
+/// The TEXT node "ABC" inside the SYMBOL "Component 1".
+const TEXT_NODE: Guid = Guid(1, 42);
 
 fn menu_items(h: &Harness<'_, App>) -> Vec<&'static str> {
     [
@@ -154,6 +157,70 @@ fn a_plain_click_selects_and_does_not_start_a_marquee() {
     h.run_steps(3);
     assert_eq!(h.state().tabs[0].selection, Some(NODE));
     assert!(h.state().tabs[0].marquee.rect().is_none());
+}
+
+#[test]
+fn command_c_copies_the_characters_of_a_selected_text_layer() {
+    let (mut h, mut c) = (harness(), Vec::new());
+    let at = centre_of(&h, TEXT_NODE);
+    h.event(Event::PointerMoved(at));
+    step(&mut h, &mut c);
+    press(&h, at, PointerButton::Primary, true);
+    press(&h, at, PointerButton::Primary, false);
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].selection, Some(TEXT_NODE));
+    // One event per step: the CopyText output command is only in the frame that ran the
+    // shortcut, and kittest's `output()` shows the last frame's alone.
+    h.event(Event::ModifiersChanged(Modifiers::COMMAND));
+    step(&mut h, &mut c);
+    h.event(Event::Key {
+        key: Key::C,
+        pressed: true,
+        modifiers: Modifiers::COMMAND,
+        repeat: false,
+        physical_key: None,
+    });
+    step(&mut h, &mut c);
+    h.event(Event::Key {
+        key: Key::C,
+        pressed: false,
+        modifiers: Modifiers::COMMAND,
+        repeat: false,
+        physical_key: None,
+    });
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    step(&mut h, &mut c);
+    assert_eq!(c, ["ABC"], "⌘C copies the text layer's characters");
+}
+
+#[test]
+fn command_c_does_nothing_without_a_text_layer_selected() {
+    let (mut h, mut c) = (harness(), Vec::new());
+    let at = centre_of(&h, NODE);
+    h.event(Event::PointerMoved(at));
+    step(&mut h, &mut c);
+    press(&h, at, PointerButton::Primary, true);
+    press(&h, at, PointerButton::Primary, false);
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].selection, Some(NODE));
+    h.event(Event::ModifiersChanged(Modifiers::COMMAND));
+    h.event(Event::Key {
+        key: Key::C,
+        pressed: true,
+        modifiers: Modifiers::COMMAND,
+        repeat: false,
+        physical_key: None,
+    });
+    h.event(Event::Key {
+        key: Key::C,
+        pressed: false,
+        modifiers: Modifiers::COMMAND,
+        repeat: false,
+        physical_key: None,
+    });
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    step(&mut h, &mut c);
+    assert!(c.is_empty(), "a non-text selection copies nothing: {c:?}");
 }
 
 #[test]

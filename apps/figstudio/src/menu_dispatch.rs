@@ -22,6 +22,7 @@ pub(crate) fn native_owned(macos: bool, attached: bool, action: Action) -> bool 
             action,
             Action::Open
                 | Action::OpenLink
+                | Action::CopyText
                 | Action::CloseTab
                 | Action::ExportSelection(2.0)
                 | Action::CommandBar
@@ -148,6 +149,7 @@ mod tests {
         for action in [
             Action::Open,
             Action::OpenLink,
+            Action::CopyText,
             Action::CloseTab,
             Action::ExportSelection(2.0),
             Action::CommandBar,

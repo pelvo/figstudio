@@ -12,6 +12,7 @@ use crate::menu::Action;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Binding {
     CommandBar,
+    Copy,
     FindOnPage,
     NextMatch,
     PreviousMatch,
@@ -60,8 +61,9 @@ const SPACE_LABELS: [&str; 9] = [
 ];
 
 impl Binding {
-    pub const ALL: [Binding; 28] = [
+    pub const ALL: [Binding; 29] = [
         Binding::CommandBar,
+        Binding::Copy,
         Binding::FindOnPage,
         Binding::NextMatch,
         Binding::PreviousMatch,
@@ -102,6 +104,7 @@ impl Binding {
     pub fn label(self) -> &'static str {
         match self {
             Binding::CommandBar => "Command bar",
+            Binding::Copy => "Copy the text of the selection",
             Binding::FindOnPage => "Find on page",
             Binding::NextMatch => "Next match",
             Binding::PreviousMatch => "Previous match",
@@ -131,6 +134,7 @@ impl Binding {
     pub fn group(self) -> &'static str {
         match self {
             Binding::CommandBar
+            | Binding::Copy
             | Binding::FindOnPage
             | Binding::NextMatch
             | Binding::PreviousMatch
@@ -155,6 +159,7 @@ impl Binding {
         let shift_cmd = Modifiers::COMMAND | Modifiers::SHIFT;
         match self {
             Binding::CommandBar => k(cmd, Key::L),
+            Binding::Copy => k(cmd, Key::C),
             Binding::FindOnPage => k(cmd, Key::F),
             Binding::NextMatch => k(cmd, Key::G),
             Binding::PreviousMatch => k(shift_cmd, Key::G),
@@ -187,6 +192,7 @@ impl Binding {
     pub fn action(self) -> Action {
         match self {
             Binding::CommandBar => Action::CommandBar,
+            Binding::Copy => Action::CopyText,
             Binding::FindOnPage => Action::FindOnPage,
             Binding::NextMatch => Action::FindNext,
             Binding::PreviousMatch => Action::FindPrevious,
