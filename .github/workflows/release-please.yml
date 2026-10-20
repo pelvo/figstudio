@@ -39,6 +39,8 @@ on:
         description: >-
           npm dry run: build the npm packages from the chosen branch, check the npm token
           (npm whoami) and run npm publish --dry-run. Publishes nothing; the tag is not used.
+          Dispatch it from main: the npm_key environment only deploys main, so a run from
+          another branch stops before it gets the token.
         required: false
         type: boolean
         default: false
@@ -174,8 +176,8 @@ jobs:
 
   # Publishes from the `npm_key` environment, whose secret NPMAPIKEY is an npm automation
   # token that can publish figstudio-mcp and the @pelvo/figstudio-mcp-* packages. Without
-  # it this job assembles the packages and skips the publish. A version already on npm is
-  # skipped, so a retry is safe.
+  # it the Publish step fails, so a release that never reached npm is not green. A version
+  # already on npm is skipped, so a retry is safe. Only the Publish step sees the token.
   npm-publish:
     needs: [release-please, npm-build]
     if: ${{ !cancelled() && needs.npm-build.result == 'success' }}
@@ -187,7 +189,6 @@ jobs:
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
       DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
-      NODE_AUTH_TOKEN: ${{ secrets.NPMAPIKEY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -212,10 +213,15 @@ jobs:
             --bin darwin-x64=bins/npm-bin-darwin-x64/figstudio-mcp \
             --bin win32-x64=bins/npm-bin-win32-x64/figstudio-mcp.exe
       - name: Publish
+        # The token is on this step only: the pack script above runs from the checked-out
+        # ref (the tag, or the branch of a dry run) and never sees it. setup-node's .npmrc
+        # reads it when npm runs.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPMAPIKEY }}
         run: |
           if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::notice::NPMAPIKEY is not set in the npm_key environment; the packages were assembled but not published"
-            exit 0
+            echo "::error::NPMAPIKEY is not set in the npm_key environment; nothing was published"
+            exit 1
           fi
           v="$VERSION"
           if [ "$DRY_RUN" = true ]; then
