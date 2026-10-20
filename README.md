@@ -23,6 +23,30 @@ Protocol (MCP) server, written in Rust.
   and PDF export are not available), compare `.fig` versions, or highlight nodes in the live
   canvas from Claude Code, Cursor, Codex, or any MCP client.
 
+## Try it
+
+- **Website:** https://pelvo.dev
+- **In the browser, nothing to install:** https://figstudio.pelvo.dev. Open or drop a `.fig`
+  (Figma → File → Save local copy); it stays in the tab and nothing is uploaded.
+- **Give it to Claude Code in one line** (needs Rust 1.95 or newer for `cargo`):
+
+  ```sh
+  cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp && claude mcp add figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev
+  ```
+
+  The first time the agent needs a file it calls `open_figstudio_browser`, which opens
+  https://figstudio.pelvo.dev paired with the local server; open your `.fig` in that tab.
+  If the browser asks to let the page reach devices on your local network, allow it: that
+  is `figstudio-mcp` on `127.0.0.1`. **Safari cannot pair:** it blocks an `https://` page
+  from reaching `ws://127.0.0.1` (Chrome, Edge and Firefox allow it). If Safari is your
+  default browser, have `figstudio-mcp` open another one, for example Chrome:
+  `claude mcp add figstudio -e 'BROWSER=open -a "Google Chrome"' -- figstudio-mcp --origin https://figstudio.pelvo.dev`
+  (`open -a "Microsoft Edge"` or `open -a Firefox` for those). Or use the local build:
+  serve it with `scripts/web-build.sh --serve` and register
+  `claude mcp add figstudio -- figstudio-mcp --browser-proxy`; `open_figstudio_browser`
+  then opens `http://127.0.0.1:8765`. To serve a file from disk instead, with no browser:
+  `claude mcp add figstudio -- figstudio-mcp /path/to/design.fig`.
+
 ---
 
 ## Workspace layout
@@ -107,16 +131,29 @@ cargo run --release -p figstudio-cli -- doctor path/to/design.fig
 
 ### 4. MCP server (`figstudio-mcp`)
 
-Full setup and tool documentation is in
-[`apps/figstudio-mcp/README.md`](apps/figstudio-mcp/README.md):
+Install the server on its own with
+`cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp` (or
+`cargo build --release -p figstudio-mcp` in a checkout). Full setup and tool documentation
+is in [`apps/figstudio-mcp/README.md`](apps/figstudio-mcp/README.md):
 
 ```sh
-# Offline file mode (stdio)
-claude mcp add figstudio -- /path/to/figstudio-mcp /path/to/design.fig
+# Browser proxy (zero upload): the agent opens figstudio in your browser and pairs with it
+claude mcp add figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev
 
-# Cloud relay mode (browser tab runs Wasm MCP; zero .fig upload)
+# Offline file mode (stdio): serve files from disk, no browser
+claude mcp add figstudio -- figstudio-mcp /path/to/design.fig
+
+# Desktop app: turn on Settings → Agents → Agent access, then use the address the status
+# pill shows (3845, or the first free port of 3846–3855 when 3845 is busy)
+claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp
+
+# Cloud relay: only on your own deploy of web/worker.mjs (https://figstudio.pelvo.dev has none)
 claude mcp add --transport http figstudio https://<your-deploy-domain>/mcp/rm_<64 hex>
 ```
+
+Cursor (`.cursor/mcp.json`), VS Code (`.vscode/mcp.json`) and Codex
+(`~/.codex/config.toml`) take the same command and arguments; see
+[Client setup](apps/figstudio-mcp/README.md#client-setup).
 
 Agent skills for coding assistants are included under [`.agents/skills/`](.agents/skills/):
 - [`compare-fig-versions`](.agents/skills/compare-fig-versions/SKILL.md) — compare two

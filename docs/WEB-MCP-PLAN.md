@@ -278,3 +278,9 @@ Out of scope: a headless-browser smoke test (suggested by the reviewer; needs CI
   origins), from the banner and from all docs. The deployed site is allowed with
   `--allow-origin https://<your-deploy-domain>`, and the banner prints a `Web:` line for each
   extra https origin given. Docs use the placeholder `<your-deploy-domain>`.
+  - 2026-10-20 amendment: the public product build `https://figstudio.pelvo.dev` (a static
+    build linked from https://pelvo.dev, no relay Worker) is not a private deploy domain.
+    It may appear in the repo: in the README, the MCP docs and their examples, and as a
+    built-in browser-proxy origin. R9 still covers private or account deploy domains (a
+    Worker or wrangler-account host): those stay out of the repo, the defaults and the
+    banner, and docs for your own deploy keep `<your-deploy-domain>`.
