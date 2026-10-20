@@ -206,10 +206,12 @@ mod system {
         }
 
         /// The first face in `faces` that draws `ch`: its outline (font units), units per em
-        /// and advance (em). A face that maps `ch` to a glyph without an outline (bitmap-only
-        /// color emoji, an empty glyph) is skipped, so a later face draws it instead of the
-        /// character being dropped. Whitespace has no outline and is taken from the first face.
+        /// and advance (em). Faces without outline tables (bitmap-only color emoji) are never
+        /// used. A face whose glyph for `ch` is empty is passed over for a later one that
+        /// outlines it; when none does, the first empty glyph is used, so a blank character
+        /// (a space, U+2800 braille blank) keeps its advance instead of being dropped.
         pub(super) fn glyph_for(&mut self, faces: &[ID], ch: char) -> Option<(BezPath, f64, f64)> {
+            let mut blank = None;
             for &id in faces {
                 let Some((data, index)) = self.face_data(id) else {
                     continue;
@@ -217,18 +219,26 @@ mod system {
                 let Ok(face) = Face::parse(&data, index) else {
                     continue;
                 };
+                let t = face.tables();
+                if t.glyf.is_none() && t.cff.is_none() && t.cff2.is_none() {
+                    continue;
+                }
                 let Some(g) = face.glyph_index(ch) else {
                     continue;
                 };
-                let mut builder = Builder(BezPath::new());
-                if face.outline_glyph(g, &mut builder).is_none() && !ch.is_whitespace() {
-                    continue;
-                }
                 let upem = f64::from(face.units_per_em());
                 let adv = face.glyph_hor_advance(g).map_or(0.0, f64::from) / upem;
-                return Some((builder.0, upem, adv));
+                let mut builder = Builder(BezPath::new());
+                if face.outline_glyph(g, &mut builder).is_some() {
+                    return Some((builder.0, upem, adv));
+                }
+                // Whitespace never has an outline: the first face's blank is the answer.
+                if ch.is_whitespace() {
+                    return Some((BezPath::new(), upem, adv));
+                }
+                blank.get_or_insert((BezPath::new(), upem, adv));
             }
-            None
+            blank
         }
 
         /// Lays out `textData.characters` with installed fonts. Returns outlines in node space,
@@ -411,6 +421,16 @@ mod tests {
         assert!(!path.elements().is_empty(), "drawn by the second face");
         assert_eq!(upem, 2048.0, "Hack's units per em");
         assert!(advance > 0.0);
+    }
+
+    #[test]
+    fn a_blank_glyph_no_face_outlines_keeps_its_advance() {
+        // Hack maps U+FEFF (not `char::is_whitespace`) to a glyph with an advance and no
+        // contours, the shape of U+2800 braille blank: it must take its width, not vanish.
+        let (mut f, ids) = fonts(&[HACK_REGULAR]);
+        let (path, upem, advance) = f.glyph_for(&ids, '\u{FEFF}').unwrap();
+        assert!(path.elements().is_empty());
+        assert_eq!(advance * upem, 1233.0, "Hack's advance for the glyph");
     }
 
     #[test]
