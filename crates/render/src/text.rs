@@ -71,8 +71,11 @@ mod system {
     use ttf_parser::{Face, OutlineBuilder};
     use vello_cpu::kurbo::{Affine, BezPath};
 
-    /// Families tried, in order, for characters the requested font lacks.
-    const FALLBACK_FAMILIES: [&str; 10] = [
+    /// Families tried, in order, for characters the requested font lacks. Symbols and emoji
+    /// need faces that carry them as outlines: `glyph_for` skips a face whose glyph does not
+    /// outline (bitmap-only color emoji, empty glyphs). fontdb matches names exactly, so both
+    /// spellings of Symbols 2 are listed.
+    const FALLBACK_FAMILIES: &[&str] = &[
         "Inter",
         "Noto Sans",
         "Noto Sans CJK JP",
@@ -81,8 +84,15 @@ mod system {
         "Source Han Sans",
         "Hiragino Sans",
         "PingFang TC",
-        "Apple Color Emoji",
-        "Noto Color Emoji",
+        "Noto Sans Symbols",
+        "Noto Sans Symbols 2",
+        "Noto Sans Symbols2",
+        "Noto Sans Math",
+        "Segoe UI Symbol",
+        "Apple Symbols",
+        "Symbola",
+        "DejaVu Sans",
+        "Arial Unicode MS",
     ];
 
     /// Font file bytes and the face index inside it.
@@ -125,14 +135,24 @@ mod system {
     }
 
     struct Placed {
-        face: ID,
-        glyph: u16,
+        /// The glyph outline in font units, y up.
+        path: BezPath,
+        units_per_em: f64,
         x: f64,
         advance: f64,
         ch: char,
     }
 
     impl SystemFonts {
+        /// Fonts from `db` instead of the installed ones.
+        #[cfg(test)]
+        pub(super) fn with_database(db: Database) -> Self {
+            Self {
+                db: Some(db),
+                ..Self::default()
+            }
+        }
+
         fn db(&mut self) -> &Database {
             self.db.get_or_insert_with(|| {
                 let mut db = Database::new();
@@ -185,7 +205,13 @@ mod system {
             list
         }
 
-        fn glyph_for(&mut self, faces: &[ID], ch: char) -> Option<(ID, u16, f64)> {
+        /// The first face in `faces` that draws `ch`: its outline (font units), units per em
+        /// and advance (em). Faces without outline tables (bitmap-only color emoji) are never
+        /// used. A face whose glyph for `ch` is empty is passed over for a later one that
+        /// outlines it; when none does, the first empty glyph is used, so a blank character
+        /// (a space, U+2800 braille blank) keeps its advance instead of being dropped.
+        pub(super) fn glyph_for(&mut self, faces: &[ID], ch: char) -> Option<(BezPath, f64, f64)> {
+            let mut blank = None;
             for &id in faces {
                 let Some((data, index)) = self.face_data(id) else {
                     continue;
@@ -193,13 +219,26 @@ mod system {
                 let Ok(face) = Face::parse(&data, index) else {
                     continue;
                 };
-                if let Some(g) = face.glyph_index(ch) {
-                    let upem = f64::from(face.units_per_em());
-                    let adv = face.glyph_hor_advance(g).map_or(0.0, f64::from) / upem;
-                    return Some((id, g.0, adv));
+                let t = face.tables();
+                if t.glyf.is_none() && t.cff.is_none() && t.cff2.is_none() {
+                    continue;
                 }
+                let Some(g) = face.glyph_index(ch) else {
+                    continue;
+                };
+                let upem = f64::from(face.units_per_em());
+                let adv = face.glyph_hor_advance(g).map_or(0.0, f64::from) / upem;
+                let mut builder = Builder(BezPath::new());
+                if face.outline_glyph(g, &mut builder).is_some() {
+                    return Some((builder.0, upem, adv));
+                }
+                // Whitespace never has an outline: the first face's blank is the answer.
+                if ch.is_whitespace() {
+                    return Some((BezPath::new(), upem, adv));
+                }
+                blank.get_or_insert((BezPath::new(), upem, adv));
             }
-            None
+            blank
         }
 
         /// Lays out `textData.characters` with installed fonts. Returns outlines in node space,
@@ -273,7 +312,7 @@ mod system {
                     last_break = None;
                     continue;
                 }
-                let Some((face, glyph, adv)) = self.glyph_for(&faces, ch) else {
+                let Some((path, units_per_em, adv)) = self.glyph_for(&faces, ch) else {
                     continue;
                 };
                 let advance = adv * font_size + spacing;
@@ -304,8 +343,8 @@ mod system {
                     last_break = Some(line.len());
                 }
                 line.push(Placed {
-                    face,
-                    glyph,
+                    path,
+                    units_per_em,
                     x,
                     advance,
                     ch,
@@ -321,7 +360,7 @@ mod system {
                 _ => 0.0,
             };
             let mut out = Vec::new();
-            for (row, line) in lines.iter().enumerate() {
+            for (row, line) in lines.into_iter().enumerate() {
                 let width = line
                     .iter()
                     .rev()
@@ -337,21 +376,11 @@ mod system {
                     + (line_height - (ascent + descent)) / 2.0
                     + ascent;
                 for placed in line {
-                    let Some((bytes, index)) = self.face_data(placed.face) else {
-                        continue;
-                    };
-                    let Ok(face) = Face::parse(&bytes, index) else {
-                        continue;
-                    };
-                    let scale = font_size / f64::from(face.units_per_em());
-                    let mut builder = Builder(BezPath::new());
-                    if face
-                        .outline_glyph(ttf_parser::GlyphId(placed.glyph), &mut builder)
-                        .is_none()
-                    {
+                    if placed.path.elements().is_empty() {
                         continue;
                     }
-                    let mut path = builder.0;
+                    let scale = font_size / placed.units_per_em;
+                    let mut path = placed.path;
                     path.apply_affine(
                         Affine::translate((dx + placed.x, baseline))
                             * Affine::scale_non_uniform(scale, -scale),
@@ -361,5 +390,68 @@ mod system {
             }
             Some(out)
         }
+    }
+}
+
+#[cfg(all(test, feature = "system-fonts"))]
+mod tests {
+    use epaint_default_fonts::{EMOJI_ICON, HACK_REGULAR};
+
+    use crate::text_test_font as test_font;
+    use fontdb::{Database, ID};
+
+    use super::SystemFonts;
+
+    /// A font set of exactly `fonts` (no installed fonts), and their face ids in that order.
+    fn fonts(fonts: &[&[u8]]) -> (SystemFonts, Vec<ID>) {
+        let mut db = Database::new();
+        let mut ids = Vec::new();
+        for data in fonts {
+            let before = db.len();
+            db.load_font_data(data.to_vec());
+            ids.extend(db.faces().skip(before).map(|f| f.id));
+        }
+        (SystemFonts::with_database(db), ids)
+    }
+
+    #[test]
+    fn a_face_that_maps_the_character_without_an_outline_is_skipped() {
+        // emoji-icon-font maps U+FFFF to a glyph with no outline and Hack outlines it: the
+        // same shape as a bitmap-only color emoji face ahead of an outline face.
+        let (mut f, ids) = fonts(&[EMOJI_ICON, HACK_REGULAR]);
+        let (path, upem, advance) = f.glyph_for(&ids, '\u{FFFF}').unwrap();
+        assert!(!path.elements().is_empty(), "drawn by the second face");
+        assert_eq!(upem, 2048.0, "Hack's units per em");
+        assert!(advance > 0.0);
+    }
+
+    #[test]
+    fn a_blank_glyph_no_face_outlines_keeps_its_advance() {
+        // Hack maps U+FEFF (not `char::is_whitespace`) to a glyph with an advance and no
+        // contours, the shape of U+2800 braille blank: it must take its width, not vanish.
+        let (mut f, ids) = fonts(&[HACK_REGULAR]);
+        let (path, upem, advance) = f.glyph_for(&ids, '\u{FEFF}').unwrap();
+        assert!(path.elements().is_empty());
+        assert_eq!(advance * upem, 1233.0, "Hack's advance for the glyph");
+    }
+
+    #[test]
+    fn whitespace_has_no_outline_but_still_advances() {
+        let (mut f, ids) = fonts(&[HACK_REGULAR]);
+        let (path, _, advance) = f.glyph_for(&ids, ' ').unwrap();
+        assert!(path.elements().is_empty());
+        assert!(advance > 0.0);
+    }
+
+    #[test]
+    fn a_bitmap_only_face_does_not_set_the_space_width() {
+        // A face without outline tables maps the space to a wide advance (2.55 em), like
+        // Noto Color Emoji; the space must come from the outline face after it.
+        let bitmap = test_font::bitmap_only(2550);
+        let (mut f, ids) = fonts(&[&bitmap, HACK_REGULAR]);
+        assert_eq!(ids.len(), 2, "both faces load");
+        let (_, upem, advance) = f.glyph_for(&ids, ' ').unwrap();
+        assert_eq!(upem, 2048.0, "Hack's space, not the bitmap face's");
+        assert!(advance < 1.0, "{advance} em");
     }
 }

@@ -46,6 +46,8 @@ rmcp = { workspace = true, features = ["client", "transport-streamable-http-clie
 getrandom = "0.3.4"
 # Headless UI tests (ui_tests.rs): the real App driven without a window, GPU or display.
 egui_kittest = { version = "0.36", default-features = false, features = ["eframe"] }
+# theme tests: egui's bundled fonts, whose symbol coverage is known.
+epaint_default_fonts = "0.36"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing-subscriber.workspace = true
@@ -62,6 +64,9 @@ pollster = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11", "persistence"] }
 rfd = { workspace = true }
 fontdb = { workspace = true }
+# Checking that a face can outline glyphs (bitmap-only color emoji cannot) when picking the
+# UI's symbols fallback (theme.rs).
+ttf-parser = { workspace = true }
 # The platform's config folder for saved space styles (spaces.rs).
 dirs = "6"
 # Saving them atomically: a uniquely named temporary file (created new, owner-only on Unix),

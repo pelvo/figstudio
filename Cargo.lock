@@ -1498,6 +1498,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_kittest",
+ "epaint_default_fonts",
  "figstudio-fig",
  "figstudio-mcp",
  "figstudio-mcp-core",
@@ -1525,6 +1526,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-web",
+ "ttf-parser",
  "unicode-segmentation",
  "vello_gpu",
  "wasm-bindgen",
@@ -1634,6 +1636,7 @@ dependencies = [
 name = "figstudio-render"
 version = "0.1.0"
 dependencies = [
+ "epaint_default_fonts",
  "figstudio-fig",
  "fontdb",
  "image",
