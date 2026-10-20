@@ -51,8 +51,9 @@ pub(crate) struct LinkAsk {
     pub done: Done,
 }
 
-/// How many listings may be given up on (their folders chosen again or away from) while
-/// still blocked, before new links are refused rather than start yet another thread.
+/// How many listings may be given up on (their folders chosen again or away from) and be
+/// stuck, past [`SEARCH_TIMEOUT`] and still not back, before new links are refused rather
+/// than start yet another thread. Listings that are merely slow do not count.
 pub(crate) const MAX_ABANDONED: usize = 3;
 
 /// A finished listing: its search id, what it found, and when it finished.
@@ -82,9 +83,10 @@ pub(crate) struct LinkOpen {
     /// Listings still running (search id, start), timed-out ones included: one that is past
     /// [`SEARCH_TIMEOUT`] and still blocked makes new links fail at once.
     listings: Vec<(u64, web_time::Instant)>,
-    /// Listings given up on by choosing folders, not back yet: they no longer block links, but
-    /// at [`MAX_ABANDONED`] new links are refused (each would leave another thread waiting).
-    abandoned: Vec<u64>,
+    /// Listings given up on by choosing folders, not back yet (id, start): they no longer block
+    /// links, but at [`MAX_ABANDONED`] stuck ones new links are refused (each would leave
+    /// another thread waiting).
+    abandoned: Vec<(u64, web_time::Instant)>,
     /// Finished searches: the search id and what it found.
     found_tx: Sender<Found>,
     found_rx: Receiver<Found>,
@@ -138,15 +140,13 @@ impl LinkOpen {
         self.searches.iter().any(|s| s.done.is_none())
     }
 
-    /// Whether new links must not start a listing: one is past the timeout and still
-    /// blocked, or too many were given up on and are still blocked.
+    /// Whether new links must not start a listing: one of the current folders' listings is
+    /// past the timeout and still blocked, or [`MAX_ABANDONED`] given-up ones are.
     fn blocked(&self) -> bool {
         let timeout = self.search_timeout;
-        self.abandoned.len() >= MAX_ABANDONED
-            || self
-                .listings
-                .iter()
-                .any(|(_, started)| started.elapsed() >= timeout)
+        let stuck = |(_, started): &&(u64, web_time::Instant)| started.elapsed() >= timeout;
+        self.abandoned.iter().filter(stuck).count() >= MAX_ABANDONED
+            || self.listings.iter().any(|l| stuck(&l))
     }
 
     /// Search `dirs` from now on. Every running listing is given up on, the same folder's
@@ -157,8 +157,7 @@ impl LinkOpen {
         expect(dead_code, reason = "the browser has no link folders to choose")
     )]
     pub(crate) fn set_dirs(&mut self, dirs: Vec<PathBuf>) {
-        self.abandoned
-            .extend(self.listings.drain(..).map(|(id, _)| id));
+        self.abandoned.append(&mut self.listings);
         self.dirs = dirs;
     }
 }
@@ -568,7 +567,7 @@ impl App {
         let timeout = self.link.search_timeout;
         while let Ok((id, copies, finished)) = self.link.found_rx.try_recv() {
             self.link.listings.retain(|(listing, _)| *listing != id);
-            self.link.abandoned.retain(|listing| *listing != id);
+            self.link.abandoned.retain(|(listing, _)| *listing != id);
             if let Some(search) = self.link.searches.iter_mut().find(|s| s.id == id)
                 && finished.saturating_duration_since(search.started) < timeout
             {
@@ -586,9 +585,16 @@ impl App {
         for search in ready {
             self.finish_search(ctx, search);
         }
+        // Past the listing's own deadline, or past the MCP caller's budget (counted from when it
+        // asked, so a request that waited before a frame took it is answered in time even while
+        // its folders are still being listed).
+        let answer_by = self.link.answer_by;
         let (late, running): (Vec<Search>, Vec<Search>) = std::mem::take(&mut self.link.searches)
             .into_iter()
-            .partition(|s| s.started.elapsed() >= timeout);
+            .partition(|s| {
+                s.started.elapsed() >= timeout
+                    || (s.done.is_some() && s.asked.elapsed() >= answer_by)
+            });
         self.link.searches = running;
         for search in late {
             // Back but held for a load, or not back (in time) at all.
@@ -603,7 +609,6 @@ impl App {
         }
         // A load that outlasts the caller's budget: answer now; the file still opens and
         // shows the node (the entry stays, without its `done`).
-        let answer_by = self.link.answer_by;
         let overdue: Vec<Done> = self
             .link
             .waiting

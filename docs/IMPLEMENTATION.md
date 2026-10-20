@@ -593,14 +593,16 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
     stacks otherwise, and is dropped after a root) still takes part in the ranking, so a worse
     match or the other half of a tie never takes its place; if it is chosen, the link
     answers `LoadFailed` and it is not loaded again.
-  - **MCP budget.** `Command::OpenLink` carries when the tool sent it (`asked`). A request
-    still waiting for its copy to load at `ANSWER_BY` (55 s from `asked`, under the server's
-    60 s `OPEN_TIMEOUT`, queueing included) is answered "still opening"; the file still opens
-    and shows the node.
+  - **MCP budget.** `Command::OpenLink` carries when the tool sent it (`asked`). At
+    `ANSWER_BY` (55 s from `asked`, under the server's 60 s `OPEN_TIMEOUT`, queueing included)
+    a request is answered whatever it is waiting for: still listing ("could not be read in
+    time"), held for a load, or loading its copy ("still opening"; the file still opens and
+    shows the node).
   - **Stuck folders.** While a listing is blocked past the timeout, new links fail at once
     rather than start another blocked thread. Choosing a folder (`set_dirs`), the same one
-    included, gives up on every running listing so links search again; at most
-    `MAX_ABANDONED` (3) given-up listings may still be waiting before links are refused.
+    included, gives up on every running listing so links search again. Only given-up listings
+    that are stuck (past `SEARCH_TIMEOUT`, still not back) count towards `MAX_ABANDONED` (3),
+    at which new links are refused; slow ones never refuse the newly chosen folder.
   - **The window.** A new link from it (a file link, or a node ID, shown or not) replaces its
     older search; Go on the link already being searched for starts nothing; a link refused
     because a listing is blocked leaves the running search alone; closing it cancels its
@@ -621,7 +623,7 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   folders, a listing polled late, a load past the caller's budget, the same stuck folder chosen
   again, the cap on given-up listings, the budget counted from the caller's send time,
   `lexical` folding, a key tie with one file failed, a failed best match with a resolved
-  path),
+  path, slow given-up listings, the budget running out while listing),
   `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
 ### The browser app (`apps/figstudio` on wasm32)

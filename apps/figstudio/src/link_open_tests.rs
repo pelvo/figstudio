@@ -873,6 +873,7 @@ fn retries_cannot_pile_up_blocked_threads() {
     let mut h = harness();
     let ctx = h.ctx.clone();
     h.state_mut().link.search = slow_search;
+    h.state_mut().link.search_timeout = std::time::Duration::from_millis(300);
     let dirs = h.state().link.dirs.clone();
     for i in 0..super::MAX_ABANDONED {
         assert!(
@@ -882,7 +883,8 @@ fn retries_cannot_pile_up_blocked_threads() {
         );
         h.state_mut().link.set_dirs(dirs.clone());
     }
-    // Every listing so far is still hung: no further thread is started.
+    // The given-up listings are past their time and still hung: no further thread starts.
+    std::thread::sleep(std::time::Duration::from_millis(400));
     let (refused, rx) = done();
     assert!(
         !h.state_mut()
@@ -898,30 +900,71 @@ fn retries_cannot_pile_up_blocked_threads() {
 }
 
 #[test]
-fn the_callers_budget_counts_from_when_it_asked_not_when_the_app_took_it() {
-    let mut h = empty_app();
+fn slow_listings_given_up_on_do_not_refuse_the_newly_chosen_folder() {
+    let mut h = harness();
     let ctx = h.ctx.clone();
-    h.state_mut().link.search = listed_structure;
+    h.state_mut().link.search = slow_search;
+    // Several links in flight, none past its time yet (three quick Gos, or reveal_node calls).
+    for name in ["A", "B", "C", "D"] {
+        assert!(
+            h.state_mut()
+                .go_to_link(&ctx, &figma(name, "1-1"), Some(Box::new(|_| ())))
+        );
+    }
+    h.state_mut()
+        .link
+        .set_dirs(vec![PathBuf::from("/elsewhere")]);
+    assert!(
+        h.state_mut().go_to_link(&ctx, &figma("E", "1-1"), None),
+        "the first search of the new folder was refused"
+    );
+}
+
+#[test]
+fn a_caller_whose_budget_runs_out_while_listing_is_answered_in_time() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = slow_search;
     h.state_mut().link.answer_by = std::time::Duration::from_secs(5);
-    // The request waited 10 s before a frame took it (a busy or hidden window).
+    // Queued for 10 s before a frame took it; the folders then take 2 s to list.
     let asked = web_time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(10))
         .unwrap();
     let (done, rx) = done();
+    let started = std::time::Instant::now();
+    assert!(
+        h.state_mut()
+            .go_to_link_at(&ctx, &figma("A", "1-1"), Some(done), asked)
+    );
+    h.step();
+    let error = rx.try_recv().unwrap().unwrap_err();
+    assert!(error.contains("could not be read in time"), "{error}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(h.state().link.searching(), 0);
+}
+
+#[test]
+fn the_callers_budget_counts_from_when_it_asked_not_when_the_app_took_it() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    h.state_mut().link.search = listed_structure;
+    // The request waited a second before a frame took it.
+    let asked = web_time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap();
+    let (done, _rx) = done();
     assert!(
         h.state_mut()
             .go_to_link_at(&ctx, &figma("structure", "1-4"), Some(done), asked)
     );
+    // The frame that finishes the search starts the load; the load ends in a later frame.
     searched(&mut h);
-    h.step();
-    let error = rx.try_recv().unwrap().unwrap_err();
-    assert!(error.contains("still opening"), "{error}");
-    // The copy still opens and shows the node.
-    wait(&mut h, &mut Vec::new(), "the copy to open", |a| {
-        a.tabs.len() == 1
-    });
-    h.step();
-    assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 4)));
+    let waiting = &h.state().link.waiting;
+    assert_eq!(waiting.len(), 1, "the copy is loading");
+    assert_eq!(
+        waiting[0].asked, asked,
+        "the load's deadline counts from the caller's request"
+    );
 }
 
 #[test]
