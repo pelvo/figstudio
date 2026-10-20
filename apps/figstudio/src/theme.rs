@@ -98,11 +98,19 @@ impl Palette {
     /// properties card follows the space's colour. Text stays readable: the tint's own
     /// colours already are, and these lie between them and the neutral card.
     pub fn on_tint(self, tint: Tint) -> Palette {
-        Palette {
-            card: self.card.lerp_to_gamma(tint.top, CARD_TINT),
-            well: self.well.lerp_to_gamma(tint.top, CARD_TINT),
-            ..self
-        }
+        let card = self.card.lerp_to_gamma(tint.top, CARD_TINT);
+        // The well keeps its neutral step from the card. Mixing both into the same colour
+        // would halve that step and flatten the wells into the card.
+        let step = |card: u8, neutral_card: u8, neutral_well: u8| {
+            let v = i16::from(card) + i16::from(neutral_well) - i16::from(neutral_card);
+            u8::try_from(v.clamp(0, 255)).unwrap_or(u8::MAX)
+        };
+        let well = Color32::from_rgb(
+            step(card.r(), self.card.r(), self.well.r()),
+            step(card.g(), self.card.g(), self.well.g()),
+            step(card.b(), self.card.b(), self.well.b()),
+        );
+        Palette { card, well, ..self }
     }
 }
 
@@ -812,8 +820,13 @@ mod tests {
                         p.dark
                     );
                 }
-                // Wells still stand apart from the card they sit on.
-                assert_ne!(card.card, card.well, "{colour:?} dark={}", p.dark);
+                // Wells stand apart from the card as much as the neutral ones do.
+                assert!(
+                    contrast(card.card, card.well) >= contrast(p.card, p.well) - 0.02,
+                    "well on card {colour:?} dark={}: {:.3}",
+                    p.dark,
+                    contrast(card.card, card.well)
+                );
             }
             // A preset space shows: the card is no longer the neutral one.
             assert_ne!(p.on_tint(tint(0, p.dark)).card, p.card, "dark={}", p.dark);

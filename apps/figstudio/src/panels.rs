@@ -617,19 +617,21 @@ fn effects(ui: &mut Ui, list: Option<&Val>) {
 #[cfg(test)]
 mod tests {
     use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
 
     #[test]
-    fn a_long_value_does_not_widen_its_row() {
+    fn a_long_value_is_shortened_beside_its_key() {
         // A component name with all its variant properties, far wider than the column.
         let long = "Property 1=Page header, Property 2=Primary, Property 3=Checked ".repeat(3);
+        let value = long.clone();
         let mut h = Harness::builder()
-            .with_size(egui::vec2(600.0, 100.0))
+            .with_size(egui::vec2(600.0, 200.0))
             .build_ui_state(
                 move |ui, width: &mut f32| {
                     *width = ui
                         .scope(|ui| {
                             ui.set_max_width(200.0);
-                            super::kv(ui, "Main", long.clone());
+                            super::kv(ui, "Main", value.clone());
                             ui.min_rect().width()
                         })
                         .inner;
@@ -639,5 +641,20 @@ mod tests {
         h.run();
         let width = *h.state();
         assert!(width <= 200.5, "the row grew to {width}");
+        let key = h.get_by_label("Main").rect();
+        let shown = h.get_by_label(&long).rect();
+        assert!(
+            shown.left() >= key.right(),
+            "the value {shown:?} overlaps its key {key:?}"
+        );
+        assert!(shown.right() <= key.left() + 200.5, "value {shown:?}");
+        // Shortened, so hovering shows the full text in a tooltip.
+        h.get_by_label(&long).hover();
+        h.run();
+        assert_eq!(
+            h.get_all_by_label(&long).count(),
+            2,
+            "no tooltip with the full value"
+        );
     }
 }

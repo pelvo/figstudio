@@ -1820,3 +1820,37 @@ fn the_first_file_fades_in_over_its_own_page_colour() {
         h.step();
     }
 }
+
+/// Every rectangle fill painted this frame, nested shapes included.
+fn rect_fills(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Color32> {
+    fn walk(shape: &egui::Shape, out: &mut Vec<egui::Color32>) {
+        match shape {
+            egui::Shape::Rect(r) => out.push(r.fill),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for c in shapes {
+        walk(&c.shape, &mut out);
+    }
+    out
+}
+
+#[test]
+fn the_properties_card_and_its_sections_take_the_space_colour() {
+    let mut h = harness();
+    h.run_steps(3);
+    let ctx = h.ctx.clone();
+    let neutral = crate::theme::palette(&ctx);
+    let tinted = neutral.on_tint(h.state().tint_now(&ctx));
+    assert_ne!(tinted.well, neutral.well, "the space has a colour");
+    let fills = rect_fills(&h.output().shapes);
+    assert!(fills.contains(&tinted.card), "no tinted card in {fills:?}");
+    // The document overview section (no selection) is drawn on a tinted well.
+    assert!(fills.contains(&tinted.well), "no tinted well in {fills:?}");
+    assert!(
+        !fills.contains(&neutral.well),
+        "a neutral well in {fills:?}"
+    );
+}
