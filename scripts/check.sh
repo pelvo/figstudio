@@ -4,6 +4,8 @@
 #   scripts/check.sh            fmt, clippy (-D warnings), tests, release build
 #   scripts/check.sh --cross    also `cargo check` for macOS and Windows
 #   scripts/check.sh --web      also build the browser app (scripts/web-build.sh; nightly)
+#   scripts/check.sh --lint     only fmt and clippy (CI job "fmt + clippy")
+#   scripts/check.sh --test     only tests and builds (CI job "build + test")
 #
 # Toolchain: not pinned. egui 0.36 needs Rust 1.95+. If your default toolchain is older,
 # set FIGSTUDIO_TOOLCHAIN, e.g. FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh
@@ -28,6 +30,8 @@ rustc $TC --version
 # incremental. `--release` here would thin-LTO link every test binary (~20 min after a
 # change in crates/fig). The "release build" step below still checks the shipped LTO build.
 
+MODE="${1:-}"
+if [ "$MODE" != "--test" ]; then
 step "fmt"
 cargo $TC fmt --all -- --check
 
@@ -39,6 +43,8 @@ cargo $TC clippy --profile fast -p figstudio-render --features parallel --all-ta
 cargo $TC clippy --profile fast -p figstudio-render --features gpu --all-targets -- -D warnings
 # The app without agent access (feature `mcp` off), as the browser build compiles it.
 cargo $TC clippy --profile fast -p figstudio --no-default-features --all-targets -- -D warnings
+fi
+[ "$MODE" = "--lint" ] && { step "lint checks passed"; exit 0; }
 
 step "tests"
 cargo $TC test --profile fast --workspace
@@ -57,7 +63,7 @@ else
   echo "skipped: run 'rustup target add wasm32-unknown-unknown $TC_FLAG' first"
 fi
 
-if [ "${1:-}" = "--cross" ]; then
+if [ "$MODE" = "--cross" ]; then
   step "macOS check (aarch64-apple-darwin)"
   if rustup target list --installed $TC_FLAG 2>/dev/null | grep -qx aarch64-apple-darwin; then
     cargo $TC check --release --workspace --target aarch64-apple-darwin
@@ -72,7 +78,7 @@ if [ "${1:-}" = "--cross" ]; then
   fi
 fi
 
-if [ "${1:-}" = "--web" ]; then
+if [ "$MODE" = "--web" ]; then
   step "browser build (wasm32, threads)"
   scripts/web-build.sh
 fi

@@ -13,7 +13,13 @@
 # Token: GITHUB_TOKEN, which needs Settings > Actions > General > Workflow permissions >
 # "Allow GitHub Actions to create and approve pull requests" (on in the org and this repo).
 # Optional: a repo secret RELEASE_PLEASE_TOKEN (Contents and Pull requests write) is used
-# instead when set; release PRs opened with it also start other workflows.
+# instead when set.
+#
+# CI on the release PR: with GITHUB_TOKEN, the release PR's pull_request runs of ci.yml
+# wait in an approval-required state; a writer clicks "Approve workflows to run" on the PR
+# so the required checks report. With RELEASE_PLEASE_TOKEN they start on their own. Do not
+# dispatch ci.yml instead: workflow_dispatch checks never satisfy a ruleset's required
+# checks.
 #
 # Third-party actions are pinned to commit SHAs; the comment names the release.
 

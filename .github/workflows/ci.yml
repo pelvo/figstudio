@@ -1,0 +1,53 @@
+# Runs scripts/check.sh (its --lint and --test halves) on every pull request and push to
+# main, so CI and the local gate cannot drift apart. The two job names ("fmt + clippy",
+# "build + test") are required status checks in the main ruleset; rename them only together
+# with the ruleset. The toolchain is pinned to the one docs/TESTING.md names; bump both
+# together.
+#
+# Third-party actions are pinned to commit SHAs; the comment names the release.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  FIGSTUDIO_TOOLCHAIN: 1.99.0
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain
+        run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: scripts/check.sh --lint
+
+  test:
+    name: build + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain
+        run: rustup toolchain install "$FIGSTUDIO_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: scripts/check.sh --test
