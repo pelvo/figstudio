@@ -19,6 +19,8 @@ pub(crate) enum Glyph {
         x: i16,
         y: i16,
         ppem: u16,
+        /// sbix contour origin in em units, y up; zero for CBDT/contourless sbix.
+        origin: (f64, f64),
     },
     /// Outline in em units, y up.
     Mono(BezPath),
@@ -83,10 +85,12 @@ impl Ctx<'_> {
                     x: ox,
                     y: oy,
                     ppem,
+                    origin,
                 } => {
                     let scale = size / f64::from(*ppem);
-                    let left = x + f64::from(*ox) * scale;
-                    let top = y - (f64::from(*oy) + f64::from(image.height())) * scale;
+                    let left = x + origin.0 * size + f64::from(*ox) * scale;
+                    let top =
+                        y - origin.1 * size - (f64::from(*oy) + f64::from(image.height())) * scale;
                     let rect = Rect::new(
                         left,
                         top,

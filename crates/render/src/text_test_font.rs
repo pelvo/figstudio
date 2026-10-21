@@ -12,7 +12,7 @@ fn be32(v: &mut Vec<u8>, x: u32) {
 /// A face named "Bitmap" with 1000 units per em that maps U+0020 to glyph 1 with
 /// `space_advance`, and has no outline tables.
 pub(crate) fn bitmap_only(space_advance: u16) -> Vec<u8> {
-    font(space_advance, "Bitmap", 0x20, None, false)
+    font(space_advance, "Bitmap", 0x20, None, None)
 }
 
 /// Two PNG strikes of a synthetic emoji, to exercise colour decoding without installed fonts.
@@ -22,7 +22,7 @@ pub(crate) fn colour_emoji(png: &[u8]) -> Vec<u8> {
 
 /// A real outline family, not a colour-family alias.
 pub(crate) fn outline_emoji() -> Vec<u8> {
-    font(1000, "Noto Emoji", 0x2764, None, true)
+    font(1000, "Noto Emoji", 0x2764, None, Some((0, 0)))
 }
 
 pub(crate) fn emoji_strike(
@@ -31,6 +31,15 @@ pub(crate) fn emoji_strike(
     tag: &[u8; 4],
     outline: bool,
 ) -> Vec<u8> {
+    emoji_strikes(png, origin, [tag, tag], outline.then_some((0, 0)))
+}
+
+pub(crate) fn emoji_strikes(
+    png: &[u8],
+    origin: (i16, i16),
+    tags: [&[u8; 4]; 2],
+    contour_origin: Option<(i16, i16)>,
+) -> Vec<u8> {
     let mut sbix = Vec::new();
     for v in [1, 1] {
         be16(&mut sbix, v);
@@ -38,7 +47,7 @@ pub(crate) fn emoji_strike(
     for v in [2, 16, (16 + 24 + png.len()) as u32] {
         be32(&mut sbix, v);
     }
-    for ppem in [16, 64] {
+    for (ppem, tag) in [16, 64].into_iter().zip(tags) {
         be16(&mut sbix, ppem);
         be16(&mut sbix, 72);
         for offset in [16, 16, (24 + png.len()) as u32] {
@@ -49,7 +58,7 @@ pub(crate) fn emoji_strike(
         sbix.extend(tag);
         sbix.extend(png);
     }
-    font(1000, "Noto Color Emoji", 0x2764, Some(sbix), outline)
+    font(1000, "Noto Color Emoji", 0x2764, Some(sbix), contour_origin)
 }
 
 fn font(
@@ -57,7 +66,7 @@ fn font(
     family: &str,
     codepoint: u16,
     sbix: Option<Vec<u8>>,
-    outline: bool,
+    contour_origin: Option<(i16, i16)>,
 ) -> Vec<u8> {
     let mut head = Vec::new();
     be32(&mut head, 0x0001_0000); // version
@@ -138,14 +147,14 @@ fn font(
         (b"maxp", maxp),
         (b"name", name),
     ];
-    if outline {
-        // One rectangular contour, glyph 0 empty, glyph 1 from (0, 0) to (800, 800).
+    if let Some((x, y)) = contour_origin {
+        // One rectangular contour, glyph 0 empty; origin is deliberately configurable.
         let mut glyf = Vec::new();
-        for n in [1, 0, 0, 800, 800, 3, 0] {
-            be16(&mut glyf, n);
+        for n in [1, x, y, x + 800, y + 800, 3, 0] {
+            be16(&mut glyf, n as u16);
         }
         glyf.extend([1; 4]); // on-curve, signed 16-bit x/y deltas
-        for n in [0i16, 800, 0, -800, 0, 0, 800, 0] {
+        for n in [x, 800, 0, -800, y, 0, 800, 0] {
             glyf.extend(n.to_be_bytes());
         }
         let mut loca = Vec::new();

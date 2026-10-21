@@ -116,6 +116,40 @@ fn strike_origin_dimensions_and_ppem_determine_placement() {
 }
 
 #[test]
+fn sbix_contour_origin_offsets_the_bitmap_in_design_units() {
+    let mut renderer = renderer(vec![text_test_font::emoji_strikes(
+        &png(8, 8),
+        (0, 0),
+        [b"png ", b"png "],
+        Some((200, -100)),
+    )]);
+    let frame = renderer.render(&document(&[0x2764]), Guid(99, 1), &viewport());
+    let px = frame.pixmap.data_as_u8_slice();
+    let alpha = |x: usize, y: usize| px[(y * 80 + x) * 4 + 3];
+    // Baseline (10,50), size 40: design origin moves ink by (+8,+4).
+    assert_eq!(alpha(20, 51), 255);
+    assert_eq!(alpha(12, 47), 0);
+    assert_eq!(frame.stats.emoji_skipped, 0);
+}
+
+#[test]
+fn unsupported_nearest_sbix_strike_uses_another_png_strike() {
+    for tag in [b"jpg ", b"tiff", b"flip"] {
+        for tags in [[tag, b"png "], [b"png ", tag]] {
+            let mut renderer = renderer(vec![text_test_font::emoji_strikes(
+                &png(8, 8),
+                (0, 0),
+                tags,
+                None,
+            )]);
+            let frame = renderer.render(&document(&[0x2764]), Guid(99, 1), &viewport());
+            assert_eq!(frame.stats.emoji_skipped, 0, "{tags:?}");
+            assert_eq!(frame.stats.emoji_approximated, 0);
+        }
+    }
+}
+
+#[test]
 fn emoji_only_and_mixed_text_cast_counted_rectangular_shadows() {
     use crate::emoji_tests::obj;
     use figstudio_fig::Val;

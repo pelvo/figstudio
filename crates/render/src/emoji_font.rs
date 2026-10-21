@@ -32,17 +32,21 @@ pub(crate) fn resolve(db: &Database, ch: char, pixels: u16) -> Option<Glyph> {
             .with_face_data(id, |bytes, index| {
                 let face = Face::parse(bytes, index).ok()?;
                 let id = face.glyph_index(ch)?;
-                if let Some(strike) = closest_strike(&face, id, pixels)
-                    .filter(|i| i.format == RasterImageFormat::PNG && i.pixels_per_em > 0)
-                    && let Some(image) = decode_png(strike.data)
-                    && image.width() == strike.width
-                    && image.height() == strike.height
-                {
+                if let Some((strike, image, sbix)) = closest_strike(&face, id, pixels) {
+                    let origin = if sbix {
+                        face.glyph_bounding_box(id).map(|b| {
+                            let upem = f64::from(face.units_per_em());
+                            (f64::from(b.x_min) / upem, f64::from(b.y_min) / upem)
+                        })
+                    } else {
+                        None
+                    };
                     return Some(Glyph::Bitmap {
                         image,
                         x: strike.x,
                         y: strike.y,
                         ppem: strike.pixels_per_em,
+                        origin: origin.unwrap_or_default(),
                     });
                 }
                 let mut outline = monochrome(&face, id)?;
@@ -106,40 +110,41 @@ impl<'b> ttf_parser::colr::Painter<'b> for MonoLayers<'_, 'b> {
     }
 }
 
-/// ttf-parser chooses the next *larger* strike. Find its lower neighbour too, using
-/// bounded binary search over the library's selector rather than parsing font tables.
+/// Enumerate sbix directly; CBDT's public selector has an eight-bit ppem domain.
+/// Unsupported or corrupt strikes must not hide usable PNGs in the same face.
 fn closest_strike<'a>(
     face: &'a Face<'a>,
     glyph: GlyphId,
     pixels: u16,
-) -> Option<RasterGlyphImage<'a>> {
-    let upper = face.glyph_raster_image(glyph, pixels)?;
-    if upper.pixels_per_em <= pixels {
-        return Some(upper);
-    }
-    let Some(mut lower) = face.glyph_raster_image(glyph, 1) else {
-        return Some(upper);
-    };
-    let (mut lo, mut hi) = (1, pixels);
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        let Some(candidate) = face.glyph_raster_image(glyph, mid) else {
-            break;
-        };
-        if candidate.pixels_per_em < upper.pixels_per_em {
-            lower = candidate;
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    Some(
-        if pixels.abs_diff(lower.pixels_per_em) < pixels.abs_diff(upper.pixels_per_em) {
-            lower
-        } else {
-            upper
-        },
-    )
+) -> Option<(RasterGlyphImage<'a>, Arc<Pixmap>, bool)> {
+    let sbix = face
+        .tables()
+        .sbix
+        .into_iter()
+        .flat_map(|t| t.strikes)
+        .filter_map(|s| s.get(glyph))
+        .map(|s| (s, true));
+    let cbdt = face
+        .tables()
+        .cbdt
+        .into_iter()
+        .flat_map(|t| (1..=255).filter_map(move |ppem| t.get(glyph, ppem)))
+        .map(|s| (s, false));
+    let mut candidates: Vec<_> = sbix
+        .chain(cbdt)
+        .filter(|(s, _)| s.format == RasterImageFormat::PNG && s.pixels_per_em > 0)
+        .collect();
+    candidates.sort_by_key(|(s, _)| {
+        (
+            pixels.abs_diff(s.pixels_per_em),
+            std::cmp::Reverse(s.pixels_per_em),
+        )
+    });
+    candidates.dedup_by_key(|(s, sbix)| (*sbix, s.pixels_per_em, s.data.as_ptr()));
+    candidates.into_iter().find_map(|(s, sbix)| {
+        let image = decode_png(s.data)?;
+        (image.width() == s.width && image.height() == s.height).then_some((s, image, sbix))
+    })
 }
 
 fn decode_png(bytes: &[u8]) -> Option<Arc<Pixmap>> {
@@ -190,8 +195,8 @@ mod tests {
         let data = crate::text_test_font::colour_emoji(&png(2, 2));
         let face = Face::parse(&data, 0).unwrap();
         let id = face.glyph_index('❤').unwrap();
-        assert_eq!(closest_strike(&face, id, 30).unwrap().pixels_per_em, 16);
-        assert_eq!(closest_strike(&face, id, 50).unwrap().pixels_per_em, 64);
+        assert_eq!(closest_strike(&face, id, 30).unwrap().0.pixels_per_em, 16);
+        assert_eq!(closest_strike(&face, id, 50).unwrap().0.pixels_per_em, 64);
         let mut db = Database::new();
         db.load_font_data(data);
         let Some(Glyph::Bitmap { image: pixmap, .. }) = resolve(&db, '❤', 30) else {
