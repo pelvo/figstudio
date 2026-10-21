@@ -57,9 +57,12 @@ mod menu_egui;
 #[cfg(any(target_os = "macos", windows))]
 mod menu_native;
 mod menu_windows;
+mod onboarding;
 mod panels;
 mod pick;
 mod pick_cache;
+#[cfg(not(target_arch = "wasm32"))]
+mod recents;
 mod recordings;
 mod region_copy;
 mod region_png;
@@ -217,6 +220,9 @@ struct UiState {
     /// Settings → General and Canvas (absent in states saved before them).
     #[serde(default)]
     prefs: Prefs,
+    /// The welcome sheet and tips seen (absent before them: shown once more).
+    #[serde(default)]
+    onboarding: onboarding::Progress,
 }
 
 /// What Settings → General and Canvas set (the rest lives in egui's options and the panels).
@@ -233,6 +239,8 @@ struct Prefs {
     scroll_zooms: bool,
     /// Shortcuts changed in Settings → Shortcuts.
     keymap: keymap::Keymap,
+    /// The Recents page lists files in rows instead of cards.
+    recents_list: bool,
 }
 
 impl Default for Prefs {
@@ -243,6 +251,7 @@ impl Default for Prefs {
             frame_labels: true,
             scroll_zooms: false,
             keymap: keymap::Keymap::default(),
+            recents_list: false,
         }
     }
 }
@@ -340,6 +349,11 @@ struct App {
     renderer: String,
     /// Agent access: the MCP server, off at every launch (`mcp_host.rs`).
     mcp: mcp_host::McpHost,
+    /// The welcome sheet and the one-time tips (`onboarding.rs`).
+    onboarding: onboarding::Onboarding,
+    /// Files opened before: the Recents page when none is open (`recents.rs`).
+    #[cfg(not(target_arch = "wasm32"))]
+    recents: recents::Recents,
 }
 
 impl App {
@@ -437,6 +451,21 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             window_cap: None,
             mcp: Default::default(),
+            // Tests turn it on themselves; it would cover every other test's window.
+            onboarding: onboarding::Onboarding::new(
+                saved
+                    .as_ref()
+                    .map(|s| s.onboarding.clone())
+                    .unwrap_or_default(),
+                !cfg!(test),
+            ),
+            // Tests never read or write the user's list.
+            #[cfg(not(target_arch = "wasm32"))]
+            recents: if cfg!(test) {
+                recents::Recents::memory()
+            } else {
+                recents::Recents::load()
+            },
         };
         if let Some(saved) = saved {
             app.show_left = saved.show_left;
@@ -648,7 +677,11 @@ impl App {
                         .unwrap_or_default();
                     self.tabs.push(tab);
                     self.active = self.tabs.len() - 1;
-                    self.link_loaded(ctx, &path, self.active);
+                    let added = self.active;
+                    self.link_loaded(ctx, &path, added);
+                    // After the link: the picture is of the page it shows.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.note_recent(ctx, added);
                 }
                 Loaded::Err {
                     path,
@@ -658,6 +691,8 @@ impl App {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
                     web::fail_upload(&path);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.recents.load_failed(&path);
                     self.link_failed(&path, real_path);
                     self.toast(
                         ctx,
@@ -803,6 +838,12 @@ impl App {
     fn shortcuts(&mut self, ctx: &egui::Context) {
         // Recording a new shortcut in Settings: every key goes there.
         if self.settings.recording().is_some() {
+            return;
+        }
+        // The welcome sheet is modal while open: its own keys only (fading out it takes
+        // none, so a shortcut pressed right after closing it works).
+        if self.onboarding.sheet_open() {
+            self.welcome_keys(ctx);
             return;
         }
         let keys = |b: keymap::Binding| self.prefs.keymap.get(b);
@@ -960,6 +1001,7 @@ impl eframe::App for App {
             show_right: self.show_right,
             pages_share: self.pages_share,
             prefs: self.prefs.clone(),
+            onboarding: self.onboarding.progress.clone(),
         };
         eframe::set_value(storage, UI_STATE_KEY, &state);
     }
@@ -1016,6 +1058,8 @@ impl App {
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
 
         self.note_active_file(&ctx);
+        // The sidebar records where the tips point as it draws.
+        self.onboarding.targets = Default::default();
         // The menu's check mark follows the real setting (a host may turn motion off too).
         self.reduce_motion = anim::reduced(&ctx);
         let p = theme::palette(&ctx);
@@ -1117,7 +1161,9 @@ impl App {
         self.peek_sidebar(&ctx);
         self.space_popover(&ctx);
         self.drop_overlay(&ctx, hovering_files);
+        self.tips(&ctx);
         self.command_bar(&ctx);
+        self.welcome_sheet(&ctx);
         self.toasts(&ctx);
         let answers = self.take_link_answers();
         self.mcp

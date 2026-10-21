@@ -114,6 +114,10 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
                          canvas card with tool / status pills and the warning chip, toasts,
                          empty state, drop overlay
   command.rs             the ⌘L command bar: search over commands, files, pages and layers
+  onboarding.rs          first run: the welcome sheet (three pages) and one-time tips beside
+                         the command field, the space dots and the sidebar button
+  recents.rs             desktop: the Recents page in the empty canvas card (cards or rows,
+                         filter, page pictures drawn in the background, saved list)
   anim.rs                springs and colour fades in egui memory; Reduce motion
   icons.rs               line icons painted on a 16-unit grid; the icon button
   vibrancy.rs            macOS only: the blur view behind the transparent window
@@ -430,9 +434,61 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   (`chrome::SIDEBAR`) so a width inflated that way is not restored.
 - eframe's `persistence` keeps the window, the panel widths and egui's options (appearance,
   Reduce motion) between launches; `App::save` adds the sidebar / properties visibility, the
-  Pages/Layers split and Settings' `Prefs` (`UiState`): the translucent sidebar, the renderer
-  (applied at the next start; `FIGSTUDIO_RENDERER` wins), frame names and whether the scroll
-  wheel zooms (`canvas::Options`).
+  Pages/Layers split, what onboarding was seen and Settings' `Prefs` (`UiState`): the
+  translucent sidebar, the renderer (applied at the next start; `FIGSTUDIO_RENDERER` wins),
+  frame names and whether the scroll wheel zooms (`canvas::Options`).
+- **Recents** (`recents.rs`, desktop only). With no file open the canvas card is the Recents
+  page instead of the plain empty state: a title, a filter, a cards/rows toggle
+  (`Prefs::recents_list`) and Open file…, then one card per file opened before, newest first.
+  A card is the file's space gradient (its saved colour, else the tint its name picks) with a
+  picture of the page it opened on, its badge, its name and "Opened 3 days ago". A click
+  opens it; the right-click menu has Open, Show in Finder (`opener::reveal`) and Remove from
+  recents. With nothing opened before, the page is the old empty state under "Recents".
+  With no file open the window is Slate (`theme::HOME_TINT`), neutral, so the page is not
+  taken for a space; the card under the pointer lends the window its colour
+  (`Recents::hover`, read by `App::tint_now`), crossfading as a file switch does.
+  The list is `<config>/figstudio/recents.json` (full paths, owner-only, at most 60, damaged
+  entries skipped, an unreadable list left alone as with spaces); each load of a file on disk
+  (`App::note_recent`, after any link moved it to its node's page; bytes dropped without a
+  path are not listed) notes it and queues its picture: one `thumbnails` thread renders the
+  page with its own image cache (never the canvas's: that would share its eviction clock,
+  in-flight reads and failed marks) to fit 640×400 over the page colour, and writes
+  `thumbs/<hash of the path>.png` owner-only, only if that job is still the newest wanted for
+  the file (Remove from recents wins over a job in flight, and of two jobs for one file the
+  later one does). The page reads at most three pictures a frame and
+  reloads one when the thread reports it. Files gone when the page appears are marked
+  Missing, and looked for again a second after the last look returned while the page is
+  up (with the next frame), so a card's label and menu follow the disk. One `recents-look`
+  thread does the looking and is asked for the next look only once it answered, so a slow
+  disk or network mount never holds up the window and a hung `stat` holds up one thread;
+  "there" means `is_file`, for a look and for a click alike. Each look carries a
+  generation: a click, a load or a failed open (which check the disk themselves) and the
+  page appearing raise it, and an answer asked for under an older one is dropped. A click
+  also looks, opening a file that is back
+  and marking one that went, with a toast. The header keeps to the card: a narrow one drops the filter, then the
+  view toggle, then narrows Open. The browser has no paths to open again and keeps the plain empty state. Tests
+  use `Recents::memory()` (no file, no pictures).
+- **Onboarding** (`onboarding.rs`). The first launch (and the first launch of a version
+  that adds it: `UiState` without `onboarding`) opens the welcome sheet: a modal card over the
+  dimmed window, a hero in the active space's gradient with a drawn picture, three pages (the
+  app, spaces, the command field), Skip/Back, Continue/Get started, Escape skips, Enter and
+  the arrows page. While it is up `App::shortcuts` hands keys only to `welcome_keys`; a native
+  menu action closes it (`App::apply`), as the person has moved on. While open it also takes
+  the wheel, pinches, touches, typing and clipboard events and the keyboard focus, so a
+  swipe or a field under it does nothing, and what happens under it teaches no tip; fading
+  out it takes nothing. After it, once a file has
+  shown for 0.8 s, one tip at a time sits to the right of its control with an arrow; the
+  sidebar records where the controls are each frame (`Onboarding::targets`, cleared at the
+  start of the frame): a tip whose control is hidden waits, and the next one shows (with the
+  sidebar closed, the sidebar tip comes first, says how to show it and is "Tip 1 of 3":
+  tips are numbered in the order they are met). A tip is done after Got it, Skip
+  tips (all of them), or when the person does what it shows (`Onboarding::watch`: the
+  command bar opened, another space with the same files open, the sidebar toggled). What
+  was seen is `onboarding::Progress` in `UiState` (named bools: unknown fields are ignored,
+  missing ones are not seen). Help → Welcome tour (also in the command bar and Settings →
+  General) resets it and opens the sheet. Tests start with it off (`!cfg!(test)`, like
+  `spaces::Store::memory`) so the sheet does not cover every other test; the onboarding
+  tests turn it on.
 - **Settings** (`settings.rs`, ⌘, / the app menu on macOS / File → Settings… elsewhere / the
   command bar): a foreground window with Arc's tab row. Agent access (`mcp.menu`, `mcp.status`)
   and About live in it; View → Agent access… and Help → About open those tabs

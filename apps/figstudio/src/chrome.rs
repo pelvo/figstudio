@@ -526,8 +526,68 @@ fn sidebar_pages(
     pages
 }
 
+/// The app's mark: a rounded tile `side` wide at `centre`, in `tint`'s gradient, with a frame
+/// glyph (the empty canvas, the welcome sheet).
+pub(crate) fn paint_mark(
+    painter: &egui::Painter,
+    p: &Palette,
+    tint: Tint,
+    centre: Pos2,
+    side: f32,
+) {
+    let tile = Rect::from_center_size(centre, vec2(side, side));
+    let radius = (side * 0.28).round();
+    painter.add(card_shadow(p, 18).as_shape(tile, CornerRadius::same(radius as u8)));
+    let colours = [
+        tint.glow,
+        tint.accent,
+        tint.accent,
+        tint.accent.lerp_to_gamma(tint.glow, 0.4),
+    ];
+    painter.add(Shape::mesh(rounded_gradient(tile, radius, colours)));
+    icons::paint(
+        painter,
+        Icon::Frame,
+        Rect::from_center_size(tile.center(), vec2(side, side) * 0.47),
+        Color32::WHITE,
+    );
+}
+
+/// A button filled with `tint`'s accent at `rect` that lifts on hover. `label` is its
+/// accessible name (with its keys, if any); `text` is what it shows.
+pub(crate) fn accent_button(
+    ui: &mut Ui,
+    rect: Rect,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    text: &str,
+    label: &str,
+    tint: Tint,
+) -> Response {
+    let p = theme::of(ui);
+    let response = ui.interact(rect, Id::new(id), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
+    let (hover, press) = icons::feedback(ui, &response);
+    let r = rect.translate(vec2(0.0, -hover * 1.5)).shrink(press * 2.0);
+    let painter = ui.painter();
+    let radius = CornerRadius::same((rect.height() * 0.32) as u8);
+    painter.add(card_shadow(&p, (8.0 + hover * 10.0) as u8).as_shape(r, radius));
+    let fill = tint.accent.lerp_to_gamma(Color32::WHITE, hover * 0.1);
+    painter.rect_filled(r, radius, fill);
+    painter.text(
+        r.center(),
+        Align2::CENTER_CENTER,
+        text,
+        theme::semibold(14.0),
+        theme::on_accent(fill),
+    );
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
 /// A control's accessible name with its keys, as the hint painted on it shows them.
-fn with_keys(name: &str, keys: &str) -> String {
+pub(crate) fn with_keys(name: &str, keys: &str) -> String {
     if keys.is_empty() {
         name.to_owned()
     } else {
@@ -581,11 +641,12 @@ pub(crate) fn split_handle(ui: &mut Ui, share: &mut f32) {
     );
 }
 
-/// A rounded field with a magnifier and a clear button: the layer filter.
-fn filter_field(ui: &mut Ui, text: &mut String) {
+/// A rounded field with a magnifier and a clear button: the layer filter (`fill` is
+/// `Palette::field` on the gradient), the Recents filter (`Palette::well` on a card).
+pub(crate) fn filter_field(ui: &mut Ui, text: &mut String, hint: &str, fill: Color32) {
     let p = theme::of(ui);
     egui::Frame::new()
-        .fill(p.field)
+        .fill(fill)
         .corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::symmetric(8, 2))
         .show(ui, |ui| {
@@ -599,7 +660,7 @@ fn filter_field(ui: &mut Ui, text: &mut String) {
                 ui.add_sized(
                     vec2(width, 24.0),
                     egui::TextEdit::singleline(text)
-                        .hint_text("Filter layers")
+                        .hint_text(hint)
                         .vertical_align(Align::Center)
                         .frame(egui::Frame::NONE)
                         .margin(Margin::symmetric(2, 0)),
@@ -686,10 +747,15 @@ impl App {
     /// The gradient of the active file, crossfading when the file changes.
     pub(crate) fn tint_now(&self, ctx: &egui::Context) -> Tint {
         let dark = theme::palette(ctx).dark;
-        let colour = self
-            .tabs
-            .get(self.active)
-            .map_or(theme::Colour::Preset(theme::HOME_TINT), |t| t.colour());
+        // No file open: Slate, or the colour of the Recents card under the pointer.
+        #[cfg(not(target_arch = "wasm32"))]
+        let home = self
+            .recents
+            .hover
+            .unwrap_or(theme::Colour::Preset(theme::HOME_TINT));
+        #[cfg(target_arch = "wasm32")]
+        let home = theme::Colour::Preset(theme::HOME_TINT);
+        let colour = self.tabs.get(self.active).map_or(home, |t| t.colour());
         let mut target = theme::space_tint(colour, dark);
         // While two spaces' pages move side by side, their colours blend with the pages.
         let neighbour = self.neighbour(self.slide).and_then(|i| self.tabs.get(i));
@@ -774,7 +840,11 @@ impl App {
                 (true, true) => ("Keep sidebar open", true),
                 (false, _) => ("Show sidebar", true),
             };
-            if icons::button(ui, Icon::Sidebar, label, false).clicked() {
+            let button = icons::button(ui, Icon::Sidebar, label, false);
+            if !peek {
+                self.onboarding.targets.sidebar = Some(button.rect);
+            }
+            if button.clicked() {
                 self.show_left = show;
             }
             let menu = self.show_drawn_menu();
@@ -927,6 +997,7 @@ impl App {
         let p = theme::of(ui);
         let (rect, response) =
             ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+        self.onboarding.targets.command = Some(rect);
         // The command bar's keys as the person set them (none: no hint).
         let shortcut = self
             .prefs
@@ -1070,7 +1141,8 @@ impl App {
             .show(ui, |ui| panels::pages(ui, tab));
         split_handle(ui, &mut self.pages_share);
         section_label(ui, "Layers", None);
-        filter_field(ui, &mut self.layer_filter);
+        let fill = theme::of(ui).field;
+        filter_field(ui, &mut self.layer_filter, "Filter layers", fill);
         ui.add_space(4.0);
         panels::layers(ui, tab, &self.layer_filter);
     }
@@ -1086,6 +1158,11 @@ impl App {
         self.dots_clip = area;
         let count = self.tabs.len() + self.loading.len();
         let fits = count as f32 * DOT <= area.width();
+        // The tips point at the dots themselves.
+        self.onboarding.targets.dots = Some(Rect::from_center_size(
+            area.center(),
+            vec2((count as f32 * DOT).min(area.width()), DOT),
+        ));
         let mut dots = ui.new_child(
             UiBuilder::new()
                 .max_rect(area)
@@ -1252,6 +1329,8 @@ impl App {
         let mut actions = Vec::new();
         let mut cursor = None;
         let mut open_clicked = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut recent = None;
         match self.tabs.get_mut(self.active) {
             Some(tab) => self.find.update(tab, &ctx),
             None => self.find.update_without_tab(&ctx),
@@ -1299,7 +1378,14 @@ impl App {
                 None => {
                     // The next file to open fades in over its own page colour.
                     self.crossfade = Crossfade::default();
-                    open_clicked = self.empty_state(ui, card);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        recent = self.recents_page(ui, card);
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        open_clicked = self.empty_state(ui, card);
+                    }
                 }
             }
             ui.painter().rect_stroke(
@@ -1326,6 +1412,17 @@ impl App {
         });
         for action in actions {
             self.apply(action, &ctx);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if !self.tabs.is_empty() {
+                self.recents.hidden();
+            }
+            match recent {
+                Some(crate::recents::Pick::OpenDialog) => open_clicked = true,
+                Some(pick) => self.recent_picked(&ctx, pick),
+                None => {}
+            }
         }
         if open_clicked {
             self.open_dialog(&ctx);
@@ -1575,28 +1672,13 @@ impl App {
 
     /// Shown in the canvas card when no file is open. Returns true when "Open file…" was
     /// clicked.
-    fn empty_state(&self, ui: &mut Ui, card: Rect) -> bool {
+    pub(crate) fn empty_state(&self, ui: &mut Ui, card: Rect) -> bool {
         let ctx = ui.ctx().clone();
         let p = theme::of(ui);
         let tint = self.tint_now(&ctx);
         let c = card.center() - vec2(0.0, card.height() * 0.08);
         let painter = ui.painter();
-        // The mark: a rounded tile in the tint's gradient with a frame glyph.
-        let tile = Rect::from_center_size(c - vec2(0.0, 92.0), vec2(64.0, 64.0));
-        painter.add(card_shadow(&p, 18).as_shape(tile, CornerRadius::same(18)));
-        let colours = [
-            tint.glow,
-            tint.accent,
-            tint.accent,
-            tint.accent.lerp_to_gamma(tint.glow, 0.4),
-        ];
-        painter.add(Shape::mesh(rounded_gradient(tile, 18.0, colours)));
-        icons::paint(
-            painter,
-            Icon::Frame,
-            Rect::from_center_size(tile.center(), vec2(30.0, 30.0)),
-            Color32::WHITE,
-        );
+        paint_mark(painter, &p, tint, c - vec2(0.0, 92.0), 64.0);
         painter.text(
             c - vec2(0.0, 30.0),
             Align2::CENTER_CENTER,
@@ -1612,7 +1694,6 @@ impl App {
             p.text_dim,
         );
         let button = Rect::from_center_size(c + vec2(0.0, 36.0), vec2(150.0, 38.0));
-        let response = ui.interact(button, Id::new("open-file"), Sense::click());
         let shortcut = self
             .prefs
             .keymap
@@ -1620,23 +1701,8 @@ impl App {
             .map(|s| ctx.format_shortcut(&s))
             .unwrap_or_default();
         let label = with_keys("Open file…", &shortcut);
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
-        let (hover, press) = icons::feedback(ui, &response);
-        let r = button
-            .translate(vec2(0.0, -hover * 1.5))
-            .shrink(press * 2.0);
+        let response = accent_button(ui, button, "open-file", "Open file…", &label, tint);
         let painter = ui.painter();
-        painter
-            .add(card_shadow(&p, (8.0 + hover * 10.0) as u8).as_shape(r, CornerRadius::same(12)));
-        let fill = tint.accent.lerp_to_gamma(Color32::WHITE, hover * 0.1);
-        painter.rect_filled(r, CornerRadius::same(12), fill);
-        painter.text(
-            r.center(),
-            Align2::CENTER_CENTER,
-            "Open file…",
-            theme::semibold(14.0),
-            theme::on_accent(fill),
-        );
         painter.text(
             c + vec2(0.0, 76.0),
             Align2::CENTER_CENTER,
@@ -1651,9 +1717,6 @@ impl App {
             egui::FontId::proportional(11.5),
             p.text_faint,
         );
-        if response.hovered() {
-            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
         response.clicked()
     }
 

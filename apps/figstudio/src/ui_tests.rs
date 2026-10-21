@@ -3,7 +3,8 @@
 //! `harness()` opens `structure.fig` on the CPU tile path (kittest gives no wgpu state). The
 //! sibling files hold the tests: `ui_mcp_tests.rs` (View menu), `ui_copy_tests.rs` (Copy menus,
 //! marquee, click and Hand-tool drag), `ui_chrome_tests.rs` (sidebar, file switcher, tool pill,
-//! command bar).
+//! command bar), `ui_onboarding_tests.rs` (welcome sheet, tips), `ui_recents_tests.rs` (the
+//! Recents page).
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -31,6 +32,8 @@ mod inner_fixture;
 mod inner_hover;
 #[path = "ui_inner_nested_tests.rs"]
 mod inner_nested;
+#[path = "ui_onboarding_tests.rs"]
+mod onboarding;
 #[path = "ui_pick_tests.rs"]
 mod pick;
 #[path = "ui_pick_bench.rs"]
@@ -41,6 +44,8 @@ mod pick_cache;
 mod pick_drag;
 #[path = "ui_pick_order_tests.rs"]
 mod pick_order;
+#[path = "ui_recents_tests.rs"]
+mod recents;
 #[path = "ui_text_drag_tests.rs"]
 mod text_drag;
 #[path = "ui_text_select_tests.rs"]

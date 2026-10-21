@@ -1024,6 +1024,14 @@ impl App {
             setting(ui, "Show the properties", "", |ui| {
                 switch(ui, &mut self.show_right, "Show the properties");
             });
+            section(ui, "Help");
+            let mut tour = false;
+            setting(ui, "Welcome tour", "The first-run sheet and tips", |ui| {
+                tour = pill(ui, "Show again", true).clicked();
+            });
+            if tour {
+                self.apply(Action::Welcome, &ctx);
+            }
         });
         explain(
             &mut right,

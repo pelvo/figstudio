@@ -34,6 +34,8 @@ pub(crate) enum Action {
     ReduceMotion,
     AgentAccess,
     About,
+    /// Help → Welcome tour: the welcome sheet and the tips again (`onboarding.rs`).
+    Welcome,
     SelectTool(Tool),
     ClearSelection,
     ZoomBy(f32),
@@ -218,13 +220,21 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
         ),
         Item::group(
             "Help",
-            vec![Item::action("About figstudio", Action::About, true)],
+            vec![
+                Item::action("Welcome tour", Action::Welcome, true),
+                Item::action("About figstudio", Action::About, true),
+            ],
         ),
     ]
 }
 
 impl App {
     pub(crate) fn apply(&mut self, action: Action, ctx: &egui::Context) {
+        // A menu used while the welcome sheet is up (the native menu still works): the
+        // person has moved on, so the sheet makes way.
+        if !matches!(action, Action::Welcome | Action::Quit) {
+            self.onboarding.finish_welcome();
+        }
         match action {
             Action::Open => self.open_dialog(ctx),
             Action::OpenLink => {
@@ -331,6 +341,11 @@ impl App {
             }
             Action::AgentAccess => self.settings.show(Some(crate::settings::Tab::Agents), ctx),
             Action::About => self.settings.show(Some(crate::settings::Tab::About), ctx),
+            Action::Welcome => {
+                self.settings.hide();
+                self.command.hide();
+                self.onboarding.show_again(ctx);
+            }
             Action::Settings => self.settings.show(None, ctx),
             #[cfg(target_arch = "wasm32")]
             Action::CjkFont(v) => self.web.select_cjk_font(v, ctx),

@@ -254,7 +254,7 @@ Retina scaling, trackpad pinch, macOS menu and shortcuts (Cmd).
 
 ## 7b. Headless UI tests (egui_kittest)
 
-`apps/figstudio/src/ui_tests.rs` (+ `ui_copy_tests.rs`, `ui_mcp_tests.rs`, `ui_chrome_tests.rs`) run the real `App`
+`apps/figstudio/src/ui_tests.rs` (+ `ui_copy_tests.rs`, `ui_mcp_tests.rs`, `ui_chrome_tests.rs`, `ui_onboarding_tests.rs`, `ui_recents_tests.rs`) run the real `App`
 on `tests/fixtures/structure.fig` inside `cargo test`: no display, X server, GPU or xdotool, on
 macOS, Linux and CI. They use `egui_kittest` (dev-dependency, `eframe` feature only; no wgpu,
 no snapshot images). `App::new` takes `eframe::CreationContext`, which kittest builds with no
@@ -304,6 +304,39 @@ MCP caller receives an answer, while unanswered searches still request a 250 ms 
 older held search must not keep a failed load from being retried by a new link. Quiet-outcome
 regressions cover a failed best copy, a file tie and a missing node in an open tab; all three
 must fail if the `search.answered` branch in `finish_search` is bypassed.
+
+`ui_onboarding_tests.rs` turns onboarding on (it is off in tests) and walks the welcome
+sheet with clicks and keys, checks it is modal (⌘L does nothing until Escape skips it),
+that tips come one at a time beside their control and go after Got it, Skip tips or using
+the control, that Help → Welcome tour from the command bar brings it all back, that the
+progress survives a restart and an older saved state, that the sheet keeps the wheel, a
+pinch, a sideways swipe and typing from what is under it and stops being modal as it fades,
+that with the sidebar hidden the sidebar tip comes first, numbered 1 and saying how to
+show it, and that the page's picture fades
+out with the sheet (frames 1/60 s apart with motion on; egui fades text by scaling its glyph
+colours, so the test reads those). A tip's first frame is egui's sizing
+pass, laid out where it will not stay; `wait_label` steps a few more frames before a click.
+Each test was seen failing with its part removed (no modal return, no save, no `watch`, no
+`show_again`, no command-field target, Got it ignored). Look at the sheet and tips in the
+real app too; the tests do not see colours or placement beyond "right of the control".
+
+`ui_recents_tests.rs` fills an in-memory recents list and checks the Recents page: the
+empty page keeps Open file…, a loaded file is listed and its card opens it again, the
+filter narrows the cards (any case) and says when none match, the rows toggle is kept in
+`Prefs`, Remove from recents takes a card away, a moved file is marked missing and
+toasts instead of opening, a file deleted and put back while the page shows opens again (its card label and menu
+follow the disk too),
+bytes dropped without a path are not listed, the header stays inside a narrow card, and the
+window is Slate until the pointer is on a card, then takes that card's colour and goes back
+after. Unit tests check that a picture finished after Remove from recents is not
+written, that of two jobs for one file only the newest writes, that a disk that hangs
+neither holds up the page nor piles up looks or threads, even with clicks and loads while
+it hangs (the next look waits a second after the slow one returned), that a look begun
+before a file was opened does not undo it, and that a folder where the file was counts as missing. The unit tests in `recents.rs` cover the list (front on reopen,
+cap with pictures deleted, restart, damaged list left alone, owner-only file), the "Opened
+… ago" wording and the picture size. Each was seen failing with its part removed (no note
+on load, Remove ignored, missing opened anyway, filter ignored, toggle not kept, no
+dedupe). The pictures themselves and Show in Finder need the real app.
 
 Cannot be covered here: the real OS clipboard (paste into an editor or Preview), a real
 window manager, native file dialogs, GPU tiles, HiDPI and trackpad gestures.
