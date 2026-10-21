@@ -416,3 +416,19 @@ fn the_workspace_saved_on_the_recents_page_keeps_the_file_it_was_on() {
         "the next launch shows the file the + was pressed on"
     );
 }
+
+#[test]
+fn files_taken_off_the_jump_list_leave_recents() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ["one.fig", "two.fig"].map(|n| dir.path().join(n));
+    for p in &paths {
+        std::fs::copy(fixture(FIXTURE), p).unwrap();
+    }
+    let mut h = with_recents(&paths);
+    h.state_mut().taken_off_the_list(vec![paths[1].clone()]);
+    // The removal is kept with the list, so it does not come back.
+    assert_eq!(
+        h.state().recents.shortlist(),
+        std::slice::from_ref(&paths[0])
+    );
+}

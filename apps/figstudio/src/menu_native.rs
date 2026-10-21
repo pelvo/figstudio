@@ -47,8 +47,9 @@ impl Dock {
         for (item, _) in self.items.drain(..) {
             self.menu.remove(&item)?;
         }
-        for path in files {
-            let item = MenuItem::new(crate::recents::file_label(path), true, None);
+        let labels = crate::recents::shortlist_labels(files);
+        for (path, label) in files.iter().zip(labels) {
+            let item = MenuItem::new(crate::recents::menu_title(&label), true, None);
             self.menu.append(&item)?;
             self.items.push((item, path.clone()));
         }
@@ -174,19 +175,27 @@ impl NativeMenu {
     }
 
     /// Lists `files` (newest first) in the Dock menu or the jump list, when they changed.
-    pub(crate) fn set_recent(&mut self, files: Vec<PathBuf>) {
+    /// Returns the files the person took off the jump list.
+    pub(crate) fn set_recent(&mut self, files: Vec<PathBuf>) -> Vec<PathBuf> {
         if files == self.recent {
-            return;
+            return Vec::new();
         }
+        #[cfg_attr(
+            not(windows),
+            expect(unused_mut, reason = "only the jump list takes some off")
+        )]
+        let mut taken_off = Vec::new();
         #[cfg(target_os = "macos")]
         if let Err(error) = self.dock.show(&files) {
             tracing::warn!("dock menu not updated: {error}");
         }
         #[cfg(windows)]
-        if let Err(error) = crate::jump_list::show(&files) {
-            tracing::warn!("jump list not updated: {error}");
+        match crate::jump_list::show(&files) {
+            Ok(gone) => taken_off = gone,
+            Err(error) => tracing::warn!("jump list not updated: {error}"),
         }
         self.recent = files;
+        taken_off
     }
 
     /// Shows `keys` (the user's shortcuts) as the menu's accelerators; `None` takes them all

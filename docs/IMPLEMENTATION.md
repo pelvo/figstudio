@@ -497,8 +497,13 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   files" category in the taskbar jump list (`jump_list.rs`, COM through the `windows`
   crate, one approved `unsafe` block): each item starts `figstudio.exe "<file>"`, a second
   process with its own window (no single-instance hand-over); a file gone by then fails to
-  open with the usual toast and `load_failed` marks it missing. Files the person removed
-  from the jump list stay off it. Linux has no common dock menu for a running app (desktop
+  open with the usual toast and `load_failed` marks it missing. A file the person removes
+  from the jump list is taken off Recents too (`App::taken_off_the_list`), so the removal
+  is kept with the list and it does not come back; should Windows still refuse the list, an
+  empty one is committed so the next update starts clean. The second process shares
+  `recents.json` with the first (the last to save wins, `missing` is per process); a
+  single-instance hand-over would remove that. Files of one name get their folder after
+  the name (`shortlist_labels`), and a Dock title doubles `&` (`menu_title`). Linux has no common dock menu for a running app (desktop
   file actions are fixed at install), so it shows none.
   An entry is (path, handle): `handle` is `None` on desktop and the browser's handle number
   otherwise, so two files of one name with different handles are two cards.

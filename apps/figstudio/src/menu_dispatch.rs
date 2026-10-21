@@ -148,10 +148,12 @@ impl App {
             }
             let tree = crate::menu::tree(self);
             let recent = self.recents.shortlist();
+            let mut taken_off = Vec::new();
             if let Some(menu) = &mut self.native_menu {
                 menu.sync(&tree);
-                menu.set_recent(recent);
+                taken_off = menu.set_recent(recent);
             }
+            self.taken_off_the_list(taken_off);
             self.sync_native_keys();
         }
     }

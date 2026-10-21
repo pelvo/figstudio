@@ -31,7 +31,7 @@ use crate::theme::{self, Tint};
 
 /// Most files listed; the oldest go first (with their pictures).
 /// Files listed beside the app (Dock menu, jump list).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(target_os = "macos", windows, test))]
 pub(crate) const SHORTLIST: usize = 5;
 pub(crate) const MAX_ENTRIES: usize = 60;
 /// A picture fits in this many pixels (two points per pixel on a card about 300 wide).
@@ -236,7 +236,7 @@ impl Recents {
 
     /// The files listed beside the app (the macOS Dock menu, the Windows jump list): the
     /// newest [`SHORTLIST`] not known to be missing.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(target_os = "macos", windows, test))]
     pub fn shortlist(&self) -> Vec<PathBuf> {
         self.entries
             .iter()
@@ -367,6 +367,34 @@ impl Recents {
         self.shown = false;
         self.hover = None;
     }
+}
+
+/// The names of the files listed beside the app (`Recents::shortlist`); files of one name
+/// get their folder after it.
+#[cfg(any(target_os = "macos", windows, test))]
+pub(crate) fn shortlist_labels(paths: &[PathBuf]) -> Vec<String> {
+    let names: Vec<String> = paths.iter().map(|p| file_label(p)).collect();
+    names
+        .iter()
+        .zip(paths)
+        .map(|(name, path)| {
+            let shared = names.iter().filter(|n| *n == name).count() > 1;
+            let folder = path
+                .parent()
+                .and_then(Path::file_name)
+                .map(|f| f.to_string_lossy().into_owned());
+            match folder {
+                Some(folder) if shared => format!("{name} — {folder}"),
+                _ => name.clone(),
+            }
+        })
+        .collect()
+}
+
+/// `label` as a native menu title: muda takes `&` as a mnemonic mark.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn menu_title(label: &str) -> String {
+    label.replace('&', "&&")
 }
 
 /// The name of the file at `path`, as a tab and a card show it.
@@ -730,9 +758,17 @@ impl App {
         }
     }
 
+    /// Files the person took off the jump list (Windows) leave Recents too, so they stay off.
+    #[cfg(any(target_os = "macos", windows, test))]
+    pub(crate) fn taken_off_the_list(&mut self, paths: Vec<PathBuf>) {
+        for path in paths {
+            self.recents.remove(&Id::file(path));
+        }
+    }
+
     /// Opens `path`, picked in the Dock menu: as its card would, so a file gone since the
     /// menu was made is marked missing and says so.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(target_os = "macos", windows, test))]
     pub(crate) fn open_recent_file(&mut self, ctx: &egui::Context, path: PathBuf) {
         self.recent_picked(ctx, Pick::Open(Id::file(path)));
     }
@@ -1152,6 +1188,17 @@ mod tests {
             .map(PathBuf::from)
             .into();
         assert_eq!(r.shortlist(), expected);
+    }
+
+    #[test]
+    fn files_of_one_name_beside_the_app_are_told_apart_by_their_folder() {
+        let paths = ["/a/x.fig", "/b/x.fig", "/c/y&z.fig"].map(PathBuf::from);
+        assert_eq!(
+            shortlist_labels(&paths),
+            ["x.fig — a", "x.fig — b", "y&z.fig"]
+        );
+        // A menu title shows a single `&` only when doubled (muda takes `&x` as a mnemonic).
+        assert_eq!(menu_title("y&z.fig"), "y&&z.fig");
     }
 
     #[test]

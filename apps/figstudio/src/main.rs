@@ -26,7 +26,7 @@ mod gpu_tiles;
 mod gpu_tiles_web;
 mod icons;
 mod instance_pick;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 mod jump_list;
 mod keymap;
 mod labels;

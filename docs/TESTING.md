@@ -430,7 +430,11 @@ is the app's), and the page sits after the last space (Next and Previous space, 
 space keeps it). The Dock menu and jump list list the newest five
 files not missing (`the_shortlist_is_the_five_newest_files_not_missing`); a file picked
 there opens, and one deleted since says so, is marked missing and leaves the list; a listed
-file gone when opened at start (a jump list item) is marked missing. The Dock hook and the
+file gone when opened at start (a jump list item) is marked missing; a file taken off the
+jump list leaves Recents; an item's argument reads back as its path (spaces, `&`); files of
+one name are told apart by their folder, and a Dock title keeps its `&`. Also run `cargo
+clippy -p figstudio --target x86_64-unknown-linux-gnu` (and the Windows target): code for
+the Dock and the jump list must not leave dead code on Linux. The Dock hook and the
 jump list's COM calls need the real systems: right-click the Dock icon of the `.app` after
 opening files; on Windows, right-click the taskbar icon (`cargo clippy --target
 x86_64-pc-windows-msvc` only checks that it builds). `recents_pictures.rs` tests the
