@@ -30,6 +30,9 @@ use crate::spaces::{self, Style};
 use crate::theme::{self, Tint};
 
 /// Most files listed; the oldest go first (with their pictures).
+/// Files listed beside the app (Dock menu, jump list).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const SHORTLIST: usize = 5;
 pub(crate) const MAX_ENTRIES: usize = 60;
 /// A picture fits in this many pixels (two points per pixel on a card about 300 wide).
 pub const THUMB_SIZE: (f64, f64) = (640.0, 400.0);
@@ -92,10 +95,7 @@ impl Entry {
 
     /// The file name, as a tab shows it.
     pub fn file_name(&self) -> String {
-        self.path.file_name().map_or_else(
-            || self.path.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        )
+        file_label(&self.path)
     }
 
     fn style(&self, spaces: &spaces::Store) -> Style {
@@ -232,6 +232,18 @@ impl Recents {
         self.missing.contains(id)
     }
 
+    /// The files listed beside the app (the macOS Dock menu, the Windows jump list): the
+    /// newest [`SHORTLIST`] not known to be missing.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn shortlist(&self) -> Vec<PathBuf> {
+        self.entries
+            .iter()
+            .filter(|e| !self.missing.contains(&e.id()))
+            .take(SHORTLIST)
+            .map(|e| e.path.clone())
+            .collect()
+    }
+
     /// The file at `path` was opened at `now`: it moves to the front.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn note(&mut self, path: &Path, key: Option<&str>, now: u64) {
@@ -353,6 +365,14 @@ impl Recents {
         self.shown = false;
         self.hover = None;
     }
+}
+
+/// The name of the file at `path`, as a tab and a card show it.
+pub(crate) fn file_label(path: &std::path::Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 /// The texture of a PNG picture, `None` when it does not decode.
@@ -706,6 +726,13 @@ impl App {
             Pick::Remove(id) => self.recents.remove(&id),
             Pick::OpenDialog => self.open_dialog(ctx),
         }
+    }
+
+    /// Opens `path`, picked in the Dock menu: as its card would, so a file gone since the
+    /// menu was made is marked missing and says so.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn open_recent_file(&mut self, ctx: &egui::Context, path: PathBuf) {
+        self.recent_picked(ctx, Pick::Open(Id::file(path)));
     }
 
     /// Carries out what was picked on the Recents page (Open file… is the caller's).
@@ -1100,6 +1127,19 @@ mod tests {
         r.add(at(2), None, 20, true);
         let handles: Vec<_> = r.entries().iter().map(|e| e.handle).collect();
         assert_eq!(handles, [Some(2), Some(1)]);
+    }
+
+    #[test]
+    fn the_shortlist_is_the_five_newest_files_not_missing() {
+        let mut r = Recents::memory();
+        for i in 0..7 {
+            r.add(Id::file(format!("/f{i}.fig")), None, i, true);
+        }
+        r.set_missing(&Id::file("/f5.fig"), true);
+        let expected: Vec<PathBuf> = ["/f6.fig", "/f4.fig", "/f3.fig", "/f2.fig", "/f1.fig"]
+            .map(PathBuf::from)
+            .into();
+        assert_eq!(r.shortlist(), expected);
     }
 
     #[test]

@@ -340,3 +340,65 @@ fn the_window_title_is_the_app_on_the_recents_page() {
     h.run_steps(3);
     assert_eq!(h.state().window_title, crate::APP_NAME);
 }
+
+#[test]
+fn a_deleted_file_picked_in_the_dock_menu_says_so_and_does_not_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let gone = dir.path().join("dock.fig");
+    std::fs::copy(fixture(FIXTURE), &gone).unwrap();
+    let mut h = with_recents(std::slice::from_ref(&gone));
+    assert_eq!(h.state().recents.shortlist(), std::slice::from_ref(&gone));
+    // Deleted after the menu was made.
+    std::fs::remove_file(&gone).unwrap();
+    let ctx = h.ctx.clone();
+    h.state_mut().open_recent_file(&ctx, gone.clone());
+    h.run_steps(3);
+    assert!(h.state().tabs.is_empty() && h.state().loading.len() == 0);
+    assert!(
+        h.state()
+            .toasts
+            .iter()
+            .any(|t| t.error && t.text.contains("moved or deleted")),
+        "a toast says why"
+    );
+    assert!(
+        h.state().recents.shortlist().is_empty(),
+        "it leaves the dock menu"
+    );
+}
+
+#[test]
+fn a_file_picked_in_the_dock_menu_opens() {
+    let path = std::path::absolute(fixture(FIXTURE)).unwrap();
+    let mut h = with_recents(std::slice::from_ref(&path));
+    let ctx = h.ctx.clone();
+    h.state_mut().open_recent_file(&ctx, path);
+    wait(&mut h, &mut Vec::new(), "the file to open", |a| {
+        a.tabs.len() == 1
+    });
+}
+
+#[test]
+fn a_listed_file_gone_when_opened_at_start_is_marked_missing() {
+    // A Windows jump list item starts figstudio with its path; the file may be gone.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("went.fig");
+    std::fs::copy(fixture(FIXTURE), &path).unwrap();
+    let mut h = with_recents(std::slice::from_ref(&path));
+    std::fs::remove_file(&path).unwrap();
+    h.state_mut().open(path.clone());
+    wait(&mut h, &mut Vec::new(), "the open to fail", |a| {
+        a.loading.len() == 0 && !a.toasts.is_empty()
+    });
+    assert!(h.state().tabs.is_empty());
+    assert!(
+        h.state()
+            .recents
+            .is_missing(&crate::recents::Id::file(path)),
+        "marked missing"
+    );
+    assert!(
+        h.state().recents.shortlist().is_empty(),
+        "it leaves the jump list"
+    );
+}

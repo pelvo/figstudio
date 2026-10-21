@@ -136,15 +136,21 @@ impl App {
     pub(crate) fn native_events(&mut self, _ctx: &egui::Context) {
         #[cfg(any(target_os = "macos", windows))]
         {
-            let actions = self
+            let picked = self
                 .native_menu
                 .as_ref()
                 .map(|menu| menu.drain())
                 .unwrap_or_default();
-            self.apply_native(actions, _ctx);
+            self.apply_native(picked.actions, _ctx);
+            // Picked in the Dock menu: as a Recents card.
+            for path in picked.files {
+                self.open_recent_file(_ctx, path);
+            }
             let tree = crate::menu::tree(self);
+            let recent = self.recents.shortlist();
             if let Some(menu) = &mut self.native_menu {
                 menu.sync(&tree);
+                menu.set_recent(recent);
             }
             self.sync_native_keys();
         }

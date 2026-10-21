@@ -127,6 +127,8 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   anim.rs                springs and colour fades in egui memory; Reduce motion
   icons.rs               line icons painted on a 16-unit grid; the icon button
   vibrancy.rs            macOS only: the blur view behind the transparent window
+  dock_mac.rs            macOS only: the Dock icon's menu of recent files
+  jump_list.rs           Windows only: the taskbar jump list of recent files
   spaces.rs              a space's colour / emoji or icon / name, saved per file on this
                          computer (config folder JSON, localStorage in the browser)
   space_editor.rs        the space popovers: icon picker, rename, theme colour (pad + presets
@@ -484,6 +486,19 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   "Recent files"). The page is a place after the last space: Next space goes to the first,
   Previous to the last, closing a space keeps it, a dot or a card leaves it. On the page
   (also with no file open) the + opens the picker as before.
+  Beside the app, the newest five files not known to be missing (`Recents::shortlist`) are
+  listed too, and `NativeMenu::set_recent` updates them when they change. On macOS they are
+  the Dock icon's menu: a muda submenu whose `NSMenu` `dock_mac.rs` hands to AppKit by
+  adding `applicationDockMenu:` to winit's app delegate class at start (one approved
+  `unsafe` block; winit has no hook). Its items send menu events like the menu bar, and
+  `App::open_recent_file` treats a pick as a card click: a file gone since is marked missing
+  with a toast, never opened empty, and it leaves the list. On Windows they are a "Recent
+  files" category in the taskbar jump list (`jump_list.rs`, COM through the `windows`
+  crate, one approved `unsafe` block): each item starts `figstudio.exe "<file>"`, a second
+  process with its own window (no single-instance hand-over); a file gone by then fails to
+  open with the usual toast and `load_failed` marks it missing. Files the person removed
+  from the jump list stay off it. Linux has no common dock menu for a running app (desktop
+  file actions are fixed at install), so it shows none.
   An entry is (path, handle): `handle` is `None` on desktop and the browser's handle number
   otherwise, so two files of one name with different handles are two cards.
 - **Recents in the browser** (`recents_web.rs`, `apps/figstudio/js/recents.js`). The JS

@@ -427,7 +427,13 @@ when another file of that name opens some other way). The page
 waits for the browser's saved list before it welcomes. The + shows the page with files
 still open (their card goes back to them, the sidebar does not say none is open, the title
 is the app's), and the page sits after the last space (Next and Previous space, closing a
-space keeps it). `recents_pictures.rs` tests the
+space keeps it). The Dock menu and jump list list the newest five
+files not missing (`the_shortlist_is_the_five_newest_files_not_missing`); a file picked
+there opens, and one deleted since says so, is marked missing and leaves the list; a listed
+file gone when opened at start (a jump list item) is marked missing. The Dock hook and the
+jump list's COM calls need the real systems: right-click the Dock icon of the `.app` after
+opening files; on Windows, right-click the taskbar icon (`cargo clippy --target
+x86_64-pc-windows-msvc` only checks that it builds). `recents_pictures.rs` tests the
 browser's picture rules: a late read (a miss or an old picture) never covers a picture drawn
 since, a missing picture is read once, and only the newest job is kept. The pictures themselves and Show in Finder need the real app.
 

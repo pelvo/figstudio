@@ -10,6 +10,8 @@ mod cjk;
 mod command;
 mod copy;
 mod copy_menu;
+#[cfg(target_os = "macos")]
+mod dock_mac;
 mod find;
 mod gpu;
 mod gpu_common;
@@ -24,6 +26,8 @@ mod gpu_tiles;
 mod gpu_tiles_web;
 mod icons;
 mod instance_pick;
+#[cfg(windows)]
+mod jump_list;
 mod keymap;
 mod labels;
 mod link_open;
