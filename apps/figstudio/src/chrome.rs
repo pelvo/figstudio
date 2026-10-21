@@ -1123,10 +1123,16 @@ impl App {
     fn sidebar_body(&mut self, ui: &mut Ui, index: usize) {
         let p = theme::of(ui);
         let Some(tab) = self.tabs.get_mut(index) else {
+            // The Recents page: with files open (the + shows it) they are still there.
+            let text = if self.tabs.is_empty() {
+                "No file open"
+            } else {
+                "Recent files"
+            };
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.add_space(6.0);
-                ui.label(RichText::new("No file open").color(p.text_dim));
+                ui.label(RichText::new(text).color(p.text_dim));
             });
             return;
         };
@@ -1188,7 +1194,10 @@ impl App {
             pos2(row.right() - plus / 2.0, row.center().y),
             vec2(28.0, 28.0),
         );
-        let open = ui
+        // The + shows the Recents page, a place after the last space; on that page it opens
+        // a file.
+        let home = self.tabs.get(self.active).is_none();
+        let plus_clicked = ui
             .put(plus_at, |ui: &mut Ui| {
                 icons::button(ui, Icon::Plus, "Open file…", false)
             })
@@ -1203,9 +1212,43 @@ impl App {
         if let Some(i) = clicked.close {
             self.close(i);
         }
-        if open {
+        if plus_clicked && home {
             self.open_dialog(&ctx);
+        } else if plus_clicked {
+            self.show_recents();
         }
+    }
+
+    /// Opens the files a later launch handed over (a jump list item, `figstudio file.fig`)
+    /// and brings this window forward. A file gone by now fails to open with the usual
+    /// toast, and a listed one is marked missing.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn open_handed_over(&mut self, ctx: &egui::Context) {
+        let Some(inbox) = &self.handed_over else {
+            return;
+        };
+        let files = inbox.take();
+        if files.is_empty() {
+            return;
+        }
+        for file in files {
+            self.open(file);
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        // On Windows the window takes the foreground itself: egui's Focus sends an Alt key
+        // press first, which can cancel the right the launch passed on.
+        #[cfg(windows)]
+        if let Some(window) = &self.window {
+            window.come_forward();
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    /// Shows the Recents page; open files stay open, after it is the first.
+    pub(crate) fn show_recents(&mut self) {
+        self.recents_from = self.tabs.get(self.active).map(|t| t.id);
+        self.active = self.tabs.len();
     }
 
     /// One dot per open file (Arc's name pill on hover, a menu on right-click; a middle
@@ -1329,7 +1372,6 @@ impl App {
         let mut actions = Vec::new();
         let mut cursor = None;
         let mut open_clicked = false;
-        #[cfg(not(target_arch = "wasm32"))]
         let mut recent = None;
         match self.tabs.get_mut(self.active) {
             Some(tab) => self.find.update(tab, &ctx),
@@ -1378,14 +1420,7 @@ impl App {
                 None => {
                     // The next file to open fades in over its own page colour.
                     self.crossfade = Crossfade::default();
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        recent = self.recents_page(ui, card);
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        open_clicked = self.empty_state(ui, card);
-                    }
+                    recent = self.recents_page(ui, card);
                 }
             }
             ui.painter().rect_stroke(
@@ -1413,16 +1448,13 @@ impl App {
         for action in actions {
             self.apply(action, &ctx);
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if !self.tabs.is_empty() {
-                self.recents.hidden();
-            }
-            match recent {
-                Some(crate::recents::Pick::OpenDialog) => open_clicked = true,
-                Some(pick) => self.recent_picked(&ctx, pick),
-                None => {}
-            }
+        if self.tabs.get(self.active).is_some() {
+            self.recents.hidden();
+        }
+        match recent {
+            Some(crate::recents::Pick::OpenDialog) => open_clicked = true,
+            Some(pick) => self.recent_picked(&ctx, pick),
+            None => {}
         }
         if open_clicked {
             self.open_dialog(&ctx);

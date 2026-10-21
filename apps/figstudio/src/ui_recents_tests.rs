@@ -45,6 +45,29 @@ fn with_nothing_opened_before_the_page_welcomes_and_offers_open_file() {
 }
 
 #[test]
+fn the_welcome_waits_for_the_saved_list() {
+    let mut h = with_recents(&[]);
+    // The browser reads its list a few frames after the page first shows.
+    h.state_mut().recents.waiting = true;
+    h.run_steps(2);
+    assert!(has(&h, "Recents"));
+    assert!(!has(&h, "Files you open show up here."));
+    assert!(h.query_by_label_contains("Open file… (").is_none());
+    h.state_mut().recents.take(crate::recents::News::default());
+    h.run_steps(2);
+    assert!(
+        !has(&h, "Files you open show up here."),
+        "a look is not the list"
+    );
+    h.state_mut().recents.take(crate::recents::News {
+        entries: Some(Vec::new()),
+        ..Default::default()
+    });
+    h.run_steps(2);
+    assert!(has(&h, "Files you open show up here."));
+}
+
+#[test]
 fn a_file_opened_once_comes_back_as_a_card_that_opens_it() {
     let mut h = harness();
     let path = std::path::absolute(fixture(FIXTURE)).unwrap();
@@ -251,4 +274,239 @@ fn a_file_put_back_while_the_page_shows_is_offered_again_in_the_menu() {
         !open.accesskit_node().is_disabled(),
         "the menu opens it again"
     );
+}
+
+/// The app on `structure.fig` and `vector.fig`, the second one shown.
+fn two_files() -> Harness<'static, App> {
+    let mut h = harness();
+    h.state_mut().open(fixture("vector.fig"));
+    wait(&mut h, &mut Vec::new(), "the second file", |a| {
+        a.tabs.len() == 2 && a.active == 1
+    });
+    h
+}
+
+fn on_recents(app: &App) -> bool {
+    app.tabs.get(app.active).is_none()
+}
+
+#[test]
+fn the_plus_button_shows_recents_with_the_files_still_open() {
+    let mut h = harness();
+    assert!(!has(&h, "Recents"));
+    h.get_by_label("Open file…").click();
+    h.run_steps(3);
+    assert!(has(&h, "Recents"), "the + shows the Recents page");
+    assert_eq!(h.state().tabs.len(), 1, "the file stays open");
+    assert!(!has(&h, "No file open"), "the sidebar does not say none is");
+    // The card of the open file (not its space's dot in the sidebar) goes back to it.
+    h.get_all_by_label(FIXTURE)
+        .max_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+        .expect("the card")
+        .click();
+    wait(&mut h, &mut Vec::new(), "the file to show", |a| {
+        !on_recents(a)
+    });
+    assert_eq!(h.state().tabs.len(), 1, "no second copy");
+    h.run_steps(2);
+    assert!(!has(&h, "Recents"));
+}
+
+#[test]
+fn the_recents_page_comes_after_the_last_space_and_stays_when_one_closes() {
+    let mut h = two_files();
+    let ctx = h.ctx.clone();
+    let from_recents = |h: &mut Harness<'static, App>, action| {
+        h.get_by_label("Open file…").click();
+        h.run_steps(3);
+        h.state_mut().apply(action, &ctx);
+        h.run_steps(3);
+        h.state().active
+    };
+    assert_eq!(from_recents(&mut h, crate::menu::Action::NextSpace), 0);
+    assert_eq!(from_recents(&mut h, crate::menu::Action::PreviousSpace), 1);
+    h.get_by_label("Open file…").click();
+    h.run_steps(3);
+    h.state_mut().close(0);
+    h.run_steps(3);
+    assert!(on_recents(h.state()), "closing a space keeps the page");
+    assert!(has(&h, "Recents"));
+}
+
+#[test]
+fn the_window_title_is_the_app_on_the_recents_page() {
+    let mut h = harness();
+    h.get_by_label("Open file…").click();
+    h.run_steps(3);
+    assert_eq!(h.state().window_title, crate::APP_NAME);
+}
+
+#[test]
+fn a_deleted_file_picked_in_the_dock_menu_says_so_and_does_not_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let gone = dir.path().join("dock.fig");
+    std::fs::copy(fixture(FIXTURE), &gone).unwrap();
+    let mut h = with_recents(std::slice::from_ref(&gone));
+    assert_eq!(h.state().recents.shortlist(), std::slice::from_ref(&gone));
+    // Deleted after the menu was made.
+    std::fs::remove_file(&gone).unwrap();
+    let ctx = h.ctx.clone();
+    h.state_mut().open_recent_file(&ctx, gone.clone());
+    h.run_steps(3);
+    assert!(h.state().tabs.is_empty() && h.state().loading.len() == 0);
+    assert!(
+        h.state()
+            .toasts
+            .iter()
+            .any(|t| t.error && t.text.contains("moved or deleted")),
+        "a toast says why"
+    );
+    assert!(
+        h.state().recents.shortlist().is_empty(),
+        "it leaves the dock menu"
+    );
+}
+
+#[test]
+fn a_file_picked_in_the_dock_menu_opens() {
+    let path = std::path::absolute(fixture(FIXTURE)).unwrap();
+    let mut h = with_recents(std::slice::from_ref(&path));
+    let ctx = h.ctx.clone();
+    h.state_mut().open_recent_file(&ctx, path);
+    wait(&mut h, &mut Vec::new(), "the file to open", |a| {
+        a.tabs.len() == 1
+    });
+}
+
+#[test]
+fn a_listed_file_gone_when_opened_at_start_is_marked_missing() {
+    // A Windows jump list item starts figstudio with its path; the file may be gone.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("went.fig");
+    std::fs::copy(fixture(FIXTURE), &path).unwrap();
+    let mut h = with_recents(std::slice::from_ref(&path));
+    std::fs::remove_file(&path).unwrap();
+    h.state_mut().open(path.clone());
+    wait(&mut h, &mut Vec::new(), "the open to fail", |a| {
+        a.loading.len() == 0 && !a.toasts.is_empty()
+    });
+    assert!(h.state().tabs.is_empty());
+    assert!(
+        h.state()
+            .recents
+            .is_missing(&crate::recents::Id::file(path)),
+        "marked missing"
+    );
+    assert!(
+        h.state().recents.shortlist().is_empty(),
+        "it leaves the jump list"
+    );
+}
+
+#[test]
+fn the_workspace_saved_on_the_recents_page_keeps_the_file_it_was_on() {
+    let mut h = two_files();
+    let shown = h.state().tabs[1].path.clone();
+    h.get_by_label("Open file…").click();
+    h.run_steps(3);
+    assert!(on_recents(h.state()));
+    assert_eq!(
+        crate::session::Session::capture(h.state()).active(),
+        Some(std::path::absolute(shown).unwrap().as_path()),
+        "the next launch shows the file the + was pressed on"
+    );
+}
+
+#[test]
+fn files_taken_off_the_jump_list_leave_recents() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ["one.fig", "two.fig"].map(|n| dir.path().join(n));
+    for p in &paths {
+        std::fs::copy(fixture(FIXTURE), p).unwrap();
+    }
+    let mut h = with_recents(&paths);
+    h.state_mut().taken_off_the_list(vec![paths[1].clone()]);
+    // The removal is kept with the list, so it does not come back.
+    assert_eq!(
+        h.state().recents.shortlist(),
+        std::slice::from_ref(&paths[0])
+    );
+}
+
+#[test]
+fn files_handed_over_by_a_later_launch_open_in_this_window() {
+    use crate::handoff::{Start, claim, hand_over};
+    let mut h = with_recents(&[]);
+    let dir = tempfile::tempdir().unwrap();
+    let Start::First(instance) = claim(dir.path()) else {
+        panic!("the lock");
+    };
+    h.state_mut().handed_over = Some(instance.watch(|| {}));
+    let Start::Running(to) = claim(dir.path()) else {
+        panic!("held");
+    };
+    let file = std::path::absolute(fixture(FIXTURE)).unwrap();
+    let launch = std::thread::spawn(move || {
+        hand_over(&to, &[file], crate::handoff::WAIT, crate::handoff::STARTING)
+    });
+    wait(
+        &mut h,
+        &mut Vec::new(),
+        "the handed-over file to open",
+        |a| a.tabs.len() == 1,
+    );
+    assert!(launch.join().unwrap(), "the launch exits");
+}
+
+#[test]
+fn closing_the_file_the_recents_page_came_from_keeps_its_neighbour() {
+    let mut h = two_files();
+    h.state_mut().open(fixture("corners.fig"));
+    wait(&mut h, &mut Vec::new(), "the third file", |a| {
+        a.tabs.len() == 3 && a.active == 2
+    });
+    let neighbour = h.state().tabs[1].path.clone();
+    h.get_by_label("Open file…").click();
+    h.run_steps(3);
+    h.state_mut().close(2);
+    h.run_steps(3);
+    assert!(on_recents(h.state()));
+    assert_eq!(
+        crate::session::Session::capture(h.state()).active(),
+        Some(std::path::absolute(neighbour).unwrap().as_path()),
+        "the space beside it, as closing a shown space would pick"
+    );
+}
+
+#[test]
+fn a_window_that_is_not_drawn_still_takes_handed_over_files() {
+    use crate::handoff::{Start, claim, hand_over};
+    use eframe::App as _;
+    // Minimized, eframe runs only `logic`, not `ui`: the files must be taken there.
+    let mut h = with_recents(&[]);
+    let dir = tempfile::tempdir().unwrap();
+    let Start::First(instance) = claim(dir.path()) else {
+        panic!("the lock");
+    };
+    h.state_mut().handed_over = Some(instance.watch(|| {}));
+    let Start::Running(to) = claim(dir.path()) else {
+        panic!("held");
+    };
+    let file = std::path::absolute(fixture(FIXTURE)).unwrap();
+    let launch = std::thread::spawn(move || {
+        hand_over(
+            &to,
+            &[file],
+            Duration::from_secs(1),
+            crate::handoff::STARTING,
+        )
+    });
+    let ctx = h.ctx.clone();
+    let mut frame = eframe::Frame::_new_kittest();
+    let until = Instant::now() + Duration::from_secs(3);
+    while !launch.is_finished() && Instant::now() < until {
+        h.state_mut().logic(&ctx, &mut frame);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(launch.join().unwrap(), "taken without a drawn frame");
 }

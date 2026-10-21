@@ -655,3 +655,16 @@ fn a_close_before_welcome_with_1006_is_a_blocked_connection() {
     assert_eq!(closed_message(true, 1006), close_reason(1006));
     assert_eq!(closed_message(false, 4401), close_reason(4401));
 }
+
+#[test]
+fn a_file_of_the_same_name_picked_while_one_loads_leaves_the_tab_the_loading_one() {
+    let mut uploads = Uploads::new();
+    let name = PathBuf::from("same.fig");
+    let first = uploads.pick("first");
+    let second = uploads.pick("second");
+    uploads.start(name.clone(), first);
+    // The second is let go: one load per name runs at a time.
+    uploads.discard(second);
+    uploads.bind(&name, 1);
+    assert_eq!(uploads.get(1), Some("first"));
+}

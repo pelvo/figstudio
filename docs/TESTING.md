@@ -420,7 +420,59 @@ before a file was opened does not undo it, and that a folder where the file was 
 cap with pictures deleted, restart, damaged list left alone, owner-only file), the "Opened
 … ago" wording and the picture size. Each was seen failing with its part removed (no note
 on load, Remove ignored, missing opened anyway, filter ignored, toggle not kept, no
-dedupe). The pictures themselves and Show in Finder need the real app.
+dedupe). Two more cover the browser's merge rules: files opened before the saved list
+arrives stay in front of it, and a moved file picked again (a new handle) replaces its
+missing card (only the one it was picked for, not another of the same name, and not
+when another file of that name opens some other way). The page
+waits for the browser's saved list before it welcomes. The + shows the page with files
+still open (their card goes back to them, the sidebar does not say none is open, the title
+is the app's), and the page sits after the last space (Next and Previous space, closing a
+space keeps it). The Dock menu and jump list list the newest five
+files not missing (`the_shortlist_is_the_five_newest_files_not_missing`); a file picked
+there opens, and one deleted since says so, is marked missing and leaves the list; a listed
+file gone when opened at start (a jump list item) is marked missing; a file taken off the
+jump list leaves Recents; an item's argument reads back as its path (spaces, `&`); a refused list is tried again
+without one file at a time, a retry never publishes an empty list, and an error stops the
+tries; files of
+one name are told apart by their folder, and a Dock title keeps its `&`. `handoff.rs` tests the
+single instance with real locks in folders of their own:
+- files handed to a running figstudio arrive there, made absolute;
+- only the first holds the lock, and it is free again once that one ends;
+- a launch waits for a figstudio still starting, and does not take a `ready` mark left by
+  one that ended as up;
+- files not taken in time, or not taken by a hung window, stay with the launch and leave
+  no request behind;
+- a request that cannot be looked at is not counted as taken (Unix);
+- a launch opens its files only once its request is withdrawn (Unix); one that can
+  neither withdraw nor look opens them itself and the window never does; one whose
+  request the window takes while it gives up leaves them to the window (both through
+  the `decided` mark); one whose inbox is shut throughout leaves the request queued
+  (Unix); what was decided before a crash is not opened again;
+- a request unreadable for a while is read on a later look (Unix); one that is not text
+  is kept aside; one too big to read stays with the launch; a request is decided only
+  once it was read (one that is not a request is kept aside, one whose read fails goes
+  back undecided and opens on a later look); one its launch opened keeps its mark until it
+  is gone; an old mark stays while its request waits, as `.json` or `.taken`;
+- what a crash left (`.part`, `.taken`) is cleared or opened; a figstudio that ends takes
+  its marks away; one that cannot write its id takes no files;
+- the folder is `0700` and not a link (Unix);
+- only the running figstudio's process may take the foreground (never one whose mark is
+  stale, never `ASFW_ANY`), and the holder's process is read from its id;
+- a launch without files hands nothing over;
+- a window that is not drawn (minimized: only `logic` runs) still takes handed-over files
+  (UI test).
+
+a UI test
+opens what is handed over. In the built app: start
+one, then `figstudio other.fig` from a shell; it exits at once and the first window shows
+the file. Also run `cargo
+clippy -p figstudio --target x86_64-unknown-linux-gnu` (and the Windows target): code for
+the Dock and the jump list must not leave dead code on Linux. The Dock hook and the
+jump list's COM calls need the real systems: right-click the Dock icon of the `.app` after
+opening files; on Windows, right-click the taskbar icon (`cargo clippy --target
+x86_64-pc-windows-msvc` only checks that it builds). `recents_pictures.rs` tests the
+browser's picture rules: a late read (a miss or an old picture) never covers a picture drawn
+since, a missing picture is read once, and only the newest job is kept. The pictures themselves and Show in Finder need the real app.
 
 Cannot be covered here: the real OS clipboard (paste into an editor or Preview), a real
 window manager, native file dialogs, GPU tiles, HiDPI and trackpad gestures.
@@ -464,6 +516,33 @@ this page (cross-origin isolated); poll `page.evaluate` instead. `window.figstud
 holds numbers only (tabs, page, drawn, culled, images loading / missing / read, image cache
 and Wasm memory bytes, errors); `figstudioPage(n)` switches page. Never screenshot a
 private file.
+
+Recents in the browser has two Playwright specs in `web/e2e` (`npm i --no-save
+@playwright/test`, then `npx playwright test <spec>` there):
+
+- `recents.spec.mjs` loads `apps/figstudio/js/recents.js` on its own (no build) and checks
+  the IndexedDB list, the handle store (a re-picked file keeps its number, another file
+  gets its own), reading a file back through its handle after a reload (and "gone" once
+  deleted), pictures kept and deleted, the no-handle answer, and drops (a later drop's
+  files never match an earlier one; all files of a big drop keep their handles). Handles come from the
+  origin's private file system (OPFS), as Playwright cannot drive `showOpenFilePicker`
+  (it cancels it).
+- `recents-app.spec.mjs` drives the built app and skips unless `FIGSTUDIO_WEB_URL` is set
+  (`scripts/web-build.sh`, `python3 scripts/web-serve.py web/dist 8765`, then
+  `FIGSTUDIO_WEB_URL=http://127.0.0.1:8765/`). With `showOpenFilePicker` deleted
+  (Firefox, Safari) a picked file is listed with a picture, kept over a reload, and its card
+  shows the file chooser. With a fake picker returning an OPFS handle (Chrome, Edge) the
+  card reads the file through its handle without a picker, and after the file is deleted
+  it opens the picker with `startIn`. Of two files of one name picked together, the card
+  keeps the handle of the one that opened. Relocating a moved card: a cancelled picker
+  leaves the card to a later open of that name, and when the browser refuses its picker the
+  plain input's file is listed beside the card, which keeps its handle (and the picker was
+  asked exactly three times: the open, then in the card's folder and without it). The canvas is driven by position (1280×800).
+
+The relay spec deletes `showOpenFilePicker` for the same reason, so Ctrl+O shows the plain
+input Playwright fills. `npx playwright install webkit` lets the app spec's no-handle steps
+run in WebKit too (a probe script, not in the spec). Look at the cards, the list rows and
+the toasts by eye in Chrome and Safari or Firefox after a change.
 
 Measured on the development machine (32 threads, headless Chromium, 1400×880 window,
 4500-node `synth --copies 400` of structure.fig): 100% zoom 15 ms on 1 thread, 6–7 ms on 8+;

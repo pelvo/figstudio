@@ -38,6 +38,9 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
     // After eframe's hook (installed by `new`). eframe stops drawing after any panic, so the
     // page shows the error itself (`figstudioFatal`, polled by index.html).
     crate::worker::install_panic_flag();
+    // Before eframe's own drop listener: a dropped file's handle is only there during the
+    // event (Recents keeps it to open the file again).
+    crate::recents_web::watch_drops();
     CANVAS.with(|c| *c.borrow_mut() = Some((canvas.clone(), 0.0)));
     runner
         .start(
@@ -113,6 +116,12 @@ pub enum Picked {
         doc_key: String,
     },
     Failed(String),
+    /// A Recents card's handle did not give its file (`name` as the card shows it).
+    Unavailable {
+        name: PathBuf,
+        handle: u32,
+        why: crate::recents_web::Unavailable,
+    },
 }
 
 type Exported = (String, anyhow::Result<Vec<u8>>);
@@ -228,19 +237,49 @@ fn drop_file(id: u32) {
     FILES.with(|f| f.borrow_mut().1.remove(&id));
 }
 
+/// A file picked or dropped here, with the number its handle is kept under where the
+/// browser gave one (Recents opens it again from that).
+#[derive(Clone)]
+struct Upload {
+    file: web_sys::File,
+    origin: Origin,
+}
+
+/// Where a file picked or dropped here came from.
+#[derive(Clone, Copy, Debug)]
+pub struct Origin {
+    /// The number its handle is kept under, where the browser gave one.
+    pub handle: Option<u32>,
+    /// Picked in the picker a moved Recents card opened: that card's handle.
+    pub replaces: Option<u32>,
+}
+
 thread_local! {
-    /// The `File` behind each open tab, so the MCP bridge can stream it (mcp_upload.rs).
-    static UPLOADS: RefCell<crate::mcp_wire::Uploads<web_sys::File>> =
+    /// The `File` behind each open tab, so the MCP bridge can stream it (mcp_upload.rs) and
+    /// Recents lists it. It follows its own pick, so of two files of one name the tab gets
+    /// the one that loaded.
+    static UPLOADS: RefCell<crate::mcp_wire::Uploads<Upload>> =
         RefCell::new(crate::mcp_wire::Uploads::new());
 }
 
 /// The file behind tab `tab`, if it was opened here.
 pub fn upload_file(tab: u64) -> Option<web_sys::File> {
-    UPLOADS.with(|u| u.borrow().get(tab))
+    UPLOADS.with(|u| u.borrow().get(tab)).map(|u| u.file)
 }
 
-fn pick_upload(file: &web_sys::File) -> u32 {
-    UPLOADS.with(|u| u.borrow_mut().pick(file.clone()))
+/// Where tab `tab`'s file came from, if it was picked or dropped here (a link's or an
+/// agent's was not).
+pub fn upload_origin(tab: u64) -> Option<Origin> {
+    UPLOADS.with(|u| u.borrow().get(tab)).map(|u| u.origin)
+}
+
+fn pick_upload(file: &web_sys::File, origin: Origin) -> u32 {
+    UPLOADS.with(|u| {
+        u.borrow_mut().pick(Upload {
+            file: file.clone(),
+            origin,
+        })
+    })
 }
 
 /// The load of `name` began with pick `pick`.
@@ -336,7 +375,7 @@ async fn fetch_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Opens a big archive without reading its images.
-async fn open_lazy(file: web_sys::File) -> Picked {
+async fn open_lazy(file: web_sys::File, origin: Origin) -> Picked {
     let name = PathBuf::from(file.name());
     let fail = |e: anyhow::Error| {
         Picked::Failed(format!(
@@ -382,7 +421,7 @@ async fn open_lazy(file: web_sys::File) -> Picked {
     let doc_key = crate::source::doc_key_from_prefix(len, &head);
     Picked::Lazy {
         name,
-        pick: pick_upload(&file),
+        pick: pick_upload(&file, origin),
         file: keep_file(file),
         entries,
         eager,
@@ -391,23 +430,65 @@ async fn open_lazy(file: web_sys::File) -> Picked {
 }
 
 /// Opens a file the user chose: big archives lazily, the rest by reading them.
-async fn open_file(file: web_sys::File) -> Picked {
+async fn open_file(file: web_sys::File, origin: Origin) -> Picked {
     let name = PathBuf::from(file.name());
     if file.size() as u64 > LAZY_ABOVE {
         let mut magic = read_range(&file, 0, 2).await.unwrap_or_default();
         magic.truncate(2);
         if magic == b"PK" {
-            return open_lazy(file).await;
+            return open_lazy(file, origin).await;
         }
     }
     // Same limit as `Document::open` on the desktop.
     match read_range_max(&file, 0, file.size() as u64, figstudio_fig::MAX_FILE_BYTES).await {
-        Ok(bytes) => Picked::Bytes(name, bytes, pick_upload(&file)),
+        Ok(bytes) => Picked::Bytes(name, bytes, pick_upload(&file, origin)),
         Err(e) => Picked::Failed(format!(
             "Could not read {}: {}",
             name.display(),
             figstudio_fig::one_line(e.as_ref())
         )),
+    }
+}
+
+/// Shows the picker and opens what is chosen. The File System Access picker where the
+/// browser has it (each file with its handle), else the plain one (no handles). `moved`: the
+/// handle of a moved Recents card; the picker starts in its folder, and a file picked there
+/// with the browser's picker takes the card's place (one from the plain input, which has no
+/// handle, is listed beside it).
+async fn pick(tx: Sender<Picked>, ctx: egui::Context, moved: Option<u32>) {
+    if crate::recents_web::keeps_handles() {
+        match crate::recents_web::pick_files(moved).await {
+            Ok(Some(files)) => {
+                for (file, handle) in files {
+                    let origin = Origin {
+                        handle: Some(handle),
+                        replaces: moved,
+                    };
+                    let _ = tx.send(open_file(file, origin).await);
+                    ctx.request_repaint();
+                }
+                return;
+            }
+            Ok(None) => return,
+            // Refused (no click to go with it, or an embedding page): the plain picker.
+            Err(e) => tracing::warn!("file picker: {e}"),
+        }
+    }
+    let Some(files) = rfd::AsyncFileDialog::new()
+        .add_filter("Figma file", &["fig"])
+        .pick_files()
+        .await
+    else {
+        return;
+    };
+    for f in files {
+        // No handle to take the moved card's place (`Recents::replace_moved`).
+        let origin = Origin {
+            handle: None,
+            replaces: None,
+        };
+        let _ = tx.send(open_file(f.inner().clone(), origin).await);
+        ctx.request_repaint();
     }
 }
 
@@ -564,21 +645,35 @@ impl Inbox {
         }
     }
 
-    /// Shows the browser's file picker; chosen files arrive in `files`.
+    /// Shows the browser's file picker; chosen files arrive in `files`. Where the browser
+    /// gives file handles it is the File System Access picker, so Recents can open the files
+    /// again.
     pub fn pick_files(&self, ctx: &egui::Context) {
-        let tx = self.files_tx.clone();
-        let ctx = ctx.clone();
+        let (tx, ctx) = (self.files_tx.clone(), ctx.clone());
+        wasm_bindgen_futures::spawn_local(pick(tx, ctx, None));
+    }
+
+    /// Opens the file behind a Recents card's handle (asking to read it, if needed). When
+    /// it was moved or deleted, the picker starts in its folder.
+    pub fn open_handle(&self, ctx: &egui::Context, handle: u32, name: PathBuf) {
+        let (tx, ctx) = (self.files_tx.clone(), ctx.clone());
         wasm_bindgen_futures::spawn_local(async move {
-            let Some(files) = rfd::AsyncFileDialog::new()
-                .add_filter("Figma file", &["fig"])
-                .pick_files()
-                .await
-            else {
-                return;
-            };
-            for f in files {
-                let _ = tx.send(open_file(f.inner().clone()).await);
-                ctx.request_repaint();
+            match crate::recents_web::open_handle(handle).await {
+                Ok(file) => {
+                    let origin = Origin {
+                        handle: Some(handle),
+                        replaces: None,
+                    };
+                    let _ = tx.send(open_file(file, origin).await);
+                    ctx.request_repaint();
+                }
+                Err(why) => {
+                    let _ = tx.send(Picked::Unavailable { name, handle, why });
+                    ctx.request_repaint();
+                    if why == crate::recents_web::Unavailable::Missing {
+                        pick(tx, ctx, Some(handle)).await;
+                    }
+                }
             }
         });
     }
@@ -592,7 +687,12 @@ impl Inbox {
             return;
         };
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = tx.send(open_file(file).await);
+            let handle = crate::recents_web::dropped_handle(&file).await;
+            let origin = Origin {
+                handle,
+                replaces: None,
+            };
+            let _ = tx.send(open_file(file, origin).await);
             ctx.request_repaint();
         });
     }

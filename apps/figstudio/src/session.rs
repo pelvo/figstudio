@@ -56,9 +56,19 @@ impl Session {
         }
     }
 
+    /// The file shown when this was saved.
+    #[cfg(test)]
+    pub(crate) fn active(&self) -> Option<&Path> {
+        self.active.as_deref()
+    }
+
     pub(crate) fn capture(app: &App) -> Self {
         let mut session = Self::default();
-        let current = app.tabs.get(app.active);
+        // On the Recents page the file it was shown from is still the one to come back to.
+        let current = app.tabs.get(app.active).or_else(|| {
+            let from = app.recents_from?;
+            app.tabs.iter().find(|t| t.id == from)
+        });
         let mut active = current.map(|t| t.path.clone());
         if let Some(restore) = &app.restoring {
             for path in &restore.session.files {

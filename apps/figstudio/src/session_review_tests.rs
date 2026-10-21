@@ -204,6 +204,7 @@ fn workspace_recents_automatic_restore_preserves_history_and_pictures() {
                     } else {
                         dir.path().join(format!("history-{i}.fig"))
                     },
+                    handle: None,
                     opened: 60 - i,
                     key: Some("kept".into()),
                 })

@@ -10,7 +10,11 @@ mod cjk;
 mod command;
 mod copy;
 mod copy_menu;
+#[cfg(target_os = "macos")]
+mod dock_mac;
 mod find;
+#[cfg(windows)]
+mod foreground_win;
 mod gpu;
 mod gpu_common;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -22,8 +26,12 @@ mod gpu_scenes;
 mod gpu_tiles;
 #[cfg(target_arch = "wasm32")]
 mod gpu_tiles_web;
+#[cfg(not(target_arch = "wasm32"))]
+mod handoff;
 mod icons;
 mod instance_pick;
+#[cfg(any(windows, test))]
+mod jump_list;
 mod keymap;
 mod labels;
 mod link_open;
@@ -61,8 +69,13 @@ mod onboarding;
 mod panels;
 mod pick;
 mod pick_cache;
-#[cfg(not(target_arch = "wasm32"))]
 mod recents;
+#[cfg(not(target_arch = "wasm32"))]
+mod recents_disk;
+#[cfg(any(target_arch = "wasm32", test))]
+mod recents_pictures;
+#[cfg(target_arch = "wasm32")]
+mod recents_web;
 mod recordings;
 mod region_copy;
 mod region_png;
@@ -116,6 +129,18 @@ fn app_icon() -> Option<egui::IconData> {
 fn main() -> std::process::ExitCode {
     init_tracing();
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    // Before any window: the first figstudio of this person keeps a lock; a later launch
+    // with files hands them to it, which opens them in its window (`handoff.rs`).
+    let instance = match handoff::folder().map_or(handoff::Start::Alone, |d| handoff::claim(&d)) {
+        handoff::Start::First(instance) => Some(instance),
+        handoff::Start::Running(inbox) => {
+            if handoff::hand_over(&inbox, &files, handoff::WAIT, handoff::STARTING) {
+                return std::process::ExitCode::SUCCESS;
+            }
+            None
+        }
+        handoff::Start::Alone => None,
+    };
     let mut options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
@@ -146,6 +171,12 @@ fn main() -> std::process::ExitCode {
         options,
         Box::new(move |cc| {
             let mut app = App::new(cc, files);
+            let ctx = cc.egui_ctx.clone();
+            app.handed_over = instance.map(|i| i.watch(move || ctx.request_repaint()));
+            #[cfg(windows)]
+            {
+                app.window = foreground_win::Window::of(cc);
+            }
             app.attach_menu(cc);
             #[cfg(target_os = "macos")]
             {
@@ -366,8 +397,15 @@ struct App {
     /// The welcome sheet and the one-time tips (`onboarding.rs`).
     onboarding: onboarding::Onboarding,
     /// Files opened before: the Recents page when none is open (`recents.rs`).
-    #[cfg(not(target_arch = "wasm32"))]
     recents: recents::Recents,
+    /// The file the Recents page was shown from with the + (still the workspace's).
+    recents_from: Option<u64>,
+    /// Files later launches handed to this figstudio (`handoff.rs`).
+    #[cfg(not(target_arch = "wasm32"))]
+    handed_over: Option<handoff::Inbox>,
+    /// The window, to bring it forward when files are handed over (`foreground_win.rs`).
+    #[cfg(windows)]
+    window: Option<foreground_win::Window>,
     /// Startup files still arriving from the decode workers.
     restoring: Option<session::Restore>,
     workspace_store: session_store::Store,
@@ -491,7 +529,11 @@ impl App {
                 !cfg!(test),
             ),
             // Tests never read or write the user's list.
+            recents_from: None,
             #[cfg(not(target_arch = "wasm32"))]
+            handed_over: None,
+            #[cfg(windows)]
+            window: None,
             recents: if cfg!(test) {
                 recents::Recents::memory()
             } else {
@@ -595,6 +637,8 @@ impl App {
             if self.space_editing.as_ref().map(|e| e.tab) == Some(self.tabs[i].id) {
                 self.commit_space_editor();
             }
+            // On the Recents page (after the last space) it stays.
+            let home = self.active >= self.tabs.len();
             let closed = self.tabs.remove(i);
             #[cfg(target_arch = "wasm32")]
             web::forget_upload(closed.id);
@@ -605,7 +649,14 @@ impl App {
                 // Its picture may be what the next file fades in over (`canvas_card`).
                 self.tiles_closed.push(instance);
             }
-            if self.active >= self.tabs.len() {
+            if home {
+                self.active = self.tabs.len();
+                // The file the page came from closed: the one beside it, as a shown one would.
+                if self.recents_from == Some(closed.id) {
+                    let beside = i.min(self.tabs.len().saturating_sub(1));
+                    self.recents_from = self.tabs.get(beside).map(|t| t.id);
+                }
+            } else if self.active >= self.tabs.len() {
                 self.active = self.tabs.len().saturating_sub(1);
             } else if self.active > i {
                 self.active -= 1;
@@ -737,9 +788,14 @@ impl App {
                     self.workspace_finished(&path, previous, None);
                     if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
                         self.link_loaded(ctx, &path, i);
-                        // After the link: the picture is of the page it shows.
+                        // After the link: the picture is of the page it shows. A file the
+                        // workspace reopened by itself is not listed again (the browser lists
+                        // only files picked or dropped there).
                         #[cfg(not(target_arch = "wasm32"))]
-                        if !automatic {
+                        let listed = !automatic;
+                        #[cfg(target_arch = "wasm32")]
+                        let listed = true;
+                        if listed {
                             self.note_recent(ctx, i);
                         }
                     }
@@ -790,6 +846,7 @@ impl App {
         }
         #[cfg(target_arch = "wasm32")]
         self.poll_web(ctx);
+        self.recents.sync(ctx);
         #[cfg(target_arch = "wasm32")]
         if let Some(n) = web::take_page_request()
             && let Some(tab) = self.tab()
@@ -887,6 +944,23 @@ impl App {
                     }
                 }
                 web::Picked::Failed(e) => self.toast(ctx, e, true),
+                web::Picked::Unavailable { name, handle, why } => {
+                    let shown = name.display().to_string();
+                    let text = match why {
+                        crate::recents_web::Unavailable::Missing => {
+                            let id = recents::Id {
+                                path: name,
+                                handle: Some(handle),
+                            };
+                            self.recents.set_missing(&id, true);
+                            format!("{shown} was moved or deleted. Pick it where it is now.")
+                        }
+                        crate::recents_web::Unavailable::Denied => format!(
+                            "figstudio was not allowed to open {shown}. Click it again to allow it."
+                        ),
+                    };
+                    self.toast(ctx, text, true);
+                }
             }
         }
         while let Ok((name, png)) = self.web.exports.try_recv() {
@@ -1047,6 +1121,15 @@ fn shifted_digit(i: &egui::InputState, digit: Key, shifted: Option<Key>) -> bool
 }
 
 impl eframe::App for App {
+    /// Runs before every `ui`, and also when the window is not drawn (minimized: eframe
+    /// skips `ui` then), so files a later launch hands over are taken either way.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.open_handed_over(ctx);
+        #[cfg(target_arch = "wasm32")]
+        let _ = ctx;
+    }
+
     /// Transparent only where the window blurs what is behind it (macOS with the blur
     /// attached); everywhere else an opaque colour under the gradient.
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
@@ -1189,7 +1272,7 @@ impl App {
         // The sidebar's own button may have hidden it this frame; a drag past its edge too.
         self.show_left = self.show_left && show_left;
 
-        let has_tab = !self.tabs.is_empty();
+        let has_tab = self.tabs.get(self.active).is_some();
         let mut show_right = has_tab && self.show_right;
         // The Properties card follows the space's colour, crossfading with the window.
         let card_p = p.on_tint(self.tint_now(&ctx));
@@ -1248,12 +1331,13 @@ impl App {
         let answers = self.take_link_answers();
         self.mcp
             .sync_then_answer(&ctx, &self.tabs, self.active, answers);
-        if let Some(tab) = self.tabs.get(self.active) {
-            let title = format!("{} — {APP_NAME}", tab.title());
-            if title != self.window_title {
-                self.window_title.clone_from(&title);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
-            }
+        let title = self.tabs.get(self.active).map_or_else(
+            || APP_NAME.to_owned(),
+            |tab| format!("{} — {APP_NAME}", tab.title()),
+        );
+        if title != self.window_title {
+            self.window_title.clone_from(&title);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
         if !self.toasts.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));

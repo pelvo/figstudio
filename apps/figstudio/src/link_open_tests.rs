@@ -1752,7 +1752,6 @@ fn workspace_recents_alias_refreshes_only_explicit_opens() {
                 doc: doc.clone(),
                 page,
                 source: None,
-                out: picture.clone(),
             })
             .unwrap();
             let deadline = Instant::now() + Duration::from_secs(10);
