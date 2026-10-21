@@ -2,7 +2,7 @@ use super::*;
 use crate::{icons::Icon, theme};
 use figstudio_fig::{Node, Obj, Val};
 
-fn node(n: u32, parent: u32, kind: &str, name: &str, x: f64, w: f64) -> Node {
+pub(super) fn node(n: u32, parent: u32, kind: &str, name: &str, x: f64, w: f64) -> Node {
     let mut o = Obj::new();
     let guid = |n: u32| Guid(9, n).to_val();
     let mut pi = Obj::new();
@@ -24,7 +24,7 @@ fn node(n: u32, parent: u32, kind: &str, name: &str, x: f64, w: f64) -> Node {
     Node::from_data(Val::Obj(o)).unwrap()
 }
 
-fn document(nodes: Vec<Node>) -> Document {
+pub(super) fn document(nodes: Vec<Node>) -> Document {
     let mut doc =
         Document::from_bytes(include_bytes!("../../../tests/fixtures/structure.fig")).unwrap();
     doc.set_nodes(nodes).unwrap();
@@ -51,7 +51,7 @@ fn visible_labels(doc: &Document) -> Vec<Label> {
     out
 }
 
-fn at_y(mut n: Node, y: f64) -> Node {
+pub(super) fn at_y(mut n: Node, y: f64) -> Node {
     let mut tf = n.data.get("transform").cloned().unwrap();
     if let Val::Obj(o) = &mut tf {
         o.insert("m12", Val::Float(y));
@@ -74,6 +74,19 @@ fn a_label_that_would_cover_another_frame_is_hidden() {
     ]);
     let names: Vec<_> = visible_labels(&doc).into_iter().map(|l| l.text).collect();
     assert_eq!(names, ["Upper", "Free", "Inside"]);
+}
+
+#[test]
+fn nested_sections_exempt_all_ancestors_without_exempting_siblings() {
+    let doc = document(vec![
+        node(1, 0, "CANVAS", "page", 0.0, 0.0),
+        node(2, 1, "SECTION", "Outer", 0.0, 1000.0),
+        at_y(node(3, 2, "SECTION", "Inner", 20.0, 900.0), 30.0),
+        at_y(node(4, 3, "FRAME", "Child", 20.0, 300.0), 30.0),
+        at_y(node(5, 3, "FRAME", "Blocked sibling", 20.0, 300.0), 90.0),
+    ]);
+    let names: Vec<_> = visible_labels(&doc).into_iter().map(|l| l.text).collect();
+    assert_eq!(names, ["Outer", "Inner", "Child"]);
 }
 
 #[test]
@@ -145,6 +158,7 @@ fn component_label_paints_purple_text_and_an_icon_inside_its_find_rect() {
     assert_eq!(labels.len(), 1);
     labels[0].at.y = 80.0;
     labels[0].max_width = 120.0;
+    labels[0].layout = None;
     let ctx = egui::Context::default();
     let mut bounds = Rect::NOTHING;
     let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {

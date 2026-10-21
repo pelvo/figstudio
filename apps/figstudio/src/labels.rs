@@ -3,8 +3,13 @@
 
 use egui::{Color32, CornerRadius, FontId, Pos2, Rect, Vec2};
 use figstudio_fig::{Document, Guid, Node};
+use figstudio_render::geom;
 use figstudio_render::kurbo::Point;
-use figstudio_render::{absolute_transform, geom};
+
+#[path = "labels_named.rs"]
+mod candidates;
+#[path = "labels_spatial.rs"]
+mod spatial;
 
 use crate::{
     icons::{self, Icon},
@@ -33,6 +38,7 @@ pub struct Label {
     pub section: bool,
     pub icon: Option<Icon>,
     pub color: Color32,
+    layout: Option<(std::sync::Arc<egui::Galley>, Rect, Pos2)>,
 }
 
 /// Canvas colours follow the page background, which can differ from the app's theme.
@@ -68,21 +74,10 @@ fn style(node: &Node, background: Color32) -> (Option<Icon>, Color32) {
 /// The frames and sections whose names the canvas shows (when they are big enough on
 /// screen): the page's top-level ones, and those directly inside its sections. Page order.
 pub fn named(doc: &Document, page: Guid) -> Vec<Guid> {
-    let mut out = Vec::new();
-    let mut stack: Vec<Guid> = doc.children(page).iter().rev().copied().collect();
-    while let Some(id) = stack.pop() {
-        let Some(node) = doc.node(id) else { continue };
-        let section = node.kind == "SECTION";
-        if !(section || geom::is_container(&node.kind)) || node.data.flag("visible") == Some(false)
-        {
-            continue;
-        }
-        out.push(id);
-        if section {
-            stack.extend(doc.children(id).iter().rev().copied());
-        }
-    }
-    out
+    candidates::collect(doc, page)
+        .into_iter()
+        .map(|n| n.id)
+        .collect()
 }
 
 /// Labels for the page's top-level frames, and for frames directly inside its sections.
@@ -97,26 +92,17 @@ pub fn labels(
 ) -> Vec<Label> {
     let mut out = Vec::new();
     let background = crate::canvas::to_color32(figstudio_render::page_background(doc, page));
-    let named = named(doc, page);
-    // On-screen rectangles of the named frames that can be covered (on or near the screen).
-    let frames: Vec<(Guid, Rect)> = named
-        .iter()
-        .filter_map(|&id| {
-            let b = figstudio_render::node_bounds(doc, id)?;
-            let min = view.to_screen(origin, Pos2::new(b.x0 as f32, b.y0 as f32));
-            let max = view.to_screen(origin, Pos2::new(b.x1 as f32, b.y1 as f32));
-            let r = Rect::from_min_max(min, max);
-            r.intersects(screen.expand(64.0)).then_some((id, r))
-        })
-        .collect();
-    let mut placed: Vec<Rect> = Vec::new();
-    for id in named {
+    let named = candidates::collect(doc, page);
+    let frames = blockers(doc, &named, view, origin, screen);
+    let mut placed = spatial::Grid::default();
+    for (index, candidate) in named.iter().enumerate() {
+        let id = candidate.id;
         if out.len() >= MAX_LABELS {
             break;
         }
         let Some(node) = doc.node(id) else { continue };
         let section = node.kind == "SECTION";
-        let tf = absolute_transform(doc, id);
+        let tf = candidate.world;
         let (w, _) = geom::size(&node.data);
         let a = tf * Point::new(0.0, 0.0);
         let b = tf * Point::new(w, 0.0);
@@ -129,7 +115,7 @@ pub fn labels(
         };
         if width >= min && screen.expand(width).contains(at) {
             let (icon, color) = style(node, background);
-            let label = Label {
+            let mut label = Label {
                 id,
                 text: node.name.clone(),
                 at,
@@ -137,15 +123,15 @@ pub fn labels(
                 section,
                 icon,
                 color,
+                layout: None,
             };
-            let r = rect(painter, &label);
-            let covers = |other: &Rect| r.intersect(*other).is_positive();
-            let blocked = placed.iter().any(covers)
-                || frames
-                    .iter()
-                    .any(|(f, fr)| *f != id && covers(fr) && !is_ancestor(doc, *f, id));
+            let shaped = layout(painter, &label);
+            let r = shaped.1;
+            label.layout = Some(shaped);
+            let blocked = placed.any(r, |_: &()| true)
+                || frames.any(r, |&(start, end)| !(start <= index && index < end));
             if !blocked {
-                placed.push(r);
+                placed.insert(r, ());
                 out.push(label);
             }
         }
@@ -153,20 +139,42 @@ pub fn labels(
     out
 }
 
-/// Whether `a` is a strict ancestor of `id` (a section holding the labelled frame).
-fn is_ancestor(doc: &Document, a: Guid, id: Guid) -> bool {
-    let mut cur = doc.node(id).and_then(|n| n.parent);
-    while let Some(p) = cur {
-        if p == a {
-            return true;
+fn blockers(
+    doc: &Document,
+    named: &[candidates::Named],
+    view: View,
+    origin: Pos2,
+    screen: Rect,
+) -> spatial::Grid<(usize, usize)> {
+    let mut frames = spatial::Grid::default();
+    for (index, candidate) in named.iter().enumerate() {
+        let Some(node) = doc.node(candidate.id) else {
+            continue;
+        };
+        let (w, h) = geom::size(&node.data);
+        let b = geom::transformed_bounds(
+            candidate.world,
+            figstudio_render::kurbo::Rect::new(0.0, 0.0, w, h),
+        );
+        let min = view.to_screen(origin, Pos2::new(b.x0 as f32, b.y0 as f32));
+        let max = view.to_screen(origin, Pos2::new(b.x1 as f32, b.y1 as f32));
+        let r = Rect::from_min_max(min, max);
+        if r.intersects(screen.expand(64.0)) {
+            frames.insert(r, (index, candidate.end));
         }
-        cur = doc.node(p).and_then(|n| n.parent);
     }
-    false
+    frames
+}
+
+#[cfg(test)]
+thread_local! {
+    static SHAPED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Text, full label bounds (including icon or pill) and text position.
 fn layout(painter: &egui::Painter, l: &Label) -> (std::sync::Arc<egui::Galley>, Rect, Pos2) {
+    #[cfg(test)]
+    SHAPED.set(SHAPED.get() + 1);
     let font = FontId::proportional(if l.section { 13.0 } else { 12.0 });
     let leading = if l.icon.is_some() {
         ICON_SIZE + ICON_GAP
@@ -195,13 +203,15 @@ fn layout(painter: &egui::Painter, l: &Label) -> (std::sync::Arc<egui::Galley>, 
 
 /// Where a label is drawn on screen (its pill, for a section), including its icon.
 pub fn rect(painter: &egui::Painter, l: &Label) -> Rect {
-    layout(painter, l).1
+    l.layout
+        .as_ref()
+        .map_or_else(|| layout(painter, l).1, |shaped| shaped.1)
 }
 
 /// Draws section pills, grey frame names and purple component/instance names with icons.
 pub fn paint(painter: &egui::Painter, labels: &[Label]) {
     for l in labels {
-        let (galley, bounds, text_at) = layout(painter, l);
+        let (galley, bounds, text_at) = l.layout.clone().unwrap_or_else(|| layout(painter, l));
         if l.section {
             painter.rect_filled(bounds, CornerRadius::same(4), Color32::from_gray(20));
         }
@@ -221,3 +231,11 @@ pub fn paint(painter: &egui::Painter, labels: &[Label]) {
 #[cfg(test)]
 #[path = "labels_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "labels_bench.rs"]
+mod bench;
+
+#[cfg(test)]
+#[path = "labels_work_tests.rs"]
+mod work_tests;
