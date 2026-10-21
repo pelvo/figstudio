@@ -36,6 +36,24 @@ const HOLDER: &str = "holder";
 /// How long a launch keeps trying to take back a request it gave up on.
 const GIVE_UP: Duration = Duration::from_secs(5);
 
+#[cfg(test)]
+thread_local! {
+    /// Tests: taking a request back fails, as when a scanner holds the file a long while.
+    static CANNOT_WITHDRAW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Takes a request back by deleting it (or, `aside`, moving it to `to`).
+fn withdraw(request: &Path, to: Option<&Path>) -> std::io::Result<()> {
+    #[cfg(test)]
+    if CANNOT_WITHDRAW.with(std::cell::Cell::get) {
+        return Err(std::io::Error::other("held"));
+    }
+    match to {
+        None => fs::remove_file(request),
+        Some(to) => fs::rename(request, to),
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Request {
     open: Vec<PathBuf>,
@@ -124,8 +142,11 @@ pub(crate) fn claim(dir: &Path) -> Start {
         Ok(()) => {
             // The id first, so a launch sees this figstudio's id as soon as it can.
             let id = unique();
+            // Without its id a launch could take an ended figstudio's marks for this one's:
+            // then it takes no files (and drops the lock with `lock`).
             if let Err(e) = fs::write(inbox.join(HOLDER), &id) {
                 tracing::warn!("single instance: {e}");
+                return Start::Alone;
             }
             recover(&inbox);
             Start::First(Instance {
@@ -153,6 +174,12 @@ fn recover(inbox: &Path) {
     for path in entries.flatten().map(|e| e.path()) {
         match path.extension().and_then(|e| e.to_str()) {
             Some("part" | "withdrawn") => {
+                let _ = fs::remove_file(&path);
+            }
+            // A launch gave up on it and opened the files itself: the request goes too.
+            Some("cancel") => {
+                let _ = fs::remove_file(path.with_extension("json"));
+                let _ = fs::remove_file(path.with_extension("taken"));
                 let _ = fs::remove_file(&path);
             }
             Some("taken") => {
@@ -232,12 +259,12 @@ pub(crate) fn hand_over(
     let withdrawn = inbox.join(format!("{id}.withdrawn"));
     let until = Instant::now() + GIVE_UP;
     loop {
-        match fs::remove_file(&request) {
+        match withdraw(&request, None) {
             Ok(()) => return false,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
             Err(_) => {}
         }
-        match fs::rename(&request, &withdrawn) {
+        match withdraw(&request, Some(&withdrawn)) {
             Ok(()) => {
                 let _ = fs::remove_file(&withdrawn);
                 return false;
@@ -246,11 +273,14 @@ pub(crate) fn hand_over(
             Err(_) => {}
         }
         if Instant::now() >= until {
-            // Neither taken back nor known taken: it stays queued, and the running
-            // figstudio (or the next to start) opens it. Opening the files here too could
-            // open them twice.
-            tracing::warn!("single instance: a request could not be taken back; it stays queued");
-            return true;
+            // Neither taken back nor known taken: cancel it, so a window that takes it
+            // later drops it, then open the files here, unless it was taken meanwhile.
+            // Without a cancel mark it stays queued for the running figstudio instead.
+            tracing::warn!("single instance: a request could not be taken back");
+            if fs::write(inbox.join(format!("{id}.cancel")), "").is_err() {
+                return true;
+            }
+            return !matches!(fs::exists(&request), Ok(true));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -370,24 +400,40 @@ fn take(inbox: &Path) -> Vec<Vec<PathBuf>> {
         if fs::rename(&path, &mine).is_err() {
             continue;
         }
+        // Given up on by its launch, which opens the files itself: dropped.
+        let cancel = path.with_extension("cancel");
+        if matches!(fs::exists(&cancel), Ok(true)) {
+            let _ = fs::remove_file(&mine);
+            let _ = fs::remove_file(&cancel);
+            continue;
+        }
         // Launches write at most `MAX_REQUEST`, whole, so this reads all of it.
-        let text = File::open(&mine).and_then(|f| {
+        let file = match File::open(&mine) {
+            Ok(file) => file,
+            // Not openable now (a scanner may hold a new file a while): back for a later
+            // look, without holding up the window.
+            Err(_) => {
+                if let Err(e) = fs::rename(&mine, &path) {
+                    tracing::warn!("single instance: a request was not put back: {e}");
+                }
+                continue;
+            }
+        };
+        let request = {
             use std::io::Read as _;
             let mut text = String::new();
-            f.take(MAX_REQUEST).read_to_string(&mut text).map(|_| text)
-        });
-        match text.map(|t| serde_json::from_str::<Request>(&t)) {
-            Ok(Ok(request)) => {
+            file.take(MAX_REQUEST)
+                .read_to_string(&mut text)
+                .ok()
+                .and_then(|_| serde_json::from_str::<Request>(&text).ok())
+        };
+        match request {
+            Some(request) => {
                 let _ = fs::remove_file(&mine);
                 taken.push(request.open);
             }
-            // Not readable now (a scanner may hold a new file a while): back for a later
-            // look, without holding up the window.
-            Err(_) => {
-                let _ = fs::rename(&mine, &path);
-            }
-            // Not a launch's request: kept aside, not read again.
-            Ok(Err(_)) => tracing::warn!("single instance: a request was not readable"),
+            // Not a launch's request (not text, or not one): kept aside, not read again.
+            None => tracing::warn!("single instance: a request was not readable"),
         }
     }
     taken
@@ -713,6 +759,75 @@ mod tests {
         assert_eq!(holder_pid("not an id"), None);
         assert_eq!(holder_pid("notanid"), None);
         assert_eq!(holder_pid(""), None);
+    }
+
+    /// A stat that fails during the wait is not the request taken: the launch waits on,
+    /// and takes it back once it can (Unix: a folder shut a while).
+    #[cfg(unix)]
+    #[test]
+    fn a_request_that_cannot_be_looked_at_is_not_counted_as_taken() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let _inbox = first(dir.path()).watch(|| {});
+        let to = inbox_of(dir.path());
+        let shut = to.clone();
+        let block = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            fs::set_permissions(&shut, fs::Permissions::from_mode(0o600)).unwrap();
+            std::thread::sleep(Duration::from_millis(650));
+            fs::set_permissions(&shut, fs::Permissions::from_mode(0o700)).unwrap();
+        });
+        let handed = hand_over(
+            &to,
+            &[PathBuf::from("/a.fig")],
+            Duration::from_millis(400),
+            STARTING,
+        );
+        block.join().unwrap();
+        assert!(!handed, "taken back, so the launch opens them");
+        assert_eq!(requests(&to), 0);
+    }
+
+    /// A launch that cannot take its request back opens the files itself and leaves a
+    /// cancel mark, so the window never opens them too, even if it takes it later.
+    #[test]
+    fn a_request_the_launch_cannot_take_back_is_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        // Up, but its window never takes (or not yet).
+        let inbox = first(dir.path()).watch(|| {});
+        let to = inbox_of(dir.path());
+        CANNOT_WITHDRAW.with(|c| c.set(true));
+        let handed = hand_over(
+            &to,
+            &[PathBuf::from("/a.fig")],
+            Duration::from_millis(100),
+            STARTING,
+        );
+        CANNOT_WITHDRAW.with(|c| c.set(false));
+        assert!(!handed, "the launch opens them");
+        assert!(inbox.take().is_empty(), "the window does not, now or later");
+        assert_eq!(requests(&to), 0, "and nothing is left");
+    }
+
+    #[test]
+    fn a_request_that_is_not_text_is_kept_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = first(dir.path()).watch(|| {});
+        let request = dir.path().join("inbox").join("9-9.json");
+        fs::write(&request, [0xff, 0xfe, 0xfd]).unwrap();
+        assert!(inbox.take().is_empty());
+        assert!(!request.exists(), "not put back for every frame");
+    }
+
+    /// A lock holder that cannot write its id would leave an ended one's marks matching:
+    /// it does not take launches' files then.
+    #[test]
+    fn a_figstudio_that_cannot_write_its_id_takes_no_files() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("inbox").join(HOLDER)).unwrap();
+        assert!(matches!(claim(dir.path()), Start::Alone));
+        // And it holds no lock: the next one is not kept waiting on it.
+        assert!(!matches!(claim(dir.path()), Start::Running(_)));
     }
 
     #[test]
