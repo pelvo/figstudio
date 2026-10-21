@@ -61,8 +61,9 @@ mod onboarding;
 mod panels;
 mod pick;
 mod pick_cache;
-#[cfg(not(target_arch = "wasm32"))]
 mod recents;
+#[cfg(not(target_arch = "wasm32"))]
+mod recents_disk;
 mod recordings;
 mod region_copy;
 mod region_png;
