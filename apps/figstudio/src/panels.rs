@@ -65,13 +65,52 @@ fn hover_fade(ui: &Ui, list: Id, row: Id, hovered: bool) -> f32 {
 
 /// The page list; the selected page's pill slides when the page changes.
 pub fn pages(ui: &mut Ui, tab: &mut Tab) {
-    let p = theme::of(ui);
     let doc = tab.doc.clone();
     ui.spacing_mut().item_spacing.y = 1.0;
+    page_rows(ui, tab, &doc.pages);
+    if !doc.internal_pages.is_empty() {
+        let p = theme::of(ui);
+        let navigation = ui.make_persistent_id(("internal-page-navigation", tab.id));
+        let entered_internal = ui.ctx().data_mut(|data| {
+            let previous = data.get_temp::<Guid>(navigation);
+            data.insert_temp(navigation, tab.page);
+            previous != Some(tab.page) && doc.internal_pages.contains(&tab.page)
+        });
+        ui.add_space(6.0);
+        ui.scope(|ui| {
+            ui.spacing_mut().indent = 34.0;
+            ui.spacing_mut().interact_size.y = 30.0;
+            ui.visuals_mut().collapsing_header_frame = true;
+            ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+            egui::CollapsingHeader::new(
+                RichText::new(format!("Internal pages ({})", doc.internal_pages.len()))
+                    .font(theme::semibold(11.0))
+                    .color(p.text_dim),
+            )
+            .id_salt(("internal-pages", tab.id))
+            .default_open(doc.internal_pages.contains(&tab.page))
+            .open(entered_internal.then_some(true))
+            .icon(move |ui, openness, response| {
+                let color = if response.hovered() || response.has_focus() {
+                    p.text
+                } else {
+                    p.text_dim
+                };
+                let rect = egui::Rect::from_center_size(response.rect.center(), vec2(12.0, 12.0));
+                icons::chevron(ui.painter(), rect, color, openness);
+            })
+            .show_unindented(ui, |ui| page_rows(ui, tab, &doc.internal_pages));
+        });
+    }
+}
+
+fn page_rows(ui: &mut Ui, tab: &mut Tab, pages: &[Guid]) {
+    let p = theme::of(ui);
+    let doc = tab.doc.clone();
     let pill = ui.painter().add(Shape::Noop);
     let origin = ui.min_rect().min.to_vec2();
     let mut lit = None;
-    for &page in &doc.pages {
+    for &page in pages {
         let name = doc.node(page).map(display_name).unwrap_or_default();
         let selected = tab.page == page;
         let (rect, response) =
@@ -113,26 +152,12 @@ pub fn pages(ui: &mut Ui, tab: &mut Tab) {
     if let Some(rect) = lit {
         let r = anim::spring_rect(
             ui.ctx(),
-            Id::new("page-pill"),
+            ui.make_persistent_id(("page-pill", tab.id)),
             rect.translate(-origin),
             Spring::SMOOTH,
         )
         .translate(origin);
         ui.painter().set(pill, selected_pill(&p, r));
-    }
-    if !doc.internal_pages.is_empty() {
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new(format!(
-                    "{} internal page(s) hidden",
-                    doc.internal_pages.len()
-                ))
-                .color(p.text_dim)
-                .small(),
-            );
-        });
     }
 }
 

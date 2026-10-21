@@ -2083,6 +2083,176 @@ fn two_pages() -> (crate::tab::Tab, [figstudio_fig::Guid; 2]) {
     (tab, pages)
 }
 
+fn internal_pages_tab() -> (crate::tab::Tab, [figstudio_fig::Guid; 2]) {
+    let (mut tab, pages) = two_pages();
+    let doc = std::sync::Arc::get_mut(&mut tab.doc).expect("unshared test document");
+    doc.pages = vec![pages[0]];
+    doc.internal_pages = vec![pages[1]];
+    (tab, pages)
+}
+
+fn internal_pages_harness() -> (Harness<'static, App>, [figstudio_fig::Guid; 2]) {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, Vec::new()));
+    let (tab, pages) = internal_pages_tab();
+    h.state_mut().tabs.push(tab);
+    h.state_mut().active = 0;
+    h.run_steps(3);
+    (h, pages)
+}
+
+#[test]
+fn internal_pages_expand_open_and_return_to_a_normal_page() {
+    let (mut h, [normal, internal]) = internal_pages_harness();
+    assert!(h.query_by_label("Page 1").is_some());
+    assert!(h.query_by_label("Page 2").is_none(), "collapsed initially");
+    h.get_by_label("Internal pages (1)").click();
+    h.run_steps(20);
+    assert_eq!(
+        h.state().tabs[0].page,
+        normal,
+        "expanding does not navigate"
+    );
+    h.state_mut().tabs[0].selection = Some(normal);
+    h.state_mut().tabs[0].hover = Some(normal);
+    h.get_by_label("Page 2").click();
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].page, internal);
+    assert_eq!(h.state().tabs[0].selection, None);
+    assert_eq!(h.state().tabs[0].hover, None);
+    h.get_by_label("Page 1").click();
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].page, normal);
+    h.get_by_label("Internal pages (1)").click();
+    h.run_steps(20);
+    assert!(h.query_by_label("Page 2").is_none());
+    assert!(h.query_by_label("Page 1").is_some());
+}
+
+#[test]
+fn internal_pages_open_on_programmatic_navigation_but_can_still_be_collapsed() {
+    let navigations: [fn(&mut crate::tab::Tab, figstudio_fig::Guid); 3] = [
+        crate::tab::Tab::set_page,
+        |tab, page| tab.select(Some(page)),
+        crate::tab::Tab::show_node,
+    ];
+    for navigate in navigations {
+        let (mut h, [normal, internal]) = internal_pages_harness();
+        navigate(&mut h.state_mut().tabs[0], internal);
+        h.run_steps(20);
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Page 2").is_some(),
+            "navigation reveals the active page"
+        );
+        h.get_by_label("Internal pages (1)").click();
+        h.run_steps(20);
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Page 2").is_none(),
+            "manual collapse is respected"
+        );
+        h.state_mut().tabs[0].set_page(normal);
+        h.run_steps(3);
+        navigate(&mut h.state_mut().tabs[0], internal);
+        h.run_steps(20);
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Page 2").is_some(),
+            "later navigation reveals it again"
+        );
+    }
+}
+
+#[test]
+fn internal_pages_start_visible_when_already_selected() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, Vec::new()));
+    let (mut tab, [_, internal]) = internal_pages_tab();
+    tab.page = internal;
+    h.state_mut().tabs.push(tab);
+    h.state_mut().active = 0;
+    h.run_steps(20);
+    assert!(h.query_by_label("Page 2").is_some());
+    assert_eq!(h.state().tabs[0].page, internal);
+}
+
+#[test]
+fn internal_pages_highlight_does_not_inherit_another_lists_animation() {
+    use figstudio_fig::{Guid, Node, Val};
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, Vec::new()));
+    crate::anim::set_reduced(&h.ctx.clone(), false);
+    let (mut tab, [first, internal]) = internal_pages_tab();
+    let second = Guid(9, 3);
+    let mut nodes = tab.doc.nodes.clone();
+    let mut data = nodes[0].data.clone();
+    let Val::Obj(ref mut fields) = data else {
+        panic!("page object")
+    };
+    fields.insert("guid", second.to_val());
+    fields.insert("name", Val::Str("Page 3".into()));
+    nodes.push(Node::from_data(data).expect("page"));
+    let doc = std::sync::Arc::get_mut(&mut tab.doc).expect("unshared test document");
+    doc.set_nodes(nodes).expect("nodes");
+    doc.pages = vec![first, second];
+    doc.internal_pages = vec![internal];
+    tab.page = second;
+    h.state_mut().tabs.push(tab);
+    h.state_mut().active = 0;
+    h.run_steps(30);
+    h.get_by_label("Internal pages (1)").click();
+    h.run_steps(20);
+    let row = h.get_by_label("Page 3").rect();
+    let selected = fill_at(&h, egui::pos2(row.right() - 12.0, row.center().y));
+    h.state_mut().tabs[0].set_page(internal);
+    h.step();
+    let row = h.get_by_label("Page 2").rect();
+    assert_eq!(
+        fill_at(&h, egui::pos2(row.right() - 12.0, row.center().y)),
+        selected,
+        "the internal list does not animate from the normal list's second row"
+    );
+}
+
+#[test]
+fn internal_pages_disclosure_and_rows_share_the_page_list_width() {
+    let (mut h, _) = internal_pages_harness();
+    let normal = h.get_by_label("Page 1").rect();
+    let header = h.get_by_label("Internal pages (1)").rect();
+    assert_eq!(header.x_range(), normal.x_range(), "full-row click target");
+    assert_eq!(header.height(), normal.height(), "consistent row height");
+    h.get_by_label("Internal pages (1)").click();
+    h.run_steps(20);
+    let internal = h.get_by_label("Page 2").rect();
+    assert_eq!(internal.x_range(), normal.x_range(), "no extra indentation");
+}
+
+#[test]
+fn internal_pages_can_be_opened_with_the_keyboard() {
+    let (mut h, [_, internal]) = internal_pages_harness();
+    h.get_by_label("Internal pages (1)").focus();
+    h.run_steps(2);
+    assert!(h.get_by_label("Internal pages (1)").is_focused());
+    h.key_press(Key::Space);
+    h.run_steps(20);
+    h.key_press(Key::Tab);
+    h.run_steps(2);
+    assert!(h.get_by_label("Page 2").is_focused());
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].page, internal);
+}
+
+#[test]
+fn files_without_internal_pages_have_no_disclosure() {
+    let (mut h, _) = internal_pages_harness();
+    h.state_mut().tabs[0] = two_pages().0;
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Internal pages (").is_none());
+}
+
 #[test]
 fn another_page_crossfades_from_the_last_and_going_back_fades_from_what_was_shown() {
     let mut h = Harness::builder()

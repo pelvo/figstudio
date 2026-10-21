@@ -201,6 +201,27 @@ impl Tab {
             .unwrap_or_else(|| "Untitled".into())
     }
 
+    /// Zero-based page index, with internal pages after normal pages.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub fn page_index(&self) -> Option<usize> {
+        self.doc
+            .pages
+            .iter()
+            .chain(&self.doc.internal_pages)
+            .position(|&page| page == self.page)
+    }
+
+    /// Page addressed by the browser's zero-based page probe.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub fn page_at(&self, index: usize) -> Option<Guid> {
+        self.doc
+            .pages
+            .iter()
+            .chain(&self.doc.internal_pages)
+            .nth(index)
+            .copied()
+    }
+
     pub fn set_page(&mut self, page: Guid) {
         if self.page != page {
             self.page = page;
@@ -215,7 +236,7 @@ impl Tab {
     /// Reveal `node` (MCP `reveal_node`, Open Figma link): switch to it when it is a page, else
     /// select it and fit it into view on the next draw.
     pub fn show_node(&mut self, node: Guid) {
-        if self.doc.pages.contains(&node) {
+        if self.doc.pages.contains(&node) || self.doc.internal_pages.contains(&node) {
             self.set_page(node);
         } else {
             self.select(Some(node));

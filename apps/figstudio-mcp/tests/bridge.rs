@@ -107,6 +107,86 @@ async fn upload_selection_reveal_and_disconnect_over_http() {
 }
 
 #[tokio::test]
+async fn internal_pages_are_live_pages_and_non_pages_are_still_rejected() {
+    let bridge = BridgeTest::start(2 * 1024 * 1024).await;
+    let client = ()
+        .serve(StreamableHttpClientTransport::from_uri(Arc::<str>::from(
+            format!("http://{}/mcp", bridge.addr),
+        )))
+        .await
+        .unwrap();
+    let mut socket = bridge.socket("test-pairing-secret").await;
+    assert!(matches!(
+        receive(&mut socket).await,
+        ServerMessage::Welcome { .. }
+    ));
+    upload(&mut socket).await;
+    let doc = figstudio_fig::Document::from_bytes(&fixture()).unwrap();
+    for page in [doc.internal_pages[0], doc.pages[0]] {
+        send(
+            &mut socket,
+            ClientMessage::State {
+                tabs: vec![TabState {
+                    tab: 7,
+                    page: Some(page.to_string()),
+                    selection: None,
+                    viewport: Some([10., 20., 300., 400.]),
+                }],
+                active: Some(7),
+            },
+        )
+        .await;
+        send(&mut socket, ClientMessage::End { tab: 99 }).await;
+        assert!(
+            matches!(
+                receive(&mut socket).await,
+                ServerMessage::Error { tab: Some(99), .. }
+            ),
+            "only the ordering barrier should be rejected"
+        );
+        let tabs = call(&client, "list_open_tabs", json!({}))
+            .await
+            .structured_content
+            .unwrap();
+        assert_eq!(tabs["tabs"][0]["page"]["id"], page.to_string());
+        assert!(tabs["tabs"][0]["selection"].is_null());
+        let selected = call(&client, "get_selection", json!({}))
+            .await
+            .structured_content
+            .unwrap();
+        assert_eq!(selected["page"]["id"], page.to_string());
+        assert!(selected["node"].is_null());
+    }
+    send(
+        &mut socket,
+        ClientMessage::State {
+            tabs: vec![TabState {
+                tab: 7,
+                page: Some(doc.root.unwrap().to_string()),
+                selection: None,
+                viewport: None,
+            }],
+            active: Some(7),
+        },
+    )
+    .await;
+    assert!(
+        matches!(receive(&mut socket).await, ServerMessage::Error { message, .. } if message == "unknown page")
+    );
+    let tabs = call(&client, "list_open_tabs", json!({}))
+        .await
+        .structured_content
+        .unwrap();
+    assert_eq!(
+        tabs["tabs"][0]["page"]["id"],
+        doc.pages[0].to_string(),
+        "bad state is atomic"
+    );
+    client.cancel().await.unwrap();
+    bridge.finish().await;
+}
+
+#[tokio::test]
 async fn rejects_unpaired_origins_tokens_uploads_and_bad_messages() {
     let bridge = BridgeTest::start(8).await;
     let mut request = format!("ws://{}/bridge", bridge.addr)

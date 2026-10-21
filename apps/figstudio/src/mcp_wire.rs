@@ -18,7 +18,7 @@ pub(crate) fn state_message(tabs: &[Tab], active: usize, ready: &HashSet<u64>) -
         .filter(|t| ready.contains(&t.id))
         .map(|t| TabState {
             tab: t.id,
-            page: t.doc.pages.contains(&t.page).then(|| guid_string(t.page)),
+            page: t.page_index().map(|_| guid_string(t.page)),
             selection: t.selection.map(guid_string),
             viewport: viewport(t)
                 .filter(|v| v.iter().all(|x| x.is_finite()) && v[2] >= 0. && v[3] >= 0.),

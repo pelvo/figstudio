@@ -348,6 +348,24 @@ public-fixture copies and isolated stores; no user workspace or Recents data is 
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
 
+### Internal-page navigation
+
+`cargo test --profile fast -p figstudio internal_pages` covers the collapsed internal-page
+section, expanding without navigating, opening an internal page, clearing selection and hover,
+returning to a normal page, collapsing again, keyboard activation and files without internal
+pages. Layout checks cover full-width click targets, matching row heights and unindented rows.
+The tests also cover initial and programmatic navigation to internal pages, respecting manual
+collapse until later navigation, per-list highlight animation, command-bar targets, fit requests
+and browser state frames. Probe indices round-trip through normal then internal pages, with
+out-of-range rejection; command-bar details distinguish both page kinds in current and inactive
+states. Documents are synthetic or public fixtures, never private content.
+
+`cargo test --profile fast -p figstudio-mcp --test bridge internal_pages` checks both MCP
+`list_open_tabs` and `get_selection` after internal-page navigation over the browser bridge,
+returning to a normal page, and atomic rejection of a document node used as a page ID.
+
+### Command-bar links
+
 `link_open_tests.rs` also drives the real command bar: paste a Figma or figstudio URL, submit
 with Enter or a click, reveal a node in an open tab or a newly loaded local copy, and keep
 file choices and failed input in the link window. Unsupported URLs never become link actions;
