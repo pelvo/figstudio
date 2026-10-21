@@ -300,7 +300,16 @@ impl App {
                     } else {
                         n - 1
                     };
-                    self.active = (self.active + step) % n;
+                    // From the Recents page (after the last space): the first or the last.
+                    self.active = if self.active >= n {
+                        if action == Action::NextSpace {
+                            0
+                        } else {
+                            n - 1
+                        }
+                    } else {
+                        (self.active + step) % n
+                    };
                 }
             }
             Action::GoToSpace(i) => {

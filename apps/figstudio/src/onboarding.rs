@@ -644,7 +644,9 @@ impl App {
         let targets = self.onboarding.targets;
         let due = self
             .onboarding
-            .next_tip(!self.tabs.is_empty(), time, |t| targets.get(t).is_some());
+            .next_tip(self.tabs.get(self.active).is_some(), time, |t| {
+                targets.get(t).is_some()
+            });
         if let Some(wait) = self.onboarding.tip_wait(time) {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
         }

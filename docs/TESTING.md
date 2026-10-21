@@ -424,7 +424,10 @@ dedupe). Two more cover the browser's merge rules: files opened before the saved
 arrives stay in front of it, and a moved file picked again (a new handle) replaces its
 missing card (only the one it was picked for, not another of the same name, and not
 when another file of that name opens some other way). The page
-waits for the browser's saved list before it welcomes. `recents_pictures.rs` tests the
+waits for the browser's saved list before it welcomes. The + shows the page with files
+still open (their card goes back to them, the sidebar does not say none is open, the title
+is the app's), and the page sits after the last space (Next and Previous space, closing a
+space keeps it). `recents_pictures.rs` tests the
 browser's picture rules: a late read (a miss or an old picture) never covers a picture drawn
 since, a missing picture is read once, and only the newest job is kept. The pictures themselves and Show in Finder need the real app.
 

@@ -1123,10 +1123,16 @@ impl App {
     fn sidebar_body(&mut self, ui: &mut Ui, index: usize) {
         let p = theme::of(ui);
         let Some(tab) = self.tabs.get_mut(index) else {
+            // The Recents page: with files open (the + shows it) they are still there.
+            let text = if self.tabs.is_empty() {
+                "No file open"
+            } else {
+                "Recent files"
+            };
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.add_space(6.0);
-                ui.label(RichText::new("No file open").color(p.text_dim));
+                ui.label(RichText::new(text).color(p.text_dim));
             });
             return;
         };
@@ -1188,7 +1194,10 @@ impl App {
             pos2(row.right() - plus / 2.0, row.center().y),
             vec2(28.0, 28.0),
         );
-        let open = ui
+        // The + shows the Recents page, a place after the last space; on that page it opens
+        // a file.
+        let home = self.tabs.get(self.active).is_none();
+        let plus_clicked = ui
             .put(plus_at, |ui: &mut Ui| {
                 icons::button(ui, Icon::Plus, "Open file…", false)
             })
@@ -1203,9 +1212,16 @@ impl App {
         if let Some(i) = clicked.close {
             self.close(i);
         }
-        if open {
+        if plus_clicked && home {
             self.open_dialog(&ctx);
+        } else if plus_clicked {
+            self.show_recents();
         }
+    }
+
+    /// Shows the Recents page; open files stay open, after it is the first.
+    pub(crate) fn show_recents(&mut self) {
+        self.active = self.tabs.len();
     }
 
     /// One dot per open file (Arc's name pill on hover, a menu on right-click; a middle
@@ -1405,7 +1421,7 @@ impl App {
         for action in actions {
             self.apply(action, &ctx);
         }
-        if !self.tabs.is_empty() {
+        if self.tabs.get(self.active).is_some() {
             self.recents.hidden();
         }
         match recent {

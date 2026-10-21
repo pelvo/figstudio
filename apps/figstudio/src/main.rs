@@ -598,6 +598,8 @@ impl App {
             if self.space_editing.as_ref().map(|e| e.tab) == Some(self.tabs[i].id) {
                 self.commit_space_editor();
             }
+            // On the Recents page (after the last space) it stays.
+            let home = self.active >= self.tabs.len();
             let closed = self.tabs.remove(i);
             #[cfg(target_arch = "wasm32")]
             web::forget_upload(closed.id);
@@ -608,7 +610,9 @@ impl App {
                 // Its picture may be what the next file fades in over (`canvas_card`).
                 self.tiles_closed.push(instance);
             }
-            if self.active >= self.tabs.len() {
+            if home {
+                self.active = self.tabs.len();
+            } else if self.active >= self.tabs.len() {
                 self.active = self.tabs.len().saturating_sub(1);
             } else if self.active > i {
                 self.active -= 1;
@@ -1215,7 +1219,7 @@ impl App {
         // The sidebar's own button may have hidden it this frame; a drag past its edge too.
         self.show_left = self.show_left && show_left;
 
-        let has_tab = !self.tabs.is_empty();
+        let has_tab = self.tabs.get(self.active).is_some();
         let mut show_right = has_tab && self.show_right;
         // The Properties card follows the space's colour, crossfading with the window.
         let card_p = p.on_tint(self.tint_now(&ctx));
@@ -1274,12 +1278,13 @@ impl App {
         let answers = self.take_link_answers();
         self.mcp
             .sync_then_answer(&ctx, &self.tabs, self.active, answers);
-        if let Some(tab) = self.tabs.get(self.active) {
-            let title = format!("{} — {APP_NAME}", tab.title());
-            if title != self.window_title {
-                self.window_title.clone_from(&title);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
-            }
+        let title = self.tabs.get(self.active).map_or_else(
+            || APP_NAME.to_owned(),
+            |tab| format!("{} — {APP_NAME}", tab.title()),
+        );
+        if title != self.window_title {
+            self.window_title.clone_from(&title);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
         if !self.toasts.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));

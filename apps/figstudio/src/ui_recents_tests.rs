@@ -275,3 +275,68 @@ fn a_file_put_back_while_the_page_shows_is_offered_again_in_the_menu() {
         "the menu opens it again"
     );
 }
+
+/// The app on `structure.fig` and `vector.fig`, the second one shown.
+fn two_files() -> Harness<'static, App> {
+    let mut h = harness();
+    h.state_mut().open(fixture("vector.fig"));
+    wait(&mut h, &mut Vec::new(), "the second file", |a| {
+        a.tabs.len() == 2 && a.active == 1
+    });
+    h
+}
+
+fn on_recents(app: &App) -> bool {
+    app.tabs.get(app.active).is_none()
+}
+
+#[test]
+fn the_plus_button_shows_recents_with_the_files_still_open() {
+    let mut h = harness();
+    assert!(!has(&h, "Recents"));
+    h.get_by_label("Open file…").click();
+    h.run_steps(3);
+    assert!(has(&h, "Recents"), "the + shows the Recents page");
+    assert_eq!(h.state().tabs.len(), 1, "the file stays open");
+    assert!(!has(&h, "No file open"), "the sidebar does not say none is");
+    // The card of the open file (not its space's dot in the sidebar) goes back to it.
+    h.get_all_by_label(FIXTURE)
+        .max_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+        .expect("the card")
+        .click();
+    wait(&mut h, &mut Vec::new(), "the file to show", |a| {
+        !on_recents(a)
+    });
+    assert_eq!(h.state().tabs.len(), 1, "no second copy");
+    h.run_steps(2);
+    assert!(!has(&h, "Recents"));
+}
+
+#[test]
+fn the_recents_page_comes_after_the_last_space_and_stays_when_one_closes() {
+    let mut h = two_files();
+    let ctx = h.ctx.clone();
+    let from_recents = |h: &mut Harness<'static, App>, action| {
+        h.get_by_label("Open file…").click();
+        h.run_steps(3);
+        h.state_mut().apply(action, &ctx);
+        h.run_steps(3);
+        h.state().active
+    };
+    assert_eq!(from_recents(&mut h, crate::menu::Action::NextSpace), 0);
+    assert_eq!(from_recents(&mut h, crate::menu::Action::PreviousSpace), 1);
+    h.get_by_label("Open file…").click();
+    h.run_steps(3);
+    h.state_mut().close(0);
+    h.run_steps(3);
+    assert!(on_recents(h.state()), "closing a space keeps the page");
+    assert!(has(&h, "Recents"));
+}
+
+#[test]
+fn the_window_title_is_the_app_on_the_recents_page() {
+    let mut h = harness();
+    h.get_by_label("Open file…").click();
+    h.run_steps(3);
+    assert_eq!(h.state().window_title, crate::APP_NAME);
+}

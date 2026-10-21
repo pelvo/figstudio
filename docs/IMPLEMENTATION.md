@@ -478,6 +478,12 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   also looks, opening a file that is back
   and marking one that went, with a toast. The header keeps to the card: a narrow one drops the filter, then the
   view toggle, then narrows Open. Tests use `Recents::memory()` (no file, no pictures).
+  The sidebar's + shows the page with files still open (`App::show_recents`): `active`
+  points one past the last tab, so everything that asks for the active tab sees none (the
+  window is Slate, no tool pill or properties, the title is the app's, the sidebar says
+  "Recent files"). The page is a place after the last space: Next space goes to the first,
+  Previous to the last, closing a space keeps it, a dot or a card leaves it. On the page
+  (also with no file open) the + opens the picker as before.
   An entry is (path, handle): `handle` is `None` on desktop and the browser's handle number
   otherwise, so two files of one name with different handles are two cards.
 - **Recents in the browser** (`recents_web.rs`, `apps/figstudio/js/recents.js`). The JS
