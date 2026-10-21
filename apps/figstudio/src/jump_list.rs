@@ -35,9 +35,9 @@ fn argument(path: &Path) -> String {
 /// Publishes `items` with `try_list`, which answers `Ok(None)` when Windows refused a list
 /// (it holds a file the person removed that was not recognised) and `Ok(Some(appended))`
 /// when it took it (`appended`: the list held files). A refused list is tried again without
-/// one item at a time. `Some(left_out)` when one was taken: the item left out is named only
-/// when the list taken held files (an empty one says nothing about which was removed);
-/// `None` when none was. An error stops at once.
+/// one item at a time, but never as an empty list. `Some(left_out)` when one was taken: the
+/// item left out is named only when the list taken held files; `None` when none was (the
+/// list shown stays). An error stops at once.
 fn publish<T: Copy, E>(
     items: &[T],
     mut try_list: impl FnMut(&[T]) -> Result<Option<bool>, E>,
@@ -52,6 +52,11 @@ fn publish<T: Copy, E>(
             .filter(|(i, _)| *i != skip)
             .map(|(_, item)| *item)
             .collect();
+        // An empty list taken would clear what Windows holds against the removed file
+        // without showing which it was, so it could come back: not tried.
+        if rest.is_empty() {
+            continue;
+        }
         if let Some(appended) = try_list(&rest)? {
             return Ok(Some(appended.then_some(items[skip])));
         }
@@ -201,10 +206,20 @@ mod tests {
     }
 
     #[test]
-    fn a_list_taken_only_when_empty_blames_no_file() {
-        // One file, refused for another reason: the empty list is taken, but that does not
-        // show the file was removed, so it stays in Recents.
-        assert_eq!(publish(&["a"], windows("a")), Ok(Some(None)));
+    fn a_retry_never_publishes_an_empty_list() {
+        // One file, refused: an empty list would be taken and clear what Windows holds
+        // against the removed file, which could then come back. It is not tried; the list
+        // shown stays and no file is blamed.
+        let mut tried = Vec::new();
+        let mut take = windows("a");
+        let published = publish(&["a"], |list| {
+            tried.push(list.to_vec());
+            take(list)
+        });
+        assert_eq!(published, Ok(None));
+        assert_eq!(tried, [vec!["a"]]);
+        // With no files at all the empty list is the list, and is published.
+        assert_eq!(publish(&[] as &[&str], windows("a")), Ok(Some(None)));
     }
 
     #[test]

@@ -505,7 +505,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   removal it reports but this did not read), that session is aborted, so the list shown
   stays, and new sessions try the list without one file at a time (`publish`); the one
   that is taken shows which file was removed (only when it held files), and it leaves
-  Recents too. An error, as opposed to a refusal, aborts the open session and stops the
+  Recents too. A retry is never an empty list: taken, it would clear what Windows holds
+  against the removed file without showing which, so the old list stays instead. An error, as opposed to a refusal, aborts the open session and stops the
   tries. Files of one name get their folder after
   the name, or the folder's whole path when that is shared or missing (`shortlist_labels`), and a Dock title doubles `&` (`menu_title`). Linux has no common dock menu for a running app (desktop
   file actions are fixed at install), so it shows none.

@@ -432,7 +432,7 @@ files not missing (`the_shortlist_is_the_five_newest_files_not_missing`); a file
 there opens, and one deleted since says so, is marked missing and leaves the list; a listed
 file gone when opened at start (a jump list item) is marked missing; a file taken off the
 jump list leaves Recents; an item's argument reads back as its path (spaces, `&`); a refused list is tried again
-without one file at a time, an empty list taken blames no file, and an error stops the
+without one file at a time, a retry never publishes an empty list, and an error stops the
 tries; files of
 one name are told apart by their folder, and a Dock title keeps its `&`. `handoff.rs` tests the
 single instance with real locks in folders of their own: files handed to a running
