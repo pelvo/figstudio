@@ -12,6 +12,80 @@ fn be32(v: &mut Vec<u8>, x: u32) {
 /// A face named "Bitmap" with 1000 units per em that maps U+0020 to glyph 1 with
 /// `space_advance`, and has no outline tables.
 pub(crate) fn bitmap_only(space_advance: u16) -> Vec<u8> {
+    font(space_advance, "Bitmap", 0x20, None, None)
+}
+
+/// Two PNG strikes of a synthetic emoji, to exercise colour decoding without installed fonts.
+pub(crate) fn colour_emoji(png: &[u8]) -> Vec<u8> {
+    emoji_strike(png, (0, 0), b"png ", false)
+}
+
+/// A real outline family, not a colour-family alias.
+pub(crate) fn outline_emoji() -> Vec<u8> {
+    font(1000, "Noto Emoji", 0x2764, None, Some((0, 0)))
+}
+
+pub(crate) fn emoji_strike(
+    png: &[u8],
+    origin: (i16, i16),
+    tag: &[u8; 4],
+    outline: bool,
+) -> Vec<u8> {
+    emoji_strikes(png, origin, [tag, tag], outline.then_some((0, 0)))
+}
+
+pub(crate) fn emoji_strikes(
+    png: &[u8],
+    origin: (i16, i16),
+    tags: [&[u8; 4]; 2],
+    contour_origin: Option<(i16, i16)>,
+) -> Vec<u8> {
+    sbix_font(png, origin, &[(16, tags[0]), (64, tags[1])], contour_origin)
+}
+
+pub(crate) fn emoji_many_strikes(png: &[u8], ppems: &[u16]) -> Vec<u8> {
+    let strikes: Vec<_> = ppems.iter().map(|p| (*p, b"png ")).collect();
+    sbix_font(png, (0, 0), &strikes, None)
+}
+
+fn sbix_font(
+    png: &[u8],
+    origin: (i16, i16),
+    strikes: &[(u16, &[u8; 4])],
+    contour_origin: Option<(i16, i16)>,
+) -> Vec<u8> {
+    let mut sbix = Vec::new();
+    for v in [1, 1] {
+        be16(&mut sbix, v);
+    }
+    be32(&mut sbix, strikes.len() as u32);
+    for i in 0..strikes.len() {
+        be32(
+            &mut sbix,
+            (8 + 4 * strikes.len() + i * (24 + png.len())) as u32,
+        );
+    }
+    for (ppem, tag) in strikes {
+        be16(&mut sbix, *ppem);
+        be16(&mut sbix, 72);
+        for offset in [16, 16, (24 + png.len()) as u32] {
+            be32(&mut sbix, offset);
+        }
+        sbix.extend(origin.0.to_be_bytes());
+        sbix.extend(origin.1.to_be_bytes());
+        sbix.extend(*tag);
+        sbix.extend(png);
+    }
+    font(1000, "Noto Color Emoji", 0x2764, Some(sbix), contour_origin)
+}
+
+fn font(
+    space_advance: u16,
+    family: &str,
+    codepoint: u16,
+    sbix: Option<Vec<u8>>,
+    contour_origin: Option<(i16, i16)>,
+) -> Vec<u8> {
     let mut head = Vec::new();
     be32(&mut head, 0x0001_0000); // version
     be32(&mut head, 0); // fontRevision
@@ -51,12 +125,12 @@ pub(crate) fn bitmap_only(space_advance: u16) -> Vec<u8> {
         be16(&mut sub, v); // format, length, language, segCountX2, search fields
     }
     for v in [
-        0x20,
+        codepoint,
         0xFFFF,
         0,
-        0x20,
+        codepoint,
         0xFFFF,
-        1u16.wrapping_sub(0x20),
+        1u16.wrapping_sub(codepoint),
         1,
         0,
         0,
@@ -71,7 +145,7 @@ pub(crate) fn bitmap_only(space_advance: u16) -> Vec<u8> {
     cmap.extend(sub);
 
     // name: family (ID 1) and PostScript name (ID 6); fontdb skips a face without both.
-    let family: Vec<u8> = "Bitmap".encode_utf16().flat_map(u16::to_be_bytes).collect();
+    let family: Vec<u8> = family.encode_utf16().flat_map(u16::to_be_bytes).collect();
     let mut name = Vec::new();
     for v in [0, 2, 6 + 2 * 12] {
         be16(&mut name, v);
@@ -83,7 +157,7 @@ pub(crate) fn bitmap_only(space_advance: u16) -> Vec<u8> {
     }
     name.extend(family);
 
-    let tables: [(&[u8; 4], Vec<u8>); 6] = [
+    let mut tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
         (b"cmap", cmap),
         (b"head", head),
         (b"hhea", hhea),
@@ -91,6 +165,31 @@ pub(crate) fn bitmap_only(space_advance: u16) -> Vec<u8> {
         (b"maxp", maxp),
         (b"name", name),
     ];
+    if let Some((x, y)) = contour_origin {
+        // One rectangular contour, glyph 0 empty; origin is deliberately configurable.
+        let mut glyf = Vec::new();
+        for n in [1, x, y, x + 800, y + 800, 3, 0] {
+            be16(&mut glyf, n as u16);
+        }
+        glyf.extend([1; 4]); // on-curve, signed 16-bit x/y deltas
+        for n in [x, 800, 0, -800, y, 0, 800, 0] {
+            glyf.extend(n.to_be_bytes());
+        }
+        let mut loca = Vec::new();
+        for n in [0, 0, glyf.len() as u16 / 2] {
+            be16(&mut loca, n);
+        }
+        tables.push((b"glyf", glyf));
+        tables.push((b"loca", loca));
+    }
+    if let Some(sbix) = sbix {
+        tables.push((b"sbix", sbix));
+    }
+    sfnt(tables)
+}
+
+pub(crate) fn sfnt(mut tables: Vec<(&[u8; 4], Vec<u8>)>) -> Vec<u8> {
+    tables.sort_by_key(|(tag, _)| *tag);
     let mut out = Vec::new();
     be32(&mut out, 0x0001_0000);
     for v in [tables.len() as u16, 64, 2, 32] {

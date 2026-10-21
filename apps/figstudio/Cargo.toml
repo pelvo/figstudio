@@ -21,6 +21,8 @@ figstudio-fig = { workspace = true }
 figstudio-mcp-core = { workspace = true }
 egui = { workspace = true }
 web-time = { workspace = true }
+# Validate outline fonts before the browser installs fetched fallback faces; also used natively.
+ttf-parser = { workspace = true }
 # The browser's `?renderer=cpu|gpu` query (gpu_scenes.rs); the URL crate's own parser.
 form_urlencoded = "1.2"
 # The caller room is derived from the executor secret (mcp_pair.rs): RustCrypto's SHA-256,
@@ -64,9 +66,6 @@ pollster = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11", "persistence"] }
 rfd = { workspace = true }
 fontdb = { workspace = true }
-# Checking that a face can outline glyphs (bitmap-only color emoji cannot) when picking the
-# UI's symbols fallback (theme.rs).
-ttf-parser = { workspace = true }
 # The platform's config folder for saved space styles (spaces.rs).
 dirs = "6"
 # Recents: reading the page pictures back (already built for figstudio-render).
@@ -101,7 +100,7 @@ wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-rayon = { version = "1.3", features = ["no-bundler"] }
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["AbortController", "AbortSignal", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "File", "Headers", "History", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "Location", "MediaQueryList", "EventTarget", "Navigator", "RequestInit", "Response", "Storage", "Url", "Window", "WebSocket", "MessageEvent", "CloseEvent", "Event"] }
+web-sys = { version = "0.3", features = ["AbortController", "AbortSignal", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "File", "Headers", "History", "HtmlAnchorElement", "HtmlCanvasElement", "OffscreenCanvas", "OffscreenCanvasRenderingContext2d", "ImageData", "TextMetrics", "HtmlElement", "Location", "MediaQueryList", "EventTarget", "Navigator", "RequestInit", "Response", "Storage", "Url", "Window", "WebSocket", "MessageEvent", "CloseEvent", "Event"] }
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 muda = { version = "0.21.2", default-features = false }

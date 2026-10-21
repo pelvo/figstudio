@@ -241,6 +241,14 @@ fn print_tree(doc: &Document, id: Guid, indent: usize, depth: usize) {
     }
 }
 
+mod emoji_report;
+
+fn emoji_counts(doc: &Document, system_fonts: bool) -> figstudio_render::Stats {
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = system_fonts;
+    renderer.emoji_counts(doc)
+}
+
 fn run(args: Args) -> Result<()> {
     if args.command == "doctor" {
         // Opens the file itself, to time it and to keep the path out of any error.
@@ -289,6 +297,8 @@ fn run(args: Args) -> Result<()> {
             }
             let components = doc.nodes.iter().filter(|n| n.kind == "SYMBOL").count();
             println!("components: {components}");
+            let counts = emoji_counts(&doc, args.system_fonts);
+            println!("emoji:    {}", emoji_report::summary(&counts));
         }
         "tree" => {
             let page = pick_page(&doc, args.page.as_deref())?;

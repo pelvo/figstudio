@@ -1644,6 +1644,7 @@ dependencies = [
  "image",
  "pollster 0.4.0",
  "rayon",
+ "read-fonts",
  "tracing",
  "ttf-parser",
  "vello_cpu 0.3.0",

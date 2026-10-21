@@ -356,7 +356,7 @@ async fn read_raw(file: &web_sys::File, entry: &Entry) -> anyhow::Result<Vec<u8>
 }
 
 /// GETs `url` (same origin) and returns the body.
-async fn fetch_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
+pub(crate) async fn fetch_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
     let js = |e: JsValue| anyhow::anyhow!("{e:?}");
     let window = web_sys::window().ok_or_else(|| anyhow::anyhow!("no window"))?;
     let response: web_sys::Response =
@@ -560,6 +560,7 @@ pub struct Inbox {
     pub font_choice: Variant,
     /// A Hangul-only file is open this session, so KR is in use instead of `font_choice`.
     pub korean_override: bool,
+    pub symbols: crate::symbols::Loader,
 }
 
 impl std::fmt::Debug for Inbox {
@@ -586,6 +587,7 @@ impl Inbox {
             font_state: FontState::NotNeeded,
             font_choice: cjk_default(),
             korean_override: false,
+            symbols: crate::symbols::Loader::default(),
         }
     }
 

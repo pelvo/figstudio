@@ -11,7 +11,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use figstudio_fig::{Document, Guid};
 use figstudio_render::images::{ImageRequest, Images};
-use figstudio_render::{Renderer, Stats, node_bounds};
+use figstudio_render::{Stats, node_bounds};
 
 use crate::source::Source;
 use crate::tab::Tab;
@@ -98,7 +98,7 @@ pub fn render(
                 figstudio_mcp_core::region_shot::viewport(doc, page, rect, f64::from(zoom))
                     .context("Region is too small to copy as an image")?;
             let read = |want: &ImageRequest| source.and_then(|s| s.read(&want.entry).ok());
-            let frame = Renderer::with_images(images).render_complete(doc, page, &viewport, read);
+            let frame = crate::renderer(images).render_complete(doc, page, &viewport, read);
             (frame, "region".to_string())
         }
         Job::Node(id) => {
