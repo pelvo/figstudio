@@ -198,3 +198,68 @@ test("of two picked files with one name, the card keeps the handle of the one th
   });
   expect(kept).toBe(size);
 });
+
+// Relocating a moved card: only a file its own picker returns, with a handle, takes the
+// card's place (reviews of #47). The fake picker answers from `window.answers`: "top"
+// (OPFS structure.fig), "other" (other/structure.fig), "cancel" or "refuse".
+test.describe("relocating a moved card", () => {
+  test.beforeEach(async ({ context }) => {
+    await context.addInitScript(() => {
+      window.answers = [];
+      window.calls = 0;
+      window.showOpenFilePicker = async () => {
+        window.calls += 1;
+        const next = window.answers.shift();
+        if (next === "cancel") throw new DOMException("cancelled", "AbortError");
+        if (next === "refuse") throw new DOMException("refused", "SecurityError");
+        const root = await navigator.storage.getDirectory();
+        const dir = next === "other" ? await root.getDirectoryHandle("other") : root;
+        return [await dir.getFileHandle("structure.fig")];
+      };
+    });
+  });
+
+  // Opens structure.fig with a handle, closes it and deletes it: its card is missing next.
+  const moved = async (page) => {
+    await start(page);
+    const b64 = (await readFile(fixture)).toString("base64");
+    await page.evaluate(async (b64) => {
+      const root = await navigator.storage.getDirectory();
+      for (const dir of [root, await root.getDirectoryHandle("other", { create: true })]) {
+        const out = await (await dir.getFileHandle("structure.fig", { create: true })).createWritable();
+        await out.write(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+        await out.close();
+      }
+    }, b64);
+    const answer = (list) => page.evaluate((list) => { window.answers = list; }, list);
+    const called = (n) => () =>
+      expect.poll(() => page.evaluate(() => window.calls), { timeout: 3000 })
+        .toBeGreaterThanOrEqual(n).then(() => true, () => false);
+    await answer(["top"]);
+    await pressOpen(page, called(1));
+    await expect.poll(async () => (await stored(page)).thumbs, { timeout: 60_000 }).toEqual(["h1"]);
+    await page.keyboard.press(close);
+    await page.evaluate(async () => {
+      await (await navigator.storage.getDirectory()).removeEntry("structure.fig");
+    });
+    return { answer, called };
+  };
+  const handles = async (page) => (await stored(page)).list.map((e) => e.handle ?? null);
+
+  test("a cancelled relocate leaves the card to a later open of that name", async ({ page }) => {
+    const { answer, called } = await moved(page);
+    await answer(["cancel"]);
+    await clickCard(page, called(2));
+    await answer(["other"]);
+    await pressOpen(page, called(3));
+    await expect.poll(() => handles(page), { timeout: 30_000 }).toEqual([2, 1]);
+  });
+
+  test("a relocate the browser refuses keeps the card and its handle", async ({ page }) => {
+    const { answer } = await moved(page);
+    // Refused in its folder and again without: the plain file input opens instead.
+    await answer(["refuse", "refuse"]);
+    await clickCard(page, () => chooser(page));
+    await expect.poll(() => handles(page), { timeout: 30_000 }).toEqual([null, 1]);
+  });
+});

@@ -208,13 +208,15 @@ impl Recents {
 
     /// `new` is `old`'s file, found moved and picked where it is now (the browser gives it a
     /// new handle): `old`'s card, if still missing, gives way. Only that card: two files may
-    /// share a name.
+    /// share a name. A card with a handle stays for a file without one (the plain picker),
+    /// which could not open it again.
     #[cfg_attr(
         not(any(target_arch = "wasm32", test)),
         expect(dead_code, reason = "the browser picks a moved file again")
     )]
     pub fn replace_moved(&mut self, old: &Id, new: &Id) {
-        if old.path != new.path || old == new || !self.missing.contains(old) {
+        let loses_handle = old.handle.is_some() && new.handle.is_none();
+        if old.path != new.path || old == new || loses_handle || !self.missing.contains(old) {
             return;
         }
         self.entries.retain(|e| e.id() != *old);
@@ -1107,6 +1109,16 @@ mod tests {
         // A card back in place is not replaced.
         r.replace_moved(&at(3), &at(4));
         assert_eq!(r.entries().len(), 3);
+        // Nor one with a handle by a file without (the plain picker, when the browser's
+        // own one is refused): its handle would be lost.
+        let plain = Id {
+            path: "a.fig".into(),
+            handle: None,
+        };
+        r.add(plain.clone(), None, 35, true);
+        r.replace_moved(&at(2), &plain);
+        assert!(r.is_missing(&at(2)), "the card and its handle stay");
+        r.remove(&plain);
         // Only the next file picked replaces it.
         r.set_missing(&at(3), true);
         r.add(at(5), None, 40, true);

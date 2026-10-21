@@ -1221,6 +1221,7 @@ impl App {
 
     /// Shows the Recents page; open files stay open, after it is the first.
     pub(crate) fn show_recents(&mut self) {
+        self.recents_from = self.tabs.get(self.active).map(|t| t.id);
         self.active = self.tabs.len();
     }
 

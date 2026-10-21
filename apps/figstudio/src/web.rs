@@ -481,9 +481,10 @@ async fn pick(tx: Sender<Picked>, ctx: egui::Context, moved: Option<u32>) {
         return;
     };
     for f in files {
+        // No handle to take the moved card's place (`Recents::replace_moved`).
         let origin = Origin {
             handle: None,
-            replaces: moved,
+            replaces: None,
         };
         let _ = tx.send(open_file(f.inner().clone(), origin).await);
         ctx.request_repaint();

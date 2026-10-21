@@ -485,7 +485,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   window is Slate, no tool pill or properties, the title is the app's, the sidebar says
   "Recent files"). The page is a place after the last space: Next space goes to the first,
   Previous to the last, closing a space keeps it, a dot or a card leaves it. On the page
-  (also with no file open) the + opens the picker as before.
+  (also with no file open) the + opens the picker as before. The workspace saved there
+  keeps the file the + was pressed on as its active one (`App::recents_from`).
   Beside the app, the newest five files not known to be missing (`Recents::shortlist`) are
   listed too, and `NativeMenu::set_recent` updates them when they change. On macOS they are
   the Dock icon's menu: a muda submenu whose `NSMenu` `dock_mac.rs` hands to AppKit by
@@ -518,7 +519,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   refused permission toasts to click again. Picking the moved file gives a new handle; the
   missing card it was picked for gives way to it (`Recents::replace_moved`, only that one:
   two files may share a name). Which card travels with that picker's files (`web::Origin`,
-  on the pick's `Upload` record), so a cancelled picker or another open replaces nothing. Without the picker
+  on the pick's `Upload` record), so a cancelled picker or another open replaces nothing, and
+  a file without a handle (the plain picker, when the browser refuses its own) never
+  replaces a card with one. Without the picker
   (Firefox, Safari) Open uses the plain file input, a card opens the picker with a toast
   naming the file, and its row says "Opens the file picker". There is no Show in Finder.
   Pictures render on the rayon pool (the same 640×400 job as desktop) and are stored as PNG.

@@ -497,7 +497,9 @@ Recents in the browser has two Playwright specs in `web/e2e` (`npm i --no-save
   shows the file chooser. With a fake picker returning an OPFS handle (Chrome, Edge) the
   card reads the file through its handle without a picker, and after the file is deleted
   it opens the picker with `startIn`. Of two files of one name picked together, the card
-  keeps the handle of the one that opened. The canvas is driven by position (1280×800).
+  keeps the handle of the one that opened. Relocating a moved card: a cancelled picker
+  leaves the card to a later open of that name, and when the browser refuses its picker the
+  plain input's file is listed beside the card, which keeps its handle. The canvas is driven by position (1280×800).
 
 The relay spec deletes `showOpenFilePicker` for the same reason, so Ctrl+O shows the plain
 input Playwright fills. `npx playwright install webkit` lets the app spec's no-handle steps

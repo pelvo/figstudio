@@ -376,6 +376,8 @@ struct App {
     onboarding: onboarding::Onboarding,
     /// Files opened before: the Recents page when none is open (`recents.rs`).
     recents: recents::Recents,
+    /// The file the Recents page was shown from with the + (still the workspace's).
+    recents_from: Option<u64>,
     /// Startup files still arriving from the decode workers.
     restoring: Option<session::Restore>,
     workspace_store: session_store::Store,
@@ -499,6 +501,7 @@ impl App {
                 !cfg!(test),
             ),
             // Tests never read or write the user's list.
+            recents_from: None,
             recents: if cfg!(test) {
                 recents::Recents::memory()
             } else {

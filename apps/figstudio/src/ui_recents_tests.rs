@@ -402,3 +402,17 @@ fn a_listed_file_gone_when_opened_at_start_is_marked_missing() {
         "it leaves the jump list"
     );
 }
+
+#[test]
+fn the_workspace_saved_on_the_recents_page_keeps_the_file_it_was_on() {
+    let mut h = two_files();
+    let shown = h.state().tabs[1].path.clone();
+    h.get_by_label("Open file…").click();
+    h.run_steps(3);
+    assert!(on_recents(h.state()));
+    assert_eq!(
+        crate::session::Session::capture(h.state()).active(),
+        Some(std::path::absolute(shown).unwrap().as_path()),
+        "the next launch shows the file the + was pressed on"
+    );
+}
