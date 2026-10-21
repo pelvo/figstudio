@@ -42,6 +42,17 @@ thread_local! {
     static CANNOT_WITHDRAW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Tests: looking whether a request is still there fails.
     static CANNOT_LOOK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Tests: the window cannot delete a request it took.
+    static CANNOT_REMOVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Deletes a request the window took.
+fn remove(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if CANNOT_REMOVE.with(std::cell::Cell::get) {
+        return Err(std::io::Error::other("held"));
+    }
+    fs::remove_file(path)
 }
 
 /// Whether `request` is still waiting (a launch looking at its own request).
@@ -404,7 +415,13 @@ fn sweep(inbox: &Path) {
         let old = fs::metadata(&path)
             .and_then(|m| m.modified())
             .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > DECIDED_KEPT));
-        if old && path.extension().is_some_and(|e| e == "decided") {
+        // Only once nothing waits on it: a request that comes back must find its mark.
+        let waits = |ext| fs::exists(path.with_extension(ext)).unwrap_or(true);
+        if old
+            && path.extension().is_some_and(|e| e == "decided")
+            && !waits("json")
+            && !waits("taken")
+        {
             let _ = fs::remove_file(&path);
         }
     }
@@ -435,52 +452,53 @@ fn take(inbox: &Path) -> Vec<Vec<PathBuf>> {
         if fs::rename(&path, &mine).is_err() {
             continue;
         }
-        // Not openable now (a scanner may hold a new file a while): back for a later look,
-        // without holding up the window, and before anything is decided.
-        let file = match File::open(&mine) {
-            Ok(file) => file,
+        // Not openable or readable now (a scanner may hold a new file a while): back for a
+        // later look, without holding up the window, and with nothing decided.
+        let put_back = || {
+            if let Err(e) = fs::rename(&mine, &path) {
+                tracing::warn!("single instance: a request was not put back: {e}");
+            }
+        };
+        let Ok(file) = File::open(&mine) else {
+            put_back();
+            continue;
+        };
+        let mut text = String::new();
+        let read = {
+            use std::io::Read as _;
+            file.take(MAX_REQUEST).read_to_string(&mut text)
+        };
+        let request = match read {
+            Ok(_) => serde_json::from_str::<Request>(&text).ok(),
+            // Not text: not a launch's request.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => None,
             Err(_) => {
-                if let Err(e) = fs::rename(&mine, &path) {
-                    tracing::warn!("single instance: a request was not put back: {e}");
-                }
+                put_back();
                 continue;
             }
+        };
+        // Not a launch's request (not text, or not one): kept aside, undecided.
+        let Some(request) = request else {
+            tracing::warn!("single instance: a request was not readable");
+            continue;
         };
         let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
         match decide(inbox, id) {
-            Ok(()) => {}
-            // Its launch gave up on it and opened the files itself.
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                drop(file);
-                let _ = fs::remove_file(&mine);
-                let _ = fs::remove_file(path.with_extension("decided"));
-                continue;
-            }
-            // Nothing can be decided now: back for a later look.
-            Err(_) => {
-                drop(file);
-                let _ = fs::rename(&mine, &path);
-                continue;
-            }
-        }
-        // Launches write at most `MAX_REQUEST`, whole, so this reads all of it.
-        let request = {
-            use std::io::Read as _;
-            let mut text = String::new();
-            file.take(MAX_REQUEST)
-                .read_to_string(&mut text)
-                .ok()
-                .and_then(|_| serde_json::from_str::<Request>(&text).ok())
-        };
-        match request {
-            Some(request) => {
-                let _ = fs::remove_file(&mine);
+            Ok(()) => {
+                let _ = remove(&mine);
                 taken.push(request.open);
             }
-            // Not a launch's request (not text, or not one): kept aside, not read again.
-            None => tracing::warn!("single instance: a request was not readable"),
+            // Its launch gave up on it and opened the files itself. The mark goes only once
+            // the request has, so a request that comes back is not opened again.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if remove(&mine).is_ok() {
+                    let _ = fs::remove_file(path.with_extension("decided"));
+                }
+            }
+            // Nothing can be decided now: back for a later look.
+            Err(_) => put_back(),
         }
     }
     sweep(inbox);
@@ -916,6 +934,58 @@ mod tests {
         assert!(matches!(claim(dir.path()), Start::Alone));
         // And it holds no lock: the next one is not kept waiting on it.
         assert!(!matches!(claim(dir.path()), Start::Running(_)));
+    }
+
+    /// A request the window cannot read is not decided, so a later look (or the next
+    /// figstudio) can still open it.
+    #[test]
+    fn a_request_is_decided_only_once_it_was_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = first(dir.path()).watch(|| {});
+        let request = dir.path().join("inbox").join("9-9.json");
+        fs::write(&request, "not a request").unwrap();
+        assert!(inbox.take().is_empty());
+        assert!(!request.with_extension("decided").exists());
+    }
+
+    /// A request its launch opened, which the window cannot delete, keeps its mark, so it
+    /// is not opened again when it comes back.
+    #[test]
+    fn a_request_the_launch_opened_keeps_its_mark_until_it_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = first(dir.path()).watch(|| {});
+        let request = dir.path().join("inbox").join("9-9.json");
+        fs::write(&request, r#"{"open":["/a.fig"]}"#).unwrap();
+        fs::write(request.with_extension("decided"), "").unwrap();
+        CANNOT_REMOVE.with(|c| c.set(true));
+        assert!(inbox.take().is_empty());
+        CANNOT_REMOVE.with(|c| c.set(false));
+        assert!(request.with_extension("decided").exists());
+        // Back again (as `recover` would do), it is still not opened.
+        fs::rename(request.with_extension("taken"), &request).unwrap();
+        assert!(inbox.take().is_empty());
+    }
+
+    #[test]
+    fn an_old_mark_stays_while_its_request_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        fs::write(inbox.join("9-9.json"), r#"{"open":["/a.fig"]}"#).unwrap();
+        let mark = inbox.join("9-9.decided");
+        fs::write(&mark, "").unwrap();
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        File::options()
+            .write(true)
+            .open(&mark)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        sweep(&inbox);
+        assert!(mark.exists());
+        fs::remove_file(inbox.join("9-9.json")).unwrap();
+        sweep(&inbox);
+        assert!(!mark.exists(), "gone once nothing waits on it");
     }
 
     #[test]

@@ -534,10 +534,12 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   (`create_new`, so only one can): the launch opens the files if it made it, and a window
   that takes the request opens them only if it did, so they open once. If the mark cannot
   be made, the launch leaves the request queued and the window decides when it takes it.
-  A window keeps its marks two minutes (longer than any launch waits). A request the window
-  cannot open when it takes it goes back for a later look, before anything is decided (no
-  waiting on the window's thread); one that is not text, or does not parse, is kept
-  aside. The holder writes its id before it clears what an
+  The window decides only once it has read and parsed the request; one it cannot open or
+  read goes back for a later look with nothing decided (no waiting on the window's
+  thread), and one that is not text, or does not parse, is kept aside undecided. When the
+  launch decided first, the window drops the request and removes the mark only once the
+  request is gone. A mark is swept after two minutes (longer than any launch waits), and
+  only when no request waits on it. The holder writes its id before it clears what an
   ended figstudio left (if it cannot, it takes no files and drops the lock), and removes `ready` and `holder` when it ends normally, so a stale
   pair is left only by a crash (a launch in the moment between the lock and that write
   could still read one). Not taken in time, too large for one request (1 MiB), or not
