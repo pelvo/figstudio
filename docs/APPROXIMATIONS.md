@@ -115,6 +115,9 @@ Counts are per visible stored emoji glyph, not per text node; not included in th
   `read-fonts` for a single walk of CBDT/CBLC, bdat/bloc and EBDT/EBLC size records,
   and `image` for PNG decoding, bounded to
   1024 pixels per side and 8 MiB decoder allocation; encoded strikes are capped at 4 MiB.
+  Native caches retain only font/strike metadata and lazily decoded images, not copied PNG
+  payloads. Character hits refresh LRU recency; decoded strikes have bounded retention too,
+  so an over-budget font cannot force whole-character reallocation on every frame.
   Placement uses strike pixel origin and ppem at the stored font size and baseline. sbix
   adds the contour's `(xMin, yMin)` in design units; contourless sbix and CBDT do not.
   Draws retain node transforms, parent clips and paint/node opacity. Emoji shadows use a

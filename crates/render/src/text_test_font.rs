@@ -40,22 +40,40 @@ pub(crate) fn emoji_strikes(
     tags: [&[u8; 4]; 2],
     contour_origin: Option<(i16, i16)>,
 ) -> Vec<u8> {
+    sbix_font(png, origin, &[(16, tags[0]), (64, tags[1])], contour_origin)
+}
+
+pub(crate) fn emoji_many_strikes(png: &[u8], ppems: &[u16]) -> Vec<u8> {
+    let strikes: Vec<_> = ppems.iter().map(|p| (*p, b"png ")).collect();
+    sbix_font(png, (0, 0), &strikes, None)
+}
+
+fn sbix_font(
+    png: &[u8],
+    origin: (i16, i16),
+    strikes: &[(u16, &[u8; 4])],
+    contour_origin: Option<(i16, i16)>,
+) -> Vec<u8> {
     let mut sbix = Vec::new();
     for v in [1, 1] {
         be16(&mut sbix, v);
     }
-    for v in [2, 16, (16 + 24 + png.len()) as u32] {
-        be32(&mut sbix, v);
+    be32(&mut sbix, strikes.len() as u32);
+    for i in 0..strikes.len() {
+        be32(
+            &mut sbix,
+            (8 + 4 * strikes.len() + i * (24 + png.len())) as u32,
+        );
     }
-    for (ppem, tag) in [16, 64].into_iter().zip(tags) {
-        be16(&mut sbix, ppem);
+    for (ppem, tag) in strikes {
+        be16(&mut sbix, *ppem);
         be16(&mut sbix, 72);
         for offset in [16, 16, (24 + png.len()) as u32] {
             be32(&mut sbix, offset);
         }
         sbix.extend(origin.0.to_be_bytes());
         sbix.extend(origin.1.to_be_bytes());
-        sbix.extend(tag);
+        sbix.extend(*tag);
         sbix.extend(png);
     }
     font(1000, "Noto Color Emoji", 0x2764, Some(sbix), contour_origin)

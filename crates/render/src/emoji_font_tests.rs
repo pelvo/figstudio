@@ -1,4 +1,5 @@
 use super::*;
+use crate::emoji::Glyph;
 use image::ImageEncoder as _;
 #[path = "emoji_bitmap_test_font.rs"]
 mod bitmap_font;
@@ -22,16 +23,16 @@ fn synthetic_sbix_decodes_colour_and_chooses_the_nearest_strike() {
     assert_eq!(strikes(&face, id).len(), 2);
     let mut db = Database::new();
     db.load_font_data(data);
-    let resolved = resolve(&db, '❤', 30).unwrap();
+    let mut resolved = resolve(&db, '❤', 30).unwrap();
     assert!(matches!(
-        resolved.glyph(50),
+        resolved.glyph(&db, 50),
         Some(Glyph::Bitmap { ppem: 64, .. })
     ));
     let Some(Glyph::Bitmap {
         image: pixmap,
         ppem: 16,
         ..
-    }) = resolved.glyph(30)
+    }) = resolved.glyph(&db, 30)
     else {
         panic!("missing sbix colour glyph")
     };
@@ -63,12 +64,12 @@ fn embedded_bitmap_tables(tags: (&[u8; 4], &[u8; 4])) {
         );
         let mut db = Database::new();
         db.load_font_data(data);
-        let resolved =
+        let mut resolved =
             resolve(&db, '❤', 16).unwrap_or_else(|| panic!("missing {tags:?}, {ppems:?}"));
         for requested in [16, 64] {
             let Some(Glyph::Bitmap {
                 image, ppem, x, y, ..
-            }) = resolved.glyph(requested)
+            }) = resolved.glyph(&db, requested)
             else {
                 panic!("must decode colour")
             };

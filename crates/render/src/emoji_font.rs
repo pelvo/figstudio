@@ -1,8 +1,5 @@
 //! Native colour font lookup and bounded PNG decoding.
-use std::{
-    io::Cursor,
-    sync::{Arc, OnceLock},
-};
+use std::{io::Cursor, sync::Arc};
 
 use fontdb::{Database, Family, Query};
 use ttf_parser::{Face, GlyphId, RasterGlyphImage, RasterImageFormat};
@@ -12,7 +9,7 @@ use vello_cpu::{
     peniko::ImageAlphaType,
 };
 
-use crate::{emoji::Glyph, text::Builder};
+use crate::text::Builder;
 
 const FAMILIES: &[&str] = &[
     "Apple Color Emoji",
@@ -22,59 +19,14 @@ const FAMILIES: &[&str] = &[
     "EmojiOne Color",
 ];
 
-pub(crate) struct Resolved {
-    strikes: Vec<Strike>,
-    mono: Option<Glyph>,
-}
-
-struct Strike {
-    data: Vec<u8>,
-    image: OnceLock<Option<Arc<Pixmap>>>,
-    x: i16,
-    y: i16,
-    ppem: u16,
-    width: u16,
-    height: u16,
-    origin: (f64, f64),
-}
-
-impl Resolved {
-    pub(crate) fn glyph(&self, pixels: u16) -> Option<Glyph> {
-        let mut strikes: Vec<_> = self.strikes.iter().collect();
-        strikes.sort_by_key(|s| (pixels.abs_diff(s.ppem), std::cmp::Reverse(s.ppem)));
-        for s in strikes {
-            let image = s.image.get_or_init(|| {
-                let image = decode_png(&s.data)?;
-                (image.width() == s.width && image.height() == s.height).then_some(image)
-            });
-            if let Some(image) = image {
-                return Some(Glyph::Bitmap {
-                    image: image.clone(),
-                    x: f64::from(s.x),
-                    y: f64::from(s.y),
-                    ppem: s.ppem,
-                    origin: s.origin,
-                });
-            }
-        }
-        self.mono.clone()
-    }
-
-    pub(crate) fn bytes(&self) -> usize {
-        self.strikes
-            .iter()
-            .map(|s| {
-                s.data.len()
-                    + s.image
-                        .get()
-                        .and_then(Option::as_ref)
-                        .map_or(0, |p| p.data_as_u8_slice().len())
-            })
-            .sum()
-    }
-}
+#[path = "emoji_font_cache.rs"]
+mod cache;
+pub(crate) use cache::CACHED_BYTES;
+pub(crate) use cache::Resolved;
 
 pub(crate) fn resolve(db: &Database, ch: char, pixels: u16) -> Option<Resolved> {
+    #[cfg(test)]
+    RESOLVES.set(RESOLVES.get() + 1);
     let mut mono = None;
     for name in FAMILIES.iter().chain(crate::text::SYMBOL_FAMILIES) {
         let Some(id) = db.query(&Query {
@@ -86,12 +38,12 @@ pub(crate) fn resolve(db: &Database, ch: char, pixels: u16) -> Option<Resolved> 
         let glyph = db
             .with_face_data(id, |bytes, index| {
                 let face = Face::parse(bytes, index).ok()?;
-                let id = face.glyph_index(ch)?;
-                from_face(&face, id, pixels)
+                let glyph_id = face.glyph_index(ch)?;
+                from_face(db, &face, id, glyph_id, pixels)
             })
             .flatten();
         if let Some(resolved) = glyph {
-            if !resolved.strikes.is_empty() {
+            if resolved.is_bitmap() {
                 return Some(resolved);
             }
             if mono.is_none() {
@@ -102,42 +54,20 @@ pub(crate) fn resolve(db: &Database, ch: char, pixels: u16) -> Option<Resolved> 
     mono
 }
 
-fn from_face(face: &Face<'_>, id: GlyphId, pixels: u16) -> Option<Resolved> {
-    let mut resolved = Resolved {
-        strikes: Vec::new(),
-        mono: None,
-    };
-    for (s, sbix) in strikes(face, id) {
-        let origin = if sbix {
-            face.glyph_bounding_box(id)
-                .map(|b| {
-                    let upem = f64::from(face.units_per_em());
-                    (f64::from(b.x_min) / upem, f64::from(b.y_min) / upem)
-                })
-                .unwrap_or_default()
-        } else {
-            (0.0, 0.0)
-        };
-        resolved.strikes.push(Strike {
-            data: s.data.to_vec(),
-            image: OnceLock::new(),
-            x: s.x,
-            y: s.y,
-            ppem: s.pixels_per_em,
-            width: s.width,
-            height: s.height,
-            origin,
-        });
-    }
-    if resolved.glyph(pixels).is_some() {
+fn from_face(
+    db: &Database,
+    face: &Face<'_>,
+    font: fontdb::ID,
+    id: GlyphId,
+    pixels: u16,
+) -> Option<Resolved> {
+    let mut resolved = Resolved::new(face, font, id);
+    if resolved.glyph(db, pixels).is_some() {
         return Some(resolved);
     }
     let mut outline = monochrome(face, id)?;
     outline.apply_affine(Affine::scale(1.0 / f64::from(face.units_per_em())));
-    Some(Resolved {
-        strikes: Vec::new(),
-        mono: Some(Glyph::Mono(outline)),
-    })
+    Some(resolved.with_mono(outline))
 }
 
 fn monochrome(face: &Face<'_>, id: GlyphId) -> Option<BezPath> {
@@ -212,6 +142,7 @@ fn strikes<'a>(face: &'a Face<'a>, glyph: GlyphId) -> Vec<(RasterGlyphImage<'a>,
 #[cfg(test)]
 thread_local! {
     pub(crate) static DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static RESOLVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn decode_png(bytes: &[u8]) -> Option<Arc<Pixmap>> {
