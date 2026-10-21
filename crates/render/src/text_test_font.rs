@@ -167,6 +167,10 @@ fn font(
     if let Some(sbix) = sbix {
         tables.push((b"sbix", sbix));
     }
+    sfnt(tables)
+}
+
+pub(crate) fn sfnt(mut tables: Vec<(&[u8; 4], Vec<u8>)>) -> Vec<u8> {
     tables.sort_by_key(|(tag, _)| *tag);
     let mut out = Vec::new();
     be32(&mut out, 0x0001_0000);

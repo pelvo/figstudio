@@ -187,7 +187,7 @@ impl<'b> ttf_parser::colr::Painter<'b> for MonoLayers<'_, 'b> {
     }
 }
 
-/// Enumerate sbix directly; CBDT's public selector has an eight-bit ppem domain.
+/// Walk every size record once, including distinct records at the same ppem.
 /// Unsupported or corrupt strikes must not hide usable PNGs in the same face.
 fn strikes<'a>(face: &'a Face<'a>, glyph: GlyphId) -> Vec<(RasterGlyphImage<'a>, bool)> {
     let sbix = face
@@ -197,23 +197,16 @@ fn strikes<'a>(face: &'a Face<'a>, glyph: GlyphId) -> Vec<(RasterGlyphImage<'a>,
         .flat_map(|t| t.strikes)
         .filter_map(|s| s.get(glyph))
         .map(|s| (s, true));
-    let cbdt = face
-        .tables()
-        .cbdt
+    let embedded = crate::emoji_bitmap::strikes(face, glyph)
         .into_iter()
-        .flat_map(|t| (1..=255).filter_map(move |ppem| t.get(glyph, ppem)))
         .map(|s| (s, false));
-    let mut candidates: Vec<_> = sbix
-        .chain(cbdt)
+    sbix.chain(embedded)
         .filter(|(s, _)| {
             s.format == RasterImageFormat::PNG
                 && s.pixels_per_em > 0
                 && s.data.len() <= 4 * 1024 * 1024
         })
-        .collect();
-    candidates.sort_by_key(|(s, sbix)| (*sbix, s.pixels_per_em, s.data.as_ptr()));
-    candidates.dedup_by_key(|(s, sbix)| (*sbix, s.pixels_per_em, s.data.as_ptr()));
-    candidates
+        .collect()
 }
 
 #[cfg(test)]

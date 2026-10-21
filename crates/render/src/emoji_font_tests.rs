@@ -1,5 +1,7 @@
 use super::*;
 use image::ImageEncoder as _;
+#[path = "emoji_bitmap_test_font.rs"]
+mod bitmap_font;
 
 fn png(width: u32, height: u32) -> Vec<u8> {
     let rgba: Vec<u8> = (0..width * height)
@@ -41,6 +43,56 @@ fn synthetic_sbix_decodes_colour_and_chooses_the_nearest_strike() {
         ]
     );
     assert!(resolve(&db, 'A', 30).is_none());
+}
+
+fn embedded_bitmap_tables(tags: (&[u8; 4], &[u8; 4])) {
+    let good = png(2, 2);
+    for (ppems, corrupt) in [([16, 64], false), ([16, 16], true)] {
+        let data = bitmap_font::font(
+            tags,
+            [if corrupt { b"bad PNG" } else { &good }, &good],
+            ppems,
+        );
+        let face = Face::parse(&data, 0).unwrap();
+        let id = face.glyph_index('❤').unwrap();
+        let tables = face.tables();
+        let table = tables.cbdt.or(tables.bdat).or(tables.ebdt).unwrap();
+        assert!(
+            table.get(id, 16).is_some(),
+            "fixture reaches the font library"
+        );
+        let mut db = Database::new();
+        db.load_font_data(data);
+        let resolved =
+            resolve(&db, '❤', 16).unwrap_or_else(|| panic!("missing {tags:?}, {ppems:?}"));
+        for requested in [16, 64] {
+            let Some(Glyph::Bitmap {
+                image, ppem, x, y, ..
+            }) = resolved.glyph(requested)
+            else {
+                panic!("must decode colour")
+            };
+            assert_eq!(ppem, if corrupt { 16 } else { requested });
+            assert_eq!((x, y), (1.0, 1.0));
+            assert_eq!((image.width(), image.height()), (2, 2));
+            assert_eq!(&image.data_as_u8_slice()[..4], &[0, 80, 200, 255]);
+        }
+    }
+}
+
+#[test]
+fn cbdt_walk_reaches_a_usable_duplicate_ppem_record() {
+    embedded_bitmap_tables((b"CBDT", b"CBLC"));
+}
+
+#[test]
+fn bdat_png_strikes_are_read() {
+    embedded_bitmap_tables((b"bdat", b"bloc"));
+}
+
+#[test]
+fn ebdt_png_strikes_are_read() {
+    embedded_bitmap_tables((b"EBDT", b"EBLC"));
 }
 
 #[test]

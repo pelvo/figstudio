@@ -108,7 +108,9 @@ Counts are per visible stored emoji glyph, not per text node; not included in th
   or a build without `system-fonts` and without an injected `EmojiSource`. Empty or
   transparent platform rasters are skipped. Skipped glyphs leave no box; truncated-away
   markers do not count. The browser's lazy monochrome font is UI-only.
-- Native colour PNG strikes use the existing `ttf-parser` and `image` crates, bounded to
+- Native colour PNG strikes use `ttf-parser` for sbix/outline lookup, Fontations
+  `read-fonts` for a single walk of CBDT/CBLC, bdat/bloc and EBDT/EBLC size records,
+  and `image` for PNG decoding, bounded to
   1024 pixels per side and 8 MiB decoder allocation; encoded strikes are capped at 4 MiB.
   Placement uses strike pixel origin and ppem at the stored font size and baseline. sbix
   adds the contour's `(xMin, yMin)` in design units; contourless sbix and CBDT do not.

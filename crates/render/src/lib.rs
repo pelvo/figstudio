@@ -12,6 +12,8 @@ mod emoji;
 mod emoji_source;
 pub use emoji_source::{EmojiRaster, EmojiSource};
 #[cfg(feature = "system-fonts")]
+mod emoji_bitmap;
+#[cfg(feature = "system-fonts")]
 mod emoji_font;
 #[cfg(all(test, feature = "system-fonts"))]
 mod emoji_review_tests;
