@@ -107,6 +107,8 @@ pub struct Stats {
     pub approximated_paints: usize,
     /// Inside or outside strokes drawn without clipping to their shape (vector-like nodes).
     pub approximated_strokes: usize,
+    /// Boolean operations drawn from operands because no usable computed geometry is stored.
+    pub approximated_booleans: usize,
     /// Inherited stored geometry or other ink lengths not recomputed for a uniform instance scale.
     pub approximated_instance_ink: usize,
     /// Layers skipped because they are outside the viewport or smaller than a pixel.
@@ -151,6 +153,7 @@ impl Stats {
             approximated_blends,
             approximated_paints,
             approximated_strokes,
+            approximated_booleans,
             approximated_instance_ink,
             culled,
             budget_exhausted,
@@ -181,6 +184,7 @@ impl Stats {
         self.approximated_blends = self.approximated_blends.max(*approximated_blends);
         self.approximated_paints = self.approximated_paints.max(*approximated_paints);
         self.approximated_strokes = self.approximated_strokes.max(*approximated_strokes);
+        self.approximated_booleans = self.approximated_booleans.max(*approximated_booleans);
         self.approximated_instance_ink = self
             .approximated_instance_ink
             .max(*approximated_instance_ink);
@@ -223,6 +227,10 @@ impl fmt::Display for Stats {
         note(self.approximated_blends, "blend modes approximated")?;
         note(self.approximated_paints, "paints approximated")?;
         note(self.approximated_strokes, "stroke alignments approximated")?;
+        note(
+            self.approximated_booleans,
+            "boolean operations approximated",
+        )?;
         note(self.approximated_instance_ink, "instance ink approximated")?;
         note(self.culled, "off screen")?;
         note(self.budget_exhausted, "layers skipped (work budget)")?;
@@ -1164,6 +1172,19 @@ impl Ctx<'_> {
         {
             fill_paths.push(GeomPath::plain(shape));
         }
+        let stroke_paths = geometry(
+            data,
+            "strokeGeometry",
+            &self.doc.blobs,
+            &mut self.stats.unsupported_paints,
+        );
+        let boolean_result = kind == "BOOLEAN_OPERATION"
+            && fill_paths
+                .iter()
+                .chain(&stroke_paths)
+                .any(|g| !g.path.elements().is_empty());
+        self.stats.approximated_booleans +=
+            usize::from(kind == "BOOLEAN_OPERATION" && !boolean_result);
         let emojis = if kind == "TEXT" && !stale_glyphs {
             self.emojis(data, world)
         } else {
@@ -1183,7 +1204,8 @@ impl Ctx<'_> {
             && (!emojis.is_empty()
                 || effects::approximate_silhouette(
                     data,
-                    !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
+                    (!boolean_result && !self.doc.children(node.id).is_empty())
+                        || kind == "INSTANCE",
                 ));
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
@@ -1261,7 +1283,7 @@ impl Ctx<'_> {
         // A frame that clips its content draws its stroke above its children; others below.
         let clips = kind != "TEXT" && clips_content(kind, data);
         if !clips {
-            self.draw_strokes(kind, data, fill_paths, world, (w, h));
+            self.draw_strokes(kind, data, (fill_paths, &stroke_paths), world, (w, h));
         }
 
         // Children.
@@ -1275,7 +1297,8 @@ impl Ctx<'_> {
                 self.draw_instance(data, world, path);
             } else if kind == "CONNECTOR" {
                 self.draw_connector(node, world);
-            } else {
+            } else if !boolean_result {
+                // A computed boolean paints its result, never its operand children.
                 // Override paths contain instance ancestors, not ordinary frame/group ancestors.
                 let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
                 self.draw_children(node, data, world, child_path);
@@ -1284,7 +1307,7 @@ impl Ctx<'_> {
                 self.rc.pop_layer();
             }
             if clips {
-                self.draw_strokes(kind, data, fill_paths, world, (w, h));
+                self.draw_strokes(kind, data, (fill_paths, &stroke_paths), world, (w, h));
             }
         }
         for _ in 0..layers {
@@ -1299,7 +1322,7 @@ impl Ctx<'_> {
         &mut self,
         kind: &str,
         data: &Val,
-        fill_paths: &[GeomPath],
+        (fill_paths, outlines): (&[GeomPath], &[GeomPath]),
         world: Affine,
         (w, h): (f64, f64),
     ) {
@@ -1307,12 +1330,6 @@ impl Ctx<'_> {
             .get("strokePaints")
             .is_some_and(|p| !p.items().is_empty())
         {
-            let outlines = geometry(
-                data,
-                "strokeGeometry",
-                &self.doc.blobs,
-                &mut self.stats.unsupported_paints,
-            );
             // Per-side borders are built already aligned, so they skip the clip below.
             let ring = (outlines.is_empty() && is_box_shape(kind))
                 .then(|| stroke::sides(kind, data))
@@ -1352,7 +1369,7 @@ impl Ctx<'_> {
                 }
             }
             if !outlines.is_empty() {
-                self.paint_paths(data, "strokePaints", &outlines, world, w, h);
+                self.paint_paths(data, "strokePaints", outlines, world, w, h);
             } else if let Some(ring) = ring {
                 self.paint_paths(data, "strokePaints", &[ring], world, w, h);
             } else if let (Some(weight), Some(shape)) =

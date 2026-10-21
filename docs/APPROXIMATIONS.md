@@ -87,6 +87,19 @@ geometry whose networks use per-vertex and per-segment styles (10–18 of each).
 **Exact fix:** carry vertex/segment style ids into the rebuilt paths and resolve them through
 `styleOverrideTable`.
 
+### Boolean operations approximated (not measured in the historical sample)
+
+Code: `Ctx::draw_with_data` (`crates/render/src/lib.rs`), `Stats::approximated_booleans`.
+
+A boolean with no usable stored fill or stroke geometry draws its operand children instead
+of a computed result. Each such drawn boolean counts once. With stored geometry, only the
+result is painted with the boolean's own fills, strokes and effects; operands remain
+available for selection and bounds. The CLI, warning chip and MCP screenshots report the
+fallback, and tile summaries preserve it.
+
+**Exact fix:** compute the requested boolean operation from its operands when the file has
+no usable result geometry. The current fallback does not attempt boolean path arithmetic.
+
 ### C6. text truncation ignored (42)
 
 Code: the text path in `Ctx::draw_node` (`crates/render/src/lib.rs`). Text with
