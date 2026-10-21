@@ -23,6 +23,18 @@ fn has(h: &Harness<'_, App>, label: &str) -> bool {
     h.query_by_label(label).is_some()
 }
 
+/// Steps until a node is labelled `label` (the page looks at the disk on another thread,
+/// [`crate::recents`]'s `RECHECK` after its last look returned; a step is 0.25 s of egui
+/// time).
+fn wait_for(h: &mut Harness<'_, App>, label: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !has(h, label) {
+        assert!(Instant::now() < deadline, "timed out waiting for {label:?}");
+        std::thread::sleep(Duration::from_millis(5));
+        h.step();
+    }
+}
+
 #[test]
 fn with_nothing_opened_before_the_page_welcomes_and_offers_open_file() {
     let h = with_recents(&[]);
@@ -228,16 +240,10 @@ fn a_file_put_back_while_the_page_shows_is_offered_again_in_the_menu() {
     let path = temp_copy(&dir, "back.fig");
     let mut h = with_recents(std::slice::from_ref(&path));
     std::fs::remove_file(&path).unwrap();
-    // The page sees it gone (the next time it looks).
-    h.run_steps(90);
-    h.event(egui::Event::PointerMoved(Pos2::new(5.0, 5.0)));
-    h.run_steps(2);
-    assert!(has(&h, "back.fig (missing)"));
+    // The page sees it gone (the next time it looks), then back.
+    wait_for(&mut h, "back.fig (missing)");
     temp_copy(&dir, "back.fig");
-    h.run_steps(90);
-    h.event(egui::Event::PointerMoved(Pos2::new(6.0, 5.0)));
-    h.run_steps(2);
-    assert!(has(&h, "back.fig"), "the card no longer says missing");
+    wait_for(&mut h, "back.fig");
     h.get_by_label("back.fig").click_secondary();
     h.run_steps(3);
     let open = h.get_by_label("Open");

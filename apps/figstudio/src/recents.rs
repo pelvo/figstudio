@@ -111,10 +111,9 @@ pub struct Recents {
     painter: Option<mpsc::Sender<(u64, ThumbJob)>>,
     /// Pictures written since the last frame: their textures are loaded again.
     fresh: Arc<Mutex<Vec<PathBuf>>>,
-    /// Picture files still wanted: a job finishing after its file was removed from the
-    /// list writes nothing (checked and written under this lock).
-    /// Each maps to the newest job for it: an older job still rendering writes nothing, so
-    /// the last open's page wins.
+    /// Picture files still wanted, each with its newest job: a job finishing after its file
+    /// was removed from the list, or after a newer job for it, writes nothing (checked and
+    /// written under this lock), so Remove sticks and the last open's page wins.
     wanted: Arc<Mutex<HashMap<PathBuf, u64>>>,
     /// The number the next picture job gets.
     next_job: u64,
@@ -124,8 +123,16 @@ pub struct Recents {
     missing: HashSet<PathBuf>,
     /// The page was drawn in the last frame.
     shown: bool,
-    /// When the page last looked for moved or deleted files (`egui` time).
+    /// When the page's last look for moved or deleted files returned (`egui` time).
     checked: f64,
+    /// A look running off the UI thread (a slow disk or network mount holds it up, not the
+    /// window): its answer, once it comes. At most one runs.
+    scan: Option<mpsc::Receiver<HashSet<PathBuf>>>,
+    /// The page appeared since the running look began: look again when it returns.
+    stale: bool,
+    /// Whether a listed file is there: `Path::is_file`, as a click checks (tests put in a
+    /// slow one).
+    probe: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
     pub filter: String,
     /// The space colour of the card under the pointer: the window takes it (`App::tint_now`).
     pub hover: Option<theme::Colour>,
@@ -155,6 +162,9 @@ impl Recents {
             missing: HashSet::new(),
             shown: false,
             checked: 0.0,
+            scan: None,
+            stale: false,
+            probe: Arc::new(Path::is_file),
             filter: String::new(),
             hover: None,
         }
@@ -212,7 +222,7 @@ impl Recents {
     pub fn note(&mut self, path: &Path, key: Option<&str>, now: u64) {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         self.entries.retain(|e| e.path != path);
-        if path.exists() {
+        if path.is_file() {
             self.missing.remove(&path);
         } else {
             self.missing.insert(path.clone());
@@ -242,13 +252,23 @@ impl Recents {
         } else {
             self.missing.remove(path);
         }
+        self.look_again();
+    }
+
+    /// A look begun before the disk was just checked could undo what it found: its answer
+    /// is dropped and a new look starts with the next frame.
+    fn look_again(&mut self) {
+        if self.scan.take().is_some() {
+            self.stale = true;
+        }
     }
 
     /// Opening `path` failed: a listed file that is not there any more is marked missing.
     pub fn load_failed(&mut self, path: &Path) {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        if !path.exists() && self.entries.iter().any(|e| e.path == path) {
+        if !path.is_file() && self.entries.iter().any(|e| e.path == path) {
             self.missing.insert(path);
+            self.look_again();
         }
     }
 
@@ -389,19 +409,32 @@ impl Recents {
         texture
     }
 
-    /// Called each frame the page shows: on appearing, and every [`RECHECK`] seconds while
-    /// it stays up (a frame comes with any pointer move), it looks for moved or deleted
-    /// files, so a card, its label and its menu follow the disk; a freshly drawn picture is
-    /// loaded again.
-    fn begin_frame(&mut self, time: f64) {
-        if !self.shown || time - self.checked >= RECHECK {
-            self.checked = time;
-            self.missing = self
-                .entries
-                .iter()
-                .filter(|e| !e.path.exists())
-                .map(|e| e.path.clone())
-                .collect();
+    /// Called each frame the page shows: on appearing, and [`RECHECK`] seconds after the
+    /// last look returned while it stays up (a frame comes with any pointer move), it looks
+    /// for moved or deleted files on another thread, so a card, its label and its menu
+    /// follow the disk and a slow path never holds up the window; a freshly drawn picture
+    /// is loaded again.
+    fn begin_frame(&mut self, ctx: &egui::Context, time: f64) {
+        if !self.shown {
+            self.stale = true;
+        }
+        if let Some(scan) = &self.scan {
+            match scan.try_recv() {
+                Ok(missing) => {
+                    self.missing = missing;
+                    self.scan = None;
+                    self.checked = time;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.scan = None;
+                    self.checked = time;
+                }
+            }
+        }
+        if self.scan.is_none() && (self.stale || time - self.checked >= RECHECK) {
+            self.stale = false;
+            self.look(ctx, time);
         }
         self.shown = true;
         let fresh: Vec<PathBuf> = self
@@ -411,6 +444,27 @@ impl Recents {
             .unwrap_or_default();
         for out in fresh {
             self.textures.remove(&out);
+        }
+    }
+
+    /// Starts a look for moved or deleted files on its own thread.
+    fn look(&mut self, ctx: &egui::Context, time: f64) {
+        let paths: Vec<PathBuf> = self.entries.iter().map(|e| e.path.clone()).collect();
+        let probe = self.probe.clone();
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("recents-look".into())
+            .spawn(move || {
+                let missing: HashSet<PathBuf> = paths.into_iter().filter(|p| !probe(p)).collect();
+                if tx.send(missing).is_ok() {
+                    ctx.request_repaint();
+                }
+            });
+        match spawned {
+            Ok(_) => self.scan = Some(rx),
+            // No thread: try again after the usual wait, not every frame.
+            Err(_) => self.checked = time,
         }
     }
 
@@ -535,7 +589,7 @@ impl App {
     pub(crate) fn recents_page(&mut self, ui: &mut Ui, card: Rect) -> Option<Pick> {
         let ctx = ui.ctx().clone();
         let p = theme::of(ui);
-        self.recents.begin_frame(ctx.input(|i| i.time));
+        self.recents.begin_frame(&ctx, ctx.input(|i| i.time));
         self.recents.hover = None;
         let inner = card.shrink2(vec2(32.0, 26.0));
         let header = Rect::from_min_size(inner.min, vec2(inner.width(), 34.0));
@@ -1002,6 +1056,74 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Steps `r`'s page (frame time `time`) until its running look has returned.
+    fn settle(r: &mut Recents, ctx: &egui::Context, time: f64) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while r.scan.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the look never returned"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            r.begin_frame(ctx, time);
+        }
+    }
+
+    #[test]
+    fn a_slow_disk_neither_holds_up_the_page_nor_piles_up_looks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let ctx = egui::Context::default();
+        let mut r = Recents::memory();
+        r.note(Path::new("/slow/a.fig"), None, 1);
+        let looks = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Mutex::new(()));
+        let held = gate.lock().unwrap();
+        let (l, g) = (looks.clone(), gate.clone());
+        r.probe = Arc::new(move |_| {
+            l.fetch_add(1, Ordering::SeqCst);
+            drop(g.lock());
+            false
+        });
+        let started = std::time::Instant::now();
+        r.begin_frame(&ctx, 0.0);
+        // Frames go on while the disk hangs, long past the wait, without a second look.
+        for t in [0.5, 2.0, 5.0, 9.0] {
+            r.begin_frame(&ctx, t);
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "the page waited"
+        );
+        drop(held);
+        settle(&mut r, &ctx, 9.5);
+        assert_eq!(looks.load(Ordering::SeqCst), 1, "one look at a time");
+        assert!(r.is_missing(Path::new("/slow/a.fig")));
+        // The wait counts from when the look returned, not when it began.
+        r.begin_frame(&ctx, 10.0);
+        assert!(r.scan.is_none(), "no look right after a slow one returned");
+        r.begin_frame(&ctx, 10.6);
+        assert!(r.scan.is_some(), "the next look, a second later");
+        settle(&mut r, &ctx, 10.7);
+    }
+
+    #[test]
+    fn a_folder_where_the_file_was_counts_as_missing() {
+        let ctx = egui::Context::default();
+        let dir = temp_dir("folder");
+        let path = dir.join("now-a-folder.fig");
+        std::fs::create_dir_all(&path).unwrap();
+        let mut r = Recents::memory();
+        r.note(&path, None, 1);
+        assert!(r.is_missing(&path), "noted as missing");
+        r.begin_frame(&ctx, 0.0);
+        settle(&mut r, &ctx, 0.1);
+        assert!(
+            r.is_missing(&path),
+            "a look agrees with a click: not a file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

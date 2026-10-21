@@ -329,7 +329,9 @@ follow the disk too),
 bytes dropped without a path are not listed, the header stays inside a narrow card, and the
 window is Slate until the pointer is on a card, then takes that card's colour and goes back
 after. Unit tests check that a picture finished after Remove from recents is not
-written, and that of two jobs for one file only the newest writes. The unit tests in `recents.rs` cover the list (front on reopen,
+written, that of two jobs for one file only the newest writes, that a disk that hangs
+neither holds up the page nor piles up looks (the next look waits a second after the slow
+one returned), and that a folder where the file was counts as missing. The unit tests in `recents.rs` cover the list (front on reopen,
 cap with pictures deleted, restart, damaged list left alone, owner-only file), the "Opened
 … ago" wording and the picture size. Each was seen failing with its part removed (no note
 on load, Remove ignored, missing opened anyway, filter ignored, toggle not kept, no

@@ -457,8 +457,11 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   the file (Remove from recents wins over a job in flight, and of two jobs for one file the
   later one does). The page reads at most three pictures a frame and
   reloads one when the thread reports it. Files gone when the page appears are marked
-  Missing, and looked for again each second while the page is up (with the next frame), so
-  a card's label and menu follow the disk; a click also looks, opening a file that is back
+  Missing, and looked for again a second after the last look returned while the page is
+  up (with the next frame), so a card's label and menu follow the disk. Looks run on their
+  own thread, one at a time, so a slow disk or network mount never holds up the window;
+  "there" means `is_file`, for a look and for a click alike. A click also looks (and drops
+  a look begun before it), opening a file that is back
   and marking one that went, with a toast. The header keeps to the card: a narrow one drops the filter, then the
   view toggle, then narrows Open. The browser has no paths to open again and keeps the plain empty state. Tests
   use `Recents::memory()` (no file, no pictures).
