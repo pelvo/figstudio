@@ -431,7 +431,8 @@ space keeps it). The Dock menu and jump list list the newest five
 files not missing (`the_shortlist_is_the_five_newest_files_not_missing`); a file picked
 there opens, and one deleted since says so, is marked missing and leaves the list; a listed
 file gone when opened at start (a jump list item) is marked missing; a file taken off the
-jump list leaves Recents; an item's argument reads back as its path (spaces, `&`); files of
+jump list leaves Recents; an item's argument reads back as its path (spaces, `&`); a refused list is tried again
+without one file at a time; files of
 one name are told apart by their folder, and a Dock title keeps its `&`. `handoff.rs` tests the
 single instance over real local sockets with names of their own: files handed to a running
 figstudio arrive there (made absolute), with none running a launch keeps its files, a

@@ -374,19 +374,37 @@ impl Recents {
 #[cfg(any(target_os = "macos", windows, test))]
 pub(crate) fn shortlist_labels(paths: &[PathBuf]) -> Vec<String> {
     let names: Vec<String> = paths.iter().map(|p| file_label(p)).collect();
+    let folder = |path: &PathBuf| {
+        path.parent()
+            .and_then(Path::file_name)
+            .map(|f| f.to_string_lossy().into_owned())
+    };
     names
         .iter()
         .zip(paths)
         .map(|(name, path)| {
-            let shared = names.iter().filter(|n| *n == name).count() > 1;
-            let folder = path
-                .parent()
-                .and_then(Path::file_name)
-                .map(|f| f.to_string_lossy().into_owned());
-            match folder {
-                Some(folder) if shared => format!("{name} — {folder}"),
-                _ => name.clone(),
+            let alike: Vec<&PathBuf> = names
+                .iter()
+                .zip(paths)
+                .filter(|(n, _)| *n == name)
+                .map(|(_, p)| p)
+                .collect();
+            if alike.len() < 2 {
+                return name.clone();
             }
+            // The folder's name when that tells them apart, else the folder's whole path.
+            let short = folder(path).filter(|f| {
+                alike
+                    .iter()
+                    .filter(|p| folder(p).as_ref() == Some(f))
+                    .count()
+                    == 1
+            });
+            let place = short.unwrap_or_else(|| {
+                path.parent()
+                    .map_or_else(String::new, |p| p.display().to_string())
+            });
+            format!("{name} — {place}")
         })
         .collect()
 }
@@ -1196,6 +1214,12 @@ mod tests {
         assert_eq!(
             shortlist_labels(&paths),
             ["x.fig — a", "x.fig — b", "y&z.fig"]
+        );
+        // Folders of one name, or none (a root), give their whole path.
+        let paths = ["/work/final/x.fig", "/archive/final/x.fig", "/x.fig"].map(PathBuf::from);
+        assert_eq!(
+            shortlist_labels(&paths),
+            ["x.fig — /work/final", "x.fig — /archive/final", "x.fig — /"]
         );
         // A menu title shows a single `&` only when doubled (muda takes `&x` as a mnemonic).
         assert_eq!(menu_title("y&z.fig"), "y&&z.fig");

@@ -501,9 +501,11 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   that window; a file gone by then fails to open with the usual toast and `load_failed`
   marks it missing. A file the person removes
   from the jump list is taken off Recents too (`App::taken_off_the_list`), so the removal
-  is kept with the list and it does not come back; should Windows still refuse the list, an
-  empty one is committed so the next update starts clean. Files of one name get their folder after
-  the name (`shortlist_labels`), and a Dock title doubles `&` (`menu_title`). Linux has no common dock menu for a running app (desktop
+  is kept with the list and it does not come back. Should Windows still refuse the list (a
+  removal it reports but this did not read), that session is aborted, so the list shown
+  stays, and new sessions try the list without one file at a time (`publish`); the one
+  that is taken shows which file was removed, and it leaves Recents too. Files of one name get their folder after
+  the name, or the folder's whole path when that is shared or missing (`shortlist_labels`), and a Dock title doubles `&` (`menu_title`). Linux has no common dock menu for a running app (desktop
   file actions are fixed at install), so it shows none.
 - **One figstudio per person** (`handoff.rs`, desktop). A launch with files (a jump list
   item, `figstudio file.fig`) first offers them to the figstudio already running, over a
