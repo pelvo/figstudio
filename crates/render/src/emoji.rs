@@ -40,7 +40,7 @@ fn fill(data: &Val) -> Option<&Val> {
 }
 
 impl Ctx<'_> {
-    /// Shared classification and placement for drawing and metadata, with no canvas work.
+    /// Shared drawing/metadata placement; a platform cache miss can rasterize on canvas.
     pub(crate) fn emojis(&mut self, data: &Val, world: Affine) -> Vec<Placed> {
         if fill(data).is_none() {
             return Vec::new();
@@ -87,16 +87,20 @@ impl Ctx<'_> {
                         .collect::<Option<String>>()
                 })
                 .and_then(|cluster| self.emoji_source.raster(&cluster, pixels));
-            let fully_shaped = shaped.is_some();
-            let resolved = shaped.or_else(|| {
+            let fully_shaped = shaped.as_ref().is_some_and(|(_, verified)| *verified);
+            let platform_approx = shaped.as_ref().is_some_and(|(_, verified)| !verified);
+            let resolved = shaped.map(|(glyph, _)| glyph).or_else(|| {
                 base.and_then(|ch| self.fonts.as_mut().and_then(|f| f.emoji(ch, pixels)))
             });
             let Some(resolved) = resolved else {
                 self.stats.emoji_skipped += 1;
                 continue;
             };
-            self.stats.emoji_approximated +=
-                usize::from((sequence && !fully_shaped) || matches!(resolved, Glyph::Mono(_)));
+            self.stats.emoji_approximated += usize::from(
+                platform_approx
+                    || (sequence && !fully_shaped)
+                    || matches!(resolved, Glyph::Mono(_)),
+            );
             let (transform, rect) = match &resolved {
                 Glyph::Bitmap {
                     image,

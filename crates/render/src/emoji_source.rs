@@ -10,6 +10,7 @@ use vello_cpu::{PixelMetadata, Pixmap, peniko::ImageAlphaType};
 /// Implementations may be called on render workers and must not retain thread-bound handles.
 pub trait EmojiSource: Send + Sync {
     /// Rasterize at `pixels` pixels per em. Return `None` when unavailable.
+    /// Ink alone does not attest font/sequence support: unverified rasters are counted.
     fn raster(&self, cluster: &str, pixels: u16) -> Option<EmojiRaster>;
 }
 
@@ -20,9 +21,18 @@ pub struct EmojiRaster {
     pub(crate) left: f64,
     pub(crate) top: f64,
     ppem: Option<u16>,
+    fully_shaped: bool,
 }
 
 impl EmojiRaster {
+    /// Attest complete-cluster support: no .notdef, omitted required scalars, or
+    /// decomposed fallback for requested sequence semantics. The source must verify this;
+    /// nonempty pixels, cmap coverage, or merely completing a shaping call are insufficient.
+    pub fn with_verified_shaping(mut self) -> Self {
+        self.fully_shaped = true;
+        self
+    }
+
     /// Override the requested size when the adapter rasterized at a smaller ppem.
     pub fn with_ppem(mut self, ppem: u16) -> Option<Self> {
         if ppem == 0 {
@@ -69,6 +79,7 @@ impl EmojiRaster {
             left,
             top,
             ppem: None,
+            fully_shaped: false,
         })
     }
 }
@@ -90,7 +101,11 @@ impl Cache {
         }
     }
 
-    pub(crate) fn raster(&mut self, cluster: &str, pixels: u16) -> Option<crate::emoji::Glyph> {
+    pub(crate) fn raster(
+        &mut self,
+        cluster: &str,
+        pixels: u16,
+    ) -> Option<(crate::emoji::Glyph, bool)> {
         let source = self.source.as_ref()?;
         if cluster.is_empty() || cluster.len() > 1024 || pixels == 0 {
             return None;
@@ -118,12 +133,15 @@ impl Cache {
             self.entries.insert(key, (raster.clone(), self.clock));
             raster
         };
-        Some(crate::emoji::Glyph::Bitmap {
-            x: raster.left,
-            y: -raster.top - f64::from(raster.image.height()),
-            image: raster.image,
-            ppem: raster.ppem.unwrap_or(pixels),
-            origin: (0.0, 0.0),
-        })
+        Some((
+            crate::emoji::Glyph::Bitmap {
+                x: raster.left,
+                y: -raster.top - f64::from(raster.image.height()),
+                image: raster.image,
+                ppem: raster.ppem.unwrap_or(pixels),
+                origin: (0.0, 0.0),
+            },
+            raster.fully_shaped,
+        ))
     }
 }

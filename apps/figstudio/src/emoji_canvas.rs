@@ -53,6 +53,7 @@ impl EmojiSource for BrowserEmoji {
             .ok()?
             .data()
             .0;
+        // Canvas exposes neither the used font nor shaped glyphs; leave support unverified.
         EmojiRaster::from_rgba(rgba, bounds.width, bounds.height, bounds.left, bounds.top)?
             .with_ppem(pixels)
     }

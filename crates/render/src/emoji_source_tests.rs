@@ -55,7 +55,8 @@ fn reduced_platform_ppem_is_preserved_for_draw_scaling() {
     }
     let mut cache = Cache::new(Some(Arc::new(Reduced)));
     for requested in [40, 4096, u16::MAX] {
-        let Some(crate::emoji::Glyph::Bitmap { ppem, x, y, .. }) = cache.raster("❤", requested)
+        let Some((crate::emoji::Glyph::Bitmap { ppem, x, y, .. }, _)) =
+            cache.raster("❤", requested)
         else {
             panic!("must rasterize")
         };

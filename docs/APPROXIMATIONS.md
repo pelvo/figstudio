@@ -102,8 +102,11 @@ Counts are per visible stored emoji glyph, not per text node; not included in th
 `emojiCodePoints` marks an editor placeholder, so its stored square is never painted.
 
 - `emoji_approximated`: an outline-only face (including flattened COLR layers) drawn with the
-  text paint, or a multi-code-point sequence drawn using its first base scalar. A glyph with
-  both limitations is counted once. COLR palette, clips and compositing are not reproduced.
+  text paint, a multi-code-point sequence drawn using its first base scalar, or an injected
+  raster whose source cannot attest complete-cluster shaping. Limitations count once per
+  glyph. COLR palette, clips and compositing are not reproduced. Browser counts are
+  conservative: Canvas cannot identify the font/glyphs used, so even correctly drawn emoji
+  remain counted rather than silently accepting tofu or partial cluster fallback.
 - `emoji_skipped`: no usable installed face, invalid marker, unsupported or malformed strike,
   or a build without `system-fonts` and without an injected `EmojiSource`. Empty or
   transparent platform rasters are skipped. Skipped glyphs leave no box; truncated-away
@@ -122,10 +125,14 @@ Counts are per visible stored emoji glyph, not per text node; not included in th
   renderer factory, used by the canvas worker and PNG exports. `emoji_canvas.rs` creates
   OffscreenCanvas and its 2D context on the calling worker; JS handles never cross threads.
   It draws full stored clusters (ZWJ/variation selectors included), using measured baseline
-  ink bounds and advance at the requested ppem. Successful full-cluster rasters are drawn,
-  not approximated. Straight-alpha canvas RGBA is premultiplied once. Renderer-local caches
-  bound results to 256 entries and 16 MiB of pixels, including cached misses; keys and raster
-  dimensions are bounded too. Recordings retain owned pixels and need no browser API on replay.
+  ink bounds and advance. Oversized boxes are remeasured at a smaller ppem and scaled at draw
+  time; absent ink metrics use font bounds or an em square. Successful rasters are drawn,
+  but counted unless the source explicitly attests verified shaping (`with_verified_shaping`).
+  Browser Canvas provides no such attestation; pixel/tofu comparisons cannot prove support.
+  Straight-alpha RGBA is premultiplied once. Renderer-local LRU caches bound results to 256
+  entries and 16 MiB of pixels; transparent misses are retried, not cached permanently.
+  Keys and raster dimensions are bounded too. Recordings retain owned pixels and need no
+  browser API on replay.
 
 The warning chip, copied-image warning, CLI render/doctor counts, CLI info emoji summary,
 MCP screenshot notes and diff JSON carry these counters. `Stats::max_with` retains them

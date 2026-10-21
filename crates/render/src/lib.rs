@@ -659,7 +659,7 @@ impl Renderer {
     /// are lower bounds when `budget_exhausted` or `depth_skipped` is nonzero. Clipping and
     /// masks do not remove glyphs from this metadata inventory.
     pub fn emoji_counts(&mut self, doc: &Document) -> Stats {
-        // The shared walk needs a canvas, but metadata mode never issues canvas commands.
+        // No Vello drawing in metadata mode; the platform source can still rasterize.
         let mut canvas = RenderContext::new(1, 1);
         let mut ctx = self.context(doc, &mut canvas, Rect::ZERO, MAX_RENDER_WORK, 0);
         ctx.emoji_only = true;
