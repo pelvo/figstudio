@@ -63,6 +63,7 @@ Rules:
 - [x] frame clipping, masks, opacity layers
 - [x] instances: expand symbol, apply `symbolOverrides` + `derivedSymbolData`, cycle guard
 - [x] text: stored glyph outlines; system-font layout fallback (wrap, align, line height)
+- [x] browser text without stored outlines uses supplied UI/CJK/symbol fonts on workers
 - [x] drop shadow and layer blur via Vello filters; other effects counted as skipped
 - [x] **visual check against Figma thumbnails** for all 7 fixtures, fix what is wrong
       (fixed: path blobs that continue after a close; vector `styleOverrideTable` colours)
@@ -961,3 +962,4 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 - 2026-10-21 — Canvas label overlap now uses a screen-space grid, one propagated transform per candidate and section subtree ranges instead of ancestor walks; paint and find reuse each candidate's shaped layout. A 5,000-frame/50-section optimized benchmark preserves ordered label IDs at three zooms; negative controls catch repeated shaping, full scans and missing section exemptions.
 - 2026-10-21 — Boolean stored results now require non-empty geometry for every visible paint kind; incomplete results fall back to operands and count an approximation. Synthetic missing/empty geometry and hidden-paint regressions pass; all seven public fixture renders remain pixel-identical.
 - 2026-10-21 — Canvas component and component-set labels use the palette purple and Component icon; instance labels use the Instance icon. Colour selection follows the page background, not the app appearance; plain frame labels use readable grey (179 on dark pages) with a WCAG 4.5:1 fallback. Shared label layout reserves icon width for ellipsis and find highlights; section pills are unchanged. Original-code regressions caught grey component text and insufficient frame contrast; removing icon painting also fails the painter test. Inspected before/after headless WGPU label captures on light/dark synthetic pages. Native-window and live Figma checks were not run.
+- 2026-10-21: Enabled shared fallback layout from browser-supplied font bytes, with tile/recording and Recents refresh. Synthetic delayed-font CPU/GPU checks passed; registration and stale-tile mutation controls failed as intended. All seven native public fixture PNGs stayed byte-identical. No deployment, private-file or allocation-profile verification.

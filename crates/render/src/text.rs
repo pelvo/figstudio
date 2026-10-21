@@ -56,34 +56,16 @@ pub fn characters(data: &Val) -> &str {
         .unwrap_or("")
 }
 
-#[cfg(feature = "system-fonts")]
 pub use system::SystemFonts;
 #[cfg(feature = "system-fonts")]
 pub(crate) use system::{Builder, SYMBOL_FAMILIES};
 
-/// Stand-in without the `system-fonts` feature (browser build): never finds a font.
-#[cfg(not(feature = "system-fonts"))]
-#[derive(Default)]
-pub struct SystemFonts {
-    _none: (),
-}
-
-#[cfg(not(feature = "system-fonts"))]
-impl SystemFonts {
-    pub(crate) fn emoji(&mut self, _ch: char, _pixels: u16) -> Option<crate::emoji::Glyph> {
-        None
-    }
-
-    pub fn layout(&mut self, _data: &Val) -> Option<Vec<BezPath>> {
-        None
-    }
-}
-
-#[cfg(feature = "system-fonts")]
 mod system {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "system-fonts"))]
     mod cache_tests;
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::HashMap;
+    #[cfg(feature = "system-fonts")]
+    use std::collections::VecDeque;
     use std::sync::Arc;
 
     use figstudio_fig::Val;
@@ -127,8 +109,12 @@ mod system {
         db: Option<Database>,
         faces: HashMap<ID, Option<FaceData>>,
         fallbacks: Option<Vec<ID>>,
+        supplied: Vec<ID>,
+        #[cfg(feature = "system-fonts")]
         emojis: HashMap<char, Option<crate::emoji_font::Resolved>>,
+        #[cfg(feature = "system-fonts")]
         emoji_order: VecDeque<char>,
+        #[cfg(feature = "system-fonts")]
         emoji_bytes: usize,
     }
 
@@ -172,7 +158,7 @@ mod system {
 
     impl SystemFonts {
         /// Fonts from `db` instead of the installed ones.
-        #[cfg(test)]
+        #[cfg(all(test, feature = "system-fonts"))]
         pub(crate) fn with_database(db: Database) -> Self {
             Self {
                 db: Some(db),
@@ -180,6 +166,21 @@ mod system {
             }
         }
 
+        pub fn add_font_data(&mut self, bytes: Arc<Vec<u8>>) {
+            self.db();
+            if let Some(db) = &mut self.db {
+                self.supplied
+                    .extend(db.load_font_source(fontdb::Source::Binary(bytes)));
+            }
+            self.fallbacks = None;
+        }
+
+        #[cfg(not(feature = "system-fonts"))]
+        pub(crate) fn emoji(&mut self, _ch: char, _pixels: u16) -> Option<crate::emoji::Glyph> {
+            None
+        }
+
+        #[cfg(feature = "system-fonts")]
         pub(crate) fn emoji(&mut self, ch: char, pixels: u16) -> Option<crate::emoji::Glyph> {
             self.db();
             let db = self.db.as_ref()?;
@@ -208,8 +209,13 @@ mod system {
 
         fn db(&mut self) -> &Database {
             self.db.get_or_insert_with(|| {
-                let mut db = Database::new();
-                db.load_system_fonts();
+                let db = Database::new();
+                #[cfg(feature = "system-fonts")]
+                let db = {
+                    let mut db = db;
+                    db.load_system_fonts();
+                    db
+                };
                 db
             })
         }
@@ -254,6 +260,7 @@ mod system {
                     list.push(id);
                 }
             }
+            list.extend(self.supplied.iter().copied());
             self.fallbacks = Some(list.clone());
             list
         }

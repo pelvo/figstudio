@@ -8,6 +8,14 @@ The numbers come from a large private real-world file (42 pages, ~170k layers). 
 measured with a temporary debug build that printed the reason at each counter site; the
 build was thrown away. Re-measure after each fix and update the table and the log below.
 
+## Font fallback
+
+`text_system_fonts` counts text laid out from font bytes rather than stored glyph
+outlines. Native uses installed fonts; the browser uses its existing UI, CJK and
+symbol faces. Both use the same approximate layout. `text_missing` still counts
+text for which neither stored outlines nor usable fallback fonts are available.
+Browser font arrival discards cached tiles and recordings and refreshes Recents.
+
 ## Measurement (2026-10-11, branch `fix/known-gaps` at `4e36127`)
 
 Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:

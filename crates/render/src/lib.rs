@@ -354,6 +354,12 @@ impl Renderer {
         }
     }
 
+    /// Register an app-supplied fallback face without scanning installed fonts.
+    /// Discard existing recordings and rendered tiles after adding fonts.
+    pub fn add_font_data(&mut self, bytes: Arc<Vec<u8>>) {
+        self.fonts.add_font_data(bytes);
+    }
+
     /// Install a platform emoji source and clear cached rasters. Set before recording;
     /// callers replacing a source must also discard their existing page recordings.
     pub fn set_emoji_source(&mut self, source: Option<Arc<dyn EmojiSource>>) {

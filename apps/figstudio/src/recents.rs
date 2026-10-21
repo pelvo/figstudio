@@ -715,6 +715,29 @@ impl App {
 }
 
 impl App {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn refresh_recent_thumbnail(&mut self, ctx: &egui::Context, i: usize) {
+        let Some(tab) = self.tabs.get(i) else { return };
+        let ids: Vec<_> = self
+            .recents
+            .entries
+            .iter()
+            .filter(|entry| entry.id().path == tab.path)
+            .map(Entry::id)
+            .collect();
+        for id in ids {
+            self.recents.paint_thumb(
+                ctx,
+                &id,
+                ThumbJob {
+                    doc: tab.doc.clone(),
+                    page: tab.page,
+                    source: tab.source.clone(),
+                },
+            );
+        }
+    }
+
     /// Lists tab `i`'s file and queues the picture of the page it shows. Called once the
     /// file is loaded and any link has moved it to its node's page. Bytes dropped without a
     /// file (only a name) are not listed: there is nothing to open again.
