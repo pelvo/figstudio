@@ -20,6 +20,8 @@ pub(crate) struct Session {
 pub(crate) struct Restore {
     session: Session,
     waiting: VecDeque<PathBuf>,
+    /// Saved paths not explicitly opened by the user during this startup.
+    automatic: Vec<PathBuf>,
     /// Distinguishes automatic focus from a different space selected while loading.
     last_active: Option<u64>,
 }
@@ -90,9 +92,20 @@ impl Restore {
     fn new(session: Session) -> Self {
         Self {
             waiting: session.files.iter().cloned().collect(),
+            automatic: session.files.iter().map(|p| absolute(p)).collect(),
             session,
             last_active: None,
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn is_automatic(&self, path: &Path) -> bool {
+        self.automatic.contains(&absolute(path))
+    }
+
+    pub(crate) fn explicitly_opened(&mut self, path: &Path) {
+        let path = absolute(path);
+        self.automatic.retain(|p| *p != path);
     }
 
     fn alias(&mut self, from: &Path, to: &Path) {
@@ -176,12 +189,17 @@ impl App {
             session.push(path);
         }
         session.active = saved.active.map(|p| absolute(&p));
-        for path in files {
-            session.push(&path);
-            session.active = Some(absolute(&path));
+        for path in &files {
+            session.push(path);
+            session.active = Some(absolute(path));
         }
         session.active = session.active.or_else(|| session.files.first().cloned());
         self.restoring = (!session.is_empty()).then(|| Restore::new(session));
+        if let Some(restore) = &mut self.restoring {
+            for path in files {
+                restore.explicitly_opened(&path);
+            }
+        }
         self.pump_workspace();
     }
 
@@ -191,7 +209,7 @@ impl App {
                 break;
             };
             if !self.tabs.iter().any(|t| t.path == path) {
-                self.open(path);
+                self.open_file(path);
             }
         }
         if let Some(restore) = &self.restoring
@@ -233,6 +251,11 @@ impl App {
         let Some(i) = real.and_then(|p| self.tabs.iter().position(|t| t.real_path == p)) else {
             return false;
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        let automatic = self
+            .restoring
+            .as_ref()
+            .is_some_and(|restore| restore.is_automatic(path));
         let previous = self.tabs.get(self.active).map(|t| t.id);
         let id = self.tabs[i].id;
         let kept = self.tabs[i].path.clone();
@@ -240,6 +263,10 @@ impl App {
         self.workspace_finished(path, previous, Some(&kept));
         if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
             self.link_loaded(ctx, path, i);
+            #[cfg(not(target_arch = "wasm32"))]
+            if !automatic {
+                self.note_recent(ctx, i);
+            }
         }
         true
     }

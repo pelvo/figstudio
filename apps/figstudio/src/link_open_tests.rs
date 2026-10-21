@@ -1678,3 +1678,91 @@ fn open_link_shortcut_uses_the_keymap_without_taking_the_command_bar_keys() {
     assert!(h.state().link.window);
     assert!(!h.state().command.is_open());
 }
+
+#[test]
+fn workspace_recents_alias_refreshes_only_explicit_opens() {
+    use figstudio_fig::{Document, Node, Obj, Val};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let bytes = std::fs::read(fixture("structure.fig")).unwrap();
+    let mut doc = Document::from_bytes(&bytes).unwrap();
+    let page = doc.pages[0];
+    let node = doc.children(page)[0];
+    let other = Guid(77, 1);
+    let mut data = Obj::new();
+    data.insert("guid", other.to_val());
+    data.insert("type", Val::Str("CANVAS".into()));
+    let mut nodes = doc.nodes.clone();
+    nodes.push(Node::from_data(Val::Obj(data)).unwrap());
+    doc.set_nodes(nodes).unwrap();
+    if !doc.pages.contains(&other) {
+        doc.pages.push(other);
+    }
+    let doc = Arc::new(doc);
+    for automatic in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kept.fig");
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::create_dir(dir.path().join("alias")).unwrap();
+        let alias = dir.path().join("alias/../kept.fig");
+        let real = std::fs::canonicalize(&path).unwrap();
+        let mut h = empty_app();
+        let mut tab = crate::tab::Tab::new(50, path.clone(), doc.clone(), None, Duration::ZERO)
+            .with_real_path(Some(real.clone()));
+        tab.page = other;
+        h.state_mut().tabs.push(tab);
+        let thumbs = dir.path().join("thumbs");
+        std::fs::create_dir(&thumbs).unwrap();
+        h.state_mut().recents =
+            crate::recents::Recents::at(dir.path().join("recents.json"), Some(thumbs));
+        h.state_mut().recents.note(&path, None, 1);
+        let picture = h.state().recents.thumb_file(&path).unwrap();
+        std::fs::write(&picture, b"previous page").unwrap();
+        if automatic {
+            let saved = serde_json::from_value(serde_json::json!({
+                "files": [alias], "active": alias,
+            }))
+            .unwrap();
+            h.state_mut().restore_workspace(saved, Vec::new());
+            h.state_mut().loading.finish(&alias);
+        } else {
+            h.state_mut().link.waiting.push(super::Waiting {
+                path: alias.clone(),
+                node: Some(node),
+                done: None,
+                asked: web_time::Instant::now(),
+                answered: false,
+            });
+        }
+        let ctx = h.ctx.clone();
+        assert!(h.state_mut().reuse_loaded_file(&ctx, &alias, Some(&real)));
+        assert_eq!(h.state().tabs.len(), 1);
+        if automatic {
+            assert_eq!(h.state().recents.entries()[0].opened, 1);
+            assert_eq!(std::fs::read(picture).unwrap(), b"previous page");
+        } else {
+            assert_eq!(h.state().tabs[0].page, page, "the link changes the page");
+            assert_eq!(h.state().tabs[0].selection, Some(node));
+            assert!(
+                h.state().recents.entries()[0].opened > 1,
+                "an explicit alias open must refresh Recents after its link"
+            );
+            let expected = crate::recents::thumb_png(&crate::recents::ThumbJob {
+                doc: doc.clone(),
+                page,
+                source: None,
+                out: picture.clone(),
+            })
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while std::fs::read(&picture).unwrap() != expected {
+                assert!(
+                    Instant::now() < deadline,
+                    "the card must show the linked page"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}

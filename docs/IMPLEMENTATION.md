@@ -451,9 +451,12 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   taken for a space; the card under the pointer lends the window its colour
   (`Recents::hover`, read by `App::tint_now`), crossfading as a file switch does.
   The list is `<config>/figstudio/recents.json` (full paths, owner-only, at most 60, damaged
-  entries skipped, an unreadable list left alone as with spaces); each load of a file on disk
-  (`App::note_recent`, after any link moved it to its node's page; bytes dropped without a
-  path are not listed) notes it and queues its picture: one `thumbnails` thread renders the
+  entries skipped, an unreadable list left alone as with spaces). Explicit file loads and
+  canonical-alias opens note the loaded/kept tab (`App::note_recent`, after any link moved
+  it to its node's page; bytes dropped without a path are not listed). Automatic workspace
+  restoration leaves history order, timestamps, keys and pictures untouched, including paths
+  not already listed; it does not backfill or evict prior history. Explicit opens queue a
+  picture: one `thumbnails` thread renders the
   page with its own image cache (never the canvas's: that would share its eviction clock,
   in-flight reads and failed marks) to fit 640×400 over the page colour, and writes
   `thumbs/<hash of the path>.png` owner-only, only if that job is still the newest wanted for
@@ -510,8 +513,11 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   skipped entries. Startup decodes at most four files concurrently; queued files survive an
   early save/quit. Worker-resolved canonical paths deduplicate aliases without lexically
   rewriting a symlink's `..`; completion order does not change the saved space order.
-  After sorting, polling finds the loaded tab by id for links and Recents, independently of
-  the saved or manually chosen active space.
+  After sorting, polling finds the loaded tab by id for links and explicit-open Recents,
+  independently of the saved or manually chosen active space. `Restore` tracks automatic
+  paths separately: explicit startup files and user opens of already-pending paths remove
+  that marker; pumping automatic loads does not. Polling and alias reuse capture this intent
+  before completion can drop/remap restoration, then refresh explicit cards after links.
   A successful alias retains its original automatic/manual classification and uses the kept
   tab's path for focus. Explicit startup files merge and take focus. Switching spaces while
   loading keeps that focus; closing an automatically selected interim tab does not cancel the

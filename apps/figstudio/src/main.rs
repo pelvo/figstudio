@@ -515,6 +515,13 @@ impl App {
     }
 
     fn open(&mut self, path: PathBuf) {
+        if let Some(restore) = &mut self.restoring {
+            restore.explicitly_opened(&path);
+        }
+        self.open_file(path);
+    }
+
+    fn open_file(&mut self, path: PathBuf) {
         match open_action(
             &self.tabs.iter().map(|t| &t.path).collect::<Vec<_>>(),
             &mut self.loading,
@@ -706,6 +713,11 @@ impl App {
                     if self.reuse_loaded_file(ctx, &path, real_path.as_deref()) {
                         continue;
                     }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let automatic = self
+                        .restoring
+                        .as_ref()
+                        .is_some_and(|restore| restore.is_automatic(&path));
                     let id = self.next_id;
                     self.next_id += 1;
                     #[cfg(target_arch = "wasm32")]
@@ -727,7 +739,9 @@ impl App {
                         self.link_loaded(ctx, &path, i);
                         // After the link: the picture is of the page it shows.
                         #[cfg(not(target_arch = "wasm32"))]
-                        self.note_recent(ctx, i);
+                        if !automatic {
+                            self.note_recent(ctx, i);
+                        }
                     }
                 }
                 Loaded::Err {

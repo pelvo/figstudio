@@ -129,7 +129,7 @@ fn workspace_standard_path_comparison_already_ignores_trailing_separators() {
 }
 
 #[test]
-fn workspace_restore_recents_record_loaded_tab_after_saved_focus_and_sort() {
+fn workspace_recents_explicit_loads_record_the_loaded_tab_after_saved_focus_and_sort() {
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/structure.fig");
     let bytes = std::fs::read(fixture).unwrap();
@@ -153,6 +153,8 @@ fn workspace_restore_recents_record_loaded_tab_after_saved_focus_and_sort() {
         }
         h.state_mut().restoring = Some(restoring);
         for (loaded, &index) in order.iter().enumerate() {
+            // A user opening an already pending path makes it an explicit open.
+            h.state_mut().open(paths[index].clone());
             h.state()
                 .workers
                 .load_bytes(paths[index].clone(), bytes.clone());
@@ -183,4 +185,100 @@ fn workspace_restore_recents_record_loaded_tab_after_saved_focus_and_sort() {
             "record the loaded tab even when a different saved tab stays active"
         );
     }
+}
+
+#[test]
+fn workspace_recents_automatic_restore_preserves_history_and_pictures() {
+    let bytes = std::fs::read(crate::ui_tests::fixture("structure.fig")).unwrap();
+    for listed in [false, true] {
+        for order in [[0, 1], [1, 0]] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = ["saved.fig", "later.fig"].map(|name| dir.path().join(name));
+            for path in &paths {
+                std::fs::write(path, &bytes).unwrap();
+            }
+            let history: Vec<_> = (0..60)
+                .map(|i| crate::recents::Entry {
+                    path: if listed && i == 59 {
+                        paths[0].clone()
+                    } else {
+                        dir.path().join(format!("history-{i}.fig"))
+                    },
+                    opened: 60 - i,
+                    key: Some("kept".into()),
+                })
+                .collect();
+            let before = serde_json::to_vec(&history).unwrap();
+            let file = dir.path().join("recents.json");
+            std::fs::write(&file, &before).unwrap();
+            let thumbs = dir.path().join("thumbs");
+            std::fs::create_dir(&thumbs).unwrap();
+            let recents = crate::recents::Recents::at(file.clone(), Some(thumbs.clone()));
+            let picture = recents.thumb_file(&history.last().unwrap().path).unwrap();
+            std::fs::write(&picture, b"kept picture").unwrap();
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1000.0, 700.0))
+                .build_eframe(|cc| App::new(cc, Vec::new()));
+            h.state_mut().recents = recents;
+            let mut restoring = Restore::new(Session {
+                files: paths.to_vec(),
+                active: Some(paths[0].clone()),
+            });
+            restoring.waiting.clear();
+            for path in &paths {
+                h.state_mut().loading.begin(path);
+            }
+            h.state_mut().restoring = Some(restoring);
+            for (loaded, &index) in order.iter().enumerate() {
+                h.state()
+                    .workers
+                    .load_bytes(paths[index].clone(), bytes.clone());
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                while h.state().tabs.len() != loaded + 1 {
+                    assert!(std::time::Instant::now() < deadline, "restored file loads");
+                    h.step();
+                    std::thread::yield_now();
+                }
+            }
+            assert!(h.state().restoring.is_none());
+            assert_eq!(Session::capture(h.state()).files, paths);
+            assert_eq!(h.state().tabs[h.state().active].path, paths[0]);
+            assert_eq!(
+                h.state().recents.entries(),
+                history.as_slice(),
+                "automatic restore must not replace or reorder user-open history"
+            );
+            assert_eq!(std::fs::read(file).unwrap(), before, "no history rewrite");
+            assert_eq!(std::fs::read(picture).unwrap(), b"kept picture");
+            assert_eq!(std::fs::read_dir(thumbs).unwrap().count(), 1);
+        }
+    }
+}
+
+#[test]
+fn workspace_recents_explicit_startup_records_an_already_saved_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chosen.fig");
+    std::fs::copy(crate::ui_tests::fixture("structure.fig"), &path).unwrap();
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1000.0, 700.0))
+        .build_eframe(|cc| App::new(cc, Vec::new()));
+    h.state_mut().restore_workspace(
+        Session {
+            files: vec![path.clone()],
+            active: Some(path.clone()),
+        },
+        vec![path.clone()],
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while h.state().tabs.is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "explicit startup file loads"
+        );
+        h.step();
+        std::thread::yield_now();
+    }
+    assert_eq!(h.state().recents.entries().len(), 1);
+    assert_eq!(h.state().recents.entries()[0].path, path);
 }
