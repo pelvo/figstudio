@@ -438,7 +438,10 @@ one name are told apart by their folder, and a Dock title keeps its `&`. `handof
 single instance with real locks in folders of their own: files handed to a running
 figstudio arrive there (made absolute), only the first holds the lock and it is free again
 once that one ends, files not taken in time stay with the launch and leave no request
-behind (and cannot be taken late), files a hung window does not take stay with the launch, and a launch without files hands nothing over; a UI test
+behind (and cannot be taken late), files a hung window does not take stay with the launch, a launch waits for a figstudio
+still starting, a request too big to read stays with the launch, what a crash left is
+cleared or opened, and (Unix) a request that cannot be looked at is not counted as taken
+and the folder is `0700` and not a link, and a launch without files hands nothing over; a UI test
 opens what is handed over. In the built app: start
 one, then `figstudio other.fig` from a shell; it exits at once and the first window shows
 the file. Also run `cargo

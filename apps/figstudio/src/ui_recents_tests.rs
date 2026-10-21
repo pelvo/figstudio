@@ -446,7 +446,9 @@ fn files_handed_over_by_a_later_launch_open_in_this_window() {
         panic!("held");
     };
     let file = std::path::absolute(fixture(FIXTURE)).unwrap();
-    let launch = std::thread::spawn(move || hand_over(&to, &[file], crate::handoff::WAIT));
+    let launch = std::thread::spawn(move || {
+        hand_over(&to, &[file], crate::handoff::WAIT, crate::handoff::STARTING)
+    });
     wait(
         &mut h,
         &mut Vec::new(),

@@ -132,7 +132,7 @@ fn main() -> std::process::ExitCode {
     let instance = match handoff::folder().map_or(handoff::Start::Alone, |d| handoff::claim(&d)) {
         handoff::Start::First(instance) => Some(instance),
         handoff::Start::Running(inbox) => {
-            if handoff::hand_over(&inbox, &files, handoff::WAIT) {
+            if handoff::hand_over(&inbox, &files, handoff::WAIT, handoff::STARTING) {
                 return std::process::ExitCode::SUCCESS;
             }
             None

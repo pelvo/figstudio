@@ -5,10 +5,11 @@
 //!
 //! The running figstudio holds a lock on `<config>/figstudio/instance.lock`, taken before
 //! its window opens; the system drops it when the process ends, crash or not. A launch that
-//! finds it held writes its files as a request in `<config>/figstudio/inbox/` and waits a
-//! moment for the running one to take it. Taking is one rename, and a launch that gives up
-//! removes its request: whichever comes first wins, so the files open in one window only.
-//! Both live in the person's own config folder, which other accounts cannot write.
+//! finds it held writes its files as a request in `<config>/figstudio/inbox/`, waits for the
+//! running one to be up (its `ready` mark), then a moment for its window to take the
+//! request. Taking is one rename, and a launch that gives up removes its request: only one
+//! of the two can succeed, so the files open in one window only. The folder is the
+//! person's own; on Unix this makes it `0700` and refuses one that is a link elsewhere.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -17,14 +18,18 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-/// How long a launch waits for the running figstudio to take its files.
+/// How long a launch waits for the running figstudio's window to take its files.
 pub(crate) const WAIT: Duration = Duration::from_secs(2);
+/// How long a launch waits for a figstudio still starting (its window, its GPU).
+pub(crate) const STARTING: Duration = Duration::from_secs(20);
 /// How often the running figstudio looks in its inbox.
 const LOOK: Duration = Duration::from_millis(150);
 /// How often a launch looks whether its request was taken.
 const CHECK: Duration = Duration::from_millis(20);
-/// The largest request read.
+/// The largest request: a launch keeps files that would make a larger one.
 const MAX_REQUEST: u64 = 1 << 20;
+/// In the inbox while the running figstudio's window takes requests.
+const READY: &str = "ready";
 
 #[derive(Serialize, Deserialize)]
 struct Request {
@@ -38,7 +43,8 @@ pub(crate) enum Start {
     First(Instance),
     /// Another runs; files go to its inbox.
     Running(PathBuf),
-    /// No lock could be had (no config folder, a file system without locks): on its own.
+    /// No lock could be had (no config folder, a file system without locks, a folder that
+    /// is not the person's own): on its own.
     Alone,
 }
 
@@ -64,22 +70,40 @@ pub(crate) fn folder() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("figstudio"))
 }
 
+/// Makes `dir` (and its parents) and checks it is the person's own: on Unix a real
+/// folder, not a link, readable by its owner only.
+fn own_folder(dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if fs::symlink_metadata(dir)?.file_type().is_symlink() {
+            return Err(std::io::Error::other("a link, not a folder"));
+        }
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// Takes the lock in `dir`, or finds another figstudio holding it.
 pub(crate) fn claim(dir: &Path) -> Start {
     let inbox = dir.join("inbox");
-    if fs::create_dir_all(&inbox).is_err() {
+    if let Err(e) = own_folder(dir).and_then(|()| own_folder(&inbox)) {
+        tracing::warn!("single instance: {e}");
         return Start::Alone;
     }
-    let Ok(lock) = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join("instance.lock"))
-    else {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let Ok(lock) = options.open(dir.join("instance.lock")) else {
         return Start::Alone;
     };
     match lock.try_lock() {
-        Ok(()) => Start::First(Instance { _lock: lock, inbox }),
+        Ok(()) => {
+            recover(&inbox);
+            Start::First(Instance { _lock: lock, inbox })
+        }
         Err(TryLockError::WouldBlock) => Start::Running(inbox),
         Err(TryLockError::Error(e)) => {
             tracing::warn!("single instance: {e}");
@@ -88,15 +112,43 @@ pub(crate) fn claim(dir: &Path) -> Start {
     }
 }
 
-/// Hands `files` to the figstudio whose inbox is `inbox`. True when it took them within
-/// `wait` (this process is not needed); false when there are none, they cannot be written
-/// down, or it did not take them (they are this process's to open).
-pub(crate) fn hand_over(inbox: &Path, files: &[PathBuf], wait: Duration) -> bool {
+/// What a figstudio that ended left in `inbox` (this one holds the lock now): its `ready`
+/// mark and half-written requests go; requests it took but never opened are waiting
+/// again (their launches counted them as taken and left).
+fn recover(inbox: &Path) {
+    let _ = fs::remove_file(inbox.join(READY));
+    let Ok(entries) = fs::read_dir(inbox) else {
+        return;
+    };
+    for path in entries.flatten().map(|e| e.path()) {
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("part") => {
+                let _ = fs::remove_file(&path);
+            }
+            Some("taken") => {
+                let _ = fs::rename(&path, path.with_extension("json"));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Hands `files` to the figstudio whose inbox is `inbox`: waits up to `starting` for it to
+/// be up, then up to `wait` for its window to take them. True when it took them (this
+/// process is not needed); false when there are none, they cannot be written down, or they
+/// were not known to be taken (they are this process's to open).
+pub(crate) fn hand_over(
+    inbox: &Path,
+    files: &[PathBuf],
+    wait: Duration,
+    starting: Duration,
+) -> bool {
     if files.is_empty() {
         return false;
     }
     // Absolute here: the running figstudio was started somewhere else. A path that cannot
-    // be made absolute, or written as text, stays with this launch.
+    // be made absolute, or written as text, stays with this launch, as do files too many
+    // for one request.
     let Ok(open) = files
         .iter()
         .map(std::path::absolute)
@@ -107,6 +159,9 @@ pub(crate) fn hand_over(inbox: &Path, files: &[PathBuf], wait: Duration) -> bool
     let Ok(text) = serde_json::to_string(&Request { open }) else {
         return false;
     };
+    if text.len() as u64 > MAX_REQUEST {
+        return false;
+    }
     let id = format!(
         "{}-{}",
         std::process::id(),
@@ -121,24 +176,39 @@ pub(crate) fn hand_over(inbox: &Path, files: &[PathBuf], wait: Duration) -> bool
         let _ = fs::remove_file(&partial);
         return false;
     }
+    // A figstudio still starting takes nothing yet: wait for it, then for its window.
+    let up = Instant::now() + starting;
+    while !matches!(fs::exists(inbox.join(READY)), Ok(true)) && Instant::now() < up {
+        std::thread::sleep(CHECK);
+    }
     let until = Instant::now() + wait;
     while Instant::now() < until {
-        if !request.exists() {
+        // Only a request known to be gone was taken; one that cannot be looked at is not.
+        if matches!(fs::exists(&request), Ok(false)) {
             return true;
         }
         std::thread::sleep(CHECK);
     }
-    // Not taken in time: take it back. If that fails because it is gone, it was taken.
-    match fs::remove_file(&request) {
-        Ok(()) => false,
-        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    // Not taken in time: take it back. Gone means it was taken after all; another error
+    // (a scanner holding the new file a moment) is tried again.
+    for _ in 0..10 {
+        match fs::remove_file(&request) {
+            Ok(()) => return false,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+            Err(_) => std::thread::sleep(Duration::from_millis(50)),
+        }
     }
+    tracing::warn!("single instance: a request could not be taken back");
+    false
 }
 
 impl Instance {
     /// From now on, `wake` is called while a later launch's request waits; the window then
     /// takes it with [`Inbox::take`]. The lock goes with the inbox.
     pub(crate) fn watch(self, wake: impl Fn() + Send + 'static) -> Inbox {
+        if let Err(e) = fs::write(self.inbox.join(READY), "") {
+            tracing::warn!("single instance: {e}");
+        }
         let alive = Arc::new(());
         let (dir, weak): (PathBuf, Weak<()>) = (self.inbox.clone(), Arc::downgrade(&alive));
         let look = move || {
@@ -195,15 +265,20 @@ fn take(inbox: &Path) -> Vec<Vec<PathBuf>> {
         if fs::rename(&path, &mine).is_err() {
             continue;
         }
+        // Launches write at most `MAX_REQUEST`, whole, so this reads all of it.
         let request = File::open(&mine).ok().and_then(|f| {
             use std::io::Read as _;
             let mut text = String::new();
             f.take(MAX_REQUEST).read_to_string(&mut text).ok()?;
             serde_json::from_str::<Request>(&text).ok()
         });
-        let _ = fs::remove_file(&mine);
-        if let Some(request) = request {
-            taken.push(request.open);
+        match request {
+            Some(request) => {
+                let _ = fs::remove_file(&mine);
+                taken.push(request.open);
+            }
+            // Not a launch's request: kept aside, not read again.
+            None => tracing::warn!("single instance: a request was not readable"),
         }
     }
     taken
@@ -233,7 +308,7 @@ mod tests {
         let inbox = first(dir.path()).watch(|| {});
         let to = inbox_of(dir.path());
         let files = [PathBuf::from("a.fig"), PathBuf::from("/b/c d.fig")];
-        let launch = std::thread::spawn(move || hand_over(&to, &files, WAIT));
+        let launch = std::thread::spawn(move || hand_over(&to, &files, WAIT, STARTING));
         // The window takes them.
         let until = Instant::now() + Duration::from_secs(5);
         let mut got = Vec::new();
@@ -266,6 +341,7 @@ mod tests {
         assert!(!hand_over(
             &inbox,
             &[PathBuf::from("/a.fig")],
+            Duration::from_millis(100),
             Duration::from_millis(100)
         ));
         assert_eq!(fs::read_dir(&inbox).unwrap().count(), 0);
@@ -282,14 +358,129 @@ mod tests {
         assert!(!hand_over(
             &inbox,
             &[PathBuf::from("/a.fig")],
-            Duration::from_millis(400)
+            Duration::from_millis(400),
+            STARTING
         ));
+    }
+
+    #[test]
+    fn a_launch_waits_for_a_figstudio_still_starting() {
+        let dir = tempfile::tempdir().unwrap();
+        // Holds the lock, but its window (and its inbox watch) is not up yet.
+        let starting = first(dir.path());
+        let to = inbox_of(dir.path());
+        let launch = std::thread::spawn(move || {
+            hand_over(
+                &to,
+                &[PathBuf::from("/a.fig")],
+                Duration::from_millis(300),
+                Duration::from_secs(5),
+            )
+        });
+        // Longer than the wait: the window took its time.
+        std::thread::sleep(Duration::from_millis(600));
+        let inbox = starting.watch(|| {});
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut got = Vec::new();
+        while got.is_empty() && Instant::now() < until {
+            got = inbox.take();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(got, [PathBuf::from("/a.fig")]);
+        assert!(
+            launch.join().unwrap(),
+            "taken, so the launch does not open them too"
+        );
+    }
+
+    #[test]
+    fn a_request_too_big_to_read_stays_with_the_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = first(dir.path()).watch(|| {});
+        let to = inbox_of(dir.path());
+        let long = PathBuf::from(format!("/{}.fig", "x".repeat(MAX_REQUEST as usize)));
+        let launch = std::thread::spawn(move || {
+            hand_over(&to, &[long], Duration::from_millis(500), STARTING)
+        });
+        // The window takes what it can read.
+        let until = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < until {
+            assert!(inbox.take().is_empty());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !launch.join().unwrap(),
+            "kept by the launch, not taken and lost"
+        );
+    }
+
+    #[test]
+    fn what_a_crash_left_in_the_inbox_is_cleared_or_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        // A launch killed while writing; a window killed after taking a request.
+        fs::write(inbox.join("1-1.part"), "{").unwrap();
+        fs::write(inbox.join("2-2.taken"), r#"{"open":["/left.fig"]}"#).unwrap();
+        let inbox = first(dir.path()).watch(|| {});
+        assert_eq!(
+            inbox.take(),
+            [PathBuf::from("/left.fig")],
+            "its launch had left"
+        );
+        assert_eq!(
+            fs::read_dir(dir.path().join("inbox")).unwrap().count(),
+            1,
+            "only ready"
+        );
+    }
+
+    /// A stat that fails is not the request taken (Unix: a folder that cannot be searched).
+    #[cfg(unix)]
+    #[test]
+    fn a_request_that_cannot_be_looked_at_is_not_counted_as_taken() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let _inbox = first(dir.path()).watch(|| {});
+        let to = inbox_of(dir.path());
+        let shut = to.clone();
+        let block = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            fs::set_permissions(&shut, fs::Permissions::from_mode(0o600)).unwrap();
+        });
+        let handed = hand_over(
+            &to,
+            &[PathBuf::from("/a.fig")],
+            Duration::from_millis(400),
+            STARTING,
+        );
+        block.join().unwrap();
+        fs::set_permissions(&to, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(!handed, "not known to be taken: the launch keeps the files");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_folder_is_the_persons_own() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("figstudio");
+        let _held = first(&folder);
+        for path in [&folder, &folder.join("inbox")] {
+            let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}", path.display());
+        }
+        // A folder that is a link elsewhere is not used.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(elsewhere.path(), &linked).unwrap();
+        assert!(matches!(claim(&linked), Start::Alone));
     }
 
     #[test]
     fn a_launch_without_files_starts_its_own_window() {
         let dir = tempfile::tempdir().unwrap();
         let _held = first(dir.path());
-        assert!(!hand_over(&inbox_of(dir.path()), &[], WAIT));
+        assert!(!hand_over(&inbox_of(dir.path()), &[], WAIT, STARTING));
     }
 }

@@ -511,21 +511,29 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   file actions are fixed at install), so it shows none.
 - **One figstudio per person** (`handoff.rs`, desktop). Before its window, `main` takes a
   lock on `<config>/figstudio/instance.lock` (`File::try_lock`); the system drops it when
-  the process ends, crash or not, so nothing is left to clean up. A launch with files (a
-  jump list item, `figstudio file.fig`) that finds the lock held writes them, made
-  absolute, as a request in `<config>/figstudio/inbox/` (written as `.part`, then renamed
-  to `.json`) and waits up to two seconds for the running figstudio to take it. A thread of
-  that one looks in its inbox every 150 ms and wakes the window; the window itself takes a
-  request (`Inbox::take`, in `App::open_handed_over`) by renaming it (one rename: a launch
-  that gave up has removed its own, so a request is opened by one side only), opens the
-  files through `open` (a gone file toasts and is marked missing) and comes forward; the
-  launch exits. A hung window takes nothing. Not taken in time, or not
-  writable as a request (a path not text, or not made absolute): the launch opens the
-  files itself. The config folder is the person's own, so no other account can take the
-  name or send files. On Windows the window may only flash in the taskbar instead of
-  coming forward (the launch does not call `AllowSetForegroundWindow`). A launch without files starts a second window as before; two
-  windows share `recents.json` (the last to save wins, `missing` is per window). Tests
-  claim their own folders; `App` only watches when `main` hands it the lock.
+  the process ends, crash or not. A launch with files (a jump list item, `figstudio
+  file.fig`) that finds the lock held writes them, made absolute, as a request in
+  `<config>/figstudio/inbox/` (written as `.part`, then renamed to `.json`). It waits up to
+  20 s for the running figstudio to be up (`inbox/ready`, written when its window starts
+  watching, so a slow first start is not mistaken for a hung one), then up to 2 s for its
+  window to take the request. A thread of the running one looks in the inbox every 150 ms
+  and wakes the window; the window itself takes a request (`Inbox::take`, in
+  `App::open_handed_over`) by renaming it (one rename: a launch that gave up has removed
+  its own, so a request is opened by one side only), opens the files through `open` (a
+  gone file toasts and is marked missing) and comes forward; the launch exits. A hung
+  window takes nothing. The launch counts its files as taken only when its request is
+  known to be gone (`fs::exists` is `Ok(false)`; a stat error is not), and takes a request
+  back by deleting it, trying again on errors other than "not found" (a scanner may hold
+  a new file a moment). Not taken in time, too large for one request (1 MiB), or not
+  writable as one (a path not text, or not made absolute): the launch opens the files
+  itself. A figstudio that takes the lock clears what one that ended left: `ready`, `.part`
+  files, and `.taken` requests, which wait again (their launches had left). The folder is
+  the person's own: on Unix `claim` makes it and the inbox `0700`, the lock `0600`, and
+  refuses a folder that is a link. On Windows the window may only flash in the taskbar
+  instead of coming forward (the launch does not call `AllowSetForegroundWindow`). A
+  launch without files starts a second window as before; two windows share
+  `recents.json` (the last to save wins, `missing` is per window). Tests claim their own
+  folders; `App` only watches when `main` hands it the lock.
   An entry is (path, handle): `handle` is `None` on desktop and the browser's handle number
   otherwise, so two files of one name with different handles are two cards.
 - **Recents in the browser** (`recents_web.rs`, `apps/figstudio/js/recents.js`). The JS
