@@ -66,8 +66,9 @@ impl EmojiRaster {
 #[derive(Default)]
 pub(crate) struct Cache {
     pub(crate) source: Option<Arc<dyn EmojiSource>>,
-    entries: HashMap<(String, u16), Option<EmojiRaster>>,
+    entries: HashMap<(String, u16), (Option<EmojiRaster>, u64)>,
     bytes: usize,
+    clock: u64,
 }
 
 impl Cache {
@@ -84,19 +85,27 @@ impl Cache {
             return None;
         }
         let key = (cluster.to_owned(), pixels);
-        let raster = if let Some(cached) = self.entries.get(&key) {
+        self.clock = self.clock.wrapping_add(1);
+        let raster = if let Some((cached, last_used)) = self.entries.get_mut(&key) {
+            *last_used = self.clock;
             cached.clone()
         } else {
             let raster = source.raster(cluster, pixels);
             let bytes = raster
                 .as_ref()
                 .map_or(0, |r| r.image.data_as_u8_slice().len());
-            if self.entries.len() >= 256 || self.bytes + bytes > 16 * 1024 * 1024 {
-                self.entries.clear();
-                self.bytes = 0;
+            while self.entries.len() >= 256 || self.bytes + bytes > 16 * 1024 * 1024 {
+                let oldest = self
+                    .entries
+                    .iter()
+                    .max_by_key(|(_, (_, used))| self.clock.wrapping_sub(*used))
+                    .map(|(key, _)| key.clone())?;
+                if let Some((Some(old), _)) = self.entries.remove(&oldest) {
+                    self.bytes -= old.image.data_as_u8_slice().len();
+                }
             }
             self.bytes += bytes;
-            self.entries.insert(key, raster.clone());
+            self.entries.insert(key, (raster.clone(), self.clock));
             raster
         }?;
         Some(crate::emoji::Glyph::Bitmap {

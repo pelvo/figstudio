@@ -42,8 +42,8 @@ fn rgba_is_premultiplied_once_before_recording() {
 }
 
 #[test]
-fn cache_pressure_evicts_old_clusters_and_oversized_keys_are_rejected() {
-    for (side, count) in [(1, 257), (512, 17)] {
+fn cache_pressure_preserves_recent_clusters_and_rejects_oversized_keys() {
+    for (side, count) in [(1, 256), (512, 16)] {
         let source = Arc::new(Source {
             side,
             ..Source::default()
@@ -52,9 +52,21 @@ fn cache_pressure_evicts_old_clusters_and_oversized_keys_are_rejected() {
         for i in 0..count {
             assert!(cache.raster(&i.to_string(), 40).is_some());
         }
+        assert!(cache.raster("0", 40).is_some()); // refresh the oldest entry
+        assert!(cache.raster("new", 40).is_some());
         assert!(cache.raster("0", 40).is_some());
-        assert_eq!(source.calls.load(Ordering::Relaxed), count + 1);
+        assert_eq!(
+            source.calls.load(Ordering::Relaxed),
+            count + 1,
+            "recent entry retained"
+        );
+        assert!(cache.raster("1", 40).is_some());
+        assert_eq!(
+            source.calls.load(Ordering::Relaxed),
+            count + 2,
+            "oldest entry evicted"
+        );
         assert!(cache.raster(&"x".repeat(1025), 40).is_none());
-        assert_eq!(source.calls.load(Ordering::Relaxed), count + 1);
+        assert_eq!(source.calls.load(Ordering::Relaxed), count + 2);
     }
 }
