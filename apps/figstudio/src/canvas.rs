@@ -247,7 +247,7 @@ pub fn show(
 
     // Overlays.
     let labels = if frame_labels {
-        crate::labels::labels(&tab.doc, tab.page, tab.view, origin, rect)
+        crate::labels::labels(&painter, &tab.doc, tab.page, tab.view, origin, rect)
     } else {
         Vec::new()
     };

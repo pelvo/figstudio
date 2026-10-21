@@ -32,16 +32,48 @@ fn document(nodes: Vec<Node>) -> Document {
 }
 
 fn visible_labels(doc: &Document) -> Vec<Label> {
-    labels(
-        doc,
-        Guid(9, 1),
-        View {
-            pan: Vec2::ZERO,
-            zoom: 1.0,
-        },
-        Pos2::ZERO,
-        Rect::from_min_size(Pos2::ZERO, Vec2::splat(2000.0)),
-    )
+    let ctx = egui::Context::default();
+    let mut out = Vec::new();
+    let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+        out = labels(
+            ui.painter(),
+            doc,
+            Guid(9, 1),
+            View {
+                pan: Vec2::new(0.0, 100.0),
+                zoom: 1.0,
+            },
+            Pos2::ZERO,
+            Rect::from_min_size(Pos2::ZERO, Vec2::splat(2000.0)),
+        );
+    });
+    frame.textures_delta.clear();
+    out
+}
+
+fn at_y(mut n: Node, y: f64) -> Node {
+    let mut tf = n.data.get("transform").cloned().unwrap();
+    if let Val::Obj(o) = &mut tf {
+        o.insert("m12", Val::Float(y));
+    }
+    n.data.set("transform", tf);
+    n
+}
+
+#[test]
+fn a_label_that_would_cover_another_frame_is_hidden() {
+    let doc = document(vec![
+        node(1, 0, "CANVAS", "page", 0.0, 0.0),
+        node(2, 1, "FRAME", "Upper", 0.0, 300.0),
+        // Its label would sit on the bottom of "Upper", so it is not shown.
+        at_y(node(3, 1, "FRAME", "Lower", 0.0, 300.0), 60.0),
+        // Far enough below "Lower" for its label to sit in empty canvas.
+        at_y(node(4, 1, "SECTION", "Free", 0.0, 300.0), 200.0),
+        // Frames inside a section keep their labels on the section.
+        at_y(node(5, 4, "FRAME", "Inside", 10.0, 280.0), 40.0),
+    ]);
+    let names: Vec<_> = visible_labels(&doc).into_iter().map(|l| l.text).collect();
+    assert_eq!(names, ["Upper", "Free", "Inside"]);
 }
 
 #[test]
@@ -49,7 +81,8 @@ fn top_level_frames_and_sections_and_their_frames_get_labels() {
     let doc = document(vec![
         node(1, 0, "CANVAS", "page", 0.0, 0.0),
         node(2, 1, "SECTION", "Section A", 0.0, 400.0),
-        node(3, 2, "FRAME", "Frame in section", 10.0, 300.0),
+        // Below the section pill, so its label sits inside the section, not on the pill.
+        at_y(node(3, 2, "FRAME", "Frame in section", 10.0, 300.0), 40.0),
         node(4, 3, "FRAME", "Nested frame", 0.0, 300.0),
         node(5, 1, "FRAME", "Top frame", 500.0, 300.0),
         node(6, 1, "RECTANGLE", "Shape", 900.0, 300.0),

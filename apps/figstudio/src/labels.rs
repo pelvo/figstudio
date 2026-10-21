@@ -86,10 +86,31 @@ pub fn named(doc: &Document, page: Guid) -> Vec<Guid> {
 }
 
 /// Labels for the page's top-level frames, and for frames directly inside its sections.
-pub fn labels(doc: &Document, page: Guid, view: View, origin: Pos2, screen: Rect) -> Vec<Label> {
+/// Like Figma, a label that would cover another frame or label is not shown.
+pub fn labels(
+    painter: &egui::Painter,
+    doc: &Document,
+    page: Guid,
+    view: View,
+    origin: Pos2,
+    screen: Rect,
+) -> Vec<Label> {
     let mut out = Vec::new();
     let background = crate::canvas::to_color32(figstudio_render::page_background(doc, page));
-    for id in named(doc, page) {
+    let named = named(doc, page);
+    // On-screen rectangles of the named frames that can be covered (on or near the screen).
+    let frames: Vec<(Guid, Rect)> = named
+        .iter()
+        .filter_map(|&id| {
+            let b = figstudio_render::node_bounds(doc, id)?;
+            let min = view.to_screen(origin, Pos2::new(b.x0 as f32, b.y0 as f32));
+            let max = view.to_screen(origin, Pos2::new(b.x1 as f32, b.y1 as f32));
+            let r = Rect::from_min_max(min, max);
+            r.intersects(screen.expand(64.0)).then_some((id, r))
+        })
+        .collect();
+    let mut placed: Vec<Rect> = Vec::new();
+    for id in named {
         if out.len() >= MAX_LABELS {
             break;
         }
@@ -108,7 +129,7 @@ pub fn labels(doc: &Document, page: Guid, view: View, origin: Pos2, screen: Rect
         };
         if width >= min && screen.expand(width).contains(at) {
             let (icon, color) = style(node, background);
-            out.push(Label {
+            let label = Label {
                 id,
                 text: node.name.clone(),
                 at,
@@ -116,10 +137,32 @@ pub fn labels(doc: &Document, page: Guid, view: View, origin: Pos2, screen: Rect
                 section,
                 icon,
                 color,
-            });
+            };
+            let r = rect(painter, &label);
+            let covers = |other: &Rect| r.intersect(*other).is_positive();
+            let blocked = placed.iter().any(covers)
+                || frames
+                    .iter()
+                    .any(|(f, fr)| *f != id && covers(fr) && !is_ancestor(doc, *f, id));
+            if !blocked {
+                placed.push(r);
+                out.push(label);
+            }
         }
     }
     out
+}
+
+/// Whether `a` is a strict ancestor of `id` (a section holding the labelled frame).
+fn is_ancestor(doc: &Document, a: Guid, id: Guid) -> bool {
+    let mut cur = doc.node(id).and_then(|n| n.parent);
+    while let Some(p) = cur {
+        if p == a {
+            return true;
+        }
+        cur = doc.node(p).and_then(|n| n.parent);
+    }
+    false
 }
 
 /// Text, full label bounds (including icon or pill) and text position.
