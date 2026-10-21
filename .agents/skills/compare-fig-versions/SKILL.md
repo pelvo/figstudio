@@ -3,44 +3,35 @@ name: compare-fig-versions
 description: "Compare two versions of a Figma .fig file with figstudio and produce a changelog (what was added, removed, changed, moved; properties, text, fonts, shapes, render). Use for: diff two fig files, compare fig versions, fig changelog, report.html, figstudio-cli compare, compare_files, compare_page MCP tool, what changed between design versions."
 ---
 ## When to Use
-Use when someone hands you two .fig files of the same project (older and newer) and wants to know what changed, or wants an HTML/JSON changelog for front end engineers. Use the CLI when you can run shell commands; it writes everything to a folder in one step. Use the MCP tools only when you are already talking to a running figstudio-mcp server and have no shell. Not for comparing two unrelated files: node matching is by Figma id (Guid), so unrelated files show as mass add/remove.
+Two .fig files of the same project (older, newer) and someone wants to know what changed. Use the CLI when you have a shell; MCP only when you are talking to a running figstudio-mcp server without one. Not for unrelated files: node ids and screen name/size matching cannot establish meaningful version history.
 
 ## Procedure
-1. Pick the path. Shell available: use the CLI (steps 2-7). Only MCP available: use the MCP tools (steps 8-12).
-2. CLI: Run commands from the repo root. Build once: `cargo build --release -p figstudio-cli`. The binary is `target/release/figstudio-cli`. Needs Rust 1.95+; if the default toolchain is older, run `cargo +1.99.0 ...` (any installed 1.95+), as with `FIGSTUDIO_TOOLCHAIN` in `scripts/check.sh`.
-3. CLI: Make a NEW empty output folder each run (old files in a reused folder are not cleaned up). Then run: `target/release/figstudio-cli compare OLD.fig NEW.fig -o OUT_DIR`. Order matters: older file first, newer file second.
-4. CLI: Pick flags only if needed. Default draws before/after/diff PNGs for every changed page. `--no-render` skips pictures (much faster, use for big files or a quick look). `--json-only` writes only report.json. `--scale 2` makes sharper PNGs. `--no-system-fonts` stops using installed fonts for text without stored outlines.
-5. CLI: Check the result. Exit 0 = success; stdout has two lines: `pages added N, removed N, changed N, nodes added N, removed N, changed N, moved N`, then `OUT_DIR/`. Exit 1 = a read or artifact-write failure (read errors: `cannot read the older file` / `cannot read the newer file`). Exit 2 = bad arguments (`invalid compare arguments` plus usage). The CLI never prints layer names or text on purpose.
-6. CLI: Read the output folder: `report.html` is the human changelog, open it in a browser, one section per changed page. The Added, Removed and Changed headings always appear, even when empty; Moved out appears only when it is not empty. `report.json` is the full machine record. Rendered pages write `render/<session>-<local>-before.png`, `-after.png` and `-diff.png` (red = changed pixels): an added page gets after and diff, a removed page gets before and diff, a changed page gets all three. An identical pair has no PNGs. A rendered page can have `pixels_changed: 0`.
-7. CLI: To answer questions, read report.json. Top level: `old`, `new` (file info), `summary` (snake_case counts: pages_added, pages_removed, pages_changed, nodes_added, nodes_removed, nodes_changed, nodes_moved, properties_changed), `complete`, `truncated` (notes), `pages`. Each page: `id`, `old_name`, `new_name`, `status` (Added/Removed/Changed), `added`, `removed`, `changed`, `moved_out`, `render`. Unchanged pages are omitted. Each changed node has `changes`: list of `{field, old, new, category}`; `old: null` means the field did not exist before, `new: null` means it was removed. `text` holds old/new characters and per-run font/style changes; a font-only edit still repeats the unchanged characters. `text.runs[].index` is the `textData.styleOverrideTable` index, not a character offset, and run deltas also appear in `changes`, so do not list both. `moved` is null or `{old_parent, new_parent, old_position, new_position}`, with parents as id arrays or null at the document root. When `moved` is set, `parentIndex*` rows are left out of `changes` and `properties_changed`, so a pure move has `changes: []`. A move between two pages marks both pages Changed: the node row is on the destination page and `moved_out` (ids only) is on the source page. A Guid stored as a property value stays `{"sessionID": ..., "localID": ...}`; only schema ids are `[a, b]` arrays.
-8. MCP: Install the server: `cargo build --release -p figstudio-mcp`; binary: `target/release/figstudio-mcp`. See [client setup](../../../apps/figstudio-mcp/README.md#client-setup). Start it with BOTH files: `target/release/figstudio-mcp --assets-dir ./figma-assets OLD.fig NEW.fig` (or use the native app with both files open). The compare tools are native only; the browser bridge does not have them.
-9. MCP: Find the file keys. A key is the file name without `.fig` (the stem). If both files have the same name (common for versions, e.g. two `design.fig`), the key is the FULL PATH. If unsure, call `list_files` and use the registered full paths.
-10. MCP: Call `compare_files` with `{"oldFile": "<old key>", "newFile": "<new key>"}`. Always pass both. Add `"includeRender": true` only if pictures are needed (slower, more disk). The reply has `summary` (`pagesAdded`, `pagesRemoved`, `pagesChanged`, `nodesAdded`, `nodesRemoved`, `nodesChanged`, `nodesMoved`, `propertiesChanged`), `pages` (at most 100; `pagesTotal` is the full count and `pagesTruncated` says if more exist), `complete`, `truncated` (the report notes), and `reportJson` / `reportHtml` paths on disk. Each `pages` entry is `{id, name, nameTruncated, status, added, removed, changed}` with counts, not node arrays; `name` is the new name, else the old one, capped at 128 bytes. The paths are under `<assets-dir>/compare/compare-<random>/`, or `$TMPDIR/figstudio-compare/compare-<random>/` with inline assets (the desktop app). Each new compare deletes `compare-*` folders older than 24 hours; a CLI `-o` folder is never deleted. Hand `reportHtml` to the user.
-11. MCP: For one page's detail, call `compare_page` with `{"oldFile": ..., "newFile": ..., "pageId": "0:1"}` using an `id` from the `pages` list. Ids are strings like `0:1`.
-12. MCP: If the `compare_page` reply has `truncated: true`, names were shortened and/or rows were dropped to stay under 64 KiB. Check `nameTruncated`, and `addedOmitted` / `removedOmitted` / `changedOmitted` / `moved_outOmitted` against `addedTotal` / `removedTotal` / `changedTotal` / `moved_outTotal`. For full detail, read the `reportJson` path from `compare_files` instead of calling again. Unchanged or unknown pages return a tool error.
-13. Write the answer for the user: start with the counts, then go page by page: added nodes, removed nodes, changed nodes with each property old -> new, moves. Point to report.html as the shareable artifact.
+1. Build once from the repo root: `cargo build --release -p figstudio-cli` (Rust 1.95+; else `cargo +1.99.0 ...`).
+2. Use a NEW empty folder: `target/release/figstudio-cli compare OLD.fig NEW.fig -o OUT_DIR`. Older file first.
+3. Images default to lossless WebP; `--format png` opts out (`--format webp` is explicit). Flags: `--no-render` no pictures (fast, big files); `--json-only` only report.json; `--scale 2` sharper whole-page images (screens use their own budget; area crops use 2×); `--no-system-fonts` ignore installed fonts.
+4. Exit 0 = ok (stdout: counts line, then `OUT_DIR/`); 1 = read/write failure; 2 = bad arguments. The CLI never prints layer names or text.
+5. Open `report.html`: screens match by id, then kind + name + size, and compare in their own coordinates, ignoring canvas moves/re-parenting.
+   Each changed screen has sharp Before/After areas, a screen locator and `+ - ~` lines; unchanged screens are hidden. Use the one global Side by side / Overlay switch (top right); whole-page pictures are folded.
+   Repeated visual changes appear once under “Shared changes” (`shared_changes` / region `shared` in JSON), with links to affected screens; shared-only screens fold into a muted page summary.
+   Lines belong to an area when it covers at least half their screen-space box; unmatched lines appear in screen or page “Other changes”.
+6. Share the WHOLE OUT_DIR (report.html + render/), e.g. Artifact Server with `--entry report.html`. `--no-render` / `--json-only` reports have no pictures.
+7. report.json: `summary`, `complete`, `truncated`, `pages[]` with raw `added`/`removed`/`changed`, whole-page `render`, `screens[]` (`matched_by`, thumbnails, `regions[].nodes` in screen space), `screens_unchanged`/`screens_moved`. Screen `nodes` and page `other_nodes` assign line ownership. Each changed node keeps `changes: [{field, old, new, category}]` (`null` = absent) and `text`/`moved`.
+8. MCP: start `figstudio-mcp OLD.fig NEW.fig`, call `compare_files` with both keys (file stem, or full path if names clash), optionally `format: "png"` (compare files default to WebP), then `compare_page` by page id for detail; read `reportJson` for bulk. Compare tools are native only.
+9. Answer with counts first, then page by page.
 
 ## Pitfalls
-- Swapped arguments invert the report: additions become removals. Older file first, always.
-- Two files that are not versions of the same project match almost nothing by id and look like everything was removed and re-added. Say so instead of reporting it as a redesign.
-- Reusing an output folder: a run with `--json-only` or `--no-render` leaves old report.html or PNGs from an earlier run. Use a fresh folder.
-- Field name styles differ by surface: report.json uses snake_case (`pages_changed`) and status `Changed`; MCP summaries use camelCase (`pagesChanged`) and lowercase status (`changed`). MCP page detail keeps snake_case fields such as `old_name` and `moved_out`; only its status and schema ids are converted. Node and page ids are `[a, b]` arrays in report.json but `"a:b"` strings in MCP replies.
-- `complete: false` means some added, removed or changed nodes sit outside any page: they are counted in `summary` (including `nodes_moved` and `properties_changed`) but have no page row. The note reads `N added, removed or changed nodes outside pages are not grouped`.
-- `render` is null when a page was not drawn: `--no-render`, `--json-only`, MCP without `includeRender`, pages past the 512 render limit, or a page with nothing to draw. The render limit, pixel budget (`16777216`) and scaled-down notes appear in `truncated`; mention them to the user.
-- The render lane shows what figstudio's renderer draws, not Figma itself. Trust the property rows over the pictures; renderer approximations are counted in each page's `render.old_stats` / `new_stats`.
-- `descendants` on an added or removed row excludes the root itself; it includes matched children that moved into or out of the subtree. Do not add it to the summary totals. Moves also count in `nodes_changed`; do not add `nodes_moved` to it.
-- MCP: `compare_page` re-runs the whole diff each call. Do not loop over every page with it; use report.json for bulk reading.
-- Privacy: these files are often private. In the direct answer to the person who supplied the files, include the names, text and old -> new values step 13 asks for. Never paste layer names, text, colours, image hashes, node ids or file paths from the report into issues, commits, PRs, docs, code, tests or anything shared beyond that person; describe changes in neutral terms there.
-- Files over 256 MiB open lazily; that is fine. Very large pages render scaled down to a 16M pixel budget; the report notes it.
+- Swapped arguments turn additions into removals.
+- Unrelated files look like a total redesign; say so.
+- A reused folder keeps stale report.html and images from earlier runs.
+- The renderer is figstudio's, not Figma's; trust property rows over pictures.
+- `complete: false` or notes in `truncated` (render limit, scaled-down pages) must be mentioned to the user.
+- Privacy: files are often private. Names, text and values go only to the person who supplied the files, never into issues, commits, PRs, docs or tests.
 
 ## Verification
-1. CLI: exit code is 0 and OUT_DIR contains report.json and report.html (only report.json with --json-only). PNGs exist only when pages were rendered.
-2. Self-check from the repo root (creates a fresh output folder):
+1. Exit code 0 and OUT_DIR holds report.html and report.json (and render/ when drawn).
+2. Self-check (fresh folder, same file twice):
    ```sh
-   mkdir -p .pi/tasks
-   OUT_DIR=$(mktemp -d .pi/tasks/compare-self-check.XXXXXX)
+   mkdir -p .pi/tasks; OUT_DIR=$(mktemp -d .pi/tasks/compare-self-check.XXXXXX)
    target/release/figstudio-cli compare tests/fixtures/structure.fig tests/fixtures/structure.fig -o "$OUT_DIR"
    ```
-   Expect `pages added 0, removed 0, changed 0, nodes added 0, removed 0, changed 0, moved 0`, then the output folder. All eight JSON summary counts must be zero, including `properties_changed` (not printed on stdout). A file compared with itself has no changes.
-3. report.json parses as JSON and its `summary` counts match the stdout line.
-4. MCP: `compare_files` reply has non-empty `reportJson` and `reportHtml` paths that exist on disk; any `compare_page` id came from that reply's `pages` list.
+   Expect all zeros in the counts line and in report.json `summary`.
