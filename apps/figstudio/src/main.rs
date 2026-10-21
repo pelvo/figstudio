@@ -793,7 +793,7 @@ impl App {
         #[cfg(target_arch = "wasm32")]
         if let Some(n) = web::take_page_request()
             && let Some(tab) = self.tab()
-            && let Some(&page) = tab.doc.pages.get(n)
+            && let Some(page) = tab.page_at(n)
         {
             tab.set_page(page);
         }

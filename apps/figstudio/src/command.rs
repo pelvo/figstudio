@@ -220,10 +220,11 @@ pub fn entries(app: &App, query: &str) -> Vec<Entry> {
                 .unwrap_or_default();
             all.push(Entry {
                 title: name,
-                detail: if page == tab.page {
-                    "Page · current"
-                } else {
-                    "Page"
+                detail: match (tab.doc.internal_pages.contains(&page), page == tab.page) {
+                    (true, true) => "Internal page · current",
+                    (true, false) => "Internal page",
+                    (false, true) => "Page · current",
+                    (false, false) => "Page",
                 }
                 .into(),
                 icon: Icon::Page,
@@ -755,7 +756,17 @@ mod tests {
     #[test]
     fn internal_pages_are_command_bar_targets_and_request_fit() {
         let mut h = crate::ui_tests::harness();
+        let normal = h.state().tabs[0].doc.pages[0];
         let internal = h.state().tabs[0].doc.internal_pages[0];
+        let detail = |app: &crate::App, page| {
+            entries(app, "")
+                .into_iter()
+                .find(|e| e.target == Target::Page(page))
+                .unwrap()
+                .detail
+        };
+        assert_eq!(detail(h.state(), normal), "Page · current");
+        assert_eq!(detail(h.state(), internal), "Internal page");
         let name = h.state().tabs[0].doc.node(internal).unwrap().name.clone();
         assert!(
             entries(h.state(), &name)
@@ -768,6 +779,8 @@ mod tests {
         assert_eq!(h.state().tabs[0].page, internal);
         assert_eq!(h.state().tabs[0].selection, None);
         assert!(h.state().tabs[0].fit_pending);
+        assert_eq!(detail(h.state(), internal), "Internal page · current");
+        assert_eq!(detail(h.state(), normal), "Page");
     }
 
     #[test]

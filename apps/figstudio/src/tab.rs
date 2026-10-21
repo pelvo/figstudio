@@ -211,6 +211,17 @@ impl Tab {
             .position(|&page| page == self.page)
     }
 
+    /// Page addressed by the browser's zero-based page probe.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub fn page_at(&self, index: usize) -> Option<Guid> {
+        self.doc
+            .pages
+            .iter()
+            .chain(&self.doc.internal_pages)
+            .nth(index)
+            .copied()
+    }
+
     pub fn set_page(&mut self, page: Guid) {
         if self.page != page {
             self.page = page;

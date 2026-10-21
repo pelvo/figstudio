@@ -647,8 +647,9 @@ pub fn fatal() -> bool {
 
 static PAGE_REQUEST: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
-/// `figstudioPage(n)` from JavaScript: show page `n` (0-based) of the active tab (for
-/// automated checks; people use the Pages panel).
+/// `figstudioPage(n)` from JavaScript: show page `n` (0-based) of the active tab.
+/// Normal pages precede internal pages, matching `figstudioStatus.page` and `.pages`.
+/// This is for automated checks; people use the Pages panel.
 #[wasm_bindgen(js_name = figstudioPage)]
 pub fn request_page(n: i32) {
     PAGE_REQUEST.store(n, std::sync::atomic::Ordering::Relaxed);

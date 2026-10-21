@@ -356,7 +356,9 @@ returning to a normal page, collapsing again, keyboard activation and files with
 pages. Layout checks cover full-width click targets, matching row heights and unindented rows.
 The tests also cover initial and programmatic navigation to internal pages, respecting manual
 collapse until later navigation, per-list highlight animation, command-bar targets, fit requests
-and browser state frames. Documents are synthetic or public fixtures, never private content.
+and browser state frames. Probe indices round-trip through normal then internal pages, with
+out-of-range rejection; command-bar details distinguish both page kinds in current and inactive
+states. Documents are synthetic or public fixtures, never private content.
 
 `cargo test --profile fast -p figstudio-mcp --test bridge internal_pages` checks both MCP
 `list_open_tabs` and `get_selection` after internal-page navigation over the browser bridge,

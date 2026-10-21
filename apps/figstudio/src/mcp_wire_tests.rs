@@ -409,6 +409,26 @@ fn state_lists_only_received_tabs_with_wire_ids() {
 }
 
 #[test]
+fn internal_pages_probe_indices_round_trip_and_reject_out_of_range() {
+    let mut tabs = tabs();
+    let pages: Vec<_> = tabs[0]
+        .doc
+        .pages
+        .iter()
+        .chain(&tabs[0].doc.internal_pages)
+        .copied()
+        .collect();
+    assert!(!tabs[0].doc.internal_pages.is_empty());
+    for (index, page) in pages.iter().copied().enumerate() {
+        tabs[0].set_page(page);
+        assert_eq!(tabs[0].page_index(), Some(index));
+        assert_eq!(tabs[0].page_at(index), Some(page));
+    }
+    assert_eq!(tabs[0].page_at(pages.len()), None);
+    assert_eq!(tabs[0].page_at(usize::MAX), None);
+}
+
+#[test]
 fn internal_pages_are_included_in_browser_state_frames() {
     let mut tabs = tabs();
     assert_eq!(tabs[0].page_index(), Some(0));
