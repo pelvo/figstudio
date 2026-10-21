@@ -32,22 +32,31 @@ fn argument(path: &Path) -> String {
     format!("\"{}\"", path.display())
 }
 
-/// Publishes `items` with `try_list`, which reports whether Windows took a list. A refused
-/// list (it holds a file the person removed that was not recognised) is tried again without
-/// one item at a time. `Some(left_out)` when one was taken, `None` when none was.
-fn publish<T: Copy>(items: &[T], mut try_list: impl FnMut(&[T]) -> bool) -> Option<Option<T>> {
-    if try_list(items) {
-        return Some(None);
+/// Publishes `items` with `try_list`, which answers `Ok(None)` when Windows refused a list
+/// (it holds a file the person removed that was not recognised) and `Ok(Some(appended))`
+/// when it took it (`appended`: the list held files). A refused list is tried again without
+/// one item at a time. `Some(left_out)` when one was taken: the item left out is named only
+/// when the list taken held files (an empty one says nothing about which was removed);
+/// `None` when none was. An error stops at once.
+fn publish<T: Copy, E>(
+    items: &[T],
+    mut try_list: impl FnMut(&[T]) -> Result<Option<bool>, E>,
+) -> Result<Option<Option<T>>, E> {
+    if try_list(items)?.is_some() {
+        return Ok(Some(None));
     }
-    (0..items.len()).find_map(|skip| {
+    for skip in 0..items.len() {
         let rest: Vec<T> = items
             .iter()
             .enumerate()
             .filter(|(i, _)| *i != skip)
             .map(|(_, item)| *item)
             .collect();
-        try_list(&rest).then_some(Some(items[skip]))
-    })
+        if let Some(appended) = try_list(&rest)? {
+            return Ok(Some(appended.then_some(items[skip])));
+        }
+    }
+    Ok(None)
 }
 
 /// The file an item's argument opens (`argument` read back).
@@ -70,7 +79,6 @@ pub(crate) fn show(files: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
         .collect();
     // Arguments of items the person removed, as Windows reports them.
     let mut gone: Vec<String> = Vec::new();
-    let mut failed = None;
     let order: Vec<usize> = (0..items.len()).collect();
     #[expect(unsafe_code, reason = "the Windows jump list is a COM API")]
     // SAFETY: plain COM calls on this (the UI) thread, which winit initialised for OLE;
@@ -83,12 +91,14 @@ pub(crate) fn show(files: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let list: ICustomDestinationList =
             CoCreateInstance(&DestinationList, None, CLSCTX_INPROC_SERVER)?;
-        // One session with the items `chosen`: true when Windows took it. A refused one is
-        // aborted, so the list shown stays, and the next try starts clean (a commit after a
-        // refusal would not clear what Windows holds against the removed item).
-        let mut session = |chosen: &[usize]| -> windows::core::Result<bool> {
-            let mut slots = 0u32;
-            let removed: IObjectArray = list.BeginList(&mut slots)?;
+        // One session (after `BeginList`) with the items `chosen`: `None` when Windows refused
+        // the list, `Some(appended)` when it was committed. A refused one is aborted, so the
+        // list shown stays and the next try starts clean (a commit after a refusal would not
+        // clear what Windows holds against the removed item).
+        let mut fill = |chosen: &[usize],
+                        slots: u32,
+                        removed: &IObjectArray|
+         -> windows::core::Result<Option<bool>> {
             for i in 0..removed.GetCount()? {
                 let Ok(link) = removed.GetAt::<IShellLinkW>(i) else {
                     continue;
@@ -129,23 +139,21 @@ pub(crate) fn show(files: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
                     .is_err()
                 {
                     list.AbortList()?;
-                    return Ok(false);
+                    return Ok(None);
                 }
             }
             list.CommitList()?;
-            Ok(true)
+            Ok(Some(count > 0))
         };
-        publish(&order, |chosen| match session(chosen) {
-            Ok(taken) => taken,
-            Err(error) => {
-                failed = Some(error);
-                false
-            }
-        })
+        publish(&order, |chosen| {
+            let mut slots = 0u32;
+            let removed: IObjectArray = list.BeginList(&mut slots)?;
+            // Any failure inside ends the session too, so the list shown stays.
+            fill(chosen, slots, &removed).inspect_err(|_| {
+                let _ = list.AbortList();
+            })
+        })?
     };
-    if let Some(error) = failed {
-        return Err(error.into());
-    }
     let mut taken_off: Vec<PathBuf> = gone.iter().map(|a| path_of_argument(a)).collect();
     match published {
         // Refused with it, taken without: the person removed it.
@@ -160,25 +168,58 @@ pub(crate) fn show(files: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
 mod tests {
     use super::*;
 
+    /// What Windows does with a list in these tests: refuse it while it holds `blocked`.
+    fn windows(blocked: &'static str) -> impl FnMut(&[&'static str]) -> Result<Option<bool>, ()> {
+        move |list| {
+            Ok(if list.contains(&blocked) {
+                None
+            } else {
+                Some(!list.is_empty())
+            })
+        }
+    }
+
     #[test]
     fn a_refused_list_is_tried_again_without_one_file_at_a_time() {
         let files = ["a", "b", "c"];
-        // Windows refuses any list with "b" (removed, but not recognised as such).
         let mut tried = Vec::new();
+        let mut take = windows("b");
         let published = publish(&files, |list| {
             tried.push(list.to_vec());
-            !list.contains(&"b")
+            take(list)
         });
         assert_eq!(
             published,
-            Some(Some("b")),
+            Ok(Some(Some("b"))),
             "published without b, which was removed"
         );
         assert_eq!(tried, [vec!["a", "b", "c"], vec!["b", "c"], vec!["a", "c"]]);
         // Accepted at once: nothing left out.
-        assert_eq!(publish(&files, |_| true), Some(None));
+        assert_eq!(publish(&files, |_| Ok::<_, ()>(Some(true))), Ok(Some(None)));
         // Refused whatever is left out: nothing is published (the old list stays).
-        assert_eq!(publish(&files, |_| false), None);
+        assert_eq!(publish(&files, |_| Ok::<_, ()>(None)), Ok(None));
+    }
+
+    #[test]
+    fn a_list_taken_only_when_empty_blames_no_file() {
+        // One file, refused for another reason: the empty list is taken, but that does not
+        // show the file was removed, so it stays in Recents.
+        assert_eq!(publish(&["a"], windows("a")), Ok(Some(None)));
+    }
+
+    #[test]
+    fn an_error_stops_the_tries_at_once() {
+        let mut tried = 0;
+        let published = publish(&["a", "b"], |list| {
+            tried += 1;
+            if list.len() == 2 {
+                Ok(None)
+            } else {
+                Err("broken")
+            }
+        });
+        assert_eq!(published, Err("broken"));
+        assert_eq!(tried, 2, "no list is tried after the error");
     }
 
     #[test]

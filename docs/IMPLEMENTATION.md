@@ -504,7 +504,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   is kept with the list and it does not come back. Should Windows still refuse the list (a
   removal it reports but this did not read), that session is aborted, so the list shown
   stays, and new sessions try the list without one file at a time (`publish`); the one
-  that is taken shows which file was removed, and it leaves Recents too. Files of one name get their folder after
+  that is taken shows which file was removed (only when it held files), and it leaves
+  Recents too. An error, as opposed to a refusal, aborts the open session and stops the
+  tries. Files of one name get their folder after
   the name, or the folder's whole path when that is shared or missing (`shortlist_labels`), and a Dock title doubles `&` (`menu_title`). Linux has no common dock menu for a running app (desktop
   file actions are fixed at install), so it shows none.
 - **One figstudio per person** (`handoff.rs`, desktop). Before its window, `main` takes a
