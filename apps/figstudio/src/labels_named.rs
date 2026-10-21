@@ -8,6 +8,8 @@ pub(super) struct Named {
     pub world: Affine,
     /// Exclusive end of this section's subtree; ordinary frames contain no candidates.
     pub end: usize,
+    /// Index of the enclosing section candidate, whose fill is under this label.
+    pub parent: Option<usize>,
 }
 
 pub(super) fn collect(doc: &Document, page: Guid) -> Vec<Named> {
@@ -17,9 +19,9 @@ pub(super) fn collect(doc: &Document, page: Guid) -> Vec<Named> {
         .children(page)
         .iter()
         .rev()
-        .map(|&id| (id, Affine::IDENTITY, None::<usize>))
+        .map(|&id| (id, Affine::IDENTITY, None::<usize>, None::<usize>))
         .collect();
-    while let Some((id, parent, exit)) = stack.pop() {
+    while let Some((id, parent, exit, section_parent)) = stack.pop() {
         if let Some(index) = exit {
             let end = out.len();
             out[index].end = end;
@@ -37,10 +39,16 @@ pub(super) fn collect(doc: &Document, page: Guid) -> Vec<Named> {
             id,
             world,
             end: index + 1,
+            parent: section_parent,
         });
         if section {
-            stack.push((id, world, Some(index)));
-            stack.extend(doc.children(id).iter().rev().map(|&id| (id, world, None)));
+            stack.push((id, world, Some(index), None));
+            stack.extend(
+                doc.children(id)
+                    .iter()
+                    .rev()
+                    .map(|&id| (id, world, None, Some(index))),
+            );
         }
     }
     out

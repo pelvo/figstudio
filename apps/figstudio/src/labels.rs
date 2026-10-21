@@ -93,8 +93,9 @@ pub fn labels(
     screen: Rect,
 ) -> Vec<Label> {
     let mut out = Vec::new();
-    let background = crate::canvas::to_color32(figstudio_render::page_background(doc, page));
+    let page_bg = crate::canvas::to_color32(figstudio_render::page_background(doc, page));
     let named = candidates::collect(doc, page);
+    let backdrops = backdrops(doc, &named, page_bg);
     let frames = blockers(doc, &named, view, origin, screen);
     let mut placed = spatial::Grid::default();
     for (index, candidate) in named.iter().enumerate() {
@@ -116,7 +117,7 @@ pub fn labels(
             MIN_FRAME_WIDTH
         };
         if width >= min && screen.expand(width).contains(at) {
-            let (icon, color) = style(node, background);
+            let (icon, color) = style(node, backdrops[index]);
             let mut label = Label {
                 id,
                 text: node.name.clone(),
@@ -141,6 +142,38 @@ pub fn labels(
         }
     }
     out
+}
+
+/// The colour under each label: its enclosing section's fill over that section's backdrop,
+/// or the page. Parents precede their children in `named`, so one pass resolves nesting.
+fn backdrops(doc: &Document, named: &[candidates::Named], page: Color32) -> Vec<Color32> {
+    let mut surface: Vec<Color32> = Vec::with_capacity(named.len());
+    let mut under = Vec::with_capacity(named.len());
+    for candidate in named {
+        let back = candidate.parent.map_or(page, |p| surface[p]);
+        under.push(back);
+        let fills = doc
+            .node(candidate.id)
+            .and_then(|n| n.data.get("fillPaints"))
+            .map(figstudio_fig::Val::items)
+            .unwrap_or_default();
+        // shortcut: only solid fills count; gradient/image sections keep the backdrop below.
+        let top = fills.iter().fold(back, |acc, p| {
+            if p.flag("visible") == Some(false) || p.text("type").unwrap_or("SOLID") != "SOLID" {
+                return acc;
+            }
+            let opacity = p.num("opacity").unwrap_or(1.0);
+            figstudio_render::paint::color(p.get("color"), opacity).map_or(acc, |c| {
+                let [r, g, b, a] = c.components;
+                let solid = crate::canvas::to_color32(figstudio_render::color::AlphaColor::new([
+                    r, g, b, 1.0,
+                ]));
+                acc.lerp_to_gamma(solid, a.clamp(0.0, 1.0))
+            })
+        });
+        surface.push(top);
+    }
+    under
 }
 
 fn blockers(

@@ -226,3 +226,35 @@ fn plain_frame_labels_are_readable_on_light_and_dark_pages() {
         );
     }
 }
+
+#[test]
+fn frame_labels_inside_a_dark_section_read_on_the_section_not_the_page() {
+    let mut section = node(2, 1, "SECTION", "Dark section", 0.0, 1000.0);
+    let mut fill = Obj::new();
+    let mut c = Obj::new();
+    for channel in ["r", "g", "b"] {
+        c.insert(channel, Val::Float(0.27));
+    }
+    c.insert("a", Val::Float(1.0));
+    fill.insert("type", Val::Str("SOLID".into()));
+    fill.insert("color", Val::Obj(c));
+    section
+        .data
+        .set("fillPaints", Val::Arr(vec![Val::Obj(fill)]));
+    let doc = document(vec![
+        node(1, 0, "CANVAS", "page", 0.0, 0.0),
+        section,
+        at_y(node(3, 2, "FRAME", "Inside", 20.0, 900.0), 60.0),
+        at_y(node(4, 2, "SYMBOL", "Component", 20.0, 900.0), 300.0),
+    ]);
+    let labels = visible_labels(&doc);
+    let find = |name: &str| labels.iter().find(|l| l.text == name).expect(name).color;
+    let dark = Color32::from_gray(69);
+    let inside = find("Inside");
+    assert!(
+        theme::contrast(inside, dark) >= 4.5,
+        "frame label {inside:?} unreadable on its dark section"
+    );
+    // Component purple is a fixed palette colour; the section picks the dark one.
+    assert_eq!(find("Component"), theme::DARK.component);
+}
