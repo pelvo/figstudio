@@ -195,6 +195,9 @@ pub(crate) fn hand_over(
     while !is_up() && Instant::now() < up {
         std::thread::sleep(CHECK);
     }
+    // Before the window takes the files, while this launch still may give the foreground.
+    let holder = fs::read_to_string(inbox.join(HOLDER)).ok();
+    let_come_forward(holder.as_deref().and_then(holder_pid));
     let until = Instant::now() + wait;
     while Instant::now() < until {
         // Only a request known to be gone was taken; one that cannot be looked at is not.
@@ -229,6 +232,33 @@ pub(crate) fn hand_over(
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// The process of a lock holder's id (`unique`), so a launch can let its window come
+/// forward.
+fn holder_pid(id: &str) -> Option<u32> {
+    id.split_once('-')?.0.parse().ok()
+}
+
+/// Lets the running figstudio's window come forward when it opens the files: Windows gives
+/// the foreground only to the process the person just started, which is this launch, and
+/// this passes it on. Elsewhere the window comes forward by itself.
+#[cfg(windows)]
+fn let_come_forward(holder: Option<u32>) {
+    use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
+    #[expect(
+        unsafe_code,
+        reason = "Windows' foreground permission is a Win32 call (approved by the owner)"
+    )]
+    // SAFETY: a plain Win32 call that takes a process id (or `ASFW_ANY`) by value and reads
+    // or writes no memory of this process; any failure is reported as an error.
+    let allowed = unsafe { AllowSetForegroundWindow(holder.unwrap_or(ASFW_ANY)) };
+    if let Err(e) = allowed {
+        tracing::warn!("single instance: the window may not come forward: {e}");
+    }
+}
+
+#[cfg(not(windows))]
+fn let_come_forward(_holder: Option<u32>) {}
 
 /// An id no other request or figstudio has: the process and the time.
 fn unique() -> String {
@@ -614,6 +644,13 @@ mod tests {
         });
         assert_eq!(inbox.take(), [PathBuf::from("/later.fig")]);
         reopen.join().unwrap();
+    }
+
+    #[test]
+    fn the_holders_process_is_read_from_its_id() {
+        assert_eq!(holder_pid(&unique()), Some(std::process::id()));
+        assert_eq!(holder_pid("not an id"), None);
+        assert_eq!(holder_pid(""), None);
     }
 
     #[test]

@@ -534,8 +534,10 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   itself. A figstudio that takes the lock clears what one that ended left: `ready`, `.part`
   and `.withdrawn` files, and `.taken` requests, which wait again (their launches had left). The folder is
   the person's own: on Unix `claim` makes it and the inbox `0700`, the lock `0600`, and
-  refuses a folder that is a link. On Windows the window may only flash in the taskbar
-  instead of coming forward (the launch does not call `AllowSetForegroundWindow`). A
+  refuses a folder that is a link. On Windows the launch, which has the foreground
+  because the person just started it, passes it to the running figstudio
+  (`AllowSetForegroundWindow` with the pid in its `holder` id; one approved `unsafe`
+  block), so its window can come forward instead of only flashing in the taskbar. A
   launch without files starts a second window as before; two windows share
   `recents.json` (the last to save wins, `missing` is per window). Tests claim their own
   folders; `App` only watches when `main` hands it the lock.
