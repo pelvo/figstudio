@@ -420,7 +420,9 @@ before a file was opened does not undo it, and that a folder where the file was 
 cap with pictures deleted, restart, damaged list left alone, owner-only file), the "Opened
 … ago" wording and the picture size. Each was seen failing with its part removed (no note
 on load, Remove ignored, missing opened anyway, filter ignored, toggle not kept, no
-dedupe). The pictures themselves and Show in Finder need the real app.
+dedupe). Two more cover the browser's merge rules: files opened before the saved list
+arrives stay in front of it, and a moved file picked again (a new handle) replaces its
+missing card of the same name. The pictures themselves and Show in Finder need the real app.
 
 Cannot be covered here: the real OS clipboard (paste into an editor or Preview), a real
 window manager, native file dialogs, GPU tiles, HiDPI and trackpad gestures.
@@ -464,6 +466,28 @@ this page (cross-origin isolated); poll `page.evaluate` instead. `window.figstud
 holds numbers only (tabs, page, drawn, culled, images loading / missing / read, image cache
 and Wasm memory bytes, errors); `figstudioPage(n)` switches page. Never screenshot a
 private file.
+
+Recents in the browser has two Playwright specs in `web/e2e` (`npm i --no-save
+@playwright/test`, then `npx playwright test <spec>` there):
+
+- `recents.spec.mjs` loads `apps/figstudio/js/recents.js` on its own (no build) and checks
+  the IndexedDB list, the handle store (a re-picked file keeps its number, another file
+  gets its own), reading a file back through its handle after a reload (and "gone" once
+  deleted), pictures kept and deleted, and the no-handle answer. Handles come from the
+  origin's private file system (OPFS), as Playwright cannot drive `showOpenFilePicker`
+  (it cancels it).
+- `recents-app.spec.mjs` drives the built app and skips unless `FIGSTUDIO_WEB_URL` is set
+  (`scripts/web-build.sh`, `python3 scripts/web-serve.py web/dist 8765`, then
+  `FIGSTUDIO_WEB_URL=http://127.0.0.1:8765/`). With `showOpenFilePicker` deleted
+  (Firefox, Safari) a picked file is listed with a picture, kept over a reload, and its card
+  shows the file chooser. With a fake picker returning an OPFS handle (Chrome, Edge) the
+  card reads the file through its handle without a picker, and after the file is deleted
+  it opens the picker with `startIn`. The canvas is driven by position (1280×800).
+
+The relay spec deletes `showOpenFilePicker` for the same reason, so Ctrl+O shows the plain
+input Playwright fills. `npx playwright install webkit` lets the app spec's no-handle steps
+run in WebKit too (a probe script, not in the spec). Look at the cards, the list rows and
+the toasts by eye in Chrome and Safari or Firefox after a change.
 
 Measured on the development machine (32 threads, headless Chromium, 1400×880 window,
 4500-node `synth --copies 400` of structure.fig): 100% zoom 15 ms on 1 thread, 6–7 ms on 8+;

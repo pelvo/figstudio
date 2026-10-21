@@ -118,8 +118,11 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   command.rs             the ⌘L command bar: search over commands, files, pages and layers
   onboarding.rs          first run: the welcome sheet (three pages) and one-time tips beside
                          the command field, the space dots and the sidebar button
-  recents.rs             desktop: the Recents page in the empty canvas card (cards or rows,
-                         filter, page pictures drawn in the background, saved list)
+  recents.rs             the Recents page in the empty canvas card (cards or rows, filter,
+                         page pictures drawn in the background, the list and its merge rules)
+  recents_disk.rs        desktop: where recents are kept (recents.json, thumbs/, the look
+                         thread for moved files, Show in Finder)
+  recents_web.rs         browser only: the same through js/recents.js (IndexedDB, handles)
   anim.rs                springs and colour fades in egui memory; Reduce motion
   icons.rs               line icons painted on a 16-unit grid; the icon button
   vibrancy.rs            macOS only: the blur view behind the transparent window
@@ -440,7 +443,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   translucent sidebar, the renderer (applied at the next start; `FIGSTUDIO_RENDERER` wins),
   frame names and whether the scroll wheel zooms (`canvas::Options`), shortcuts and desktop
   Agent access.
-- **Recents** (`recents.rs`, desktop only). With no file open the canvas card is the Recents
+- **Recents** (`recents.rs`; the store is `recents_disk.rs` on desktop and
+  `recents_web.rs` in the browser). With no file open the canvas card is the Recents
   page instead of the plain empty state: a title, a filter, a cards/rows toggle
   (`Prefs::recents_list`) and Open file…, then one card per file opened before, newest first.
   A card is the file's space gradient (its saved colour, else the tint its name picks) with a
@@ -472,8 +476,28 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   page appearing raise it, and an answer asked for under an older one is dropped. A click
   also looks, opening a file that is back
   and marking one that went, with a toast. The header keeps to the card: a narrow one drops the filter, then the
-  view toggle, then narrows Open. The browser has no paths to open again and keeps the plain empty state. Tests
-  use `Recents::memory()` (no file, no pictures).
+  view toggle, then narrows Open. Tests use `Recents::memory()` (no file, no pictures).
+  An entry is (path, handle): `handle` is `None` on desktop and the browser's handle number
+  otherwise, so two files of one name with different handles are two cards.
+- **Recents in the browser** (`recents_web.rs`, `apps/figstudio/js/recents.js`). The JS
+  module keeps three IndexedDB stores in `figstudio-recents`: `list` (the same JSON as
+  `recents.json`, with `handle`), `handles` (`FileSystemFileHandle`s by number, a picked file
+  that `isSameEntry` an old one keeps its number) and `thumbs` (PNG blobs, keyed `h<handle>`
+  or `n:<name>`). Only files picked or dropped are listed: `web::open_file` records each
+  file's origin (`web::take_origin`), which `note_recent` takes; files from links or an
+  agent have none. The saved list arrives a few frames after start, so `Recents::take`
+  keeps files opened before it in front, dedupes, caps at 60 and saves. Where
+  `showOpenFilePicker` exists (Chrome, Edge) Open file… uses it and every file gets a handle;
+  a card reads its file through the handle (asking permission again if needed). A file gone
+  marks the card missing, toasts, and opens the picker with `startIn` the old handle; a
+  refused permission toasts to click again. Picking the moved file gives a new handle; the
+  missing card of the same name gives way to it (`Recents::add`). Without the picker
+  (Firefox, Safari) Open uses the plain file input, a card opens the picker with a toast
+  naming the file, and its row says "Opens the file picker". There is no Show in Finder.
+  Pictures render on the rayon pool (the same 640×400 job as desktop) and are stored as PNG;
+  the pool cannot wake the window (`egui::Context` is not `Send` in wasm), so
+  `Recents::sync` repaints every 100 ms while `busy()`. `web::start` registers
+  `watchDrops` before eframe's drop listener so a dropped file's handle can be matched.
 - **Onboarding** (`onboarding.rs`). The first launch (and the first launch of a version
   that adds it: `UiState` without `onboarding`) opens the welcome sheet: a modal card over the
   dimmed window, a hero in the active space's gradient with a drawn picture, three pages (the
