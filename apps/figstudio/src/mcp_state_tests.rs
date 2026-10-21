@@ -53,6 +53,21 @@ fn shared_reveal_selects_switches_page_and_fits_without_mutating_on_closed_tab()
 }
 
 #[test]
+fn internal_pages_reveal_switches_without_selecting_the_canvas_and_requests_fit() {
+    let mut tabs = tabs();
+    let internal = tabs[0].doc.internal_pages[0];
+    tabs[0].selection = Some(Guid(1, 25));
+    tabs[0].hover = Some(Guid(1, 25));
+    tabs[0].fit_pending = false;
+    let mut active = 0;
+    reveal(&mut tabs, &mut active, 7, internal).unwrap();
+    assert_eq!(tabs[0].page, internal);
+    assert_eq!(tabs[0].selection, None);
+    assert_eq!(tabs[0].hover, None);
+    assert!(tabs[0].fit_pending);
+}
+
+#[test]
 fn revealing_a_page_switches_to_it_instead_of_selecting_it() {
     let mut tabs = tabs();
     let mut active = 0;

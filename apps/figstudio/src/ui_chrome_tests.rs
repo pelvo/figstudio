@@ -299,22 +299,364 @@ fn a_file_opens_with_the_style_saved_for_it() {
 }
 
 #[test]
+fn workspace_malformed_legacy_payload_cannot_reset_other_preferences() {
+    let mut memory = Memory::default();
+    memory.0.insert(crate::UI_STATE_KEY.to_owned(), "(show_left:false,show_right:true,pages_share:0.3,prefs:(renderer:Cpu,frame_labels:false),workspace:\"invalid\")".to_owned());
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&memory);
+    let app = App::new(&cc, Vec::new());
+    assert!(
+        !app.show_left && !app.prefs.frame_labels,
+        "workspace decoding must not discard unrelated settings"
+    );
+    assert_eq!(app.prefs.renderer, crate::settings::Renderer::Cpu);
+}
+
+#[test]
+fn workspace_paths_are_not_written_into_eframe_preferences() {
+    use eframe::App as _;
+    let mut h = harness();
+    let mut memory = Memory::default();
+    h.state_mut().save(&mut memory);
+    assert!(
+        memory
+            .0
+            .values()
+            .all(|value| !value.contains("structure.fig")),
+        "file paths must not enter the non-private preferences store"
+    );
+}
+
+#[test]
+fn workspace_startup_bounds_decode_concurrency_and_retains_the_queue() {
+    let dir = tempfile::tempdir().expect("workspace folder");
+    let paths: Vec<_> = (0..5)
+        .map(|i| {
+            let path = dir.path().join(format!("copy-{i}.fig"));
+            std::fs::copy(fixture("structure.fig"), &path).expect("public fixture");
+            path
+        })
+        .collect();
+    let mut h = Harness::builder().with_size(SIZE).build_eframe(|cc| {
+        let app = App::new(cc, paths);
+        assert!(
+            app.loading.len() <= 4,
+            "startup must not spawn one decoder for every saved path"
+        );
+        let snapshot =
+            serde_json::to_value(crate::session::Session::capture(&app)).expect("snapshot");
+        assert_eq!(
+            snapshot["files"].as_array().expect("files").len(),
+            5,
+            "queued restores survive a save before decoding finishes"
+        );
+        app
+    });
+    wait(&mut h, &mut Vec::new(), "all queued files", |a| {
+        a.tabs.len() == 5 && a.loading.len() == 0
+    });
+}
+
+#[test]
+fn workspace_resolved_parent_aliases_open_only_one_space() {
+    let dir = tempfile::tempdir().expect("workspace folder");
+    std::fs::create_dir(dir.path().join("nested")).expect("nested folder");
+    let path = dir.path().join("design.fig");
+    std::fs::copy(fixture("structure.fig"), &path).expect("public fixture");
+    let alias = dir.path().join("nested").join("..").join("design.fig");
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, vec![path, alias]));
+    wait(&mut h, &mut Vec::new(), "alias loads", |a| {
+        a.loading.len() == 0
+    });
+    assert_eq!(
+        h.state().tabs.len(),
+        1,
+        "worker-resolved identity prevents duplicate spaces"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_alias_deduplication_preserves_symlink_parent_semantics() {
+    let dir = tempfile::tempdir().expect("workspace folder");
+    let real = dir.path().join("real");
+    let inner = real.join("inner");
+    std::fs::create_dir_all(&inner).expect("real folder");
+    let path = real.join("design.fig");
+    std::fs::copy(fixture("structure.fig"), &path).expect("public fixture");
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&inner, &link).expect("directory symlink");
+    let alias = link.join("..").join("design.fig");
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, vec![path, alias]));
+    wait(&mut h, &mut Vec::new(), "symlink alias loads", |a| {
+        a.loading.len() == 0
+    });
+    assert_eq!(h.state().tabs.len(), 1);
+    assert!(
+        !h.state().toasts.iter().any(|t| t.error),
+        "do not lexically resolve a symlink's parent to the wrong file"
+    );
+}
+
+#[test]
+fn desktop_workspace_restores_order_active_space_and_pending_files() {
+    use crate::spaces::{Style, Symbol};
+    use eframe::App as _;
+
+    let dir = tempfile::tempdir().expect("private workspace folder");
+    let workspace = dir.path().join("workspace.json");
+    let mut first = Harness::builder().with_size(SIZE).build_eframe(|cc| {
+        App::with_workspace_store(
+            cc,
+            vec![fixture("structure.fig"), fixture("vector.fig")],
+            crate::session_store::Store::at(workspace.clone()),
+        )
+    });
+    wait(&mut first, &mut Vec::new(), "both workspace files", |a| {
+        a.tabs.len() == 2
+    });
+    // Use a chosen order, not whichever decode happened to finish first.
+    first.state_mut().tabs.sort_by(|a, b| b.path.cmp(&a.path));
+    first.state_mut().active = 0;
+    let expected: Vec<_> = first.state().tabs.iter().map(|t| t.path.clone()).collect();
+    let style = Style {
+        name: Some("Workspace".to_owned()),
+        symbol: Some(Symbol::Icon("component".to_owned())),
+        ..Default::default()
+    };
+    let id = crate::spaces::FileId::of(&first.state().tabs[0], "vector.fig");
+    let key = id.key.map(str::to_owned);
+    let folder = id.folder.map(str::to_owned);
+    first.state_mut().spaces.remember(
+        crate::spaces::FileId {
+            key: key.as_deref(),
+            file: "vector.fig",
+            folder: folder.as_deref(),
+        },
+        &style,
+    );
+    let mut saved = Memory::default();
+    first.state_mut().save(&mut saved);
+
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&saved);
+    let mut interrupted = App::with_workspace_store(
+        &cc,
+        Vec::new(),
+        crate::session_store::Store::at(workspace.clone()),
+    );
+    assert_eq!(
+        interrupted.loading.len(),
+        2,
+        "restore starts without opening files manually"
+    );
+    let mut pending = Memory::default();
+    interrupted.save(&mut pending);
+
+    let spaces = std::mem::take(&mut first.state_mut().spaces);
+    let mut reopened = Harness::builder().with_size(SIZE).build_eframe(|cc| {
+        let mut saved_cc = eframe::CreationContext::_new_kittest(cc.egui_ctx.clone());
+        saved_cc.storage = Some(&pending);
+        let mut app = App::with_workspace_store(
+            &saved_cc,
+            Vec::new(),
+            crate::session_store::Store::at(workspace.clone()),
+        );
+        app.spaces = spaces;
+        app
+    });
+    wait(&mut reopened, &mut Vec::new(), "restored workspace", |a| {
+        a.tabs.len() == 2 && a.loading.len() == 0
+    });
+    assert_eq!(
+        reopened
+            .state()
+            .tabs
+            .iter()
+            .map(|t| t.path.clone())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(
+        reopened.state().tabs[reopened.state().active].path,
+        expected[0]
+    );
+    assert_eq!(
+        reopened.state().tabs[0].style,
+        style,
+        "existing space styling is reused"
+    );
+}
+
+#[test]
+fn desktop_workspace_skips_missing_files_merges_startup_files_and_forgets_closed_spaces() {
+    use eframe::App as _;
+    let dir = tempfile::tempdir().expect("workspace folder");
+    let missing = dir.path().join("missing.fig");
+    let kept = dir.path().join("kept.fig");
+    let workspace = dir.path().join("workspace.json");
+    for path in [&missing, &kept] {
+        std::fs::copy(fixture("structure.fig"), path).expect("public fixture copy");
+    }
+    let mut first = Harness::builder().with_size(SIZE).build_eframe(|cc| {
+        App::with_workspace_store(
+            cc,
+            vec![missing.clone(), kept.clone()],
+            crate::session_store::Store::at(workspace.clone()),
+        )
+    });
+    wait(&mut first, &mut Vec::new(), "saved files", |a| {
+        a.tabs.len() == 2
+    });
+    let mut saved = Memory::default();
+    first.state_mut().save(&mut saved);
+    std::fs::remove_file(&missing).expect("remove one saved file");
+    let extra = fixture("vector.fig");
+    let mut reopened = Harness::builder().with_size(SIZE).build_eframe(|cc| {
+        let mut saved_cc = eframe::CreationContext::_new_kittest(cc.egui_ctx.clone());
+        saved_cc.storage = Some(&saved);
+        let app = App::with_workspace_store(
+            &saved_cc,
+            vec![kept.clone(), extra.clone(), extra.clone()],
+            crate::session_store::Store::at(workspace.clone()),
+        );
+        assert_eq!(
+            app.loading.len(),
+            3,
+            "saved files plus one unique explicit file"
+        );
+        app
+    });
+    wait(&mut reopened, &mut Vec::new(), "surviving files", |a| {
+        a.tabs.len() == 2 && a.loading.len() == 0
+    });
+    assert_eq!(
+        reopened
+            .state()
+            .tabs
+            .iter()
+            .map(|t| &t.path)
+            .collect::<Vec<_>>(),
+        [&kept, &extra]
+    );
+    assert_eq!(
+        reopened.state().tabs[reopened.state().active].path,
+        extra,
+        "explicit file takes focus"
+    );
+    assert!(
+        reopened
+            .state()
+            .toasts
+            .iter()
+            .any(|t| t.error && t.text.contains("Could not open"))
+    );
+    reopened.state_mut().close(0);
+    let mut closed = Memory::default();
+    reopened.state_mut().save(&mut closed);
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&closed);
+    let only_open = App::with_workspace_store(
+        &cc,
+        Vec::new(),
+        crate::session_store::Store::at(workspace.clone()),
+    );
+    assert_eq!(only_open.loading.iter().collect::<Vec<_>>(), [&extra]);
+
+    reopened.state_mut().close(0);
+    reopened.state_mut().save(&mut closed);
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&closed);
+    assert_eq!(
+        App::with_workspace_store(&cc, Vec::new(), crate::session_store::Store::at(workspace))
+            .loading
+            .len(),
+        0,
+        "closing every space saves an empty workspace"
+    );
+}
+
+#[cfg(feature = "mcp")]
+#[test]
+fn desktop_agent_access_preferences_survive_restart() {
+    use eframe::App as _;
+    for (on, remote) in [(true, false), (true, true), (false, true), (false, false)] {
+        let mut storage = Memory::default();
+        let cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+        let mut first = App::new(&cc, Vec::new());
+        let access = first.mcp.access().expect("desktop agent settings");
+        *access.on = on;
+        *access.remote = remote;
+        *access.remote_addr = "127.0.0.1:0".to_owned();
+        first.save(&mut storage);
+        let saved = &storage.0[crate::UI_STATE_KEY];
+        assert!(
+            !saved.contains("token"),
+            "bearer tokens are not preferences"
+        );
+        assert!(
+            !saved.contains("endpoint"),
+            "bound ports are not preferences"
+        );
+
+        let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+        cc.storage = Some(&storage);
+        let mut second = App::new(&cc, Vec::new());
+        let access = second
+            .mcp
+            .access()
+            .expect("restored desktop agent settings");
+        assert_eq!((*access.on, *access.remote), (on, remote));
+        assert_eq!(access.remote_addr, "127.0.0.1:0");
+        assert!(access.endpoint.is_none(), "only sync starts the server");
+        if on && remote {
+            second.mcp.sync(&cc.egui_ctx, &[], 0);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                assert_eq!(second.mcp.frame(&mut [], &mut 0), None);
+                let access = second.mcp.access().expect("agent settings");
+                if let Some((endpoint, _)) = access.endpoint
+                    && endpoint != "Starting…"
+                {
+                    assert!(endpoint.starts_with("127.0.0.1:"), "{endpoint}");
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "server did not restart"
+                );
+                std::thread::yield_now();
+            }
+            second.mcp.stop();
+        }
+    }
+}
+
+#[cfg(feature = "mcp")]
+#[test]
+fn desktop_agent_access_defaults_off_for_older_saved_preferences() {
+    let mut storage = Memory::default();
+    storage.0.insert(
+        crate::UI_STATE_KEY.to_owned(),
+        "(show_left:false,show_right:true,pages_share:0.3,prefs:(renderer:Cpu))".to_owned(),
+    );
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&storage);
+    let mut app = App::new(&cc, Vec::new());
+    assert!(!app.show_left, "the older state still loads");
+    assert_eq!(app.prefs.renderer, crate::settings::Renderer::Cpu);
+    let access = app.mcp.access().expect("desktop agent settings");
+    assert!(!*access.on && !*access.remote);
+    assert!(access.remote_addr.is_empty() && access.endpoint.is_none());
+}
+
+#[test]
 fn the_sidebar_and_panels_come_back_as_they_were_left() {
     use eframe::App as _;
-    #[derive(Default)]
-    struct Memory(std::collections::HashMap<String, String>);
-    impl eframe::Storage for Memory {
-        fn get_string(&self, key: &str) -> Option<String> {
-            self.0.get(key).cloned()
-        }
-        fn set_string(&mut self, key: &str, value: String) {
-            self.0.insert(key.to_owned(), value);
-        }
-        fn remove_string(&mut self, key: &str) {
-            self.0.remove(key);
-        }
-        fn flush(&mut self) {}
-    }
     let mut storage = Memory::default();
     let cc = eframe::CreationContext::_new_kittest(egui::Context::default());
     let mut first = App::new(&cc, Vec::new());
@@ -1739,6 +2081,176 @@ fn two_pages() -> (crate::tab::Tab, [figstudio_fig::Guid; 2]) {
     );
     tab.page = pages[0];
     (tab, pages)
+}
+
+fn internal_pages_tab() -> (crate::tab::Tab, [figstudio_fig::Guid; 2]) {
+    let (mut tab, pages) = two_pages();
+    let doc = std::sync::Arc::get_mut(&mut tab.doc).expect("unshared test document");
+    doc.pages = vec![pages[0]];
+    doc.internal_pages = vec![pages[1]];
+    (tab, pages)
+}
+
+fn internal_pages_harness() -> (Harness<'static, App>, [figstudio_fig::Guid; 2]) {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, Vec::new()));
+    let (tab, pages) = internal_pages_tab();
+    h.state_mut().tabs.push(tab);
+    h.state_mut().active = 0;
+    h.run_steps(3);
+    (h, pages)
+}
+
+#[test]
+fn internal_pages_expand_open_and_return_to_a_normal_page() {
+    let (mut h, [normal, internal]) = internal_pages_harness();
+    assert!(h.query_by_label("Page 1").is_some());
+    assert!(h.query_by_label("Page 2").is_none(), "collapsed initially");
+    h.get_by_label("Internal pages (1)").click();
+    h.run_steps(20);
+    assert_eq!(
+        h.state().tabs[0].page,
+        normal,
+        "expanding does not navigate"
+    );
+    h.state_mut().tabs[0].selection = Some(normal);
+    h.state_mut().tabs[0].hover = Some(normal);
+    h.get_by_label("Page 2").click();
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].page, internal);
+    assert_eq!(h.state().tabs[0].selection, None);
+    assert_eq!(h.state().tabs[0].hover, None);
+    h.get_by_label("Page 1").click();
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].page, normal);
+    h.get_by_label("Internal pages (1)").click();
+    h.run_steps(20);
+    assert!(h.query_by_label("Page 2").is_none());
+    assert!(h.query_by_label("Page 1").is_some());
+}
+
+#[test]
+fn internal_pages_open_on_programmatic_navigation_but_can_still_be_collapsed() {
+    let navigations: [fn(&mut crate::tab::Tab, figstudio_fig::Guid); 3] = [
+        crate::tab::Tab::set_page,
+        |tab, page| tab.select(Some(page)),
+        crate::tab::Tab::show_node,
+    ];
+    for navigate in navigations {
+        let (mut h, [normal, internal]) = internal_pages_harness();
+        navigate(&mut h.state_mut().tabs[0], internal);
+        h.run_steps(20);
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Page 2").is_some(),
+            "navigation reveals the active page"
+        );
+        h.get_by_label("Internal pages (1)").click();
+        h.run_steps(20);
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Page 2").is_none(),
+            "manual collapse is respected"
+        );
+        h.state_mut().tabs[0].set_page(normal);
+        h.run_steps(3);
+        navigate(&mut h.state_mut().tabs[0], internal);
+        h.run_steps(20);
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Page 2").is_some(),
+            "later navigation reveals it again"
+        );
+    }
+}
+
+#[test]
+fn internal_pages_start_visible_when_already_selected() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, Vec::new()));
+    let (mut tab, [_, internal]) = internal_pages_tab();
+    tab.page = internal;
+    h.state_mut().tabs.push(tab);
+    h.state_mut().active = 0;
+    h.run_steps(20);
+    assert!(h.query_by_label("Page 2").is_some());
+    assert_eq!(h.state().tabs[0].page, internal);
+}
+
+#[test]
+fn internal_pages_highlight_does_not_inherit_another_lists_animation() {
+    use figstudio_fig::{Guid, Node, Val};
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, Vec::new()));
+    crate::anim::set_reduced(&h.ctx.clone(), false);
+    let (mut tab, [first, internal]) = internal_pages_tab();
+    let second = Guid(9, 3);
+    let mut nodes = tab.doc.nodes.clone();
+    let mut data = nodes[0].data.clone();
+    let Val::Obj(ref mut fields) = data else {
+        panic!("page object")
+    };
+    fields.insert("guid", second.to_val());
+    fields.insert("name", Val::Str("Page 3".into()));
+    nodes.push(Node::from_data(data).expect("page"));
+    let doc = std::sync::Arc::get_mut(&mut tab.doc).expect("unshared test document");
+    doc.set_nodes(nodes).expect("nodes");
+    doc.pages = vec![first, second];
+    doc.internal_pages = vec![internal];
+    tab.page = second;
+    h.state_mut().tabs.push(tab);
+    h.state_mut().active = 0;
+    h.run_steps(30);
+    h.get_by_label("Internal pages (1)").click();
+    h.run_steps(20);
+    let row = h.get_by_label("Page 3").rect();
+    let selected = fill_at(&h, egui::pos2(row.right() - 12.0, row.center().y));
+    h.state_mut().tabs[0].set_page(internal);
+    h.step();
+    let row = h.get_by_label("Page 2").rect();
+    assert_eq!(
+        fill_at(&h, egui::pos2(row.right() - 12.0, row.center().y)),
+        selected,
+        "the internal list does not animate from the normal list's second row"
+    );
+}
+
+#[test]
+fn internal_pages_disclosure_and_rows_share_the_page_list_width() {
+    let (mut h, _) = internal_pages_harness();
+    let normal = h.get_by_label("Page 1").rect();
+    let header = h.get_by_label("Internal pages (1)").rect();
+    assert_eq!(header.x_range(), normal.x_range(), "full-row click target");
+    assert_eq!(header.height(), normal.height(), "consistent row height");
+    h.get_by_label("Internal pages (1)").click();
+    h.run_steps(20);
+    let internal = h.get_by_label("Page 2").rect();
+    assert_eq!(internal.x_range(), normal.x_range(), "no extra indentation");
+}
+
+#[test]
+fn internal_pages_can_be_opened_with_the_keyboard() {
+    let (mut h, [_, internal]) = internal_pages_harness();
+    h.get_by_label("Internal pages (1)").focus();
+    h.run_steps(2);
+    assert!(h.get_by_label("Internal pages (1)").is_focused());
+    h.key_press(Key::Space);
+    h.run_steps(20);
+    h.key_press(Key::Tab);
+    h.run_steps(2);
+    assert!(h.get_by_label("Page 2").is_focused());
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].page, internal);
+}
+
+#[test]
+fn files_without_internal_pages_have_no_disclosure() {
+    let (mut h, _) = internal_pages_harness();
+    h.state_mut().tabs[0] = two_pages().0;
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Internal pages (").is_none());
 }
 
 #[test]

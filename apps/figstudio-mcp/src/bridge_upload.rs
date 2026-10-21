@@ -137,7 +137,7 @@ impl Session {
                 .ok_or("unknown tab")?;
             if let Some(page) = state.page {
                 let page = parse_guid(&page).map_err(|_| "invalid page id")?;
-                if !tab.doc.pages.contains(&page) {
+                if !tab.doc.pages.contains(&page) && !tab.doc.internal_pages.contains(&page) {
                     return Err("unknown page".into());
                 }
                 tab.page = page;

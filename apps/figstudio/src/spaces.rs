@@ -306,7 +306,7 @@ impl Store {
             Backend::Memory => {}
             #[cfg(not(target_arch = "wasm32"))]
             Backend::File(path) => {
-                if let Err(e) = write_private(path, &text) {
+                if let Err(e) = write_private(path, text.as_bytes()) {
                     tracing::warn!("space styles not saved: {e}");
                 }
             }
@@ -321,12 +321,12 @@ impl Store {
     }
 }
 
-/// Writes `text` to `path` all or nothing: into a new, uniquely named temporary file next
+/// Writes `bytes` to `path` all or nothing: into a new, uniquely named temporary file next
 /// to it, then renamed over it, so a crash or a second figstudio writing at the same time
 /// never leaves half a file. On Unix only its owner can read it (the temporary file is
 /// created that way, and the rename keeps it); Windows sets no ACL here.
 #[cfg(not(target_arch = "wasm32"))]
-fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     let dir = path
         .parent()
@@ -334,7 +334,7 @@ fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
         .unwrap_or_else(|| std::path::Path::new("."));
     std::fs::create_dir_all(dir)?;
     let mut file = tempfile::Builder::new()
-        .prefix(".spaces-")
+        .prefix(".figstudio-")
         .suffix(".tmp")
         .tempfile_in(dir)?;
     #[cfg(unix)]
@@ -343,7 +343,7 @@ fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
         file.as_file()
             .set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
-    file.write_all(text.as_bytes())?;
+    file.write_all(bytes)?;
     file.as_file().sync_all()?;
     file.persist(path).map_err(|e| e.error)?;
     Ok(())

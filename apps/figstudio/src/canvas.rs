@@ -1,10 +1,10 @@
 //! The canvas: pan / zoom input, background rendering, selection and hover outlines.
 
-use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use figstudio_fig::Guid;
 use figstudio_render::kurbo::Point;
 use figstudio_render::{
-    absolute_transform, color::AlphaColor, content_bounds, geom, hit_test, page_background,
+    absolute_transform, color::AlphaColor, content_bounds, geom, page_background,
 };
 
 use crate::copy_menu;
@@ -13,6 +13,17 @@ use crate::tab::{Tab, View};
 use crate::theme;
 use crate::tiles_view::Tiles;
 use crate::worker::Workers;
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static HIT_CHAIN_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn hit_chain(doc: &figstudio_fig::Document, page: Guid, point: Point) -> Vec<Guid> {
+    #[cfg(test)]
+    HIT_CHAIN_CALLS.with(|calls| calls.set(calls.get() + 1));
+    figstudio_render::hit_chain(doc, page, point)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
@@ -147,20 +158,38 @@ pub fn show(
 
     // Input: selection / zoom tool.
     let cursor_page = response.hover_pos().map(|p| tab.view.to_page(origin, p));
-    if response.hovered() && !response.dragged() {
-        tab.hover = cursor_page.and_then(|p| {
-            hit_test(
+    let needs_chain = (response.hovered() && !response.dragged())
+        || response.clicked()
+        || response.double_clicked()
+        || response.secondary_clicked();
+    let chain = cursor_page
+        .filter(|_| needs_chain)
+        .map_or_else(Vec::new, |p| {
+            hit_chain(
                 &tab.doc,
                 tab.page,
                 Point::new(f64::from(p.x), f64::from(p.y)),
             )
         });
+    if response.hovered() && !response.dragged() {
+        tab.hover = crate::pick::click(
+            &tab.doc,
+            &chain,
+            tab.selection,
+            ui.input(|i| i.modifiers.command),
+        );
     } else if !response.hovered() {
         tab.hover = None;
     }
+    let point = cursor_page.map(|p| Point::new(f64::from(p.x), f64::from(p.y)));
+    let deep = ui.input(|i| i.modifiers.command);
+    let mut inner_changed = false;
     if response.clicked() && !panning {
         match tool {
-            Tool::Select => tab.select(tab.hover),
+            Tool::Select => {
+                inner_changed =
+                    crate::canvas_pick::click(tab, &chain, point, deep, response.double_clicked());
+            }
             Tool::Zoom => {
                 if let Some(p) = response.interact_pointer_pos() {
                     let alt = ui.input(|i| i.modifiers.alt);
@@ -178,22 +207,28 @@ pub fn show(
     // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
     // canvas nothing is selected, so no menu opens. Any tool, as the spec says.
     if response.secondary_clicked() && !marquee::right_click(&response, tab, origin) {
-        tab.select(tab.hover);
+        crate::canvas_pick::click(tab, &chain, point, deep, false);
     }
-    marquee::update(ui, &response, tab, origin, tool == Tool::Select && !panning);
+    crate::canvas_text::input(
+        &response,
+        tab,
+        origin,
+        tool == Tool::Select && !panning,
+        !inner_changed,
+    );
+    marquee::update(
+        ui,
+        &response,
+        tab,
+        origin,
+        tool == Tool::Select && !panning && tab.text_select.is_none(),
+    );
     if tab.marquee.menu {
         marquee::context(&response, tab);
     } else if let Some(id) = tab.selection {
         let mut picked = None;
         copy_menu::on_context(&response, tab, id, &mut picked);
         tab.pending_copy = picked.or(tab.pending_copy.take());
-    }
-    if response.double_clicked()
-        && tool == Tool::Select
-        && let Some(sel) = tab.selection
-    {
-        // Fitted from the target on the next frame, then eased to.
-        tab.fit_node = Some(sel);
     }
 
     // Rendering: cached tiles for the view on screen; missing tiles are requested for the
@@ -220,7 +255,21 @@ pub fn show(
     find_highlights(&painter, tab, origin, &labels);
     // Outlines fade in when they move to another layer.
     let ctx = ui.ctx().clone();
-    if let Some(h) = tab.hover.filter(|h| Some(*h) != tab.selection) {
+    let inner_hover = crate::canvas_pick::hover(tab, point, deep);
+    if let Some(path) = inner_hover
+        .as_ref()
+        .filter(|p| Some(*p) != tab.inner.as_ref())
+    {
+        crate::canvas_pick::outline(
+            &painter,
+            tab,
+            origin,
+            path,
+            Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.8)),
+        );
+    } else if inner_hover.is_none()
+        && let Some(h) = tab.hover.filter(|h| Some(*h) != tab.selection)
+    {
         let a = crate::anim::arrive(&ctx, egui::Id::new("hover-outline"), (tab.id, h), 0.12);
         outline(
             &painter,
@@ -237,14 +286,14 @@ pub fn show(
             (tab.id, sel),
             0.12,
         );
-        outline(
-            &painter,
-            tab,
-            origin,
-            sel,
-            Stroke::new(1.5, theme::ACCENT.gamma_multiply(a)),
-        );
+        let stroke = Stroke::new(1.5, theme::ACCENT.gamma_multiply(a));
+        if let Some(path) = &tab.inner {
+            crate::canvas_pick::outline(&painter, tab, origin, path, stroke);
+        } else {
+            outline(&painter, tab, origin, sel, stroke);
+        }
     }
+    crate::canvas_text::overlay(&painter, tab, origin);
     marquee::paint(&painter, tab, origin);
     tab.view = target;
 
@@ -252,6 +301,13 @@ pub fn show(
         _ if panning => egui::CursorIcon::Grab,
         Tool::Zoom => egui::CursorIcon::ZoomIn,
         Tool::Hand => egui::CursorIcon::Grab,
+        Tool::Select
+            if tab.text_select.is_some()
+                && tab.selection == tab.hover
+                && (tab.inner.is_none() || inner_hover == tab.inner) =>
+        {
+            egui::CursorIcon::Text
+        }
         Tool::Select => egui::CursorIcon::Default,
     };
     if response.hovered() {
@@ -360,18 +416,7 @@ fn outline(painter: &egui::Painter, tab: &Tab, origin: Pos2, id: Guid, stroke: S
     let Some(corners) = corners(tab, origin, id) else {
         return;
     };
-    let axis_aligned =
-        (corners[0].y - corners[1].y).abs() < 0.01 && (corners[0].x - corners[3].x).abs() < 0.01;
-    if axis_aligned {
-        painter.rect_stroke(
-            Rect::from_two_pos(corners[0], corners[2]),
-            0.0,
-            stroke,
-            StrokeKind::Middle,
-        );
-    } else {
-        painter.add(egui::Shape::closed_line(corners.to_vec(), stroke));
-    }
+    crate::canvas_pick::outline_corners(painter, corners, stroke);
 }
 
 /// How long a jump of the view (fit, zoom buttons and keys, the Zoom tool) eases; pans and

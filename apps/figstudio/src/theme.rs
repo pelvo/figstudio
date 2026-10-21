@@ -323,8 +323,9 @@ fn custom_tint(c: Color32, dark: bool) -> Tint {
     }
 }
 
-/// The tint shown when no file is open.
-pub const HOME_TINT: usize = 0;
+/// The tint shown when no file is open: Slate, neutral, so the Recents page is not taken
+/// for a space of its own (a hovered card lends the window its colour, `App::tint_now`).
+pub const HOME_TINT: usize = 7;
 
 /// A tint for a file named `name`: the same file gets the same colour each time, unless an
 /// open file (`taken`) already has it, then the next free one.

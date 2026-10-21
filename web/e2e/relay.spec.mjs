@@ -6,6 +6,12 @@ import { fileURLToPath } from "node:url";
 const baseURL = process.env.RELAY_BASE_URL ?? "http://localhost:8787";
 const fixture = fileURLToPath(new URL("../../tests/fixtures/structure.fig", import.meta.url));
 
+// Ctrl+O shows the File System Access picker where Chromium has it, and Playwright cannot
+// drive that one (it cancels it). Without it the app shows the plain file input, which
+// Playwright's file chooser fills; the relay does not care how the file was picked.
+const plainPicker = () => { delete window.showOpenFilePicker; };
+test.beforeEach(async ({ context }) => { await context.addInitScript(plainPicker); });
+
 // The stored credential is the executor (`figstudio.mcp.executor.v2`, `ex_` + 64 hex);
 // the caller room is derived from it — SHA-256 over "figstudio/room/v1", a zero byte,
 // then the 32 raw executor bytes (same contract as web/executor-auth.mjs and
@@ -251,6 +257,7 @@ test("a #room=&exec= link asks before joining; the joined tab becomes the execut
 
   // A second browser (fresh storage, like another device) opens the room link.
   const other = await browser.newContext();
+  await other.addInitScript(plainPicker);
   const second = await other.newPage();
   const sockets = [];
   second.on("websocket", (socket) => sockets.push(socket.url()));

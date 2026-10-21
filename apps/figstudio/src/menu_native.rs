@@ -4,15 +4,61 @@ use crate::{
     menu::{Action, Item},
 };
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
 pub(crate) struct NativeMenu {
     _menu: Menu,
     items: Vec<Entry>,
     events: Receiver<MenuId>,
+    /// The recent files listed beside the app (the Dock menu, the jump list), newest first.
+    recent: Vec<PathBuf>,
+    /// The Dock menu (macOS): one item per recent file.
+    #[cfg(target_os = "macos")]
+    dock: Dock,
+}
+
+/// What the menus picked since the last frame.
+#[derive(Default)]
+pub(crate) struct Picked {
+    pub actions: Vec<Action>,
+    /// Recent files picked in the Dock menu.
+    pub files: Vec<PathBuf>,
+}
+
+#[cfg(target_os = "macos")]
+struct Dock {
+    menu: Submenu,
+    items: Vec<(MenuItem, PathBuf)>,
+}
+
+#[cfg(target_os = "macos")]
+impl Dock {
+    fn new() -> Self {
+        let menu = Submenu::new("Dock", true);
+        crate::dock_mac::install(&menu);
+        Self {
+            menu,
+            items: Vec::new(),
+        }
+    }
+
+    fn show(&mut self, files: &[PathBuf]) -> muda::Result<()> {
+        for (item, _) in self.items.drain(..) {
+            self.menu.remove(&item)?;
+        }
+        let labels = crate::recents::shortlist_labels(files);
+        for (path, label) in files.iter().zip(labels) {
+            let item = MenuItem::new(crate::recents::menu_title(&label), true, None);
+            self.menu.append(&item)?;
+            self.items.push((item, path.clone()));
+        }
+        Ok(())
+    }
 }
 
 struct Entry {
+    label: &'static str,
     action: Option<Action>,
     kind: Kind,
     enabled: bool,
@@ -103,19 +149,53 @@ impl NativeMenu {
             _menu: menu,
             items: entries,
             events,
+            recent: Vec::new(),
+            #[cfg(target_os = "macos")]
+            dock: Dock::new(),
         })
     }
 
-    pub(crate) fn drain(&self) -> Vec<Action> {
-        self.events
-            .try_iter()
-            .filter_map(|id| {
-                self.items
-                    .iter()
-                    .find(|i| *i.id() == id)
-                    .and_then(|i| i.action)
-            })
-            .collect()
+    pub(crate) fn drain(&self) -> Picked {
+        let mut picked = Picked::default();
+        for id in self.events.try_iter() {
+            if let Some(action) = self
+                .items
+                .iter()
+                .find(|i| *i.id() == id)
+                .and_then(|i| i.action)
+            {
+                picked.actions.push(action);
+            }
+            #[cfg(target_os = "macos")]
+            if let Some((_, path)) = self.dock.items.iter().find(|(i, _)| *i.id() == id) {
+                picked.files.push(path.clone());
+            }
+        }
+        picked
+    }
+
+    /// Lists `files` (newest first) in the Dock menu or the jump list, when they changed.
+    /// Returns the files the person took off the jump list.
+    pub(crate) fn set_recent(&mut self, files: Vec<PathBuf>) -> Vec<PathBuf> {
+        if files == self.recent {
+            return Vec::new();
+        }
+        #[cfg_attr(
+            not(windows),
+            expect(unused_mut, reason = "only the jump list takes some off")
+        )]
+        let mut taken_off = Vec::new();
+        #[cfg(target_os = "macos")]
+        if let Err(error) = self.dock.show(&files) {
+            tracing::warn!("dock menu not updated: {error}");
+        }
+        #[cfg(windows)]
+        match crate::jump_list::show(&files) {
+            Ok(gone) => taken_off = gone,
+            Err(error) => tracing::warn!("jump list not updated: {error}"),
+        }
+        self.recent = files;
+        taken_off
     }
 
     /// Shows `keys` (the user's shortcuts) as the menu's accelerators; `None` takes them all
@@ -124,9 +204,22 @@ impl NativeMenu {
         for entry in &self.items {
             let Some(action) = entry.action else { continue };
             let accelerator = accelerator(action, keys);
+            let label = crate::menu_dispatch::native_label(
+                cfg!(target_os = "macos"),
+                action,
+                entry.label,
+                keys.and_then(|keys| keys.for_action(action)),
+                accelerator.is_some(),
+            );
             let set = match &entry.kind {
-                Kind::Item(i) => i.set_accelerator(accelerator),
-                Kind::Check(i) => i.set_accelerator(accelerator),
+                Kind::Item(i) => {
+                    i.set_text(&label);
+                    i.set_accelerator(accelerator)
+                }
+                Kind::Check(i) => {
+                    i.set_text(&label);
+                    i.set_accelerator(accelerator)
+                }
                 Kind::Group(_) => Ok(()),
             };
             if let Err(error) = set {
@@ -195,6 +288,7 @@ fn macos_app_menu(
     let quit = MenuItem::new("Quit figstudio", true, Some("Cmd+Q".parse()?));
     app_menu.append(&quit)?;
     entries.push(Entry {
+        label: "Quit figstudio",
         action: Some(Action::Quit),
         kind: Kind::Item(quit),
         enabled: true,
@@ -233,12 +327,13 @@ fn add(
     }
     let kind = if let Some(action) = item.action {
         let accelerator = accelerator(action, keys);
-        // The egui labels include textual hints; native menus render their own accelerators.
-        let label = if accelerator.is_some() {
-            item.label.split("   ").next().unwrap_or(item.label)
-        } else {
-            item.label
-        };
+        let label = crate::menu_dispatch::native_label(
+            cfg!(target_os = "macos"),
+            action,
+            item.label,
+            keys.and_then(|keys| keys.for_action(action)),
+            accelerator.is_some(),
+        );
         if let Some(checked) = item.checked {
             let i = CheckMenuItem::new(label, item.enabled, checked, accelerator);
             parent.append(&i)?;
@@ -257,6 +352,7 @@ fn add(
         Kind::Group(group)
     };
     entries.push(Entry {
+        label: item.label,
         action: item.action,
         kind,
         enabled: item.enabled,
@@ -267,12 +363,15 @@ fn add(
 
 /// The native accelerator for `action` with the user's `keys` (`None` while a shortcut is
 /// being recorded, so the menu does not swallow it).
-fn accelerator(
+pub(crate) fn accelerator(
     action: Action,
     keys: Option<&crate::keymap::Keymap>,
 ) -> Option<muda::accelerator::Accelerator> {
     use muda::accelerator::{Accelerator, Modifiers};
-    if cfg!(target_os = "macos") && !crate::menu_dispatch::native_owned(true, true, action) {
+    // Field shortcuts must reach egui; native events cannot distinguish clicks from keys.
+    if crate::menu_dispatch::hint_only(action)
+        || (cfg!(target_os = "macos") && !crate::menu_dispatch::native_owned(true, true, action))
+    {
         return None;
     }
     let shortcut = keys?.for_action(action)?;

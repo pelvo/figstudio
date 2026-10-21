@@ -31,6 +31,37 @@ pub(crate) fn native_owned(macos: bool, attached: bool, action: Action) -> bool 
         )
 }
 
+/// These field shortcuts deliberately have no native accelerator.
+#[cfg_attr(not(any(target_os = "macos", windows, test)), expect(dead_code))]
+pub(crate) fn hint_only(action: Action) -> bool {
+    matches!(action, Action::CopyText | Action::SelectAllText)
+}
+
+/// Win32 draws tab-separated hints without owning the keys.
+#[cfg_attr(not(any(target_os = "macos", windows, test)), expect(dead_code))]
+pub(crate) fn native_label(
+    macos: bool,
+    action: Action,
+    label: &str,
+    shortcut: Option<egui::KeyboardShortcut>,
+    has_accelerator: bool,
+) -> String {
+    let label = label.split("   ").next().unwrap_or(label);
+    // AppKit needs keyEquivalent for its column; keep it empty so fields retain Cmd+C.
+    // An attributed title would need unsafe objc2 calls, so macOS gets no hint.
+    if !macos
+        && hint_only(action)
+        && !has_accelerator
+        && let Some(shortcut) = shortcut
+    {
+        return format!(
+            "{label}\t{}",
+            shortcut.format(&egui::ModifierNames::NAMES, false)
+        );
+    }
+    label.to_owned()
+}
+
 fn show_drawn_bar(attached: bool) -> bool {
     !attached
 }
@@ -105,16 +136,24 @@ impl App {
     pub(crate) fn native_events(&mut self, _ctx: &egui::Context) {
         #[cfg(any(target_os = "macos", windows))]
         {
-            let actions = self
+            let picked = self
                 .native_menu
                 .as_ref()
                 .map(|menu| menu.drain())
                 .unwrap_or_default();
-            self.apply_native(actions, _ctx);
+            self.apply_native(picked.actions, _ctx);
+            // Picked in the Dock menu: as a Recents card.
+            for path in picked.files {
+                self.open_recent_file(_ctx, path);
+            }
             let tree = crate::menu::tree(self);
+            let recent = self.recents.shortlist();
+            let mut taken_off = Vec::new();
             if let Some(menu) = &mut self.native_menu {
                 menu.sync(&tree);
+                taken_off = menu.set_recent(recent);
             }
+            self.taken_off_the_list(taken_off);
             self.sync_native_keys();
         }
     }
@@ -123,6 +162,79 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_labels_only_hint_copy_on_windows() {
+        use crate::keymap::{Binding, Keymap};
+        use egui::{Key, KeyboardShortcut, Modifiers};
+
+        for macos in [false, true] {
+            let mut keys = Keymap::default();
+            for (action, label) in [
+                (Action::ZoomBy(1.25), "Zoom in"),
+                (Action::ZoomBy(0.8), "Zoom out"),
+                (Action::ZoomFit, "Zoom to fit"),
+                (Action::ActualSize, "Actual size"),
+                (Action::NextSpace, "Next space"),
+                (Action::PreviousSpace, "Previous space"),
+            ] {
+                let shortcut = keys.for_action(action);
+                assert!(shortcut.is_some(), "exercise a bound row: {label}");
+                assert_eq!(native_label(macos, action, label, shortcut, false), label);
+            }
+            for (action, binding, label, hint) in [
+                (
+                    Action::CopyText,
+                    Binding::Copy,
+                    "Copy text",
+                    "Copy text\tCtrl+C",
+                ),
+                (
+                    Action::SelectAllText,
+                    Binding::SelectAll,
+                    "Select all text",
+                    "Select all text\tCtrl+A",
+                ),
+            ] {
+                assert_eq!(
+                    native_label(macos, action, label, keys.for_action(action), false),
+                    if macos { label } else { hint },
+                );
+                let rebound = KeyboardShortcut::new(Modifiers::ALT, Key::F8);
+                keys.set(binding, Some(rebound));
+                assert_eq!(
+                    native_label(macos, action, label, keys.for_action(action), false),
+                    if macos {
+                        label.to_owned()
+                    } else {
+                        format!("{label}\tAlt+F8")
+                    },
+                );
+                keys.set(binding, None);
+                assert_eq!(
+                    native_label(macos, action, label, keys.for_action(action), false),
+                    label,
+                    "cleared binding",
+                );
+                assert_eq!(
+                    native_label(macos, action, label, None, false),
+                    label,
+                    "recording"
+                );
+            }
+            assert_eq!(
+                native_label(
+                    macos,
+                    Action::Open,
+                    "Open…   Ctrl+O",
+                    keys.for_action(Action::Open),
+                    true
+                ),
+                "Open…",
+                "the accelerator supplies the owned action's shortcut",
+            );
+        }
+    }
 
     #[test]
     fn keys_a_menu_cannot_show_stay_with_egui() {
@@ -166,6 +278,8 @@ mod tests {
             );
         }
         for action in [
+            Action::CopyText,
+            Action::SelectAllText,
             Action::ZoomFit,
             Action::ActualSize,
             Action::ExportSelection(1.0),

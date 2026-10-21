@@ -72,7 +72,12 @@ figstudio-mcp [--http[=ADDR]] [--no-system-fonts] [--assets-dir DIR | --assets i
 The desktop app can host this server with the files it has open. Turn it on in **Settings →
 Agents** (⌘, / Ctrl+,; **View → Agent access…** opens the same tab) with **Agent access (MCP
 server)**. On Linux and in the browser the menus are behind the **⋯** button at the top of the
-sidebar; ⌘L / Ctrl+L finds them too. It is off at every launch and is not saved.
+sidebar; ⌘L / Ctrl+L finds them too. Desktop Agent access is off on first launch. Its
+on/off state, **Allow remote agents** and bind address are saved between launches, so an
+enabled server starts again automatically. Remote bearer tokens are not saved and change
+when the server starts; copy the new token to your client after restarting. A startup or
+runtime failure leaves the saved access setting enabled but stops that attempt. Turn access
+off and on to retry, or restart the app once the address/port is available.
 
 - While it runs, the status pill at the bottom left of the canvas shows `MCP 127.0.0.1:3845/mcp`. Point your client there.
   The app tries 3845, then 3846–3855, and shows the address it got.

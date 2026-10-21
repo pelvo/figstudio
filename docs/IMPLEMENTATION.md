@@ -109,14 +109,26 @@ apps/figstudio-mcp/tests/  protocol tests (stdio.rs, http.rs, prompts.rs, files.
                          user doc
 apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   main.rs                App: shortcuts, panel layout, message polling, export
+  session.rs             bounded desktop restore queue, canonical aliases and active-space intent
+  session_store.rs       private atomic workspace JSON, independent of eframe preferences
   chrome.rs              Arc-style chrome: window gradient, sidebar (window controls, command
                          field, pages, layers, file switcher), title strip, peeking sidebar,
                          canvas card with tool / status pills and the warning chip, toasts,
                          empty state, drop overlay
   command.rs             the ⌘L command bar: search over commands, files, pages and layers
+  onboarding.rs          first run: the welcome sheet (three pages) and one-time tips beside
+                         the command field, the space dots and the sidebar button
+  recents.rs             the Recents page in the empty canvas card (cards or rows, filter,
+                         page pictures drawn in the background, the list and its merge rules)
+  recents_disk.rs        desktop: where recents are kept (recents.json, thumbs/, the look
+                         thread for moved files, Show in Finder)
+  recents_web.rs         browser only: the same through js/recents.js (IndexedDB, handles)
+  recents_pictures.rs    browser pictures in memory (read, drawn, ready, shown); native tests
   anim.rs                springs and colour fades in egui memory; Reduce motion
   icons.rs               line icons painted on a 16-unit grid; the icon button
   vibrancy.rs            macOS only: the blur view behind the transparent window
+  dock_mac.rs            macOS only: the Dock icon's menu of recent files
+  jump_list.rs           Windows only: the taskbar jump list of recent files
   spaces.rs              a space's colour / emoji or icon / name, saved per file on this
                          computer (config folder JSON, localStorage in the browser)
   space_editor.rs        the space popovers: icon picker, rename, theme colour (pad + presets
@@ -430,9 +442,205 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   (`chrome::SIDEBAR`) so a width inflated that way is not restored.
 - eframe's `persistence` keeps the window, the panel widths and egui's options (appearance,
   Reduce motion) between launches; `App::save` adds the sidebar / properties visibility, the
-  Pages/Layers split and Settings' `Prefs` (`UiState`): the translucent sidebar, the renderer
-  (applied at the next start; `FIGSTUDIO_RENDERER` wins), frame names and whether the scroll
-  wheel zooms (`canvas::Options`).
+  Pages/Layers split, what onboarding was seen and Settings' `Prefs` (`UiState`): the
+  translucent sidebar, the renderer (applied at the next start; `FIGSTUDIO_RENDERER` wins),
+  frame names and whether the scroll wheel zooms (`canvas::Options`), shortcuts and desktop
+  Agent access.
+- **Recents** (`recents.rs`; the store is `recents_disk.rs` on desktop and
+  `recents_web.rs` in the browser). With no file open the canvas card is the Recents
+  page instead of the plain empty state: a title, a filter, a cards/rows toggle
+  (`Prefs::recents_list`) and Open file…, then one card per file opened before, newest first.
+  A card is the file's space gradient (its saved colour, else the tint its name picks) with a
+  picture of the page it opened on, its badge, its name and "Opened 3 days ago". A click
+  opens it; the right-click menu has Open, Show in Finder (`opener::reveal`) and Remove from
+  recents. With nothing opened before, the page is the old empty state under "Recents".
+  With no file open the window is Slate (`theme::HOME_TINT`), neutral, so the page is not
+  taken for a space; the card under the pointer lends the window its colour
+  (`Recents::hover`, read by `App::tint_now`), crossfading as a file switch does.
+  The list is `<config>/figstudio/recents.json` (full paths, owner-only, at most 60, damaged
+  entries skipped, an unreadable list left alone as with spaces). Explicit file loads and
+  canonical-alias opens note the loaded/kept tab (`App::note_recent`, after any link moved
+  it to its node's page; bytes dropped without a path are not listed). Automatic workspace
+  restoration leaves history order, timestamps, keys and pictures untouched, including paths
+  not already listed; it does not backfill or evict prior history. Explicit opens queue a
+  picture: one `thumbnails` thread renders the
+  page with its own image cache (never the canvas's: that would share its eviction clock,
+  in-flight reads and failed marks) to fit 640×400 over the page colour, and writes
+  `thumbs/<hash of the path>.png` owner-only, only if that job is still the newest wanted for
+  the file (Remove from recents wins over a job in flight, and of two jobs for one file the
+  later one does). The page reads at most three pictures a frame and
+  reloads one when the thread reports it. Files gone when the page appears are marked
+  Missing, and looked for again a second after the last look returned while the page is
+  up (with the next frame), so a card's label and menu follow the disk. One `recents-look`
+  thread does the looking and is asked for the next look only once it answered, so a slow
+  disk or network mount never holds up the window and a hung `stat` holds up one thread;
+  "there" means `is_file`, for a look and for a click alike. Each look carries a
+  generation: a click, a load or a failed open (which check the disk themselves) and the
+  page appearing raise it, and an answer asked for under an older one is dropped. A click
+  also looks, opening a file that is back
+  and marking one that went, with a toast. The header keeps to the card: a narrow one drops the filter, then the
+  view toggle, then narrows Open. Tests use `Recents::memory()` (no file, no pictures).
+  The sidebar's + shows the page with files still open (`App::show_recents`): `active`
+  points one past the last tab, so everything that asks for the active tab sees none (the
+  window is Slate, no tool pill or properties, the title is the app's, the sidebar says
+  "Recent files"). The page is a place after the last space: Next space goes to the first,
+  Previous to the last, closing a space keeps it, a dot or a card leaves it. On the page
+  (also with no file open) the + opens the picker as before. The workspace saved there
+  keeps the file the + was pressed on as its active one (`App::recents_from`); if that file
+  is closed meanwhile, the one beside it takes its place, as when a shown file closes.
+  Beside the app, the newest five files not known to be missing (`Recents::shortlist`) are
+  listed too, and `NativeMenu::set_recent` updates them when they change. On macOS they are
+  the Dock icon's menu: a muda submenu whose `NSMenu` `dock_mac.rs` hands to AppKit by
+  adding `applicationDockMenu:` to winit's app delegate class at start (one approved
+  `unsafe` block; winit has no hook). Its items send menu events like the menu bar, and
+  `App::open_recent_file` treats a pick as a card click: a file gone since is marked missing
+  with a toast, never opened empty, and it leaves the list. On Windows they are a "Recent
+  files" category in the taskbar jump list (`jump_list.rs`, COM through the `windows`
+  crate, one approved `unsafe` block): each item starts `figstudio.exe "<file>"`, which hands
+  the file to the figstudio already running (`handoff.rs`, below) and exits, so it opens in
+  that window; a file gone by then fails to open with the usual toast and `load_failed`
+  marks it missing. A file the person removes
+  from the jump list is taken off Recents too (`App::taken_off_the_list`), so the removal
+  is kept with the list and it does not come back. Should Windows still refuse the list (a
+  removal it reports but this did not read), that session is aborted, so the list shown
+  stays, and new sessions try the list without one file at a time (`publish`); the one
+  that is taken shows which file was removed (only when it held files), and it leaves
+  Recents too. A retry is never an empty list: taken, it would clear what Windows holds
+  against the removed file without showing which, so the old list stays instead. An error, as opposed to a refusal, aborts the open session and stops the
+  tries. Files of one name get their folder after
+  the name, or the folder's whole path when that is shared or missing (`shortlist_labels`), and a Dock title doubles `&` (`menu_title`). Linux has no common dock menu for a running app (desktop
+  file actions are fixed at install), so it shows none.
+- **One figstudio per person** (`handoff.rs`, desktop). Before its window, `main` takes a
+  lock on `<config>/figstudio/instance.lock` (`File::try_lock`); the system drops it when
+  the process ends, crash or not. A launch with files (a jump list item, `figstudio
+  file.fig`) that finds the lock held writes them, made absolute, as a request in
+  `<config>/figstudio/inbox/` (written as `.part`, then renamed to `.json`). It waits up to
+  20 s for the running figstudio to be up (`inbox/ready`, written when its window starts
+  watching, so a slow first start is not mistaken for a hung one; it holds the id that
+  figstudio wrote to `inbox/holder` on taking the lock, so a mark left by one that ended
+  does not count), then up to 2 s for its
+  window to take the request. A thread of the running one looks in the inbox every 150 ms
+  and wakes the window; the window itself takes a request (`Inbox::take`, in
+  `App::open_handed_over`, called from `App::logic`, which eframe runs also when the window
+  is minimized and `ui` is skipped) by renaming it (one rename: a launch that gave up has removed
+  its own, so a request is opened by one side only), opens the files through `open` (a
+  gone file toasts and is marked missing) and comes forward; the launch exits. A hung
+  window takes nothing. The launch counts its files as taken only when its request is
+  known to be gone (`fs::exists` is `Ok(false)`; a stat error is not), and takes a request
+  back by deleting it or moving it aside (`.withdrawn`, not looked at), trying again for
+  up to 5 s on errors other than "not found" (a scanner may hold a new file a moment); it
+  opens the files itself only once one of those succeeded; for a request it could not
+  take back in that time, the launch and the window both try to make `{id}.decided`
+  (`create_new`, so only one can): the launch opens the files if it made it, and a window
+  that takes the request opens them only if it did, so they open once. If the mark cannot
+  be made, the launch leaves the request queued and the window decides when it takes it.
+  The window decides only once it has read and parsed the request; one it cannot open or
+  read goes back for a later look with nothing decided (no waiting on the window's
+  thread), and one that is not text, or does not parse, is kept aside undecided. When the
+  launch decided first, the window drops the request and removes the mark only once the
+  request is gone. A mark is swept after two minutes (longer than any launch waits), and
+  only when no request waits on it. The holder writes its id before it clears what an
+  ended figstudio left (if it cannot, it takes no files and drops the lock), and removes `ready` and `holder` when it ends normally, so a stale
+  pair is left only by a crash (a launch in the moment between the lock and that write
+  could still read one). Not taken in time, too large for one request (1 MiB), or not
+  writable as one (a path not text, or not made absolute): the launch opens the files
+  itself. A figstudio that takes the lock clears what one that ended left: `ready`, `.part`
+  and `.withdrawn` files, and `.taken` requests, which wait again (their launches had left). The folder is
+  the person's own: on Unix `claim` makes it and the inbox `0700`, the lock `0600`, and
+  refuses a folder that is a link. On Windows the launch, which has the foreground
+  because the person just started it, passes it to the running figstudio
+  (`AllowSetForegroundWindow` with the pid in its `holder` id, only when `ready` matches it,
+  never `ASFW_ANY`: `foreground_for`), and that window then asks for the foreground itself
+  (`foreground_win.rs`, `SetForegroundWindow` on its HWND, after `ShowWindow(SW_RESTORE)`
+  when it is minimized) rather than through egui's `Focus`, whose Alt key press can cancel
+  the right. Two approved `unsafe` blocks; not run
+  on Windows. A
+  launch without files starts a second window as before; two windows share
+  `recents.json` (the last to save wins, `missing` is per window). Tests claim their own
+  folders; `App` only watches when `main` hands it the lock.
+  An entry is (path, handle): `handle` is `None` on desktop and the browser's handle number
+  otherwise, so two files of one name with different handles are two cards.
+- **Recents in the browser** (`recents_web.rs`, `apps/figstudio/js/recents.js`). The JS
+  module keeps three IndexedDB stores in `figstudio-recents`: `list` (the same JSON as
+  `recents.json`, with `handle`), `handles` (`FileSystemFileHandle`s by number, a picked file
+  that `isSameEntry` an old one keeps its number) and `thumbs` (PNG blobs, keyed `h<handle>`
+  or `n:<name>`). Only files picked or dropped are listed: each pick's `Upload` record (the
+  `File` and its handle number) follows the pick id through `Uploads` to its tab, and
+  `note_recent` asks `web::upload_handle(tab)`; so of two files of one name the card gets
+  the handle of the one that loaded, and files from links or an agent have no record. The
+  saved list arrives a few frames after start, so `Recents::take` keeps files opened before
+  it in front, dedupes, caps at 60 and saves; until then (`Recents::waiting`) the page shows
+  no welcome. Where
+  `showOpenFilePicker` exists (Chrome, Edge) Open file… uses it and every file gets a handle;
+  a card reads its file through the handle (asking permission again if needed). A file gone
+  marks the card missing, toasts, and opens the picker with `startIn` the old handle; a
+  refused permission toasts to click again. Picking the moved file gives a new handle; the
+  missing card it was picked for gives way to it (`Recents::replace_moved`, only that one:
+  two files may share a name). Which card travels with that picker's files (`web::Origin`,
+  on the pick's `Upload` record), so a cancelled picker or another open replaces nothing, and
+  a file without a handle (the plain picker, when the browser refuses its own) never
+  replaces a card with one. Without the picker
+  (Firefox, Safari) Open uses the plain file input, a card opens the picker with a toast
+  naming the file, and its row says "Opens the file picker". There is no Show in Finder.
+  Pictures render on the rayon pool (the same 640×400 job as desktop) and are stored as PNG.
+  `recents_pictures::Pictures` keeps them in memory: a read of the saved picture carries the
+  job of the picture placed when it began, so a late answer never covers a newer one; Remove
+  drops reads and jobs. Drop handles are matched only against the latest drop's files;
+  the pool cannot wake the window (`egui::Context` is not `Send` in wasm), so
+  `Recents::sync` repaints every 100 ms while `busy()`. `web::start` registers
+  `watchDrops` before eframe's drop listener so a dropped file's handle can be matched.
+- **Onboarding** (`onboarding.rs`). The first launch (and the first launch of a version
+  that adds it: `UiState` without `onboarding`) opens the welcome sheet: a modal card over the
+  dimmed window, a hero in the active space's gradient with a drawn picture, three pages (the
+  app, spaces, the command field), Skip/Back, Continue/Get started, Escape skips, Enter and
+  the arrows page. While it is up `App::shortcuts` hands keys only to `welcome_keys`; a native
+  menu action closes it (`App::apply`), as the person has moved on. While open it also takes
+  the wheel, pinches, touches, typing and clipboard events and the keyboard focus, so a
+  swipe or a field under it does nothing, and what happens under it teaches no tip; fading
+  out it takes nothing. After it, once a file has
+  shown for 0.8 s, one tip at a time sits to the right of its control with an arrow; the
+  sidebar records where the controls are each frame (`Onboarding::targets`, cleared at the
+  start of the frame): a tip whose control is hidden waits, and the next one shows (with the
+  sidebar closed, the sidebar tip comes first, says how to show it and is "Tip 1 of 3":
+  tips are numbered in the order they are met). A tip is done after Got it, Skip
+  tips (all of them), or when the person does what it shows (`Onboarding::watch`: the
+  command bar opened, another space with the same files open, the sidebar toggled). What
+  was seen is `onboarding::Progress` in `UiState` (named bools: unknown fields are ignored,
+  missing ones are not seen). Help → Welcome tour (also in the command bar and Settings →
+  General) resets it and opens the sheet. Tests start with it off (`!cfg!(test)`, like
+  `spaces::Store::memory`) so the sheet does not cover every other test; the onboarding
+  tests turn it on.
+- Desktop workspace (`session.rs`, `session_store.rs`): file paths and the active space live
+  in `<config>/figstudio/workspace.json`. The store reuses the private atomic writer from
+  `spaces.rs` (Unix mode 0600); read/parse errors leave the original file for repair without
+  resetting sidebar, keymap or agent preferences. Legacy embedded metadata is imported
+  independently and removed from eframe preferences only after private persistence succeeds.
+  Until then, preference saves retain the original legacy paths without adding newly opened
+  files. Unreadable private metadata can fall back to that legacy copy; unrelated preferences
+  still save. The serialization-only backup is ignored when decoding `UiState`, so malformed
+  workspace metadata cannot reset other preferences. A private read failure disables workspace
+  writes for the rest of the process, even if the file is repaired meanwhile. The warning
+  says this session's workspace edits will not be saved; repair and restart enable future
+  writes, not recovery of those edits. Other preferences still save. An oversized legacy
+  fallback appends its skipped-file warning without hiding the read failure or recovery
+  instructions. This avoids overwriting unreadable metadata.
+  Metadata is capped at 4 MiB and 500 saved paths, retaining the selected file and announcing
+  skipped entries. Startup decodes at most four files concurrently; queued files survive an
+  early save/quit. Worker-resolved canonical paths deduplicate aliases without lexically
+  rewriting a symlink's `..`; completion order does not change the saved space order.
+  After sorting, polling finds the loaded tab by id for links and explicit-open Recents,
+  independently of the saved or manually chosen active space. `Restore` tracks automatic
+  paths separately: explicit startup files and user opens of already-pending paths remove
+  that marker; pumping automatic loads does not. Polling and alias reuse capture this intent
+  before completion can drop/remap restoration, then refresh explicit cards after links.
+  A successful alias retains its original automatic/manual classification and uses the kept
+  tab's path for focus. Explicit startup files merge and take focus. Switching spaces while
+  loading keeps that focus; closing an automatically selected interim tab does not cancel the
+  saved target.
+  Failed active files record the displayed fallback. Closed spaces stay closed, and existing
+  styles still load through `spaces::Store`. Only local metadata is stored, never file
+  contents or changes to the `.fig`. Browser file restoration is unchanged; page, zoom and
+  selection are not restored.
 - **Settings** (`settings.rs`, ⌘, / the app menu on macOS / File → Settings… elsewhere / the
   command bar): a foreground window with Arc's tab row. Agent access (`mcp.menu`, `mcp.status`)
   and About live in it; View → Agent access… and Help → About open those tabs
@@ -479,7 +687,24 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   selection.
 - The canvas card has round corners: the page background is a rounded rect and tiles that
   reach into a corner are drawn as a polygon cut to it (`tiles_view::rounded_clip`).
-- View jumps (fit, zoom buttons and keys, the Zoom tool, double-click) ease over 0.28 s:
+- Canvas picking uses `hit_chain` and `pick.rs`: plain click keeps the selected layer or
+  its nearest common ancestor's child, starting at the page's child (inside a top-level
+  FRAME, its direct child). Hover and right-click use the same target; Cmd/Ctrl-click selects deepest.
+  Double-click drills one level and enters read-only text selection upon reaching TEXT,
+  never zooming. Rebindable Enter selects the first visible child; Shift+Enter selects
+  the parent without crossing the page. Both wait while a field, find or command bar is up.
+  `canvas_pick.rs` and `instance_pick.rs` extend this context rule through resolved instances.
+  `Tab.inner` stores the inner path while `Tab.selection` stays at the outer instance for
+  panels, MCP, export and context menus. Inner selection clears with selection/page changes
+  or Escape. Double-click drills one inner level, then another double-click on inner TEXT
+  enters read-only text mode; Shift+Enter visits both ordinary and nested-instance parents.
+  Walks have depth/node budgets, respect masks, visibility, clipping and paint order, and use
+  `Renderer::path_bounds` for selection and hover outlines. `canvas_text.rs` uses
+  `Renderer::path_layout` for renderer-patched data and transforms, including constraints, scale and text overrides.
+  Stale stored glyphs are discarded only in that transient layout, giving whole-text
+  fallback without modifying the writable document. Properties and copy menus remain
+  outer-instance based.
+- View jumps (fit, zoom buttons and keys, the Zoom tool) ease over 0.28 s:
   `Tab::view` is the target (the MCP and the next jump see it); `canvas::show` takes the
   eased `shown_view` (kept in `Tab::shown`), which zooms geometrically around the page point
   both views share (`view_between`), and uses it for hover, clicks, the marquee and the
@@ -538,13 +763,18 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 ### MCP inside the app (`mcp_host.rs`, desktop only)
 
 - **View → Agent access…** opens Settings → Agents; the **Agent access** switch there starts
-  the live server. It is off at every launch. `mcp_off.rs` is the same API with no thread, used when the `mcp` feature is off or on
-  wasm32, so the UI code does not change.
+  the live server. Desktop on/off, remote access and bind address are saved with the window's
+  preferences and restored before the first frame; fresh or older preferences default off.
+  Only these settings are stored, not the endpoint or bearer token. Normal `sync` starts the
+  server, validates the address and creates a fresh remote token. `mcp_off.rs` is the same API
+  with no thread when the `mcp` feature is off; the browser uses `mcp_web.rs` and keeps its
+  existing bridge/relay connection rules.
 - **Threads.** `McpHost::start` spawns one thread named `mcp`. It runs a 2-worker tokio runtime,
   binds the first free of 127.0.0.1:3845 to :3855 (`bind_first`), and serves `serve_http` with
   `FigstudioServer::live`. The runtime ends with `shutdown_background`, so a stuck stdin or SSE
-  stream cannot block the app. A bind or runtime error comes back as an event, turns the toggle
-  off, and shows a toast.
+  stream cannot block the app. A plan, bind or runtime error stops the current attempt and
+  shows a toast without changing the requested on/off preference. A failure latch prevents
+  per-frame retries; off/on or the next app launch retries the retained request.
 - **Snapshot (app to server).** Each frame while running, `sync` builds a `Key` from the tab ids,
   the document pointers (`Arc<Document>`), page, selection and the viewport in whole units. It publishes a new
   `Arc<Snapshot>` only when the key changes. The server reads the snapshot under a lock held

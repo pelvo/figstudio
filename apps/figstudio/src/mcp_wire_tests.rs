@@ -409,6 +409,53 @@ fn state_lists_only_received_tabs_with_wire_ids() {
 }
 
 #[test]
+fn internal_pages_probe_indices_round_trip_and_reject_out_of_range() {
+    let mut tabs = tabs();
+    let pages: Vec<_> = tabs[0]
+        .doc
+        .pages
+        .iter()
+        .chain(&tabs[0].doc.internal_pages)
+        .copied()
+        .collect();
+    assert!(!tabs[0].doc.internal_pages.is_empty());
+    for (index, page) in pages.iter().copied().enumerate() {
+        tabs[0].set_page(page);
+        assert_eq!(tabs[0].page_index(), Some(index));
+        assert_eq!(tabs[0].page_at(index), Some(page));
+    }
+    assert_eq!(tabs[0].page_at(pages.len()), None);
+    assert_eq!(tabs[0].page_at(usize::MAX), None);
+}
+
+#[test]
+fn internal_pages_are_included_in_browser_state_frames() {
+    let mut tabs = tabs();
+    assert_eq!(tabs[0].page_index(), Some(0));
+    let internal = tabs[0].doc.internal_pages[0];
+    tabs[0].select(Some(Guid(1, 25)));
+    tabs[0].canvas_rect = Some(egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(800., 600.),
+    ));
+    tabs[0].set_page(internal);
+    assert!(tabs[0].fit_pending);
+    assert_eq!(
+        tabs[0].page_index(),
+        Some(tabs[0].doc.pages.len()),
+        "the browser probe uses the same index"
+    );
+    let ClientMessage::State { tabs: out, active } = state_message(&tabs, 0, &HashSet::from([7]))
+    else {
+        panic!("not a state frame");
+    };
+    assert_eq!(out[0].page, Some(guid_string(internal)));
+    assert_eq!(out[0].selection, None);
+    assert!(out[0].viewport.is_some());
+    assert_eq!(active, Some(7));
+}
+
+#[test]
 fn fragment_token_is_read_without_leaking_other_keys() {
     assert_eq!(token_from_fragment("#mcp=abc123"), Some("abc123".into()));
     assert_eq!(token_from_fragment("#x=1&mcp=a%2Bb"), Some("a+b".into()));
@@ -607,4 +654,17 @@ fn a_close_before_welcome_with_1006_is_a_blocked_connection() {
     assert_eq!(closed_message(false, 1006), connect_failed_message());
     assert_eq!(closed_message(true, 1006), close_reason(1006));
     assert_eq!(closed_message(false, 4401), close_reason(4401));
+}
+
+#[test]
+fn a_file_of_the_same_name_picked_while_one_loads_leaves_the_tab_the_loading_one() {
+    let mut uploads = Uploads::new();
+    let name = PathBuf::from("same.fig");
+    let first = uploads.pick("first");
+    let second = uploads.pick("second");
+    uploads.start(name.clone(), first);
+    // The second is let go: one load per name runs at a time.
+    uploads.discard(second);
+    uploads.bind(&name, 1);
+    assert_eq!(uploads.get(1), Some("first"));
 }

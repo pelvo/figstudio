@@ -258,15 +258,23 @@ Retina scaling, trackpad pinch, macOS menu and shortcuts (Cmd).
 
 ## 7b. Headless UI tests (egui_kittest)
 
-`apps/figstudio/src/ui_tests.rs` (+ `ui_copy_tests.rs`, `ui_mcp_tests.rs`, `ui_chrome_tests.rs`) run the real `App`
+`apps/figstudio/src/ui_tests.rs` (+ `ui_copy_tests.rs`, `ui_mcp_tests.rs`, `ui_chrome_tests.rs`, `ui_onboarding_tests.rs`, `ui_recents_tests.rs`) run the real `App`
 on `tests/fixtures/structure.fig` inside `cargo test`: no display, X server, GPU or xdotool, on
 macOS, Linux and CI. They use `egui_kittest` (dev-dependency, `eframe` feature only; no wgpu,
 no snapshot images). `App::new` takes `eframe::CreationContext`, which kittest builds with no
 wgpu state, so tiles render on the CPU path.
 
 ```sh
-cargo test -p figstudio ui_tests          # 48 tests, about 2 s
+cargo test -p figstudio ui_tests          # headless canvas and chrome behavior
 ```
+
+Selection cases live in `ui_pick_tests.rs`, `ui_pick_cousins.rs`, `ui_text_select_tests.rs`,
+`ui_inner_tests.rs`, `ui_inner_nested_tests.rs` and `ui_inner_hover_tests.rs`. They drive real
+pointer/key events,
+assert inner outlines in egui's output, and check clipboard commands rather than the OS
+clipboard. Synthetic nested definitions use only the public fixture schema. In the renderer,
+`tests/path_layout.rs` checks stale/fresh glyph provenance, unchanged writable data and
+resized/rotated nested layout against rendered pixels. `tests/hit_chain.rs` covers hit ancestry.
 
 How to write one: `harness()` returns a `Harness<App>` with the file loaded and fitted;
 `centre_of(&h, guid)` turns a node into a screen point; `right_click`, `drag`, `click_label`
@@ -275,8 +283,92 @@ send pointer events; `step` also collects what the frame sent to the clipboard (
 with `h.get_by_label("Copy link")` (plain `ui.label`s are matched by their accesskit value, see
 `shown_addr`). Menus open a frame or two after the click: use `wait_for`, not a fixed step count.
 Tests that start the MCP server use whatever port `bind_first` gives and read it from the status pill.
+`cargo test -p figstudio desktop_agent_access` covers all enabled/remote preference combinations,
+restores the bind address, restarts an enabled server on an ephemeral loopback port, and checks
+that saved state contains neither endpoints nor tokens. Older preferences without Agent access
+still load with access off. Prove these regressions by removing preference capture/restoration,
+and by removing `Prefs`' `#[serde(default)]` for the older-state case. These tests use in-memory
+eframe storage; real on-disk persistence across an OS app restart still needs a manual check.
+`mcp_host::tests::persistence` also saves after a failed bind and retries the retained access
+choice in a new app. Its credential test mints real remote bearer rules, starts a loopback-only
+test listener with those rules, and checks the actual token value is absent from every stored
+preference value. Injecting that token into storage must make the regression fail.
+
+`cargo test --profile fast -p figstudio workspace` covers desktop session save/reload, saved
+file order and active space, existing space styles, saving before restores finish, missing
+files, duplicate/explicit startup files, and closing some or all spaces. A deterministic
+`session::tests` case feeds reverse completion order and checks that a later manual space
+selection wins. Both UI tests failed without restoration; removing `Restore::finished`'s
+`sort_by_key` makes the deterministic ordering test fail. Restore the mutation before checks.
+Use an isolated `CARGO_TARGET_DIR` if worktrees share a build cache, and confirm the named
+new tests actually appear in the output. Actual OS quit/relaunch and browser file retention
+remain manual checks; this feature changes desktop file reopening only.
+
+Workspace tests now use an explicit temporary private store, not embedded file paths in the
+eframe fixture. Coverage includes Unix 0600 permissions on new/replaced files, atomic-writer
+reuse, malformed/oversized metadata preserving other preferences and the original file,
+legacy import and path removal, 500 saved paths retaining the active file, four concurrent
+startup decodes with a retained queue, parent/symlink alias deduplication, interim-tab closure,
+and a failed active file's displayed fallback. Privacy/focus/alias/concurrency regressions
+failed before the fixes. Replacing the private writer with `std::fs::write`, disabling the
+saved-file limit, or persisting the live token must fail their dedicated tests. Always restore
+these mutations before running the full gate or committing.
+
+`workspace_re_review` covers failed legacy migration and successful alias focus. A dangling
+config-directory symlink makes the first private write fail even for root; legacy paths
+survive preference saves without adding new paths, and a repaired directory permits private
+commit and cleanup. A non-file private store retains a restorable legacy copy and allows
+unrelated preferences to update. The alias test checks manual focus, automatic saved intent,
+an early save and a later completion. All three tests failed at their intended assertions
+before the fixes. The deterministic write-failure setup is Unix-only.
+
+The corruption test requires the warning to state that this session's workspace edits will
+not be saved. A synthetic pending file never enters legacy preferences or reappears after
+restart. Removing damaged metadata does not re-enable writes in the same store; a fresh
+store can save after repair.
+`workspace_unreadable_store_keeps_recovery_guidance_when_legacy_is_limited` combines corrupt
+private metadata with 503 synthetic legacy paths. It checks the 500-path cap, retained active
+file and original legacy backup, unchanged damaged bytes, and both recovery and skipped-file
+messages. Both warning regressions failed at their intended assertions on the old code.
+The alias test includes selecting a third tab after either a manual or automatic alias
+completes while the saved target is still loading, and checks early-save focus and focus
+after that target finishes.
+
+`workspace_recents_explicit_loads_record_the_loaded_tab_after_saved_focus_and_sort` delivers
+real worker results in both completion orders, promoting pending automatic paths through
+user opens. Saved order/focus remain intact while Recents records the loaded id, not the
+active tab. `workspace_recents_explicit_startup_records_an_already_saved_path` covers an
+explicit startup file also present in the saved workspace.
+
+`workspace_recents_automatic_restore_preserves_history_and_pictures` seeds a full 60-entry
+on-disk history. Both completion orders, with a restored path listed or absent, must preserve
+entry order/timestamps/keys, exact JSON bytes and the oldest thumbnail, without adding
+pictures. `workspace_recents_alias_refreshes_only_explicit_opens` uses a public fixture plus
+a synthetic extra page: explicit canonical-alias links refresh the actual linked-page PNG;
+automatic alias reuse leaves history and its picture alone. History preservation and alias
+recording each failed their intended assertion before the fix. Tests use temporary files,
+public-fixture copies and isolated stores; no user workspace or Recents data is read.
+
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
+
+### Internal-page navigation
+
+`cargo test --profile fast -p figstudio internal_pages` covers the collapsed internal-page
+section, expanding without navigating, opening an internal page, clearing selection and hover,
+returning to a normal page, collapsing again, keyboard activation and files without internal
+pages. Layout checks cover full-width click targets, matching row heights and unindented rows.
+The tests also cover initial and programmatic navigation to internal pages, respecting manual
+collapse until later navigation, per-list highlight animation, command-bar targets, fit requests
+and browser state frames. Probe indices round-trip through normal then internal pages, with
+out-of-range rejection; command-bar details distinguish both page kinds in current and inactive
+states. Documents are synthetic or public fixtures, never private content.
+
+`cargo test --profile fast -p figstudio-mcp --test bridge internal_pages` checks both MCP
+`list_open_tabs` and `get_selection` after internal-page navigation over the browser bridge,
+returning to a normal page, and atomic rejection of a document node used as a page ID.
+
+### Command-bar links
 
 `link_open_tests.rs` also drives the real command bar: paste a Figma or figstudio URL, submit
 with Enter or a click, reveal a node in an open tab or a newly loaded local copy, and keep
@@ -300,6 +392,91 @@ MCP caller receives an answer, while unanswered searches still request a 250 ms 
 older held search must not keep a failed load from being retried by a new link. Quiet-outcome
 regressions cover a failed best copy, a file tie and a missing node in an open tab; all three
 must fail if the `search.answered` branch in `finish_search` is bypassed.
+
+`ui_onboarding_tests.rs` turns onboarding on (it is off in tests) and walks the welcome
+sheet with clicks and keys, checks it is modal (⌘L does nothing until Escape skips it),
+that tips come one at a time beside their control and go after Got it, Skip tips or using
+the control, that Help → Welcome tour from the command bar brings it all back, that the
+progress survives a restart and an older saved state, that the sheet keeps the wheel, a
+pinch, a sideways swipe and typing from what is under it and stops being modal as it fades,
+that with the sidebar hidden the sidebar tip comes first, numbered 1 and saying how to
+show it, and that the page's picture fades
+out with the sheet (frames 1/60 s apart with motion on; egui fades text by scaling its glyph
+colours, so the test reads those). A tip's first frame is egui's sizing
+pass, laid out where it will not stay; `wait_label` steps a few more frames before a click.
+Each test was seen failing with its part removed (no modal return, no save, no `watch`, no
+`show_again`, no command-field target, Got it ignored). Look at the sheet and tips in the
+real app too; the tests do not see colours or placement beyond "right of the control".
+
+`ui_recents_tests.rs` fills an in-memory recents list and checks the Recents page: the
+empty page keeps Open file…, a loaded file is listed and its card opens it again, the
+filter narrows the cards (any case) and says when none match, the rows toggle is kept in
+`Prefs`, Remove from recents takes a card away, a moved file is marked missing and
+toasts instead of opening, a file deleted and put back while the page shows opens again (its card label and menu
+follow the disk too),
+bytes dropped without a path are not listed, the header stays inside a narrow card, and the
+window is Slate until the pointer is on a card, then takes that card's colour and goes back
+after. Unit tests check that a picture finished after Remove from recents is not
+written, that of two jobs for one file only the newest writes, that a disk that hangs
+neither holds up the page nor piles up looks or threads, even with clicks and loads while
+it hangs (the next look waits a second after the slow one returned), that a look begun
+before a file was opened does not undo it, and that a folder where the file was counts as missing. The unit tests in `recents.rs` cover the list (front on reopen,
+cap with pictures deleted, restart, damaged list left alone, owner-only file), the "Opened
+… ago" wording and the picture size. Each was seen failing with its part removed (no note
+on load, Remove ignored, missing opened anyway, filter ignored, toggle not kept, no
+dedupe). Two more cover the browser's merge rules: files opened before the saved list
+arrives stay in front of it, and a moved file picked again (a new handle) replaces its
+missing card (only the one it was picked for, not another of the same name, and not
+when another file of that name opens some other way). The page
+waits for the browser's saved list before it welcomes. The + shows the page with files
+still open (their card goes back to them, the sidebar does not say none is open, the title
+is the app's), and the page sits after the last space (Next and Previous space, closing a
+space keeps it). The Dock menu and jump list list the newest five
+files not missing (`the_shortlist_is_the_five_newest_files_not_missing`); a file picked
+there opens, and one deleted since says so, is marked missing and leaves the list; a listed
+file gone when opened at start (a jump list item) is marked missing; a file taken off the
+jump list leaves Recents; an item's argument reads back as its path (spaces, `&`); a refused list is tried again
+without one file at a time, a retry never publishes an empty list, and an error stops the
+tries; files of
+one name are told apart by their folder, and a Dock title keeps its `&`. `handoff.rs` tests the
+single instance with real locks in folders of their own:
+- files handed to a running figstudio arrive there, made absolute;
+- only the first holds the lock, and it is free again once that one ends;
+- a launch waits for a figstudio still starting, and does not take a `ready` mark left by
+  one that ended as up;
+- files not taken in time, or not taken by a hung window, stay with the launch and leave
+  no request behind;
+- a request that cannot be looked at is not counted as taken (Unix);
+- a launch opens its files only once its request is withdrawn (Unix); one that can
+  neither withdraw nor look opens them itself and the window never does; one whose
+  request the window takes while it gives up leaves them to the window (both through
+  the `decided` mark); one whose inbox is shut throughout leaves the request queued
+  (Unix); what was decided before a crash is not opened again;
+- a request unreadable for a while is read on a later look (Unix); one that is not text
+  is kept aside; one too big to read stays with the launch; a request is decided only
+  once it was read (one that is not a request is kept aside, one whose read fails goes
+  back undecided and opens on a later look); one its launch opened keeps its mark until it
+  is gone; an old mark stays while its request waits, as `.json` or `.taken`;
+- what a crash left (`.part`, `.taken`) is cleared or opened; a figstudio that ends takes
+  its marks away; one that cannot write its id takes no files;
+- the folder is `0700` and not a link (Unix);
+- only the running figstudio's process may take the foreground (never one whose mark is
+  stale, never `ASFW_ANY`), and the holder's process is read from its id;
+- a launch without files hands nothing over;
+- a window that is not drawn (minimized: only `logic` runs) still takes handed-over files
+  (UI test).
+
+a UI test
+opens what is handed over. In the built app: start
+one, then `figstudio other.fig` from a shell; it exits at once and the first window shows
+the file. Also run `cargo
+clippy -p figstudio --target x86_64-unknown-linux-gnu` (and the Windows target): code for
+the Dock and the jump list must not leave dead code on Linux. The Dock hook and the
+jump list's COM calls need the real systems: right-click the Dock icon of the `.app` after
+opening files; on Windows, right-click the taskbar icon (`cargo clippy --target
+x86_64-pc-windows-msvc` only checks that it builds). `recents_pictures.rs` tests the
+browser's picture rules: a late read (a miss or an old picture) never covers a picture drawn
+since, a missing picture is read once, and only the newest job is kept. The pictures themselves and Show in Finder need the real app.
 
 Cannot be covered here: the real OS clipboard (paste into an editor or Preview), a real
 window manager, native file dialogs, GPU tiles, HiDPI and trackpad gestures.
@@ -343,6 +520,33 @@ this page (cross-origin isolated); poll `page.evaluate` instead. `window.figstud
 holds numbers only (tabs, page, drawn, culled, images loading / missing / read, image cache
 and Wasm memory bytes, errors); `figstudioPage(n)` switches page. Never screenshot a
 private file.
+
+Recents in the browser has two Playwright specs in `web/e2e` (`npm i --no-save
+@playwright/test`, then `npx playwright test <spec>` there):
+
+- `recents.spec.mjs` loads `apps/figstudio/js/recents.js` on its own (no build) and checks
+  the IndexedDB list, the handle store (a re-picked file keeps its number, another file
+  gets its own), reading a file back through its handle after a reload (and "gone" once
+  deleted), pictures kept and deleted, the no-handle answer, and drops (a later drop's
+  files never match an earlier one; all files of a big drop keep their handles). Handles come from the
+  origin's private file system (OPFS), as Playwright cannot drive `showOpenFilePicker`
+  (it cancels it).
+- `recents-app.spec.mjs` drives the built app and skips unless `FIGSTUDIO_WEB_URL` is set
+  (`scripts/web-build.sh`, `python3 scripts/web-serve.py web/dist 8765`, then
+  `FIGSTUDIO_WEB_URL=http://127.0.0.1:8765/`). With `showOpenFilePicker` deleted
+  (Firefox, Safari) a picked file is listed with a picture, kept over a reload, and its card
+  shows the file chooser. With a fake picker returning an OPFS handle (Chrome, Edge) the
+  card reads the file through its handle without a picker, and after the file is deleted
+  it opens the picker with `startIn`. Of two files of one name picked together, the card
+  keeps the handle of the one that opened. Relocating a moved card: a cancelled picker
+  leaves the card to a later open of that name, and when the browser refuses its picker the
+  plain input's file is listed beside the card, which keeps its handle (and the picker was
+  asked exactly three times: the open, then in the card's folder and without it). The canvas is driven by position (1280×800).
+
+The relay spec deletes `showOpenFilePicker` for the same reason, so Ctrl+O shows the plain
+input Playwright fills. `npx playwright install webkit` lets the app spec's no-handle steps
+run in WebKit too (a probe script, not in the spec). Look at the cards, the list rows and
+the toasts by eye in Chrome and Safari or Firefox after a change.
 
 Measured on the development machine (32 threads, headless Chromium, 1400×880 window,
 4500-node `synth --copies 400` of structure.fig): 100% zoom 15 ms on 1 thread, 6–7 ms on 8+;

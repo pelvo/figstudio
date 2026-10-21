@@ -79,6 +79,15 @@ impl Renderer {
     }
 }
 
+/// Desktop access preferences, without the server's endpoint or per-start bearer token.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct AgentPrefs {
+    pub on: bool,
+    pub remote: bool,
+    pub remote_addr: String,
+}
+
 /// What Settings → Agents changes on the desktop MCP server (`McpHost::access`); the
 /// browser has its own relay controls instead.
 #[derive(Debug)]
@@ -1024,6 +1033,14 @@ impl App {
             setting(ui, "Show the properties", "", |ui| {
                 switch(ui, &mut self.show_right, "Show the properties");
             });
+            section(ui, "Help");
+            let mut tour = false;
+            setting(ui, "Welcome tour", "The first-run sheet and tips", |ui| {
+                tour = pill(ui, "Show again", true).clicked();
+            });
+            if tour {
+                self.apply(Action::Welcome, &ctx);
+            }
         });
         explain(
             &mut right,
@@ -1099,7 +1116,7 @@ impl App {
                 setting(
                     ui,
                     "Agent access",
-                    "An MCP server for the open files. Off at every launch",
+                    "An MCP server for the open files. Remembered between launches",
                     |ui| {
                         switch(ui, access.on, "Agent access");
                     },
@@ -1158,8 +1175,8 @@ impl App {
             &[Glyph::Icon(Icon::Sparkle)],
             "Agents",
             "Let AI agents (Claude, Cursor, Codex…) read the files open here through MCP, \
-             offline. Off at every launch; your MCP client connects to the address shown \
-             while it is on.",
+             offline. Desktop access settings are remembered between launches; your MCP client \
+             connects to the address shown while it is on.",
         );
     }
 

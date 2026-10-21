@@ -69,6 +69,10 @@ fontdb = { workspace = true }
 ttf-parser = { workspace = true }
 # The platform's config folder for saved space styles (spaces.rs).
 dirs = "6"
+# Recents: reading the page pictures back (already built for figstudio-render).
+image = { workspace = true }
+# Recents: Show in Finder / in the file manager (reveal), not a hand-rolled per-OS launch.
+opener = { version = "0.9", features = ["reveal"] }
 # Saving them atomically: a uniquely named temporary file (created new, owner-only on Unix),
 # renamed over the store (spaces.rs).
 tempfile.workspace = true
@@ -91,6 +95,8 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "persistence"]
 # file-handle-inner: the picked `File`, so big files are read in slices, not whole.
 rfd = { workspace = true, features = ["file-handle-inner"] }
 rayon = { workspace = true }
+# Recents: reading the page pictures back (already built for figstudio-render).
+image = { workspace = true }
 wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-rayon = { version = "1.3", features = ["no-bundler"] }
@@ -102,6 +108,10 @@ muda = { version = "0.21.2", default-features = false }
 
 [target."cfg(windows)".dependencies]
 raw-window-handle = "0.6"
+# The taskbar jump list of recent files (jump_list.rs) and the foreground hand-over of a
+# launch (handoff.rs): the Windows bindings that eframe, muda and rfd already pull in, at
+# the same version.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_EnhancedStorage", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }
 
 # The blurred window background (vibrancy.rs): AppKit through the objc2 bindings eframe,
 # muda and rfd already use.
@@ -109,7 +119,7 @@ raw-window-handle = "0.6"
 raw-window-handle = "0.6"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSAppearance", "NSGraphics", "NSResponder", "NSView", "NSVisualEffectView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSAppearance", "NSApplication", "NSGraphics", "NSResponder", "NSView", "NSVisualEffectView", "NSWindow"] }
 
 [lints]
 workspace = true

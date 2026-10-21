@@ -5,6 +5,10 @@ use crate::{App, Tool};
 pub(crate) enum Action {
     Open,
     OpenLink,
+    CopyText,
+    SelectAllText,
+    SelectChild,
+    SelectParent,
     ExportPage(f64),
     ExportSelection(f64),
     CloseTab,
@@ -30,6 +34,8 @@ pub(crate) enum Action {
     ReduceMotion,
     AgentAccess,
     About,
+    /// Help → Welcome tour: the welcome sheet and the tips again (`onboarding.rs`).
+    Welcome,
     SelectTool(Tool),
     ClearSelection,
     ZoomBy(f32),
@@ -176,6 +182,13 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
     if cfg!(any(feature = "mcp", target_arch = "wasm32")) {
         view.push(Item::action("Agent access…", Action::AgentAccess, true));
     }
+    let edit = vec![Item::action(
+        "Copy text",
+        Action::CopyText,
+        app.tabs
+            .get(app.active)
+            .is_some_and(|t| t.selected_text().is_some()),
+    )];
     vec![
         Item::group(
             "File",
@@ -190,6 +203,7 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                 Item::action("Quit", Action::Quit, true),
             ],
         ),
+        Item::group("Edit", edit),
         Item::group("View", view),
         Item::group(
             "Space",
@@ -206,18 +220,43 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
         ),
         Item::group(
             "Help",
-            vec![Item::action("About figstudio", Action::About, true)],
+            vec![
+                Item::action("Welcome tour", Action::Welcome, true),
+                Item::action("About figstudio", Action::About, true),
+            ],
         ),
     ]
 }
 
 impl App {
     pub(crate) fn apply(&mut self, action: Action, ctx: &egui::Context) {
+        // A menu used while the welcome sheet is up (the native menu still works): the
+        // person has moved on, so the sheet makes way.
+        if !matches!(action, Action::Welcome | Action::Quit) {
+            self.onboarding.finish_welcome();
+        }
         match action {
             Action::Open => self.open_dialog(ctx),
             Action::OpenLink => {
                 self.link.window = true;
                 self.link.focus = true;
+            }
+            Action::CopyText => {
+                if let Some(tab) = self.tabs.get_mut(self.active)
+                    && let Some(text) = tab.selected_text()
+                {
+                    tab.pending_copy = Some(crate::copy::Item::text("Copy text", "text", text));
+                }
+            }
+            Action::SelectChild | Action::SelectParent => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.select_relative(action == Action::SelectChild);
+                }
+            }
+            Action::SelectAllText => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.select_all_text();
+                }
             }
             Action::ExportPage(scale) => self.export_png(ctx, false, scale),
             Action::ExportSelection(scale) => self.export_png(ctx, true, scale),
@@ -261,7 +300,16 @@ impl App {
                     } else {
                         n - 1
                     };
-                    self.active = (self.active + step) % n;
+                    // From the Recents page (after the last space): the first or the last.
+                    self.active = if self.active >= n {
+                        if action == Action::NextSpace {
+                            0
+                        } else {
+                            n - 1
+                        }
+                    } else {
+                        (self.active + step) % n
+                    };
                 }
             }
             Action::GoToSpace(i) => {
@@ -294,12 +342,19 @@ impl App {
                 }
             }
             Action::ClearSelection => {
-                if let Some(t) = self.tab() {
+                if let Some(t) = self.tab()
+                    && t.text_select.take().is_none()
+                {
                     t.select(None);
                 }
             }
             Action::AgentAccess => self.settings.show(Some(crate::settings::Tab::Agents), ctx),
             Action::About => self.settings.show(Some(crate::settings::Tab::About), ctx),
+            Action::Welcome => {
+                self.settings.hide();
+                self.command.hide();
+                self.onboarding.show_again(ctx);
+            }
             Action::Settings => self.settings.show(None, ctx),
             #[cfg(target_arch = "wasm32")]
             Action::CjkFont(v) => self.web.select_cjk_font(v, ctx),
