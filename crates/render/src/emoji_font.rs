@@ -1,5 +1,8 @@
 //! Native colour font lookup and bounded PNG decoding.
-use std::{io::Cursor, sync::Arc};
+use std::{
+    io::Cursor,
+    sync::{Arc, OnceLock},
+};
 
 use fontdb::{Database, Family, Query};
 use ttf_parser::{Face, GlyphId, RasterGlyphImage, RasterImageFormat};
@@ -19,7 +22,59 @@ const FAMILIES: &[&str] = &[
     "EmojiOne Color",
 ];
 
-pub(crate) fn resolve(db: &Database, ch: char, pixels: u16) -> Option<Glyph> {
+pub(crate) struct Resolved {
+    strikes: Vec<Strike>,
+    mono: Option<Glyph>,
+}
+
+struct Strike {
+    data: Vec<u8>,
+    image: OnceLock<Option<Arc<Pixmap>>>,
+    x: i16,
+    y: i16,
+    ppem: u16,
+    width: u16,
+    height: u16,
+    origin: (f64, f64),
+}
+
+impl Resolved {
+    pub(crate) fn glyph(&self, pixels: u16) -> Option<Glyph> {
+        let mut strikes: Vec<_> = self.strikes.iter().collect();
+        strikes.sort_by_key(|s| (pixels.abs_diff(s.ppem), std::cmp::Reverse(s.ppem)));
+        for s in strikes {
+            let image = s.image.get_or_init(|| {
+                let image = decode_png(&s.data)?;
+                (image.width() == s.width && image.height() == s.height).then_some(image)
+            });
+            if let Some(image) = image {
+                return Some(Glyph::Bitmap {
+                    image: image.clone(),
+                    x: f64::from(s.x),
+                    y: f64::from(s.y),
+                    ppem: s.ppem,
+                    origin: s.origin,
+                });
+            }
+        }
+        self.mono.clone()
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.strikes
+            .iter()
+            .map(|s| {
+                s.data.len()
+                    + s.image
+                        .get()
+                        .and_then(Option::as_ref)
+                        .map_or(0, |p| p.data_as_u8_slice().len())
+            })
+            .sum()
+    }
+}
+
+pub(crate) fn resolve(db: &Database, ch: char, pixels: u16) -> Option<Resolved> {
     let mut mono = None;
     for name in FAMILIES.iter().chain(crate::text::SYMBOL_FAMILIES) {
         let Some(id) = db.query(&Query {
@@ -32,35 +87,57 @@ pub(crate) fn resolve(db: &Database, ch: char, pixels: u16) -> Option<Glyph> {
             .with_face_data(id, |bytes, index| {
                 let face = Face::parse(bytes, index).ok()?;
                 let id = face.glyph_index(ch)?;
-                if let Some((strike, image, sbix)) = closest_strike(&face, id, pixels) {
-                    let origin = if sbix {
-                        face.glyph_bounding_box(id).map(|b| {
-                            let upem = f64::from(face.units_per_em());
-                            (f64::from(b.x_min) / upem, f64::from(b.y_min) / upem)
-                        })
-                    } else {
-                        None
-                    };
-                    return Some(Glyph::Bitmap {
-                        image,
-                        x: f64::from(strike.x),
-                        y: f64::from(strike.y),
-                        ppem: strike.pixels_per_em,
-                        origin: origin.unwrap_or_default(),
-                    });
-                }
-                let mut outline = monochrome(&face, id)?;
-                outline.apply_affine(Affine::scale(1.0 / f64::from(face.units_per_em())));
-                Some(Glyph::Mono(outline))
+                from_face(&face, id, pixels)
             })
             .flatten();
-        match glyph {
-            Some(Glyph::Bitmap { .. }) => return glyph,
-            Some(Glyph::Mono(_)) if mono.is_none() => mono = glyph,
-            _ => {}
+        if let Some(resolved) = glyph {
+            if !resolved.strikes.is_empty() {
+                return Some(resolved);
+            }
+            if mono.is_none() {
+                mono = Some(resolved);
+            }
         }
     }
     mono
+}
+
+fn from_face(face: &Face<'_>, id: GlyphId, pixels: u16) -> Option<Resolved> {
+    let mut resolved = Resolved {
+        strikes: Vec::new(),
+        mono: None,
+    };
+    for (s, sbix) in strikes(face, id) {
+        let origin = if sbix {
+            face.glyph_bounding_box(id)
+                .map(|b| {
+                    let upem = f64::from(face.units_per_em());
+                    (f64::from(b.x_min) / upem, f64::from(b.y_min) / upem)
+                })
+                .unwrap_or_default()
+        } else {
+            (0.0, 0.0)
+        };
+        resolved.strikes.push(Strike {
+            data: s.data.to_vec(),
+            image: OnceLock::new(),
+            x: s.x,
+            y: s.y,
+            ppem: s.pixels_per_em,
+            width: s.width,
+            height: s.height,
+            origin,
+        });
+    }
+    if resolved.glyph(pixels).is_some() {
+        return Some(resolved);
+    }
+    let mut outline = monochrome(face, id)?;
+    outline.apply_affine(Affine::scale(1.0 / f64::from(face.units_per_em())));
+    Some(Resolved {
+        strikes: Vec::new(),
+        mono: Some(Glyph::Mono(outline)),
+    })
 }
 
 fn monochrome(face: &Face<'_>, id: GlyphId) -> Option<BezPath> {
@@ -112,11 +189,7 @@ impl<'b> ttf_parser::colr::Painter<'b> for MonoLayers<'_, 'b> {
 
 /// Enumerate sbix directly; CBDT's public selector has an eight-bit ppem domain.
 /// Unsupported or corrupt strikes must not hide usable PNGs in the same face.
-fn closest_strike<'a>(
-    face: &'a Face<'a>,
-    glyph: GlyphId,
-    pixels: u16,
-) -> Option<(RasterGlyphImage<'a>, Arc<Pixmap>, bool)> {
+fn strikes<'a>(face: &'a Face<'a>, glyph: GlyphId) -> Vec<(RasterGlyphImage<'a>, bool)> {
     let sbix = face
         .tables()
         .sbix
@@ -132,22 +205,25 @@ fn closest_strike<'a>(
         .map(|s| (s, false));
     let mut candidates: Vec<_> = sbix
         .chain(cbdt)
-        .filter(|(s, _)| s.format == RasterImageFormat::PNG && s.pixels_per_em > 0)
+        .filter(|(s, _)| {
+            s.format == RasterImageFormat::PNG
+                && s.pixels_per_em > 0
+                && s.data.len() <= 4 * 1024 * 1024
+        })
         .collect();
-    candidates.sort_by_key(|(s, _)| {
-        (
-            pixels.abs_diff(s.pixels_per_em),
-            std::cmp::Reverse(s.pixels_per_em),
-        )
-    });
+    candidates.sort_by_key(|(s, sbix)| (*sbix, s.pixels_per_em, s.data.as_ptr()));
     candidates.dedup_by_key(|(s, sbix)| (*sbix, s.pixels_per_em, s.data.as_ptr()));
-    candidates.into_iter().find_map(|(s, sbix)| {
-        let image = decode_png(s.data)?;
-        (image.width() == s.width && image.height() == s.height).then_some((s, image, sbix))
-    })
+    candidates
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn decode_png(bytes: &[u8]) -> Option<Arc<Pixmap>> {
+    #[cfg(test)]
+    DECODES.set(DECODES.get() + 1);
     // Font strikes are untrusted: bound encoded data, PNG dimensions and decoder allocations.
     if bytes.len() > 4 * 1024 * 1024 {
         return None;
@@ -175,49 +251,5 @@ fn decode_png(bytes: &[u8]) -> Option<Arc<Pixmap>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use image::ImageEncoder as _;
-
-    fn png(width: u32, height: u32) -> Vec<u8> {
-        let rgba: Vec<u8> = (0..width * height)
-            .flat_map(|i| [i as u8, 80, 200, 255])
-            .collect();
-        let mut out = Vec::new();
-        image::codecs::png::PngEncoder::new(&mut out)
-            .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
-            .unwrap();
-        out
-    }
-
-    #[test]
-    fn synthetic_sbix_decodes_colour_and_chooses_the_nearest_strike() {
-        let data = crate::text_test_font::colour_emoji(&png(2, 2));
-        let face = Face::parse(&data, 0).unwrap();
-        let id = face.glyph_index('❤').unwrap();
-        assert_eq!(closest_strike(&face, id, 30).unwrap().0.pixels_per_em, 16);
-        assert_eq!(closest_strike(&face, id, 50).unwrap().0.pixels_per_em, 64);
-        let mut db = Database::new();
-        db.load_font_data(data);
-        let Some(Glyph::Bitmap { image: pixmap, .. }) = resolve(&db, '❤', 30) else {
-            panic!("missing sbix colour glyph")
-        };
-        assert_eq!(pixmap.width(), 2);
-        assert_eq!(
-            pixmap.data_as_u8_slice(),
-            &[
-                0, 80, 200, 255, 1, 80, 200, 255, 2, 80, 200, 255, 3, 80, 200, 255
-            ]
-        );
-        assert!(resolve(&db, 'A', 30).is_none());
-    }
-
-    #[test]
-    fn malformed_or_oversized_strikes_are_not_decoded() {
-        assert!(decode_png(b"not a PNG").is_none());
-        assert!(decode_png(&png(1025, 1)).is_none());
-        let mut db = Database::new();
-        db.load_font_data(crate::text_test_font::colour_emoji(b"not a PNG"));
-        assert!(resolve(&db, '❤', 30).is_none());
-    }
-}
+#[path = "emoji_font_tests.rs"]
+mod tests;

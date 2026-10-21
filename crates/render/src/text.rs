@@ -81,7 +81,7 @@ impl SystemFonts {
 
 #[cfg(feature = "system-fonts")]
 mod system {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::sync::Arc;
 
     use figstudio_fig::Val;
@@ -125,7 +125,9 @@ mod system {
         db: Option<Database>,
         faces: HashMap<ID, Option<FaceData>>,
         fallbacks: Option<Vec<ID>>,
-        emojis: HashMap<(char, u16), Option<crate::emoji::Glyph>>,
+        emojis: HashMap<char, Option<crate::emoji_font::Resolved>>,
+        emoji_order: VecDeque<char>,
+        emoji_bytes: usize,
     }
 
     pub(crate) struct Builder(pub(crate) BezPath);
@@ -177,15 +179,25 @@ mod system {
         }
 
         pub(crate) fn emoji(&mut self, ch: char, pixels: u16) -> Option<crate::emoji::Glyph> {
-            if let Some(glyph) = self.emojis.get(&(ch, pixels)) {
-                return glyph.clone();
+            if !self.emojis.contains_key(&ch) {
+                let resolved = crate::emoji_font::resolve(self.db(), ch, pixels);
+                self.emoji_bytes += resolved.as_ref().map_or(0, |r| r.bytes());
+                self.emojis.insert(ch, resolved);
+                self.emoji_order.push_back(ch);
             }
-            let glyph = crate::emoji_font::resolve(self.db(), ch, pixels);
-            // Bound retained decoded strikes when zoom or document text changes repeatedly.
-            if self.emojis.len() >= 64 {
-                self.emojis.clear();
+            // Font lookup is per character; decoded images live on their actual strike.
+            let resolved = self.emojis.get(&ch).and_then(Option::as_ref);
+            let before = resolved.map_or(0, |r| r.bytes());
+            let glyph = resolved.and_then(|r| r.glyph(pixels));
+            self.emoji_bytes += resolved.map_or(0, |r| r.bytes()) - before;
+            while self.emojis.len() > 64 || self.emoji_bytes > 16 * 1024 * 1024 {
+                let Some(oldest) = self.emoji_order.pop_front() else {
+                    break;
+                };
+                if let Some(Some(old)) = self.emojis.remove(&oldest) {
+                    self.emoji_bytes -= old.bytes();
+                }
             }
-            self.emojis.insert((ch, pixels), glyph.clone());
             glyph
         }
 
