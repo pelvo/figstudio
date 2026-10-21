@@ -432,7 +432,13 @@ files not missing (`the_shortlist_is_the_five_newest_files_not_missing`); a file
 there opens, and one deleted since says so, is marked missing and leaves the list; a listed
 file gone when opened at start (a jump list item) is marked missing; a file taken off the
 jump list leaves Recents; an item's argument reads back as its path (spaces, `&`); files of
-one name are told apart by their folder, and a Dock title keeps its `&`. Also run `cargo
+one name are told apart by their folder, and a Dock title keeps its `&`. `handoff.rs` tests the
+single instance over real local sockets with names of their own: files handed to a running
+figstudio arrive there (made absolute), with none running a launch keeps its files, a
+launch without files hands nothing over, only the first listens, and a socket file left by a
+crash is taken over (Unix); a UI test opens what is handed over. In the built app: start
+one, then `figstudio other.fig` from a shell; it exits at once and the first window shows
+the file. Also run `cargo
 clippy -p figstudio --target x86_64-unknown-linux-gnu` (and the Windows target): code for
 the Dock and the jump list must not leave dead code on Linux. The Dock hook and the
 jump list's COM calls need the real systems: right-click the Dock icon of the `.app` after

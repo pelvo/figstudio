@@ -1219,6 +1219,25 @@ impl App {
         }
     }
 
+    /// Opens the files a later launch handed over (a jump list item, `figstudio file.fig`)
+    /// and brings this window forward. A file gone by now fails to open with the usual
+    /// toast, and a listed one is marked missing.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn open_handed_over(&mut self, ctx: &egui::Context) {
+        let Some(inbox) = &self.handed_over else {
+            return;
+        };
+        let files: Vec<std::path::PathBuf> = inbox.try_iter().flatten().collect();
+        if files.is_empty() {
+            return;
+        }
+        for file in files {
+            self.open(file);
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
     /// Shows the Recents page; open files stay open, after it is the first.
     pub(crate) fn show_recents(&mut self) {
         self.recents_from = self.tabs.get(self.active).map(|t| t.id);

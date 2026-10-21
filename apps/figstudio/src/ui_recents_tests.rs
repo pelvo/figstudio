@@ -432,3 +432,18 @@ fn files_taken_off_the_jump_list_leave_recents() {
         std::slice::from_ref(&paths[0])
     );
 }
+
+#[test]
+fn files_handed_over_by_a_later_launch_open_in_this_window() {
+    let mut h = with_recents(&[]);
+    let (send, inbox) = std::sync::mpsc::channel();
+    h.state_mut().handed_over = Some(inbox);
+    send.send(vec![std::path::absolute(fixture(FIXTURE)).unwrap()])
+        .unwrap();
+    wait(
+        &mut h,
+        &mut Vec::new(),
+        "the handed-over file to open",
+        |a| a.tabs.len() == 1,
+    );
+}

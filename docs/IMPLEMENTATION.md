@@ -495,16 +495,25 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   `App::open_recent_file` treats a pick as a card click: a file gone since is marked missing
   with a toast, never opened empty, and it leaves the list. On Windows they are a "Recent
   files" category in the taskbar jump list (`jump_list.rs`, COM through the `windows`
-  crate, one approved `unsafe` block): each item starts `figstudio.exe "<file>"`, a second
-  process with its own window (no single-instance hand-over); a file gone by then fails to
-  open with the usual toast and `load_failed` marks it missing. A file the person removes
+  crate, one approved `unsafe` block): each item starts `figstudio.exe "<file>"`, which hands
+  the file to the figstudio already running (`handoff.rs`, below) and exits, so it opens in
+  that window; a file gone by then fails to open with the usual toast and `load_failed`
+  marks it missing. A file the person removes
   from the jump list is taken off Recents too (`App::taken_off_the_list`), so the removal
   is kept with the list and it does not come back; should Windows still refuse the list, an
-  empty one is committed so the next update starts clean. The second process shares
-  `recents.json` with the first (the last to save wins, `missing` is per process); a
-  single-instance hand-over would remove that. Files of one name get their folder after
+  empty one is committed so the next update starts clean. Files of one name get their folder after
   the name (`shortlist_labels`), and a Dock title doubles `&` (`menu_title`). Linux has no common dock menu for a running app (desktop
   file actions are fixed at install), so it shows none.
+- **One figstudio per person** (`handoff.rs`, desktop). A launch with files (a jump list
+  item, `figstudio file.fig`) first offers them to the figstudio already running, over a
+  local socket of the user's (`interprocess`: a named pipe named for the user on Windows,
+  `<config>/figstudio/instance.sock` elsewhere, not the shared `/tmp`). The running one
+  opens them (`App::open_handed_over`, through `open`, so a gone file toasts and is marked
+  missing), brings its window forward, and answers `ok`; the launch then exits. With no
+  answer within two seconds the launch opens the files itself. Only one process keeps
+  `recents.json` that way. A launch without files starts a window as before. A socket file
+  left by a crash is taken over when nothing answers on it. Tests listen on their own names
+  (`App` does not listen under `cfg(test)`).
   An entry is (path, handle): `handle` is `None` on desktop and the browser's handle number
   otherwise, so two files of one name with different handles are two cards.
 - **Recents in the browser** (`recents_web.rs`, `apps/figstudio/js/recents.js`). The JS

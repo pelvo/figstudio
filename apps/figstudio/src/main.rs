@@ -24,6 +24,8 @@ mod gpu_scenes;
 mod gpu_tiles;
 #[cfg(target_arch = "wasm32")]
 mod gpu_tiles_web;
+#[cfg(not(target_arch = "wasm32"))]
+mod handoff;
 mod icons;
 mod instance_pick;
 #[cfg(any(windows, test))]
@@ -125,6 +127,10 @@ fn app_icon() -> Option<egui::IconData> {
 fn main() -> std::process::ExitCode {
     init_tracing();
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    // A figstudio already running opens them in its window (`handoff.rs`).
+    if handoff::hand_over(&handoff::name(), &files) {
+        return std::process::ExitCode::SUCCESS;
+    }
     let mut options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
@@ -378,6 +384,9 @@ struct App {
     recents: recents::Recents,
     /// The file the Recents page was shown from with the + (still the workspace's).
     recents_from: Option<u64>,
+    /// Files later launches handed to this figstudio (`handoff.rs`).
+    #[cfg(not(target_arch = "wasm32"))]
+    handed_over: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
     /// Startup files still arriving from the decode workers.
     restoring: Option<session::Restore>,
     workspace_store: session_store::Store,
@@ -502,6 +511,13 @@ impl App {
             ),
             // Tests never read or write the user's list.
             recents_from: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            handed_over: if cfg!(test) {
+                None
+            } else {
+                let ctx = cc.egui_ctx.clone();
+                handoff::listen(&handoff::name(), move || ctx.request_repaint())
+            },
             recents: if cfg!(test) {
                 recents::Recents::memory()
             } else {
@@ -694,6 +710,8 @@ impl App {
         if let Some(problem) = self.workspace_store.take_problem() {
             self.toast(ctx, problem, true);
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.open_handed_over(ctx);
         loop {
             let msg = match classify(self.workers.load_rx.try_recv()) {
                 Poll::Msg(msg) => msg,
