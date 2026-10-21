@@ -81,6 +81,7 @@ mod recents_pictures;
 #[cfg(target_arch = "wasm32")]
 mod recents_web;
 mod recordings;
+mod region_clipboard;
 mod region_copy;
 mod region_png;
 mod session;

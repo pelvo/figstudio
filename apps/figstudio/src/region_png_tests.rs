@@ -102,13 +102,40 @@ fn a_region_renders_to_the_planned_size_and_a_decodable_png() {
     let done = render(Images::default(), &doc, None, job, true).unwrap();
     assert_eq!(done.rgba.len(), done.width * done.height * 4);
     assert!(done.rgba.iter().any(|&v| v != 0), "an empty image");
-    let png = image::load_from_memory(done.png.as_deref().unwrap()).unwrap();
+    let png = image::load_from_memory(done.encoded.as_deref().unwrap()).unwrap();
     assert_eq!(
         (png.width() as usize, png.height() as usize),
         (done.width, done.height)
     );
     assert_eq!(done.width, b.width().ceil() as usize);
     assert_eq!(done.name, "region");
+}
+
+#[test]
+fn a_webp_node_job_encodes_lossless_pixels_on_desktop_too() {
+    let doc = Document::from_bytes(STRUCTURE).unwrap();
+    let node = doc.nodes.iter().find(|n| n.kind == "FRAME").unwrap();
+    let webp = render(Images::default(), &doc, None, Job::WebpNode(node.id), false).unwrap();
+    assert_eq!(webp.format, ImageFormat::Webp);
+    let bytes = webp.encoded.unwrap();
+    assert_eq!(
+        image::guess_format(&bytes).unwrap(),
+        image::ImageFormat::WebP
+    );
+    // The clipboard also gets a PNG twin with the same pixels.
+    let twin = webp.png_twin.unwrap();
+    assert_eq!(image::guess_format(&twin).unwrap(), image::ImageFormat::Png);
+    assert_eq!(
+        image::load_from_memory(&twin).unwrap().to_rgba8(),
+        image::load_from_memory(&bytes).unwrap().to_rgba8()
+    );
+    let png = render(Images::default(), &doc, None, Job::Node(node.id), true).unwrap();
+    let expected = image::load_from_memory(&png.encoded.unwrap())
+        .unwrap()
+        .to_rgba8();
+    let actual = image::load_from_memory(&bytes).unwrap().to_rgba8();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.dimensions(), (webp.width as u32, webp.height as u32));
 }
 
 #[test]
