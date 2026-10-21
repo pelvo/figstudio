@@ -40,6 +40,20 @@ fn permanent_misses_are_bounded_but_still_periodically_retried() {
     }
     let calls = source.0.load(Ordering::Relaxed);
     eprintln!("1000 permanent-miss requests: {calls} rasters");
+    // A busy page: other clusters' lookups between frames must not shorten one key's wait.
+    let start = source.0.load(Ordering::Relaxed);
+    for frame in 0..200u16 {
+        for other in 0..64u16 {
+            let _ = cache.raster(&format!("x{}", frame * 64 + other), 40);
+        }
+        assert!(cache.raster("❤", 40).is_none());
+    }
+    let busy = source.0.load(Ordering::Relaxed) - start - 200 * 64;
+    eprintln!("200 busy frames: {busy} rasters of the missing key");
+    assert!(
+        busy <= 4,
+        "a full page must not retry a permanent miss every frame"
+    );
     assert!(
         (2..=18).contains(&calls),
         "misses must back off, not become permanent or busy-loop"

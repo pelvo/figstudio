@@ -387,11 +387,12 @@ impl Renderer {
         mut read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
         draw: impl Fn(&mut Self) -> Frame,
     ) -> Frame {
+        self.emoji_source.take_retry_due();
         // Thumbnail first, then the image, then perhaps a finer level: a few rounds at most.
         for _ in 0..6 {
             let frame = draw(self);
             if frame.wanted.is_empty() && self.images.in_flight() == 0 {
-                return frame;
+                return self.retry_emoji(frame, &draw);
             }
             for want in &frame.wanted {
                 match read(want) {
@@ -402,7 +403,18 @@ impl Renderer {
                 }
             }
         }
-        draw(self)
+        let frame = draw(self);
+        self.retry_emoji(frame, &draw)
+    }
+
+    /// A complete frame is often kept (a Recents thumbnail, an export), so a platform emoji
+    /// that missed for the first time (a font still loading) gets its one retry in this call.
+    fn retry_emoji(&mut self, frame: Frame, draw: &impl Fn(&mut Self) -> Frame) -> Frame {
+        if self.emoji_source.take_retry_due() {
+            draw(self)
+        } else {
+            frame
+        }
     }
 
     /// Bytes of decoded pixels held by the image cache.

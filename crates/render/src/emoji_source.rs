@@ -108,7 +108,11 @@ impl EmojiRaster {
 
 enum Cached {
     Raster(EmojiRaster),
-    Missing { since: u64, delay: u64 },
+    /// `skipped` counts later lookups of this key only, so busy pages cannot shorten the wait.
+    Missing {
+        skipped: u32,
+        delay: u32,
+    },
 }
 
 impl Cached {
@@ -127,6 +131,8 @@ pub(crate) struct Cache {
     bytes: usize,
     clock: u64,
     byte_budget: usize,
+    /// A first miss happened since the last [`Cache::take_retry_due`]; one more pass retries it.
+    retry_due: bool,
 }
 
 impl Default for Cache {
@@ -137,6 +143,7 @@ impl Default for Cache {
             bytes: 0,
             clock: 0,
             byte_budget: 16 * 1024 * 1024,
+            retry_due: false,
         }
     }
 }
@@ -147,6 +154,11 @@ impl Cache {
             source,
             ..Self::default()
         }
+    }
+
+    /// Whether a pass since the last call left a miss that is due an immediate retry.
+    pub(crate) fn take_retry_due(&mut self) -> bool {
+        std::mem::take(&mut self.retry_due)
     }
 
     fn store(&mut self, key: (String, u16), cached: Cached) {
@@ -191,8 +203,9 @@ impl Cache {
             *used = self.clock;
             match cached {
                 Cached::Raster(raster) => return Some(raster.clone().glyph(pixels)),
-                Cached::Missing { since, delay } => {
-                    if self.clock.wrapping_sub(*since) < *delay {
+                Cached::Missing { skipped, delay } => {
+                    *skipped += 1;
+                    if *skipped < *delay {
                         return None;
                     }
                     retry = true;
@@ -207,10 +220,11 @@ impl Cache {
         if bytes > self.byte_budget {
             return raster.map(|r| r.glyph(pixels));
         }
-        // Give a newly loading font one immediate retry, then back off by cache calls.
+        // Give a newly loading font one immediate retry, then back off by this key's lookups.
+        self.retry_due |= raster.is_none() && !retry;
         let cached = raster.as_ref().map_or(
             Cached::Missing {
-                since: self.clock,
+                skipped: 0,
                 delay: if retry { 64 } else { 1 },
             },
             |r| Cached::Raster(r.clone()),

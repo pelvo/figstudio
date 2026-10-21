@@ -96,7 +96,9 @@ struct LoadState {
 impl LoadState {
     fn begin_labels(&mut self, ctx: &egui::Context, labels: &[String]) -> bool {
         use std::hash::{Hash, Hasher};
-        if self.installed {
+        // The card set changes with every filter edit; after a failed fetch only an opened
+        // document may ask again, so typing in the filter never re-downloads.
+        if self.installed || self.warned {
             return false;
         }
         let mut labels: Vec<_> = labels.iter().map(String::as_str).collect();

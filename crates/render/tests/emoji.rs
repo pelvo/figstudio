@@ -290,3 +290,45 @@ fn installed_colour_emoji_is_not_the_text_paint() {
     assert_eq!(sequence.stats.emoji_approximated, 0);
     assert_eq!(sequence.stats.emoji_skipped, 0);
 }
+
+/// A platform emoji font that is still loading: the first raster is empty, later ones draw.
+struct Loading(std::sync::atomic::AtomicUsize);
+
+impl figstudio_render::EmojiSource for Loading {
+    fn raster(&self, _: &str, pixels: u16) -> Option<figstudio_render::EmojiRaster> {
+        if self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+            return None;
+        }
+        let side = pixels / 2;
+        figstudio_render::EmojiRaster::from_rgba(
+            [0, 200, 40, 255].repeat(usize::from(side).pow(2)),
+            side,
+            side,
+            0.0,
+            -f64::from(side),
+        )
+    }
+}
+
+#[test]
+fn a_complete_render_retries_an_emoji_whose_font_was_still_loading() {
+    // A complete frame is what a Recents thumbnail stores until the file is opened again.
+    let doc = emoji_document(&[0x2764]);
+    let source = std::sync::Arc::new(Loading(Default::default()));
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    renderer.set_emoji_source(Some(source.clone()));
+    let frame = renderer.render_complete(&doc, id(1), &viewport(), |_| None);
+    assert_eq!(
+        frame.stats.emoji_skipped, 0,
+        "the one retry happened in this call"
+    );
+    assert_eq!(source.0.load(std::sync::atomic::Ordering::Relaxed), 2);
+    // Nothing missed for the first time, so a later complete render draws once.
+    renderer.render_complete(&doc, id(1), &viewport(), |_| None);
+    assert_eq!(
+        source.0.load(std::sync::atomic::Ordering::Relaxed),
+        2,
+        "cached"
+    );
+}

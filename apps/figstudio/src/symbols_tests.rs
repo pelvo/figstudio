@@ -178,3 +178,23 @@ fn failed_symbol_load_retries_only_for_a_new_document_and_warns_once() {
     assert!(!state.finish(true));
     assert!(!state.begin(Content::Document(4)));
 }
+
+#[test]
+fn filter_edits_after_a_failed_label_fetch_do_not_download_again() {
+    let ctx = egui::Context::default();
+    tick(&ctx);
+    let mut state = LoadState::default();
+    assert!(state.begin_labels(&ctx, &["└ title".into()]));
+    assert!(state.finish(false), "one toast");
+    // Each filter edit hashes a different visible card set.
+    for n in 0..20 {
+        assert!(
+            !state.begin_labels(&ctx, &[format!("└ title {n}")]),
+            "edit {n} must not fetch the fonts again"
+        );
+    }
+    assert!(
+        state.begin(Content::Document(1)),
+        "opening a document may still retry"
+    );
+}
