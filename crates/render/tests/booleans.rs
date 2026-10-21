@@ -61,7 +61,15 @@ fn render(doc: &Document) -> figstudio_render::Frame {
 fn computed_boolean_uses_its_own_paints_without_operand_pixels() {
     for operation in ["UNION", "SUBTRACT", "INTERSECT", "EXCLUDE"] {
         for field in ["fillGeometry", "strokeGeometry"] {
-            let doc = boolean_doc(operation, Some(field));
+            let mut doc = boolean_doc(operation, Some(field));
+            let absent = if field == "fillGeometry" {
+                "strokePaints"
+            } else {
+                "fillPaints"
+            };
+            for index in [1, 3] {
+                doc.nodes[index].data.set(absent, Val::Arr(vec![]));
+            }
             let frame = render(&doc);
             let px = frame.pixmap.data_as_u8_slice();
             assert_eq!(pixel(px, 20, 20), [255, 0, 0, 255], "{operation} {field}");
@@ -137,9 +145,72 @@ fn boolean_without_computed_geometry_draws_operands_and_reports_approximation() 
 }
 
 #[test]
+fn incomplete_boolean_paint_geometry_falls_back_to_operands() {
+    for missing in ["fillGeometry", "strokeGeometry"] {
+        for empty in [false, true] {
+            let present = if missing == "fillGeometry" {
+                "strokeGeometry"
+            } else {
+                "fillGeometry"
+            };
+            let mut doc = boolean_doc("UNION", Some(present));
+            doc.nodes[1].data.set("strokePaints", paint(0.0, 0.0, 1.0));
+            // The stored result is away from the grey operand, with a different paint.
+            let blob = doc.blobs.last_mut().unwrap();
+            for offset in [1, 10, 19, 28] {
+                let x = f32::from_le_bytes(blob[offset..offset + 4].try_into().unwrap());
+                blob[offset..offset + 4].copy_from_slice(&(x + 45.0).to_le_bytes());
+            }
+            if empty {
+                let index = doc.blobs.len();
+                doc.blobs.push(vec![]);
+                doc.nodes[1].data.set(
+                    missing,
+                    Val::Arr(vec![obj(&[("commandsBlob", Val::Int(index as i64))])]),
+                );
+            }
+            doc.nodes[3].kind = "RECTANGLE".into();
+            doc.nodes[3].data.set("type", Val::Str("RECTANGLE".into()));
+            let frame = render(&doc);
+            assert_eq!(
+                pixel(frame.pixmap.data_as_u8_slice(), 20, 20),
+                [128, 128, 128, 255],
+                "missing {missing}, empty={empty}"
+            );
+            assert_eq!(
+                frame.stats.approximated_booleans, 1,
+                "missing {missing}, empty={empty}"
+            );
+        }
+    }
+}
+
+#[test]
+fn hidden_boolean_paint_does_not_require_geometry() {
+    for hidden in [
+        obj(&[("visible", Val::Bool(false))]),
+        obj(&[("opacity", Val::Float(0.0))]),
+    ] {
+        let mut doc = boolean_doc("UNION", Some("fillGeometry"));
+        for index in [1, 3] {
+            doc.nodes[index]
+                .data
+                .set("strokePaints", Val::Arr(vec![hidden.clone()]));
+        }
+        let frame = render(&doc);
+        assert_eq!(
+            pixel(frame.pixmap.data_as_u8_slice(), 20, 20),
+            [255, 0, 0, 255]
+        );
+        assert_eq!(frame.stats.approximated_booleans, 0);
+    }
+}
+
+#[test]
 fn computed_boolean_masks_use_result_geometry_not_operand_bounds() {
     let mut doc = boolean_doc("UNION", Some("fillGeometry"));
     doc.nodes[1].data.set("mask", Val::Bool(true));
+    doc.nodes[1].data.set("strokePaints", Val::Arr(vec![]));
     doc.nodes[2].data.set("size", size(70.0, 70.0));
     let mut content = node(6, 1, "RECTANGLE");
     content.data.set("size", size(70.0, 70.0));

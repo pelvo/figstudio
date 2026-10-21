@@ -1172,17 +1172,30 @@ impl Ctx<'_> {
         {
             fill_paths.push(GeomPath::plain(shape));
         }
-        let stroke_paths = geometry(
+        let mut stroke_paths = geometry(
             data,
             "strokeGeometry",
             &self.doc.blobs,
             &mut self.stats.unsupported_paints,
         );
+        // Booleans have no base_shape fallback: these are their stored result paths.
+        let has_fill = fill_paths.iter().any(|g| !g.path.elements().is_empty());
+        let has_stroke = stroke_paths.iter().any(|g| !g.path.elements().is_empty());
+        let visible = |key| {
+            data.get(key).is_some_and(|paints| {
+                paints.items().iter().any(|p| {
+                    p.flag("visible") != Some(false) && p.num("opacity").unwrap_or(1.0) > 0.0
+                })
+            })
+        };
         let boolean_result = kind == "BOOLEAN_OPERATION"
-            && fill_paths
-                .iter()
-                .chain(&stroke_paths)
-                .any(|g| !g.path.elements().is_empty());
+            && (has_fill || has_stroke)
+            && (!visible("fillPaints") || has_fill)
+            && (!visible("strokePaints") || has_stroke);
+        if kind == "BOOLEAN_OPERATION" && !boolean_result {
+            fill_paths.clear();
+            stroke_paths.clear();
+        }
         self.stats.approximated_booleans +=
             usize::from(kind == "BOOLEAN_OPERATION" && !boolean_result);
         let emojis = if kind == "TEXT" && !stale_glyphs {
