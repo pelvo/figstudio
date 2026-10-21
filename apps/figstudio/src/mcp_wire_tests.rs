@@ -409,6 +409,33 @@ fn state_lists_only_received_tabs_with_wire_ids() {
 }
 
 #[test]
+fn internal_pages_are_included_in_browser_state_frames() {
+    let mut tabs = tabs();
+    assert_eq!(tabs[0].page_index(), Some(0));
+    let internal = tabs[0].doc.internal_pages[0];
+    tabs[0].select(Some(Guid(1, 25)));
+    tabs[0].canvas_rect = Some(egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(800., 600.),
+    ));
+    tabs[0].set_page(internal);
+    assert!(tabs[0].fit_pending);
+    assert_eq!(
+        tabs[0].page_index(),
+        Some(tabs[0].doc.pages.len()),
+        "the browser probe uses the same index"
+    );
+    let ClientMessage::State { tabs: out, active } = state_message(&tabs, 0, &HashSet::from([7]))
+    else {
+        panic!("not a state frame");
+    };
+    assert_eq!(out[0].page, Some(guid_string(internal)));
+    assert_eq!(out[0].selection, None);
+    assert!(out[0].viewport.is_some());
+    assert_eq!(active, Some(7));
+}
+
+#[test]
 fn fragment_token_is_read_without_leaking_other_keys() {
     assert_eq!(token_from_fragment("#mcp=abc123"), Some("abc123".into()));
     assert_eq!(token_from_fragment("#x=1&mcp=a%2Bb"), Some("a+b".into()));

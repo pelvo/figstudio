@@ -212,7 +212,7 @@ pub fn entries(app: &App, query: &str) -> Vec<Entry> {
     }
     let tab = app.tabs.get(app.active);
     if let Some(tab) = tab {
-        for &page in &tab.doc.pages {
+        for &page in tab.doc.pages.iter().chain(&tab.doc.internal_pages) {
             let name = tab
                 .doc
                 .node(page)
@@ -750,6 +750,24 @@ mod tests {
             score("anything", "  ").is_some(),
             "an empty query matches all"
         );
+    }
+
+    #[test]
+    fn internal_pages_are_command_bar_targets_and_request_fit() {
+        let mut h = crate::ui_tests::harness();
+        let internal = h.state().tabs[0].doc.internal_pages[0];
+        let name = h.state().tabs[0].doc.node(internal).unwrap().name.clone();
+        assert!(
+            entries(h.state(), &name)
+                .iter()
+                .any(|e| e.target == Target::Page(internal))
+        );
+        h.state_mut().tabs[0].fit_pending = false;
+        let ctx = h.ctx.clone();
+        h.state_mut().run_target(Target::Page(internal), &ctx);
+        assert_eq!(h.state().tabs[0].page, internal);
+        assert_eq!(h.state().tabs[0].selection, None);
+        assert!(h.state().tabs[0].fit_pending);
     }
 
     #[test]

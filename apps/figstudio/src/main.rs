@@ -997,7 +997,7 @@ impl App {
     fn status_json(&self) -> String {
         let tab = self.tabs.get(self.active);
         let s = tab.map(|t| &t.stats);
-        let page = tab.and_then(|t| t.doc.pages.iter().position(|p| *p == t.page));
+        let page = tab.and_then(Tab::page_index);
         format!(
             concat!(
                 r#"{{"tabs":{},"loading":{},"page":{},"pages":{},"zoom":{},"drawn":{},"#,
@@ -1008,7 +1008,7 @@ impl App {
             self.tabs.len(),
             self.loading.len(),
             page.map_or(-1, |p| p as i64),
-            tab.map_or(0, |t| t.doc.pages.len()),
+            tab.map_or(0, |t| t.doc.pages.len() + t.doc.internal_pages.len()),
             tab.map_or(0.0, |t| t.view.zoom),
             s.map_or(0, |s| s.nodes),
             s.map_or(0, |s| s.culled),

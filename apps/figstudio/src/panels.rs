@@ -70,6 +70,12 @@ pub fn pages(ui: &mut Ui, tab: &mut Tab) {
     page_rows(ui, tab, &doc.pages);
     if !doc.internal_pages.is_empty() {
         let p = theme::of(ui);
+        let navigation = ui.make_persistent_id(("internal-page-navigation", tab.id));
+        let entered_internal = ui.ctx().data_mut(|data| {
+            let previous = data.get_temp::<Guid>(navigation);
+            data.insert_temp(navigation, tab.page);
+            previous != Some(tab.page) && doc.internal_pages.contains(&tab.page)
+        });
         ui.add_space(6.0);
         ui.scope(|ui| {
             ui.spacing_mut().indent = 34.0;
@@ -83,6 +89,7 @@ pub fn pages(ui: &mut Ui, tab: &mut Tab) {
             )
             .id_salt(("internal-pages", tab.id))
             .default_open(doc.internal_pages.contains(&tab.page))
+            .open(entered_internal.then_some(true))
             .icon(move |ui, openness, response| {
                 let color = if response.hovered() || response.has_focus() {
                     p.text
@@ -145,7 +152,7 @@ fn page_rows(ui: &mut Ui, tab: &mut Tab, pages: &[Guid]) {
     if let Some(rect) = lit {
         let r = anim::spring_rect(
             ui.ctx(),
-            Id::new("page-pill"),
+            ui.make_persistent_id(("page-pill", tab.id)),
             rect.translate(-origin),
             Spring::SMOOTH,
         )

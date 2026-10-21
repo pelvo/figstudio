@@ -345,17 +345,24 @@ automatic alias reuse leaves history and its picture alone. History preservation
 recording each failed their intended assertion before the fix. Tests use temporary files,
 public-fixture copies and isolated stores; no user workspace or Recents data is read.
 
+Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
+`get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
+
+### Internal-page navigation
+
 `cargo test --profile fast -p figstudio internal_pages` covers the collapsed internal-page
 section, expanding without navigating, opening an internal page, clearing selection and hover,
 returning to a normal page, collapsing again, keyboard activation and files without internal
-pages. A layout regression checks the full-width disclosure click target, matching row heights
-and unindented internal-page rows; it failed against the old short header. The synthetic
-two-page document contains no private content. The navigation regression failed on the old
-passive label because the internal page never appeared after clicking it. The disclosure uses
-egui's built-in collapsing header and the existing selectable page rows.
+pages. Layout checks cover full-width click targets, matching row heights and unindented rows.
+The tests also cover initial and programmatic navigation to internal pages, respecting manual
+collapse until later navigation, per-list highlight animation, command-bar targets, fit requests
+and browser state frames. Documents are synthetic or public fixtures, never private content.
 
-Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
-`get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
+`cargo test --profile fast -p figstudio-mcp --test bridge internal_pages` checks both MCP
+`list_open_tabs` and `get_selection` after internal-page navigation over the browser bridge,
+returning to a normal page, and atomic rejection of a document node used as a page ID.
+
+### Command-bar links
 
 `link_open_tests.rs` also drives the real command bar: paste a Figma or figstudio URL, submit
 with Enter or a click, reveal a node in an open tab or a newly loaded local copy, and keep
