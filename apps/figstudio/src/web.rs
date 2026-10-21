@@ -452,8 +452,9 @@ async fn open_file(file: web_sys::File, origin: Origin) -> Picked {
 
 /// Shows the picker and opens what is chosen. The File System Access picker where the
 /// browser has it (each file with its handle), else the plain one (no handles). `moved`: the
-/// handle of a moved Recents card; the picker starts in its folder, and what is picked there
-/// takes the card's place.
+/// handle of a moved Recents card; the picker starts in its folder, and a file picked there
+/// with the browser's picker takes the card's place (one from the plain input, which has no
+/// handle, is listed beside it).
 async fn pick(tx: Sender<Picked>, ctx: egui::Context, moved: Option<u32>) {
     if crate::recents_web::keeps_handles() {
         match crate::recents_web::pick_files(moved).await {

@@ -260,6 +260,8 @@ test.describe("relocating a moved card", () => {
     // Refused in its folder and again without: the plain file input opens instead.
     await answer(["refuse", "refuse"]);
     await clickCard(page, () => chooser(page));
+    // The open in `moved`, then the card's picker refused in its folder and again without.
+    expect(await page.evaluate(() => window.calls)).toBe(3);
     await expect.poll(() => handles(page), { timeout: 30_000 }).toEqual([null, 1]);
   });
 });

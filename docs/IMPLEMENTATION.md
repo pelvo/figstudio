@@ -486,7 +486,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   "Recent files"). The page is a place after the last space: Next space goes to the first,
   Previous to the last, closing a space keeps it, a dot or a card leaves it. On the page
   (also with no file open) the + opens the picker as before. The workspace saved there
-  keeps the file the + was pressed on as its active one (`App::recents_from`).
+  keeps the file the + was pressed on as its active one (`App::recents_from`); if that file
+  is closed meanwhile, the one beside it takes its place, as when a shown file closes.
   Beside the app, the newest five files not known to be missing (`Recents::shortlist`) are
   listed too, and `NativeMenu::set_recent` updates them when they change. On macOS they are
   the Dock icon's menu: a muda submenu whose `NSMenu` `dock_mac.rs` hands to AppKit by

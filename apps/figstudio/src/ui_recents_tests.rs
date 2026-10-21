@@ -447,3 +447,23 @@ fn files_handed_over_by_a_later_launch_open_in_this_window() {
         |a| a.tabs.len() == 1,
     );
 }
+
+#[test]
+fn closing_the_file_the_recents_page_came_from_keeps_its_neighbour() {
+    let mut h = two_files();
+    h.state_mut().open(fixture("corners.fig"));
+    wait(&mut h, &mut Vec::new(), "the third file", |a| {
+        a.tabs.len() == 3 && a.active == 2
+    });
+    let neighbour = h.state().tabs[1].path.clone();
+    h.get_by_label("Open file…").click();
+    h.run_steps(3);
+    h.state_mut().close(2);
+    h.run_steps(3);
+    assert!(on_recents(h.state()));
+    assert_eq!(
+        crate::session::Session::capture(h.state()).active(),
+        Some(std::path::absolute(neighbour).unwrap().as_path()),
+        "the space beside it, as closing a shown space would pick"
+    );
+}

@@ -635,6 +635,11 @@ impl App {
             }
             if home {
                 self.active = self.tabs.len();
+                // The file the page came from closed: the one beside it, as a shown one would.
+                if self.recents_from == Some(closed.id) {
+                    let beside = i.min(self.tabs.len().saturating_sub(1));
+                    self.recents_from = self.tabs.get(beside).map(|t| t.id);
+                }
             } else if self.active >= self.tabs.len() {
                 self.active = self.tabs.len().saturating_sub(1);
             } else if self.active > i {
