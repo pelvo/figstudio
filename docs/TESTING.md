@@ -435,21 +435,29 @@ jump list leaves Recents; an item's argument reads back as its path (spaces, `&`
 without one file at a time, a retry never publishes an empty list, and an error stops the
 tries; files of
 one name are told apart by their folder, and a Dock title keeps its `&`. `handoff.rs` tests the
-single instance with real locks in folders of their own: files handed to a running
-figstudio arrive there (made absolute), only the first holds the lock and it is free again
-once that one ends, files not taken in time stay with the launch and leave no request
-behind (and cannot be taken late), files a hung window does not take stay with the launch, a launch waits for a figstudio
-still starting (and does not take a `ready` mark left by one that ended as up), a launch
-opens its files only once its request is withdrawn, and leaves one it cannot withdraw to
-the running figstudio (Unix), a request unreadable for a while is read on a later look
-(Unix), a figstudio that ends takes its marks away, a request the launch cannot take back is
-cancelled so the window never opens it too, a request that is not text is kept aside, a
-figstudio that cannot write its id takes no files, a request that cannot be looked at is
-not counted as taken (Unix), only the running figstudio's process may take
-the foreground (never one whose mark is stale, never `ASFW_ANY`), the holder's process is
-read from its id, a request too big to read stays with the launch, what a crash left is
-cleared or opened, and (Unix) a request that cannot be looked at is not counted as taken
-and the folder is `0700` and not a link, and a launch without files hands nothing over; a UI test
+single instance with real locks in folders of their own:
+- files handed to a running figstudio arrive there, made absolute;
+- only the first holds the lock, and it is free again once that one ends;
+- a launch waits for a figstudio still starting, and does not take a `ready` mark left by
+  one that ended as up;
+- files not taken in time, or not taken by a hung window, stay with the launch and leave
+  no request behind;
+- a request that cannot be looked at is not counted as taken (Unix);
+- a launch opens its files only once its request is withdrawn (Unix); one that can
+  neither withdraw nor look opens them itself and the window never does; one whose
+  request the window takes while it gives up leaves them to the window (both through
+  the `decided` mark); one whose inbox is shut throughout leaves the request queued
+  (Unix); what was decided before a crash is not opened again;
+- a request unreadable for a while is read on a later look (Unix); one that is not text
+  is kept aside; one too big to read stays with the launch;
+- what a crash left (`.part`, `.taken`) is cleared or opened; a figstudio that ends takes
+  its marks away; one that cannot write its id takes no files;
+- the folder is `0700` and not a link (Unix);
+- only the running figstudio's process may take the foreground (never one whose mark is
+  stale, never `ASFW_ANY`), and the holder's process is read from its id;
+- a launch without files hands nothing over.
+
+a UI test
 opens what is handed over. In the built app: start
 one, then `figstudio other.fig` from a shell; it exits at once and the first window shows
 the file. Also run `cargo

@@ -528,13 +528,15 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   known to be gone (`fs::exists` is `Ok(false)`; a stat error is not), and takes a request
   back by deleting it or moving it aside (`.withdrawn`, not looked at), trying again for
   up to 5 s on errors other than "not found" (a scanner may hold a new file a moment); it
-  opens the files itself only once one of those succeeded; a request it could not take
-  back in that time gets a `{id}.cancel` mark and the launch opens the files itself
-  (unless the request was taken meanwhile); a window that takes a request with a cancel
-  mark drops it, so the files open once. Without a cancel mark (the inbox not writable)
-  the request stays queued for the running figstudio. A request the window cannot open
-  when it takes it goes back for a later look (no waiting on the window's thread); one
-  that is not text, or does not parse, is kept aside. The holder writes its id before it clears what an
+  opens the files itself only once one of those succeeded; for a request it could not
+  take back in that time, the launch and the window both try to make `{id}.decided`
+  (`create_new`, so only one can): the launch opens the files if it made it, and a window
+  that takes the request opens them only if it did, so they open once. If the mark cannot
+  be made, the launch leaves the request queued and the window decides when it takes it.
+  A window keeps its marks two minutes (longer than any launch waits). A request the window
+  cannot open when it takes it goes back for a later look, before anything is decided (no
+  waiting on the window's thread); one that is not text, or does not parse, is kept
+  aside. The holder writes its id before it clears what an
   ended figstudio left (if it cannot, it takes no files and drops the lock), and removes `ready` and `holder` when it ends normally, so a stale
   pair is left only by a crash (a launch in the moment between the lock and that write
   could still read one). Not taken in time, too large for one request (1 MiB), or not
