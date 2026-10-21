@@ -10,11 +10,15 @@ use crate::emoji_canvas_bounds::{self as geometry, Measured};
 pub(crate) struct BrowserEmoji;
 
 impl EmojiSource for BrowserEmoji {
+    fn raster_size(&self, requested: u16) -> u16 {
+        geometry::initial_pixels(requested)
+    }
+
     fn raster(&self, cluster: &str, pixels: u16) -> Option<EmojiRaster> {
         let canvas = OffscreenCanvas::new(1, 1).ok()?;
         let ctx: OffscreenCanvasRenderingContext2d =
             canvas.get_context("2d").ok()??.dyn_into().ok()?;
-        let mut pixels = geometry::initial_pixels(pixels);
+        let mut pixels = self.raster_size(pixels);
         let (font, bounds) = loop {
             let font = format!(
                 "{pixels}px \"Apple Color Emoji\",\"Segoe UI Emoji\",\"Noto Color Emoji\",sans-serif"

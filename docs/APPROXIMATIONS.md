@@ -130,7 +130,10 @@ Counts are per visible stored emoji glyph, not per text node; not included in th
   but counted unless the source explicitly attests verified shaping (`with_verified_shaping`).
   Browser Canvas provides no such attestation; pixel/tofu comparisons cannot prove support.
   Straight-alpha RGBA is premultiplied once. Renderer-local LRU caches bound results to 256
-  entries and 16 MiB of pixels; transparent misses are retried, not cached permanently.
+  entries and 16 MiB of pixels. Sources declare a canonical request size so capped rasters
+  serve all larger zooms. Misses get one immediate retry, then one retry per 64 later cache
+  calls; negative entries share the same LRU bound. Oversized results draw uncached without
+  evicting hot entries.
   Keys and raster dimensions are bounded too. Recordings retain owned pixels and need no
   browser API on replay.
 
