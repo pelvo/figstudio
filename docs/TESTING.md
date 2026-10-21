@@ -434,10 +434,11 @@ file gone when opened at start (a jump list item) is marked missing; a file take
 jump list leaves Recents; an item's argument reads back as its path (spaces, `&`); a refused list is tried again
 without one file at a time; files of
 one name are told apart by their folder, and a Dock title keeps its `&`. `handoff.rs` tests the
-single instance over real local sockets with names of their own: files handed to a running
-figstudio arrive there (made absolute), with none running a launch keeps its files, a
-launch without files hands nothing over, only the first listens, and a socket file left by a
-crash is taken over (Unix); a UI test opens what is handed over. In the built app: start
+single instance with real locks in folders of their own: files handed to a running
+figstudio arrive there (made absolute), only the first holds the lock and it is free again
+once that one ends, files not taken in time stay with the launch and leave no request
+behind (and cannot be taken late), files a hung window does not take stay with the launch, and a launch without files hands nothing over; a UI test
+opens what is handed over. In the built app: start
 one, then `figstudio other.fig` from a shell; it exits at once and the first window shows
 the file. Also run `cargo
 clippy -p figstudio --target x86_64-unknown-linux-gnu` (and the Windows target): code for

@@ -507,16 +507,23 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   that is taken shows which file was removed, and it leaves Recents too. Files of one name get their folder after
   the name, or the folder's whole path when that is shared or missing (`shortlist_labels`), and a Dock title doubles `&` (`menu_title`). Linux has no common dock menu for a running app (desktop
   file actions are fixed at install), so it shows none.
-- **One figstudio per person** (`handoff.rs`, desktop). A launch with files (a jump list
-  item, `figstudio file.fig`) first offers them to the figstudio already running, over a
-  local socket of the user's (`interprocess`: a named pipe named for the user on Windows,
-  `<config>/figstudio/instance.sock` elsewhere, not the shared `/tmp`). The running one
-  opens them (`App::open_handed_over`, through `open`, so a gone file toasts and is marked
-  missing), brings its window forward, and answers `ok`; the launch then exits. With no
-  answer within two seconds the launch opens the files itself. Only one process keeps
-  `recents.json` that way. A launch without files starts a window as before. A socket file
-  left by a crash is taken over when nothing answers on it. Tests listen on their own names
-  (`App` does not listen under `cfg(test)`).
+- **One figstudio per person** (`handoff.rs`, desktop). Before its window, `main` takes a
+  lock on `<config>/figstudio/instance.lock` (`File::try_lock`); the system drops it when
+  the process ends, crash or not, so nothing is left to clean up. A launch with files (a
+  jump list item, `figstudio file.fig`) that finds the lock held writes them, made
+  absolute, as a request in `<config>/figstudio/inbox/` (written as `.part`, then renamed
+  to `.json`) and waits up to two seconds for the running figstudio to take it. A thread of
+  that one looks in its inbox every 150 ms and wakes the window; the window itself takes a
+  request (`Inbox::take`, in `App::open_handed_over`) by renaming it (one rename: a launch
+  that gave up has removed its own, so a request is opened by one side only), opens the
+  files through `open` (a gone file toasts and is marked missing) and comes forward; the
+  launch exits. A hung window takes nothing. Not taken in time, or not
+  writable as a request (a path not text, or not made absolute): the launch opens the
+  files itself. The config folder is the person's own, so no other account can take the
+  name or send files. On Windows the window may only flash in the taskbar instead of
+  coming forward (the launch does not call `AllowSetForegroundWindow`). A launch without files starts a second window as before; two
+  windows share `recents.json` (the last to save wins, `missing` is per window). Tests
+  claim their own folders; `App` only watches when `main` hands it the lock.
   An entry is (path, handle): `handle` is `None` on desktop and the browser's handle number
   otherwise, so two files of one name with different handles are two cards.
 - **Recents in the browser** (`recents_web.rs`, `apps/figstudio/js/recents.js`). The JS

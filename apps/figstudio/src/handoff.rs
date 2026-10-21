@@ -1,222 +1,295 @@
 //! One figstudio per person: a launch with files hands them to the figstudio already
 //! running, which opens them in its window, and exits. The Windows jump list starts
-//! figstudio with a file, so its items open in the window the person is using, and only one
-//! process keeps the Recents list. A launch without files starts as before.
+//! figstudio with a file, so its items open in the window the person is using. A launch
+//! without files starts a window as before (two windows then share Recents).
 //!
-//! The running figstudio listens on a local socket of the user's: a named pipe with the
-//! user's name on Windows, a socket file in the user's figstudio config folder elsewhere
-//! (not the shared `/tmp`, where another account could take the name). A launch sends one JSON line, `{"open":[paths]}`, and
-//! waits a moment for `ok`; without one it opens the files itself.
+//! The running figstudio holds a lock on `<config>/figstudio/instance.lock`, taken before
+//! its window opens; the system drops it when the process ends, crash or not. A launch that
+//! finds it held writes its files as a request in `<config>/figstudio/inbox/` and waits a
+//! moment for the running one to take it. Taking is one rename, and a launch that gives up
+//! removes its request: whichever comes first wins, so the files open in one window only.
+//! Both live in the person's own config folder, which other accounts cannot write.
 
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
-use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
-use std::time::Duration;
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
 
-use interprocess::local_socket::{
-    GenericFilePath, GenericNamespaced, ListenerOptions, Name, Stream, prelude::*,
-};
 use serde::{Deserialize, Serialize};
 
-/// How long a launch waits for the running figstudio, and how long that one waits for a
-/// launch's line.
-const WAIT: Duration = Duration::from_secs(2);
-/// The longest line read (a few thousand paths).
-const MAX_LINE: u64 = 1 << 20;
+/// How long a launch waits for the running figstudio to take its files.
+pub(crate) const WAIT: Duration = Duration::from_secs(2);
+/// How often the running figstudio looks in its inbox.
+const LOOK: Duration = Duration::from_millis(150);
+/// How often a launch looks whether its request was taken.
+const CHECK: Duration = Duration::from_millis(20);
+/// The largest request read.
+const MAX_REQUEST: u64 = 1 << 20;
 
 #[derive(Serialize, Deserialize)]
-struct Message {
+struct Request {
     open: Vec<PathBuf>,
 }
 
-/// The socket for this user: a path (with a separator) is a socket file, anything else a
-/// name in the system's namespace (a named pipe on Windows).
-pub(crate) fn name() -> String {
-    #[cfg(unix)]
-    if let Some(dir) = dirs::config_dir() {
-        let dir = dir.join("figstudio");
-        if std::fs::create_dir_all(&dir).is_ok() {
-            return dir.join("instance.sock").to_string_lossy().into_owned();
-        }
-    }
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_default();
-    let user: String = user
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-        .take(32)
-        .collect();
-    format!("figstudio-{user}.sock")
+/// Where this figstudio stands among the others of this person.
+#[derive(Debug)]
+pub(crate) enum Start {
+    /// The first: it keeps the lock and takes files from later launches.
+    First(Instance),
+    /// Another runs; files go to its inbox.
+    Running(PathBuf),
+    /// No lock could be had (no config folder, a file system without locks): on its own.
+    Alone,
 }
 
-/// Hands `files` to the figstudio listening on `name`. True when it took them (this
-/// process is not needed); false when there are none, nothing listens, or it did not answer.
-pub(crate) fn hand_over(name: &str, files: &[PathBuf]) -> bool {
+/// The lock of the running figstudio, and its inbox, before its window is up.
+#[derive(Debug)]
+pub(crate) struct Instance {
+    _lock: File,
+    inbox: PathBuf,
+}
+
+/// The running figstudio's inbox. The window takes the requests (`take`), so a hung window
+/// takes none and a launch opens its own files; a thread only wakes the window.
+#[derive(Debug)]
+pub(crate) struct Inbox {
+    _lock: File,
+    dir: PathBuf,
+    /// The waking thread stops once this is dropped.
+    _alive: Arc<()>,
+}
+
+/// The folder for the lock and the inbox: `<config>/figstudio`.
+pub(crate) fn folder() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("figstudio"))
+}
+
+/// Takes the lock in `dir`, or finds another figstudio holding it.
+pub(crate) fn claim(dir: &Path) -> Start {
+    let inbox = dir.join("inbox");
+    if fs::create_dir_all(&inbox).is_err() {
+        return Start::Alone;
+    }
+    let Ok(lock) = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("instance.lock"))
+    else {
+        return Start::Alone;
+    };
+    match lock.try_lock() {
+        Ok(()) => Start::First(Instance { _lock: lock, inbox }),
+        Err(TryLockError::WouldBlock) => Start::Running(inbox),
+        Err(TryLockError::Error(e)) => {
+            tracing::warn!("single instance: {e}");
+            Start::Alone
+        }
+    }
+}
+
+/// Hands `files` to the figstudio whose inbox is `inbox`. True when it took them within
+/// `wait` (this process is not needed); false when there are none, they cannot be written
+/// down, or it did not take them (they are this process's to open).
+pub(crate) fn hand_over(inbox: &Path, files: &[PathBuf], wait: Duration) -> bool {
     if files.is_empty() {
         return false;
     }
-    // Absolute here: the running figstudio was started somewhere else.
-    let open = files
+    // Absolute here: the running figstudio was started somewhere else. A path that cannot
+    // be made absolute, or written as text, stays with this launch.
+    let Ok(open) = files
         .iter()
-        .map(|f| std::path::absolute(f).unwrap_or_else(|_| f.clone()))
-        .collect();
-    let Ok(mut line) = serde_json::to_string(&Message { open }) else {
+        .map(std::path::absolute)
+        .collect::<std::io::Result<Vec<_>>>()
+    else {
         return false;
     };
-    line.push('\n');
-    let Ok(name) = socket(name) else {
+    let Ok(text) = serde_json::to_string(&Request { open }) else {
         return false;
     };
-    let Ok(stream) = Stream::connect(name) else {
-        return false;
-    };
-    if stream.set_recv_timeout(Some(WAIT)).is_err() || stream.set_send_timeout(Some(WAIT)).is_err()
-    {
+    let id = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    );
+    let partial = inbox.join(format!("{id}.part"));
+    let request = inbox.join(format!("{id}.json"));
+    // Whole or not at all: the running figstudio reads only `.json`.
+    if fs::write(&partial, text).is_err() || fs::rename(&partial, &request).is_err() {
+        let _ = fs::remove_file(&partial);
         return false;
     }
-    let mut stream = BufReader::new(stream);
-    if stream.get_mut().write_all(line.as_bytes()).is_err() {
-        return false;
+    let until = Instant::now() + wait;
+    while Instant::now() < until {
+        if !request.exists() {
+            return true;
+        }
+        std::thread::sleep(CHECK);
     }
-    let mut answer = String::new();
-    (&mut stream).take(16).read_line(&mut answer).is_ok() && answer.trim() == "ok"
+    // Not taken in time: take it back. If that fails because it is gone, it was taken.
+    match fs::remove_file(&request) {
+        Ok(()) => false,
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    }
 }
 
-/// `name` as a socket address (see [`name`]).
-fn socket(name: &str) -> std::io::Result<Name<'_>> {
-    if name.contains(std::path::MAIN_SEPARATOR) {
-        name.to_fs_name::<GenericFilePath>()
-    } else {
-        name.to_ns_name::<GenericNamespaced>()
-    }
-}
-
-/// Listens on `name` for files handed over by later launches; `wake` is called after each
-/// batch arrives. `None` when another figstudio listens already.
-pub(crate) fn listen(
-    name: &str,
-    wake: impl Fn() + Send + 'static,
-) -> Option<Receiver<Vec<PathBuf>>> {
-    let socket = || socket(name);
-    let listener = match ListenerOptions::new().name(socket().ok()?).create_sync() {
-        Ok(listener) => listener,
-        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            // Taken: by a figstudio that answers (it keeps it), or left by one that crashed.
-            if Stream::connect(socket().ok()?).is_ok() {
-                return None;
-            }
-            match ListenerOptions::new()
-                .name(socket().ok()?)
-                .try_overwrite(true)
-                .create_sync()
-            {
-                Ok(listener) => listener,
-                Err(e) => {
-                    tracing::warn!("single instance: {e}");
-                    return None;
+impl Instance {
+    /// From now on, `wake` is called while a later launch's request waits; the window then
+    /// takes it with [`Inbox::take`]. The lock goes with the inbox.
+    pub(crate) fn watch(self, wake: impl Fn() + Send + 'static) -> Inbox {
+        let alive = Arc::new(());
+        let (dir, weak): (PathBuf, Weak<()>) = (self.inbox.clone(), Arc::downgrade(&alive));
+        let look = move || {
+            while weak.upgrade().is_some() {
+                if waiting(&dir) {
+                    wake();
                 }
+                std::thread::sleep(LOOK);
             }
-        }
-        Err(e) => {
+        };
+        if let Err(e) = std::thread::Builder::new()
+            .name("handoff".into())
+            .spawn(look)
+        {
             tracing::warn!("single instance: {e}");
-            return None;
         }
-    };
-    let (tx, rx) = channel();
-    let accept = move || {
-        for conn in listener.incoming().filter_map(Result::ok) {
-            if conn.set_recv_timeout(Some(WAIT)).is_err() {
-                continue;
-            }
-            let mut conn = BufReader::new(conn);
-            let mut line = String::new();
-            if (&mut conn).take(MAX_LINE).read_line(&mut line).is_err() {
-                continue;
-            }
-            // Not a launch's line (one checking that this figstudio answers): nothing to do.
-            let Ok(message) = serde_json::from_str::<Message>(&line) else {
-                continue;
-            };
-            if tx.send(message.open).is_err() {
-                return;
-            }
-            wake();
-            let _ = conn.get_mut().write_all(b"ok\n");
+        Inbox {
+            _lock: self._lock,
+            dir: self.inbox,
+            _alive: alive,
         }
+    }
+}
+
+impl Inbox {
+    /// The files of the requests waiting, taken now (on the window's thread).
+    pub(crate) fn take(&self) -> Vec<PathBuf> {
+        take(&self.dir).into_iter().flatten().collect()
+    }
+}
+
+/// Whether a request waits in `inbox`.
+fn waiting(inbox: &Path) -> bool {
+    fs::read_dir(inbox).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|e| e.path().extension().is_some_and(|x| x == "json"))
+    })
+}
+
+/// The requests in `inbox`, each taken by renaming it first (a launch that gave up has
+/// removed its own, and only one of the two can succeed).
+fn take(inbox: &Path) -> Vec<Vec<PathBuf>> {
+    let Ok(entries) = fs::read_dir(inbox) else {
+        return Vec::new();
     };
-    std::thread::Builder::new()
-        .name("handoff".into())
-        .spawn(accept)
-        .map_err(|e| tracing::warn!("single instance: {e}"))
-        .ok()?;
-    Some(rx)
+    let mut taken = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let mine = path.with_extension("taken");
+        if fs::rename(&path, &mine).is_err() {
+            continue;
+        }
+        let request = File::open(&mine).ok().and_then(|f| {
+            use std::io::Read as _;
+            let mut text = String::new();
+            f.take(MAX_REQUEST).read_to_string(&mut text).ok()?;
+            serde_json::from_str::<Request>(&text).ok()
+        });
+        let _ = fs::remove_file(&mine);
+        if let Some(request) = request {
+            taken.push(request.open);
+        }
+    }
+    taken
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
-    /// A name no other test or figstudio uses.
-    fn unique(tag: &str) -> String {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        format!("figstudio-test-{tag}-{}-{nanos}.sock", std::process::id())
+    fn first(dir: &Path) -> Instance {
+        match claim(dir) {
+            Start::First(instance) => instance,
+            other => panic!("expected the lock, got {other:?}"),
+        }
+    }
+
+    fn inbox_of(dir: &Path) -> PathBuf {
+        match claim(dir) {
+            Start::Running(inbox) => inbox,
+            other => panic!("expected another to hold it, got {other:?}"),
+        }
     }
 
     #[test]
     fn files_handed_to_a_running_figstudio_arrive_there() {
-        let name = unique("arrive");
-        let inbox = listen(&name, || {}).expect("nothing else listens on a fresh name");
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = first(dir.path()).watch(|| {});
+        let to = inbox_of(dir.path());
         let files = [PathBuf::from("a.fig"), PathBuf::from("/b/c d.fig")];
-        assert!(hand_over(&name, &files));
-        let got = inbox
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the files arrive");
+        let launch = std::thread::spawn(move || hand_over(&to, &files, WAIT));
+        // The window takes them.
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut got = Vec::new();
+        while got.is_empty() && Instant::now() < until {
+            got = inbox.take();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(launch.join().unwrap(), "the launch sees them taken");
         // Relative paths are made absolute where the launch was started.
         assert_eq!(got[0], std::path::absolute("a.fig").unwrap());
-        assert_eq!(got[1], PathBuf::from("/b/c d.fig"));
+        assert_eq!(got[1], std::path::absolute("/b/c d.fig").unwrap());
     }
 
     #[test]
-    fn with_none_running_a_launch_opens_its_files_itself() {
-        assert!(!hand_over(&unique("none"), &[PathBuf::from("a.fig")]));
+    fn only_the_first_figstudio_holds_the_lock_until_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance = first(dir.path());
+        inbox_of(dir.path());
+        // Ended (crash or not): the system drops the lock, nothing is left to clear.
+        drop(instance);
+        first(dir.path());
+    }
+
+    #[test]
+    fn files_not_taken_in_time_stay_with_the_launch_and_leave_no_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let _held = first(dir.path());
+        let inbox = inbox_of(dir.path());
+        // Nobody watches the inbox (the running figstudio is hung).
+        assert!(!hand_over(
+            &inbox,
+            &[PathBuf::from("/a.fig")],
+            Duration::from_millis(100)
+        ));
+        assert_eq!(fs::read_dir(&inbox).unwrap().count(), 0);
+        // Taken after the launch gave up: nothing left to take, so it opens once.
+        assert!(take(&inbox).is_empty());
+    }
+
+    #[test]
+    fn files_a_hung_window_does_not_take_stay_with_the_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        // Watched, but the window never takes (it is hung).
+        let _inbox = first(dir.path()).watch(|| {});
+        let inbox = inbox_of(dir.path());
+        assert!(!hand_over(
+            &inbox,
+            &[PathBuf::from("/a.fig")],
+            Duration::from_millis(400)
+        ));
     }
 
     #[test]
     fn a_launch_without_files_starts_its_own_window() {
-        let name = unique("empty");
-        let inbox = listen(&name, || {}).expect("listening");
-        assert!(!hand_over(&name, &[]));
-        assert!(inbox.recv_timeout(Duration::from_millis(200)).is_err());
-    }
-
-    #[test]
-    fn only_the_first_figstudio_listens() {
-        let name = unique("second");
-        let _first = listen(&name, || {}).expect("listening");
-        assert!(
-            listen(&name, || {}).is_none(),
-            "the second leaves it to the first"
-        );
-    }
-
-    /// A socket file left by a figstudio that crashed is taken over.
-    #[cfg(unix)]
-    #[test]
-    fn a_socket_left_by_a_crash_is_taken_over() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("instance.sock");
-        let name = path.to_string_lossy().into_owned();
-        drop(std::os::unix::net::UnixListener::bind(&path).expect("bind"));
-        assert!(path.exists(), "the file stays, as after a crash");
-        let inbox = listen(&name, || {}).expect("the stale name is taken over");
-        assert!(hand_over(&name, &[PathBuf::from("/x.fig")]));
-        assert_eq!(
-            inbox.recv_timeout(Duration::from_secs(5)).unwrap(),
-            [PathBuf::from("/x.fig")]
-        );
+        let _held = first(dir.path());
+        assert!(!hand_over(&inbox_of(dir.path()), &[], WAIT));
     }
 }

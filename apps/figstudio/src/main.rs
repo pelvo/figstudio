@@ -127,10 +127,18 @@ fn app_icon() -> Option<egui::IconData> {
 fn main() -> std::process::ExitCode {
     init_tracing();
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    // A figstudio already running opens them in its window (`handoff.rs`).
-    if handoff::hand_over(&handoff::name(), &files) {
-        return std::process::ExitCode::SUCCESS;
-    }
+    // Before any window: the first figstudio of this person keeps a lock; a later launch
+    // with files hands them to it, which opens them in its window (`handoff.rs`).
+    let instance = match handoff::folder().map_or(handoff::Start::Alone, |d| handoff::claim(&d)) {
+        handoff::Start::First(instance) => Some(instance),
+        handoff::Start::Running(inbox) => {
+            if handoff::hand_over(&inbox, &files, handoff::WAIT) {
+                return std::process::ExitCode::SUCCESS;
+            }
+            None
+        }
+        handoff::Start::Alone => None,
+    };
     let mut options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
@@ -161,6 +169,8 @@ fn main() -> std::process::ExitCode {
         options,
         Box::new(move |cc| {
             let mut app = App::new(cc, files);
+            let ctx = cc.egui_ctx.clone();
+            app.handed_over = instance.map(|i| i.watch(move || ctx.request_repaint()));
             app.attach_menu(cc);
             #[cfg(target_os = "macos")]
             {
@@ -386,7 +396,7 @@ struct App {
     recents_from: Option<u64>,
     /// Files later launches handed to this figstudio (`handoff.rs`).
     #[cfg(not(target_arch = "wasm32"))]
-    handed_over: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
+    handed_over: Option<handoff::Inbox>,
     /// Startup files still arriving from the decode workers.
     restoring: Option<session::Restore>,
     workspace_store: session_store::Store,
@@ -512,12 +522,7 @@ impl App {
             // Tests never read or write the user's list.
             recents_from: None,
             #[cfg(not(target_arch = "wasm32"))]
-            handed_over: if cfg!(test) {
-                None
-            } else {
-                let ctx = cc.egui_ctx.clone();
-                handoff::listen(&handoff::name(), move || ctx.request_repaint())
-            },
+            handed_over: None,
             recents: if cfg!(test) {
                 recents::Recents::memory()
             } else {

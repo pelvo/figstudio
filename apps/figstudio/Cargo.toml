@@ -51,9 +51,6 @@ epaint_default_fonts = "0.36"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing-subscriber.workspace = true
-# Single instance (handoff.rs): a launch with files hands them to the running figstudio
-# over a per-user local socket (a named pipe on Windows, a Unix socket elsewhere).
-interprocess = "2.4"
 # parallel: page recordings replayed per tile (recordings.rs), as in the browser build.
 # gpu: recorded tiles replayed into vello_gpu scenes (gpu_tiles.rs).
 figstudio-render = { workspace = true, features = ["gpu"] }

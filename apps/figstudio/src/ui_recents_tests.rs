@@ -435,17 +435,25 @@ fn files_taken_off_the_jump_list_leave_recents() {
 
 #[test]
 fn files_handed_over_by_a_later_launch_open_in_this_window() {
+    use crate::handoff::{Start, claim, hand_over};
     let mut h = with_recents(&[]);
-    let (send, inbox) = std::sync::mpsc::channel();
-    h.state_mut().handed_over = Some(inbox);
-    send.send(vec![std::path::absolute(fixture(FIXTURE)).unwrap()])
-        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let Start::First(instance) = claim(dir.path()) else {
+        panic!("the lock");
+    };
+    h.state_mut().handed_over = Some(instance.watch(|| {}));
+    let Start::Running(to) = claim(dir.path()) else {
+        panic!("held");
+    };
+    let file = std::path::absolute(fixture(FIXTURE)).unwrap();
+    let launch = std::thread::spawn(move || hand_over(&to, &[file], crate::handoff::WAIT));
     wait(
         &mut h,
         &mut Vec::new(),
         "the handed-over file to open",
         |a| a.tabs.len() == 1,
     );
+    assert!(launch.join().unwrap(), "the launch exits");
 }
 
 #[test]

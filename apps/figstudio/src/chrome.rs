@@ -1227,7 +1227,7 @@ impl App {
         let Some(inbox) = &self.handed_over else {
             return;
         };
-        let files: Vec<std::path::PathBuf> = inbox.try_iter().flatten().collect();
+        let files = inbox.take();
         if files.is_empty() {
             return;
         }
