@@ -211,9 +211,12 @@ pub(crate) fn hand_over(
     while !is_up() && Instant::now() < up {
         std::thread::sleep(CHECK);
     }
-    // Before the window takes the files, while this launch still may give the foreground.
-    let holder = fs::read_to_string(inbox.join(HOLDER)).ok();
-    let_come_forward(holder.as_deref().and_then(holder_pid));
+    // Before the window takes the files, while this launch still may give the foreground:
+    // to the running figstudio only, once it is known to be up.
+    let read = |name| fs::read_to_string(inbox.join(name)).ok();
+    if let Some(pid) = foreground_for(read(READY).as_deref(), read(HOLDER).as_deref()) {
+        let_come_forward(pid);
+    }
     let until = Instant::now() + wait;
     while Instant::now() < until {
         // Only a request known to be gone was taken; one that cannot be looked at is not.
@@ -253,6 +256,17 @@ pub(crate) fn hand_over(
     }
 }
 
+/// The process that may take the foreground from a launch: the running figstudio's, read
+/// from its id only when its `ready` mark is its own (so never one that ended), and never
+/// the value that would let any process take it.
+fn foreground_for(ready: Option<&str>, holder: Option<&str>) -> Option<u32> {
+    let holder = holder?;
+    if ready? != holder {
+        return None;
+    }
+    holder_pid(holder).filter(|&pid| pid != 0 && pid != u32::MAX)
+}
+
 /// The process of a lock holder's id (`unique`), so a launch can let its window come
 /// forward.
 fn holder_pid(id: &str) -> Option<u32> {
@@ -263,22 +277,23 @@ fn holder_pid(id: &str) -> Option<u32> {
 /// the foreground only to the process the person just started, which is this launch, and
 /// this passes it on. Elsewhere the window comes forward by itself.
 #[cfg(windows)]
-fn let_come_forward(holder: Option<u32>) {
-    use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
+fn let_come_forward(pid: u32) {
+    use windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
     #[expect(
         unsafe_code,
         reason = "Windows' foreground permission is a Win32 call (approved by the owner)"
     )]
-    // SAFETY: a plain Win32 call that takes a process id (or `ASFW_ANY`) by value and reads
-    // or writes no memory of this process; any failure is reported as an error.
-    let allowed = unsafe { AllowSetForegroundWindow(holder.unwrap_or(ASFW_ANY)) };
+    // SAFETY: a plain Win32 call that takes a process id by value (never `ASFW_ANY`, see
+    // `foreground_for`) and reads or writes no memory of this process; any failure is
+    // reported as an error.
+    let allowed = unsafe { AllowSetForegroundWindow(pid) };
     if let Err(e) = allowed {
         tracing::warn!("single instance: the window may not come forward: {e}");
     }
 }
 
 #[cfg(not(windows))]
-fn let_come_forward(_holder: Option<u32>) {}
+fn let_come_forward(_pid: u32) {}
 
 /// An id no other request or figstudio has: the process and the time.
 fn unique() -> String {
@@ -674,6 +689,30 @@ mod tests {
         for mark in [READY, HOLDER] {
             assert!(!dir.path().join("inbox").join(mark).exists(), "{mark}");
         }
+    }
+
+    #[test]
+    fn only_the_running_figstudio_may_take_the_foreground() {
+        let id = unique();
+        assert_eq!(
+            foreground_for(Some(&id), Some(&id)),
+            Some(std::process::id())
+        );
+        // Not up, or a mark left by one that ended: no one.
+        assert_eq!(foreground_for(None, Some(&id)), None);
+        assert_eq!(foreground_for(Some("1-1"), Some(&id)), None);
+        assert_eq!(foreground_for(Some(&id), None), None);
+        // The value that would let every process take it (`ASFW_ANY`) is never granted.
+        let any = format!("{}-1", u32::MAX);
+        assert_eq!(foreground_for(Some(&any), Some(&any)), None);
+    }
+
+    #[test]
+    fn the_holders_process_is_read_from_its_id() {
+        assert_eq!(holder_pid(&unique()), Some(std::process::id()));
+        assert_eq!(holder_pid("not an id"), None);
+        assert_eq!(holder_pid("notanid"), None);
+        assert_eq!(holder_pid(""), None);
     }
 
     #[test]

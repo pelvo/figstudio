@@ -13,6 +13,8 @@ mod copy_menu;
 #[cfg(target_os = "macos")]
 mod dock_mac;
 mod find;
+#[cfg(windows)]
+mod foreground_win;
 mod gpu;
 mod gpu_common;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -171,6 +173,10 @@ fn main() -> std::process::ExitCode {
             let mut app = App::new(cc, files);
             let ctx = cc.egui_ctx.clone();
             app.handed_over = instance.map(|i| i.watch(move || ctx.request_repaint()));
+            #[cfg(windows)]
+            {
+                app.window = foreground_win::Window::of(cc);
+            }
             app.attach_menu(cc);
             #[cfg(target_os = "macos")]
             {
@@ -397,6 +403,9 @@ struct App {
     /// Files later launches handed to this figstudio (`handoff.rs`).
     #[cfg(not(target_arch = "wasm32"))]
     handed_over: Option<handoff::Inbox>,
+    /// The window, to bring it forward when files are handed over (`foreground_win.rs`).
+    #[cfg(windows)]
+    window: Option<foreground_win::Window>,
     /// Startup files still arriving from the decode workers.
     restoring: Option<session::Restore>,
     workspace_store: session_store::Store,
@@ -523,6 +532,8 @@ impl App {
             recents_from: None,
             #[cfg(not(target_arch = "wasm32"))]
             handed_over: None,
+            #[cfg(windows)]
+            window: None,
             recents: if cfg!(test) {
                 recents::Recents::memory()
             } else {

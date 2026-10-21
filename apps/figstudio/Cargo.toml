@@ -111,7 +111,7 @@ raw-window-handle = "0.6"
 # The taskbar jump list of recent files (jump_list.rs) and the foreground hand-over of a
 # launch (handoff.rs): the Windows bindings that eframe, muda and rfd already pull in, at
 # the same version.
-windows = { version = "0.62", features = ["Win32_Storage_EnhancedStorage", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_EnhancedStorage", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }
 
 # The blurred window background (vibrancy.rs): AppKit through the objc2 bindings eframe,
 # muda and rfd already use.

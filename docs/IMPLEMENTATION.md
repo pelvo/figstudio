@@ -542,8 +542,11 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   the person's own: on Unix `claim` makes it and the inbox `0700`, the lock `0600`, and
   refuses a folder that is a link. On Windows the launch, which has the foreground
   because the person just started it, passes it to the running figstudio
-  (`AllowSetForegroundWindow` with the pid in its `holder` id; one approved `unsafe`
-  block), so its window can come forward instead of only flashing in the taskbar. A
+  (`AllowSetForegroundWindow` with the pid in its `holder` id, only when `ready` matches it,
+  never `ASFW_ANY`: `foreground_for`), and that window then asks for the foreground itself
+  (`foreground_win.rs`, `SetForegroundWindow` on its HWND) rather than through egui's
+  `Focus`, whose Alt key press can cancel the right. Two approved `unsafe` blocks; not run
+  on Windows. A
   launch without files starts a second window as before; two windows share
   `recents.json` (the last to save wins, `missing` is per window). Tests claim their own
   folders; `App` only watches when `main` hands it the lock.

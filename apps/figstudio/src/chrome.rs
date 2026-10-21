@@ -1235,6 +1235,13 @@ impl App {
             self.open(file);
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        // On Windows the window takes the foreground itself: egui's Focus sends an Alt key
+        // press first, which can cancel the right the launch passed on.
+        #[cfg(windows)]
+        if let Some(window) = &self.window {
+            window.come_forward();
+            return;
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 

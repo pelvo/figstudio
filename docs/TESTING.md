@@ -442,7 +442,9 @@ behind (and cannot be taken late), files a hung window does not take stay with t
 still starting (and does not take a `ready` mark left by one that ended as up), a launch
 opens its files only once its request is withdrawn, and leaves one it cannot withdraw to
 the running figstudio (Unix), a request unreadable for a while is read on a later look
-(Unix), a figstudio that ends takes its marks away, a request too big to read stays with the launch, what a crash left is
+(Unix), a figstudio that ends takes its marks away, only the running figstudio's process may take
+the foreground (never one whose mark is stale, never `ASFW_ANY`), the holder's process is
+read from its id, a request too big to read stays with the launch, what a crash left is
 cleared or opened, and (Unix) a request that cannot be looked at is not counted as taken
 and the folder is `0700` and not a link, and a launch without files hands nothing over; a UI test
 opens what is handed over. In the built app: start
