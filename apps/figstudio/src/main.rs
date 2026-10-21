@@ -731,8 +731,6 @@ impl App {
         if let Some(problem) = self.workspace_store.take_problem() {
             self.toast(ctx, problem, true);
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        self.open_handed_over(ctx);
         loop {
             let msg = match classify(self.workers.load_rx.try_recv()) {
                 Poll::Msg(msg) => msg,
@@ -1123,6 +1121,15 @@ fn shifted_digit(i: &egui::InputState, digit: Key, shifted: Option<Key>) -> bool
 }
 
 impl eframe::App for App {
+    /// Runs before every `ui`, and also when the window is not drawn (minimized: eframe
+    /// skips `ui` then), so files a later launch hands over are taken either way.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.open_handed_over(ctx);
+        #[cfg(target_arch = "wasm32")]
+        let _ = ctx;
+    }
+
     /// Transparent only where the window blurs what is behind it (macOS with the blur
     /// attached); everywhere else an opaque colour under the gradient.
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {

@@ -521,7 +521,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   does not count), then up to 2 s for its
   window to take the request. A thread of the running one looks in the inbox every 150 ms
   and wakes the window; the window itself takes a request (`Inbox::take`, in
-  `App::open_handed_over`) by renaming it (one rename: a launch that gave up has removed
+  `App::open_handed_over`, called from `App::logic`, which eframe runs also when the window
+  is minimized and `ui` is skipped) by renaming it (one rename: a launch that gave up has removed
   its own, so a request is opened by one side only), opens the files through `open` (a
   gone file toasts and is marked missing) and comes forward; the launch exits. A hung
   window takes nothing. The launch counts its files as taken only when its request is

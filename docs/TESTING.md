@@ -455,7 +455,9 @@ single instance with real locks in folders of their own:
 - the folder is `0700` and not a link (Unix);
 - only the running figstudio's process may take the foreground (never one whose mark is
   stale, never `ASFW_ANY`), and the holder's process is read from its id;
-- a launch without files hands nothing over.
+- a launch without files hands nothing over;
+- a window that is not drawn (minimized: only `logic` runs) still takes handed-over files
+  (UI test).
 
 a UI test
 opens what is handed over. In the built app: start

@@ -477,3 +477,36 @@ fn closing_the_file_the_recents_page_came_from_keeps_its_neighbour() {
         "the space beside it, as closing a shown space would pick"
     );
 }
+
+#[test]
+fn a_window_that_is_not_drawn_still_takes_handed_over_files() {
+    use crate::handoff::{Start, claim, hand_over};
+    use eframe::App as _;
+    // Minimized, eframe runs only `logic`, not `ui`: the files must be taken there.
+    let mut h = with_recents(&[]);
+    let dir = tempfile::tempdir().unwrap();
+    let Start::First(instance) = claim(dir.path()) else {
+        panic!("the lock");
+    };
+    h.state_mut().handed_over = Some(instance.watch(|| {}));
+    let Start::Running(to) = claim(dir.path()) else {
+        panic!("held");
+    };
+    let file = std::path::absolute(fixture(FIXTURE)).unwrap();
+    let launch = std::thread::spawn(move || {
+        hand_over(
+            &to,
+            &[file],
+            Duration::from_secs(1),
+            crate::handoff::STARTING,
+        )
+    });
+    let ctx = h.ctx.clone();
+    let mut frame = eframe::Frame::_new_kittest();
+    let until = Instant::now() + Duration::from_secs(3);
+    while !launch.is_finished() && Instant::now() < until {
+        h.state_mut().logic(&ctx, &mut frame);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(launch.join().unwrap(), "taken without a drawn frame");
+}
