@@ -100,6 +100,13 @@ pub enum Pick {
     Remove(PathBuf),
 }
 
+/// The looking thread's two ends: looks asked for (by generation, with the paths) and
+/// its answers (the generation, and the paths not found).
+struct Looker {
+    ask: mpsc::Sender<(u64, Vec<PathBuf>)>,
+    answers: mpsc::Receiver<(u64, HashSet<PathBuf>)>,
+}
+
 /// The list, its pictures and the page's state.
 pub struct Recents {
     /// Newest first.
@@ -125,10 +132,17 @@ pub struct Recents {
     shown: bool,
     /// When the page's last look for moved or deleted files returned (`egui` time).
     checked: f64,
-    /// A look running off the UI thread (a slow disk or network mount holds it up, not the
-    /// window): its answer, once it comes. At most one runs.
-    scan: Option<mpsc::Receiver<HashSet<PathBuf>>>,
-    /// The page appeared since the running look began: look again when it returns.
+    /// The one thread that looks for moved or deleted files (a slow disk or network mount
+    /// holds it up, not the window), spawned with the first look.
+    looker: Option<Looker>,
+    /// The generation of the look the thread is on. No other is asked for until it
+    /// answers, so a `stat` that hangs holds up that one thread and nothing piles up.
+    asked: Option<u64>,
+    /// Goes up whenever the page learns about the disk outside a look (a click, a load, a
+    /// failed open) and when the page appears: an answer asked for under an older one is
+    /// dropped, as it may be from before.
+    generation: u64,
+    /// Look as soon as the thread is free (set with each new generation).
     stale: bool,
     /// Whether a listed file is there: `Path::is_file`, as a click checks (tests put in a
     /// slow one).
@@ -162,7 +176,9 @@ impl Recents {
             missing: HashSet::new(),
             shown: false,
             checked: 0.0,
-            scan: None,
+            looker: None,
+            asked: None,
+            generation: 0,
             stale: false,
             probe: Arc::new(Path::is_file),
             filter: String::new(),
@@ -243,6 +259,7 @@ impl Recents {
             self.forget_thumb(&e.path);
         }
         self.save();
+        self.look_again();
     }
 
     /// Marks `path` as moved or deleted (`true`) or back in place.
@@ -255,12 +272,11 @@ impl Recents {
         self.look_again();
     }
 
-    /// A look begun before the disk was just checked could undo what it found: its answer
-    /// is dropped and a new look starts with the next frame.
+    /// What the page knows changed outside a look: the look running now (begun before it)
+    /// is not believed, and the next one starts once the thread is free.
     fn look_again(&mut self) {
-        if self.scan.take().is_some() {
-            self.stale = true;
-        }
+        self.generation += 1;
+        self.stale = true;
     }
 
     /// Opening `path` failed: a listed file that is not there any more is marked missing.
@@ -416,23 +432,36 @@ impl Recents {
     /// is loaded again.
     fn begin_frame(&mut self, ctx: &egui::Context, time: f64) {
         if !self.shown {
-            self.stale = true;
+            self.look_again();
         }
-        if let Some(scan) = &self.scan {
-            match scan.try_recv() {
-                Ok(missing) => {
-                    self.missing = missing;
-                    self.scan = None;
-                    self.checked = time;
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.scan = None;
-                    self.checked = time;
+        let mut answers = Vec::new();
+        let mut gone = false;
+        if let Some(looker) = &self.looker {
+            loop {
+                match looker.answers.try_recv() {
+                    Ok(answer) => answers.push(answer),
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        gone = true;
+                        break;
+                    }
                 }
             }
         }
-        if self.scan.is_none() && (self.stale || time - self.checked >= RECHECK) {
+        for (generation, missing) in answers {
+            self.asked = None;
+            self.checked = time;
+            if generation == self.generation {
+                self.missing = missing;
+            }
+        }
+        if gone {
+            // The thread panicked: a new one with the next look.
+            self.looker = None;
+            self.asked = None;
+            self.checked = time;
+        }
+        if self.asked.is_none() && (self.stale || time - self.checked >= RECHECK) {
             self.stale = false;
             self.look(ctx, time);
         }
@@ -447,24 +476,42 @@ impl Recents {
         }
     }
 
-    /// Starts a look for moved or deleted files on its own thread.
+    /// Asks the looking thread (spawned the first time) to look for moved or deleted files.
     fn look(&mut self, ctx: &egui::Context, time: f64) {
+        if self.looker.is_none() {
+            let (ask, asks) = mpsc::channel::<(u64, Vec<PathBuf>)>();
+            let (tell, answers) = mpsc::channel();
+            let probe = self.probe.clone();
+            let ctx = ctx.clone();
+            let spawned = std::thread::Builder::new()
+                .name("recents-look".into())
+                .spawn(move || {
+                    for (generation, paths) in asks {
+                        let missing: HashSet<PathBuf> =
+                            paths.into_iter().filter(|p| !probe(p)).collect();
+                        if tell.send((generation, missing)).is_err() {
+                            return;
+                        }
+                        ctx.request_repaint();
+                    }
+                });
+            if spawned.is_err() {
+                // No thread: try again after the usual wait, not every frame.
+                self.checked = time;
+                return;
+            }
+            self.looker = Some(Looker { ask, answers });
+        }
         let paths: Vec<PathBuf> = self.entries.iter().map(|e| e.path.clone()).collect();
-        let probe = self.probe.clone();
-        let (tx, rx) = mpsc::channel();
-        let ctx = ctx.clone();
-        let spawned = std::thread::Builder::new()
-            .name("recents-look".into())
-            .spawn(move || {
-                let missing: HashSet<PathBuf> = paths.into_iter().filter(|p| !probe(p)).collect();
-                if tx.send(missing).is_ok() {
-                    ctx.request_repaint();
-                }
-            });
-        match spawned {
-            Ok(_) => self.scan = Some(rx),
-            // No thread: try again after the usual wait, not every frame.
-            Err(_) => self.checked = time,
+        let sent = self
+            .looker
+            .as_ref()
+            .is_some_and(|l| l.ask.send((self.generation, paths)).is_ok());
+        if sent {
+            self.asked = Some(self.generation);
+        } else {
+            self.looker = None;
+            self.checked = time;
         }
     }
 
@@ -1058,10 +1105,11 @@ mod tests {
         dir
     }
 
-    /// Steps `r`'s page (frame time `time`) until its running look has returned.
+    /// Steps `r`'s page (frame time `time`) until the look it is waiting on has answered.
     fn settle(r: &mut Recents, ctx: &egui::Context, time: f64) {
+        let waiting = r.asked;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while r.scan.is_some() {
+        while waiting.is_some() && r.asked == waiting {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the look never returned"
@@ -1071,41 +1119,103 @@ mod tests {
         }
     }
 
+    /// A probe that waits on `gate` after it looked, counting its calls in `looks`.
+    fn held_probe(
+        looks: &Arc<std::sync::atomic::AtomicUsize>,
+        gate: &Arc<Mutex<()>>,
+    ) -> Arc<dyn Fn(&Path) -> bool + Send + Sync> {
+        let (l, g) = (looks.clone(), gate.clone());
+        Arc::new(move |p: &Path| {
+            let there = p.is_file();
+            l.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            drop(g.lock());
+            there
+        })
+    }
+
     #[test]
     fn a_slow_disk_neither_holds_up_the_page_nor_piles_up_looks() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let ctx = egui::Context::default();
         let mut r = Recents::memory();
-        r.note(Path::new("/slow/a.fig"), None, 1);
+        let slow = Path::new("/slow/a.fig");
+        r.note(slow, None, 1);
         let looks = Arc::new(AtomicUsize::new(0));
         let gate = Arc::new(Mutex::new(()));
         let held = gate.lock().unwrap();
-        let (l, g) = (looks.clone(), gate.clone());
-        r.probe = Arc::new(move |_| {
-            l.fetch_add(1, Ordering::SeqCst);
-            drop(g.lock());
-            false
-        });
+        r.probe = held_probe(&looks, &gate);
         let started = std::time::Instant::now();
         r.begin_frame(&ctx, 0.0);
-        // Frames go on while the disk hangs, long past the wait, without a second look.
+        // Frames go on while the disk hangs, long past the wait, and clicks and loads that
+        // drop the running look ask for no second one while it is stuck.
         for t in [0.5, 2.0, 5.0, 9.0] {
             r.begin_frame(&ctx, t);
+            r.set_missing(slow, true);
+            r.note(Path::new("/slow/b.fig"), None, 2);
         }
         assert!(
             started.elapsed() < std::time::Duration::from_secs(1),
             "the page waited"
         );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            looks.load(Ordering::SeqCst),
+            1,
+            "one look at a time, one thread"
+        );
         drop(held);
         settle(&mut r, &ctx, 9.5);
-        assert_eq!(looks.load(Ordering::SeqCst), 1, "one look at a time");
-        assert!(r.is_missing(Path::new("/slow/a.fig")));
+        // That answer was from before the clicks: dropped, and a new look asked right away.
+        assert!(r.asked.is_some(), "the look after the clicks");
+        settle(&mut r, &ctx, 9.5);
+        assert!(r.is_missing(slow));
         // The wait counts from when the look returned, not when it began.
         r.begin_frame(&ctx, 10.0);
-        assert!(r.scan.is_none(), "no look right after a slow one returned");
+        assert!(r.asked.is_none(), "no look right after one returned");
         r.begin_frame(&ctx, 10.6);
-        assert!(r.scan.is_some(), "the next look, a second later");
+        assert!(r.asked.is_some(), "the next look, a second later");
         settle(&mut r, &ctx, 10.7);
+    }
+
+    #[test]
+    fn a_look_begun_before_a_file_was_opened_does_not_undo_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let ctx = egui::Context::default();
+        let dir = temp_dir("older");
+        let path = dir.join("back.fig");
+        let mut r = Recents::memory();
+        r.note(&path, None, 1);
+        assert!(r.is_missing(&path));
+        let looks = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Mutex::new(()));
+        let held = gate.lock().unwrap();
+        r.probe = held_probe(&looks, &gate);
+        r.begin_frame(&ctx, 0.0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while looks.load(Ordering::SeqCst) == 0 {
+            assert!(std::time::Instant::now() < deadline, "the look never began");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // The look saw it gone; then it is put back and opened from the dialog.
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/structure.fig"
+            ),
+            &path,
+        )
+        .unwrap();
+        r.note(&path, None, 2);
+        assert!(!r.is_missing(&path));
+        drop(held);
+        settle(&mut r, &ctx, 0.1);
+        assert!(
+            !r.is_missing(&path),
+            "the older look's answer is dropped, not stored"
+        );
+        settle(&mut r, &ctx, 0.2);
+        assert!(!r.is_missing(&path), "the new look agrees");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

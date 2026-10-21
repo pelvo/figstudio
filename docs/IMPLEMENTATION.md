@@ -458,10 +458,13 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   later one does). The page reads at most three pictures a frame and
   reloads one when the thread reports it. Files gone when the page appears are marked
   Missing, and looked for again a second after the last look returned while the page is
-  up (with the next frame), so a card's label and menu follow the disk. Looks run on their
-  own thread, one at a time, so a slow disk or network mount never holds up the window;
-  "there" means `is_file`, for a look and for a click alike. A click also looks (and drops
-  a look begun before it), opening a file that is back
+  up (with the next frame), so a card's label and menu follow the disk. One `recents-look`
+  thread does the looking and is asked for the next look only once it answered, so a slow
+  disk or network mount never holds up the window and a hung `stat` holds up one thread;
+  "there" means `is_file`, for a look and for a click alike. Each look carries a
+  generation: a click, a load or a failed open (which check the disk themselves) and the
+  page appearing raise it, and an answer asked for under an older one is dropped. A click
+  also looks, opening a file that is back
   and marking one that went, with a toast. The header keeps to the card: a narrow one drops the filter, then the
   view toggle, then narrows Open. The browser has no paths to open again and keeps the plain empty state. Tests
   use `Recents::memory()` (no file, no pictures).
