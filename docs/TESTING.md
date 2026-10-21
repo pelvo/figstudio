@@ -526,6 +526,12 @@ remove the marker filter (square/mixed-run regression), disable strike-neighbour
 (nearest-strike assertion), or remove image dimension limits (oversized PNG assertion).
 Restore each control before running the gate.
 
+`web/e2e/emoji.spec.mjs` uses `FIGSTUDIO_BASE_URL` and a generated public input in
+`FIGSTUDIO_EMOJI_FIXTURE`. It checks colour on the live canvas and in the actual Recents
+thumbnail PNG persisted in IndexedDB, for CPU and requested-GPU modes. A real OPFS file
+handle makes the synthetic drop eligible for Recents. The PNG assertion cannot pass on
+card gradients or UI overlays. Run the same spec with a matching blank public control;
+the canvas colour assertion must fail at zero. Never use a private input for this test.
 
 `scripts/web-build.sh --serve` serves `web/dist` on http://127.0.0.1:8765 with the headers
 threads need. In a browser: the console shows no errors, `crossOriginIsolated` is true, drop

@@ -446,7 +446,7 @@ pub fn thumb_png(job: &ThumbJob) -> anyhow::Result<Vec<u8>> {
         .min((h - pad * 2.0) / bounds.height().max(1.0))
         .min(2.0);
     let background = figstudio_render::page_background(&job.doc, job.page);
-    let frame = figstudio_render::Renderer::new()
+    let frame = crate::renderer(Default::default())
         .render_fit_complete(&job.doc, job.page, scale, pad, Some(background), |want| {
             job.source.as_ref().and_then(|s| s.read(&want.entry).ok())
         })
