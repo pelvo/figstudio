@@ -237,19 +237,40 @@ fn drop_file(id: u32) {
     FILES.with(|f| f.borrow_mut().1.remove(&id));
 }
 
+/// A file picked or dropped here, with the number its handle is kept under where the
+/// browser gave one (Recents opens it again from that).
+#[derive(Clone)]
+struct Upload {
+    file: web_sys::File,
+    handle: Option<u32>,
+}
+
 thread_local! {
-    /// The `File` behind each open tab, so the MCP bridge can stream it (mcp_upload.rs).
-    static UPLOADS: RefCell<crate::mcp_wire::Uploads<web_sys::File>> =
+    /// The `File` behind each open tab, so the MCP bridge can stream it (mcp_upload.rs) and
+    /// Recents lists it. It follows its own pick, so of two files of one name the tab gets
+    /// the one that loaded.
+    static UPLOADS: RefCell<crate::mcp_wire::Uploads<Upload>> =
         RefCell::new(crate::mcp_wire::Uploads::new());
 }
 
 /// The file behind tab `tab`, if it was opened here.
 pub fn upload_file(tab: u64) -> Option<web_sys::File> {
-    UPLOADS.with(|u| u.borrow().get(tab))
+    UPLOADS.with(|u| u.borrow().get(tab)).map(|u| u.file)
 }
 
-fn pick_upload(file: &web_sys::File) -> u32 {
-    UPLOADS.with(|u| u.borrow_mut().pick(file.clone()))
+/// Whether tab `tab`'s file was picked or dropped here (a link's or an agent's was not),
+/// and its file handle's number.
+pub fn upload_handle(tab: u64) -> Option<Option<u32>> {
+    UPLOADS.with(|u| u.borrow().get(tab)).map(|u| u.handle)
+}
+
+fn pick_upload(file: &web_sys::File, handle: Option<u32>) -> u32 {
+    UPLOADS.with(|u| {
+        u.borrow_mut().pick(Upload {
+            file: file.clone(),
+            handle,
+        })
+    })
 }
 
 /// The load of `name` began with pick `pick`.
@@ -345,7 +366,7 @@ async fn fetch_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Opens a big archive without reading its images.
-async fn open_lazy(file: web_sys::File) -> Picked {
+async fn open_lazy(file: web_sys::File, handle: Option<u32>) -> Picked {
     let name = PathBuf::from(file.name());
     let fail = |e: anyhow::Error| {
         Picked::Failed(format!(
@@ -391,7 +412,7 @@ async fn open_lazy(file: web_sys::File) -> Picked {
     let doc_key = crate::source::doc_key_from_prefix(len, &head);
     Picked::Lazy {
         name,
-        pick: pick_upload(&file),
+        pick: pick_upload(&file, handle),
         file: keep_file(file),
         entries,
         eager,
@@ -399,43 +420,20 @@ async fn open_lazy(file: web_sys::File) -> Picked {
     }
 }
 
-thread_local! {
-    /// Files picked or dropped here, by name, until their tab lists them in Recents: with
-    /// the handle the browser gave, if any. (One load per name runs at a time, as for
-    /// `Uploads`.) A file that came another way (a link, an agent) is not listed.
-    static ORIGINS: RefCell<HashMap<PathBuf, Option<u32>>> = RefCell::new(HashMap::new());
-}
-
-/// Whether the tab of `name` was picked or dropped here, and its file handle's number.
-pub fn take_origin(name: &std::path::Path) -> Option<Option<u32>> {
-    ORIGINS.with(|o| o.borrow_mut().remove(name))
-}
-
 /// Opens a file the user chose (`handle`: the number its handle is kept under, where the
 /// browser gave one): big archives lazily, the rest by reading them.
 async fn open_file(file: web_sys::File, handle: Option<u32>) -> Picked {
-    let name = PathBuf::from(file.name());
-    ORIGINS.with(|o| o.borrow_mut().insert(name.clone(), handle));
-    let picked = read_file(file).await;
-    if matches!(picked, Picked::Failed(_)) {
-        take_origin(&name);
-    }
-    picked
-}
-
-/// Reads a chosen file: big archives lazily, the rest whole.
-async fn read_file(file: web_sys::File) -> Picked {
     let name = PathBuf::from(file.name());
     if file.size() as u64 > LAZY_ABOVE {
         let mut magic = read_range(&file, 0, 2).await.unwrap_or_default();
         magic.truncate(2);
         if magic == b"PK" {
-            return open_lazy(file).await;
+            return open_lazy(file, handle).await;
         }
     }
     // Same limit as `Document::open` on the desktop.
     match read_range_max(&file, 0, file.size() as u64, figstudio_fig::MAX_FILE_BYTES).await {
-        Ok(bytes) => Picked::Bytes(name, bytes, pick_upload(&file)),
+        Ok(bytes) => Picked::Bytes(name, bytes, pick_upload(&file, handle)),
         Err(e) => Picked::Failed(format!(
             "Could not read {}: {}",
             name.display(),

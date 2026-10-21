@@ -153,6 +153,10 @@ pub struct Recents {
     pub filter: String,
     /// The space colour of the card under the pointer: the window takes it (`App::tint_now`).
     pub hover: Option<theme::Colour>,
+    /// The saved list is still being read (the browser): no welcome yet.
+    pub(crate) waiting: bool,
+    /// The moved file the next pick is for (the browser): its card gives way to it.
+    replacing: Option<Id>,
 }
 
 impl std::fmt::Debug for Recents {
@@ -172,7 +176,10 @@ impl Recents {
     /// The list of this device.
     pub fn load() -> Self {
         let (io, entries) = Io::load();
-        Self::with(io, entries)
+        let mut recents = Self::with(io, entries);
+        // The browser's list arrives a few frames later (`take`).
+        recents.waiting = cfg!(target_arch = "wasm32");
+        recents
     }
 
     /// The list saved at `file`, pictures in `thumbs`. A list that cannot be read or does
@@ -197,7 +204,18 @@ impl Recents {
             io,
             filter: String::new(),
             hover: None,
+            waiting: false,
+            replacing: None,
         }
+    }
+
+    /// The next file picked is `id`'s file, found moved: it takes that card's place.
+    #[cfg_attr(
+        not(any(target_arch = "wasm32", test)),
+        expect(dead_code, reason = "the browser picks a moved file again")
+    )]
+    pub fn picking_again(&mut self, id: Id) {
+        self.replacing = Some(id);
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -219,19 +237,18 @@ impl Recents {
     /// `id` was opened at `now` (`there`: it is where it was opened from): it moves to the
     /// front, and the oldest beyond [`MAX_ENTRIES`] go with their pictures.
     pub(crate) fn add(&mut self, id: Id, key: Option<&str>, now: u64, there: bool) {
+        let replacing = self.replacing.take();
         self.entries.retain(|e| e.id() != id);
         if there {
             self.missing.remove(&id);
-            // A moved file picked again in the browser comes with a new handle: its card
-            // marked missing, of the same name, gives way.
-            let missing = &self.missing;
-            let moved: Vec<Entry> = self
-                .entries
-                .extract_if(.., |e| e.path == id.path && missing.contains(&e.id()))
-                .collect();
-            for e in moved {
-                self.missing.remove(&e.id());
-                self.io.forget(&e.id());
+            // A moved file picked again in the browser comes with a new handle: the card it
+            // was picked for gives way (only that one: two files may share a name).
+            if let Some(old) = replacing
+                .filter(|old| old.path == id.path && *old != id && self.missing.contains(old))
+            {
+                self.entries.retain(|e| e.id() != old);
+                self.missing.remove(&old);
+                self.io.forget(&old);
             }
         } else {
             self.missing.insert(id.clone());
@@ -314,6 +331,7 @@ impl Recents {
             self.missing = missing;
         }
         if let Some(saved) = news.entries {
+            self.waiting = false;
             // Files opened before the saved list was read stay in front of it.
             let noted = !self.entries.is_empty();
             for e in saved {
@@ -471,6 +489,10 @@ impl App {
             )
             .selectable(false),
         );
+        // The saved list is not read yet: no welcome that a list would replace.
+        if self.recents.entries().is_empty() && self.recents.waiting {
+            return None;
+        }
         if self.recents.entries().is_empty() {
             title.add(
                 egui::Label::new(
@@ -646,7 +668,7 @@ impl App {
         let Some(tab) = self.tabs.get(i) else {
             return;
         };
-        let Some(handle) = crate::web::take_origin(&tab.path) else {
+        let Some(handle) = crate::web::upload_handle(tab.id) else {
             return;
         };
         let id = Id {
@@ -1038,14 +1060,23 @@ mod tests {
         };
         let mut r = Recents::memory();
         r.add(at(1), None, 10, true);
-        // Another file of the same name, still where it was.
+        // Another file of the same name, moved too.
         r.add(at(2), None, 20, true);
+        r.set_missing(&at(2), true);
+        // A third, opened anew: it takes no card's place.
+        r.add(at(3), None, 25, true);
+        // The first is clicked, found moved, and picked where it is now: a new handle.
         r.set_missing(&at(1), true);
-        // The moved one, picked where it is now: the browser gives a new handle.
-        r.add(at(3), None, 30, true);
+        r.picking_again(at(1));
+        r.add(at(4), None, 30, true);
         let handles: Vec<_> = r.entries().iter().map(|e| e.handle).collect();
-        assert_eq!(handles, [Some(3), Some(2)]);
+        assert_eq!(handles, [Some(4), Some(3), Some(2)]);
         assert!(!r.missing.contains(&at(1)));
+        assert!(r.missing.contains(&at(2)), "the other moved card stays");
+        // Only the next file picked replaces it.
+        r.set_missing(&at(3), true);
+        r.add(at(5), None, 40, true);
+        assert_eq!(r.entries().len(), 4);
     }
 
     #[test]

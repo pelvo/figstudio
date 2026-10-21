@@ -45,6 +45,29 @@ fn with_nothing_opened_before_the_page_welcomes_and_offers_open_file() {
 }
 
 #[test]
+fn the_welcome_waits_for_the_saved_list() {
+    let mut h = with_recents(&[]);
+    // The browser reads its list a few frames after the page first shows.
+    h.state_mut().recents.waiting = true;
+    h.run_steps(2);
+    assert!(has(&h, "Recents"));
+    assert!(!has(&h, "Files you open show up here."));
+    assert!(h.query_by_label_contains("Open file… (").is_none());
+    h.state_mut().recents.take(crate::recents::News::default());
+    h.run_steps(2);
+    assert!(
+        !has(&h, "Files you open show up here."),
+        "a look is not the list"
+    );
+    h.state_mut().recents.take(crate::recents::News {
+        entries: Some(Vec::new()),
+        ..Default::default()
+    });
+    h.run_steps(2);
+    assert!(has(&h, "Files you open show up here."));
+}
+
+#[test]
 fn a_file_opened_once_comes_back_as_a_card_that_opens_it() {
     let mut h = harness();
     let path = std::path::absolute(fixture(FIXTURE)).unwrap();

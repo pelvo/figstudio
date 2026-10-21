@@ -106,3 +106,34 @@ test("without the File System Access API the store says so", async ({ page }) =>
   await page.reload();
   expect(await inPage(page, "return m.keepsHandles();")).toBe(false);
 });
+
+// Drops: the handle is asked for during the event and matched by name, size and date when
+// the app reads the file. Only the files of the latest drop are matched (review of #47).
+const drop = `
+  DataTransferItem.prototype.getAsFileSystemHandle = () =>
+    root.getFileHandle("dropped.fig", { create: true });
+  globalThis.dropFiles = (names) => {
+    const data = new DataTransfer();
+    for (const name of names) data.items.add(new File(["x"], name, { lastModified: 1 }));
+    window.dispatchEvent(new DragEvent("drop", { dataTransfer: data }));
+  };
+  m.watchDrops();
+`;
+
+test("a dropped file's handle is not matched by a later drop", async ({ page }) => {
+  const found = await inPage(page, `${drop}
+    dropFiles(["a.fig"]);
+    dropFiles(["b.fig"]);
+    return { a: await m.droppedHandle("a.fig", 1, 1), b: await m.droppedHandle("b.fig", 1, 1) };
+  `);
+  expect(found.a).toBeNull();
+  expect(found.b).not.toBeNull();
+});
+
+test("every file of one large drop keeps its handle", async ({ page }) => {
+  const first = await inPage(page, `${drop}
+    dropFiles(Array.from({ length: 70 }, (_, i) => "f" + i + ".fig"));
+    return await m.droppedHandle("f0.fig", 1, 1);
+  `);
+  expect(first).not.toBeNull();
+});

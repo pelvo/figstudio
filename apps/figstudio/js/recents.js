@@ -158,14 +158,16 @@ export async function deleteThumb(key) {
 
 // Dropped files: the handle is only reachable during the drop event, so a listener on the
 // window (capture phase, before the app's) asks for each handle then; the app collects it
-// by the file's name, size and date once it reads the `File`.
-const drops = [];
+// by the file's name, size and date once it reads the `File`. Only the latest drop's files
+// are kept, so an older file of the same name, size and date never takes a handle.
+let drops = [];
 
 /** Starts keeping the handles of dropped files (the page's main thread, once). */
 export function watchDrops() {
   if (!keepsHandles() || typeof window === "undefined") return;
   window.addEventListener("drop", (event) => {
     const items = event.dataTransfer ? [...event.dataTransfer.items] : [];
+    drops = [];
     for (const item of items) {
       if (item.kind !== "file" || typeof item.getAsFileSystemHandle !== "function") continue;
       const file = item.getAsFile();
@@ -173,8 +175,6 @@ export function watchDrops() {
       if (!file) continue;
       drops.push({ name: file.name, size: file.size, modified: file.lastModified, handle });
     }
-    // Only the last drop's files are wanted.
-    drops.splice(0, Math.max(0, drops.length - 64));
   }, true);
 }
 

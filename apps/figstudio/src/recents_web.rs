@@ -3,12 +3,12 @@
 //! (Chrome, Edge) its handle's number, so a card opens the file again. Pictures are PNGs
 //! drawn on the thread pool and kept in IndexedDB too. Nothing leaves the browser.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use wasm_bindgen::prelude::*;
 
 use crate::recents::{Entry, Id, MAX_ENTRIES, News, ThumbJob, thumb_png};
+use crate::recents_pictures::{Look, Pictures};
 
 #[wasm_bindgen(module = "/js/recents.js")]
 extern "C" {
@@ -131,16 +131,7 @@ pub(crate) struct Io {
     loaded: bool,
     tx: Sender<Event>,
     rx: Receiver<Event>,
-    /// By picture key; `None` for none.
-    textures: HashMap<String, Option<egui::TextureHandle>>,
-    /// Pictures read or drawn, waiting to become textures.
-    ready: HashMap<String, Vec<u8>>,
-    /// Pictures being read.
-    reading: HashSet<String>,
-    /// Each picture key's newest job: an older job, or one for a file removed since, keeps
-    /// nothing (as on the desktop).
-    wanted: HashMap<String, u64>,
-    next_job: u64,
+    pictures: Pictures,
     /// Pictures being drawn on the pool (it cannot wake the window; `busy`).
     painting: usize,
 }
@@ -171,11 +162,7 @@ impl Io {
             loaded: true,
             tx,
             rx,
-            textures: HashMap::new(),
-            ready: HashMap::new(),
-            reading: HashSet::new(),
-            wanted: HashMap::new(),
-            next_job: 0,
+            pictures: Pictures::default(),
             painting: 0,
         }
     }
@@ -216,9 +203,7 @@ impl Io {
     /// `id` left the list: its picture and handle go too.
     pub fn forget(&mut self, id: &Id) {
         let key = key(id);
-        self.textures.remove(&key);
-        self.ready.remove(&key);
-        self.wanted.remove(&key);
+        self.pictures.forget(&key);
         if !self.keep {
             return;
         }
@@ -234,9 +219,7 @@ impl Io {
     /// Draws the picture of `id` on the thread pool.
     pub fn paint(&mut self, _ctx: &egui::Context, id: &Id, job: ThumbJob) {
         let key = key(id);
-        self.next_job += 1;
-        let number = self.next_job;
-        self.wanted.insert(key.clone(), number);
+        let number = self.pictures.want(&key);
         self.painting += 1;
         let tx = self.tx.clone();
         rayon::spawn(move || {
@@ -258,33 +241,22 @@ impl Io {
         budget: &mut usize,
     ) -> Option<egui::TextureHandle> {
         let key = key(id);
-        if let Some(t) = self.textures.get(&key) {
-            return t.clone();
+        match self.pictures.look(ctx, &key, budget, self.keep) {
+            Look::Texture(t) => return t,
+            Look::Wait => return None,
+            Look::Read => {}
         }
-        if self.ready.contains_key(&key) {
-            if *budget == 0 {
-                ctx.request_repaint();
-                return None;
-            }
-            *budget -= 1;
-            let png = self.ready.remove(&key)?;
-            let texture = crate::recents::png_texture(ctx, &format!("recent-{key}"), &png);
-            self.textures.insert(key, texture.clone());
-            return texture;
-        }
-        if self.keep && self.reading.insert(key.clone()) {
-            let tx = self.tx.clone();
-            let ctx = ctx.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let bytes = get_thumb(&key)
-                    .await
-                    .ok()
-                    .filter(|v| !v.is_null() && !v.is_undefined())
-                    .map(|v| js_sys::Uint8Array::new(&v).to_vec());
-                let _ = tx.send(Event::Thumb(key, bytes));
-                ctx.request_repaint();
-            });
-        }
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let bytes = get_thumb(&key)
+                .await
+                .ok()
+                .filter(|v| !v.is_null() && !v.is_undefined())
+                .map(|v| js_sys::Uint8Array::new(&v).to_vec());
+            let _ = tx.send(Event::Thumb(key, bytes));
+            ctx.request_repaint();
+        });
         None
     }
 
@@ -314,17 +286,7 @@ impl Io {
                     self.loaded = true;
                     news.entries = Some(list.unwrap_or_default());
                 }
-                Event::Thumb(key, bytes) => {
-                    self.reading.remove(&key);
-                    match bytes {
-                        Some(png) => {
-                            self.ready.insert(key, png);
-                        }
-                        None => {
-                            self.textures.insert(key, None);
-                        }
-                    }
-                }
+                Event::Thumb(key, bytes) => self.pictures.read(&key, bytes),
                 Event::Painted(key, number, png) => {
                     self.painting = self.painting.saturating_sub(1);
                     let png = match png {
@@ -334,20 +296,17 @@ impl Io {
                             continue;
                         }
                     };
-                    if self.wanted.get(&key) != Some(&number) {
+                    let Some(png) = self.pictures.drawn(&key, number, png) else {
                         continue;
-                    }
-                    self.wanted.remove(&key);
-                    self.textures.remove(&key);
+                    };
                     if self.keep {
-                        let (key, bytes) = (key.clone(), js_sys::Uint8Array::from(&png[..]));
+                        let bytes = js_sys::Uint8Array::from(png);
                         wasm_bindgen_futures::spawn_local(async move {
                             if let Err(e) = put_thumb(&key, &bytes).await {
                                 tracing::warn!("picture not saved: {}", js_error(e));
                             }
                         });
                     }
-                    self.ready.insert(key, png);
                 }
             }
         }

@@ -123,6 +123,7 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   recents_disk.rs        desktop: where recents are kept (recents.json, thumbs/, the look
                          thread for moved files, Show in Finder)
   recents_web.rs         browser only: the same through js/recents.js (IndexedDB, handles)
+  recents_pictures.rs    browser pictures in memory (read, drawn, ready, shown); native tests
   anim.rs                springs and colour fades in egui memory; Reduce motion
   icons.rs               line icons painted on a 16-unit grid; the icon button
   vibrancy.rs            macOS only: the blur view behind the transparent window
@@ -483,18 +484,25 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   module keeps three IndexedDB stores in `figstudio-recents`: `list` (the same JSON as
   `recents.json`, with `handle`), `handles` (`FileSystemFileHandle`s by number, a picked file
   that `isSameEntry` an old one keeps its number) and `thumbs` (PNG blobs, keyed `h<handle>`
-  or `n:<name>`). Only files picked or dropped are listed: `web::open_file` records each
-  file's origin (`web::take_origin`), which `note_recent` takes; files from links or an
-  agent have none. The saved list arrives a few frames after start, so `Recents::take`
-  keeps files opened before it in front, dedupes, caps at 60 and saves. Where
+  or `n:<name>`). Only files picked or dropped are listed: each pick's `Upload` record (the
+  `File` and its handle number) follows the pick id through `Uploads` to its tab, and
+  `note_recent` asks `web::upload_handle(tab)`; so of two files of one name the card gets
+  the handle of the one that loaded, and files from links or an agent have no record. The
+  saved list arrives a few frames after start, so `Recents::take` keeps files opened before
+  it in front, dedupes, caps at 60 and saves; until then (`Recents::waiting`) the page shows
+  no welcome. Where
   `showOpenFilePicker` exists (Chrome, Edge) Open file… uses it and every file gets a handle;
   a card reads its file through the handle (asking permission again if needed). A file gone
   marks the card missing, toasts, and opens the picker with `startIn` the old handle; a
   refused permission toasts to click again. Picking the moved file gives a new handle; the
-  missing card of the same name gives way to it (`Recents::add`). Without the picker
+  missing card it was picked for (`Recents::picking_again`, only that one: two files may
+  share a name) gives way to it (`Recents::add`). Without the picker
   (Firefox, Safari) Open uses the plain file input, a card opens the picker with a toast
   naming the file, and its row says "Opens the file picker". There is no Show in Finder.
-  Pictures render on the rayon pool (the same 640×400 job as desktop) and are stored as PNG;
+  Pictures render on the rayon pool (the same 640×400 job as desktop) and are stored as PNG.
+  `recents_pictures::Pictures` keeps them in memory: a read of the saved picture carries the
+  job of the picture placed when it began, so a late answer never covers a newer one; Remove
+  drops reads and jobs. Drop handles are matched only against the latest drop's files;
   the pool cannot wake the window (`egui::Context` is not `Send` in wasm), so
   `Recents::sync` repaints every 100 ms while `busy()`. `web::start` registers
   `watchDrops` before eframe's drop listener so a dropped file's handle can be matched.

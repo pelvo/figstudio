@@ -150,3 +150,48 @@ test.describe("with file handles (Chrome, Edge)", () => {
         .toBe("in its folder").then(() => true, () => false));
   });
 });
+
+// Two files of one name: picked together, one load runs and the other is let go. The card
+// must keep the handle of the file that opened (review of #47).
+test("of two picked files with one name, the card keeps the handle of the one that opened", async ({ context, page }) => {
+  await context.addInitScript(() => {
+    window.showOpenFilePicker = async () => {
+      const root = await navigator.storage.getDirectory();
+      const one = await root.getDirectoryHandle("one");
+      const two = await root.getDirectoryHandle("two");
+      return [await one.getFileHandle("structure.fig"), await two.getFileHandle("structure.fig")];
+    };
+  });
+  await start(page);
+  const write = async (dir, file) => {
+    const b64 = (await readFile(fileURLToPath(new URL(`../../tests/fixtures/${file}`, import.meta.url)))).toString("base64");
+    await page.evaluate(async ([dir, b64]) => {
+      const root = await navigator.storage.getDirectory();
+      const d = await root.getDirectoryHandle(dir, { create: true });
+      const out = await (await d.getFileHandle("structure.fig", { create: true })).createWritable();
+      await out.write(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+      await out.close();
+    }, [dir, b64]);
+  };
+  await write("one", "structure.fig");
+  await write("two", "vector.fig");
+  await pressOpen(page, () =>
+    expect.poll(async () => (await stored(page)).list.length, { timeout: 3000 })
+      .toBe(1).then(() => true, () => false));
+  // The tab shows structure.fig (the first), so the card's handle must read that file.
+  const size = (await readFile(fixture)).length;
+  const kept = await page.evaluate(async () => {
+    const db = await new Promise((resolve) => {
+      const req = indexedDB.open("figstudio-recents");
+      req.onsuccess = () => resolve(req.result);
+    });
+    const get = (store, key) => new Promise((resolve) => {
+      const req = db.transaction(store).objectStore(store).get(key);
+      req.onsuccess = () => resolve(req.result);
+    });
+    const list = JSON.parse(await get("list", "entries"));
+    const handle = await get("handles", list[0].handle);
+    return (await handle.getFile()).size;
+  });
+  expect(kept).toBe(size);
+});

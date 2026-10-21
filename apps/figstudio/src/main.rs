@@ -64,6 +64,8 @@ mod pick_cache;
 mod recents;
 #[cfg(not(target_arch = "wasm32"))]
 mod recents_disk;
+#[cfg(any(target_arch = "wasm32", test))]
+mod recents_pictures;
 #[cfg(target_arch = "wasm32")]
 mod recents_web;
 mod recordings;
@@ -757,10 +759,7 @@ impl App {
                 } => {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
-                    {
-                        web::fail_upload(&path);
-                        web::take_origin(&path);
-                    }
+                    web::fail_upload(&path);
                     #[cfg(not(target_arch = "wasm32"))]
                     self.recents.load_failed(&path);
                     self.link_failed(&path, real_path);
@@ -906,6 +905,8 @@ impl App {
                                 handle: Some(handle),
                             };
                             self.recents.set_missing(&id, true);
+                            // The picker opens in its folder next.
+                            self.recents.picking_again(id);
                             format!("{shown} was moved or deleted. Pick it where it is now.")
                         }
                         crate::recents_web::Unavailable::Denied => format!(
