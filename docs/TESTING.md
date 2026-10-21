@@ -348,9 +348,11 @@ public-fixture copies and isolated stores; no user workspace or Recents data is 
 `cargo test --profile fast -p figstudio internal_pages` covers the collapsed internal-page
 section, expanding without navigating, opening an internal page, clearing selection and hover,
 returning to a normal page, collapsing again, keyboard activation and files without internal
-pages. The synthetic two-page document contains no private content. The navigation regression
-failed on the old passive label because the internal page never appeared after clicking it.
-The disclosure uses egui's built-in collapsing header and the existing selectable page rows.
+pages. A layout regression checks the full-width disclosure click target, matching row heights
+and unindented internal-page rows; it failed against the old short header. The synthetic
+two-page document contains no private content. The navigation regression failed on the old
+passive label because the internal page never appeared after clicking it. The disclosure uses
+egui's built-in collapsing header and the existing selectable page rows.
 
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.

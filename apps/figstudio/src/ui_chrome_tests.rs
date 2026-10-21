@@ -2126,6 +2126,19 @@ fn internal_pages_expand_open_and_return_to_a_normal_page() {
 }
 
 #[test]
+fn internal_pages_disclosure_and_rows_share_the_page_list_width() {
+    let (mut h, _) = internal_pages_harness();
+    let normal = h.get_by_label("Page 1").rect();
+    let header = h.get_by_label("Internal pages (1)").rect();
+    assert_eq!(header.x_range(), normal.x_range(), "full-row click target");
+    assert_eq!(header.height(), normal.height(), "consistent row height");
+    h.get_by_label("Internal pages (1)").click();
+    h.run_steps(20);
+    let internal = h.get_by_label("Page 2").rect();
+    assert_eq!(internal.x_range(), normal.x_range(), "no extra indentation");
+}
+
+#[test]
 fn internal_pages_can_be_opened_with_the_keyboard() {
     let (mut h, [_, internal]) = internal_pages_harness();
     h.get_by_label("Internal pages (1)").focus();

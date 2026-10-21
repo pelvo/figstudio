@@ -69,11 +69,31 @@ pub fn pages(ui: &mut Ui, tab: &mut Tab) {
     ui.spacing_mut().item_spacing.y = 1.0;
     page_rows(ui, tab, &doc.pages);
     if !doc.internal_pages.is_empty() {
-        ui.add_space(2.0);
-        egui::CollapsingHeader::new(format!("Internal pages ({})", doc.internal_pages.len()))
+        let p = theme::of(ui);
+        ui.add_space(6.0);
+        ui.scope(|ui| {
+            ui.spacing_mut().indent = 34.0;
+            ui.spacing_mut().interact_size.y = 30.0;
+            ui.visuals_mut().collapsing_header_frame = true;
+            ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+            egui::CollapsingHeader::new(
+                RichText::new(format!("Internal pages ({})", doc.internal_pages.len()))
+                    .font(theme::semibold(11.0))
+                    .color(p.text_dim),
+            )
             .id_salt(("internal-pages", tab.id))
             .default_open(doc.internal_pages.contains(&tab.page))
-            .show(ui, |ui| page_rows(ui, tab, &doc.internal_pages));
+            .icon(move |ui, openness, response| {
+                let color = if response.hovered() || response.has_focus() {
+                    p.text
+                } else {
+                    p.text_dim
+                };
+                let rect = egui::Rect::from_center_size(response.rect.center(), vec2(12.0, 12.0));
+                icons::chevron(ui.painter(), rect, color, openness);
+            })
+            .show_unindented(ui, |ui| page_rows(ui, tab, &doc.internal_pages));
+        });
     }
 }
 
