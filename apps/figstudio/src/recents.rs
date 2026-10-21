@@ -669,6 +669,17 @@ impl App {
             });
         }
 
+        #[cfg(target_arch = "wasm32")]
+        {
+            let labels: Vec<_> = cards
+                .iter()
+                .flat_map(|card| {
+                    std::iter::once(card.name.clone()).chain(list.then(|| place_label(&card.id)))
+                })
+                .collect();
+            self.web.symbols.load_labels_if_needed(&ctx, &labels);
+        }
+
         let body = Rect::from_min_max(header.left_bottom() + vec2(0.0, 22.0), inner.right_bottom());
         let mut body_ui = ui.new_child(UiBuilder::new().max_rect(body));
         if cards.is_empty() {

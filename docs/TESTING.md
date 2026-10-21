@@ -513,8 +513,9 @@ with `scripts/web-build.sh`, serve with `python3 scripts/web-serve.py web/dist 8
 `cd web/e2e && npm install --no-package-lock && npx playwright test symbols.spec.mjs`.
 It uses the public corners fixture with a synthetic filename, checks no startup font
 requests, then the four successful lazy fetches and no app panic, and writes a JPEG for
-visual inspection. Wait for egui's textbox and initial frames before sending Open: the
-HTML loading message clears before the app's handlers are installed.
+visual inspection. It also seeds a symbol-bearing Recents title without opening a
+file and checks that one bundle is fetched. Wait for egui's textbox and initial frames
+before dropping the public input; the HTML loading message clears before handlers exist.
 
 Canvas emoji checks: `cargo test --profile fast -p figstudio-render --features gpu emoji`
 runs synthetic sbix colour/strike/limit tests, empty-database and monochrome fallback,

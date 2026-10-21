@@ -23,6 +23,10 @@ fn missing(ctx: &egui::Context, doc: &figstudio_fig::Document, file_name: &str) 
                     .and_then(figstudio_fig::Val::as_str),
             )
         }));
+    missing_text(ctx, text)
+}
+
+fn missing_text<'a>(ctx: &egui::Context, text: impl Iterator<Item = &'a str>) -> bool {
     ctx.fonts(|fonts| {
         let definitions = fonts.definitions();
         // has_glyph misses egui's bundled emoji; query the actual proportional chain's cmap.
@@ -74,9 +78,15 @@ fn install(ctx: &egui::Context, faces: Faces) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Content {
+    Document(u64),
+    Labels(u64),
+}
+
 #[derive(Debug, Default)]
 struct LoadState {
-    document: Option<u64>,
+    content: Option<Content>,
     pending: bool,
     installed: bool,
     warned: bool,
@@ -84,11 +94,32 @@ struct LoadState {
 }
 
 impl LoadState {
-    fn begin(&mut self, document: u64) -> bool {
-        if self.installed || self.document == Some(document) {
+    fn begin_labels(&mut self, ctx: &egui::Context, labels: &[String]) -> bool {
+        use std::hash::{Hash, Hasher};
+        if self.installed {
             return false;
         }
-        self.document = Some(document);
+        let mut labels: Vec<_> = labels.iter().map(String::as_str).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        labels.hash(&mut hash);
+        let content = Content::Labels(hash.finish());
+        if self.content == Some(content) {
+            return false;
+        }
+        if !missing_text(ctx, labels.into_iter()) {
+            self.content = Some(content);
+            return false;
+        }
+        self.begin(content)
+    }
+
+    fn begin(&mut self, content: Content) -> bool {
+        if self.installed || self.content == Some(content) {
+            return false;
+        }
+        self.content = Some(content);
         if self.pending {
             self.retry_after_pending = true;
             return false;
@@ -138,11 +169,19 @@ impl Loader {
         doc: &figstudio_fig::Document,
         file_name: &str,
     ) {
-        if self.state.installed || !missing(ctx, doc, file_name) || !self.state.begin(doc.instance)
+        if self.state.installed
+            || !missing(ctx, doc, file_name)
+            || !self.state.begin(Content::Document(doc.instance))
         {
             return;
         }
         self.fetch(ctx);
+    }
+
+    pub fn load_labels_if_needed(&mut self, ctx: &egui::Context, labels: &[String]) {
+        if self.state.begin_labels(ctx, labels) {
+            self.fetch(ctx);
+        }
     }
 
     fn fetch(&self, ctx: &egui::Context) {
