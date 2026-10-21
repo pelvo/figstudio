@@ -16,8 +16,8 @@ use crate::{Ctx, geom::GeomPath, paint, text};
 pub(crate) enum Glyph {
     Bitmap {
         image: Arc<Pixmap>,
-        x: i16,
-        y: i16,
+        x: f64,
+        y: f64,
         ppem: u16,
         /// sbix contour origin in em units, y up; zero for CBDT/contourless sbix.
         origin: (f64, f64),
@@ -71,14 +71,32 @@ impl Ctx<'_> {
             let pixels = (size * paint::linear_scale(world))
                 .round()
                 .clamp(1.0, f64::from(u16::MAX)) as u16;
-            let resolved =
-                base.and_then(|ch| self.fonts.as_mut().and_then(|f| f.emoji(ch, pixels)));
+            let shaped = self
+                .emoji_source
+                .source
+                .as_ref()
+                .and_then(|_| {
+                    let points = glyph.get("emojiCodePoints")?.items();
+                    // Bound keys before allocating; never truncate a cluster to fit the cache.
+                    if points.len() > 256 {
+                        return None;
+                    }
+                    points
+                        .iter()
+                        .map(|p| p.as_u32().and_then(char::from_u32))
+                        .collect::<Option<String>>()
+                })
+                .and_then(|cluster| self.emoji_source.raster(&cluster, pixels));
+            let fully_shaped = shaped.is_some();
+            let resolved = shaped.or_else(|| {
+                base.and_then(|ch| self.fonts.as_mut().and_then(|f| f.emoji(ch, pixels)))
+            });
             let Some(resolved) = resolved else {
                 self.stats.emoji_skipped += 1;
                 continue;
             };
             self.stats.emoji_approximated +=
-                usize::from(sequence || matches!(resolved, Glyph::Mono(_)));
+                usize::from((sequence && !fully_shaped) || matches!(resolved, Glyph::Mono(_)));
             let (transform, rect) = match &resolved {
                 Glyph::Bitmap {
                     image,
@@ -88,9 +106,8 @@ impl Ctx<'_> {
                     origin,
                 } => {
                     let scale = size / f64::from(*ppem);
-                    let left = x + origin.0 * size + f64::from(*ox) * scale;
-                    let top =
-                        y - origin.1 * size - (f64::from(*oy) + f64::from(image.height())) * scale;
+                    let left = x + origin.0 * size + *ox * scale;
+                    let top = y - origin.1 * size - (*oy + f64::from(image.height())) * scale;
                     let rect = Rect::new(
                         left,
                         top,

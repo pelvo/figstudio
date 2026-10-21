@@ -44,6 +44,103 @@ fn emoji_document(points: &[i64]) -> Document {
     doc
 }
 
+#[derive(Default)]
+struct Square(std::sync::Mutex<Vec<(String, u16)>>);
+
+impl figstudio_render::EmojiSource for Square {
+    fn raster(&self, cluster: &str, pixels: u16) -> Option<figstudio_render::EmojiRaster> {
+        self.0.lock().unwrap().push((cluster.to_owned(), pixels));
+        let side = pixels / 2;
+        figstudio_render::EmojiRaster::from_rgba(
+            [0, 200, 40, 255].repeat(usize::from(side).pow(2)),
+            side,
+            side,
+            f64::from(pixels) / 10.0 + 0.25,
+            -f64::from(pixels) * 0.75 + 0.5,
+        )
+    }
+}
+
+#[test]
+fn injected_emoji_source_shapes_the_full_cluster_and_places_cached_ink() {
+    let doc = emoji_document(&[0x2764, 0xFE0F, 0x200D, 0x2764]);
+    let source = std::sync::Arc::new(Square::default());
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    renderer.set_emoji_source(Some(source.clone()));
+    let frame = renderer.render(&doc, id(1), &viewport());
+    let at = |x: usize, y: usize| {
+        &frame.pixmap.data_as_u8_slice()[(y * 80 + x) * 4..(y * 80 + x) * 4 + 4]
+    };
+    assert_eq!(at(20, 25), &[0, 200, 40, 255]);
+    assert_eq!(at(10, 25)[3], 0);
+    assert_eq!(at(20, 45)[3], 0);
+    assert!((1..255).contains(&at(14, 21)[3]), "fractional left bearing");
+    assert!(
+        (1..255).contains(&at(20, 20)[3]),
+        "fractional baseline offset"
+    );
+    assert_eq!(at(13, 21)[3], 0);
+    assert_eq!(at(20, 19)[3], 0);
+    assert_eq!(frame.stats.emoji_skipped, 0);
+    assert_eq!(frame.stats.emoji_approximated, 0);
+    let again = renderer.render(&doc, id(1), &viewport());
+    assert_eq!(
+        frame.pixmap.data_as_u8_slice(),
+        again.pixmap.data_as_u8_slice()
+    );
+    assert_eq!(
+        *source.0.lock().unwrap(),
+        vec![("❤\u{fe0f}\u{200d}❤".into(), 40)]
+    );
+    let mut zoomed = viewport();
+    zoomed.transform = Affine::scale(2.0);
+    let zoomed = renderer.render(&doc, id(1), &zoomed);
+    assert_eq!(
+        &zoomed.pixmap.data_as_u8_slice()[(50 * 80 + 40) * 4..][..4],
+        &[0, 200, 40, 255]
+    );
+    assert_eq!(source.0.lock().unwrap().len(), 2);
+    #[cfg(feature = "parallel")]
+    {
+        let (recording, _) = renderer.record(
+            &doc,
+            id(1),
+            Affine::IDENTITY,
+            vello_cpu::kurbo::Rect::new(0.0, 0.0, 80.0, 80.0),
+            1_000_000,
+        );
+        let recording = recording.unwrap();
+        let replay = recording.render(&viewport()).unwrap().0;
+        assert_eq!(
+            frame.pixmap.data_as_u8_slice(),
+            replay.pixmap.data_as_u8_slice()
+        );
+        assert_eq!(frame.stats, replay.stats);
+        #[cfg(feature = "gpu")]
+        assert!(matches!(
+            recording.gpu_scene(&viewport(), 4096),
+            Some(Err(figstudio_render::GpuUnsupported::Image))
+        ));
+    }
+    renderer.set_emoji_source(None);
+    assert_eq!(
+        renderer
+            .render(&doc, id(1), &viewport())
+            .stats
+            .emoji_skipped,
+        1
+    );
+}
+
+#[test]
+fn empty_or_invalid_platform_rasters_are_rejected() {
+    use figstudio_render::EmojiRaster;
+    assert!(EmojiRaster::from_rgba(vec![0; 16], 2, 2, 0.0, -2.0).is_none());
+    assert!(EmojiRaster::from_rgba(vec![255; 16], 2, 2, f64::NAN, -2.0).is_none());
+    assert!(EmojiRaster::from_rgba(vec![255; 15], 2, 2, 0.0, -2.0).is_none());
+}
+
 fn viewport() -> Viewport {
     Viewport {
         width: 80,

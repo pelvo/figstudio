@@ -43,8 +43,8 @@ pub(crate) fn resolve(db: &Database, ch: char, pixels: u16) -> Option<Glyph> {
                     };
                     return Some(Glyph::Bitmap {
                         image,
-                        x: strike.x,
-                        y: strike.y,
+                        x: f64::from(strike.x),
+                        y: f64::from(strike.y),
                         ppem: strike.pixels_per_em,
                         origin: origin.unwrap_or_default(),
                     });

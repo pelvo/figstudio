@@ -939,6 +939,11 @@ and git-ignored). `web/index.html` loads the module, starts the Rayon pool
   the next frame. Failures produce at most one session toast, not a panic. A later
    document needing symbols may retry. If it opens during a pending fetch, a failed
    fetch starts exactly one retry for that document; a second failure cannot loop.
+   Canvas emoji are separate: `main::renderer` installs `emoji_canvas::BrowserEmoji` for
+   the render worker and PNG exports. Each raster call creates worker-local OffscreenCanvas
+   handles, shapes the full stored cluster, and returns bounded owned pixels and measured
+   baseline offsets. `render::EmojiSource` keeps the render crate platform-free; recordings
+   replay those pixels without JS, with the existing counted CPU fallback for GPU image paints.
   `web-symbol-font.py`, invoked by `web-font.sh`, subsets installed Noto Sans Symbols,
   Symbols 2, Math and monochrome Noto Emoji. It instantiates variable defaults, removes
   shaping/hinting, checks exact scalar coverage and rejects bitmap/colour tables.

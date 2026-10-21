@@ -9,6 +9,8 @@ pub use paint_order::children_topmost_first;
 mod connector;
 mod effects;
 mod emoji;
+mod emoji_source;
+pub use emoji_source::{EmojiRaster, EmojiSource};
 #[cfg(feature = "system-fonts")]
 mod emoji_font;
 #[cfg(all(test, feature = "system-fonts"))]
@@ -261,6 +263,7 @@ pub struct Renderer {
     inspection_work: InspectionWork,
     images: Images,
     fonts: text::SystemFonts,
+    emoji_source: emoji_source::Cache,
     /// Lay out text with installed fonts when the file has no stored glyph outlines.
     pub system_fonts: bool,
     /// Property and style indexes of the last document drawn, by [`Document::instance`]:
@@ -292,6 +295,7 @@ impl Default for Renderer {
         Renderer {
             images: Images::default(),
             fonts: text::SystemFonts::default(),
+            emoji_source: emoji_source::Cache::default(),
             system_fonts: true,
             indexes: None,
             inspection_work: InspectionWork::default(),
@@ -306,6 +310,7 @@ struct Ctx<'a> {
     images: &'a Images,
     wanted: Vec<ImageRequest>,
     fonts: Option<&'a mut text::SystemFonts>,
+    emoji_source: &'a mut emoji_source::Cache,
     /// Override scopes of the instances being drawn (the merge shared with `fig::resolve`).
     overrides: Overrides,
     variables: Arc<variables::Variables>,
@@ -335,6 +340,12 @@ impl Renderer {
             images,
             ..Self::default()
         }
+    }
+
+    /// Install a platform emoji source and clear cached rasters. Set before recording;
+    /// callers replacing a source must also discard their existing page recordings.
+    pub fn set_emoji_source(&mut self, source: Option<Arc<dyn EmojiSource>>) {
+        self.emoji_source = emoji_source::Cache::new(source);
     }
 
     /// The image cache (a shared handle).
@@ -619,6 +630,7 @@ impl Renderer {
                 ..Stats::default()
             },
             images: &self.images,
+            emoji_source: &mut self.emoji_source,
             wanted: Vec::new(),
             fonts: if self.system_fonts {
                 Some(&mut self.fonts)
@@ -638,7 +650,8 @@ impl Renderer {
         }
     }
     /// Counts visible stored emoji on every page using the draw walk's overrides, truncation
-    /// and font lookup, without geometry, layout, rasterisation or viewport culling. Counts
+    /// and font lookup, without scene geometry, layout or viewport culling. Platform emoji
+    /// sources may rasterize on cache misses. Counts
     /// are lower bounds when `budget_exhausted` or `depth_skipped` is nonzero. Clipping and
     /// masks do not remove glyphs from this metadata inventory.
     pub fn emoji_counts(&mut self, doc: &Document) -> Stats {

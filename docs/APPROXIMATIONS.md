@@ -105,8 +105,9 @@ Counts are per visible stored emoji glyph, not per text node; not included in th
   text paint, or a multi-code-point sequence drawn using its first base scalar. A glyph with
   both limitations is counted once. COLR palette, clips and compositing are not reproduced.
 - `emoji_skipped`: no usable installed face, invalid marker, unsupported or malformed strike,
-  or a build without `system-fonts`. Skipped glyphs leave no box. Truncated-away markers do
-  not count. Browser canvas remains skipped; the browser's lazy monochrome font is UI-only.
+  or a build without `system-fonts` and without an injected `EmojiSource`. Empty or
+  transparent platform rasters are skipped. Skipped glyphs leave no box; truncated-away
+  markers do not count. The browser's lazy monochrome font is UI-only.
 - Native colour PNG strikes use the existing `ttf-parser` and `image` crates, bounded to
   1024 pixels per side and 8 MiB decoder allocation; encoded strikes are capped at 4 MiB.
   Placement uses strike pixel origin and ppem at the stored font size and baseline. sbix
@@ -115,18 +116,23 @@ Counts are per visible stored emoji glyph, not per text node; not included in th
   counted rectangular ink bound rather than the bitmap's alpha silhouette.
   Recordings replay the same image paint; GPU-unsupported image tiles fall back to CPU and
   increment the existing `gpu_fallback_tiles` counter.
-- The next browser lane injects a platform-free `EmojiSource` from the app. Worker-local
-  OffscreenCanvas draws full stored clusters with the browser's emoji font, using measured
-  baseline ink bounds. Raster images then follow the same recorded paint path; the lazy
-  monochrome UI font remains separate.
+- The browser app injects a platform-free `EmojiSource` (`emoji_source.rs`) through its
+  renderer factory, used by the canvas worker and PNG exports. `emoji_canvas.rs` creates
+  OffscreenCanvas and its 2D context on the calling worker; JS handles never cross threads.
+  It draws full stored clusters (ZWJ/variation selectors included), using measured baseline
+  ink bounds and advance at the requested ppem. Successful full-cluster rasters are drawn,
+  not approximated. Straight-alpha canvas RGBA is premultiplied once. Renderer-local caches
+  bound results to 256 entries and 16 MiB of pixels, including cached misses; keys and raster
+  dimensions are bounded too. Recordings retain owned pixels and need no browser API on replay.
 
 The warning chip, copied-image warning, CLI render/doctor counts, CLI info emoji summary,
 MCP screenshot notes and diff JSON carry these counters. `Stats::max_with` retains them
 across tiles. As with other render counters, work-budget truncation makes totals lower bounds.
 
-**Exact fix:** shape complete emoji sequences and support the native colour-outline formats;
-provide a browser canvas colour font/decoder. UI-only monochrome fallback does not clear
-these canvas counters. Browser UI names now get four lazy monochrome outline subsets,
+**Remaining work:** shape complete sequences natively and support native colour-outline
+formats. Browser shaping and colours depend on the browser's installed emoji fonts;
+unsupported clusters can still produce the platform's fallback glyph. UI-only monochrome
+fallback does not clear canvas counters. Browser UI names now get four lazy monochrome outline subsets,
 validated before installation and kept after CJK fallbacks; their combined size is 1,705,404
 bytes for the checked source fonts. Cross-platform colour faces and real COLR fonts remain
 to be checked.
