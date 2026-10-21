@@ -546,8 +546,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   because the person just started it, passes it to the running figstudio
   (`AllowSetForegroundWindow` with the pid in its `holder` id, only when `ready` matches it,
   never `ASFW_ANY`: `foreground_for`), and that window then asks for the foreground itself
-  (`foreground_win.rs`, `SetForegroundWindow` on its HWND) rather than through egui's
-  `Focus`, whose Alt key press can cancel the right. Two approved `unsafe` blocks; not run
+  (`foreground_win.rs`, `SetForegroundWindow` on its HWND, after `ShowWindow(SW_RESTORE)`
+  when it is minimized) rather than through egui's `Focus`, whose Alt key press can cancel
+  the right. Two approved `unsafe` blocks; not run
   on Windows. A
   launch without files starts a second window as before; two windows share
   `recents.json` (the last to save wins, `missing` is per window). Tests claim their own
