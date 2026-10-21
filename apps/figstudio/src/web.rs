@@ -38,6 +38,9 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
     // After eframe's hook (installed by `new`). eframe stops drawing after any panic, so the
     // page shows the error itself (`figstudioFatal`, polled by index.html).
     crate::worker::install_panic_flag();
+    // Before eframe's own drop listener: a dropped file's handle is only there during the
+    // event (Recents keeps it to open the file again).
+    crate::recents_web::watch_drops();
     CANVAS.with(|c| *c.borrow_mut() = Some((canvas.clone(), 0.0)));
     runner
         .start(
@@ -113,6 +116,12 @@ pub enum Picked {
         doc_key: String,
     },
     Failed(String),
+    /// A Recents card's handle did not give its file (`name` as the card shows it).
+    Unavailable {
+        name: PathBuf,
+        handle: u32,
+        why: crate::recents_web::Unavailable,
+    },
 }
 
 type Exported = (String, anyhow::Result<Vec<u8>>);
@@ -390,8 +399,32 @@ async fn open_lazy(file: web_sys::File) -> Picked {
     }
 }
 
-/// Opens a file the user chose: big archives lazily, the rest by reading them.
-async fn open_file(file: web_sys::File) -> Picked {
+thread_local! {
+    /// Files picked or dropped here, by name, until their tab lists them in Recents: with
+    /// the handle the browser gave, if any. (One load per name runs at a time, as for
+    /// `Uploads`.) A file that came another way (a link, an agent) is not listed.
+    static ORIGINS: RefCell<HashMap<PathBuf, Option<u32>>> = RefCell::new(HashMap::new());
+}
+
+/// Whether the tab of `name` was picked or dropped here, and its file handle's number.
+pub fn take_origin(name: &std::path::Path) -> Option<Option<u32>> {
+    ORIGINS.with(|o| o.borrow_mut().remove(name))
+}
+
+/// Opens a file the user chose (`handle`: the number its handle is kept under, where the
+/// browser gave one): big archives lazily, the rest by reading them.
+async fn open_file(file: web_sys::File, handle: Option<u32>) -> Picked {
+    let name = PathBuf::from(file.name());
+    ORIGINS.with(|o| o.borrow_mut().insert(name.clone(), handle));
+    let picked = read_file(file).await;
+    if matches!(picked, Picked::Failed(_)) {
+        take_origin(&name);
+    }
+    picked
+}
+
+/// Reads a chosen file: big archives lazily, the rest whole.
+async fn read_file(file: web_sys::File) -> Picked {
     let name = PathBuf::from(file.name());
     if file.size() as u64 > LAZY_ABOVE {
         let mut magic = read_range(&file, 0, 2).await.unwrap_or_default();
@@ -408,6 +441,37 @@ async fn open_file(file: web_sys::File) -> Picked {
             name.display(),
             figstudio_fig::one_line(e.as_ref())
         )),
+    }
+}
+
+/// Shows the picker and opens what is chosen. The File System Access picker where the
+/// browser has it (each file with its handle; `start`: a handle whose folder it starts in),
+/// else the plain one (no handles).
+async fn pick(tx: Sender<Picked>, ctx: egui::Context, start: Option<u32>) {
+    if crate::recents_web::keeps_handles() {
+        match crate::recents_web::pick_files(start).await {
+            Ok(Some(files)) => {
+                for (file, handle) in files {
+                    let _ = tx.send(open_file(file, Some(handle)).await);
+                    ctx.request_repaint();
+                }
+                return;
+            }
+            Ok(None) => return,
+            // Refused (no click to go with it, or an embedding page): the plain picker.
+            Err(e) => tracing::warn!("file picker: {e}"),
+        }
+    }
+    let Some(files) = rfd::AsyncFileDialog::new()
+        .add_filter("Figma file", &["fig"])
+        .pick_files()
+        .await
+    else {
+        return;
+    };
+    for f in files {
+        let _ = tx.send(open_file(f.inner().clone(), None).await);
+        ctx.request_repaint();
     }
 }
 
@@ -564,21 +628,31 @@ impl Inbox {
         }
     }
 
-    /// Shows the browser's file picker; chosen files arrive in `files`.
+    /// Shows the browser's file picker; chosen files arrive in `files`. Where the browser
+    /// gives file handles it is the File System Access picker, so Recents can open the files
+    /// again.
     pub fn pick_files(&self, ctx: &egui::Context) {
-        let tx = self.files_tx.clone();
-        let ctx = ctx.clone();
+        let (tx, ctx) = (self.files_tx.clone(), ctx.clone());
+        wasm_bindgen_futures::spawn_local(pick(tx, ctx, None));
+    }
+
+    /// Opens the file behind a Recents card's handle (asking to read it, if needed). When
+    /// it was moved or deleted, the picker starts in its folder.
+    pub fn open_handle(&self, ctx: &egui::Context, handle: u32, name: PathBuf) {
+        let (tx, ctx) = (self.files_tx.clone(), ctx.clone());
         wasm_bindgen_futures::spawn_local(async move {
-            let Some(files) = rfd::AsyncFileDialog::new()
-                .add_filter("Figma file", &["fig"])
-                .pick_files()
-                .await
-            else {
-                return;
-            };
-            for f in files {
-                let _ = tx.send(open_file(f.inner().clone()).await);
-                ctx.request_repaint();
+            match crate::recents_web::open_handle(handle).await {
+                Ok(file) => {
+                    let _ = tx.send(open_file(file, Some(handle)).await);
+                    ctx.request_repaint();
+                }
+                Err(why) => {
+                    let _ = tx.send(Picked::Unavailable { name, handle, why });
+                    ctx.request_repaint();
+                    if why == crate::recents_web::Unavailable::Missing {
+                        pick(tx, ctx, Some(handle)).await;
+                    }
+                }
             }
         });
     }
@@ -592,7 +666,8 @@ impl Inbox {
             return;
         };
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = tx.send(open_file(file).await);
+            let handle = crate::recents_web::dropped_handle(&file).await;
+            let _ = tx.send(open_file(file, handle).await);
             ctx.request_repaint();
         });
     }

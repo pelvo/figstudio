@@ -64,6 +64,8 @@ mod pick_cache;
 mod recents;
 #[cfg(not(target_arch = "wasm32"))]
 mod recents_disk;
+#[cfg(target_arch = "wasm32")]
+mod recents_web;
 mod recordings;
 mod region_copy;
 mod region_png;
@@ -367,7 +369,6 @@ struct App {
     /// The welcome sheet and the one-time tips (`onboarding.rs`).
     onboarding: onboarding::Onboarding,
     /// Files opened before: the Recents page when none is open (`recents.rs`).
-    #[cfg(not(target_arch = "wasm32"))]
     recents: recents::Recents,
     /// Startup files still arriving from the decode workers.
     restoring: Option<session::Restore>,
@@ -492,7 +493,6 @@ impl App {
                 !cfg!(test),
             ),
             // Tests never read or write the user's list.
-            #[cfg(not(target_arch = "wasm32"))]
             recents: if cfg!(test) {
                 recents::Recents::memory()
             } else {
@@ -738,9 +738,14 @@ impl App {
                     self.workspace_finished(&path, previous, None);
                     if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
                         self.link_loaded(ctx, &path, i);
-                        // After the link: the picture is of the page it shows.
+                        // After the link: the picture is of the page it shows. A file the
+                        // workspace reopened by itself is not listed again (the browser lists
+                        // only files picked or dropped there).
                         #[cfg(not(target_arch = "wasm32"))]
-                        if !automatic {
+                        let listed = !automatic;
+                        #[cfg(target_arch = "wasm32")]
+                        let listed = true;
+                        if listed {
                             self.note_recent(ctx, i);
                         }
                     }
@@ -752,7 +757,10 @@ impl App {
                 } => {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
-                    web::fail_upload(&path);
+                    {
+                        web::fail_upload(&path);
+                        web::take_origin(&path);
+                    }
                     #[cfg(not(target_arch = "wasm32"))]
                     self.recents.load_failed(&path);
                     self.link_failed(&path, real_path);
@@ -791,6 +799,7 @@ impl App {
         }
         #[cfg(target_arch = "wasm32")]
         self.poll_web(ctx);
+        self.recents.sync(ctx);
         #[cfg(target_arch = "wasm32")]
         if let Some(n) = web::take_page_request()
             && let Some(tab) = self.tab()
@@ -888,6 +897,23 @@ impl App {
                     }
                 }
                 web::Picked::Failed(e) => self.toast(ctx, e, true),
+                web::Picked::Unavailable { name, handle, why } => {
+                    let shown = name.display().to_string();
+                    let text = match why {
+                        crate::recents_web::Unavailable::Missing => {
+                            let id = recents::Id {
+                                path: name,
+                                handle: Some(handle),
+                            };
+                            self.recents.set_missing(&id, true);
+                            format!("{shown} was moved or deleted. Pick it where it is now.")
+                        }
+                        crate::recents_web::Unavailable::Denied => format!(
+                            "figstudio was not allowed to open {shown}. Click it again to allow it."
+                        ),
+                    };
+                    self.toast(ctx, text, true);
+                }
             }
         }
         while let Ok((name, png)) = self.web.exports.try_recv() {

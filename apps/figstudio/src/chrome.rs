@@ -1329,7 +1329,6 @@ impl App {
         let mut actions = Vec::new();
         let mut cursor = None;
         let mut open_clicked = false;
-        #[cfg(not(target_arch = "wasm32"))]
         let mut recent = None;
         match self.tabs.get_mut(self.active) {
             Some(tab) => self.find.update(tab, &ctx),
@@ -1378,14 +1377,7 @@ impl App {
                 None => {
                     // The next file to open fades in over its own page colour.
                     self.crossfade = Crossfade::default();
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        recent = self.recents_page(ui, card);
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        open_clicked = self.empty_state(ui, card);
-                    }
+                    recent = self.recents_page(ui, card);
                 }
             }
             ui.painter().rect_stroke(
@@ -1413,16 +1405,13 @@ impl App {
         for action in actions {
             self.apply(action, &ctx);
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if !self.tabs.is_empty() {
-                self.recents.hidden();
-            }
-            match recent {
-                Some(crate::recents::Pick::OpenDialog) => open_clicked = true,
-                Some(pick) => self.recent_picked(&ctx, pick),
-                None => {}
-            }
+        if !self.tabs.is_empty() {
+            self.recents.hidden();
+        }
+        match recent {
+            Some(crate::recents::Pick::OpenDialog) => open_clicked = true,
+            Some(pick) => self.recent_picked(&ctx, pick),
+            None => {}
         }
         if open_clicked {
             self.open_dialog(&ctx);

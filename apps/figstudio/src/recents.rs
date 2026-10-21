@@ -8,7 +8,9 @@
 //! device.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use egui::{
@@ -70,7 +72,8 @@ pub struct Id {
 }
 
 impl Id {
-    /// A file known by its path alone (the desktop; a browser without handles).
+    /// A file known by its path alone (the desktop).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn file(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
@@ -122,6 +125,8 @@ pub struct ThumbJob {
 pub enum Pick {
     Open(Id),
     OpenDialog,
+    /// Show in Finder (the desktop; the browser has no folder to show).
+    #[cfg(not(target_arch = "wasm32"))]
     Reveal(Id),
     Remove(Id),
 }
@@ -217,6 +222,17 @@ impl Recents {
         self.entries.retain(|e| e.id() != id);
         if there {
             self.missing.remove(&id);
+            // A moved file picked again in the browser comes with a new handle: its card
+            // marked missing, of the same name, gives way.
+            let missing = &self.missing;
+            let moved: Vec<Entry> = self
+                .entries
+                .extract_if(.., |e| e.path == id.path && missing.contains(&e.id()))
+                .collect();
+            for e in moved {
+                self.missing.remove(&e.id());
+                self.io.forget(&e.id());
+            }
         } else {
             self.missing.insert(id.clone());
         }
@@ -279,11 +295,42 @@ impl Recents {
         let appeared = !self.shown;
         self.shown = true;
         let news = self.io.begin_frame(ctx, time, appeared, &self.entries);
+        self.take(news);
+    }
+
+    /// Takes what the platform learnt while the page is not drawn (every frame). The
+    /// browser's pool cannot wake the window, so it is drawn again shortly while a picture
+    /// is being drawn.
+    pub fn sync(&mut self, ctx: &egui::Context) {
+        let news = self.io.poll();
+        self.take(news);
+        if self.io.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    pub(crate) fn take(&mut self, news: News) {
         if let Some(missing) = news.missing {
             self.missing = missing;
         }
-        if let Some(entries) = news.entries {
-            self.entries = entries;
+        if let Some(saved) = news.entries {
+            // Files opened before the saved list was read stay in front of it.
+            let noted = !self.entries.is_empty();
+            for e in saved {
+                if !self.entries.iter().any(|n| n.id() == e.id()) {
+                    self.entries.push(e);
+                }
+            }
+            let over: Vec<Entry> = self
+                .entries
+                .drain(MAX_ENTRIES.min(self.entries.len())..)
+                .collect();
+            for e in over {
+                self.io.forget(&e.id());
+            }
+            if noted {
+                self.io.save(&self.entries);
+            }
         }
     }
 
@@ -350,6 +397,23 @@ pub fn ago(now: u64, then: u64) -> String {
     };
     let plural = if n == 1 { "" } else { "s" };
     format!("Opened {n} {unit}{plural} ago")
+}
+
+/// The second line of a list row: the file's folder on the desktop.
+#[cfg(not(target_arch = "wasm32"))]
+fn place_label(id: &Id) -> String {
+    folder_label(&id.path)
+}
+
+/// The second line of a list row: in the browser, whether a click opens the file or the
+/// picker (no handle: Firefox, Safari, or a file dropped without one).
+#[cfg(target_arch = "wasm32")]
+fn place_label(id: &Id) -> String {
+    if id.handle.is_some() {
+        String::new()
+    } else {
+        "Opens the file picker".into()
+    }
 }
 
 /// The folder of `path` for showing, with the home folder as `~`.
@@ -575,6 +639,49 @@ impl App {
         self.recents.paint_thumb(ctx, &Id::file(path), job);
     }
 
+    /// Lists tab `i`'s file if it was picked or dropped here (a link or an agent's file is
+    /// not), with its handle where the browser gave one, and queues its picture.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn note_recent(&mut self, ctx: &egui::Context, i: usize) {
+        let Some(tab) = self.tabs.get(i) else {
+            return;
+        };
+        let Some(handle) = crate::web::take_origin(&tab.path) else {
+            return;
+        };
+        let id = Id {
+            path: tab.path.clone(),
+            handle,
+        };
+        let job = ThumbJob {
+            doc: tab.doc.clone(),
+            page: tab.page,
+            source: tab.source.clone(),
+        };
+        self.recents
+            .add(id.clone(), tab.doc_key.as_deref(), now(), true);
+        self.recents.paint_thumb(ctx, &id, job);
+    }
+
+    /// Carries out what was picked on the Recents page. A card with a handle opens its
+    /// file (the browser may ask to allow it); one without (Firefox, Safari) opens the
+    /// picker and says which file to pick.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn recent_picked(&mut self, ctx: &egui::Context, pick: Pick) {
+        match pick {
+            Pick::Open(id) => match id.handle {
+                Some(handle) => self.web.open_handle(ctx, handle, id.path),
+                None => {
+                    let name = id.path.display().to_string();
+                    self.toast(ctx, format!("Pick {name} to open it again."), false);
+                    self.open_dialog(ctx);
+                }
+            },
+            Pick::Remove(id) => self.recents.remove(&id),
+            Pick::OpenDialog => self.open_dialog(ctx),
+        }
+    }
+
     /// Carries out what was picked on the Recents page (Open file… is the caller's).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn recent_picked(&mut self, ctx: &egui::Context, pick: Pick) {
@@ -726,7 +833,7 @@ fn list_rows(ui: &mut Ui, cards: &[Card], hovered: &mut Option<theme::Colour>) -
             .galley(pos2(x, rect.center().y - 17.0), name, p.text);
         let folder = elided(
             ui,
-            &folder_label(&card.id.path),
+            &place_label(&card.id),
             egui::FontId::proportional(12.0),
             p.text_dim,
             name_w,
@@ -872,6 +979,73 @@ mod tests {
                 (PathBuf::from("/a/two.fig"), 20)
             ]
         );
+    }
+
+    fn entry(name: &str, handle: Option<u32>, opened: u64) -> Entry {
+        Entry {
+            path: PathBuf::from(name),
+            handle,
+            opened,
+            key: None,
+        }
+    }
+
+    #[test]
+    fn files_opened_before_the_saved_list_arrives_stay_in_front_of_it() {
+        let mut r = Recents::memory();
+        // Opened while the browser was still reading the list.
+        r.add(
+            Id {
+                path: "b.fig".into(),
+                handle: Some(2),
+            },
+            None,
+            50,
+            true,
+        );
+        let mut saved = vec![
+            entry("a.fig", Some(1), 40),
+            entry("b.fig", Some(2), 30),
+            // Same name, another file (another handle): its own entry.
+            entry("b.fig", Some(3), 20),
+        ];
+        saved.extend((0..MAX_ENTRIES).map(|i| entry(&format!("{i}.fig"), None, 1)));
+        r.take(News {
+            missing: None,
+            entries: Some(saved),
+        });
+        let first: Vec<_> = r.entries()[..4]
+            .iter()
+            .map(|e| (e.path.display().to_string(), e.handle, e.opened))
+            .collect();
+        assert_eq!(
+            first,
+            [
+                ("b.fig".into(), Some(2), 50),
+                ("a.fig".into(), Some(1), 40),
+                ("b.fig".into(), Some(3), 20),
+                ("0.fig".into(), None, 1),
+            ]
+        );
+        assert_eq!(r.entries().len(), MAX_ENTRIES, "capped after the merge");
+    }
+
+    #[test]
+    fn a_moved_file_picked_again_takes_the_place_of_its_missing_card() {
+        let at = |handle| Id {
+            path: "a.fig".into(),
+            handle: Some(handle),
+        };
+        let mut r = Recents::memory();
+        r.add(at(1), None, 10, true);
+        // Another file of the same name, still where it was.
+        r.add(at(2), None, 20, true);
+        r.set_missing(&at(1), true);
+        // The moved one, picked where it is now: the browser gives a new handle.
+        r.add(at(3), None, 30, true);
+        let handles: Vec<_> = r.entries().iter().map(|e| e.handle).collect();
+        assert_eq!(handles, [Some(3), Some(2)]);
+        assert!(!r.missing.contains(&at(1)));
     }
 
     #[test]

@@ -242,6 +242,16 @@ impl Io {
         texture
     }
 
+    /// Nothing arrives in the background but the looks (`begin_frame`).
+    pub fn poll(&mut self) -> News {
+        News::default()
+    }
+
+    /// The threads wake the window themselves.
+    pub fn busy(&self) -> bool {
+        false
+    }
+
     /// What the page knows changed outside a look: the look running now (begun before it)
     /// is not believed, and the next one starts once the thread is free.
     pub fn changed(&mut self) {
