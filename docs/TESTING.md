@@ -450,8 +450,9 @@ single instance with real locks in folders of their own:
   (Unix); what was decided before a crash is not opened again;
 - a request unreadable for a while is read on a later look (Unix); one that is not text
   is kept aside; one too big to read stays with the launch; a request is decided only
-  once it was read; one its launch opened keeps its mark until it is gone; an old mark
-  stays while its request waits;
+  once it was read (one that is not a request is kept aside, one whose read fails goes
+  back undecided and opens on a later look); one its launch opened keeps its mark until it
+  is gone; an old mark stays while its request waits, as `.json` or `.taken`;
 - what a crash left (`.part`, `.taken`) is cleared or opened; a figstudio that ends takes
   its marks away; one that cannot write its id takes no files;
 - the folder is `0700` and not a link (Unix);

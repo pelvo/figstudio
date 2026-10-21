@@ -44,6 +44,8 @@ thread_local! {
     static CANNOT_LOOK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Tests: the window cannot delete a request it took.
     static CANNOT_REMOVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Tests: reading a request the window opened fails (not for want of text).
+    static CANNOT_READ: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Deletes a request the window took.
@@ -466,7 +468,15 @@ fn take(inbox: &Path) -> Vec<Vec<PathBuf>> {
         let mut text = String::new();
         let read = {
             use std::io::Read as _;
-            file.take(MAX_REQUEST).read_to_string(&mut text)
+            #[cfg(test)]
+            let held = CANNOT_READ.with(std::cell::Cell::get);
+            #[cfg(not(test))]
+            let held = false;
+            if held {
+                Err(std::io::Error::other("held"))
+            } else {
+                file.take(MAX_REQUEST).read_to_string(&mut text)
+            }
         };
         let request = match read {
             Ok(_) => serde_json::from_str::<Request>(&text).ok(),
@@ -946,6 +956,24 @@ mod tests {
         fs::write(&request, "not a request").unwrap();
         assert!(inbox.take().is_empty());
         assert!(!request.with_extension("decided").exists());
+        // Not a request: kept aside, not looked at again.
+        assert!(request.with_extension("taken").exists() && !request.exists());
+    }
+
+    /// A read that fails after the open puts the request back undecided; a later look
+    /// opens it.
+    #[test]
+    fn a_request_that_fails_to_read_is_put_back_undecided() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = first(dir.path()).watch(|| {});
+        let request = dir.path().join("inbox").join("9-9.json");
+        fs::write(&request, r#"{"open":["/a.fig"]}"#).unwrap();
+        CANNOT_READ.with(|c| c.set(true));
+        assert!(inbox.take().is_empty());
+        CANNOT_READ.with(|c| c.set(false));
+        assert!(request.exists(), "put back");
+        assert!(!request.with_extension("decided").exists(), "undecided");
+        assert_eq!(inbox.take(), [PathBuf::from("/a.fig")]);
     }
 
     /// A request its launch opened, which the window cannot delete, keeps its mark, so it
@@ -983,7 +1011,11 @@ mod tests {
             .unwrap();
         sweep(&inbox);
         assert!(mark.exists());
-        fs::remove_file(inbox.join("9-9.json")).unwrap();
+        // Taken but not yet gone (its launch opened it, the window could not delete it).
+        fs::rename(inbox.join("9-9.json"), inbox.join("9-9.taken")).unwrap();
+        sweep(&inbox);
+        assert!(mark.exists());
+        fs::remove_file(inbox.join("9-9.taken")).unwrap();
         sweep(&inbox);
         assert!(!mark.exists(), "gone once nothing waits on it");
     }
