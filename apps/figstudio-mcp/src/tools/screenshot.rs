@@ -23,12 +23,14 @@ pub(crate) struct ScreenshotInput {
     /// Pixels per design unit, 0.01 to 4. Without it the scale is 1 and the longest side is
     /// capped at 2048 px; with it, at 4096 px.
     scale: Option<f64>,
+    /// Lossless image format: png (default) or webp.
+    format: Option<super::image_format::ImageFormat>,
 }
 
 #[tool_router(router = screenshot_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Render a node to a PNG image. Pages (canvases) are drawn on the page background colour; every other node on a transparent background. scale defaults to 1 (0.01 to 4) and the longest side is then capped at 2048 px; an explicit scale is capped at 4096 px. The output is cropped to the node's own box (no padding), so shadows and strokes outside it are cut off. The text reply lists what was approximated or not drawn. An instance path (I1:2;3:4) renders that node alone (no siblings, no ancestor clips) as laid out inside its instance. A figstudio region link (figstudio://<fileKey>?page=0-1&rect=x,y,w,h) in nodeId renders that rectangle of the page on the page background, with the same scale and size caps."
+        description = "Render a node to a lossless image (format: png by default, or webp). Pages (canvases) are drawn on the page background colour; every other node on a transparent background. scale defaults to 1 (0.01 to 4) and the longest side is then capped at 2048 px; an explicit scale is capped at 4096 px. The output is cropped to the node's own box (no padding), so shadows and strokes outside it are cut off. The text reply lists what was approximated or not drawn. An instance path (I1:2;3:4) renders that node alone (no siblings, no ancestor clips) as laid out inside its instance. A figstudio region link (figstudio://<fileKey>?page=0-1&rect=x,y,w,h) in nodeId renders that rectangle of the page on the page background, with the same scale and size caps."
     )]
     async fn get_screenshot(
         &self,
@@ -51,7 +53,7 @@ impl FigstudioServer {
                 .files()
                 .rendering(key.as_deref(), &document, !self.no_system_fonts())
             {
-                Ok(rendering) => rendering,
+                Ok(rendering) => rendering.with_format(input.format.unwrap_or_default().into()),
                 Err(error) => return tool_error(error),
             };
         match tokio::task::spawn_blocking(move || {

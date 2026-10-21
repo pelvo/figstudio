@@ -1682,6 +1682,7 @@ dependencies = [
  "image",
  "libc",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "zip",

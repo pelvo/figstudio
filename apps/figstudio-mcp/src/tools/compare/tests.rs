@@ -1,6 +1,6 @@
 use super::*;
 use crate::tools::design::Assets;
-use figstudio_fig::{Node, Obj, Val};
+use figstudio_fig::{Guid, Node, Obj, Val};
 
 pub(super) fn node(id: u32, parent: Option<u32>, kind: &str, name: &str) -> Node {
     let mut data = Val::Obj(Obj::from([

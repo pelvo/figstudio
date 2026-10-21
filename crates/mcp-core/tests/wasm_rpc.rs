@@ -98,10 +98,28 @@ fn tools_dispatch_core_outputs_and_inline_png_assets() {
         assert!(tools.iter().any(|t| t["name"] == name));
         let result = call(&env, name, json!({}));
         assert_eq!(result["isError"], false, "{result}");
-        png(&result);
+        let png = pixels(&result, "image/png", image::ImageFormat::Png);
+        for invalid in ["jpg", "jxl", "", "WEBP"] {
+            if invalid == "jpg" && name == "download_assets" {
+                let jpg = call(&env, name, json!({"format":"jpg"}));
+                assert_eq!(jpg["isError"], false, "{jpg}");
+                pixels(&jpg, "image/jpeg", image::ImageFormat::Jpeg);
+                continue;
+            }
+            let invalid = call(&env, name, json!({"format":invalid}));
+            assert_eq!(invalid["isError"], true, "{name}: {invalid}");
+        }
+        let webp = call(&env, name, json!({"format":"webp"}));
+        assert_eq!(webp["isError"], false, "{webp}");
+        assert_eq!(pixels(&webp, "image/webp", image::ImageFormat::WebP), png);
         if name == "get_design_context" {
             assert!(text(&result).contains("<img"));
         }
+    }
+    // Tools without images ignore `format`, valid or not.
+    for name in ["get_metadata", "get_variable_defs", "get_libraries"] {
+        let result = call(&env, name, json!({"format":"jpg"}));
+        assert_eq!(result["isError"], false, "{name}: {result}");
     }
     for (name, args, marker) in [
         ("get_variable_defs", json!({}), "No resolved tokens"),

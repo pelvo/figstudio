@@ -3,15 +3,49 @@
 //! This compares stored fields only, without resolving instances or rendering.
 
 mod html;
+mod html_changes;
+mod html_component;
+mod html_kind;
+mod html_lines;
+mod html_page;
+mod html_pictures;
+mod html_screen;
+mod html_shared;
+mod html_swatch;
 mod properties;
+mod regions;
 mod render;
+mod render_crops;
+mod render_files;
+pub use render_files::{RenderLinks, file_label, render_report_to_dir, write_render_images};
+mod render_pair;
+mod render_pixels;
+mod render_screens;
 mod report;
+mod screen_bounds;
+mod screen_model;
+mod screen_types;
 pub use html::render_html;
+pub use regions::{MAX_REGIONS, find_regions};
 pub use render::{
-    ImageReader, MAX_RENDER_PAGES, MAX_RENDER_PIXELS, RenderImages, RenderOpts,
-    attach_render_diffs, attach_render_diffs_with_sink, render_page_pair,
-    render_page_pair_with_readers,
+    DEFAULT_IMAGE_CACHE_BYTES, ImageReader, MAX_RENDER_PAGES, MAX_RENDER_PIXELS, RegionImages,
+    RenderImages, RenderOpts, SHARED_IMAGES_ID, ScreenImages, attach_render_diffs,
+    attach_render_diffs_with_sink, render_page_pair, render_page_pair_with_readers,
 };
+mod screen_limits;
+pub use screen_limits::{
+    MAX_DOCUMENT_SCREEN_PIXELS, MAX_PAGE_PICTURE_BYTES, MAX_PAGE_SCREENS, ScreenLimits,
+};
+pub use screen_types::{MatchedBy, ScreenDiff, ScreenStatus};
+mod render_shared;
+#[cfg(test)]
+mod render_tests;
+pub use render_shared::{MAX_COMPONENT_VIEW_PIXELS, MAX_COMPONENT_VIEWS};
+mod screens;
+mod shared;
+mod shared_component;
+mod shared_types;
+pub use shared_types::{SharedChange, SharedComponent, SharedOccurrence, SharedSet, SharedVariant};
 mod structure;
 mod types;
 pub use types::*;
@@ -136,11 +170,15 @@ pub fn diff_documents(old: &Document, new: &Document) -> DiffReport {
         page.moved_out.sort_by_key(|&id| rank(id, &a));
     }
     pages.retain(|p| p.status != PageStatus::Unchanged);
+    for page in &mut pages {
+        screen_model::prepare((old, new), page);
+    }
     DiffReport {
         old: structure::meta(old),
         new: structure::meta(new),
         summary,
         pages,
+        shared_changes: Vec::new(),
         complete: ungrouped == 0,
         truncated: if ungrouped == 0 {
             Vec::new()

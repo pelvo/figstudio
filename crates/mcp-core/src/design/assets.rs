@@ -87,6 +87,12 @@ const ASSET_SCALE: f64 = 2.0;
 /// Renders `target` to the PNG asset `name`; `false` (counted) when it could not be
 /// rendered or stored, or would exceed the asset caps.
 pub(super) fn render(w: &mut Writer<'_>, target: &Target, name: String) -> bool {
+    let format = w.options.rendering.format;
+    let name = if format == figstudio_render::encoding::ImageFormat::Webp {
+        format!("{}.webp", name.trim_end_matches(".png"))
+    } else {
+        name
+    };
     if w.out.assets.len() >= MAX_ASSETS {
         w.out.notes.add("assets not rendered (asset cap)");
         return false;
@@ -100,7 +106,7 @@ pub(super) fn render(w: &mut Writer<'_>, target: &Target, name: String) -> bool 
         return false;
     };
     let approximated = !approximations(&shot.frame.stats).is_empty();
-    let Ok(png) = shot.frame.pixmap.into_png() else {
+    let Ok(png) = figstudio_render::encoding::encode_pixmap(shot.frame.pixmap, format) else {
         w.out.notes.add("assets not rendered (empty or hidden)");
         return false;
     };

@@ -7,6 +7,8 @@ pub fn tool_list() -> Vec<Value> {
     let number = json!({"type":["number","null"]});
     let boolean = json!({"type":["boolean","null"]});
     let strings = json!({"type":["array","null"],"items":{"type":"string"}});
+    let format = json!({"type":["string","null"],"enum":["png","webp",null]});
+    let asset_format = json!({"type":["string","null"],"enum":["png","webp","jpg",null]});
     let node = vec![("nodeId", string.clone()), ("fileKey", string.clone())];
     let mut metadata = node.clone();
     metadata.push(("depth", integer.clone()));
@@ -14,12 +16,14 @@ pub fn tool_list() -> Vec<Value> {
     figjam.extend([
         ("includeImages", boolean.clone()),
         ("imageScale", number.clone()),
+        ("format", format.clone()),
     ]);
     let mut design = node.clone();
     design.extend([
         ("clientFrameworks", string.clone()),
         ("clientLanguages", string.clone()),
         ("maxNodes", integer.clone()),
+        ("format", format.clone()),
     ]);
     vec![
         tool("list_files", "List files open in the browser.", vec![], &[]),
@@ -52,8 +56,12 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "get_screenshot",
-            "Render a node or region to PNG. Defaults to selection; scale 0.01 to 4.",
-            [node.clone(), vec![("scale", number.clone())]].concat(),
+            "Render a node or region, format png (default) or webp. Defaults to selection; scale 0.01 to 4.",
+            [
+                node.clone(),
+                vec![("scale", number.clone()), ("format", format.clone())],
+            ]
+            .concat(),
             &[],
         ),
         tool(
@@ -79,20 +87,17 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "get_design_context",
-            "React + Tailwind reference code with inline PNG assets; defaults to selection.",
+            "React + Tailwind reference code with inline assets, format png (default) or webp; defaults to selection.",
             design,
             &[],
         ),
         tool(
             "download_assets",
-            "Render up to 20 nodes to PNG/JPG, or return original image fills. Defaults to selection.",
+            "Render up to 20 nodes, format png (default), webp or jpg (flattened onto white), or return original image fills. Defaults to selection.",
             vec![
                 ("nodeIds", strings.clone()),
                 ("fileKey", string.clone()),
-                (
-                    "format",
-                    json!({"type":["string","null"],"enum":["png","jpg",null]}),
-                ),
+                ("format", asset_format),
                 ("scale", number),
                 ("original", boolean),
             ],
@@ -100,7 +105,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "get_figjam",
-            "Sparse board XML, optionally with PNG references.",
+            "Sparse board XML, optionally with images, format png (default) or webp.",
             figjam,
             &[],
         ),

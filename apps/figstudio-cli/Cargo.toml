@@ -18,12 +18,13 @@ figstudio-fig = { workspace = true }
 figstudio-render = { workspace = true }
 figstudio-diff = { workspace = true }
 fontdb = { workspace = true }
+image = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
 [dev-dependencies]
-image = { workspace = true }
+tempfile = { workspace = true }
 serde_json = { workspace = true }
 zip = { workspace = true }
 

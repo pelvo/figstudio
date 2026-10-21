@@ -199,8 +199,9 @@ fn modified_pair_reports_counts_pngs_and_no_names() {
         assert_png(png);
     }
     let html = fs::read_to_string(out.join("report.html")).unwrap();
-    assert!(html.contains("cli-compare-renamed-rect"), "{html}");
-    assert!(html.contains("./render/"), "{html}");
+    // A rename is not a design change: the page is folded, and its pictures stay on disk.
+    assert!(!html.contains("<section"), "{html}");
+    assert!(html.contains("1 pages with no visible change"), "{html}");
 }
 
 #[test]

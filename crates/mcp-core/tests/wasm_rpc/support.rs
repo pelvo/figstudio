@@ -72,15 +72,17 @@ pub fn text(value: &Value) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-pub fn png(value: &Value) {
+pub fn pixels(value: &Value, mime: &str, format: image::ImageFormat) -> image::RgbaImage {
     let image = value["content"]
         .as_array()
         .unwrap()
         .iter()
         .find(|b| b["type"] == "image")
         .unwrap();
-    assert_eq!(image["mimeType"], "image/png");
+    assert_eq!(image["mimeType"], mime);
     let bytes = STANDARD.decode(image["data"].as_str().unwrap()).unwrap();
-    let decoded = image::load_from_memory(&bytes).unwrap();
+    assert_eq!(image::guess_format(&bytes).unwrap(), format);
+    let decoded = image::load_from_memory(&bytes).unwrap().to_rgba8();
     assert!(decoded.width() > 0 && decoded.height() > 0);
+    decoded
 }

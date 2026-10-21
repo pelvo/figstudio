@@ -26,12 +26,14 @@ pub(crate) struct FigjamInput {
     include_images: Option<bool>,
     /// Pixels per design unit for those images, 0.01 to 0.5 (default 0.25).
     image_scale: Option<f64>,
+    /// Lossless image format: png (default) or webp.
+    format: Option<super::image_format::ImageFormat>,
 }
 
 #[tool_router(router = figjam_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Get a FigJam board as sparse XML (same shape as get_metadata) with FigJam details: sticky text and colour, shape-with-text shape and text, connector start/end node ids and magnets, section status, table cell and code block text, widget and stamp names. Text caps at 200 characters. includeImages=true adds a small PNG per sticky/shape/section/table/code block/widget/stamp (max 20, imageScale up to 0.5). FigJam kinds are not drawn by the renderer yet: images show them as plain boxes, and an XML comment counts those kinds."
+        description = "Choose lossless image format png (default) or webp. Get a FigJam board as sparse XML (same shape as get_metadata) with FigJam details: sticky text and colour, shape-with-text shape and text, connector start/end node ids and magnets, section status, table cell and code block text, widget and stamp names. Text caps at 200 characters. includeImages=true adds a small image per sticky/shape/section/table/code block/widget/stamp (max 20, imageScale up to 0.5). FigJam kinds are not drawn by the renderer yet: images show them as plain boxes, and an XML comment counts those kinds."
     )]
     async fn get_figjam(&self, Parameters(input): Parameters<FigjamInput>) -> CallToolResult {
         let key = match self.file_for(input.file_key.as_deref(), input.node_id.as_deref()) {
@@ -47,7 +49,7 @@ impl FigstudioServer {
                 .files()
                 .rendering(key.as_deref(), &document, !self.no_system_fonts())
             {
-                Ok(rendering) => rendering,
+                Ok(rendering) => rendering.with_format(input.format.unwrap_or_default().into()),
                 Err(error) => return tool_error(error),
             };
         let max_bytes = self.max_output_bytes();

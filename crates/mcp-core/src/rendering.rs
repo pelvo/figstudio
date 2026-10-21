@@ -17,6 +17,8 @@ pub struct Rendering {
     pub system_fonts: bool,
     /// Browser-supplied faces, shared with the canvas font snapshot.
     pub fonts: Vec<(Arc<Vec<u8>>, u32)>,
+    /// Lossless encoding for images returned by this call; defaults to PNG.
+    pub format: figstudio_render::encoding::ImageFormat,
     /// The registered file, read for the images a lazily opened document did not load.
     /// `None`: those images count as missing.
     pub path: Option<PathBuf>,
@@ -41,6 +43,12 @@ impl std::fmt::Debug for Rendering {
 }
 
 impl Rendering {
+    /// Selects output encoding without changing the shared document image cache.
+    pub fn with_format(mut self, format: figstudio_render::encoding::ImageFormat) -> Self {
+        self.format = format;
+        self
+    }
+
     /// Settings that read lazy images from `path` and decode them into `images`.
     pub fn new(path: PathBuf, images: Images) -> Self {
         Self {
