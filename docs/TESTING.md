@@ -330,6 +330,12 @@ The alias test includes selecting a third tab after either a manual or automatic
 completes while the saved target is still loading, and checks early-save focus and focus
 after that target finishes.
 
+`workspace_restore_recents_record_loaded_tab_after_saved_focus_and_sort` delivers real worker
+results in both completion orders. It checks saved tab order and focus, and that each loaded
+file enters Recents. Replacing `note_recent(ctx, i)` with `note_recent(ctx, self.active)` must
+fail its entry-list assertion. Restore the mutation before other tests or commits. The test
+uses in-memory stores and temporary copies of a public fixture.
+
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
 

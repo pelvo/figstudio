@@ -510,6 +510,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   skipped entries. Startup decodes at most four files concurrently; queued files survive an
   early save/quit. Worker-resolved canonical paths deduplicate aliases without lexically
   rewriting a symlink's `..`; completion order does not change the saved space order.
+  After sorting, polling finds the loaded tab by id for links and Recents, independently of
+  the saved or manually chosen active space.
   A successful alias retains its original automatic/manual classification and uses the kept
   tab's path for focus. Explicit startup files merge and take focus. Switching spaces while
   loading keeps that focus; closing an automatically selected interim tab does not cancel the

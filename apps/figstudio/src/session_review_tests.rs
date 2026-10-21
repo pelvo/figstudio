@@ -127,3 +127,60 @@ fn workspace_standard_path_comparison_already_ignores_trailing_separators() {
     let trailing = PathBuf::from("example.fig/");
     assert_eq!(path, trailing);
 }
+
+#[test]
+fn workspace_restore_recents_record_loaded_tab_after_saved_focus_and_sort() {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/structure.fig");
+    let bytes = std::fs::read(fixture).unwrap();
+    for order in [[0, 1], [1, 0]] {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ["saved.fig", "later.fig"].map(|name| dir.path().join(name));
+        for path in &paths {
+            std::fs::write(path, &bytes).unwrap();
+        }
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 700.0))
+            .build_eframe(|cc| App::new(cc, Vec::new()));
+        let mut restoring = Restore::new(Session {
+            files: paths.to_vec(),
+            active: Some(paths[0].clone()),
+        });
+        // Deliver one real worker result at a time, in either completion order.
+        restoring.waiting.clear();
+        for path in &paths {
+            h.state_mut().loading.begin(path);
+        }
+        h.state_mut().restoring = Some(restoring);
+        for (loaded, &index) in order.iter().enumerate() {
+            h.state()
+                .workers
+                .load_bytes(paths[index].clone(), bytes.clone());
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while h.state().tabs.len() != loaded + 1 {
+                assert!(std::time::Instant::now() < deadline, "restored file loads");
+                h.step();
+                std::thread::yield_now();
+            }
+        }
+        let app = h.state();
+        assert!(app.restoring.is_none());
+        assert_eq!(Session::capture(app).files, paths);
+        assert_eq!(app.tabs[app.active].path, paths[0]);
+        let recent: Vec<_> = app
+            .recents
+            .entries()
+            .iter()
+            .map(|entry| entry.path.file_name().unwrap().to_owned())
+            .collect();
+        let expected: Vec<_> = order
+            .iter()
+            .rev()
+            .map(|&index| paths[index].file_name().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            recent, expected,
+            "record the loaded tab even when a different saved tab stays active"
+        );
+    }
+}
