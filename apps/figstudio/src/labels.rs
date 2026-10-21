@@ -8,6 +8,8 @@ use figstudio_render::kurbo::Point;
 
 #[path = "labels_named.rs"]
 mod candidates;
+#[path = "labels_quad.rs"]
+mod quad;
 #[path = "labels_spatial.rs"]
 mod spatial;
 
@@ -129,7 +131,9 @@ pub fn labels(
             let r = shaped.1;
             label.layout = Some(shaped);
             let blocked = placed.any(r, |_: &()| true)
-                || frames.any(r, |&(start, end)| !(start <= index && index < end));
+                || frames.any(r, |&(start, end, points)| {
+                    !(start <= index && index < end) && quad::overlaps(r, &points)
+                });
             if !blocked {
                 placed.insert(r, ());
                 out.push(label);
@@ -145,7 +149,7 @@ fn blockers(
     view: View,
     origin: Pos2,
     screen: Rect,
-) -> spatial::Grid<(usize, usize)> {
+) -> spatial::Grid<(usize, usize, [Pos2; 4])> {
     let mut frames = spatial::Grid::default();
     for (index, candidate) in named.iter().enumerate() {
         let Some(node) = doc.node(candidate.id) else {
@@ -160,7 +164,11 @@ fn blockers(
         let max = view.to_screen(origin, Pos2::new(b.x1 as f32, b.y1 as f32));
         let r = Rect::from_min_max(min, max);
         if r.intersects(screen.expand(64.0)) {
-            frames.insert(r, (index, candidate.end));
+            let points = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].map(|(x, y)| {
+                let p = candidate.world * Point::new(x, y);
+                view.to_screen(origin, Pos2::new(p.x as f32, p.y as f32))
+            });
+            frames.insert(r, (index, candidate.end, points));
         }
     }
     frames
@@ -230,7 +238,7 @@ pub fn paint(painter: &egui::Painter, labels: &[Label]) {
 
 #[cfg(test)]
 #[path = "labels_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "labels_bench.rs"]
@@ -239,3 +247,7 @@ mod bench;
 #[cfg(test)]
 #[path = "labels_work_tests.rs"]
 mod work_tests;
+
+#[cfg(test)]
+#[path = "labels_rotation_tests.rs"]
+mod rotation_tests;

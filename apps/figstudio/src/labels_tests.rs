@@ -2,7 +2,7 @@ use super::*;
 use crate::{icons::Icon, theme};
 use figstudio_fig::{Node, Obj, Val};
 
-pub(super) fn node(n: u32, parent: u32, kind: &str, name: &str, x: f64, w: f64) -> Node {
+pub(crate) fn node(n: u32, parent: u32, kind: &str, name: &str, x: f64, w: f64) -> Node {
     let mut o = Obj::new();
     let guid = |n: u32| Guid(9, n).to_val();
     let mut pi = Obj::new();
@@ -24,7 +24,7 @@ pub(super) fn node(n: u32, parent: u32, kind: &str, name: &str, x: f64, w: f64) 
     Node::from_data(Val::Obj(o)).unwrap()
 }
 
-pub(super) fn document(nodes: Vec<Node>) -> Document {
+pub(crate) fn document(nodes: Vec<Node>) -> Document {
     let mut doc =
         Document::from_bytes(include_bytes!("../../../tests/fixtures/structure.fig")).unwrap();
     doc.set_nodes(nodes).unwrap();
@@ -51,7 +51,7 @@ fn visible_labels(doc: &Document) -> Vec<Label> {
     out
 }
 
-pub(super) fn at_y(mut n: Node, y: f64) -> Node {
+pub(crate) fn at_y(mut n: Node, y: f64) -> Node {
     let mut tf = n.data.get("transform").cloned().unwrap();
     if let Val::Obj(o) = &mut tf {
         o.insert("m12", Val::Float(y));

@@ -502,6 +502,10 @@ pub fn to_color32(c: AlphaColor<figstudio_render::color::Srgb>) -> Color32 {
 }
 
 #[cfg(test)]
+#[path = "canvas_find_tests.rs"]
+mod find_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
