@@ -10,10 +10,20 @@ struct Source {
 
 impl EmojiSource for Source {
     fn raster(&self, _: &str, _: u16) -> Option<EmojiRaster> {
-        self.calls.fetch_add(1, Ordering::Relaxed);
+        let call = self.calls.fetch_add(1, Ordering::Relaxed);
         let side = self.side.max(1);
         EmojiRaster::from_rgba(
-            [100, 200, 40, if self.transparent { 0 } else { 128 }].repeat(usize::from(side).pow(2)),
+            [
+                100,
+                200,
+                40,
+                if self.transparent && call == 0 {
+                    0
+                } else {
+                    128
+                },
+            ]
+            .repeat(usize::from(side).pow(2)),
             side,
             side,
             0.0,
@@ -23,15 +33,35 @@ impl EmojiSource for Source {
 }
 
 #[test]
-fn transparent_sources_stay_skipped_and_misses_are_cached() {
+fn transparent_first_raster_does_not_permanently_hide_the_cluster() {
     let source = Arc::new(Source {
         transparent: true,
         ..Source::default()
     });
     let mut cache = Cache::new(Some(source.clone()));
     assert!(cache.raster("❤", 40).is_none());
-    assert!(cache.raster("❤", 40).is_none());
-    assert_eq!(source.calls.load(Ordering::Relaxed), 1);
+    assert!(cache.raster("❤", 40).is_some());
+    assert!(cache.raster("❤", 40).is_some());
+    assert_eq!(source.calls.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn reduced_platform_ppem_is_preserved_for_draw_scaling() {
+    struct Reduced;
+    impl EmojiSource for Reduced {
+        fn raster(&self, _: &str, _: u16) -> Option<EmojiRaster> {
+            EmojiRaster::from_rgba(vec![255; 16], 2, 2, -1.0, -3.0)?.with_ppem(16)
+        }
+    }
+    let mut cache = Cache::new(Some(Arc::new(Reduced)));
+    for requested in [40, 4096, u16::MAX] {
+        let Some(crate::emoji::Glyph::Bitmap { ppem, x, y, .. }) = cache.raster("❤", requested)
+        else {
+            panic!("must rasterize")
+        };
+        assert_eq!(ppem, 16);
+        assert_eq!((x, y), (-1.0, 1.0));
+    }
 }
 
 #[test]

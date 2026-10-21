@@ -19,9 +19,19 @@ pub struct EmojiRaster {
     pub(crate) image: Arc<Pixmap>,
     pub(crate) left: f64,
     pub(crate) top: f64,
+    ppem: Option<u16>,
 }
 
 impl EmojiRaster {
+    /// Override the requested size when the adapter rasterized at a smaller ppem.
+    pub fn with_ppem(mut self, ppem: u16) -> Option<Self> {
+        if ppem == 0 {
+            return None;
+        }
+        self.ppem = Some(ppem);
+        Some(self)
+    }
+
     /// Validate bounded straight-alpha RGBA, premultiply it, and reject empty ink.
     pub fn from_rgba(
         mut rgba: Vec<u8>,
@@ -58,6 +68,7 @@ impl EmojiRaster {
             )),
             left,
             top,
+            ppem: None,
         })
     }
 }
@@ -66,7 +77,7 @@ impl EmojiRaster {
 #[derive(Default)]
 pub(crate) struct Cache {
     pub(crate) source: Option<Arc<dyn EmojiSource>>,
-    entries: HashMap<(String, u16), (Option<EmojiRaster>, u64)>,
+    entries: HashMap<(String, u16), (EmojiRaster, u64)>,
     bytes: usize,
     clock: u64,
 }
@@ -90,29 +101,28 @@ impl Cache {
             *last_used = self.clock;
             cached.clone()
         } else {
-            let raster = source.raster(cluster, pixels);
-            let bytes = raster
-                .as_ref()
-                .map_or(0, |r| r.image.data_as_u8_slice().len());
+            // Empty ink can be transient (e.g. a platform font still loading).
+            let raster = source.raster(cluster, pixels)?;
+            let bytes = raster.image.data_as_u8_slice().len();
             while self.entries.len() >= 256 || self.bytes + bytes > 16 * 1024 * 1024 {
                 let oldest = self
                     .entries
                     .iter()
                     .max_by_key(|(_, (_, used))| self.clock.wrapping_sub(*used))
                     .map(|(key, _)| key.clone())?;
-                if let Some((Some(old), _)) = self.entries.remove(&oldest) {
+                if let Some((old, _)) = self.entries.remove(&oldest) {
                     self.bytes -= old.image.data_as_u8_slice().len();
                 }
             }
             self.bytes += bytes;
             self.entries.insert(key, (raster.clone(), self.clock));
             raster
-        }?;
+        };
         Some(crate::emoji::Glyph::Bitmap {
             x: raster.left,
             y: -raster.top - f64::from(raster.image.height()),
             image: raster.image,
-            ppem: pixels,
+            ppem: raster.ppem.unwrap_or(pixels),
             origin: (0.0, 0.0),
         })
     }

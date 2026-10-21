@@ -14,6 +14,10 @@ for (const renderer of ["cpu", "gpu"]) {
     await page.goto(`${baseURL}/?renderer=${renderer}&threads=2`);
     await expect(page.locator("#status")).toHaveText("", { timeout: 60_000 });
     await expect(page.getByRole("textbox")).toBeAttached({ timeout: 60_000 });
+    // The welcome sheet has coloured artwork inside the crop: dismiss it, including its fade.
+    await page.locator("#figstudio").focus();
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(600);
     const transfer = await page.evaluateHandle(encoded => {
       const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
       const transfer = new DataTransfer();
@@ -23,8 +27,8 @@ for (const renderer of ["cpu", "gpu"]) {
     await page.locator("#figstudio").dispatchEvent("drop", { dataTransfer: transfer });
     await page.mouse.move(8, 8); // Keep hover outlines out of the pixel evidence.
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    // Exclude sidebar, toolbars and status pills: only the central document canvas counts.
-    const screenshot = () => page.screenshot({ clip: { x: 300, y: 140, width: 650, height: 500 } });
+    // Exclude sidebar, first-run edge tips, toolbars and status pills.
+    const screenshot = () => page.screenshot({ clip: { x: 300, y: 220, width: 650, height: 420 } });
     const colouredPixels = async () => {
       const encoded = (await screenshot()).toString("base64");
       return page.evaluate(async encoded => {

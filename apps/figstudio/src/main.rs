@@ -14,6 +14,8 @@ mod copy_menu;
 mod dock_mac;
 #[cfg(target_arch = "wasm32")]
 mod emoji_canvas;
+#[cfg(any(target_arch = "wasm32", test))]
+mod emoji_canvas_bounds;
 mod find;
 #[cfg(windows)]
 mod foreground_win;
