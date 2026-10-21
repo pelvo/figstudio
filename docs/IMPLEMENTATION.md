@@ -109,6 +109,8 @@ apps/figstudio-mcp/tests/  protocol tests (stdio.rs, http.rs, prompts.rs, files.
                          user doc
 apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   main.rs                App: shortcuts, panel layout, message polling, export
+  session.rs             bounded desktop restore queue, canonical aliases and active-space intent
+  session_store.rs       private atomic workspace JSON, independent of eframe preferences
   chrome.rs              Arc-style chrome: window gradient, sidebar (window controls, command
                          field, pages, layers, file switcher), title strip, peeking sidebar,
                          canvas card with tool / status pills and the warning chip, toasts,
@@ -436,7 +438,8 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   Reduce motion) between launches; `App::save` adds the sidebar / properties visibility, the
   Pages/Layers split, what onboarding was seen and Settings' `Prefs` (`UiState`): the
   translucent sidebar, the renderer (applied at the next start; `FIGSTUDIO_RENDERER` wins),
-  frame names and whether the scroll wheel zooms (`canvas::Options`).
+  frame names and whether the scroll wheel zooms (`canvas::Options`), shortcuts and desktop
+  Agent access.
 - **Recents** (`recents.rs`, desktop only). With no file open the canvas card is the Recents
   page instead of the plain empty state: a title, a filter, a cards/rows toggle
   (`Prefs::recents_list`) and Open file…, then one card per file opened before, newest first.
@@ -448,9 +451,12 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   taken for a space; the card under the pointer lends the window its colour
   (`Recents::hover`, read by `App::tint_now`), crossfading as a file switch does.
   The list is `<config>/figstudio/recents.json` (full paths, owner-only, at most 60, damaged
-  entries skipped, an unreadable list left alone as with spaces); each load of a file on disk
-  (`App::note_recent`, after any link moved it to its node's page; bytes dropped without a
-  path are not listed) notes it and queues its picture: one `thumbnails` thread renders the
+  entries skipped, an unreadable list left alone as with spaces). Explicit file loads and
+  canonical-alias opens note the loaded/kept tab (`App::note_recent`, after any link moved
+  it to its node's page; bytes dropped without a path are not listed). Automatic workspace
+  restoration leaves history order, timestamps, keys and pictures untouched, including paths
+  not already listed; it does not backfill or evict prior history. Explicit opens queue a
+  picture: one `thumbnails` thread renders the
   page with its own image cache (never the canvas's: that would share its eviction clock,
   in-flight reads and failed marks) to fit 640×400 over the page colour, and writes
   `thumbs/<hash of the path>.png` owner-only, only if that job is still the newest wanted for
@@ -489,6 +495,37 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   General) resets it and opens the sheet. Tests start with it off (`!cfg!(test)`, like
   `spaces::Store::memory`) so the sheet does not cover every other test; the onboarding
   tests turn it on.
+- Desktop workspace (`session.rs`, `session_store.rs`): file paths and the active space live
+  in `<config>/figstudio/workspace.json`. The store reuses the private atomic writer from
+  `spaces.rs` (Unix mode 0600); read/parse errors leave the original file for repair without
+  resetting sidebar, keymap or agent preferences. Legacy embedded metadata is imported
+  independently and removed from eframe preferences only after private persistence succeeds.
+  Until then, preference saves retain the original legacy paths without adding newly opened
+  files. Unreadable private metadata can fall back to that legacy copy; unrelated preferences
+  still save. The serialization-only backup is ignored when decoding `UiState`, so malformed
+  workspace metadata cannot reset other preferences. A private read failure disables workspace
+  writes for the rest of the process, even if the file is repaired meanwhile. The warning
+  says this session's workspace edits will not be saved; repair and restart enable future
+  writes, not recovery of those edits. Other preferences still save. An oversized legacy
+  fallback appends its skipped-file warning without hiding the read failure or recovery
+  instructions. This avoids overwriting unreadable metadata.
+  Metadata is capped at 4 MiB and 500 saved paths, retaining the selected file and announcing
+  skipped entries. Startup decodes at most four files concurrently; queued files survive an
+  early save/quit. Worker-resolved canonical paths deduplicate aliases without lexically
+  rewriting a symlink's `..`; completion order does not change the saved space order.
+  After sorting, polling finds the loaded tab by id for links and explicit-open Recents,
+  independently of the saved or manually chosen active space. `Restore` tracks automatic
+  paths separately: explicit startup files and user opens of already-pending paths remove
+  that marker; pumping automatic loads does not. Polling and alias reuse capture this intent
+  before completion can drop/remap restoration, then refresh explicit cards after links.
+  A successful alias retains its original automatic/manual classification and uses the kept
+  tab's path for focus. Explicit startup files merge and take focus. Switching spaces while
+  loading keeps that focus; closing an automatically selected interim tab does not cancel the
+  saved target.
+  Failed active files record the displayed fallback. Closed spaces stay closed, and existing
+  styles still load through `spaces::Store`. Only local metadata is stored, never file
+  contents or changes to the `.fig`. Browser file restoration is unchanged; page, zoom and
+  selection are not restored.
 - **Settings** (`settings.rs`, ⌘, / the app menu on macOS / File → Settings… elsewhere / the
   command bar): a foreground window with Arc's tab row. Agent access (`mcp.menu`, `mcp.status`)
   and About live in it; View → Agent access… and Help → About open those tabs
@@ -611,13 +648,18 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
 ### MCP inside the app (`mcp_host.rs`, desktop only)
 
 - **View → Agent access…** opens Settings → Agents; the **Agent access** switch there starts
-  the live server. It is off at every launch. `mcp_off.rs` is the same API with no thread, used when the `mcp` feature is off or on
-  wasm32, so the UI code does not change.
+  the live server. Desktop on/off, remote access and bind address are saved with the window's
+  preferences and restored before the first frame; fresh or older preferences default off.
+  Only these settings are stored, not the endpoint or bearer token. Normal `sync` starts the
+  server, validates the address and creates a fresh remote token. `mcp_off.rs` is the same API
+  with no thread when the `mcp` feature is off; the browser uses `mcp_web.rs` and keeps its
+  existing bridge/relay connection rules.
 - **Threads.** `McpHost::start` spawns one thread named `mcp`. It runs a 2-worker tokio runtime,
   binds the first free of 127.0.0.1:3845 to :3855 (`bind_first`), and serves `serve_http` with
   `FigstudioServer::live`. The runtime ends with `shutdown_background`, so a stuck stdin or SSE
-  stream cannot block the app. A bind or runtime error comes back as an event, turns the toggle
-  off, and shows a toast.
+  stream cannot block the app. A plan, bind or runtime error stops the current attempt and
+  shows a toast without changing the requested on/off preference. A failure latch prevents
+  per-frame retries; off/on or the next app launch retries the retained request.
 - **Snapshot (app to server).** Each frame while running, `sync` builds a `Key` from the tab ids,
   the document pointers (`Arc<Document>`), page, selection and the viewport in whole units. It publishes a new
   `Arc<Snapshot>` only when the key changes. The server reads the snapshot under a lock held

@@ -66,6 +66,8 @@ mod recents;
 mod recordings;
 mod region_copy;
 mod region_png;
+mod session;
+mod session_store;
 mod settings;
 mod source;
 mod space_editor;
@@ -217,15 +219,23 @@ struct UiState {
     show_left: bool,
     show_right: bool,
     pages_share: f32,
-    /// Settings → General and Canvas (absent in states saved before them).
+    /// Settings preferences (absent in states saved before them).
     #[serde(default)]
     prefs: Prefs,
     /// The welcome sheet and tips seen (absent before them: shown once more).
     #[serde(default)]
     onboarding: onboarding::Progress,
+    /// Retain existing legacy paths only while their private migration cannot commit.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[serde(
+        rename = "workspace",
+        skip_deserializing,
+        skip_serializing_if = "session::Session::is_empty"
+    )]
+    legacy_workspace: session::Session,
 }
 
-/// What Settings → General and Canvas set (the rest lives in egui's options and the panels).
+/// Settings preferences (the rest lives in egui's options and the panels).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct Prefs {
@@ -241,6 +251,9 @@ struct Prefs {
     keymap: keymap::Keymap,
     /// The Recents page lists files in rows instead of cards.
     recents_list: bool,
+    /// Desktop access only; browser bridge/relay connection rules are separate.
+    #[cfg_attr(target_arch = "wasm32", serde(skip))]
+    agents: settings::AgentPrefs,
 }
 
 impl Default for Prefs {
@@ -252,6 +265,7 @@ impl Default for Prefs {
             scroll_zooms: false,
             keymap: keymap::Keymap::default(),
             recents_list: false,
+            agents: settings::AgentPrefs::default(),
         }
     }
 }
@@ -347,17 +361,33 @@ struct App {
     window_cap: Option<f32>,
     /// What draws the canvas tiles ("GPU (Metal)", "CPU"), for the status bar.
     renderer: String,
-    /// Agent access: the MCP server, off at every launch (`mcp_host.rs`).
+    /// Agent access: the MCP server (`mcp_host.rs`).
     mcp: mcp_host::McpHost,
     /// The welcome sheet and the one-time tips (`onboarding.rs`).
     onboarding: onboarding::Onboarding,
     /// Files opened before: the Recents page when none is open (`recents.rs`).
     #[cfg(not(target_arch = "wasm32"))]
     recents: recents::Recents,
+    /// Startup files still arriving from the decode workers.
+    restoring: Option<session::Restore>,
+    workspace_store: session_store::Store,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
+        let store = if cfg!(test) {
+            session_store::Store::memory()
+        } else {
+            session_store::Store::load()
+        };
+        Self::with_workspace_store(cc, files, store)
+    }
+
+    fn with_workspace_store(
+        cc: &eframe::CreationContext<'_>,
+        files: Vec<PathBuf>,
+        mut workspace_store: session_store::Store,
+    ) -> Self {
         theme::apply(&cc.egui_ctx);
         theme::install_fonts(&cc.egui_ctx);
         // What the window looked like when it was last closed (eframe's storage).
@@ -391,6 +421,7 @@ impl App {
             tiles.gpu = web_gpu;
             (Workers::with_gpu(&cc.egui_ctx, gpu), label, tiles)
         };
+        let workspace = workspace_store.read(cc.storage);
         let mut app = App {
             workers,
             renderer,
@@ -466,19 +497,31 @@ impl App {
             } else {
                 recents::Recents::load()
             },
+            restoring: None,
+            workspace_store,
         };
         if let Some(saved) = saved {
             app.show_left = saved.show_left;
             app.show_right = saved.show_right;
             app.pages_share = saved.pages_share.clamp(0.05, 0.95);
         }
-        for f in files {
-            app.open(f);
+        if let Some(access) = app.mcp.access() {
+            *access.on = app.prefs.agents.on;
+            *access.remote = app.prefs.agents.remote;
+            access.remote_addr.clone_from(&app.prefs.agents.remote_addr);
         }
+        app.restore_workspace(workspace, files);
         app
     }
 
     fn open(&mut self, path: PathBuf) {
+        if let Some(restore) = &mut self.restoring {
+            restore.explicitly_opened(&path);
+        }
+        self.open_file(path);
+    }
+
+    fn open_file(&mut self, path: PathBuf) {
         match open_action(
             &self.tabs.iter().map(|t| &t.path).collect::<Vec<_>>(),
             &mut self.loading,
@@ -547,6 +590,7 @@ impl App {
 
     fn close(&mut self, i: usize) {
         if i < self.tabs.len() {
+            let previous = self.tabs.get(self.active).map(|t| t.id);
             // A space popover on this file saves first: its style lives only on the tab.
             if self.space_editing.as_ref().map(|e| e.tab) == Some(self.tabs[i].id) {
                 self.commit_space_editor();
@@ -566,6 +610,7 @@ impl App {
             } else if self.active > i {
                 self.active -= 1;
             }
+            self.workspace_closed(&closed, previous);
         }
     }
 
@@ -632,6 +677,9 @@ impl App {
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
+        if let Some(problem) = self.workspace_store.take_problem() {
+            self.toast(ctx, problem, true);
+        }
         loop {
             let msg = match classify(self.workers.load_rx.try_recv()) {
                 Poll::Msg(msg) => msg,
@@ -662,6 +710,14 @@ impl App {
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     let _ = cjk;
+                    if self.reuse_loaded_file(ctx, &path, real_path.as_deref()) {
+                        continue;
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let automatic = self
+                        .restoring
+                        .as_ref()
+                        .is_some_and(|restore| restore.is_automatic(&path));
                     let id = self.next_id;
                     self.next_id += 1;
                     #[cfg(target_arch = "wasm32")]
@@ -675,13 +731,18 @@ impl App {
                         .spaces
                         .lookup(spaces::FileId::of(&tab, &title))
                         .unwrap_or_default();
+                    let previous = self.tabs.get(self.active).map(|t| t.id);
                     self.tabs.push(tab);
                     self.active = self.tabs.len() - 1;
-                    let added = self.active;
-                    self.link_loaded(ctx, &path, added);
-                    // After the link: the picture is of the page it shows.
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.note_recent(ctx, added);
+                    self.workspace_finished(&path, previous, None);
+                    if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+                        self.link_loaded(ctx, &path, i);
+                        // After the link: the picture is of the page it shows.
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if !automatic {
+                            self.note_recent(ctx, i);
+                        }
+                    }
                 }
                 Loaded::Err {
                     path,
@@ -694,6 +755,7 @@ impl App {
                     #[cfg(not(target_arch = "wasm32"))]
                     self.recents.load_failed(&path);
                     self.link_failed(&path, real_path);
+                    self.workspace_finished(&path, self.tabs.get(self.active).map(|t| t.id), None);
                     self.toast(
                         ctx,
                         format!("Could not open {}: {message}", path.display()),
@@ -996,12 +1058,24 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let mut prefs = self.prefs.clone();
+        if let Some(access) = self.mcp.access() {
+            prefs.agents = settings::AgentPrefs {
+                on: *access.on,
+                remote: *access.remote,
+                remote_addr: access.remote_addr.clone(),
+            };
+        }
+        let workspace = session::Session::capture(self);
+        self.workspace_store.save(&workspace);
         let state = UiState {
             show_left: self.show_left,
             show_right: self.show_right,
             pages_share: self.pages_share,
-            prefs: self.prefs.clone(),
+            prefs,
             onboarding: self.onboarding.progress.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            legacy_workspace: self.workspace_store.legacy_backup(),
         };
         eframe::set_value(storage, UI_STATE_KEY, &state);
     }
@@ -1011,7 +1085,13 @@ impl eframe::App for App {
         self.mcp.stop();
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if self.workspace_store.take_migration()
+            && let Some(storage) = frame.storage_mut()
+        {
+            self.save(storage);
+            storage.flush();
+        }
         let started = web_time::Instant::now();
         self.frame_ui(ui);
         #[cfg(not(target_arch = "wasm32"))]

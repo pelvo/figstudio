@@ -279,6 +279,72 @@ send pointer events; `step` also collects what the frame sent to the clipboard (
 with `h.get_by_label("Copy link")` (plain `ui.label`s are matched by their accesskit value, see
 `shown_addr`). Menus open a frame or two after the click: use `wait_for`, not a fixed step count.
 Tests that start the MCP server use whatever port `bind_first` gives and read it from the status pill.
+`cargo test -p figstudio desktop_agent_access` covers all enabled/remote preference combinations,
+restores the bind address, restarts an enabled server on an ephemeral loopback port, and checks
+that saved state contains neither endpoints nor tokens. Older preferences without Agent access
+still load with access off. Prove these regressions by removing preference capture/restoration,
+and by removing `Prefs`' `#[serde(default)]` for the older-state case. These tests use in-memory
+eframe storage; real on-disk persistence across an OS app restart still needs a manual check.
+`mcp_host::tests::persistence` also saves after a failed bind and retries the retained access
+choice in a new app. Its credential test mints real remote bearer rules, starts a loopback-only
+test listener with those rules, and checks the actual token value is absent from every stored
+preference value. Injecting that token into storage must make the regression fail.
+
+`cargo test --profile fast -p figstudio workspace` covers desktop session save/reload, saved
+file order and active space, existing space styles, saving before restores finish, missing
+files, duplicate/explicit startup files, and closing some or all spaces. A deterministic
+`session::tests` case feeds reverse completion order and checks that a later manual space
+selection wins. Both UI tests failed without restoration; removing `Restore::finished`'s
+`sort_by_key` makes the deterministic ordering test fail. Restore the mutation before checks.
+Use an isolated `CARGO_TARGET_DIR` if worktrees share a build cache, and confirm the named
+new tests actually appear in the output. Actual OS quit/relaunch and browser file retention
+remain manual checks; this feature changes desktop file reopening only.
+
+Workspace tests now use an explicit temporary private store, not embedded file paths in the
+eframe fixture. Coverage includes Unix 0600 permissions on new/replaced files, atomic-writer
+reuse, malformed/oversized metadata preserving other preferences and the original file,
+legacy import and path removal, 500 saved paths retaining the active file, four concurrent
+startup decodes with a retained queue, parent/symlink alias deduplication, interim-tab closure,
+and a failed active file's displayed fallback. Privacy/focus/alias/concurrency regressions
+failed before the fixes. Replacing the private writer with `std::fs::write`, disabling the
+saved-file limit, or persisting the live token must fail their dedicated tests. Always restore
+these mutations before running the full gate or committing.
+
+`workspace_re_review` covers failed legacy migration and successful alias focus. A dangling
+config-directory symlink makes the first private write fail even for root; legacy paths
+survive preference saves without adding new paths, and a repaired directory permits private
+commit and cleanup. A non-file private store retains a restorable legacy copy and allows
+unrelated preferences to update. The alias test checks manual focus, automatic saved intent,
+an early save and a later completion. All three tests failed at their intended assertions
+before the fixes. The deterministic write-failure setup is Unix-only.
+
+The corruption test requires the warning to state that this session's workspace edits will
+not be saved. A synthetic pending file never enters legacy preferences or reappears after
+restart. Removing damaged metadata does not re-enable writes in the same store; a fresh
+store can save after repair.
+`workspace_unreadable_store_keeps_recovery_guidance_when_legacy_is_limited` combines corrupt
+private metadata with 503 synthetic legacy paths. It checks the 500-path cap, retained active
+file and original legacy backup, unchanged damaged bytes, and both recovery and skipped-file
+messages. Both warning regressions failed at their intended assertions on the old code.
+The alias test includes selecting a third tab after either a manual or automatic alias
+completes while the saved target is still loading, and checks early-save focus and focus
+after that target finishes.
+
+`workspace_recents_explicit_loads_record_the_loaded_tab_after_saved_focus_and_sort` delivers
+real worker results in both completion orders, promoting pending automatic paths through
+user opens. Saved order/focus remain intact while Recents records the loaded id, not the
+active tab. `workspace_recents_explicit_startup_records_an_already_saved_path` covers an
+explicit startup file also present in the saved workspace.
+
+`workspace_recents_automatic_restore_preserves_history_and_pictures` seeds a full 60-entry
+on-disk history. Both completion orders, with a restored path listed or absent, must preserve
+entry order/timestamps/keys, exact JSON bytes and the oldest thumbnail, without adding
+pictures. `workspace_recents_alias_refreshes_only_explicit_opens` uses a public fixture plus
+a synthetic extra page: explicit canonical-alias links refresh the actual linked-page PNG;
+automatic alias reuse leaves history and its picture alone. History preservation and alias
+recording each failed their intended assertion before the fix. Tests use temporary files,
+public-fixture copies and isolated stores; no user workspace or Recents data is read.
+
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
 
