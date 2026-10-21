@@ -422,7 +422,8 @@ cap with pictures deleted, restart, damaged list left alone, owner-only file), t
 on load, Remove ignored, missing opened anyway, filter ignored, toggle not kept, no
 dedupe). Two more cover the browser's merge rules: files opened before the saved list
 arrives stay in front of it, and a moved file picked again (a new handle) replaces its
-missing card (only the one it was picked for, not another of the same name). The page
+missing card (only the one it was picked for, not another of the same name, and not
+when another file of that name opens some other way). The page
 waits for the browser's saved list before it welcomes. `recents_pictures.rs` tests the
 browser's picture rules: a late read (a miss or an old picture) never covers a picture drawn
 since, a missing picture is read once, and only the newest job is kept. The pictures themselves and Show in Finder need the real app.

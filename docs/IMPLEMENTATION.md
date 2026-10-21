@@ -495,8 +495,9 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   a card reads its file through the handle (asking permission again if needed). A file gone
   marks the card missing, toasts, and opens the picker with `startIn` the old handle; a
   refused permission toasts to click again. Picking the moved file gives a new handle; the
-  missing card it was picked for (`Recents::picking_again`, only that one: two files may
-  share a name) gives way to it (`Recents::add`). Without the picker
+  missing card it was picked for gives way to it (`Recents::replace_moved`, only that one:
+  two files may share a name). Which card travels with that picker's files (`web::Origin`,
+  on the pick's `Upload` record), so a cancelled picker or another open replaces nothing. Without the picker
   (Firefox, Safari) Open uses the plain file input, a card opens the picker with a toast
   naming the file, and its row says "Opens the file picker". There is no Show in Finder.
   Pictures render on the rayon pool (the same 640×400 job as desktop) and are stored as PNG.

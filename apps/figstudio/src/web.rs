@@ -242,7 +242,16 @@ fn drop_file(id: u32) {
 #[derive(Clone)]
 struct Upload {
     file: web_sys::File,
-    handle: Option<u32>,
+    origin: Origin,
+}
+
+/// Where a file picked or dropped here came from.
+#[derive(Clone, Copy, Debug)]
+pub struct Origin {
+    /// The number its handle is kept under, where the browser gave one.
+    pub handle: Option<u32>,
+    /// Picked in the picker a moved Recents card opened: that card's handle.
+    pub replaces: Option<u32>,
 }
 
 thread_local! {
@@ -258,17 +267,17 @@ pub fn upload_file(tab: u64) -> Option<web_sys::File> {
     UPLOADS.with(|u| u.borrow().get(tab)).map(|u| u.file)
 }
 
-/// Whether tab `tab`'s file was picked or dropped here (a link's or an agent's was not),
-/// and its file handle's number.
-pub fn upload_handle(tab: u64) -> Option<Option<u32>> {
-    UPLOADS.with(|u| u.borrow().get(tab)).map(|u| u.handle)
+/// Where tab `tab`'s file came from, if it was picked or dropped here (a link's or an
+/// agent's was not).
+pub fn upload_origin(tab: u64) -> Option<Origin> {
+    UPLOADS.with(|u| u.borrow().get(tab)).map(|u| u.origin)
 }
 
-fn pick_upload(file: &web_sys::File, handle: Option<u32>) -> u32 {
+fn pick_upload(file: &web_sys::File, origin: Origin) -> u32 {
     UPLOADS.with(|u| {
         u.borrow_mut().pick(Upload {
             file: file.clone(),
-            handle,
+            origin,
         })
     })
 }
@@ -366,7 +375,7 @@ async fn fetch_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Opens a big archive without reading its images.
-async fn open_lazy(file: web_sys::File, handle: Option<u32>) -> Picked {
+async fn open_lazy(file: web_sys::File, origin: Origin) -> Picked {
     let name = PathBuf::from(file.name());
     let fail = |e: anyhow::Error| {
         Picked::Failed(format!(
@@ -412,7 +421,7 @@ async fn open_lazy(file: web_sys::File, handle: Option<u32>) -> Picked {
     let doc_key = crate::source::doc_key_from_prefix(len, &head);
     Picked::Lazy {
         name,
-        pick: pick_upload(&file, handle),
+        pick: pick_upload(&file, origin),
         file: keep_file(file),
         entries,
         eager,
@@ -420,20 +429,19 @@ async fn open_lazy(file: web_sys::File, handle: Option<u32>) -> Picked {
     }
 }
 
-/// Opens a file the user chose (`handle`: the number its handle is kept under, where the
-/// browser gave one): big archives lazily, the rest by reading them.
-async fn open_file(file: web_sys::File, handle: Option<u32>) -> Picked {
+/// Opens a file the user chose: big archives lazily, the rest by reading them.
+async fn open_file(file: web_sys::File, origin: Origin) -> Picked {
     let name = PathBuf::from(file.name());
     if file.size() as u64 > LAZY_ABOVE {
         let mut magic = read_range(&file, 0, 2).await.unwrap_or_default();
         magic.truncate(2);
         if magic == b"PK" {
-            return open_lazy(file, handle).await;
+            return open_lazy(file, origin).await;
         }
     }
     // Same limit as `Document::open` on the desktop.
     match read_range_max(&file, 0, file.size() as u64, figstudio_fig::MAX_FILE_BYTES).await {
-        Ok(bytes) => Picked::Bytes(name, bytes, pick_upload(&file, handle)),
+        Ok(bytes) => Picked::Bytes(name, bytes, pick_upload(&file, origin)),
         Err(e) => Picked::Failed(format!(
             "Could not read {}: {}",
             name.display(),
@@ -443,14 +451,19 @@ async fn open_file(file: web_sys::File, handle: Option<u32>) -> Picked {
 }
 
 /// Shows the picker and opens what is chosen. The File System Access picker where the
-/// browser has it (each file with its handle; `start`: a handle whose folder it starts in),
-/// else the plain one (no handles).
-async fn pick(tx: Sender<Picked>, ctx: egui::Context, start: Option<u32>) {
+/// browser has it (each file with its handle), else the plain one (no handles). `moved`: the
+/// handle of a moved Recents card; the picker starts in its folder, and what is picked there
+/// takes the card's place.
+async fn pick(tx: Sender<Picked>, ctx: egui::Context, moved: Option<u32>) {
     if crate::recents_web::keeps_handles() {
-        match crate::recents_web::pick_files(start).await {
+        match crate::recents_web::pick_files(moved).await {
             Ok(Some(files)) => {
                 for (file, handle) in files {
-                    let _ = tx.send(open_file(file, Some(handle)).await);
+                    let origin = Origin {
+                        handle: Some(handle),
+                        replaces: moved,
+                    };
+                    let _ = tx.send(open_file(file, origin).await);
                     ctx.request_repaint();
                 }
                 return;
@@ -468,7 +481,11 @@ async fn pick(tx: Sender<Picked>, ctx: egui::Context, start: Option<u32>) {
         return;
     };
     for f in files {
-        let _ = tx.send(open_file(f.inner().clone(), None).await);
+        let origin = Origin {
+            handle: None,
+            replaces: moved,
+        };
+        let _ = tx.send(open_file(f.inner().clone(), origin).await);
         ctx.request_repaint();
     }
 }
@@ -641,7 +658,11 @@ impl Inbox {
         wasm_bindgen_futures::spawn_local(async move {
             match crate::recents_web::open_handle(handle).await {
                 Ok(file) => {
-                    let _ = tx.send(open_file(file, Some(handle)).await);
+                    let origin = Origin {
+                        handle: Some(handle),
+                        replaces: None,
+                    };
+                    let _ = tx.send(open_file(file, origin).await);
                     ctx.request_repaint();
                 }
                 Err(why) => {
@@ -665,7 +686,11 @@ impl Inbox {
         };
         wasm_bindgen_futures::spawn_local(async move {
             let handle = crate::recents_web::dropped_handle(&file).await;
-            let _ = tx.send(open_file(file, handle).await);
+            let origin = Origin {
+                handle,
+                replaces: None,
+            };
+            let _ = tx.send(open_file(file, origin).await);
             ctx.request_repaint();
         });
     }

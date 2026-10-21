@@ -155,8 +155,6 @@ pub struct Recents {
     pub hover: Option<theme::Colour>,
     /// The saved list is still being read (the browser): no welcome yet.
     pub(crate) waiting: bool,
-    /// The moved file the next pick is for (the browser): its card gives way to it.
-    replacing: Option<Id>,
 }
 
 impl std::fmt::Debug for Recents {
@@ -205,17 +203,25 @@ impl Recents {
             filter: String::new(),
             hover: None,
             waiting: false,
-            replacing: None,
         }
     }
 
-    /// The next file picked is `id`'s file, found moved: it takes that card's place.
+    /// `new` is `old`'s file, found moved and picked where it is now (the browser gives it a
+    /// new handle): `old`'s card, if still missing, gives way. Only that card: two files may
+    /// share a name.
     #[cfg_attr(
         not(any(target_arch = "wasm32", test)),
         expect(dead_code, reason = "the browser picks a moved file again")
     )]
-    pub fn picking_again(&mut self, id: Id) {
-        self.replacing = Some(id);
+    pub fn replace_moved(&mut self, old: &Id, new: &Id) {
+        if old.path != new.path || old == new || !self.missing.contains(old) {
+            return;
+        }
+        self.entries.retain(|e| e.id() != *old);
+        self.missing.remove(old);
+        self.io.forget(old);
+        self.io.save(&self.entries);
+        self.io.changed();
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -237,19 +243,9 @@ impl Recents {
     /// `id` was opened at `now` (`there`: it is where it was opened from): it moves to the
     /// front, and the oldest beyond [`MAX_ENTRIES`] go with their pictures.
     pub(crate) fn add(&mut self, id: Id, key: Option<&str>, now: u64, there: bool) {
-        let replacing = self.replacing.take();
         self.entries.retain(|e| e.id() != id);
         if there {
             self.missing.remove(&id);
-            // A moved file picked again in the browser comes with a new handle: the card it
-            // was picked for gives way (only that one: two files may share a name).
-            if let Some(old) = replacing
-                .filter(|old| old.path == id.path && *old != id && self.missing.contains(old))
-            {
-                self.entries.retain(|e| e.id() != old);
-                self.missing.remove(&old);
-                self.io.forget(&old);
-            }
         } else {
             self.missing.insert(id.clone());
         }
@@ -668,12 +664,12 @@ impl App {
         let Some(tab) = self.tabs.get(i) else {
             return;
         };
-        let Some(handle) = crate::web::upload_handle(tab.id) else {
+        let Some(origin) = crate::web::upload_origin(tab.id) else {
             return;
         };
         let id = Id {
             path: tab.path.clone(),
-            handle,
+            handle: origin.handle,
         };
         let job = ThumbJob {
             doc: tab.doc.clone(),
@@ -682,6 +678,14 @@ impl App {
         };
         self.recents
             .add(id.clone(), tab.doc_key.as_deref(), now(), true);
+        // Picked in the picker a moved card opened: that card gives way.
+        if let Some(old) = origin.replaces {
+            let old = Id {
+                path: tab.path.clone(),
+                handle: Some(old),
+            };
+            self.recents.replace_moved(&old, &id);
+        }
         self.recents.paint_thumb(ctx, &id, job);
     }
 
@@ -1067,16 +1071,35 @@ mod tests {
         r.add(at(3), None, 25, true);
         // The first is clicked, found moved, and picked where it is now: a new handle.
         r.set_missing(&at(1), true);
-        r.picking_again(at(1));
         r.add(at(4), None, 30, true);
+        r.replace_moved(&at(1), &at(4));
         let handles: Vec<_> = r.entries().iter().map(|e| e.handle).collect();
         assert_eq!(handles, [Some(4), Some(3), Some(2)]);
         assert!(!r.missing.contains(&at(1)));
         assert!(r.missing.contains(&at(2)), "the other moved card stays");
+        // A card back in place is not replaced.
+        r.replace_moved(&at(3), &at(4));
+        assert_eq!(r.entries().len(), 3);
         // Only the next file picked replaces it.
         r.set_missing(&at(3), true);
         r.add(at(5), None, 40, true);
         assert_eq!(r.entries().len(), 4);
+    }
+
+    #[test]
+    fn a_relocate_given_up_leaves_the_missing_card_to_other_opens() {
+        let at = |handle| Id {
+            path: "a.fig".into(),
+            handle: Some(handle),
+        };
+        let mut r = Recents::memory();
+        r.add(at(1), None, 10, true);
+        r.set_missing(&at(1), true);
+        // The picker it opened is cancelled; another file of that name opens some other way
+        // (only a file that picker returned replaces the card: `replace_moved`).
+        r.add(at(2), None, 20, true);
+        let handles: Vec<_> = r.entries().iter().map(|e| e.handle).collect();
+        assert_eq!(handles, [Some(2), Some(1)]);
     }
 
     #[test]

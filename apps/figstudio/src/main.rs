@@ -905,8 +905,6 @@ impl App {
                                 handle: Some(handle),
                             };
                             self.recents.set_missing(&id, true);
-                            // The picker opens in its folder next.
-                            self.recents.picking_again(id);
                             format!("{shown} was moved or deleted. Pick it where it is now.")
                         }
                         crate::recents_web::Unavailable::Denied => format!(

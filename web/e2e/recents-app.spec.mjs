@@ -155,7 +155,9 @@ test.describe("with file handles (Chrome, Edge)", () => {
 // must keep the handle of the file that opened (review of #47).
 test("of two picked files with one name, the card keeps the handle of the one that opened", async ({ context, page }) => {
   await context.addInitScript(() => {
+    window.picks = 0;
     window.showOpenFilePicker = async () => {
+      window.picks += 1;
       const root = await navigator.storage.getDirectory();
       const one = await root.getDirectoryHandle("one");
       const two = await root.getDirectoryHandle("two");
@@ -176,8 +178,9 @@ test("of two picked files with one name, the card keeps the handle of the one th
   await write("one", "structure.fig");
   await write("two", "vector.fig");
   await pressOpen(page, () =>
-    expect.poll(async () => (await stored(page)).list.length, { timeout: 3000 })
+    expect.poll(() => page.evaluate(() => window.picks), { timeout: 3000 })
       .toBe(1).then(() => true, () => false));
+  await expect.poll(async () => (await stored(page)).list.length, { timeout: 30_000 }).toBe(1);
   // The tab shows structure.fig (the first), so the card's handle must read that file.
   const size = (await readFile(fixture)).length;
   const kept = await page.evaluate(async () => {
