@@ -241,6 +241,8 @@ fn print_tree(doc: &Document, id: Guid, indent: usize, depth: usize) {
     }
 }
 
+mod emoji_report;
+
 fn emoji_counts(doc: &Document, system_fonts: bool) -> figstudio_render::Stats {
     let mut renderer = Renderer::new();
     renderer.system_fonts = system_fonts;
@@ -296,15 +298,7 @@ fn run(args: Args) -> Result<()> {
             let components = doc.nodes.iter().filter(|n| n.kind == "SYMBOL").count();
             println!("components: {components}");
             let counts = emoji_counts(&doc, args.system_fonts);
-            let qualifier = if counts.budget_exhausted > 0 || counts.depth_skipped > 0 {
-                "at least "
-            } else {
-                ""
-            };
-            println!(
-                "emoji:    {qualifier}{} approximated, {} skipped",
-                counts.emoji_approximated, counts.emoji_skipped
-            );
+            println!("emoji:    {}", emoji_report::summary(&counts));
         }
         "tree" => {
             let page = pick_page(&doc, args.page.as_deref())?;

@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn a_document_opened_during_a_failed_fetch_gets_exactly_one_retry() {
+    let mut state = LoadState::default();
+    assert!(state.begin(1));
+    assert!(!state.begin(2));
+    assert!(!state.begin(2));
+    assert!(state.finish(false), "first failure warns");
+    assert!(state.pending, "overlapping document must start a retry");
+    assert!(!state.finish(false), "retry failure does not warn twice");
+    assert!(!state.pending, "no tight retry loop");
+    assert!(!state.begin(2));
+    assert!(state.begin(3), "a later document may retry again");
+}
+
+#[test]
+fn a_successful_pending_fetch_satisfies_overlapping_documents() {
+    let mut state = LoadState::default();
+    assert!(state.begin(1));
+    assert!(!state.begin(2));
+    assert!(!state.finish(true));
+    assert!(!state.pending);
+    assert!(!state.begin(3));
+}
+
+#[test]
 fn symbols_and_emoji_need_the_font_but_latin_and_cjk_do_not() {
     for name in [
         "└ layer",
@@ -110,7 +134,6 @@ fn failed_symbol_load_retries_only_for_a_new_document_and_warns_once() {
     let mut state = LoadState::default();
     assert!(state.begin(1));
     assert!(!state.begin(1));
-    assert!(!state.begin(2)); // A pending request is shared across documents.
     assert!(state.finish(false));
     for _ in 0..10 {
         assert!(!state.begin(1));

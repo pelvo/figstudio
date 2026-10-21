@@ -936,7 +936,9 @@ and git-ignored). `web/index.html` loads the module, starts the Rayon pool
   only for a missing glyph. The group is validated as bounded outline fonts, installed after
   CJK in all three UI families and retained across CJK switches. CJK and symbol results
   received together are installed on separate frames because `set_fonts` takes effect on
-  the next frame. Failures produce a toast, not a panic; no retry until reload.
+  the next frame. Failures produce at most one session toast, not a panic. A later
+   document needing symbols may retry. If it opens during a pending fetch, a failed
+   fetch starts exactly one retry for that document; a second failure cannot loop.
   `web-symbol-font.py`, invoked by `web-font.sh`, subsets installed Noto Sans Symbols,
   Symbols 2, Math and monochrome Noto Emoji. It instantiates variable defaults, removes
   shaping/hinting, checks exact scalar coverage and rejects bitmap/colour tables.
@@ -1084,8 +1086,10 @@ Debug spans (`RUST_LOG=debug`): `open`/`from_bytes` (bytes, node/page/image coun
   missing character instead. Apple's colour emoji are not drawn at all (egui draws outlines),
   so the editor offers emoji from that font. Browser `symbols::missing` reads the actual
   proportional font chain's cmaps (including bundled emoji), and scans `textData.characters`
-  as well as names. A failed symbol fetch can retry once on the next document load, never
-  from the frame poll; only the first failure produces a toast.
+  as well as names. A failed symbol fetch can retry once on a later document load.
+  A document opened during an in-flight attempt queues one retry if that attempt fails;
+  polling only starts that queued retry, never an unrequested loop. Only the first failure
+  produces a toast.
 - **`usize::MAX + 1` wraps to 0.** Limits in `read_limited` use saturating arithmetic. A limit
   of `usize::MAX` once made `take()` read nothing, with no error.
 

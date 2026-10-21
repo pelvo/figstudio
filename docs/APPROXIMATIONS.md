@@ -96,7 +96,8 @@ Code: the text path in `Ctx::draw_node` (`crates/render/src/lib.rs`). Text with
 
 ### C7. emoji approximated / emoji skipped
 
-Code: `text::stored_glyphs`, `Ctx::draw_emojis`, `emoji_font::resolve` (`crates/render/src`).
+Code: `text::stored_glyphs`, `Ctx::emojis`, `Ctx::draw_placed_emojis`, and
+`emoji_font::resolve` (`crates/render/src`).
 Counts are per visible stored emoji glyph, not per text node; not included in the older totals above.
 `emojiCodePoints` marks an editor placeholder, so its stored square is never painted.
 
@@ -108,9 +109,16 @@ Counts are per visible stored emoji glyph, not per text node; not included in th
   not count. Browser canvas remains skipped; the browser's lazy monochrome font is UI-only.
 - Native colour PNG strikes use the existing `ttf-parser` and `image` crates, bounded to
   1024 pixels per side and 8 MiB decoder allocation; encoded strikes are capped at 4 MiB.
-  Draws use the stored glyph's em box, node transform, parent clip and paint/node opacity.
+  Placement uses strike pixel origin and ppem at the stored font size and baseline. sbix
+  adds the contour's `(xMin, yMin)` in design units; contourless sbix and CBDT do not.
+  Draws retain node transforms, parent clips and paint/node opacity. Emoji shadows use a
+  counted rectangular ink bound rather than the bitmap's alpha silhouette.
   Recordings replay the same image paint; GPU-unsupported image tiles fall back to CPU and
   increment the existing `gpu_fallback_tiles` counter.
+- The next browser lane injects a platform-free `EmojiSource` from the app. Worker-local
+  OffscreenCanvas draws full stored clusters with the browser's emoji font, using measured
+  baseline ink bounds. Raster images then follow the same recorded paint path; the lazy
+  monochrome UI font remains separate.
 
 The warning chip, copied-image warning, CLI render/doctor counts, CLI info emoji summary,
 MCP screenshot notes and diff JSON carry these counters. `Stats::max_with` retains them

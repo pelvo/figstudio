@@ -236,5 +236,76 @@ fn info_and_doctor_report_unavailable_emoji_as_counts() {
         report.contains("emoji:    0 approximated, 1 skipped"),
         "override-only marker: {report}"
     );
+    // Connector labels are generated TEXT parts, not ordinary document children.
+    let mut nodes = doc.nodes[..2].to_vec();
+    let label = obj(&[
+        (
+            "guidPath",
+            obj(&[("guids", Val::Arr(vec![Guid(0, 1).to_val()]))]),
+        ),
+        (
+            "size",
+            obj(&[("x", Val::Float(40.0)), ("y", Val::Float(40.0))]),
+        ),
+        (
+            "fillPaints",
+            Val::Arr(vec![obj(&[("type", Val::Enum("SOLID"))])]),
+        ),
+        (
+            "derivedTextData",
+            obj(&[(
+                "glyphs",
+                Val::Arr(vec![obj(&[
+                    ("emojiCodePoints", Val::Arr(vec![Val::Int(0x10FFFF)])),
+                    ("fontSize", Val::Float(20.0)),
+                ])]),
+            )]),
+        ),
+    ]);
+    nodes.push(
+        Node::from_data(obj(&[
+            ("guid", Guid(99, 6).to_val()),
+            ("type", Val::Enum("CONNECTOR")),
+            (
+                "parentIndex",
+                obj(&[
+                    ("guid", Guid(99, 1).to_val()),
+                    ("position", Val::Str("a".into())),
+                ]),
+            ),
+            (
+                "size",
+                obj(&[("x", Val::Float(40.0)), ("y", Val::Float(40.0))]),
+            ),
+            (
+                "derivedImmutableFrameData",
+                obj(&[("overrides", Val::Arr(vec![label]))]),
+            ),
+        ]))
+        .unwrap(),
+    );
+    doc.set_nodes(nodes).unwrap();
+    std::fs::write(&path, doc.to_bytes().unwrap()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_figstudio-cli"))
+        .args(["info", path.to_str().unwrap(), "--no-system-fonts"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report = String::from_utf8(output.stdout).unwrap();
+    let frame = renderer.render(
+        &doc,
+        Guid(99, 1),
+        &figstudio_render::Viewport {
+            width: 80,
+            height: 80,
+            transform: figstudio_render::kurbo::Affine::IDENTITY,
+            background: None,
+        },
+    );
+    assert_eq!(frame.stats.emoji_skipped, 1);
+    assert!(
+        report.contains("emoji:    0 approximated, 1 skipped"),
+        "connector: {report}"
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }

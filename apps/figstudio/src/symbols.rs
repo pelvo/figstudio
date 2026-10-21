@@ -80,21 +80,27 @@ struct LoadState {
     pending: bool,
     installed: bool,
     warned: bool,
+    retry_after_pending: bool,
 }
 
 impl LoadState {
     fn begin(&mut self, document: u64) -> bool {
-        if self.pending || self.installed || self.document == Some(document) {
+        if self.installed || self.document == Some(document) {
             return false;
         }
         self.document = Some(document);
+        if self.pending {
+            self.retry_after_pending = true;
+            return false;
+        }
         self.pending = true;
         true
     }
 
     /// Complete an attempt and return whether its failure needs the session's one toast.
     fn finish(&mut self, success: bool) -> bool {
-        self.pending = false;
+        self.pending = !success && std::mem::take(&mut self.retry_after_pending);
+        self.retry_after_pending = false;
         self.installed = success;
         if success || self.warned {
             return false;
@@ -132,13 +138,14 @@ impl Loader {
         doc: &figstudio_fig::Document,
         file_name: &str,
     ) {
-        if self.state.installed
-            || self.state.pending
-            || !missing(ctx, doc, file_name)
-            || !self.state.begin(doc.instance)
+        if self.state.installed || !missing(ctx, doc, file_name) || !self.state.begin(doc.instance)
         {
             return;
         }
+        self.fetch(ctx);
+    }
+
+    fn fetch(&self, ctx: &egui::Context) {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         wasm_bindgen_futures::spawn_local(async move {
@@ -161,11 +168,11 @@ impl Loader {
             .try_recv()
             .ok()?
             .and_then(|faces| install(ctx, faces));
-        if self.state.finish(result.is_ok()) {
-            result.err()
-        } else {
-            None
+        let warn = self.state.finish(result.is_ok());
+        if self.state.pending {
+            self.fetch(ctx);
         }
+        if warn { result.err() } else { None }
     }
 }
 
