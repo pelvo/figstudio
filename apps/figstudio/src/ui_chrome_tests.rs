@@ -2083,6 +2083,72 @@ fn two_pages() -> (crate::tab::Tab, [figstudio_fig::Guid; 2]) {
     (tab, pages)
 }
 
+fn internal_pages_harness() -> (Harness<'static, App>, [figstudio_fig::Guid; 2]) {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, Vec::new()));
+    let (mut tab, pages) = two_pages();
+    let doc = std::sync::Arc::get_mut(&mut tab.doc).expect("unshared test document");
+    doc.pages = vec![pages[0]];
+    doc.internal_pages = vec![pages[1]];
+    h.state_mut().tabs.push(tab);
+    h.state_mut().active = 0;
+    h.run_steps(3);
+    (h, pages)
+}
+
+#[test]
+fn internal_pages_expand_open_and_return_to_a_normal_page() {
+    let (mut h, [normal, internal]) = internal_pages_harness();
+    assert!(h.query_by_label("Page 1").is_some());
+    assert!(h.query_by_label("Page 2").is_none(), "collapsed initially");
+    h.get_by_label("Internal pages (1)").click();
+    h.run_steps(20);
+    assert_eq!(
+        h.state().tabs[0].page,
+        normal,
+        "expanding does not navigate"
+    );
+    h.state_mut().tabs[0].selection = Some(normal);
+    h.state_mut().tabs[0].hover = Some(normal);
+    h.get_by_label("Page 2").click();
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].page, internal);
+    assert_eq!(h.state().tabs[0].selection, None);
+    assert_eq!(h.state().tabs[0].hover, None);
+    h.get_by_label("Page 1").click();
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].page, normal);
+    h.get_by_label("Internal pages (1)").click();
+    h.run_steps(20);
+    assert!(h.query_by_label("Page 2").is_none());
+    assert!(h.query_by_label("Page 1").is_some());
+}
+
+#[test]
+fn internal_pages_can_be_opened_with_the_keyboard() {
+    let (mut h, [_, internal]) = internal_pages_harness();
+    h.get_by_label("Internal pages (1)").focus();
+    h.run_steps(2);
+    assert!(h.get_by_label("Internal pages (1)").is_focused());
+    h.key_press(Key::Space);
+    h.run_steps(20);
+    h.key_press(Key::Tab);
+    h.run_steps(2);
+    assert!(h.get_by_label("Page 2").is_focused());
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].page, internal);
+}
+
+#[test]
+fn files_without_internal_pages_have_no_disclosure() {
+    let (mut h, _) = internal_pages_harness();
+    h.state_mut().tabs[0] = two_pages().0;
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Internal pages (").is_none());
+}
+
 #[test]
 fn another_page_crossfades_from_the_last_and_going_back_fades_from_what_was_shown() {
     let mut h = Harness::builder()

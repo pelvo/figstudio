@@ -65,13 +65,25 @@ fn hover_fade(ui: &Ui, list: Id, row: Id, hovered: bool) -> f32 {
 
 /// The page list; the selected page's pill slides when the page changes.
 pub fn pages(ui: &mut Ui, tab: &mut Tab) {
-    let p = theme::of(ui);
     let doc = tab.doc.clone();
     ui.spacing_mut().item_spacing.y = 1.0;
+    page_rows(ui, tab, &doc.pages);
+    if !doc.internal_pages.is_empty() {
+        ui.add_space(2.0);
+        egui::CollapsingHeader::new(format!("Internal pages ({})", doc.internal_pages.len()))
+            .id_salt(("internal-pages", tab.id))
+            .default_open(doc.internal_pages.contains(&tab.page))
+            .show(ui, |ui| page_rows(ui, tab, &doc.internal_pages));
+    }
+}
+
+fn page_rows(ui: &mut Ui, tab: &mut Tab, pages: &[Guid]) {
+    let p = theme::of(ui);
+    let doc = tab.doc.clone();
     let pill = ui.painter().add(Shape::Noop);
     let origin = ui.min_rect().min.to_vec2();
     let mut lit = None;
-    for &page in &doc.pages {
+    for &page in pages {
         let name = doc.node(page).map(display_name).unwrap_or_default();
         let selected = tab.page == page;
         let (rect, response) =
@@ -119,20 +131,6 @@ pub fn pages(ui: &mut Ui, tab: &mut Tab) {
         )
         .translate(origin);
         ui.painter().set(pill, selected_pill(&p, r));
-    }
-    if !doc.internal_pages.is_empty() {
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new(format!(
-                    "{} internal page(s) hidden",
-                    doc.internal_pages.len()
-                ))
-                .color(p.text_dim)
-                .small(),
-            );
-        });
     }
 }
 
