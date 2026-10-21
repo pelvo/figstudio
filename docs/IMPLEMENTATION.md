@@ -528,8 +528,14 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   known to be gone (`fs::exists` is `Ok(false)`; a stat error is not), and takes a request
   back by deleting it or moving it aside (`.withdrawn`, not looked at), trying again for
   up to 5 s on errors other than "not found" (a scanner may hold a new file a moment); it
-  opens the files itself only once one of those succeeded. The window reads a request it
-  took up to five times before leaving it for the next start. Not taken in time, too large for one request (1 MiB), or not
+  opens the files itself only once one of those succeeded; a request it could not take
+  back stays queued and the launch leaves it (the running figstudio, or the next to start,
+  opens it), so the files never open twice. A request the window cannot read when it
+  takes it goes back for a later look (no waiting on the window's thread); one that reads
+  but does not parse is kept aside. The holder writes its id before it clears what an
+  ended figstudio left, and removes `ready` and `holder` when it ends normally, so a stale
+  pair is left only by a crash (a launch in the moment between the lock and that write
+  could still read one). Not taken in time, too large for one request (1 MiB), or not
   writable as one (a path not text, or not made absolute): the launch opens the files
   itself. A figstudio that takes the lock clears what one that ended left: `ready`, `.part`
   and `.withdrawn` files, and `.taken` requests, which wait again (their launches had left). The folder is
