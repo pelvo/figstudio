@@ -354,15 +354,30 @@ mod tests {
         viewed.id = 1;
         viewed.image_width = Some(10);
         report.shared_changes.push(viewed);
+        let page = report.pages.len() - 1;
+        report.pages[page].screens[1].regions[0].shared = Some(1);
         let mut images = crate::RenderImages {
             shared: vec![(1, crate::RegionImages::default())],
+            variants: vec![(1, 1, crate::RegionImages::default())],
             ..crate::RenderImages::default()
         };
         super::drop_unpictured(&mut report, Some(&mut images));
         assert_eq!(report.shared_changes.len(), 1);
         assert_eq!(report.shared_changes[0].id, 0);
+        let regions: Vec<_> = report.pages[page]
+            .screens
+            .iter()
+            .map(|s| s.regions[0].shared)
+            .collect();
+        assert_eq!(regions, [None, Some(0)]);
         assert_eq!(images.shared.iter().map(|s| s.0).collect::<Vec<_>>(), [0]);
-        let page = report.pages.last().unwrap();
-        assert!(page.screens.iter().all(|s| s.regions[0].shared.is_none()));
+        assert_eq!(
+            images
+                .variants
+                .iter()
+                .map(|v| (v.0, v.1))
+                .collect::<Vec<_>>(),
+            [(0, 1)]
+        );
     }
 }

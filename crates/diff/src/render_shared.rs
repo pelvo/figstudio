@@ -125,7 +125,7 @@ pub(crate) fn component_views(
         report.truncated.push(format!(
             "component view limit reached ({MAX_COMPONENT_VIEWS} components or \
              {MAX_COMPONENT_VIEW_PIXELS} pixels); {} component views were not drawn, \
-             their cards keep the changed-area crop",
+             their cards show the changed-area crop where one was kept",
             spent.skipped
         ));
     }
