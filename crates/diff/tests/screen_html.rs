@@ -68,7 +68,7 @@ fn non_screen_text_is_on_the_page_not_the_screen_and_screen_pixels_alone_show_pa
     let html = render_html(&report);
     let other = html.split("Other changes on this page").nth(1).unwrap();
     assert!(other.contains("layer-4") && !other.contains("layer-3"));
-    assert!(html.contains("1 screen changed · 0 added · 0 removed"));
+    assert!(html.contains("Screens: 1 changed · 0 added · 0 removed"));
     assert!(html.contains("1 screen changed</span>"));
     assert!(html.contains("id=\"page-0-s1-a1\""));
     assert_eq!(html, render_html(&report));

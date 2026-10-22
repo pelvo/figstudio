@@ -55,6 +55,40 @@ pub(crate) fn screen_box(doc: &Document, id: Guid, transform: Affine) -> Option<
         .then_some(rect)
 }
 
+/// Changed leaf layers (no children, not the screen roots) whose box holds the centre of
+/// `region`: a small change inside a wide layer, such as one new glyph of a long text line,
+/// which the half-of-the-layer rule in [`region_nodes`] cannot match.
+pub(crate) fn containing_leaves(
+    region: &Region,
+    changed: &[Guid],
+    docs: (&Document, &Document),
+    pair: ScreenPair,
+    transforms: (Affine, Affine),
+) -> Vec<Guid> {
+    let area = Rect::new(
+        region.x as f64,
+        region.y as f64,
+        (region.x + region.width) as f64,
+        (region.y + region.height) as f64,
+    );
+    let sides = [
+        (docs.0, subtree(docs.0, pair.old), transforms.0),
+        (docs.1, subtree(docs.1, pair.new), transforms.1),
+    ];
+    changed
+        .iter()
+        .copied()
+        .filter(|id| Some(*id) != pair.old && Some(*id) != pair.new)
+        .filter(|id| {
+            sides.iter().any(|(doc, members, t)| {
+                members.contains(id)
+                    && doc.children(*id).is_empty()
+                    && screen_box(doc, *id, *t).is_some_and(|r| r.contains(area.center()))
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn region_nodes(
     regions: &mut [Region],
     ids: &[Guid],

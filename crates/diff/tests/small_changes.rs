@@ -83,3 +83,36 @@ fn a_changed_screen_with_no_visible_pixels_says_so_and_shows_the_screen() {
     assert!(screen.contains("src=\"./render/0-1-s0-before.webp\""));
     assert!(screen.contains("src=\"./render/0-1-s0-after.webp\""));
 }
+
+#[test]
+fn a_small_change_inside_a_wide_layer_is_matched_to_that_layer() {
+    // A wide bar is recoloured, but a cover hides all of it except a 6×6 corner: the changed
+    // area is far smaller than the bar's box (like one new glyph of a long text line).
+    let side = |rgb| {
+        let mut bar = filled_rectangle_at(3, 2, rgb, 20.0, 100.0, 260.0, 40.0);
+        bar.data.set("name", Val::Str("Bar".into()));
+        let bar = Node::from_data(bar.data).unwrap();
+        let mut cover = filled_rectangle_at(4, 2, (0.5, 0.5, 0.5), 26.0, 100.0, 254.0, 40.0);
+        cover.data.set("name", Val::Str("Cover".into()));
+        let mut cover = Node::from_data(cover.data).unwrap();
+        cover.data.set("type", Val::Str("RECTANGLE".into()));
+        let low = filled_rectangle_at(5, 2, (0.5, 0.5, 0.5), 20.0, 106.0, 6.0, 34.0);
+        document(vec![
+            screen(),
+            bar,
+            Node::from_data(cover.data).unwrap(),
+            low,
+        ])
+    };
+    let (old, new) = (side((1.0, 0.0, 0.0)), side((0.0, 1.0, 0.0)));
+    let mut report = diff_documents(&old, &new);
+    let _ = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+    let s = &report.pages[0].screens[0];
+    assert_eq!(s.pixels_changed, Some(36), "{s:?}");
+    assert_eq!(s.regions[0].nodes, vec![figstudio_fig::Guid(0, 3)]);
+    let html = render_html(&report);
+    let area = html.split("id=\"page-0-s1-a1\"").nth(1).unwrap();
+    let area = area.split("</article>").next().unwrap();
+    assert!(area.contains("class=\"nm\">Bar<"), "{area}");
+    assert!(!html.contains("with no matched change line"), "{html}");
+}

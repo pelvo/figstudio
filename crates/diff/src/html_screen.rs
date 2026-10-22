@@ -9,14 +9,18 @@ use std::{collections::BTreeSet, fmt::Write};
 fn area_heading(out: &mut String, region: &Region, k: usize, layers: usize) {
     let _ = write!(
         out,
-        "<div class=\"ah\"><b>Area {k}</b><span>{} px</span><span>x {} · y {} · {}×{}</span><span>{}</span></div>",
-        region.pixels_changed,
-        region.x,
-        region.y,
-        region.width,
-        region.height,
-        plural(layers, "change line", "change lines")
+        "<div class=\"ah\"><b>Area {k}</b><span>{} px</span><span>x {} · y {} · {}×{}</span>",
+        region.pixels_changed, region.x, region.y, region.width, region.height,
     );
+    // Area cards without lines sit under their own "no matched change line" heading.
+    if layers > 0 {
+        let _ = write!(
+            out,
+            "<span>{}</span>",
+            plural(layers, "change line", "change lines")
+        );
+    }
+    out.push_str("</div>");
 }
 
 pub(crate) fn screen_lines<'a>(
@@ -144,10 +148,16 @@ pub(crate) fn screen_section(
         out.push_str("</div></article>");
     }
     if !mini.is_empty() {
+        // "more" only when full area cards come before these.
+        let (one, many) = if used.is_empty() {
+            ("area", "areas")
+        } else {
+            ("more area", "more areas")
+        };
         let _ = write!(
             out,
             "<p class=\"subh\">{} with no matched change line</p><div class=\"minis\">",
-            plural(mini.len(), "more area", "more areas")
+            plural(mini.len(), one, many)
         );
         for (j, region) in mini {
             let j = j + 1;

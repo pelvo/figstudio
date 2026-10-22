@@ -51,8 +51,8 @@ pub(crate) fn page_section(
     let count = |status| page.screens.iter().filter(|s| s.status == status).count();
     let _ = write!(
         out,
-        "<div class=\"meta\"><span>{} changed · {} added · {} removed</span>",
-        plural(count(ScreenStatus::Changed), "screen", "screens"),
+        "<div class=\"meta\"><span>Screens: {} changed · {} added · {} removed</span>",
+        count(ScreenStatus::Changed),
         count(ScreenStatus::Added),
         count(ScreenStatus::Removed)
     );
