@@ -130,7 +130,10 @@ fn writes_all_five_faces_and_the_license() {
         res.status.success(),
         "with inputs present the script must succeed: {stderr}"
     );
-    if let Some(skipped) = stderr.lines().find(|l| l.contains("symbol fallback omitted")) {
+    if let Some(skipped) = stderr
+        .lines()
+        .find(|l| l.contains("symbol fallback omitted"))
+    {
         assert!(
             skipped.starts_with("web-font: missing "),
             "with its fonts installed the symbol group must build: {skipped}"
