@@ -503,3 +503,34 @@ fn page_bounds_cover_a_boolean_operand_only_when_it_is_drawn() {
         "a stored result paints only inside its box"
     );
 }
+
+#[test]
+fn page_bounds_keep_a_stored_boolean_shadow() {
+    let mut doc = reaching_boolean(true);
+    let shadow = obj(&[
+        ("type", Val::Str("DROP_SHADOW".into())),
+        ("visible", Val::Bool(true)),
+        ("blendMode", Val::Str("NORMAL".into())),
+        (
+            "color",
+            obj(&[
+                ("r", Val::Float(0.0)),
+                ("g", Val::Float(0.0)),
+                ("b", Val::Float(0.0)),
+                ("a", Val::Float(1.0)),
+            ]),
+        ),
+        (
+            "offset",
+            obj(&[("x", Val::Float(20.0)), ("y", Val::Float(0.0))]),
+        ),
+        ("radius", Val::Float(0.0)),
+        ("spread", Val::Float(0.0)),
+    ]);
+    doc.nodes[1].data.set("effects", Val::Arr(vec![shadow]));
+    let bounds = figstudio_render::content_bounds(&doc, id(1)).unwrap();
+    assert!(
+        bounds.x1 >= 60.0,
+        "the shadow past the box is painted: {bounds:?}"
+    );
+}

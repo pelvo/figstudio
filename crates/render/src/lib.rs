@@ -873,12 +873,13 @@ fn content_bounds_with_budget(
         let margin = overhang(&child.kind, &child.data, w, h);
         let mut bounds =
             transformed_bounds(world, Rect::new(-margin, -margin, w + margin, h + margin));
-        let clips = clips_hits(&child.kind, &child.data, &doc.blobs);
-        if clips {
+        // A clipping frame cuts its own stroke and effects too; a boolean's stored result
+        // keeps them, and only its operands stay out.
+        if clips_content(&child.kind, &child.data) {
             bounds = bounds.intersect(transformed_bounds(world, Rect::new(0.0, 0.0, w, h)));
         }
         out = Some(out.map_or(bounds, |current| current.union(bounds)));
-        if !clips {
+        if !clips_hits(&child.kind, &child.data, &doc.blobs) {
             stack.extend(doc.children(id).iter().rev().map(|id| (*id, world)));
         }
     }
