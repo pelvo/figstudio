@@ -142,15 +142,29 @@ impl SharedGroups {
                 .map_or_else(String::new, |n| n.name.clone())
         };
         let mut shared = Vec::new();
-        for (id, (group, mut marked)) in self.groups().into_iter().enumerate() {
+        for (group, mut marked) in self.groups() {
+            let id = shared.len();
             let count = screens(marked.iter().map(|(at, _)| at));
+            let region = |o: &SharedOccurrence| {
+                &report.pages[o.page_index].screens[o.screen_index].regions[o.region_index]
+            };
+            // An area kept without its crop (the page byte cap) has no picture to lead with.
+            // With no crop at all the card would be empty, so its screens stay unfolded and
+            // keep their own locator and whole-screen pictures.
+            let cropped = |o: &SharedOccurrence| region(o).image_width.is_some();
+            if !marked.iter().any(|(at, _)| cropped(at)) {
+                continue;
+            }
             let area = |o: &SharedOccurrence| {
-                let r = &report.pages[o.page_index].screens[o.screen_index].regions[o.region_index];
+                let r = region(o);
                 u64::from(r.width) * u64::from(r.height)
             };
-            // The largest region (first on ties) gives the most context and leads the group.
+            // The largest cropped region (first on ties) gives the most context and leads.
             let lead = (0..marked.len())
-                .max_by_key(|i| (area(&marked[*i].0), std::cmp::Reverse(*i)))
+                .max_by_key(|i| {
+                    let at = &marked[*i].0;
+                    (cropped(at), area(at), std::cmp::Reverse(*i))
+                })
                 .unwrap_or(0);
             let first = marked.remove(lead);
             marked.insert(0, first);
@@ -235,5 +249,78 @@ fn component(
             name: name_of(group),
         }),
         variants,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ComponentKey, RegionKey, SharedGroups, Signature};
+    use figstudio_fig::{Document, Guid};
+
+    /// One page whose screens each hold one area of the given side, cropped or not.
+    fn report(doc: &Document, areas: &[(u32, bool)]) -> crate::DiffReport {
+        let mut report = crate::diff_documents(doc, doc);
+        let screens: Vec<_> = areas
+            .iter()
+            .map(|&(side, cropped)| {
+                serde_json::json!({
+                    "old_id": [0, 2], "new_id": [0, 2], "name": "", "kind": "FRAME",
+                    "status": "Changed", "matched_by": "Id", "moved": false,
+                    "width": 200, "height": 200, "pixels_changed": 1,
+                    "thumb_old": null, "thumb_new": null,
+                    "regions": [{
+                        "x": 0, "y": 0, "width": side, "height": side, "pixels_changed": 1,
+                        "old_png": null, "new_png": null,
+                        "image_width": cropped.then_some(side * 2),
+                    }],
+                })
+            })
+            .collect();
+        report.pages.push(
+            serde_json::from_value(serde_json::json!({
+                "id": [0, 1], "old_name": null, "new_name": null, "status": "Changed",
+                "added": [], "removed": [], "changed": [], "render": null, "screens": screens,
+            }))
+            .unwrap(),
+        );
+        report
+    }
+
+    fn finish(doc: &Document, areas: &[(u32, bool)]) -> crate::DiffReport {
+        let mut report = report(doc, areas);
+        let mut groups = SharedGroups::default();
+        // One component group across every screen, so sizes can differ.
+        let key = RegionKey {
+            signature: Signature(0, 0, 0),
+            component: Some(ComponentKey {
+                group: Guid(0, 9),
+                master: Guid(0, 9),
+            }),
+        };
+        groups.record(0, areas.iter().map(|_| vec![key]).collect());
+        let page = report.pages.len() - 1;
+        groups.0.iter_mut().for_each(|(at, _)| at.page_index = page);
+        groups.finish(&mut report, (doc, doc));
+        report
+    }
+
+    #[test]
+    fn a_shared_card_leads_with_a_cropped_area_and_is_dropped_without_one() {
+        let doc =
+            Document::from_bytes(include_bytes!("../../../tests/fixtures/structure.fig")).unwrap();
+        // The larger area was kept without its crop (the page byte cap), so the smaller,
+        // cropped one leads.
+        let report = finish(&doc, &[(20, true), (40, false)]);
+        assert_eq!(report.shared_changes[0].occurrences[0].screen_index, 0);
+        assert_eq!(report.shared_changes[0].image_width, Some(40));
+        assert_eq!(
+            finish(&doc, &[(20, false), (40, true)]).shared_changes[0].width,
+            40
+        );
+        // No occurrence has a picture: no card, and the screens stay unfolded.
+        let report = finish(&doc, &[(20, false), (40, false)]);
+        assert!(report.shared_changes.is_empty());
+        let page = report.pages.last().unwrap();
+        assert!(page.screens.iter().all(|s| s.regions[0].shared.is_none()));
     }
 }

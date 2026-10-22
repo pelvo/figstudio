@@ -610,6 +610,36 @@ fn crop_pictures_count_toward_the_page_byte_cap() {
         assert!(report.truncated.contains(&note), "{:?}", report.truncated);
     };
     note(&report, "3 screens show their areas");
+    // The same dot changed on every screen: the shared card leads with the one crop.
+    let lead = report.shared_changes[0].occurrences[0];
+    assert_eq!(images[&page.id].screens[lead.screen_index].regions.len(), 1);
+    // With no room for any crop, no shared card is left without a picture: each screen
+    // stays unfolded with its own area and whole-screen pictures.
+    let limits = ScreenLimits {
+        page_bytes: page_picture_bytes(&old, &new) + whole,
+        ..ScreenLimits::default()
+    };
+    let mut report = diff_documents(&old, &new);
+    let images = attach_render_diffs(&old, &new, &mut report, &limited(limits));
+    let screens = &images[&report.pages[0].id].screens;
+    assert_eq!(screens.len(), 4);
+    assert!(
+        screens
+            .iter()
+            .all(|s| s.regions.is_empty() && s.after.is_some())
+    );
+    assert!(
+        report.shared_changes.is_empty(),
+        "{:?}",
+        report.shared_changes
+    );
+    assert!(
+        report.pages[0]
+            .screens
+            .iter()
+            .all(|s| s.regions[0].shared.is_none())
+    );
+    note(&report, "4 screens show their areas");
     // When the first screen's own pictures fill the cap, it keeps its area too.
     let limits = ScreenLimits {
         page_bytes: page_picture_bytes(&old, &new) + 1,
