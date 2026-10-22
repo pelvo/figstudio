@@ -602,11 +602,14 @@ fn crop_pictures_count_toward_the_page_byte_cap() {
             .iter()
             .all(|s| s.regions.len() == 1 && !s.regions[0].nodes.is_empty())
     );
-    assert!(
-        report.truncated.iter().any(|n| n.contains("without crops")),
-        "{:?}",
-        report.truncated
-    );
+    let note = |report: &figstudio_diff::DiffReport, screens: &str| {
+        let note = format!(
+            "page {} picture byte limit reached; {screens} without crops",
+            report.pages[0].id
+        );
+        assert!(report.truncated.contains(&note), "{:?}", report.truncated);
+    };
+    note(&report, "3 screens show their areas");
     // When the first screen's own pictures fill the cap, it keeps its area too.
     let limits = ScreenLimits {
         page_bytes: page_picture_bytes(&old, &new) + 1,
@@ -625,4 +628,6 @@ fn crop_pictures_count_toward_the_page_byte_cap() {
             .regions
             .is_empty()
     );
+    // The screens past it were not rendered at all, so the note names only that one.
+    note(&report, "1 screen shows its areas");
 }

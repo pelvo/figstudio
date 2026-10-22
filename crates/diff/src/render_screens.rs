@@ -62,7 +62,7 @@ pub(crate) fn attach_screens(
     page.screens_moved = 0;
     let pairs = match_screens(docs.0, docs.1, page.id);
     let mut capped_any = false;
-    let mut crops_left_out = false;
+    let mut uncropped = 0;
     let mut tally = PageTally::new(opts.screen_limits, doc_pixels);
     tally.keep_page(images);
     let members: Vec<_> = pairs
@@ -153,7 +153,7 @@ pub(crate) fn attach_screens(
         // Crop pictures count toward the page byte cap too: once it is reached, later
         // screens keep their whole-screen pictures and their areas but cut no crops.
         let full = cuts && tally.bytes_full();
-        crops_left_out |= full;
+        uncropped += usize::from(full);
         let share = if cuts && !full {
             crop_budget / (croppers_left + 1)
         } else {
@@ -235,9 +235,14 @@ pub(crate) fn attach_screens(
         signatures.push(region_keys);
     }
     notes.extend(tally.note(page.id));
-    if crops_left_out {
+    if uncropped > 0 {
+        let screens = if uncropped == 1 {
+            "1 screen shows its areas".to_owned()
+        } else {
+            format!("{uncropped} screens show their areas")
+        };
         notes.push(format!(
-            "page {} picture byte limit reached; later screens show their areas without crops",
+            "page {} picture byte limit reached; {screens} without crops",
             page.id
         ));
     }

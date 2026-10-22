@@ -205,3 +205,17 @@ fn before_after_labels_sit_above_the_picture_never_on_it() {
     assert!(css.contains("#view-overlay:checked~.shell .cmp .bf{z-index:1;opacity:0"));
     assert!(css.contains("#view-overlay:checked~.shell .cmp:hover .bf"));
 }
+
+#[test]
+fn an_area_without_crop_pictures_shows_no_before_after_control() {
+    let mut report = report();
+    for region in &mut report.pages[0].screens[0].regions {
+        region.old_png = None;
+        region.new_png = None;
+    }
+    let html = render_html(&report);
+    assert!(!html.contains("class=\"cmp\" tabindex"), "{html}");
+    assert!(!html.contains("Showing After"));
+    // The area itself and where it is on the screen still show.
+    assert!(html.contains("class=\"loc\""));
+}

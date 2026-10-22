@@ -64,6 +64,13 @@ pub(crate) fn compare_sized(
     size: Option<(u32, u32)>,
     label: &str,
 ) {
+    // An area kept without its crops (the page byte cap) has no picture to compare.
+    if ![old, new]
+        .iter()
+        .any(|p| p.as_deref().is_some_and(relative_link))
+    {
+        return;
+    }
     let _ = write!(
         out,
         "<div class=\"cmp\" tabindex=\"0\" aria-label=\"{}: Before / After\">",
