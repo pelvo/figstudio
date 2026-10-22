@@ -7,10 +7,10 @@ use rmcp::{ServiceExt, transport::StreamableHttpClientTransport};
 use serde_json::json;
 use std::sync::Arc;
 use support::*;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 
-/// Reads stderr until the `Web:` line; returns the MCP address and the token.
-async fn banner(stderr: tokio::process::ChildStderr) -> (String, String) {
+/// Reads stderr until the MCP address and local pairing token have arrived.
+async fn banner(stderr: &mut (impl AsyncRead + Unpin)) -> (String, String) {
     let mut lines = BufReader::new(stderr).lines();
     let (mut mcp, mut token) = (None, None);
     while let Some(line) = lines.next_line().await.unwrap() {
@@ -30,6 +30,24 @@ async fn banner(stderr: tokio::process::ChildStderr) -> (String, String) {
 }
 
 #[tokio::test]
+async fn banner_keeps_stderr_open_for_later_output() {
+    let (mut writer, mut reader) = tokio::io::duplex(1024);
+    writer
+        .write_all(
+            b"MCP: http://127.0.0.1:3845/mcp\nLocal: http://127.0.0.1:8765/#mcp=test-token\n",
+        )
+        .await
+        .unwrap();
+    let (mcp, token) = banner(&mut reader).await;
+    assert_eq!(mcp, "http://127.0.0.1:3845/mcp");
+    assert_eq!(token, "test-token");
+    writer
+        .write_all(b"Bridge port: 3845 (set the web app URL if not 3845)\n")
+        .await
+        .expect("reading the banner must not close the child's stderr pipe");
+}
+
+#[tokio::test]
 async fn the_bridge_binary_pairs_a_browser_socket_with_an_mcp_client() {
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
         .args(["--bridge", "--http=127.0.0.1:0", "--no-system-fonts"])
@@ -37,12 +55,12 @@ async fn the_bridge_binary_pairs_a_browser_socket_with_an_mcp_client() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let (mcp, token) = tokio::time::timeout(
-        std::time::Duration::from_secs(20),
-        banner(child.stderr.take().unwrap()),
-    )
-    .await
-    .unwrap();
+    // Keep the pipe open: the child still prints banner lines after Local.
+    let mut stderr = child.stderr.take().unwrap();
+    let (mcp, token) =
+        tokio::time::timeout(std::time::Duration::from_secs(20), banner(&mut stderr))
+            .await
+            .unwrap();
     assert_eq!(token.len(), 64, "256-bit hex token");
     let addr = mcp
         .strip_prefix("http://")
