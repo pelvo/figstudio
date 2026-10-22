@@ -62,6 +62,16 @@ fn the_sample_report_is_self_contained_and_shows_each_kind_of_screen() {
     )
     .unwrap();
     let html = render_html(&report);
+    // Every picture the page links was written next to it.
+    let pictures: Vec<_> = html
+        .split("src=\"./")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    assert!(!pictures.is_empty(), "{html}");
+    for path in &pictures {
+        assert!(out.join(path).is_file(), "missing {path}");
+    }
     if dir.is_some() {
         std::fs::write(out.join("report.html"), &html).unwrap();
     } else {

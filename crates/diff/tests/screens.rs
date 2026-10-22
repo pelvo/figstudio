@@ -207,22 +207,22 @@ fn recreated_screen_lists_layers_it_gained_or_lost_but_not_identity_churn() {
 
 #[test]
 fn recreated_screen_does_not_list_churn_below_a_layer_that_kept_its_id() {
-    let named = |n: Node, name: &str, kind: &str| named(typed(n, kind), name);
+    let named_kind = |n: Node, name: &str, kind: &str| named(typed(n, kind), name);
     let row = |id, parent, y| {
-        named(
+        named_kind(
             filled_rectangle_at(id, parent, (1.0, 1.0, 1.0), 0.0, y, 200.0, 100.0),
             "Row",
             "FRAME",
         )
     };
     let dot = |id, parent| {
-        named(
+        named_kind(
             filled_rectangle_at(id, parent, (1.0, 0.0, 0.0), 10.0, 10.0, 20.0, 20.0),
             "Dot",
             "RECTANGLE",
         )
     };
-    let badge = named(
+    let badge = named_kind(
         filled_rectangle_at(9, 5, (0.0, 0.0, 1.0), 100.0, 10.0, 20.0, 20.0),
         "Badge",
         "RECTANGLE",
