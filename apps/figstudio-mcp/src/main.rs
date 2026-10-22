@@ -52,6 +52,10 @@ struct Args {
     /// Additional exact browser Origin allowed to pair (also sets the launch URL for --browser-proxy).
     #[arg(long, visible_alias = "origin", conflicts_with = "files")]
     allow_origin: Vec<String>,
+    /// Open the --origin page itself instead of serving it from the proxy's loopback port.
+    /// Chrome then asks for local network access, which a headless browser cannot grant.
+    #[arg(long, conflicts_with_all = ["files", "bridge"])]
+    no_mirror: bool,
     /// Maximum bytes per browser upload (default 2 GiB).
     #[arg(long, requires = "bridge", default_value_t = figstudio_mcp::bridge::DEFAULT_MAX_UPLOAD_BYTES)]
     max_upload_bytes: u64,
@@ -227,7 +231,8 @@ async fn run_browser_proxy(args: &Args) -> anyhow::Result<()> {
     };
     let listener = bind_proxy_listener(None).await?;
     let addr = listener.local_addr()?;
-    let config = ProxyConfig::new(&args.allow_origin, true)?;
+    let mut config = ProxyConfig::new(&args.allow_origin, true)?;
+    config.mirror &= !args.no_mirror;
     // Never log the proxy token or full launch URL on stderr: MCP hosts record stderr logs.
     eprintln!("Browser proxy: ws://127.0.0.1:{}/bridge", addr.port());
     let shutdown = tokio_util::sync::CancellationToken::new();

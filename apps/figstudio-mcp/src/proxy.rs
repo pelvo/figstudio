@@ -6,6 +6,7 @@
 //! uploading `.fig` files.
 
 use crate::bridge::{DEFAULT_ORIGINS, pairing_token};
+use crate::web_mirror::{WebMirror, is_loopback_origin, mirror_origins};
 use axum::{
     extract::{
         State, WebSocketUpgrade,
@@ -62,6 +63,9 @@ pub struct ProxyConfig {
     pub launch_origin: String,
     /// Whether `open_figstudio_browser` launches the system browser command.
     pub launch_browser: bool,
+    /// Serve `launch_origin` from the proxy's own loopback port and open it there (see
+    /// [`crate::web_mirror`]). On by default unless `launch_origin` is already loopback.
+    pub mirror: bool,
 }
 
 impl std::fmt::Debug for ProxyConfig {
@@ -70,6 +74,7 @@ impl std::fmt::Debug for ProxyConfig {
             .field("origins", &self.origins)
             .field("launch_origin", &self.launch_origin)
             .field("launch_browser", &self.launch_browser)
+            .field("mirror", &self.mirror)
             .finish_non_exhaustive()
     }
 }
@@ -110,22 +115,26 @@ impl ProxyConfig {
                     .filter(|s| !s.is_empty())
             })
             .unwrap_or_else(|| PUBLIC_ORIGIN.to_owned());
+        let mirror = !is_loopback_origin(&launch_origin);
         Ok(Self {
             token,
             origins,
             launch_origin,
             launch_browser,
+            mirror,
         })
     }
 
-    /// URL with the `#mcpProxyPort=<port>&mcpProxyToken=<token>` fragment that pairs a tab.
+    /// URL with the `#mcpProxyPort=<port>&mcpProxyToken=<token>` fragment that pairs a tab:
+    /// the proxy's own `http://127.0.0.1:<port>` when mirroring, else `launch_origin`.
     #[must_use]
     pub fn launch_url(&self, port: u16) -> String {
-        format!(
-            "{}/#mcpProxyPort={port}&mcpProxyToken={}",
-            self.launch_origin.trim_end_matches('/'),
-            self.token
-        )
+        let page = if self.mirror {
+            format!("http://127.0.0.1:{port}")
+        } else {
+            self.launch_origin.trim_end_matches('/').to_owned()
+        };
+        format!("{page}/#mcpProxyPort={port}&mcpProxyToken={}", self.token)
     }
 }
 
@@ -165,6 +174,7 @@ pub struct ProxyState {
     pending: Mutex<HashMap<String, PendingCall>>,
     stdio_pin: Mutex<Option<String>>,
     native_session_tools: Mutex<HashSet<String>>,
+    mirror: Option<WebMirror>,
     pub ready_notify: Notify,
     pub tools_changed_notify: Notify,
     pub shutdown: CancellationToken,
@@ -391,7 +401,19 @@ fn augment_tools(
 
 impl ProxyState {
     #[must_use]
-    pub fn new(config: ProxyConfig, port: u16, shutdown: CancellationToken) -> Arc<Self> {
+    pub fn new(mut config: ProxyConfig, port: u16, shutdown: CancellationToken) -> Arc<Self> {
+        let mirror = config
+            .mirror
+            .then(|| WebMirror::new(&config.launch_origin))
+            .flatten();
+        config.mirror = mirror.is_some();
+        if config.mirror {
+            for origin in mirror_origins(port) {
+                if !config.origins.contains(&origin) {
+                    config.origins.push(origin);
+                }
+            }
+        }
         Arc::new(Self {
             config,
             port,
@@ -402,6 +424,7 @@ impl ProxyState {
             pending: Mutex::new(HashMap::new()),
             stdio_pin: Mutex::new(None),
             native_session_tools: Mutex::new(HashSet::new()),
+            mirror,
             ready_notify: Notify::new(),
             tools_changed_notify: Notify::new(),
             shutdown,
@@ -1183,6 +1206,18 @@ pub async fn upgrade_bridge(
         .on_upgrade(move |socket| handle_socket(socket, state))
 }
 
+async fn serve_mirror(
+    State(state): State<Arc<ProxyState>>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+) -> Response {
+    match &state.mirror {
+        Some(mirror) => mirror.serve(&method, &uri, &headers).await,
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 async fn handle_socket(mut socket: WebSocket, state: Arc<ProxyState>) {
     let conn_id = state.conn_seq.fetch_add(1, Ordering::Relaxed) + 1;
     let first_order = state.next_order();
@@ -1415,9 +1450,11 @@ pub async fn serve_proxy_ws(
         None
     };
 
-    let router = axum::Router::new()
-        .route("/bridge", axum::routing::get(upgrade_bridge))
-        .with_state(state.clone());
+    let mut router = axum::Router::new().route("/bridge", axum::routing::get(upgrade_bridge));
+    if state.mirror.is_some() {
+        router = router.fallback(serve_mirror);
+    }
+    let router = router.with_state(state.clone());
 
     let shutdown = state.shutdown.clone();
     let mut tasks = vec![tokio::spawn({

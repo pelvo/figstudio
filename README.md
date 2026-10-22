@@ -36,16 +36,16 @@ Protocol (MCP) server, written in Rust.
   ```
 
   The first time the agent needs a file it calls `open_figstudio_browser`, which opens
-  https://figstudio.pelvo.dev paired with the local server; open your `.fig` in that tab.
+  the figstudio.pelvo.dev app paired with the local server; open your `.fig` in that tab.
+  `figstudio-mcp` fetches the app from figstudio.pelvo.dev and serves it on its own
+  `http://127.0.0.1:<port>`, so the page reaches the server without a local network
+  access prompt (a headless browser cannot answer one). `--no-mirror` opens
+  https://figstudio.pelvo.dev itself instead; Chrome then asks to let the page reach
+  devices on your local network, and Safari cannot pair at all (it blocks an `https://`
+  page from reaching `ws://127.0.0.1`).
   **What you trust:** that page's code comes from figstudio.pelvo.dev and reads the files
   you open in it, so "nothing is uploaded" holds as long as that deployment serves this
-  repository's build. To keep everything on your machine, use the local build below.
-  If the browser asks to let the page reach devices on your local network, allow it: that
-  is `figstudio-mcp` on `127.0.0.1`. **Safari cannot pair:** it blocks an `https://` page
-  from reaching `ws://127.0.0.1` (Chrome, Edge and Firefox allow it). If Safari is your
-  default browser, have `figstudio-mcp` open another one, for example Chrome:
-  `claude mcp add figstudio -e 'BROWSER=open -a "Google Chrome"' -- npx -y figstudio-mcp --browser-proxy`
-  (`open -a "Microsoft Edge"` or `open -a Firefox` for those). Or use the local build:
+  repository's build. To keep everything on your machine, use the local build:
   serve it with `scripts/web-build.sh --serve` and register
   `claude mcp add figstudio -- npx -y figstudio-mcp --origin http://127.0.0.1:8765`;
   `open_figstudio_browser` then opens that address. To serve a file from disk instead,

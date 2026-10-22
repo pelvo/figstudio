@@ -35,6 +35,8 @@ clap.workspace = true
 url.workspace = true
 tokio-util.workspace = true
 tempfile.workspace = true
+# HTTPS fetches of the web app for the loopback mirror (web_mirror.rs).
+reqwest = { workspace = true, features = ["rustls"] }
 
 [dev-dependencies]
 zip = { workspace = true }

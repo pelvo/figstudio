@@ -119,9 +119,11 @@ pairing token (a wrong one closes the socket with 4401), so another web page can
 files at it. One browser connection at a time: a newer tab replaces the older one. Logs
 show counts only, never names or contents.
 
-Not verified: whether Safari or a newer Chrome blocks an `https://` page opening
-`ws://127.0.0.1` (mixed content / Local Network Access prompt). If your browser blocks it,
-use the local `--serve` build over `http://127.0.0.1:8765`.
+An `https://` page opening `ws://127.0.0.1` needs Chrome's Local Network Access
+permission (Chrome 142+; a headless browser fails with
+`ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`) and is blocked by Safari as mixed content.
+If your browser blocks it, use the local `--serve` build over `http://127.0.0.1:8765`.
+`--browser-proxy` avoids this by serving the page itself (below).
 
 ### Deploying the browser app (two methods)
 
@@ -188,17 +190,24 @@ Or in `.mcp.json` / Cursor / Windsurf:
   build at `http://127.0.0.1:8765` may always pair) speaks `stdio` to the agent, binds
   `ws://127.0.0.1:<port>/bridge` on loopback (trying `3845..=3855` first, then an ephemeral
   port), and mints a 256-bit process token (never printed to `stderr`).
-- When the agent calls `open_figstudio_browser`, the proxy opens the first `--origin`, by
-  default `https://figstudio.pelvo.dev/#mcpProxyPort=<port>&mcpProxyToken=<token>` (your
-  own deploy's or the local build's origin if you passed one), in your default browser
+- **Loopback mirror (default):** the same port serves the first `--origin` (by default
+  `https://figstudio.pelvo.dev`). The proxy fetches each file from that origin on first
+  request, keeps it in memory (up to 256 MiB, 128 MiB per file) and answers with the
+  cross-origin isolation headers of `web/_headers`. The page therefore loads from
+  `http://127.0.0.1:<port>` and reaches `ws://127.0.0.1:<port>/bridge` on its own address,
+  which needs no Local Network Access permission: a headless Chrome pairs instead of
+  failing with `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`. Only `GET`/`HEAD` with a
+  loopback `Host` are served (a DNS-rebinding page gets 403), requests never leave the
+  origin's host, and `/mcp/` answers 404 so the app hides Cloud relay. A loopback
+  `--origin` (the local build) is opened directly. `--no-mirror` opens the origin itself
+  (Chrome then asks for local network access, Safari cannot pair). The tab's storage
+  (recents, settings) belongs to `http://127.0.0.1:<port>`, not to the public origin.
+- When the agent calls `open_figstudio_browser`, the proxy opens
+  `http://127.0.0.1:<port>/#mcpProxyPort=<port>&mcpProxyToken=<token>` (with
+  `--no-mirror` or a loopback `--origin`, that origin instead) in your default browser
   (`$BROWSER`, `open`, `xdg-open`, or `rundll32 url.dll,FileProtocolHandler`). The page
   strips the `#fragment` immediately, and the proxy waits up to 60 s for the tab's `ready`
   v2 frame before emitting `notifications/tools/list_changed`.
-- **Safari cannot pair with an `https://` origin:** WebKit blocks `ws://127.0.0.1` from
-  `https://` pages as mixed content (Chromium, Edge and Firefox allow loopback). With
-  Safari as the default browser, set `BROWSER` to another one, for example
-  `claude mcp add figstudio -e 'BROWSER=open -a "Google Chrome"' -- npx -y figstudio-mcp --browser-proxy`,
-  or use the local build with `--origin http://127.0.0.1:8765`.
 - `list_sessions` and `select_session` work identically when multiple tabs connect.
 
 ### In the browser (cloud relay and multi-device sessions)
@@ -460,7 +469,7 @@ renderer), so the browser MCP build does not register them.
 | `reveal_node` *(app only)* | `nodeId` (or a link), `fileKey?` | One line: the node is revealed in tab N | Selects the node in the app; the tab becomes active and the view fits the node. A page ID switches to that page. An instance path reveals its outer instance and says so. Waits 5 s for the app; then the error "the app did not respond" (a minimised window may not run frames, so the reveal can time out). A figma.com link (without `fileKey`) is shown only in the file it names, never in some other active tab. The desktop app resolves it: the matching open tab, or else the local copy named after the link (`<file name>.fig`) in its link folders (`FIGSTUDIO_LINK_DIRS`, a path list, else `~/Downloads`; or the folder chosen in File → Open Figma link…), which it opens first (`revealed 1:2 in tab 3 (opened the local copy)`); it waits up to 60 s for that. When several files match equally (two documents can share a name), the call fails and asks for a pick in the app. The node ID is checked first, so a link without a valid `node-id` never opens a file. Replies about links carry no paths or file names. In the browser bridge, which cannot open local copies, the link must name exactly one open tab. |
 | `list_sessions` *(cloud relay only)* | none | `{sessions: [{session, device: {label}, focused, docs: [{tab, name, fileKey, key, pages}], secondsSinceReady}], selectedSession, socketsInUse, socketCap}` | Answered by the relay Durable Object even when no tab is connected. `docs[].fileKey` is the tool `fileKey` argument; `docs[].key` is the first 16 hex of SHA-256 over the 8-byte little-endian file size and first 4 MiB. `device.id` is never exposed. |
 | `select_session` *(cloud relay / browser proxy)* | `session` (`s_…` or `""` to clear) | `{selected: <sessionSummary>}` or `{cleared: true, ...}` | Pins a target session in memory for subsequent tool calls from this MCP client (keyed by the `Mcp-Session-Id` header issued on `initialize`, capped at 64 clients). If the pinned tab disconnects, subsequent calls return `-32002`; if the isolate restarts or evicts the `Mcp-Session-Id`, requests carrying the stale header return HTTP 404 (`-32002`) so the client re-initializes instead of falling through to another device. |
-| `open_figstudio_browser` *(`--browser-proxy` only)* | `timeoutSeconds?` (1–120, default 60) | `{connected, launched, sessions}` | Opens `<origin>/#mcpProxyPort=<port>&mcpProxyToken=<token>` in the system browser if no tab is connected yet and waits for the tab to send `ready` v2. |
+| `open_figstudio_browser` *(`--browser-proxy` only)* | `timeoutSeconds?` (1–120, default 60) | `{connected, launched, sessions}` | Opens `http://127.0.0.1:<port>/#mcpProxyPort=<port>&mcpProxyToken=<token>` (the loopback mirror; `<origin>/…` with `--no-mirror`) in the system browser if no tab is connected yet and waits for the tab to send `ready` v2. |
 
 ### Comparing versions
 

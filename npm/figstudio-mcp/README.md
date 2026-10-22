@@ -11,22 +11,18 @@ and no install script runs.
 claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
 ```
 
-When the agent first needs a file it opens https://figstudio.pelvo.dev in your browser,
+When the agent first needs a file it opens the figstudio.pelvo.dev app in your browser,
 paired with this local server; open your `.fig` in that tab (Figma → File → Save local
 copy). The file stays in the tab and nothing is uploaded, as long as figstudio.pelvo.dev
 serves figstudio's own build: that page's code reads your file, so you trust that
-deployment (to keep everything local, use the local build below). If the browser asks to
-let the page reach devices on your local network, allow it: that is this server on
-`127.0.0.1`.
+deployment (to keep everything local, use the local build below).
 
-**Safari cannot pair:** it blocks an `https://` page from reaching `ws://127.0.0.1`
-(Chrome, Edge and Firefox allow it). If Safari is your default browser, have this server
-open another one, for example Chrome (`open -a "Microsoft Edge"` or `open -a Firefox` for
-those):
-
-```sh
-claude mcp add figstudio -e 'BROWSER=open -a "Google Chrome"' -- npx -y figstudio-mcp --browser-proxy
-```
+This server fetches the app from figstudio.pelvo.dev and serves it on its own
+`http://127.0.0.1:<port>`, so the page reaches the server without Chrome's local network
+access prompt, which a headless browser cannot answer. With `--no-mirror` it opens
+https://figstudio.pelvo.dev itself: Chrome then asks to let the page reach devices on your
+local network, and Safari cannot pair (it blocks an `https://` page from reaching
+`ws://127.0.0.1`).
 
 Or, from a [figstudio](https://github.com/pelvo/figstudio) checkout, serve the local build
 with `scripts/web-build.sh --serve` and pair with it over plain `http`:

@@ -37,8 +37,18 @@ fn without_an_origin_the_proxy_opens_the_public_build_and_still_pairs_the_local_
     assert_eq!(PUBLIC_ORIGIN, "https://figstudio.pelvo.dev");
     let config = ProxyConfig::new(&[], false).unwrap();
     assert_eq!(config.launch_origin, PUBLIC_ORIGIN);
+    // The public build is served from the proxy's own port (see `web_mirror_*` below), so
+    // the tab never needs Chrome's local network access permission.
+    assert!(config.mirror);
     let url = config.launch_url(3845);
-    assert!(url.starts_with("https://figstudio.pelvo.dev/#mcpProxyPort=3845&mcpProxyToken="));
+    assert!(url.starts_with("http://127.0.0.1:3845/#mcpProxyPort=3845&mcpProxyToken="));
+    let mut direct = config.clone();
+    direct.mirror = false;
+    assert!(
+        direct
+            .launch_url(3845)
+            .starts_with("https://figstudio.pelvo.dev/#mcpProxyPort=3845&mcpProxyToken=")
+    );
     for origin in [
         PUBLIC_ORIGIN,
         "http://127.0.0.1:8765",
@@ -53,6 +63,7 @@ fn without_an_origin_the_proxy_opens_the_public_build_and_still_pairs_the_local_
     // `--origin` still wins, and the public build stays allowed next to it.
     let custom = ProxyConfig::new(&["https://figstudio.example.com/".to_owned()], false).unwrap();
     assert_eq!(custom.launch_origin, "https://figstudio.example.com");
+    assert!(custom.mirror);
     assert!(custom.origins.iter().any(|o| o == PUBLIC_ORIGIN));
     assert!(
         custom
@@ -60,6 +71,131 @@ fn without_an_origin_the_proxy_opens_the_public_build_and_still_pairs_the_local_
             .iter()
             .any(|o| o == "https://figstudio.example.com")
     );
+}
+
+#[test]
+fn a_loopback_origin_is_opened_directly() {
+    let config = ProxyConfig::new(&["http://127.0.0.1:8765".to_owned()], false).unwrap();
+    assert!(!config.mirror);
+    assert!(
+        config
+            .launch_url(3845)
+            .starts_with("http://127.0.0.1:8765/#mcpProxyPort=3845&mcpProxyToken=")
+    );
+}
+
+/// A stand-in for the deployed web app: counts requests so the test sees the cache.
+async fn start_fake_web_app() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let hits = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    let app = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+        let counter = counter.clone();
+        async move {
+            counter.fetch_add(1, Ordering::SeqCst);
+            match uri.path() {
+                "/" => (
+                    axum::http::StatusCode::OK,
+                    [("content-type", "text/html")],
+                    "<!doctype html><title>figstudio</title>".to_owned(),
+                ),
+                "/figstudio_bg.wasm" => (
+                    axum::http::StatusCode::OK,
+                    [("content-type", "application/wasm")],
+                    "\0asm".to_owned(),
+                ),
+                _ => (
+                    axum::http::StatusCode::NOT_FOUND,
+                    [("content-type", "text/plain")],
+                    "missing".to_owned(),
+                ),
+            }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (origin, hits)
+}
+
+#[tokio::test]
+async fn web_mirror_serves_the_app_from_the_proxy_port_and_pairs_with_it() {
+    use std::sync::atomic::Ordering;
+    let (upstream, hits) = start_fake_web_app().await;
+    let listener = bind_proxy_listener(Some("127.0.0.1:0".parse().unwrap()))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let mut config = ProxyConfig::new(std::slice::from_ref(&upstream), false).unwrap();
+    // The stand-in app is on loopback itself; force the mirror a public origin gets.
+    config.mirror = true;
+    let token = config.token.clone();
+    let shutdown = CancellationToken::new();
+    let state = ProxyState::new(config, port, shutdown.clone());
+    assert!(state.config.mirror);
+    let server_state = state.clone();
+    tokio::spawn(async move {
+        let _ = serve_proxy_ws(listener, server_state).await;
+    });
+    let page = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+
+    // The page and its files come from the proxy port, cross-origin isolated for threads.
+    for _ in 0..2 {
+        let index = client.get(format!("{page}/")).send().await.unwrap();
+        assert_eq!(index.status(), 200);
+        assert_eq!(index.headers()["content-type"], "text/html");
+        assert_eq!(index.headers()["cross-origin-opener-policy"], "same-origin");
+        assert_eq!(
+            index.headers()["cross-origin-embedder-policy"],
+            "require-corp"
+        );
+        assert_eq!(
+            index.text().await.unwrap(),
+            "<!doctype html><title>figstudio</title>"
+        );
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "the second load is cached");
+    let wasm = client
+        .get(format!("{page}/figstudio_bg.wasm"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wasm.headers()["content-type"], "application/wasm");
+    let missing = client.get(format!("{page}/nope.js")).send().await.unwrap();
+    assert_eq!(missing.status(), 404);
+
+    // No cloud relay behind this port: the probe never reaches the origin.
+    let before = hits.load(Ordering::SeqCst);
+    let probe = client.get(format!("{page}/mcp/")).send().await.unwrap();
+    assert_eq!(probe.status(), 404);
+    assert_eq!(hits.load(Ordering::SeqCst), before);
+
+    // A DNS-rebinding page under another host name is refused.
+    let rebound = client
+        .get(format!("{page}/"))
+        .header("host", format!("evil.example:{port}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rebound.status(), 403);
+
+    // The mirrored page pairs with its own port; a foreign origin still cannot.
+    let proto = format!("{EXEC_PROTOCOL}, {token}");
+    for origin in [page.clone(), format!("http://localhost:{port}")] {
+        let mut ws = connect_ws(port, &origin, Some(&proto)).await.unwrap();
+        ws.send(Message::Text("ping".into())).await.unwrap();
+        let pong = ws.next().await.unwrap().unwrap();
+        assert_eq!(pong.into_text().unwrap().as_str(), "pong");
+    }
+    assert!(
+        connect_ws(port, "http://127.0.0.1:1", Some(&proto))
+            .await
+            .is_err()
+    );
+    shutdown.cancel();
 }
 
 async fn connect_ws(
@@ -436,6 +572,10 @@ async fn browser_proxy_binary_speaks_stdio_never_logs_token_and_launches_browser
         }
     }
     let (port, token) = (port.unwrap(), token.unwrap());
+    assert!(
+        launch_url.starts_with(&format!("http://127.0.0.1:{port}/#")),
+        "the tab opens the loopback mirror, not the public origin: {launch_url}"
+    );
     let proto = format!("{EXEC_PROTOCOL}, {token}");
     let mut ws = connect_ws(port, "https://figstudio.example.com", Some(&proto))
         .await
