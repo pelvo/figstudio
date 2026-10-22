@@ -41,18 +41,20 @@ Protocol (MCP) server, written in Rust.
   normally. The tap is [pelvo/homebrew-tap](https://github.com/pelvo/homebrew-tap).
 - **Linux (x86_64 or arm64), CLI and MCP server:** each release has a static
   `figstudio-cli-mcp-vX.Y.Z-linux-<arch>.tar.gz` (any distro, Alpine too; from the release
-  after v0.1.0). To put the latest one in `~/.local/bin`:
+  after v0.1.0). To check the latest one against the release's `SHA256SUMS` and put it in
+  `~/.local/bin`:
 
   ```sh
   v=$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/pelvo/figstudio/releases/latest); v=${v##*/}
-  arch=$(uname -m | sed 's/aarch64/arm64/')
-  mkdir -p ~/.local/bin && curl -fsSL "https://github.com/pelvo/figstudio/releases/download/$v/figstudio-cli-mcp-$v-linux-$arch.tar.gz" | tar -xz -C ~/.local/bin
+  f=figstudio-cli-mcp-$v-linux-$(uname -m | sed 's/aarch64/arm64/').tar.gz
+  cd "$(mktemp -d)" && curl -fsSL -O "https://github.com/pelvo/figstudio/releases/download/$v/$f" -O "https://github.com/pelvo/figstudio/releases/download/$v/SHA256SUMS"
+  grep " $f\$" SHA256SUMS | sha256sum -c - && mkdir -p ~/.local/bin && tar -xzf "$f" -C ~/.local/bin
   ```
 
   If `~/.local/bin` is not on your `PATH` yet (Debian and Ubuntu add it only at login, and
-  only if it existed then), add `export PATH="$HOME/.local/bin:$PATH"` to your shell
-  profile, or register the server by its full path (`~/.local/bin/figstudio-mcp`).
-  `SHA256SUMS` in the same release lists every file's checksum.
+  only if it existed then), run `export PATH="$HOME/.local/bin:$PATH"` in this shell and add
+  the same line to your shell profile for later sessions. Registering the server by its full
+  path (`~/.local/bin/figstudio-mcp`) also works without it.
 - **Give it to Claude Code in one line** (needs Rust 1.95 or newer for `cargo`):
 
   ```sh
