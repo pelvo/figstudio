@@ -873,11 +873,12 @@ fn content_bounds_with_budget(
         let margin = overhang(&child.kind, &child.data, w, h);
         let mut bounds =
             transformed_bounds(world, Rect::new(-margin, -margin, w + margin, h + margin));
-        if clips_content(&child.kind, &child.data) {
+        let clips = clips_hits(&child.kind, &child.data, &doc.blobs);
+        if clips {
             bounds = bounds.intersect(transformed_bounds(world, Rect::new(0.0, 0.0, w, h)));
         }
         out = Some(out.map_or(bounds, |current| current.union(bounds)));
-        if !clips_content(&child.kind, &child.data) {
+        if !clips {
             stack.extend(doc.children(id).iter().rev().map(|id| (*id, world)));
         }
     }
@@ -1051,15 +1052,17 @@ impl Ctx<'_> {
         h: f64,
     ) -> bool {
         let leaf = kind != "INSTANCE" && self.doc.children(node.id).is_empty();
-        let bounded = leaf || clips_hits(kind, data, &self.doc.blobs);
-        if !bounded {
+        let bounded = leaf || clips_content(kind, data);
+        if !bounded && kind != "BOOLEAN_OPERATION" {
             return false;
         }
         let m = overhang(kind, data, w, h);
         let r = self.inherited_reach;
         let b = transformed_bounds(world, Rect::new(-m, -m, w + m, h + m)).inflate(r, r);
         if !b.overlaps(self.screen) {
-            return true;
+            // Whether a boolean draws its stored result decides only here, so its geometry is
+            // decoded only for a box that misses the output.
+            return bounded || clips_hits(kind, data, &self.doc.blobs);
         }
         // A leaf smaller than a quarter pixel each way contributes nothing visible.
         leaf && kind != "TEXT" && {

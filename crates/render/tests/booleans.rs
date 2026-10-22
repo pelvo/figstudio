@@ -452,25 +452,54 @@ fn an_unstroked_boolean_does_not_count_its_stale_stroke_geometry() {
     assert_eq!(skipped(true), skipped(false));
 }
 
-#[test]
-fn a_fallback_boolean_is_not_culled_by_its_box() {
-    let mut doc = boolean_doc("SUBTRACT", None);
-    // The operand reaches past the 40×40 box; the view shows only that part.
+/// A boolean whose operand reaches to 70×70 past its 40×40 box, drawing its stored result
+/// when `stored`, otherwise falling back to its operands.
+fn reaching_boolean(stored: bool) -> Document {
+    let mut doc = boolean_doc("SUBTRACT", stored.then_some("fillGeometry"));
+    doc.nodes[1].data.set("strokePaints", Val::Arr(vec![]));
     doc.nodes[2].data.set("size", size(70.0, 70.0));
-    let frame = Renderer::new().render(
-        &doc,
-        id(1),
-        &Viewport {
-            width: 80,
-            height: 80,
-            transform: Affine::translate((-50.0, -50.0)),
-            background: None,
-        },
-    );
-    let px = frame.pixmap.data_as_u8_slice();
+    doc
+}
+
+#[test]
+fn a_boolean_is_culled_by_its_box_only_when_it_draws_its_stored_result() {
+    // The view shows only the part of the operand past the box.
+    let view = |stored: bool| {
+        Renderer::new().render(
+            &reaching_boolean(stored),
+            id(1),
+            &Viewport {
+                width: 80,
+                height: 80,
+                transform: Affine::translate((-50.0, -50.0)),
+                background: None,
+            },
+        )
+    };
+    let fallback = view(false);
     assert_eq!(
-        pixel(px, 5, 5),
+        pixel(fallback.pixmap.data_as_u8_slice(), 5, 5),
         [128, 128, 128, 255],
-        "the operand past the box"
+        "a fallback paints the operand past the box"
+    );
+    let stored = view(true);
+    assert_eq!(pixel(stored.pixmap.data_as_u8_slice(), 5, 5), [0, 0, 0, 0]);
+    assert_eq!(
+        stored.stats.culled, 1,
+        "a stored result is culled by its box"
+    );
+}
+
+#[test]
+fn page_bounds_cover_a_boolean_operand_only_when_it_is_drawn() {
+    let right = |stored: bool| {
+        figstudio_render::content_bounds(&reaching_boolean(stored), id(1))
+            .unwrap()
+            .x1
+    };
+    assert!(right(false) >= 70.0, "a fallback paints its operand whole");
+    assert!(
+        right(true) < 45.0,
+        "a stored result paints only inside its box"
     );
 }
