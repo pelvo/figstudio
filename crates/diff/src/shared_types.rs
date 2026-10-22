@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// A repeated visual change. Its picture is the changed component itself when that component
 /// exists in both files (`component_view`), else the crops of `occurrences[0]`, which is the
-/// occurrence with the largest region (most context).
+/// largest occurrence that kept its crop (most context). A card with neither picture is dropped.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedChange {
     /// Zero-based index into DiffReport::shared_changes.
