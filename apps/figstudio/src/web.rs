@@ -558,8 +558,8 @@ pub struct Inbox {
     pub font_state: FontState,
     /// The View menu choice (saved, or the browser language default).
     pub font_choice: Variant,
-    /// A Hangul-only file is open this session, so KR is in use instead of `font_choice`.
-    pub korean_override: bool,
+    /// Why KR is in use this session instead of `font_choice`, if it is.
+    pub korean: crate::cjk::KoreanFor,
     /// The most the Recents names asked for so far. Each level acts once, so a View menu
     /// pick is not undone on the next frame.
     labels_cjk: crate::theme::CjkNeed,
@@ -589,29 +589,40 @@ impl Inbox {
             fonts,
             font_state: FontState::NotNeeded,
             font_choice: cjk_default(),
-            korean_override: false,
+            korean: crate::cjk::KoreanFor::Nothing,
             labels_cjk: crate::theme::CjkNeed::None,
             symbols: crate::symbols::Loader::default(),
         }
     }
 
-    /// Fetches the CJK font that `need` asks for (KR for Hangul only).
+    /// Fetches the CJK font that an opened file's `need` asks for (KR for Hangul only).
+    /// Otherwise it is the saved face, also when only Recents names had switched to KR.
     pub fn load_cjk_for(&mut self, ctx: &egui::Context, need: crate::theme::CjkNeed) {
         use crate::theme::CjkNeed;
-        match need {
-            CjkNeed::None => {}
-            CjkNeed::HangulOnly => self.load_hangul_font(ctx),
-            CjkNeed::Shared | CjkNeed::Any => self.load_cjk_font(ctx),
+        if need == CjkNeed::None {
+            return;
         }
+        let hangul_only = need == CjkNeed::HangulOnly;
+        self.switch(ctx, |inbox| {
+            inbox.korean = inbox.korean.after_document(hangul_only)
+        });
+        self.load_cjk_font(ctx);
     }
 
-    /// Fetches the CJK font for names shown before any file opens (the Recents page).
+    /// Fetches the CJK font for names shown before any file opens (the Recents page): KR
+    /// when any name has Hangul. Each level acts once, so a View menu pick is not undone on
+    /// the next frame.
     pub fn load_cjk_for_labels(&mut self, ctx: &egui::Context, labels: &[String]) {
+        use crate::theme::{CjkNeed, names_rank};
         let need = crate::theme::cjk_need_of(labels.iter().map(String::as_str));
-        if need > self.labels_cjk {
-            self.labels_cjk = need;
-            self.load_cjk_for(ctx, need);
+        if names_rank(need) <= names_rank(self.labels_cjk) {
+            return;
         }
+        self.labels_cjk = need;
+        if need == CjkNeed::HangulOnly {
+            self.switch(ctx, |inbox| inbox.korean = inbox.korean.after_names());
+        }
+        self.load_cjk_font(ctx);
     }
 
     /// Fetches the CJK font once; it arrives in `fonts`.
@@ -630,9 +641,10 @@ impl Inbox {
         });
     }
 
-    /// The face in use: KR while a Hangul-only file asked for it, else the menu choice.
+    /// The face in use: KR while a Hangul-only file or Recents name asked for it, else the
+    /// menu choice.
     pub fn font_variant(&self) -> Variant {
-        if self.korean_override {
+        if self.korean.on() {
             Variant::Kr
         } else {
             self.font_choice
@@ -648,15 +660,8 @@ impl Inbox {
         }
         self.switch(ctx, |inbox| {
             inbox.font_choice = variant;
-            inbox.korean_override = false;
+            inbox.korean = crate::cjk::KoreanFor::Nothing;
         });
-    }
-
-    /// A file whose only CJK is Hangul: only KR draws it, so use KR for this session. Not
-    /// saved; it lasts until a menu pick or a reload, and applies to every tab.
-    pub fn load_hangul_font(&mut self, ctx: &egui::Context) {
-        self.switch(ctx, |inbox| inbox.korean_override = true);
-        self.load_cjk_font(ctx);
     }
 
     /// Applies `change`; if that changes the face in use, a loaded or loading font is

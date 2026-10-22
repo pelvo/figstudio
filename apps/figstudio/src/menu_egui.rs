@@ -35,10 +35,17 @@ impl App {
                 if ui.radio(item.checked == Some(true), item.label).clicked() {
                     self.apply(action, ui.ctx());
                 }
-                if self.web.korean_override && v == *crate::cjk::Variant::ALL.last().unwrap_or(&v) {
+                let why = match self.web.korean {
+                    crate::cjk::KoreanFor::Nothing => None,
+                    crate::cjk::KoreanFor::Document => Some("a file has only Hangul"),
+                    crate::cjk::KoreanFor::Names => Some("a recent file name has Hangul"),
+                };
+                if let Some(why) = why
+                    && v == *crate::cjk::Variant::ALL.last().unwrap_or(&v)
+                {
                     ui.separator();
                     ui.label(
-                        egui::RichText::new("Korean (KR) in use: a file has only Hangul")
+                        egui::RichText::new(format!("Korean (KR) in use: {why}"))
                             .color(crate::theme::of(ui).text_dim),
                     );
                 }

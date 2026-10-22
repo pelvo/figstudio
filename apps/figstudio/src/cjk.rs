@@ -37,6 +37,51 @@ impl Variant {
     }
 }
 
+/// Why the session draws CJK with KR instead of the saved choice. KR is the only face with
+/// Hangul, and it also has kana and ideographs.
+#[cfg_attr(
+    not(any(test, target_arch = "wasm32")),
+    expect(dead_code, reason = "only the browser fetches a CJK font")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KoreanFor {
+    /// The saved choice is in use.
+    #[default]
+    Nothing,
+    /// An open file's only CJK is Hangul.
+    Document,
+    /// A Recents name has Hangul and no file asked for a face.
+    Names,
+}
+
+#[cfg_attr(
+    not(any(test, target_arch = "wasm32")),
+    expect(dead_code, reason = "only the browser fetches a CJK font")
+)]
+impl KoreanFor {
+    pub fn on(self) -> bool {
+        self != Self::Nothing
+    }
+
+    /// A file asked for a CJK face: KR for Hangul only, else the saved choice wins over KR
+    /// that only the Recents names asked for.
+    pub fn after_document(self, hangul_only: bool) -> Self {
+        match (hangul_only, self) {
+            (true, _) => Self::Document,
+            (false, Self::Names) => Self::Nothing,
+            (false, other) => other,
+        }
+    }
+
+    /// A Recents name has Hangul. It never replaces a file's reason.
+    pub fn after_names(self) -> Self {
+        match self {
+            Self::Nothing => Self::Names,
+            other => other,
+        }
+    }
+}
+
 pub fn from_language(language: &str) -> Variant {
     let language = language.to_ascii_lowercase();
     let mut parts = language.split('-');
@@ -83,5 +128,33 @@ mod tests {
             assert!(!variant.label().is_empty());
         }
         assert_eq!(Variant::from_code("invalid"), None);
+    }
+
+    #[test]
+    fn a_file_takes_back_the_face_that_recents_names_switched_to_kr() {
+        use KoreanFor::*;
+        assert_eq!(Nothing.after_names(), Names, "a Hangul name on Recents");
+        assert_eq!(
+            Names.after_document(false),
+            Nothing,
+            "a Japanese file opens next"
+        );
+        assert_eq!(
+            Names.after_document(true),
+            Document,
+            "a Hangul-only file opens next"
+        );
+        assert_eq!(
+            Document.after_names(),
+            Document,
+            "names never replace a file's reason"
+        );
+        assert_eq!(
+            Document.after_document(false),
+            Document,
+            "unchanged from before"
+        );
+        assert_eq!(Nothing.after_document(false), Nothing);
+        assert!(Names.on() && Document.on() && !Nothing.on());
     }
 }
