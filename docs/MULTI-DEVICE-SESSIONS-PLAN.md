@@ -51,7 +51,8 @@ can see who answered. The script is `docs/qa/relay_multi_device_qa.py`.
 | S10 | Everything closed | `503 No browser tab connected` |
 
 The app reconnects on its own after a connection drops, with delays growing from 1 s to
-60 s (`apps/figstudio/src/mcp_backoff.rs`), and sends `ready` on connect, so S6b happens without
+60 s (`apps/figstudio/src/mcp_backoff.rs`), and sends `ready` on connect, a background tab included
+(`mcp_web_pump.rs`), so S6b happens without
 the user touching the idle machine: a Wi-Fi blip at the office is enough. (A Worker
 deploy did **not** trigger this in the real-Cloudflare run below: the hibernated sockets
 stayed open across deploys.)

@@ -8,20 +8,21 @@ use crate::mcp_relay::{Done, Inbox, RelayTabs};
 pub(super) struct Calls {
     pub inbox: Inbox,
     /// The welcomed relay socket and its connection generation; `None` while there is
-    /// none. Set by each frame (`McpHost::publish`).
+    /// none. Set by each frame, and by a connection welcomed between frames
+    /// (`mcp_web_pump.rs`).
     live: Option<(u32, WebSocket)>,
     /// The tabs as the last frame saw them; calls between frames run against these.
     view: RelayTabs,
 }
 
 impl Calls {
-    /// What the last frame saw. Captured only while a relay socket is live.
-    pub fn publish(&mut self, live: Option<(u32, WebSocket)>, tabs: &[Tab], active: usize) {
-        self.view = if live.is_some() {
-            RelayTabs::capture(tabs, active)
-        } else {
-            RelayTabs::default()
-        };
+    /// What the last frame saw.
+    pub fn view(&mut self, tabs: &[Tab], active: usize) {
+        self.view = RelayTabs::capture(tabs, active);
+    }
+
+    /// The connection calls run on and reply to; `None` refuses them until there is one.
+    pub fn live(&mut self, live: Option<(u32, WebSocket)>) {
         self.live = live;
     }
 

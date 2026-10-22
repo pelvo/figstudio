@@ -590,3 +590,69 @@ test("a hidden tab answers relay calls while its frames are throttled", async ({
     expect(Date.now() - started, `${name} answered without a frame`).toBeLessThan(10_000);
   }
 });
+
+test("a hidden tab reconnects a dropped relay without waiting for a frame", async ({
+  page, request,
+}) => {
+  test.setTimeout(180_000);
+  // The same background tab as above: its frames are a minute apart. A dropped relay
+  // socket (a Worker deploy, a network change) must still be noticed, retried and greeted
+  // with `ready` between frames (mcp_web_pump.rs), or every call meanwhile gets 503.
+  await page.addInitScript(() => {
+    window.relayHidden = false;
+    window.relaySockets = [];
+    const hidden = Object.getOwnPropertyDescriptor(Document.prototype, "hidden");
+    Object.defineProperty(Document.prototype, "hidden", {
+      configurable: true,
+      get() { return window.relayHidden || hidden.get.call(this); },
+    });
+    Object.defineProperty(Document.prototype, "visibilityState", {
+      configurable: true,
+      get() { return window.relayHidden ? "hidden" : "visible"; },
+    });
+    const later = window.setTimeout;
+    window.setTimeout = (callback, delay, ...rest) =>
+      later.call(window, callback, window.relayHidden && delay === 10 ? 60_000 : delay, ...rest);
+    const NativeWebSocket = WebSocket;
+    window.WebSocket = class extends NativeWebSocket {
+      constructor(...args) {
+        super(...args);
+        if (String(args[0]).includes("/bridge/")) window.relaySockets.push(this);
+      }
+    };
+  });
+  await page.goto(baseURL);
+  await expect(page.locator("#figstudio")).toBeVisible();
+  await expect.poll(() => mcp(page), { timeout: 60_000 }).toBeTruthy();
+  const { room } = await mcp(page);
+  const url = `${baseURL}/mcp/${room}`;
+  await openFile(page, fixture);
+  let nextId = 1;
+  const tabs = async () => {
+    const response = await request.post(url, {
+      data: {
+        jsonrpc: "2.0", id: nextId++, method: "tools/call",
+        params: { name: "list_open_tabs", arguments: {} },
+      },
+    });
+    if (response.status() !== 200) return 0;
+    const result = (await response.json()).result;
+    if (result.isError) return 0;
+    return (result.structuredContent ??
+      JSON.parse(result.content.find((block) => block.type === "text").text)).tabs.length;
+  };
+  await expect.poll(tabs, { timeout: 60_000 }).toBeGreaterThan(0);
+
+  await page.evaluate(() => {
+    window.relayHidden = true;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  // Let the last visible-timer frame pass, so the next one is a minute away.
+  await page.waitForTimeout(2_000);
+  expect(await page.evaluate(() => window.relaySockets.length)).toBe(1);
+  const dropped = Date.now();
+  await page.evaluate(() => window.relaySockets[0].close());
+  await expect.poll(tabs, { timeout: 20_000, intervals: [250] }).toBeGreaterThan(0);
+  expect(Date.now() - dropped, "reconnected without a frame").toBeLessThan(15_000);
+  expect(await page.evaluate(() => window.relaySockets.length)).toBe(2);
+});

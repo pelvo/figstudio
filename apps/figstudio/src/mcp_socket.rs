@@ -1,5 +1,6 @@
 //! Socket callbacks enqueue events and start relay calls on the pool; no browser file
-//! reads run here.
+//! reads run here. Each event also wakes the host, which handles the connection's own
+//! events without waiting for a frame (`mcp_web_pump.rs`).
 use super::Calls;
 use crate::mcp_upload::{Event, Shared};
 use crate::mcp_wire::{CONNECT_TIMEOUT_MS, parse_rpc};
@@ -44,7 +45,7 @@ impl Conn {
         generation: u32,
         shared: &Rc<Shared>,
         calls: &Rc<RefCell<Calls>>,
-        ctx: &egui::Context,
+        wake: Rc<dyn Fn()>,
     ) -> Result<Self, String> {
         let ws = match protocols {
             Some([marker, executor]) => WebSocket::new_with_str_sequence(
@@ -57,11 +58,12 @@ impl Conn {
             None => WebSocket::new(url),
         }
         .map_err(|_| "Not a valid WebSocket address".to_owned())?;
-        let push = |shared: &Rc<Shared>, ctx: &egui::Context, event: Event| {
+        // The wake handles the event (or leaves it for the frame) and asks for a frame.
+        let push = move |shared: &Rc<Shared>, event: Event| {
             shared.events.borrow_mut().push_back(event);
-            ctx.request_repaint();
+            wake();
         };
-        let (s, c, calls) = (shared.clone(), ctx.clone(), Rc::downgrade(calls));
+        let (s, p, calls) = (shared.clone(), push.clone(), Rc::downgrade(calls));
         let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
             let Some(text) = e.data().as_string() else {
                 return;
@@ -72,7 +74,7 @@ impl Conn {
                 // instead of, `rpc` frame parsing, and tagged with this connection's
                 // generation so only its own `pong` can clear its wait.
                 if text == "pong" {
-                    push(&s, &c, Event::Pong { generation });
+                    p(&s, Event::Pong { generation });
                 } else if let Some((id, body)) = parse_rpc(&text) {
                     // Started here, not at the next frame: a hidden tab may not draw one
                     // before the relay's deadline (`mcp_web_calls.rs`).
@@ -82,9 +84,8 @@ impl Conn {
                             .start(generation, id.clone(), body.clone())
                     });
                     if !started {
-                        push(
+                        p(
                             &s,
-                            &c,
                             Event::Rpc {
                                 generation,
                                 id,
@@ -94,22 +95,21 @@ impl Conn {
                     }
                 }
             } else if let Ok(message) = serde_json::from_str::<ServerMessage>(&text) {
-                push(&s, &c, Event::Server(message));
+                p(&s, Event::Server(message));
             }
         });
-        let (s, c) = (shared.clone(), ctx.clone());
+        let (s, p) = (shared.clone(), push.clone());
         let on_close = Closure::<dyn FnMut(CloseEvent)>::new(move |e: CloseEvent| {
-            push(&s, &c, Event::Closed(e.code()));
+            p(&s, Event::Closed(e.code()));
         });
-        let (s, c) = (shared.clone(), ctx.clone());
-        let on_open =
-            Closure::<dyn FnMut(web_sys::Event)>::new(move |_| push(&s, &c, Event::Opened));
+        let (s, p) = (shared.clone(), push.clone());
+        let on_open = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| p(&s, Event::Opened));
         ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
         ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
         ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-        let (s, c) = (shared.clone(), ctx.clone());
+        let s = shared.clone();
         let give_up = Closure::<dyn FnMut()>::once(move || {
-            push(&s, &c, Event::ConnectTimeout(generation));
+            push(&s, Event::ConnectTimeout(generation));
         });
         let timer = web_sys::window().and_then(|window| {
             window

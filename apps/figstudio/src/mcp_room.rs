@@ -110,8 +110,13 @@ pub(super) fn document_focused() -> bool {
 }
 
 /// Retry a lost relay at once when the page is shown again or the browser is back
-/// online, instead of waiting out the retry delay: sets `hurry` and asks for a frame.
-pub(super) fn watch_return(hurry: std::rc::Rc<std::cell::Cell<bool>>, ctx: &egui::Context) {
+/// online, instead of waiting out the retry delay: sets `hurry`, asks for a frame and
+/// wakes the host (a hidden page that comes back online has no frame soon).
+pub(super) fn watch_return(
+    hurry: std::rc::Rc<std::cell::Cell<bool>>,
+    ctx: &egui::Context,
+    wake: std::rc::Rc<dyn Fn()>,
+) {
     use wasm_bindgen::{JsCast, closure::Closure};
     let Some(window) = web_sys::window() else {
         return;
@@ -119,21 +124,19 @@ pub(super) fn watch_return(hurry: std::rc::Rc<std::cell::Cell<bool>>, ctx: &egui
     let Some(document) = window.document() else {
         return;
     };
+    let ctx = ctx.clone();
     let nudge = move || {
         hurry.set(true);
+        ctx.request_repaint();
+        wake();
     };
-    let (shown, ctx_shown) = (nudge.clone(), ctx.clone());
+    let shown = nudge.clone();
     let on_visible = Closure::<dyn FnMut()>::new(move || {
         if !crate::web::page_hidden() {
             shown();
-            ctx_shown.request_repaint();
         }
     });
-    let ctx = ctx.clone();
-    let on_online = Closure::<dyn FnMut()>::new(move || {
-        nudge();
-        ctx.request_repaint();
-    });
+    let on_online = Closure::<dyn FnMut()>::new(nudge);
     let _ = document
         .add_event_listener_with_callback("visibilitychange", on_visible.as_ref().unchecked_ref());
     let _ = window.add_event_listener_with_callback("online", on_online.as_ref().unchecked_ref());

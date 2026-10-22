@@ -2,7 +2,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use egui::RichText;
 use figstudio_mcp_core::bridge::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
@@ -32,6 +32,8 @@ mod events;
 mod join;
 #[path = "mcp_web_menu.rs"]
 mod menu;
+#[path = "mcp_web_pump.rs"]
+mod pump;
 #[path = "mcp_room.rs"]
 mod room;
 #[path = "mcp_socket.rs"]
@@ -39,7 +41,86 @@ mod socket;
 use calls::Calls;
 use socket::Conn;
 
-pub struct McpHost {
+/// Browser agent access. The state is shared with the relay socket's callbacks and the
+/// timers they set, which keep the connection up between frames (`mcp_web_pump.rs`).
+pub struct McpHost(Rc<RefCell<Host>>);
+
+impl Default for McpHost {
+    fn default() -> Self {
+        let host = Rc::new(RefCell::new(Host::default()));
+        host.borrow_mut().me = Rc::downgrade(&host);
+        Self(host)
+    }
+}
+
+impl McpHost {
+    /// Start of each frame: apply what the bridge sent. Returns a message for a toast.
+    pub fn frame(&mut self, tabs: &mut [Tab], active: &mut usize) -> Option<String> {
+        self.0.borrow_mut().frame(tabs, active)
+    }
+
+    /// The browser has no folders to open a link's local copy from (`reveal_node` refuses it).
+    pub fn take_links(&mut self) -> Vec<crate::link_open::LinkAsk> {
+        Vec::new()
+    }
+
+    /// [`Self::sync`], then send the link answers: an MCP caller told a file is open finds
+    /// it in the published snapshot.
+    pub fn sync_then_answer(
+        &mut self,
+        ctx: &egui::Context,
+        tabs: &[Tab],
+        active: usize,
+        answers: Vec<crate::link_open::Answer>,
+    ) {
+        self.sync(ctx, tabs, active);
+        for (done, result) in answers {
+            done(result);
+        }
+    }
+
+    /// End of each frame: connect when asked, upload new tabs, tell the bridge about closed
+    /// tabs and publish the view when it changed.
+    pub fn sync(&mut self, ctx: &egui::Context, tabs: &[Tab], active: usize) {
+        self.0.borrow_mut().sync(ctx, tabs, active);
+    }
+
+    /// Close the socket; open documents stay. No automatic retry follows.
+    pub fn stop(&mut self) {
+        self.0.borrow_mut().stop();
+    }
+
+    /// The browser's controls are its own (`menu`), not the desktop switches.
+    pub fn access(&mut self) -> Option<crate::settings::Access<'_>> {
+        None
+    }
+
+    pub fn menu(&mut self, ui: &mut egui::Ui) {
+        self.0.borrow_mut().menu(ui);
+    }
+
+    pub fn status(&self, ui: &mut egui::Ui) {
+        self.0.borrow().status(ui);
+    }
+
+    /// Ask about a pending linked room before anything joins it. Drawn ahead of the app
+    /// shortcuts so the dialog's Escape is consumed first.
+    pub fn confirm(&mut self, ctx: &egui::Context) {
+        self.0.borrow_mut().confirm(ctx);
+    }
+}
+
+struct Host {
+    /// This host, for the socket callbacks and timers that run `pump` between frames.
+    me: Weak<RefCell<Host>>,
+    /// Kept by the first `sync`, for work between frames.
+    ctx: Option<egui::Context>,
+    /// The pending `pump` timer (its id, and when it is due), and the callback it runs.
+    timer: Option<(i32, Instant)>,
+    tick: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
+    /// The tabs' `ready` summary and their key as the last frame saw them, for a
+    /// connection welcomed between frames.
+    seen: (Key, Vec<serde_json::Value>),
     relay: bool,
     /// The executor credential; `None` until storage yields or accepts one.
     pair: Option<ExecutorPair>,
@@ -103,7 +184,7 @@ pub struct McpHost {
     cloud_gate: CloudGate,
 }
 
-impl Default for McpHost {
+impl Default for Host {
     fn default() -> Self {
         let hash = web_sys::window().and_then(|w| w.location().hash().ok());
         let link = parse_link(hash.as_deref());
@@ -140,6 +221,11 @@ impl Default for McpHost {
             }
         });
         Self {
+            me: Weak::new(),
+            ctx: None,
+            timer: None,
+            tick: None,
+            seen: (key(&[], 0), Vec::new()),
             relay,
             pair,
             calls,
@@ -176,9 +262,15 @@ impl Default for McpHost {
     }
 }
 
-impl McpHost {
-    /// Start of each frame: apply what the bridge sent. Returns a message for a toast.
-    pub fn frame(&mut self, tabs: &mut [Tab], active: &mut usize) -> Option<String> {
+impl Drop for Host {
+    fn drop(&mut self) {
+        // Its callback goes with this host.
+        self.cancel_timer();
+    }
+}
+
+impl Host {
+    fn frame(&mut self, tabs: &mut [Tab], active: &mut usize) -> Option<String> {
         // Before the menu draws: an origin the probe just ruled out leaves Cloud relay now,
         // so the menu never shows cloud controls there.
         let cloud_mode = self.relay && self.proxy.is_none();
@@ -224,14 +316,23 @@ impl McpHost {
         toast
     }
 
-    /// Hand this frame's tabs and live relay socket to the between-frame calls.
-    fn publish(&self, tabs: &[Tab], active: usize) {
+    /// Hand this frame's tabs and live relay socket to the work between frames.
+    fn publish(&mut self, tabs: &[Tab], active: usize) {
+        if self.relay {
+            self.seen = (key(tabs, active), crate::mcp_wire::relay_ready_docs(tabs));
+            self.calls.borrow_mut().view(tabs, active);
+        }
+        self.go_live();
+    }
+
+    /// Hand the welcomed relay socket, if any, to the calls.
+    fn go_live(&self) {
         let live = self
             .conn
             .as_ref()
             .filter(|conn| self.relay && conn.welcomed)
             .map(|conn| (self.generation, conn.ws.clone()));
-        self.calls.borrow_mut().publish(live, tabs, active);
+        self.calls.borrow_mut().live(live);
     }
 
     /// Forget everything the bridge knew; a new connection uploads again.
@@ -246,29 +347,7 @@ impl McpHost {
         self.shared.cancelled.borrow_mut().clear();
     }
 
-    /// End of each frame: connect when asked, upload new tabs, tell the bridge about closed
-    /// tabs and publish the view when it changed.
-    /// The browser has no folders to open a link's local copy from (`reveal_node` refuses it).
-    pub fn take_links(&mut self) -> Vec<crate::link_open::LinkAsk> {
-        Vec::new()
-    }
-
-    /// [`Self::sync`], then send the link answers: an MCP caller told a file is open finds
-    /// it in the published snapshot.
-    pub fn sync_then_answer(
-        &mut self,
-        ctx: &egui::Context,
-        tabs: &[Tab],
-        active: usize,
-        answers: Vec<crate::link_open::Answer>,
-    ) {
-        self.sync(ctx, tabs, active);
-        for (done, result) in answers {
-            done(result);
-        }
-    }
-
-    pub fn sync(&mut self, ctx: &egui::Context, tabs: &[Tab], active: usize) {
+    fn sync(&mut self, ctx: &egui::Context, tabs: &[Tab], active: usize) {
         // After the UI pass: calls between frames see what this frame left (a reveal's
         // selection, say), not what it started with.
         self.publish(tabs, active);
@@ -281,22 +360,10 @@ impl McpHost {
             self.probe(ctx);
         }
         if !std::mem::replace(&mut self.listening, true) {
-            room::watch_return(self.hurry.clone(), ctx);
+            self.ctx = Some(ctx.clone());
+            room::watch_return(self.hurry.clone(), ctx, self.waker());
         }
-        if self.hurry.take() {
-            self.reconnect.hurry();
-        }
-        if self.relay && self.conn.is_none() {
-            match self.reconnect.poll(Instant::now()) {
-                Retry::Now => {
-                    // Quiet only when nothing else asked for this connect already.
-                    self.retrying_now = !self.want_connect;
-                    self.want_connect = true;
-                }
-                Retry::Wait(resume) => ctx.request_repaint_after(resume),
-                Retry::Idle => {}
-            }
-        }
+        self.plan_retry(ctx);
         let change = self.link.borrow_mut().take();
         if let Some(change) = change {
             // A `#room=` key is consumed the moment it is read, whatever else it said.
@@ -333,16 +400,7 @@ impl McpHost {
                 }
             }
         }
-        let asked = std::mem::take(&mut self.want_connect) && self.conn.is_none();
-        let step = self.settle_cloud(asked);
-        if step.probe {
-            self.probe(ctx);
-        }
-        if step.connect
-            && let Err(error) = self.connect(ctx)
-        {
-            self.notices.push(error);
-        }
+        self.connect_if_asked(ctx);
         let Some(conn) = self.conn.as_ref().filter(|c| c.welcomed) else {
             return;
         };
@@ -358,57 +416,19 @@ impl McpHost {
             if self.last_key.as_ref() != Some(&key) || self.last_focused != Some(focused) {
                 let wire_label = room::current_device_label();
                 if let (Some(device_id), Some(instance)) = (&self.device_id, &self.instance) {
-                    let frame = crate::mcp_wire::relay_ready_v2(
+                    let frame = crate::mcp_wire::relay_ready_frame(
                         device_id,
                         &wire_label,
                         instance,
                         focused,
-                        tabs,
+                        &self.seen.1,
                     );
                     let _ = ws.send_with_str(&frame);
                     self.last_key = Some(key);
                     self.last_focused = Some(focused);
                 }
             }
-            // Otherwise the relay socket can sit silent for a whole session while a NAT
-            // or proxy has already forgotten the flow, and a successful send only proves
-            // the browser buffered the bytes. The keepalive state machine runs the proof:
-            // a ping goes out, the DO's runtime answers `pong` without waking it, and no
-            // answer within the deadline drops the connection (see `mcp_heartbeat.rs`).
-            // `Beat::Wait` schedules the repaint for exactly the next decision — not a
-            // fixed cadence — so the deadline frame lands on time (or later, in a
-            // throttled background tab; never early).
-            let now = Instant::now();
-            let beat = self.heartbeat.tick(now);
-            match beat {
-                Beat::Wait(resume) => ctx.request_repaint_after(resume),
-                Beat::SendPing => match ws.send_with_str("ping") {
-                    Ok(()) => {
-                        self.heartbeat.ping_sent(now);
-                        ctx.request_repaint_after(PONG_DEADLINE);
-                    }
-                    // A refused send is the browser already giving up on the socket:
-                    // disconnect now, not after some later frame notices.
-                    Err(_) => {
-                        let msg = if self.proxy.is_some() {
-                            "Local browser proxy disconnected"
-                        } else {
-                            "Cloud relay disconnected"
-                        };
-                        self.relay_lost(ctx, msg, self.heartbeat.proven())
-                    }
-                },
-                // Retried with growing delays (`relay_lost`); a connection that never
-                // proved itself is one more failed attempt of the series.
-                Beat::Elapsed { proven } => {
-                    let msg = if self.proxy.is_some() {
-                        "Local browser proxy stopped responding"
-                    } else {
-                        "Cloud relay stopped responding"
-                    };
-                    self.relay_lost(ctx, msg, proven)
-                }
-            }
+            self.beat(ctx, &ws);
             return;
         }
         if self.uploading.is_none() {
@@ -499,7 +519,7 @@ impl McpHost {
         self.notices.extend(step.notice.map(str::to_owned));
     }
 
-    fn connect(&mut self, ctx: &egui::Context) -> Result<(), String> {
+    fn connect(&mut self) -> Result<(), String> {
         if !self.relay && self.token.is_empty() {
             return Err("Enter the pairing token printed by figstudio-mcp --bridge".to_owned());
         }
@@ -537,7 +557,7 @@ impl McpHost {
             self.generation,
             &self.shared,
             &self.calls,
-            ctx,
+            self.waker(),
         )?);
         Ok(())
     }
@@ -547,7 +567,7 @@ impl McpHost {
         self.conn = None;
         self.later.clear();
         self.reconnect.cancel();
-        self.calls.borrow_mut().publish(None, &[], 0);
+        self.calls.borrow_mut().live(None);
         self.reset_link();
         self.shared.events.borrow_mut().clear();
     }
