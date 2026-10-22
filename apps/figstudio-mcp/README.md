@@ -203,12 +203,14 @@ Or in `.mcp.json` / Cursor / Windsurf:
   loopback `Host` are served (a DNS-rebinding page gets 403), requests never leave the
   origin's host, and `/mcp/` answers 404 so the app hides Cloud relay. A loopback
   `--origin` (the local build) is opened directly, and so is an origin whose start page
-  the proxy cannot fetch within 15 s or that redirects to another host (a sign-in
-  gateway, offline). `--no-mirror` always opens the origin itself (Chrome then asks for
+  the proxy cannot fetch within 15 s, that redirects to another host, or that is not
+  figstudio's (it must import `figstudio.js`; a sign-in gateway's own page does not). `--no-mirror` always opens the origin itself (Chrome then asks for
   local network access, Safari cannot pair). On loopback the page could also reach other
   local ports and private addresses without a prompt, so the mirror sends a
-  Content-Security-Policy: `connect-src` only to its own port, images and media only from
-  it, no frames, objects or form posts. Compressed files are fetched with gzip/brotli
+  Content-Security-Policy with `default-src 'self'`: every script, style, font, image,
+  worker and connection comes from its own port (plus the inline script and style of
+  `index.html`, Wasm compilation and blob workers, which the app needs), and no frames,
+  objects or form posts. Compressed files are fetched with gzip/brotli
   and served decoded. The tab's storage (recents, settings) belongs to
   `http://127.0.0.1:<port>`, not to the public origin.
 - When the agent calls `open_figstudio_browser`, the proxy opens

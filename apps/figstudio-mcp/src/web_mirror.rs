@@ -83,13 +83,18 @@ impl WebMirror {
         if !matches!(origin.scheme(), "http" | "https") || origin.host().is_none() {
             return None;
         }
-        // `'self'` covers the page's own scheme, host and port (and `ws:` to it); the
-        // launch URL's `ws://127.0.0.1:<port>/bridge` is named too for a page opened as
-        // `localhost`. Scripts, styles, workers and fonts are left as the app needs them.
+        // Everything loads from this port (`default-src 'self'`). `'self'` also covers `ws:`
+        // to it; the launch URL's `ws://127.0.0.1:<port>/bridge` is named for a page opened
+        // as `localhost`. The exceptions are what the app needs to start: `web/index.html`'s
+        // inline module script and style, Wasm compilation, and wasm-bindgen-rayon's blob
+        // workers.
         let csp = HeaderValue::from_str(&format!(
-            "connect-src 'self' ws://127.0.0.1:{port}; img-src 'self' data: blob:; \
-             media-src 'self' data: blob:; frame-src 'none'; object-src 'none'; \
-             form-action 'none'; base-uri 'self'"
+            "default-src 'self'; \
+             script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; \
+             style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; \
+             connect-src 'self' ws://127.0.0.1:{port}; img-src 'self' data: blob:; \
+             media-src 'self' data: blob:; font-src 'self' data: blob:; frame-src 'none'; \
+             object-src 'none'; form-action 'none'; base-uri 'self'"
         ))
         .ok()?;
         Some(Self {
@@ -187,19 +192,23 @@ impl WebMirror {
         response
     }
 
-    /// Whether the origin's start page can be fetched from here: an origin behind a sign-in
-    /// gateway redirects to another host (or refuses) without the browser's cookies, so it
-    /// has to be opened in the browser itself.
+    /// Whether the origin's start page can be fetched from here and is figstudio's: an origin
+    /// behind a sign-in gateway redirects to another host, refuses, or answers with its own
+    /// sign-in page without the browser's cookies, so it has to be opened in the browser.
     pub async fn start_page_loads(&self) -> bool {
         let Some(url) = self.upstream_url(&Uri::from_static("/")) else {
             return false;
         };
         match tokio::time::timeout(START_PAGE_TIMEOUT, self.fetch(url)).await {
-            Ok(Ok(page)) => page.content_type.as_ref().is_some_and(|value| {
-                value
-                    .to_str()
-                    .is_ok_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"))
-            }),
+            Ok(Ok(page)) => {
+                let html = page.content_type.as_ref().is_some_and(|value| {
+                    value
+                        .to_str()
+                        .is_ok_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"))
+                });
+                // `web/index.html` imports the app's module; a gateway's page does not.
+                html && imports_the_app(&page.body)
+            }
             Ok(Err(_)) | Err(_) => false,
         }
     }
@@ -286,6 +295,11 @@ async fn read_capped(mut upstream: reqwest::Response) -> Result<axum::body::Byte
             }
         }
     }
+}
+
+fn imports_the_app(body: &[u8]) -> bool {
+    const MARKER: &[u8] = b"figstudio.js";
+    body.windows(MARKER.len()).any(|w| w == MARKER)
 }
 
 fn host_is_loopback(headers: &HeaderMap) -> bool {

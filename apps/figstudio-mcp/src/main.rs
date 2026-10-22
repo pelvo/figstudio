@@ -46,7 +46,8 @@ struct Args {
     #[arg(long, conflicts_with_all = ["files", "assets", "assets_dir", "browser_proxy"])]
     bridge: bool,
     /// Zero-upload local browser proxy over stdio (no FILE required). Serves the
-    /// https://figstudio.pelvo.dev app (or --origin's) on its own loopback port and opens it there.
+    /// https://figstudio.pelvo.dev app (or --origin's) on its own loopback port and opens it
+    /// there; opens the origin itself when its start page cannot be fetched (sign-in, offline).
     #[arg(long, conflicts_with_all = ["files", "assets", "assets_dir", "bridge", "http"])]
     browser_proxy: bool,
     /// Additional exact browser Origin allowed to pair (also sets the launch URL for --browser-proxy).

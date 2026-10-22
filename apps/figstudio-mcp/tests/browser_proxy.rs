@@ -97,7 +97,8 @@ async fn start_fake_web_app() -> (String, std::sync::Arc<std::sync::atomic::Atom
                 "/" => (
                     axum::http::StatusCode::OK,
                     [("content-type", "text/html")],
-                    "<!doctype html><title>figstudio</title>".to_owned(),
+                    "<!doctype html><script type=\"module\" src=\"./figstudio.js\"></script>"
+                        .to_owned(),
                 ),
                 "/figstudio_bg.wasm" => (
                     axum::http::StatusCode::OK,
@@ -109,6 +110,12 @@ async fn start_fake_web_app() -> (String, std::sync::Arc<std::sync::atomic::Atom
                     axum::http::StatusCode::FOUND,
                     [("location", "http://127.0.0.1:9/sign-in")],
                     String::new(),
+                ),
+                // A gateway that answers on the same host with its own sign-in page.
+                "/challenge/" => (
+                    axum::http::StatusCode::OK,
+                    [("content-type", "text/html; charset=utf-8")],
+                    "<!doctype html><form action=\"/sign-in\"></form>".to_owned(),
                 ),
                 _ => (
                     axum::http::StatusCode::NOT_FOUND,
@@ -158,10 +165,11 @@ async fn web_mirror_serves_the_app_from_the_proxy_port_and_pairs_with_it() {
         // connections on this port and its images and frames off other addresses.
         let csp = index.headers()["content-security-policy"].to_str().unwrap();
         assert!(
-            csp.starts_with(&format!("connect-src 'self' ws://127.0.0.1:{port};")),
+            csp.contains(&format!("connect-src 'self' ws://127.0.0.1:{port};")),
             "{csp}"
         );
         for directive in [
+            "default-src 'self';",
             "frame-src 'none'",
             "form-action 'none'",
             "img-src 'self' data: blob:",
@@ -174,7 +182,7 @@ async fn web_mirror_serves_the_app_from_the_proxy_port_and_pairs_with_it() {
         );
         assert_eq!(
             index.text().await.unwrap(),
-            "<!doctype html><title>figstudio</title>"
+            "<!doctype html><script type=\"module\" src=\"./figstudio.js\"></script>"
         );
     }
     assert_eq!(hits.load(Ordering::SeqCst), 1, "the second load is cached");
@@ -248,14 +256,16 @@ async fn an_origin_behind_a_sign_in_redirect_is_opened_directly() {
     // The proxy has none of the browser's cookies, so a gateway's redirect to its sign-in
     // host can only be followed in the browser, on the origin itself.
     let (upstream, _hits) = start_fake_web_app().await;
-    let gated = format!("{upstream}/gated");
-    let (port, state, shutdown) = start_mirroring_proxy(&gated).await;
-    let url = state.launch_url().await;
-    assert!(
-        url.starts_with(&format!("{gated}/#mcpProxyPort={port}&")),
-        "{url}"
-    );
-    shutdown.cancel();
+    for path in ["gated", "challenge"] {
+        let gated = format!("{upstream}/{path}");
+        let (port, state, shutdown) = start_mirroring_proxy(&gated).await;
+        let url = state.launch_url().await;
+        assert!(
+            url.starts_with(&format!("{gated}/#mcpProxyPort={port}&")),
+            "{url}"
+        );
+        shutdown.cancel();
+    }
 }
 
 #[tokio::test]
