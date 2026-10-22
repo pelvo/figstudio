@@ -244,21 +244,33 @@ fn many_medium_screens_under_the_default_caps_all_render() {
 
 #[test]
 fn dropped_unchanged_screens_do_not_consume_the_page_byte_cap() {
-    // Four identical screens are dropped from the report; the changed one after them must draw.
-    // Its dot only moves, so it has no change line and is drawn in id order, after them.
-    let old = frames(5, 60.0, |_| false);
+    // Every dot moves (no change line, so all five screens share one draw tier and keep id
+    // order), but the first four dots are hidden: those screens draw identically and are
+    // dropped. The changed fifth screen comes after them and must still draw.
+    let hide = |doc: &mut figstudio_fig::Document, moved: bool| {
+        let mut nodes = doc.nodes.clone();
+        for (i, dot) in [11, 13, 15, 17, 19].into_iter().enumerate() {
+            let n = nodes
+                .iter_mut()
+                .find(|n| n.id == figstudio_fig::Guid(0, dot))
+                .unwrap();
+            if i < 4 {
+                n.data.set("visible", Val::Bool(false));
+            }
+            if moved {
+                n.data.set(
+                    "transform",
+                    support::object(&[("m02", Val::Float(30.0)), ("m12", Val::Float(10.0))]),
+                );
+            }
+            *n = Node::from_data(n.data.clone()).unwrap();
+        }
+        doc.set_nodes(nodes).unwrap();
+    };
+    let mut old = frames(5, 60.0, |_| false);
+    hide(&mut old, false);
     let mut new = frames(5, 60.0, |_| false);
-    let mut nodes = new.nodes.clone();
-    let dot = nodes
-        .iter_mut()
-        .find(|n| n.id == figstudio_fig::Guid(0, 19))
-        .unwrap();
-    dot.data.set(
-        "transform",
-        support::object(&[("m02", Val::Float(30.0)), ("m12", Val::Float(10.0))]),
-    );
-    *dot = Node::from_data(dot.data.clone()).unwrap();
-    new.set_nodes(nodes).unwrap();
+    hide(&mut new, true);
     let limits = ScreenLimits {
         page_bytes: page_picture_bytes(&old, &new) + 1,
         ..ScreenLimits::default()
@@ -328,6 +340,38 @@ fn added_and_removed_screens_do_not_take_a_crop_share() {
         .position(|s| s.new_id == Some(figstudio_fig::Guid(0, 2)))
         .unwrap();
     let crop = &images[&page.id].screens[at].regions[0];
+    let png = image::load_from_memory(&crop.after).unwrap();
+    assert!(
+        png.width() >= 2000 && png.height() >= 2000,
+        "{}x{}",
+        png.width(),
+        png.height()
+    );
+}
+
+#[test]
+fn unchanged_screens_do_not_dilute_a_changed_screens_crop_share() {
+    // Ten unchanged 1000×1000 screens and one changed one: the changed crop gets the whole
+    // budget (2x, so at least 2000 px a side), not a tenth of it.
+    let frame = |id, x, rgb| {
+        let mut n = filled_rectangle_at(id, 1, rgb, x, 0.0, 1000.0, 1000.0);
+        n.data.set("type", Val::Str("FRAME".into()));
+        Node::from_data(n.data).unwrap()
+    };
+    let side = |rgb| {
+        document(
+            (2..12)
+                .map(|id| frame(id, f64::from(id) * 1200.0, (0.0, 0.0, 1.0)))
+                .chain(std::iter::once(frame(20, 0.0, rgb)))
+                .collect(),
+        )
+    };
+    let (old, new) = (side((1.0, 0.0, 0.0)), side((0.0, 1.0, 0.0)));
+    let mut report = diff_documents(&old, &new);
+    let images = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+    let page = &report.pages[0];
+    assert_eq!(page.screens.len(), 1);
+    let crop = &images[&page.id].screens[0].regions[0];
     let png = image::load_from_memory(&crop.after).unwrap();
     assert!(
         png.width() >= 2000 && png.height() >= 2000,

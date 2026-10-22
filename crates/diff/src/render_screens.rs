@@ -58,13 +58,24 @@ pub(crate) fn attach_screens(
             })
         })
         .collect();
-    // Screens with change lines are drawn first, so screens that turn out unchanged cannot
-    // use up the screen caps before them; the report keeps document order.
+    // Draw order: screens with change lines, then screens with other layer edits (a move has
+    // no line), then the rest, which are usually unchanged. Screens that turn out unchanged
+    // cannot use up the screen caps first. The report keeps document order.
+    let tier = |i: usize| match (has_lines[i], members[i].is_empty()) {
+        (true, _) => 0,
+        (false, false) => 1,
+        (false, true) => 2,
+    };
     let mut order: Vec<usize> = (0..pairs.len()).collect();
-    order.sort_by_key(|&i| (!has_lines[i], i));
-    // Only screens present on both sides crop, so only they share the crop budget.
+    order.sort_by_key(|&i| (tier(i), i));
+    // Only screens present on both sides crop. Each tier splits what is left of the budget
+    // among its own screens, so likely-unchanged screens drawn later cannot dilute the share
+    // of a known change; their unused shares carry forward.
     let crops = |pair: &ScreenPair| pair.old.is_some() && pair.new.is_some();
-    let mut croppers_left = pairs.iter().filter(|p| crops(p)).count();
+    let mut croppers_left = [0usize; 3];
+    for (i, pair) in pairs.iter().enumerate() {
+        croppers_left[tier(i)] += usize::from(crops(pair));
+    }
     let mut kept: Vec<(usize, ScreenDiff, ScreenImages, Vec<RegionKey>)> = Vec::new();
     for index in order {
         let pair = pairs[index];
@@ -80,8 +91,9 @@ pub(crate) fn attach_screens(
         let (_, w, h, _) = dimensions(docs, pair);
         let over = !tally.admit(u64::from(w) * u64::from(h) * 2);
         let share = if crops(&pair) {
-            let share = crop_budget / croppers_left.max(1);
-            croppers_left = croppers_left.saturating_sub(1);
+            let left = &mut croppers_left[tier(index)];
+            let share = crop_budget / (*left).max(1);
+            *left = left.saturating_sub(1);
             share
         } else {
             0
