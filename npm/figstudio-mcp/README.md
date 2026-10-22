@@ -37,6 +37,11 @@ To serve files from disk instead, with no browser:
 claude mcp add figstudio -- npx -y figstudio-mcp /path/to/design.fig
 ```
 
+**Also works with `bunx`:** `bunx figstudio-mcp --browser-proxy` runs the same launcher.
+`bin/figstudio-mcp.js` only uses Node's built-in `fs`/`os`/`child_process` modules (no
+npx-only syntax), and `bun install` resolves the matching `@pelvo/figstudio-mcp-<os>-<cpu>`
+optional dependency the same way npm does.
+
 ## Cursor, VS Code, Codex
 
 `.cursor/mcp.json` (VS Code: `.vscode/mcp.json`, with `servers` as the top-level key):
