@@ -170,7 +170,12 @@ fn limit_note(skipped: usize, (cropped, cropless): (usize, usize), variants: usi
     }
     format!(
         "component view limit reached ({MAX_COMPONENT_VIEWS} components or \
-         {MAX_COMPONENT_VIEW_PIXELS} pixels); {skipped} component views were not drawn: {}",
+         {MAX_COMPONENT_VIEW_PIXELS} pixels); {}: {}",
+        plural(
+            skipped,
+            "component view was not drawn",
+            "component views were not drawn"
+        ),
         why.join("; ")
     )
 }
@@ -192,7 +197,7 @@ mod tests {
         );
         let note = limit_note(1, (0, 1), 0);
         assert!(
-            note.ends_with("drawn: 1 card with no crop kept is left out"),
+            note.ends_with("1 component view was not drawn: 1 card with no crop kept is left out"),
             "{note}"
         );
     }

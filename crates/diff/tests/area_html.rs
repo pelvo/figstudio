@@ -246,13 +246,13 @@ fn an_area_without_crop_pictures_shows_no_before_after_control() {
     let pair = html
         .split("<div class=\"cmp thumbs\"")
         .nth(1)
-        .and_then(|rest| rest.split("class=\"hint\"").next())
+        .and_then(|rest| rest.split("</div>").next())
         .unwrap_or_else(|| panic!("{html}"));
     assert!(
         pair.contains("aria-label=\"Screen: Before / After\""),
-        "{html}"
+        "{pair}"
     );
-    assert!(pair.contains("src=\"./render/screen-after.png\""), "{html}");
+    assert!(pair.contains("src=\"./render/screen-after.png\""), "{pair}");
     assert_eq!(
         html.matches("<article class=\"area bare\"").count(),
         2,
