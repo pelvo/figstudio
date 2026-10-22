@@ -70,7 +70,9 @@ test("overlay shows After and reveals Before on hover and focus", async ({ page 
   const pressed = await page.evaluate(() =>
     [...document.styleSheets]
       .flatMap(sheet => [...sheet.cssRules])
-      .filter(rule => rule instanceof CSSStyleRule && rule.selectorText.includes(".cmp:active .bf"))
+      .filter(rule => rule instanceof CSSStyleRule
+        && rule.selectorText.split(",").map(part => part.trim().replace(/\s+/g, " "))
+          .includes("#view-overlay:checked ~ .shell .cmp:active .bf"))
       .map(rule => rule.style.opacity));
   expect(pressed).toEqual(["1"]);
 });
