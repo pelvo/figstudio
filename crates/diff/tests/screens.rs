@@ -218,29 +218,45 @@ fn recreated_screen_does_not_list_churn_below_a_layer_that_kept_its_id() {
         n.data.set("type", Val::Str(kind.into()));
         Node::from_data(n.data).unwrap()
     };
-    let group = |parent| {
+    let row = |id, parent, y| {
         named(
-            filled_rectangle_at(5, parent, (1.0, 1.0, 1.0), 0.0, 0.0, 200.0, 200.0),
-            "Group",
+            filled_rectangle_at(id, parent, (1.0, 1.0, 1.0), 0.0, y, 200.0, 100.0),
+            "Row",
             "FRAME",
         )
     };
-    let dot = |id| {
+    let dot = |id, parent| {
         named(
-            filled_rectangle_at(id, 5, (1.0, 0.0, 0.0), 10.0, 10.0, 20.0, 20.0),
+            filled_rectangle_at(id, parent, (1.0, 0.0, 0.0), 10.0, 10.0, 20.0, 20.0),
             "Dot",
             "RECTANGLE",
         )
     };
-    // The group keeps its id under the recreated root, so the diff lists its recreated dot
-    // on its own. The dot pairs by path and is churn; the badge is a real addition.
-    let old = document(vec![screen(4, 1, 0.0, "FRAME"), group(4), dot(6)]);
     let badge = named(
         filled_rectangle_at(9, 5, (0.0, 0.0, 1.0), 100.0, 10.0, 20.0, 20.0),
         "Badge",
         "RECTANGLE",
     );
-    let new = document(vec![screen(7, 1, 0.0, "FRAME"), group(7), dot(8), badge]);
+    // Two rows keep their ids under the recreated root, so the diff lists their recreated
+    // children on their own. Row 5's dot pairs and is churn; the badge is a real addition.
+    // Row 6 lost a dot and the same-named row 50 gained one: both are real.
+    let old = document(vec![
+        screen(4, 1, 0.0, "FRAME"),
+        row(5, 4, 0.0),
+        dot(6, 5),
+        row(50, 4, 100.0),
+        row(60, 4, 200.0),
+        dot(61, 60),
+    ]);
+    let new = document(vec![
+        screen(7, 1, 0.0, "FRAME"),
+        row(5, 7, 0.0),
+        dot(8, 5),
+        badge,
+        row(50, 7, 100.0),
+        dot(51, 50),
+        row(60, 7, 200.0),
+    ]);
     for render in [false, true] {
         let mut report = diff_documents(&old, &new);
         if render {
@@ -249,7 +265,13 @@ fn recreated_screen_does_not_list_churn_below_a_layer_that_kept_its_id() {
         let page = &report.pages[0];
         assert_eq!(page.screens.len(), 1, "render {render}: {page:?}");
         let html = render_html(&report);
-        assert!(html.contains(">Badge<"), "{html}");
-        assert!(!html.contains(">Dot<"), "render {render}: {html}");
+        let screen = html.split("id=\"page-0-s1\"").nth(1).unwrap();
+        assert!(screen.contains(">Badge<"), "{screen}");
+        assert_eq!(
+            screen.matches(">Dot<").count(),
+            2,
+            "render {render}: {screen}"
+        );
+        assert_eq!(screen.matches("class=\"sg\">").count(), 3, "{screen}");
     }
 }

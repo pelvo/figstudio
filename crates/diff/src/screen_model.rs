@@ -20,7 +20,9 @@ pub(crate) fn counts(
         || (Some(line.id) != roots.0 && Some(line.id) != roots.1)
 }
 
-/// The layers only one side of the screen has, keyed by their name/kind path below the root.
+/// The layers only one side of the screen has, keyed by their name/kind path below the root,
+/// or below the nearest layer both sides kept (named by its id, so same-named kept layers
+/// stay apart).
 fn one_sided(doc: &Document, other: &Document, root: Guid) -> Vec<(Vec<(String, String)>, Guid)> {
     let mut out = Vec::new();
     let mut stack: Vec<(Guid, Vec<(String, String)>)> = doc
@@ -31,8 +33,10 @@ fn one_sided(doc: &Document, other: &Document, root: Guid) -> Vec<(Vec<(String, 
         .collect();
     while let Some((id, mut key)) = stack.pop() {
         let Some(node) = doc.node(id) else { continue };
-        key.push((node.name.clone(), node.kind.clone()));
-        if other.node(id).is_none() {
+        if other.node(id).is_some() {
+            key = vec![(format!("{id:?}"), String::new())];
+        } else {
+            key.push((node.name.clone(), node.kind.clone()));
             out.push((key.clone(), id));
         }
         stack.extend(doc.children(id).iter().rev().map(|&c| (c, key.clone())));
