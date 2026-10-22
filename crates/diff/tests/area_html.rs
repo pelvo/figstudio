@@ -266,5 +266,13 @@ fn an_area_without_crop_pictures_shows_no_before_after_control() {
     let html = render_html(&report);
     assert!(html.contains("src=\"./render/zoom-after.png\""), "{html}");
     assert!(html.contains("src=\"./render/shared-after.png\""), "{html}");
+    assert!(
+        html.contains("aria-label=\"Area 1: Before / After\""),
+        "{html}"
+    );
     assert!(!html.contains("class=\"cmp thumbs\""), "{html}");
+    assert!(
+        !html.contains("aria-label=\"Screen: Before / After\""),
+        "{html}"
+    );
 }
