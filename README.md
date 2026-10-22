@@ -78,9 +78,10 @@ Protocol (MCP) server, written in Rust.
   `open_figstudio_browser` then opens that address. To serve a file from disk instead,
   with no browser: `claude mcp add figstudio -- npx -y figstudio-mcp /path/to/design.fig`.
 
-  Without Node, install `figstudio-mcp` with Homebrew or the Linux tarball above and register
-  `claude mcp add figstudio -- figstudio-mcp --browser-proxy`, or build it with Rust 1.95 or
-  newer: `cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp && claude mcp add figstudio -- figstudio-mcp --browser-proxy`.
+  Without Node, install `figstudio-mcp` with Homebrew or the Linux tarball above (from the
+  release after v0.1.0; v0.1.0's `--browser-proxy` opens `http://127.0.0.1:8765` instead) and
+  register `claude mcp add figstudio -- figstudio-mcp --browser-proxy`, or build it with Rust
+  1.95 or newer: `cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp && claude mcp add figstudio -- figstudio-mcp --browser-proxy`.
 
 ---
 

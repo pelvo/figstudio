@@ -246,7 +246,8 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             npm: linux-x64
-            runner: ubuntu-latest
+            # Pinned like the linux job, so a label move does not change the release build.
+            runner: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
             npm: linux-arm64
             runner: ubuntu-24.04-arm
