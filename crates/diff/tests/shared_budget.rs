@@ -110,8 +110,7 @@ fn component_views_stop_at_the_global_count_and_the_rest_keep_their_crop() {
         .unwrap();
     assert!(
         note.ends_with(
-            "6 component views were not drawn: 6 cards show the changed-area crop instead, \
-             or are left out when no crop was kept"
+            "6 component views were not drawn: 6 cards show the changed-area crop instead"
         ),
         "{note}"
     );
