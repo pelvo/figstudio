@@ -19,6 +19,9 @@ const PLATFORMS = {
 /** How long a child may run on after a forwarded signal before it gets SIGKILL. */
 const KILL_AFTER_MS = 2000;
 
+/** Longest test hold after spawn(); the signal tests need 300 ms. */
+const TEST_HOLD_MAX_MS = 300;
+
 const CARGO_HINT =
   "Build it instead with: cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp";
 
@@ -96,8 +99,10 @@ function run(argv = process.argv.slice(2)) {
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, forward);
   child = spawn(bin, argv, { stdio: "inherit", windowsHide: true });
   // Test hook, never set in use: launcher.test.mjs holds the launcher here so its signals
-  // land in the window a handler installed after spawn() would leave open.
-  const holdMs = Number(process.env.FIGSTUDIO_MCP_TEST_HOLD_AFTER_SPAWN_MS) || 0;
+  // land in the window a handler installed after spawn() would leave open. It must stay the
+  // first statement after spawn() (a test checks the source). Signals wait until it ends,
+  // so it is capped: a stray value delays a start and a stop by TEST_HOLD_MAX_MS at most.
+  const holdMs = Math.min(Number(process.env.FIGSTUDIO_MCP_TEST_HOLD_AFTER_SPAWN_MS) || 0, TEST_HOLD_MAX_MS);
   if (holdMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, holdMs);
   child.on("error", (error) => {
     process.stderr.write(`figstudio-mcp: could not start ${bin}: ${error.message}\n`);
@@ -108,6 +113,6 @@ function run(argv = process.argv.slice(2)) {
   });
 }
 
-module.exports = { SCOPE, PLATFORMS, KILL_AFTER_MS, packageName, binaryName, locate };
+module.exports = { SCOPE, PLATFORMS, KILL_AFTER_MS, TEST_HOLD_MAX_MS, packageName, binaryName, locate };
 
 if (require.main === module) run();

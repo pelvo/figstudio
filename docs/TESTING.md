@@ -58,7 +58,10 @@ The `tests-npm` slice runs `node --test npm/figstudio-mcp/test/*.test.mjs` (the 
 `scripts/npm-pack.mjs`, including a check that the release workflow builds every platform
 the launcher knows); it is skipped when `node` is not installed. The signal tests set
 `FIGSTUDIO_MCP_TEST_HOLD_AFTER_SPAWN_MS=300`, which holds the launcher right after
-`spawn()`, so a signal handler installed after `spawn()` (a reverted fix) fails them.
+`spawn()`, so a signal handler installed after the hold fails them. A handler placed
+between `spawn()` and the hold would still pass them, so a source test checks the order:
+every `process.on` comes before `spawn()` and the hold is the next statement. The hold is
+capped at `TEST_HOLD_MAX_MS` (300 ms), and a test sets 5000 to check the cap.
 
 It must end with `== all checks passed` before you commit. If clippy or rustfmt is missing:
 `rustup component add clippy rustfmt --toolchain <version>`.

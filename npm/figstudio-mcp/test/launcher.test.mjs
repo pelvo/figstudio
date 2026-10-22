@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const launcher = join(here, "..", "bin", "figstudio-mcp.js");
 const root = join(here, "..", "..", "..");
-const { KILL_AFTER_MS, PLATFORMS, locate, packageName } = createRequire(import.meta.url)(launcher);
+const { KILL_AFTER_MS, PLATFORMS, TEST_HOLD_MAX_MS, locate, packageName } = createRequire(import.meta.url)(launcher);
 
 test("every platform has a release build, and the release builds only these", () => {
   const workflow = readFileSync(join(root, ".github", "workflows", "release-please.yml"), "utf8");
@@ -88,6 +88,36 @@ async function signalled(script, signals) {
   child.stdout.destroy();
   return { code, ms: Date.now() - start };
 }
+
+// The signal tests below catch a handler installed after the test hold, but not one in
+// the gap between spawn() and the hold, so the source order is checked here: every
+// handler is installed before spawn(), and the hold is the next statement after it.
+test("signal handlers are installed before spawn() and the hold follows it", () => {
+  const source = readFileSync(launcher, "utf8");
+  const body = source.slice(source.indexOf("function run("), source.indexOf("module.exports"));
+  const code = body.split("\n").filter((line) => !line.trim().startsWith("//")).join("\n");
+  const spawnAt = code.indexOf("child = spawn(");
+  assert.ok(spawnAt > 0, "run() calls spawn()");
+  const afterSpawn = code.slice(code.indexOf(";", spawnAt) + 1).trimStart();
+  assert.match(afterSpawn, /^const holdMs = /, "the test hold is the first statement after spawn()");
+  assert.ok(code.lastIndexOf("process.on(") < spawnAt, "no process.on after spawn()");
+  assert.ok(code.indexOf("process.on(") >= 0, "the signal handlers exist");
+});
+
+test("the test hold is capped", { skip: process.platform === "win32", timeout: 10_000 }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "figstudio-npm-"));
+  const fake = join(dir, "fake-mcp");
+  writeFileSync(fake, "#!/bin/sh\nexit 0\n");
+  chmodSync(fake, 0o755);
+  const start = Date.now();
+  const res = spawnSync(process.execPath, [launcher], {
+    env: { ...process.env, FIGSTUDIO_MCP_BINARY: fake, FIGSTUDIO_MCP_TEST_HOLD_AFTER_SPAWN_MS: "5000" },
+    timeout: 8_000,
+  });
+  const ms = Date.now() - start;
+  assert.equal(res.status, 0);
+  assert.ok(ms < TEST_HOLD_MAX_MS + 2000, `held at most TEST_HOLD_MAX_MS (${ms} ms)`);
+});
 
 const DIES = "#!/bin/sh\necho ready $$\nexec sleep 30\n";
 const IGNORES = "#!/bin/sh\ntrap '' INT TERM HUP\necho ready $$\nwhile :; do sleep 1; done\n";
