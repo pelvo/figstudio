@@ -193,7 +193,7 @@ fn html_hides_blob_rows_but_json_keeps_them() {
     assert!(!html.contains("derivedTextData") && !html.contains("vectorNetworkBlob"));
     // Blob-only churn is no visible change: the page is folded away, not a section.
     assert!(!html.contains("<section"), "{html}");
-    assert!(html.contains("1 pages with no visible change"), "{html}");
+    assert!(html.contains("1 page with no visible change"), "{html}");
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn move_only_node_has_no_tilde_line_but_is_counted() {
     let html = render_html(&report);
     assert!(!html.contains("class=\"ln mod\""), "{html}");
     assert!(!html.contains("<section"), "{html}");
-    assert!(html.contains("1 pages with no visible change"), "{html}");
+    assert!(html.contains("1 page with no visible change"), "{html}");
 }
 
 #[test]

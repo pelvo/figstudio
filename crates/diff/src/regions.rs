@@ -43,6 +43,7 @@ impl Boxed {
 }
 
 /// Finds the changed areas of a `width` x `height` mask (`true` = changed pixel).
+/// Areas under 64 changed pixels are dropped as specks, unless no larger area exists.
 /// Deterministic: largest first, then top-most, then left-most.
 #[must_use]
 pub fn find_regions(mask: &[bool], width: usize, height: usize) -> Vec<Region> {
@@ -108,7 +109,11 @@ pub(crate) fn all_regions(mask: &[bool], width: usize, height: usize) -> Vec<Reg
         }
         break;
     }
-    boxes.retain(|b| b.count >= NOISE_PIXELS);
+    // Specks are noise only beside a real change. When they are all that changed (a nudged
+    // icon, one character), they are the change and must not vanish.
+    if boxes.iter().any(|b| b.count >= NOISE_PIXELS) {
+        boxes.retain(|b| b.count >= NOISE_PIXELS);
+    }
     boxes.sort_by_key(|b| (std::cmp::Reverse(b.count), b.y0, b.x0));
     let to = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
     boxes

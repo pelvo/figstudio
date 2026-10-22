@@ -8,6 +8,11 @@ pub(crate) fn escape(text: &str) -> String {
     html_escape::encode_quoted_attribute(text).into_owned()
 }
 
+/// `1 screen`, `2 screens`: the count and the noun, singular only for exactly one.
+pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
 pub(crate) fn page_name(page: &PageDiff) -> &str {
     page.new_name
         .as_deref()
@@ -31,8 +36,8 @@ fn hidden_pages(out: &mut String, hidden: &[&PageDiff]) {
     }
     let _ = write!(
         out,
-        "<details><summary>{} pages with no visible change</summary><ul>",
-        hidden.len()
+        "<details><summary>{} with no visible change</summary><ul>",
+        plural(hidden.len(), "page", "pages")
     );
     for page in hidden {
         let _ = write!(out, "<li>{}</li>", escape(page_name(page)));
@@ -85,14 +90,15 @@ fn header(out: &mut String, report: &DiffReport, hidden: &[&PageDiff]) {
     if moved > 0 {
         let _ = write!(
             out,
-            "<div class=\"warn\">{moved} screens moved or re-parented without change (hidden)</div>"
+            "<div class=\"warn\">{} moved or re-parented without change (hidden)</div>",
+            plural(moved, "screen", "screens")
         );
     }
     if !report.truncated.is_empty() {
         let _ = write!(
             out,
-            "<details><summary>{} report notes</summary><ul>",
-            report.truncated.len()
+            "<details><summary>{}</summary><ul>",
+            plural(report.truncated.len(), "report note", "report notes")
         );
         for note in &report.truncated {
             let _ = write!(out, "<li>{}</li>", escape(note));
@@ -114,13 +120,12 @@ fn index(out: &mut String, shown: &[(usize, &PageDiff, PageLines)], hidden: &[&P
         let count = if shared_only(page, lines) {
             "shared only".to_owned()
         } else {
-            format!(
-                "{} screens changed",
-                page.screens
-                    .iter()
-                    .filter(|s| s.status == crate::ScreenStatus::Changed)
-                    .count()
-            )
+            let changed = page
+                .screens
+                .iter()
+                .filter(|s| s.status == crate::ScreenStatus::Changed)
+                .count();
+            format!("{} changed", plural(changed, "screen", "screens"))
         };
         let px = pixels(page);
         let width = if max == 0 {

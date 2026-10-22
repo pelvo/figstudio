@@ -228,7 +228,9 @@ pub(crate) fn render_screen(
         opts.threshold,
     );
     let mut regions = crate::regions::all_regions(&mask, width as usize, height as usize);
-    let pixels = regions.iter().map(|r| r.pixels_changed).sum();
+    // Every changed pixel, including specks left out of the areas: a screen whose only
+    // change is small must not be counted as unchanged.
+    let pixels = mask.iter().filter(|&&changed| changed).count() as u64;
     if merge {
         regions = crate::regions::union(regions);
     }

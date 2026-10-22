@@ -164,5 +164,5 @@ fn inherited_instance_change_is_not_erased_by_moving_its_section() {
     assert!(page.screens[0].moved);
     let html = render_html(&report);
     assert!(html.contains("<section"));
-    assert!(html.contains("more areas with no matched change line"));
+    assert!(html.contains(" with no matched change line"));
 }

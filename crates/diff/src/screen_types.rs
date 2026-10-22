@@ -14,6 +14,7 @@ pub struct ScreenDiff {
     pub moved: bool,
     pub width: u32,
     pub height: u32,
+    /// Every changed pixel of the screen, including specks too small to become an area.
     pub pixels_changed: Option<u64>,
     pub thumb_old: Option<String>,
     pub thumb_new: Option<String>,

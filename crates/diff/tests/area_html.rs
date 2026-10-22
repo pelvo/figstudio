@@ -127,10 +127,12 @@ fn inherited_component_lines_stay_in_areas_and_unmatched_rows_count_in_footer() 
             .count(),
         2
     );
-    let rest = html.split("Other changes on this page").nth(1).unwrap();
+    // Nothing left for the page itself: no empty "Other changes on this page" section.
+    assert!(!html.contains("Other changes on this page"));
+    let rest = html.split("<p class=\"foot\">").nth(1).unwrap();
     assert!(!rest.contains("shared component changed"));
     assert!(!rest.contains("layer-4"));
-    assert!(rest.contains("1 other property changes on 1 layers are only in report.json"));
+    assert!(rest.contains("1 other property change on 1 layer is only in report.json"));
     for region in &mut report.pages[0].screens[0].regions {
         region.nodes.clear();
     }

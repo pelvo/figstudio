@@ -1,5 +1,5 @@
 //! Existing area cards, now scoped to a standalone screen and its locator.
-use crate::html::escape;
+use crate::html::{escape, plural};
 use crate::html_changes::PageLines;
 use crate::html_lines::{ChangeLine, count_lines, render_lines};
 use crate::html_pictures::{compare, locator, picture};
@@ -9,8 +9,13 @@ use std::{collections::BTreeSet, fmt::Write};
 fn area_heading(out: &mut String, region: &Region, k: usize, layers: usize) {
     let _ = write!(
         out,
-        "<div class=\"ah\"><b>Area {k}</b><span>{} px</span><span>x {} · y {} · {}×{}</span><span>{layers} change lines</span></div>",
-        region.pixels_changed, region.x, region.y, region.width, region.height
+        "<div class=\"ah\"><b>Area {k}</b><span>{} px</span><span>x {} · y {} · {}×{}</span><span>{}</span></div>",
+        region.pixels_changed,
+        region.x,
+        region.y,
+        region.width,
+        region.height,
+        plural(layers, "change line", "change lines")
     );
 }
 
@@ -29,6 +34,22 @@ pub(crate) fn only_shared(screen: &ScreenDiff, lines: &PageLines) -> bool {
         && !screen.regions.is_empty()
         && screen.regions.iter().all(|r| r.shared.is_some())
         && screen_lines(screen, lines).next().is_none()
+}
+
+fn no_visible_change(out: &mut String, screen: &ScreenDiff) {
+    if screen.pixels_changed == Some(0) {
+        out.push_str("<p class=\"none\">No visible change: these edits draw no different pixels (for example clipped or hidden layers).</p>");
+    }
+    if screen.thumb_old.is_some() || screen.thumb_new.is_some() {
+        out.push_str(
+            "<div class=\"cmp thumbs\" tabindex=\"0\" aria-label=\"Screen: Before / After\">",
+        );
+        picture(out, &screen.thumb_old, "Before", "bf");
+        picture(out, &screen.thumb_new, "After", "af");
+        out.push_str(
+            "<span class=\"hint\">Showing After · hover or focus to see Before</span></div>",
+        );
+    }
 }
 
 pub(crate) fn screen_section(
@@ -76,14 +97,23 @@ pub(crate) fn screen_section(
         return;
     }
     out.push_str("</div>");
+    if screen.regions.is_empty() {
+        // Layer edits that draw nothing at this scale (clipped, hidden, sub-pixel) still get
+        // a picture of the screen, so the reader can see why no area is boxed.
+        no_visible_change(out, screen);
+    }
     let groups: BTreeSet<_> = screen.regions.iter().filter_map(|r| r.shared).collect();
     for id in groups {
         if let Some(group) = shared.get(id) {
             let k = id + 1;
             let _ = write!(
                 out,
-                "<p class=\"none\"><a href=\"#shared-{k}\">Shared change #{k}</a> · also in {} other screens</p>",
-                group.count.saturating_sub(1)
+                "<p class=\"none\"><a href=\"#shared-{k}\">Shared change #{k}</a> · also in {}</p>",
+                plural(
+                    group.count.saturating_sub(1),
+                    "other screen",
+                    "other screens"
+                )
             );
         }
     }
@@ -116,8 +146,8 @@ pub(crate) fn screen_section(
     if !mini.is_empty() {
         let _ = write!(
             out,
-            "<p class=\"subh\">{} more areas with no matched change line</p><div class=\"minis\">",
-            mini.len()
+            "<p class=\"subh\">{} with no matched change line</p><div class=\"minis\">",
+            plural(mini.len(), "more area", "more areas")
         );
         for (j, region) in mini {
             let j = j + 1;
@@ -130,7 +160,11 @@ pub(crate) fn screen_section(
     }
     let rest = || screen_lines(screen, lines).filter(|l| !used.contains(&l.id));
     if rest().next().is_some() {
-        out.push_str("<h4>Other changes in this screen</h4>");
+        out.push_str(if screen.regions.is_empty() {
+            "<h4 class=\"sub\">Changes in this screen</h4>"
+        } else {
+            "<h4 class=\"sub\">Other changes in this screen</h4>"
+        });
         render_lines(out, rest());
     }
     out.push_str("</div>");

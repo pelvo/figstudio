@@ -1,5 +1,5 @@
 //! Page headers, screen blocks, non-screen changes and folded whole-page context.
-use crate::html::{escape, page_name};
+use crate::html::{escape, page_name, plural};
 use crate::html_changes::PageLines;
 use crate::html_lines::render_lines;
 use crate::html_pictures::{measures, whole_page};
@@ -51,8 +51,8 @@ pub(crate) fn page_section(
     let count = |status| page.screens.iter().filter(|s| s.status == status).count();
     let _ = write!(
         out,
-        "<div class=\"meta\"><span>{} screens changed · {} added · {} removed</span>",
-        count(ScreenStatus::Changed),
+        "<div class=\"meta\"><span>{} changed · {} added · {} removed</span>",
+        plural(count(ScreenStatus::Changed), "screen", "screens"),
         count(ScreenStatus::Added),
         count(ScreenStatus::Removed)
     );
@@ -69,11 +69,10 @@ pub(crate) fn page_section(
     if page.screens_moved > 0 {
         let _ = write!(
             out,
-            "<p class=\"none\">{} screens moved or re-parented without change (hidden)</p>",
-            page.screens_moved
+            "<p class=\"none\">{} moved or re-parented without change (hidden)</p>",
+            plural(page.screens_moved, "screen", "screens")
         );
     }
-    out.push_str("<div class=\"sec\"><div class=\"sh\"><h3>Other changes on this page</h3></div>");
     let rest = || {
         lines.items.iter().filter(|l| {
             page.other_nodes
@@ -81,20 +80,28 @@ pub(crate) fn page_section(
                 .is_none_or(|ids| ids.contains(&l.id))
         })
     };
+    // Only when there is something to list: an empty "None." section is noise.
     if rest().next().is_some() {
+        out.push_str(
+            "<div class=\"sec\"><div class=\"sh\"><h3>Other changes on this page</h3></div>",
+        );
         render_lines(out, rest());
-    } else {
-        out.push_str("<p class=\"none\">None.</p>");
+        out.push_str("</div>");
     }
-    out.push_str("</div>");
     if let Some(render) = &page.render {
         whole_page(out, render);
     }
     if lines.other_props > 0 {
         let _ = write!(
             out,
-            "<p class=\"foot\">{} other property changes on {} layers are only in report.json</p>",
-            lines.other_props, lines.other_layers
+            "<p class=\"foot\">{} on {} {} only in report.json</p>",
+            plural(
+                lines.other_props,
+                "other property change",
+                "other property changes"
+            ),
+            plural(lines.other_layers, "layer", "layers"),
+            if lines.other_props == 1 { "is" } else { "are" }
         );
     }
     out.push_str("</section>");

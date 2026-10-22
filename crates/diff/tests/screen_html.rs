@@ -68,8 +68,8 @@ fn non_screen_text_is_on_the_page_not_the_screen_and_screen_pixels_alone_show_pa
     let html = render_html(&report);
     let other = html.split("Other changes on this page").nth(1).unwrap();
     assert!(other.contains("layer-4") && !other.contains("layer-3"));
-    assert!(html.contains("1 screens changed · 0 added · 0 removed"));
-    assert!(html.contains("1 screens changed</span>"));
+    assert!(html.contains("1 screen changed · 0 added · 0 removed"));
+    assert!(html.contains("1 screen changed</span>"));
     assert!(html.contains("id=\"page-0-s1-a1\""));
     assert_eq!(html, render_html(&report));
     assert!(html.contains("default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"));
@@ -77,7 +77,7 @@ fn non_screen_text_is_on_the_page_not_the_screen_and_screen_pixels_alone_show_pa
     report.pages[0].changed.clear();
     let html = render_html(&report);
     assert!(html.contains("<section"));
-    assert!(html.contains("more areas with no matched change line"));
+    assert!(html.contains(" with no matched change line"));
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn page_level_text_only_and_move_only_screens_obey_visibility_rule() {
     let _ = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
     let html = render_html(&report);
     assert!(!html.contains("<section"));
-    assert!(html.contains("1 screens moved or re-parented without change (hidden)"));
+    assert!(html.contains("1 screen moved or re-parented without change (hidden)"));
     let side = |size| {
         let mut t = node(2, Some(1), "TEXT", "");
         t.data.set("fontSize", Val::Float(size));

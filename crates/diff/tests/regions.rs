@@ -34,8 +34,14 @@ fn blobs_within_padding_merge() {
 }
 
 #[test]
-fn specks_under_the_noise_floor_are_dropped() {
-    assert!(find_regions(&mask(&[(50, 50, 7, 9)]), W, H).is_empty());
+fn specks_under_the_noise_floor_are_dropped_beside_a_real_change() {
+    let r = find_regions(&mask(&[(50, 50, 7, 9), (300, 200, 10, 10)]), W, H);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].pixels_changed, 100);
+    // Alone, the speck is the change.
+    let r = find_regions(&mask(&[(50, 50, 7, 9)]), W, H);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].pixels_changed, 63);
     assert!(find_regions(&[], 0, 0).is_empty());
     assert!(find_regions(&[], usize::MAX, 2).is_empty());
 }
