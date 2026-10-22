@@ -575,8 +575,9 @@ impl Host {
     /// The relay connection is dead from our side: drop it and plan a retry with a
     /// growing delay (`mcp_backoff.rs`), which bounds what a black-holed path can cost.
     /// Says why unless this was one more failed attempt of a retry series (`proven`: the
-    /// connection had answered a keepalive). The repaint makes the next frame happen even
-    /// on an otherwise idle page (it shows the notice and schedules the retry).
+    /// connection had answered a keepalive). The repaint shows the notice; the retry's wake
+    /// is set here, since a loss the keepalive found fires no `close` that would set it
+    /// (and a hidden tab's next frame can be a minute away).
     fn relay_lost(&mut self, ctx: &egui::Context, notice: &str, proven: bool) {
         let quiet = !proven && self.reconnect.retrying();
         self.stop();
@@ -584,6 +585,7 @@ impl Host {
             self.notices.push(notice.to_owned());
         }
         self.reconnect.lost(Instant::now());
+        self.plan_retry(ctx);
         ctx.request_repaint();
     }
 }

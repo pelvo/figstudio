@@ -656,3 +656,56 @@ test("a hidden tab reconnects a dropped relay without waiting for a frame", asyn
   expect(Date.now() - dropped, "reconnected without a frame").toBeLessThan(15_000);
   expect(await page.evaluate(() => window.relaySockets.length)).toBe(2);
 });
+
+test("a hidden tab retries a relay whose keepalive went unanswered", async ({ page }) => {
+  test.setTimeout(180_000);
+  // The silent loss in a background tab: a socket whose `pong` never comes back fires no
+  // `close`, so only the keepalive deadline notices it, and the retry after that must be
+  // timed between frames too (`relay_lost`), not by eframe's minute-long hidden timer.
+  await page.addInitScript(() => {
+    window.relayHidden = false;
+    const hidden = Object.getOwnPropertyDescriptor(Document.prototype, "hidden");
+    Object.defineProperty(Document.prototype, "hidden", {
+      configurable: true,
+      get() { return window.relayHidden || hidden.get.call(this); },
+    });
+    Object.defineProperty(Document.prototype, "visibilityState", {
+      configurable: true,
+      get() { return window.relayHidden ? "hidden" : "visible"; },
+    });
+    const later = window.setTimeout;
+    window.setTimeout = (callback, delay, ...rest) =>
+      later.call(window, callback, window.relayHidden && delay === 10 ? 60_000 : delay, ...rest);
+  });
+  // The first socket works; every later one has its `pong` swallowed.
+  const sockets = [];
+  let pongs = 0;
+  await page.routeWebSocket(/\/bridge\//, (ws) => {
+    const index = sockets.push(ws) - 1;
+    const server = ws.connectToServer();
+    ws.onMessage((message) => server.send(message));
+    server.onMessage((message) => {
+      if (message !== "pong") ws.send(message);
+      else if (index === 0 && ++pongs) ws.send(message);
+    });
+    ws.onClose(() => server.close());
+  });
+  await page.goto(baseURL);
+  await expect(page.locator("#figstudio")).toBeVisible();
+  await expect.poll(() => mcp(page), { timeout: 60_000 }).toBeTruthy();
+  await expect.poll(() => pongs, { timeout: 30_000 }).toBeGreaterThan(0);
+
+  await page.evaluate(() => {
+    window.relayHidden = true;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  // Let the last visible-timer frame pass, so the next one is a minute away.
+  await page.waitForTimeout(2_000);
+  const dropped = Date.now();
+  sockets[0].close();
+  // The replacement opens about 1 s later; its first ping goes unanswered, its 10 s
+  // deadline expires, and the next attempt follows 2 s after that.
+  await expect.poll(() => sockets.length, { timeout: 10_000 }).toBe(2);
+  await expect.poll(() => sockets.length, { timeout: 40_000 }).toBe(3);
+  expect(Date.now() - dropped, "retried without a frame").toBeLessThan(25_000);
+});
