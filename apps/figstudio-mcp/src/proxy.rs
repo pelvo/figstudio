@@ -447,7 +447,7 @@ impl ProxyState {
         match &self.mirror {
             Some(mirror) if !mirror.start_page_loads().await => {
                 tracing::warn!(
-                    "the web app's start page could not be fetched for the loopback mirror; opening the origin itself"
+                    "the origin's start page is not figstudio's from here (sign-in or offline); opening the origin itself"
                 );
                 self.config.origin_url(self.port)
             }

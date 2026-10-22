@@ -141,7 +141,8 @@ Build the browser bundle first with `scripts/web-build.sh` (output in `web/dist`
      spawns `figstudio-mcp --browser-proxy` over `stdio`, and your already-signed-in browser
      connects outbound to `ws://127.0.0.1:<port>/bridge`. The proxy cannot mirror a gated
      origin (it has none of the browser's cookies), so when the start page redirects to the
-     sign-in host it opens the origin itself, and Chrome asks for local network access.
+     sign-in host or is the gateway's own sign-in page it opens the origin itself, and Chrome
+     asks for local network access.
    - Nothing to configure for the app: once per page load it asks `GET /mcp/`, which only
      the relay Worker answers (`204` with a `figstudio-relay` header). Anywhere else that
      path is a missing asset, so **Settings → Agents** hides **Cloud relay** and opens no
@@ -204,7 +205,7 @@ Or in `.mcp.json` / Cursor / Windsurf:
   origin's host, and `/mcp/` answers 404 so the app hides Cloud relay. A loopback
   `--origin` (the local build) is opened directly, and so is an origin whose start page
   the proxy cannot fetch within 15 s, that redirects to another host, or that is not
-  figstudio's (it must import `figstudio.js`; a sign-in gateway's own page does not). `--no-mirror` always opens the origin itself (Chrome then asks for
+  figstudio's (it must import `./figstudio.js`; a sign-in gateway's own page does not). `--no-mirror` always opens the origin itself (Chrome then asks for
   local network access, Safari cannot pair). On loopback the page could also reach other
   local ports and private addresses without a prompt, so the mirror sends a
   Content-Security-Policy with `default-src 'self'`: every script, style, font, image,

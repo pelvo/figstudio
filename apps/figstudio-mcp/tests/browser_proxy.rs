@@ -117,6 +117,12 @@ async fn start_fake_web_app() -> (String, std::sync::Arc<std::sync::atomic::Atom
                     [("content-type", "text/html; charset=utf-8")],
                     "<!doctype html><form action=\"/sign-in\"></form>".to_owned(),
                 ),
+                // A sign-in page that names the app's module without importing it.
+                "/named/" => (
+                    axum::http::StatusCode::OK,
+                    [("content-type", "text/html")],
+                    "<!doctype html><p>Sign in to load ./figstudio.js</p>".to_owned(),
+                ),
                 _ => (
                     axum::http::StatusCode::NOT_FOUND,
                     [("content-type", "text/plain")],
@@ -170,6 +176,10 @@ async fn web_mirror_serves_the_app_from_the_proxy_port_and_pairs_with_it() {
         );
         for directive in [
             "default-src 'self';",
+            "script-src 'self' ",
+            "style-src 'self' ",
+            "font-src 'self' ",
+            "worker-src 'self' ",
             "frame-src 'none'",
             "form-action 'none'",
             "img-src 'self' data: blob:",
@@ -256,7 +266,7 @@ async fn an_origin_behind_a_sign_in_redirect_is_opened_directly() {
     // The proxy has none of the browser's cookies, so a gateway's redirect to its sign-in
     // host can only be followed in the browser, on the origin itself.
     let (upstream, _hits) = start_fake_web_app().await;
-    for path in ["gated", "challenge"] {
+    for path in ["gated", "challenge", "named"] {
         let gated = format!("{upstream}/{path}");
         let (port, state, shutdown) = start_mirroring_proxy(&gated).await;
         let url = state.launch_url().await;

@@ -297,9 +297,22 @@ async fn read_capped(mut upstream: reqwest::Response) -> Result<axum::body::Byte
     }
 }
 
+/// Whether `body` loads `./figstudio.js` as a module: a quoted specifier right after
+/// `import(`, `from` or `src=`. A page that only names the file, or `figstudio.json`, does not.
 fn imports_the_app(body: &[u8]) -> bool {
-    const MARKER: &[u8] = b"figstudio.js";
-    body.windows(MARKER.len()).any(|w| w == MARKER)
+    const SPECIFIER: &[u8] = b"./figstudio.js";
+    const LOADERS: [&[u8]; 3] = [b"import(", b"from", b"src="];
+    (1..body.len().saturating_sub(SPECIFIER.len())).any(|start| {
+        let quote = body[start - 1];
+        let end = start + SPECIFIER.len();
+        matches!(quote, b'\'' | b'"' | b'`')
+            && body[start..end] == *SPECIFIER
+            && body[end] == quote
+            && {
+                let before = body[..start - 1].trim_ascii_end();
+                LOADERS.iter().any(|loader| before.ends_with(loader))
+            }
+    })
 }
 
 fn host_is_loopback(headers: &HeaderMap) -> bool {
@@ -317,6 +330,30 @@ fn host_is_loopback(headers: &HeaderMap) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_page_that_imports_the_app_is_figstudio() {
+        let index = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/index.html"))
+            .expect("web/index.html");
+        assert!(imports_the_app(&index));
+        for page in [
+            "<script type=\"module\" src=\"./figstudio.js\"></script>",
+            "<script type=module>import { x } from './figstudio.js';</script>",
+            "<script type=module>await import( \"./figstudio.js\" );</script>",
+        ] {
+            assert!(imports_the_app(page.as_bytes()), "{page}");
+        }
+        for page in [
+            "<p>Sign in to open ./figstudio.js</p>",
+            "<p>Sign in to open './figstudio.js'</p>",
+            "<script src=\"./figstudio.json\"></script>",
+            "<script src=\"./myfigstudio.js\"></script>",
+            "<script>fetch('./figstudio.js')</script>",
+            "./figstudio.js",
+        ] {
+            assert!(!imports_the_app(page.as_bytes()), "{page}");
+        }
+    }
 
     #[test]
     fn only_loopback_origins_skip_the_mirror() {
