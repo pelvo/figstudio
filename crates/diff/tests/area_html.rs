@@ -242,11 +242,17 @@ fn an_area_without_crop_pictures_shows_no_before_after_control() {
         image_height: Some(80),
     });
     let html = render_html(&report);
+    // The pair's own pictures, not the locator images on the area cards.
+    let pair = html
+        .split("<div class=\"cmp thumbs\"")
+        .nth(1)
+        .and_then(|rest| rest.split("class=\"hint\"").next())
+        .unwrap_or_else(|| panic!("{html}"));
     assert!(
-        html.contains("aria-label=\"Screen: Before / After\"")
-            && html.contains("src=\"./render/screen-after.png\""),
+        pair.contains("aria-label=\"Screen: Before / After\""),
         "{html}"
     );
+    assert!(pair.contains("src=\"./render/screen-after.png\""), "{html}");
     assert_eq!(
         html.matches("<article class=\"area bare\"").count(),
         2,
@@ -257,5 +263,8 @@ fn an_area_without_crop_pictures_shows_no_before_after_control() {
         region.old_png = Some("render/zoom-before.png".into());
         region.new_png = Some("render/zoom-after.png".into());
     }
-    assert!(!render_html(&report).contains("class=\"cmp thumbs\""));
+    let html = render_html(&report);
+    assert!(html.contains("src=\"./render/zoom-after.png\""), "{html}");
+    assert!(html.contains("src=\"./render/shared-after.png\""), "{html}");
+    assert!(!html.contains("class=\"cmp thumbs\""), "{html}");
 }
