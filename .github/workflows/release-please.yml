@@ -1,14 +1,20 @@
 # Releases with release-please. Every push to main updates one release PR (version bump in
 # Cargo.toml and Cargo.lock, CHANGELOG.md from the Conventional Commit titles). Merging that
-# PR tags vX.Y.Z and publishes a GitHub release; the job below then builds the macOS app and
-# attaches it to the release.
+# PR tags vX.Y.Z and publishes a GitHub release; the jobs below then build the macOS app and
+# the Linux CLI/MCP binaries (x86_64 and arm64, static musl) as workflow artifacts, and the
+# `publish` job attaches whatever built to the release, then SHA256SUMS for every archive
+# the release then has (pelvo/homebrew-tap reads it). Only `publish` can write; the build
+# jobs run with a read-only token.
 #
 # The build runs in this workflow, not on `release: published`: a release made with
 # GITHUB_TOKEN does not start other workflows.
 #
-# Retry: if the macOS build failed, or a release has no assets, run this workflow by hand
+# Retry: if a build failed, or a release has no assets, run this workflow by hand
 # (Actions > release-please > Run workflow) with the release's tag. It rebuilds that tag and
-# replaces the assets.
+# replaces the assets. A build that fails leaves its old asset (if any) in place. SHA256SUMS
+# is rewritten only after every archive uploaded; if an archive upload fails, the step fails
+# and the old SHA256SUMS stays, and --clobber may already have removed that archive, so run
+# the workflow again.
 #
 # Token: GITHUB_TOKEN, which needs Settings > Actions > General > Workflow permissions >
 # "Allow GitHub Actions to create and approve pull requests" (on in the org and this repo).
@@ -65,13 +71,12 @@ jobs:
       || needs.release-please.outputs.release_created == 'true')
     # Apple silicon runner: the build is arm64.
     runs-on: macos-latest
-    permissions:
-      contents: write # gh release upload
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null
@@ -80,6 +85,7 @@ jobs:
           # Fully qualified: checkout resolves a bare name to a branch before a tag, so a
           # branch named like the tag would be built and its assets uploaded.
           ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -95,11 +101,115 @@ jobs:
       - name: Package
         run: |
           rm -rf dist && mkdir dist
-          app="figstudio-$TAG-macos-arm64.zip"
-          tools="figstudio-cli-mcp-$TAG-macos-arm64.tar.gz"
           # ditto keeps the bundle's signature and symlinks intact (plain zip does not).
-          ditto -c -k --keepParent target/release/figstudio.app "dist/$app"
-          tar -C target/release -czf "dist/$tools" figstudio-cli figstudio-mcp
-          (cd dist && shasum -a 256 "$app" "$tools" > SHA256SUMS)
+          ditto -c -k --keepParent target/release/figstudio.app "dist/figstudio-$TAG-macos-arm64.zip"
+          tar -C target/release -czf "dist/figstudio-cli-mcp-$TAG-macos-arm64.tar.gz" figstudio-cli figstudio-mcp
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-macos-arm64
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    needs: release-please
+    if: >-
+      !cancelled() && (github.event_name == 'workflow_dispatch'
+      || needs.release-please.outputs.release_created == 'true')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x86_64, target: x86_64-unknown-linux-musl, runner: ubuntu-24.04}
+          - {arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm}
+    # Native runner per arch, pinned (not ubuntu-latest) so a label move does not change the
+    # release build. musl links statically, so one binary runs on any distro (glibc or
+    # Alpine); renders measured as fast as the glibc build.
+    runs-on: ${{ matrix.runner }}
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
+    steps:
+      - name: Check the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup default stable
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-rust
+          key: ${{ matrix.target }}
+          cache-workspace-crates: true
+      - name: Build
+        run: cargo build --locked --release -p figstudio-cli -p figstudio-mcp --target ${{ matrix.target }}
+      - name: Smoke test
+        run: |
+          bin=target/${{ matrix.target }}/release
+          for b in figstudio-cli figstudio-mcp; do
+            file "$bin/$b" | tee /dev/stderr | grep -qE "static(ally|-pie) linked"
+          done
+          "$bin/figstudio-cli" render tests/fixtures/structure.fig -o "$RUNNER_TEMP/smoke.png"
+          "$bin/figstudio-mcp" --help >/dev/null
+      - name: Package
+        run: |
+          rm -rf dist && mkdir dist
+          tar -C target/${{ matrix.target }}/release -czf \
+            "dist/figstudio-cli-mcp-$TAG-linux-${{ matrix.arch }}.tar.gz" figstudio-cli figstudio-mcp
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [release-please, macos, linux]
+    # Runs when any build ran, so a failed arch does not hold back the others (or the cask
+    # bump, which needs only the macOS zip's line). The failed job still fails the run.
+    if: >-
+      !cancelled() && (needs.macos.result != 'skipped' || needs.linux.result != 'skipped')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # gh release upload
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Write SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Hash the new archives plus the release's archives this run did not rebuild, so
+          # SHA256SUMS lists exactly what the release has after the upload below.
+          mkdir sums
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' > names
+          while read -r name; do
+            case "$name" in
+              *.zip | *.tar.gz)
+                [ -e "dist/$name" ] || gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D sums -p "$name" ;;
+            esac
+          done < names
+          cp dist/* sums/
+          (cd sums && sha256sum -- * > ../dist/SHA256SUMS)
+          cat dist/SHA256SUMS
       - name: Attach to the release
-        run: gh release upload "$TAG" dist/* --clobber -R "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Archives first, SHA256SUMS last: --clobber replaces each asset on its own and gh
+        # uploads one call's files concurrently, so a failed archive upload must not leave
+        # sums for files the release does not have.
+        run: |
+          shopt -s nullglob
+          gh release upload "$TAG" dist/*.zip dist/*.tar.gz --clobber -R "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" dist/SHA256SUMS --clobber -R "$GITHUB_REPOSITORY"
