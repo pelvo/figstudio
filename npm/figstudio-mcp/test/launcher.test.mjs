@@ -117,8 +117,8 @@ test("the test hold is capped", { skip: process.platform === "win32", timeout: 1
   const ms = Date.now() - start;
   assert.equal(res.status, 0);
   assert.equal(TEST_HOLD_MAX_MS, 300, "the signal tests' hold");
-  // The hold runs (5000 asked), and only for the cap plus process start-up (about 25 ms;
-  // a literal ceiling, so a looser cap elsewhere in the launcher still fails).
+  // The hold runs (5000 asked), and ends under a fixed 700 ms ceiling: the 300 ms cap plus
+  // slack for process start-up (about 25 ms). The ceiling does not follow the export.
   assert.ok(ms >= 300 && ms < 300 + 400, `held for the cap (${ms} ms)`);
 });
 
