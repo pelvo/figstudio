@@ -2,17 +2,19 @@
 # Cargo.toml and Cargo.lock, CHANGELOG.md from the Conventional Commit titles). Merging that
 # PR tags vX.Y.Z and publishes a GitHub release; the jobs below then build the macOS app and
 # the Linux CLI/MCP binaries (x86_64 and arm64, static musl) as workflow artifacts, and the
-# `publish` job attaches whatever built to the release in one upload together with
-# SHA256SUMS for every archive on the release (pelvo/homebrew-tap reads it). Only `publish`
-# can write; the build jobs run with a read-only token.
+# `publish` job attaches whatever built to the release, then SHA256SUMS for every archive
+# the release then has (pelvo/homebrew-tap reads it). Only `publish` can write; the build
+# jobs run with a read-only token.
 #
 # The build runs in this workflow, not on `release: published`: a release made with
 # GITHUB_TOKEN does not start other workflows.
 #
 # Retry: if a build failed, or a release has no assets, run this workflow by hand
 # (Actions > release-please > Run workflow) with the release's tag. It rebuilds that tag and
-# replaces the assets. A build that fails leaves its old asset (if any) in place; SHA256SUMS
-# is always rewritten from the archives the release has after the upload.
+# replaces the assets. A build that fails leaves its old asset (if any) in place. SHA256SUMS
+# is rewritten only after every archive uploaded; if an archive upload fails, the step fails
+# and the old SHA256SUMS stays, and --clobber may already have removed that archive, so run
+# the workflow again.
 #
 # Token: GITHUB_TOKEN, which needs Settings > Actions > General > Workflow permissions >
 # "Allow GitHub Actions to create and approve pull requests" (on in the org and this repo).
