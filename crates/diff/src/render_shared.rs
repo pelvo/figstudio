@@ -76,18 +76,22 @@ pub(crate) fn component_views(
         ..RenderImages::default()
     };
     let mut spent = Spent::default();
+    let mut cards_skipped = 0;
     for group in &mut report.shared_changes {
         let Some(id) = group.component.as_ref().map(|c| c.id) else {
             continue;
         };
-        let Some((region, pictures)) = draw(
+        let before = spent.skipped;
+        let drawn = draw(
             (&mut *old_renderer, &mut *new_renderer),
             docs,
             readers,
             opts,
             &mut spent,
             id,
-        ) else {
+        );
+        cards_skipped += spent.skipped - before;
+        let Some((region, pictures)) = drawn else {
             continue;
         };
         group.component_view = true;
@@ -122,12 +126,28 @@ pub(crate) fn component_views(
         images.shared.push((group.id, kept.swap_remove(0)));
     }
     if spent.skipped > 0 {
+        // A card whose component was drawn keeps that picture even when its variants are not.
+        let variants_skipped = spent.skipped - cards_skipped;
+        let mut why = Vec::new();
+        if cards_skipped > 0 {
+            why.push(format!(
+                "{} the changed-area crop instead, or {} left out when no crop was kept",
+                crate::html::plural(cards_skipped, "card shows", "cards show"),
+                if cards_skipped == 1 { "is" } else { "are" }
+            ));
+        }
+        if variants_skipped > 0 {
+            why.push(crate::html::plural(
+                variants_skipped,
+                "other variant is left out",
+                "other variants are left out",
+            ));
+        }
         report.truncated.push(format!(
             "component view limit reached ({MAX_COMPONENT_VIEWS} components or \
-             {MAX_COMPONENT_VIEW_PIXELS} pixels); {} component views were not drawn: \
-             a card without its view shows its changed-area crop, or is left out when no \
-             crop was kept, and a variant without one is left out",
-            spent.skipped
+             {MAX_COMPONENT_VIEW_PIXELS} pixels); {} component views were not drawn: {}",
+            spent.skipped,
+            why.join("; ")
         ));
     }
     (!images.shared.is_empty()).then_some(images)

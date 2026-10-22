@@ -108,7 +108,13 @@ fn component_views_stop_at_the_global_count_and_the_rest_keep_their_crop() {
         .iter()
         .find(|n| n.contains("component view limit"))
         .unwrap();
-    assert!(note.contains("6 component views were not drawn"), "{note}");
+    assert!(
+        note.ends_with(
+            "6 component views were not drawn: 6 cards show the changed-area crop instead, \
+             or are left out when no crop was kept"
+        ),
+        "{note}"
+    );
     // A card without a component view keeps the representative changed-area crop.
     let plain: Vec<_> = report
         .shared_changes
@@ -217,12 +223,8 @@ fn every_variant_counts_toward_the_view_limit() {
         .iter()
         .find(|n| n.contains("component view limit"))
         .unwrap();
-    assert!(note.contains("5 component views were not drawn"), "{note}");
     assert!(
-        note.ends_with(
-            "a card without its view shows its changed-area crop, or is left out when no \
-             crop was kept, and a variant without one is left out"
-        ),
+        note.ends_with("5 component views were not drawn: 5 other variants are left out"),
         "{note}"
     );
 }
