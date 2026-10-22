@@ -139,8 +139,8 @@ pub(crate) fn component_views(
         if variants_skipped > 0 {
             why.push(crate::html::plural(
                 variants_skipped,
-                "other variant is left out",
-                "other variants are left out",
+                "other variant picture is left out",
+                "other variant pictures are left out",
             ));
         }
         report.truncated.push(format!(

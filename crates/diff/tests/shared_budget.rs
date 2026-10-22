@@ -224,8 +224,16 @@ fn every_variant_counts_toward_the_view_limit() {
         .find(|n| n.contains("component view limit"))
         .unwrap();
     assert!(
-        note.ends_with("5 component views were not drawn: 5 other variants are left out"),
+        note.ends_with("5 component views were not drawn: 5 other variant pictures are left out"),
         "{note}"
+    );
+    // The card keeps its component picture; the last five variants stay listed, unpictured.
+    let listed = &group.component.as_ref().unwrap().variants;
+    assert_eq!(listed.len(), variants as usize);
+    assert!(
+        listed[MAX_COMPONENT_VIEWS..]
+            .iter()
+            .all(|v| v.image_width.is_none())
     );
 }
 
