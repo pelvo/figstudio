@@ -124,8 +124,9 @@ pub(crate) fn component_views(
     if spent.skipped > 0 {
         report.truncated.push(format!(
             "component view limit reached ({MAX_COMPONENT_VIEWS} components or \
-             {MAX_COMPONENT_VIEW_PIXELS} pixels); {} component views were not drawn, \
-             their cards show the changed-area crop where one was kept",
+             {MAX_COMPONENT_VIEW_PIXELS} pixels); {} component views were not drawn: \
+             a card without its view shows its changed-area crop where one was kept, \
+             and a variant without one is left out",
             spent.skipped
         ));
     }
