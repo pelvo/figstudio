@@ -283,3 +283,31 @@ fn recreated_screen_does_not_list_churn_below_a_layer_that_kept_its_id() {
         assert_eq!(screen.matches("class=\"sg\">").count(), 3, "{screen}");
     }
 }
+
+#[test]
+fn recreated_screen_lists_edits_of_layers_that_pair_by_name() {
+    let dot = |id, parent, rgb| {
+        let mut n = filled_rectangle_at(id, parent, rgb, 10.0, 10.0, 20.0, 20.0);
+        n.data.set("name", Val::Str("Dot".into()));
+        Node::from_data(n.data).unwrap()
+    };
+    // The screen is recreated with new ids; its dot pairs by name and turns from red to blue.
+    let old = document(vec![screen(4, 1, 0.0, "FRAME"), dot(5, 4, (1.0, 0.0, 0.0))]);
+    let new = document(vec![screen(7, 1, 0.0, "FRAME"), dot(8, 7, (0.0, 0.0, 1.0))]);
+    for render in [false, true] {
+        let mut report = diff_documents(&old, &new);
+        if render {
+            let _ = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+        }
+        let page = &report.pages[0];
+        assert_eq!(page.screens.len(), 1, "render {render}: {page:?}");
+        let html = render_html(&report);
+        let screen = html.split("id=\"page-0-s1\"").nth(1).unwrap();
+        assert!(
+            screen.contains("class=\"sg\">~</span>"),
+            "render {render}: {screen}"
+        );
+        assert!(screen.contains(">Dot<"), "{screen}");
+        assert!(!screen.contains("guid"), "{screen}");
+    }
+}

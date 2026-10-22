@@ -77,6 +77,7 @@ fn list_recreated_changes(docs: (&Document, &Document), page: &mut PageDiff, pai
         }
         out
     };
+    list_paired_edits(docs, page, &old, &new);
     for (doc, side, root, old_side) in [
         (docs.0, &old, old_root, true),
         (docs.1, &new, new_root, false),
@@ -96,6 +97,49 @@ fn list_recreated_changes(docs: (&Document, &Document), page: &mut PageDiff, pai
                 list.push(crate::structure::reference(doc, node));
             }
         }
+    }
+}
+
+/// Layers of a recreated screen that pair by [`Path`] have new ids, so the structural diff
+/// never compares them. Their own edits (a new colour, new text) are listed as changes of
+/// the new layer; the id fields that always differ are left out.
+fn list_paired_edits(
+    docs: (&Document, &Document),
+    page: &mut PageDiff,
+    old: &[(Path, Guid)],
+    new: &[(Path, Guid)],
+) {
+    let mut olds: BTreeMap<&Path, Vec<Guid>> = BTreeMap::new();
+    for (key, id) in old {
+        olds.entry(key).or_default().push(*id);
+    }
+    let mut taken: BTreeMap<&Path, usize> = BTreeMap::new();
+    for (key, new_id) in new {
+        let rank = taken.entry(key).or_default();
+        let Some(&old_id) = olds.get(key).and_then(|ids| ids.get(*rank)) else {
+            continue;
+        };
+        *rank += 1;
+        let (Some(a), Some(b)) = (docs.0.node(old_id), docs.1.node(*new_id)) else {
+            continue;
+        };
+        let mut changes = crate::properties::changes(Some(&a.data), Some(&b.data));
+        changes.retain(|c| {
+            let head = c.field.split('.').next().unwrap_or(&c.field);
+            !matches!(head, "guid" | "parentIndex" | "overrideKey")
+        });
+        if changes.is_empty() || page.changed.iter().any(|n| n.id == b.id) {
+            continue;
+        }
+        page.changed.push(crate::NodeDiff {
+            id: b.id,
+            kind: b.kind.clone(),
+            name: b.name.clone(),
+            path: crate::structure::path(docs.1, b),
+            moved: None,
+            text: crate::properties::text_change(&a.data, &b.data, &changes),
+            changes,
+        });
     }
 }
 
