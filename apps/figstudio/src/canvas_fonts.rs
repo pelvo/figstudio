@@ -46,13 +46,17 @@ pub fn sync(ctx: &egui::Context) -> bool {
 }
 
 /// Only render workers take the blocking lock; parsing happens after it is released.
-pub fn snapshot() -> (u64, Vec<Font>) {
+pub fn snapshot() -> (u64, Vec<(Font, u32)>) {
     let fonts = FONTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     (
         fonts.generation,
-        fonts.faces.iter().map(|(_, bytes)| bytes.clone()).collect(),
+        fonts
+            .faces
+            .iter()
+            .map(|(face, bytes)| (bytes.clone(), face.index))
+            .collect(),
     )
 }
 
@@ -74,12 +78,12 @@ pub fn renderer(images: figstudio_render::images::Images) -> (u64, figstudio_ren
 
 fn configured(
     images: figstudio_render::images::Images,
-    fonts: Vec<Font>,
+    fonts: Vec<(Font, u32)>,
 ) -> figstudio_render::Renderer {
     let mut renderer = figstudio_render::Renderer::with_images(images);
     renderer.set_emoji_source(Some(Arc::new(crate::emoji_canvas::BrowserEmoji)));
-    for bytes in fonts {
-        renderer.add_font_data(bytes);
+    for (bytes, index) in fonts {
+        renderer.add_font_data(bytes, index);
     }
     renderer
 }

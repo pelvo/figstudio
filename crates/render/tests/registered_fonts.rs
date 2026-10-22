@@ -44,7 +44,7 @@ fn registered_fonts_replace_missing_text_in_pixels_and_recordings() {
     let absent = renderer.render(&doc, id(1), &viewport);
     assert_eq!(absent.stats.text_missing, 1);
     assert!(absent.pixmap.data_as_u8_slice().iter().all(|&b| b == 0));
-    renderer.add_font_data(Arc::new(epaint_default_fonts::HACK_REGULAR.to_vec()));
+    renderer.add_font_data(Arc::new(epaint_default_fonts::HACK_REGULAR.to_vec()), 0);
     let present = renderer.render(&doc, id(1), &viewport);
     assert_eq!(present.stats.text_missing, 0);
     assert_eq!(present.stats.text_system_fonts, 1);

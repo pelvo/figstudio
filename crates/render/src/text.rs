@@ -63,6 +63,8 @@ pub(crate) use system::{Builder, SYMBOL_FAMILIES};
 mod system {
     #[cfg(all(test, feature = "system-fonts"))]
     mod cache_tests;
+    #[cfg(test)]
+    mod supplied_tests;
     use std::collections::HashMap;
     #[cfg(feature = "system-fonts")]
     use std::collections::VecDeque;
@@ -166,11 +168,18 @@ mod system {
             }
         }
 
-        pub fn add_font_data(&mut self, bytes: Arc<Vec<u8>>) {
+        pub fn add_font_data(&mut self, bytes: Arc<Vec<u8>>, index: u32) {
             self.db();
             if let Some(db) = &mut self.db {
-                self.supplied
-                    .extend(db.load_font_source(fontdb::Source::Binary(bytes)));
+                let ids = db.load_font_source(fontdb::Source::Binary(bytes.clone()));
+                for id in ids {
+                    if db.face(id).is_some_and(|face| face.index == index) {
+                        self.supplied.push(id);
+                        self.faces.insert(id, Some((bytes.clone(), index)));
+                    } else {
+                        db.remove_face(id);
+                    }
+                }
             }
             self.fallbacks = None;
         }

@@ -30,7 +30,7 @@ fn supplied_fonts_draw_outline_less_text() {
     assert!(absent.pixmap.data_as_u8_slice().iter().all(|&b| b == 0));
     rendering
         .fonts
-        .push(Arc::new(epaint_default_fonts::HACK_REGULAR.to_vec()));
+        .push((Arc::new(epaint_default_fonts::HACK_REGULAR.to_vec()), 0));
     let present = rendering.draw(&doc, Root::Node(id(1)), &viewport);
     assert_eq!(present.stats.text_missing, 0);
     assert_eq!(present.stats.text_system_fonts, 1);

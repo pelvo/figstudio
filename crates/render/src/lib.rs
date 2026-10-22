@@ -354,10 +354,11 @@ impl Renderer {
         }
     }
 
-    /// Register an app-supplied fallback face without scanning installed fonts.
+    /// Register an app-supplied fallback face, sharing its bytes without copying.
+    /// `index` selects a face in a collection; an invalid index registers no face.
     /// Discard existing recordings and rendered tiles after adding fonts.
-    pub fn add_font_data(&mut self, bytes: Arc<Vec<u8>>) {
-        self.fonts.add_font_data(bytes);
+    pub fn add_font_data(&mut self, bytes: Arc<Vec<u8>>, index: u32) {
+        self.fonts.add_font_data(bytes, index);
     }
 
     /// Install a platform emoji source and clear cached rasters. Set before recording;
