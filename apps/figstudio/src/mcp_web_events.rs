@@ -8,14 +8,11 @@ impl McpHost {
         active: &mut usize,
     ) -> Option<String> {
         match event {
+            // A call the socket callback could not start yet (it came before a frame saw
+            // the connection welcomed): start it against this frame's tabs.
             Event::Rpc { id, body } => {
-                // A refused call is answered immediately (the worker would otherwise hold
-                // it for the full 30 s); an accepted one replies from the pool.
-                if let Some(busy) = self.rpc.dispatch(self.generation, id, body, tabs, *active)
-                    && let Some(conn) = self.conn.as_ref().filter(|c| c.welcomed)
-                {
-                    let _ = conn.ws.send_with_str(&busy);
-                }
+                self.publish(tabs, *active);
+                self.calls.borrow_mut().start(self.generation, id, body);
                 None
             }
             Event::Pong { generation } => {
@@ -26,6 +23,9 @@ impl McpHost {
                 // covers a pong drained after `stop` cleared the queue.
                 if self.conn.is_some() {
                     self.heartbeat.pong(generation, Instant::now());
+                    if self.heartbeat.proven() {
+                        self.reconnect.proven();
+                    }
                 }
                 None
             }
@@ -74,7 +74,16 @@ impl McpHost {
                 if !waiting {
                     return None;
                 }
-                self.stop();
+                if self.relay {
+                    let quiet = self.reconnect.retrying();
+                    self.stop();
+                    self.reconnect.lost(Instant::now());
+                    if quiet {
+                        return None;
+                    }
+                } else {
+                    self.stop();
+                }
                 Some(
                     if self.relay && self.proxy.is_some() {
                         "Could not connect to the local browser proxy"
@@ -113,6 +122,15 @@ impl McpHost {
             Event::Closed(code) => {
                 let welcomed = self.conn.take().is_some_and(|c| c.welcomed);
                 self.reset_link();
+                if self.relay {
+                    // A failed attempt of a retry series is retried again without a toast.
+                    let quiet = !welcomed && self.reconnect.retrying();
+                    self.calls.borrow_mut().publish(None, &[], 0);
+                    self.reconnect.lost(Instant::now());
+                    if quiet {
+                        return None;
+                    }
+                }
                 Some(
                     if self.relay && self.proxy.is_some() {
                         "Local browser proxy disconnected"

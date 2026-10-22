@@ -1,7 +1,10 @@
-//! Socket callbacks only enqueue events; no browser file reads or RPC run here.
+//! Socket callbacks enqueue events and start relay calls on the pool; no browser file
+//! reads run here.
+use super::Calls;
 use crate::mcp_upload::{Event, Shared};
 use crate::mcp_wire::{CONNECT_TIMEOUT_MS, parse_rpc};
 use figstudio_mcp_core::bridge::ServerMessage;
+use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{CloseEvent, MessageEvent, WebSocket};
@@ -40,6 +43,7 @@ impl Conn {
         relay: bool,
         generation: u32,
         shared: &Rc<Shared>,
+        calls: &Rc<RefCell<Calls>>,
         ctx: &egui::Context,
     ) -> Result<Self, String> {
         let ws = match protocols {
@@ -57,7 +61,7 @@ impl Conn {
             shared.events.borrow_mut().push_back(event);
             ctx.request_repaint();
         };
-        let (s, c) = (shared.clone(), ctx.clone());
+        let (s, c, calls) = (shared.clone(), ctx.clone(), Rc::downgrade(calls));
         let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
             let Some(text) = e.data().as_string() else {
                 return;
@@ -70,7 +74,16 @@ impl Conn {
                 if text == "pong" {
                     push(&s, &c, Event::Pong { generation });
                 } else if let Some((id, body)) = parse_rpc(&text) {
-                    push(&s, &c, Event::Rpc { id, body });
+                    // Started here, not at the next frame: a hidden tab may not draw one
+                    // before the relay's deadline (`mcp_web_calls.rs`).
+                    let started = calls.upgrade().is_some_and(|calls| {
+                        calls
+                            .borrow_mut()
+                            .start(generation, id.clone(), body.clone())
+                    });
+                    if !started {
+                        push(&s, &c, Event::Rpc { id, body });
+                    }
                 }
             } else if let Ok(message) = serde_json::from_str::<ServerMessage>(&text) {
                 push(&s, &c, Event::Server(message));

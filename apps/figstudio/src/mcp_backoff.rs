@@ -1,0 +1,101 @@
+//! Relay reconnect pacing: a lost relay connection is retried with growing delays.
+//! Pure time logic (native tests drive it with a synthetic clock); `mcp_web.rs` owns the
+//! real clock and the socket.
+//!
+//! Before this, a relay socket that closed (a Worker deploy, a network change, a sleeping
+//! laptop) stayed closed until someone reconnected by hand, so every call in the meantime
+//! got "No browser tab connected". The delays double from [`FIRST_RETRY`] to
+//! [`MAX_RETRY`], which bounds the load a black-holed path can cause (the old one-retry
+//! storm bound); a connection that proves itself (a keepalive `pong`) starts the next
+//! series from the first delay again. Becoming visible or coming back online retries at
+//! once instead of waiting out the delay.
+use std::time::Duration;
+
+use crate::mcp_heartbeat::Clock;
+
+/// The first retry's delay after a loss.
+pub(crate) const FIRST_RETRY: Duration = Duration::from_secs(1);
+
+/// The longest delay between two retries.
+pub(crate) const MAX_RETRY: Duration = Duration::from_secs(60);
+
+/// What the host should do at this frame.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Retry {
+    /// No retry is planned.
+    Idle,
+    /// A retry is planned; repaint again after this much time has passed.
+    Wait(Duration),
+    /// Connect now. The plan is used up: a failed attempt calls `lost` again.
+    Now,
+}
+
+/// Reconnect plan for the relay connection.
+#[derive(Debug)]
+pub(crate) struct Reconnect<T: Clock> {
+    /// The planned retry: when the loss was seen, and how long to wait from then.
+    planned: Option<(T, Duration)>,
+    /// The delay the next loss waits.
+    next: Duration,
+}
+
+impl<T: Clock> Default for Reconnect<T> {
+    fn default() -> Self {
+        Self {
+            planned: None,
+            next: FIRST_RETRY,
+        }
+    }
+}
+
+impl<T: Clock> Reconnect<T> {
+    /// The connection (or a connect attempt) was lost at `now`: plan a retry after the
+    /// current delay, and double the delay for the loss after that.
+    pub(crate) fn lost(&mut self, now: T) {
+        self.planned = Some((now, self.next));
+        self.next = (self.next * 2).min(MAX_RETRY);
+    }
+
+    /// The connection answered a keepalive: the next loss retries quickly again.
+    pub(crate) fn proven(&mut self) {
+        self.next = FIRST_RETRY;
+    }
+
+    /// Someone connected or disconnected by hand: drop the planned retry (the delay keeps
+    /// growing if a connect by hand keeps failing too).
+    pub(crate) fn cancel(&mut self) {
+        self.planned = None;
+    }
+
+    /// The page became visible or the browser came back online: a planned retry is due
+    /// now instead of after its delay.
+    pub(crate) fn hurry(&mut self) {
+        if let Some((_, wait)) = &mut self.planned {
+            *wait = Duration::ZERO;
+        }
+    }
+
+    /// Whether losses since the last proven connection are being retried; their failed
+    /// attempts need no toast each.
+    pub(crate) fn retrying(&self) -> bool {
+        self.next > FIRST_RETRY
+    }
+
+    /// The frame's decision. `Now` clears the plan.
+    pub(crate) fn poll(&mut self, now: T) -> Retry {
+        let Some((since, wait)) = self.planned else {
+            return Retry::Idle;
+        };
+        let waited = now.since(since);
+        if waited >= wait {
+            self.planned = None;
+            Retry::Now
+        } else {
+            Retry::Wait(wait - waited)
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "mcp_backoff_tests.rs"]
+mod tests;

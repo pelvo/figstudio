@@ -16,8 +16,9 @@
 //!   beats the deadline heuristic;
 //! - a `pong` after the deadline fired changes nothing: expiry has already dropped the
 //!   connection, and a new connection only trusts its own generation's `pong`;
-//! - expiry of a connection that never proved itself does not reconnect automatically
-//!   (the storm bound); a proven one reconnects once.
+//! - expiry drops the connection; the host retries it with growing delays
+//!   (`mcp_backoff.rs`), which bounds what a black-holed path can cost. `proven` only
+//!   decides whether the loss is worth a toast.
 use std::time::Duration;
 
 /// How long a proven relay connection idles between keepalive pings.
@@ -47,7 +48,7 @@ pub(crate) enum Beat {
     /// A keepalive ping is due now; call `ping_sent(now)` once its bytes were accepted.
     SendPing,
     /// No pong within the deadline: drop the connection. `proven` says whether this
-    /// connection ever cleared a pong, which bounds automatic reconnect to one try.
+    /// connection ever cleared a pong (an unproven one is a failed connect attempt).
     Elapsed { proven: bool },
 }
 

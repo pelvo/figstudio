@@ -109,6 +109,39 @@ pub(super) fn document_focused() -> bool {
         .unwrap_or(true)
 }
 
+/// Retry a lost relay at once when the page is shown again or the browser is back
+/// online, instead of waiting out the retry delay: sets `hurry` and asks for a frame.
+pub(super) fn watch_return(hurry: std::rc::Rc<std::cell::Cell<bool>>, ctx: &egui::Context) {
+    use wasm_bindgen::{JsCast, closure::Closure};
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let nudge = move || {
+        hurry.set(true);
+    };
+    let (shown, ctx_shown) = (nudge.clone(), ctx.clone());
+    let on_visible = Closure::<dyn FnMut()>::new(move || {
+        if !crate::web::page_hidden() {
+            shown();
+            ctx_shown.request_repaint();
+        }
+    });
+    let ctx = ctx.clone();
+    let on_online = Closure::<dyn FnMut()>::new(move || {
+        nudge();
+        ctx.request_repaint();
+    });
+    let _ = document
+        .add_event_listener_with_callback("visibilitychange", on_visible.as_ref().unchecked_ref());
+    let _ = window.add_event_listener_with_callback("online", on_online.as_ref().unchecked_ref());
+    // The listeners live as long as the page does.
+    on_visible.forget();
+    on_online.forget();
+}
+
 /// The pair this visit uses, plus one-time notices for the host to toast.
 pub(super) struct Loaded {
     pub pair: Option<ExecutorPair>,
