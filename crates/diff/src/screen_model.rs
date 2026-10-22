@@ -99,9 +99,10 @@ fn list_recreated_changes(
 const MAX_COPY_COMPARISONS: usize = 4096;
 
 /// Pairs the one-sided layers that share a [`Path`], as `(old, new, compared)` in the new
-/// side's walk order. Copies pair by fewest property changes (ties in walk order), so an
-/// inserted copy is the one left over and a reordered copy keeps its own pair. A path with
-/// too many copies to compare pairs in walk order and is not `compared`.
+/// side's walk order. Copies pair greedily by fewest changed fields, ties in walk order: an
+/// inserted copy that differs from the rest is the one left over, but identical copies pair
+/// from the front. A path with too many copies to compare pairs in walk order and is not
+/// `compared`.
 fn pair_up(
     docs: (&Document, &Document),
     old: &[(Path, Guid)],

@@ -374,12 +374,19 @@ fn a_recreated_screen_that_is_only_rotated_or_scaled_is_a_move_not_an_edit() {
                 ("m12", Val::Float(0.0)),
             ]),
         );
-        let old = document(vec![screen(4, 1, 0.0, "FRAME")]);
-        let new = document(vec![Node::from_data(root.data).unwrap()]);
+        // A small mark inside, so a leaked scale or turn would move it on the screen picture.
+        let mark = |id, parent| {
+            let mut n = filled_rectangle_at(id, parent, (0.0, 0.0, 0.0), 20.0, 20.0, 40.0, 30.0);
+            n.data.set("name", Val::Str("Mark".into()));
+            Node::from_data(n.data).unwrap()
+        };
+        let old = document(vec![screen(4, 1, 0.0, "FRAME"), mark(5, 4)]);
+        let new = document(vec![Node::from_data(root.data).unwrap(), mark(8, 7)]);
         for render in [false, true] {
             let mut report = diff_documents(&old, &new);
             if render {
                 let _ = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+                assert!(report.pages[0].render.is_some());
             }
             let page = &report.pages[0];
             assert!(page.changed.iter().all(|n| n.id != Guid(0, 7)), "{page:?}");
