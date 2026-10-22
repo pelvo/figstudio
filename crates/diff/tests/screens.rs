@@ -413,4 +413,54 @@ fn recreated_screen_keeps_repeated_names_silent_when_a_copy_is_inserted() {
     let page = &report.pages[0];
     assert!(page.changed.is_empty(), "{:?}", page.changed);
     assert_eq!(report.summary.nodes_changed, 0);
+    // The unchanged copy pairs with the old card, so the inserted one is the addition.
+    let ids = |list: &[figstudio_diff::NodeRef]| list.iter().map(|n| n.id.1).collect::<Vec<_>>();
+    assert_eq!(ids(&page.added), [7, 20], "{:?}", page.added);
+    assert_eq!(ids(&page.removed), [4], "{:?}", page.removed);
+}
+
+#[test]
+fn recreated_screen_lists_an_edit_of_a_repeated_name_in_tree_order() {
+    let card = |id, parent, y, text: &str, position: &str| {
+        let mut frame = node(id, Some(parent), "FRAME", position);
+        frame.data.set("name", Val::Str("Card".into()));
+        frame
+            .data
+            .set("transform", object(&[("m12", Val::Float(y))]));
+        let mut title = node(id + 1, Some(id), "TEXT", "a");
+        title.data.set("name", Val::Str("Title".into()));
+        title
+            .data
+            .set("textData", object(&[("characters", Val::Str(text.into()))]));
+        [
+            Node::from_data(frame.data).unwrap(),
+            Node::from_data(title.data).unwrap(),
+        ]
+    };
+    let label = |id, parent, name: &str, text: &str, position: &str| {
+        let mut n = node(id, Some(parent), "TEXT", position);
+        n.data.set("name", Val::Str(name.into()));
+        n.data
+            .set("textData", object(&[("characters", Val::Str(text.into()))]));
+        Node::from_data(n.data).unwrap()
+    };
+    // Two cards on each side, in the same order; only the second title changes. Zebra is
+    // the earlier sibling of Apple, and both change.
+    let mut old = vec![screen(4, 1, 0.0, "FRAME")];
+    old.extend(card(5, 4, 0.0, "One", "a"));
+    old.extend(card(10, 4, 100.0, "Two", "b"));
+    old.push(label(12, 4, "Zebra", "z", "c"));
+    old.push(label(13, 4, "Apple", "a", "d"));
+    let mut new = vec![screen(7, 1, 0.0, "FRAME")];
+    new.extend(card(20, 7, 0.0, "One", "a"));
+    new.extend(card(30, 7, 100.0, "Two edited", "b"));
+    new.push(label(32, 7, "Zebra", "z2", "c"));
+    new.push(label(33, 7, "Apple", "a2", "d"));
+    let report = diff_documents(&document(old), &document(new));
+    let page = &report.pages[0];
+    let rows: Vec<_> = page.changed.iter().map(|n| n.id.1).collect();
+    assert_eq!(rows, [31, 32, 33], "{:?}", page.changed);
+    assert_eq!(page.screens.len(), 1, "{page:?}");
+    assert!(render_html(&report).contains("Two edited"));
+    assert!(page.added.iter().all(|n| n.id.1 == 7), "{:?}", page.added);
 }
