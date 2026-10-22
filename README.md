@@ -88,6 +88,10 @@ Protocol (MCP) server, written in Rust.
 
 ## Quick start
 
+These commands build from a checkout. To install a release instead, see [Try it](#try-it):
+Homebrew on macOS (the app, `figstudio-cli` and `figstudio-mcp`) or the Linux tarball
+(`figstudio-cli` and `figstudio-mcp`).
+
 ### 1. Desktop app (`figstudio`)
 
 ```sh
@@ -153,9 +157,9 @@ cargo run --release -p figstudio-cli -- doctor path/to/design.fig
 
 ### 4. MCP server (`figstudio-mcp`)
 
-Install the server on its own with
-`cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp` (or
-`cargo build --release -p figstudio-mcp` in a checkout). Full setup and tool documentation
+Install the server with Homebrew or the Linux tarball (see [Try it](#try-it)), on its own
+with `cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp`, or
+build it in a checkout with `cargo build --release -p figstudio-mcp`. Full setup and tool documentation
 is in [`apps/figstudio-mcp/README.md`](apps/figstudio-mcp/README.md):
 
 ```sh
