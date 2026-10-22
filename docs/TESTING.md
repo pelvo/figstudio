@@ -629,10 +629,13 @@ FigJam and most design-context mappings; the fixtures have no variables or FigJa
   `whoami`, an unknown tool, and a non-loopback `Host` that must be refused.
 - `bridge*.rs` (browser bridge): a tokio-tungstenite client plays the browser against
   `serve_bridge` in process; `bridge_cli.rs` spawns the real `--bridge` binary, parses its printed
-  token and pairs a socket. Keep the child's stderr handle alive after reading the banner:
-  later startup output otherwise races with a closed pipe and can terminate the server.
-  `banner_keeps_stderr_open_for_later_output` checks a late write with a Tokio duplex stream;
-  it fails with `BrokenPipe` when the banner reader owns and drops the stream.
+  token and pairs a socket. The banner helper takes ownership of stderr and hands it to a
+  drain task after parsing; EOF ends the task when the child exits. This prevents later
+  output from hitting a closed or full pipe. `banner_keeps_stderr_open_for_later_output`
+  moves an owned Tokio duplex reader into the same helper, then writes more than the pipe
+  capacity after it returns. Removing the drain task fails with `BrokenPipe` without
+  changing the test. Both parsing and the late write have two-second timeouts; a mutated
+  banner prefix was verified to fail with the parsing timeout instead of hanging.
   The wasm client itself (`mcp_web.rs`) is checked by hand; its pure
   helpers (`mcp_wire.rs`, `mcp_state.rs`) have native unit tests in the app crate.
 - `prompts.rs`, `files.rs` and most per-tool files use rmcp's client over an in-process duplex

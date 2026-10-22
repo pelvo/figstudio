@@ -9,8 +9,8 @@ use std::sync::Arc;
 use support::*;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 
-/// Reads stderr until the MCP address and local pairing token have arrived.
-async fn banner(stderr: &mut (impl AsyncRead + Unpin)) -> (String, String) {
+/// Reads the pairing banner, then drains the owned stderr until the child exits.
+async fn banner(stderr: impl AsyncRead + Unpin + Send + 'static) -> (String, String) {
     let mut lines = BufReader::new(stderr).lines();
     let (mut mcp, mut token) = (None, None);
     while let Some(line) = lines.next_line().await.unwrap() {
@@ -26,24 +26,33 @@ async fn banner(stderr: &mut (impl AsyncRead + Unpin)) -> (String, String) {
             break;
         }
     }
+    // Keep ownership beyond the banner and consume later output so the child cannot
+    // hit either a broken pipe or a full pipe. EOF ends the task when the child exits.
+    tokio::spawn(async move {
+        let _ = tokio::io::copy(&mut lines.into_inner(), &mut tokio::io::sink()).await;
+    });
     (mcp.expect("MCP line"), token.expect("token line"))
 }
 
 #[tokio::test]
 async fn banner_keeps_stderr_open_for_later_output() {
-    let (mut writer, mut reader) = tokio::io::duplex(1024);
+    let (mut writer, reader) = tokio::io::duplex(1024);
     writer
         .write_all(
             b"MCP: http://127.0.0.1:3845/mcp\nLocal: http://127.0.0.1:8765/#mcp=test-token\n",
         )
         .await
         .unwrap();
-    let (mcp, token) = banner(&mut reader).await;
+    let wait = std::time::Duration::from_secs(2);
+    let (mcp, token) = tokio::time::timeout(wait, banner(reader))
+        .await
+        .expect("banner parsing timed out");
     assert_eq!(mcp, "http://127.0.0.1:3845/mcp");
     assert_eq!(token, "test-token");
-    writer
-        .write_all(b"Bridge port: 3845 (set the web app URL if not 3845)\n")
+    // More than the duplex capacity: the helper must own AND drain the reader.
+    tokio::time::timeout(wait, writer.write_all(&[b'x'; 4096]))
         .await
+        .expect("stderr was kept open but not drained")
         .expect("reading the banner must not close the child's stderr pipe");
 }
 
@@ -55,12 +64,12 @@ async fn the_bridge_binary_pairs_a_browser_socket_with_an_mcp_client() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // Keep the pipe open: the child still prints banner lines after Local.
-    let mut stderr = child.stderr.take().unwrap();
-    let (mcp, token) =
-        tokio::time::timeout(std::time::Duration::from_secs(20), banner(&mut stderr))
-            .await
-            .unwrap();
+    let (mcp, token) = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        banner(child.stderr.take().unwrap()),
+    )
+    .await
+    .unwrap();
     assert_eq!(token.len(), 64, "256-bit hex token");
     let addr = mcp
         .strip_prefix("http://")
