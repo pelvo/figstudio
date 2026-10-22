@@ -40,7 +40,8 @@ claude mcp add figstudio -- npx -y figstudio-mcp /path/to/design.fig
 **Also works with `bunx`:** `bunx figstudio-mcp --browser-proxy` runs the same launcher.
 `bin/figstudio-mcp.js` only uses Node's built-in `fs`/`os`/`child_process` modules (no
 npx-only syntax), and `bun install` resolves the matching `@pelvo/figstudio-mcp-<os>-<cpu>`
-optional dependency the same way npm does.
+optional dependency the same way npm does. `bunx` runs the launcher under Node when Node is
+installed (it follows the `#!/usr/bin/env node` line) and under Bun otherwise; both work.
 
 ## Cursor, VS Code, Codex
 
