@@ -28,6 +28,33 @@ Protocol (MCP) server, written in Rust.
 - **Website:** https://pelvo.dev
 - **In the browser, nothing to install:** https://figstudio.pelvo.dev. Open or drop a `.fig`
   (Figma → File → Save local copy); it stays in the tab and nothing is uploaded.
+- **macOS (Apple silicon) with Homebrew:**
+
+  ```sh
+  brew install --cask pelvo/tap/figstudio
+  ```
+
+  This installs `figstudio.app` in `/Applications` and puts `figstudio-cli` and
+  `figstudio-mcp` on your `PATH`. Update with `brew upgrade --cask figstudio`; remove with
+  `brew uninstall --cask figstudio` (add `--zap` to delete its settings as well). The app
+  is ad-hoc signed, not notarized; the cask clears the download quarantine so it opens
+  normally. The tap is [pelvo/homebrew-tap](https://github.com/pelvo/homebrew-tap).
+- **Linux (x86_64 or arm64), CLI and MCP server:** each release has a static
+  `figstudio-cli-mcp-vX.Y.Z-linux-<arch>.tar.gz` (any distro, Alpine too; from the release
+  after v0.1.0). To check the latest one against the release's `SHA256SUMS` and put it in
+  `~/.local/bin`:
+
+  ```sh
+  v=$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/pelvo/figstudio/releases/latest); v=${v##*/}
+  f=figstudio-cli-mcp-$v-linux-$(uname -m | sed 's/aarch64/arm64/').tar.gz
+  (cd "$(mktemp -d)" && curl -fsSL -O "https://github.com/pelvo/figstudio/releases/download/$v/$f" -O "https://github.com/pelvo/figstudio/releases/download/$v/SHA256SUMS" &&
+    awk -v f="$f" '$2 == f' SHA256SUMS | sha256sum -c - && mkdir -p ~/.local/bin && tar -xzf "$f" -C ~/.local/bin)
+  ```
+
+  If `~/.local/bin` is not on your `PATH` yet (Debian and Ubuntu add it only at login, and
+  only if it existed then), run `export PATH="$HOME/.local/bin:$PATH"` in this shell and add
+  the same line to your shell profile for later sessions. Registering the server by its full
+  path (`~/.local/bin/figstudio-mcp`) also works without it.
 - **Give it to Claude Code in one line** (needs Node.js; npm fetches a prebuilt binary for
   Linux, macOS or Windows, nothing is compiled):
 
@@ -51,8 +78,9 @@ Protocol (MCP) server, written in Rust.
   `open_figstudio_browser` then opens that address. To serve a file from disk instead,
   with no browser: `claude mcp add figstudio -- npx -y figstudio-mcp /path/to/design.fig`.
 
-  Without Node, build it with Rust 1.95 or newer:
-  `cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp && claude mcp add figstudio -- figstudio-mcp --browser-proxy`.
+  Without Node, install `figstudio-mcp` with Homebrew or the Linux tarball above and register
+  `claude mcp add figstudio -- figstudio-mcp --browser-proxy`, or build it with Rust 1.95 or
+  newer: `cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp && claude mcp add figstudio -- figstudio-mcp --browser-proxy`.
 
 ---
 
@@ -72,6 +100,10 @@ Protocol (MCP) server, written in Rust.
 ---
 
 ## Quick start
+
+These commands build from a checkout. To install a release instead, see [Try it](#try-it):
+Homebrew on macOS (the app, `figstudio-cli` and `figstudio-mcp`) or the Linux tarball
+(`figstudio-cli` and `figstudio-mcp`).
 
 ### 1. Desktop app (`figstudio`)
 
@@ -138,9 +170,10 @@ cargo run --release -p figstudio-cli -- doctor path/to/design.fig
 
 ### 4. MCP server (`figstudio-mcp`)
 
-Run the server with `npx -y figstudio-mcp` (prebuilt binaries on npm), or install it with
-`cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp` (or
-`cargo build --release -p figstudio-mcp` in a checkout). Full setup and tool documentation
+Run the server with `npx -y figstudio-mcp` (prebuilt binaries on npm), install it with
+Homebrew or the Linux tarball (see [Try it](#try-it)), on its own with
+`cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp`, or build it
+in a checkout with `cargo build --release -p figstudio-mcp`. Full setup and tool documentation
 is in [`apps/figstudio-mcp/README.md`](apps/figstudio-mcp/README.md):
 
 ```sh
