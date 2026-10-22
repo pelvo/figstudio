@@ -92,6 +92,8 @@ pub struct McpHost {
     hurry: Rc<std::cell::Cell<bool>>,
     /// The listeners above are installed (by the first `sync`, which has the context).
     listening: bool,
+    /// The pending connect is a planned retry, not one asked for by hand.
+    retrying_now: bool,
     /// Whether this origin runs the cloud relay Worker; written by the probe task that
     /// the first `sync` starts (it has the context to repaint with), and that a connect
     /// after a failed probe starts again.
@@ -166,6 +168,7 @@ impl Default for McpHost {
             reconnect: Reconnect::default(),
             hurry: Rc::default(),
             listening: false,
+            retrying_now: false,
             cloud: Rc::default(),
             probe_started: false,
             cloud_gate: CloudGate::page_load(cloud_wanted),
@@ -285,7 +288,10 @@ impl McpHost {
         }
         if self.relay && self.conn.is_none() {
             match self.reconnect.poll(Instant::now()) {
-                Retry::Now => self.want_connect = true,
+                Retry::Now => {
+                    self.want_connect = true;
+                    self.retrying_now = true;
+                }
                 Retry::Wait(resume) => ctx.request_repaint_after(resume),
                 Retry::Idle => {}
             }
@@ -501,7 +507,11 @@ impl McpHost {
             return Err("Could not generate a secure MCP device identity".to_owned());
         }
         self.generation = self.generation.wrapping_add(1);
-        self.reconnect.cancel();
+        if std::mem::take(&mut self.retrying_now) {
+            self.reconnect.cancel();
+        } else {
+            self.reconnect.restart();
+        }
         self.reset_link();
         self.shared.events.borrow_mut().clear();
         let (url, protocols) = if self.relay {

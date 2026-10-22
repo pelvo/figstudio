@@ -79,6 +79,19 @@ fn becoming_visible_or_online_retries_at_once() {
 }
 
 #[test]
+fn a_connect_by_hand_starts_a_fresh_series() {
+    let mut reconnect = Reconnect::default();
+    for now in [0, 1, 3] {
+        reconnect.lost(Secs(now));
+    }
+    reconnect.restart();
+    assert!(!reconnect.retrying());
+    assert_eq!(reconnect.poll(Secs(100)), Retry::Idle);
+    reconnect.lost(Secs(100));
+    assert_eq!(reconnect.poll(Secs(100)), Retry::Wait(FIRST_RETRY));
+}
+
+#[test]
 fn a_cancelled_plan_never_fires() {
     let mut reconnect = Reconnect::default();
     reconnect.lost(Secs(0));
