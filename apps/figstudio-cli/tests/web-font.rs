@@ -114,8 +114,14 @@ fn writes_all_five_faces_and_the_license() {
     };
 
     let out = TempDir::new("success");
+    // This test is about the CJK group. The script builds the symbol and emoji group
+    // after it, which needs four more Noto fonts that the skip check above does not look
+    // for, so a machine with CJK and fontTools but no Noto Emoji failed here. The symbol
+    // group's own opt-out keeps it out of this test; `symbols::tests` and web-font.sh's
+    // own checks cover it.
     let res = Command::new(SCRIPT)
         .env_remove("FIGSTUDIO_ALLOW_MISSING_CJK")
+        .env("FIGSTUDIO_ALLOW_MISSING_SYMBOLS", "1")
         .env("FIGSTUDIO_CJK_FONT", &font)
         .arg(&out.0)
         .output()
