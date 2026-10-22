@@ -21,6 +21,9 @@ On macOS (Apple silicon), Homebrew installs it together with the desktop app and
 brew install --cask pelvo/tap/figstudio
 ```
 
+On Linux (x86_64 or arm64), each release has a static tarball with `figstudio-mcp` and
+`figstudio-cli`; see [Try it](../../README.md#try-it) for a one-line download.
+
 Or build it with cargo (Rust 1.95 or newer):
 
 ```sh

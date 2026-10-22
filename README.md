@@ -39,6 +39,17 @@ Protocol (MCP) server, written in Rust.
   `brew uninstall --cask figstudio` (add `--zap` to delete its settings as well). The app
   is ad-hoc signed, not notarized; the cask clears the download quarantine so it opens
   normally. The tap is [pelvo/homebrew-tap](https://github.com/pelvo/homebrew-tap).
+- **Linux (x86_64 or arm64), CLI and MCP server:** each release has a static
+  `figstudio-cli-mcp-vX.Y.Z-linux-<arch>.tar.gz` (any distro, Alpine too; from the release
+  after v0.1.0). To put the latest one in `~/.local/bin`:
+
+  ```sh
+  v=$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/pelvo/figstudio/releases/latest); v=${v##*/}
+  arch=$(uname -m | sed 's/aarch64/arm64/')
+  mkdir -p ~/.local/bin && curl -fsSL "https://github.com/pelvo/figstudio/releases/download/$v/figstudio-cli-mcp-$v-linux-$arch.tar.gz" | tar -xz -C ~/.local/bin
+  ```
+
+  `SHA256SUMS` in the same release lists every file's checksum.
 - **Give it to Claude Code in one line** (needs Rust 1.95 or newer for `cargo`):
 
   ```sh

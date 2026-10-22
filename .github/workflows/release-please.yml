@@ -1,12 +1,13 @@
 # Releases with release-please. Every push to main updates one release PR (version bump in
 # Cargo.toml and Cargo.lock, CHANGELOG.md from the Conventional Commit titles). Merging that
-# PR tags vX.Y.Z and publishes a GitHub release; the job below then builds the macOS app and
-# attaches it to the release.
+# PR tags vX.Y.Z and publishes a GitHub release; the jobs below then build the macOS app and
+# the Linux CLI/MCP binaries (x86_64 and arm64, static musl), attach them to the release,
+# and the last job writes SHA256SUMS for every asset (pelvo/homebrew-tap reads it).
 #
 # The build runs in this workflow, not on `release: published`: a release made with
 # GITHUB_TOKEN does not start other workflows.
 #
-# Retry: if the macOS build failed, or a release has no assets, run this workflow by hand
+# Retry: if a build failed, or a release has no assets, run this workflow by hand
 # (Actions > release-please > Run workflow) with the release's tag. It rebuilds that tag and
 # replaces the assets.
 #
@@ -100,6 +101,80 @@ jobs:
           # ditto keeps the bundle's signature and symlinks intact (plain zip does not).
           ditto -c -k --keepParent target/release/figstudio.app "dist/$app"
           tar -C target/release -czf "dist/$tools" figstudio-cli figstudio-mcp
-          (cd dist && shasum -a 256 "$app" "$tools" > SHA256SUMS)
       - name: Attach to the release
         run: gh release upload "$TAG" dist/* --clobber -R "$GITHUB_REPOSITORY"
+
+  linux:
+    needs: release-please
+    if: >-
+      !cancelled() && (github.event_name == 'workflow_dispatch'
+      || needs.release-please.outputs.release_created == 'true')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x86_64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest}
+          - {arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm}
+    # Native runner per arch. musl links statically, so one binary runs on any distro
+    # (glibc or Alpine); renders measured as fast as the glibc build.
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write # gh release upload
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check the tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup default stable
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-rust
+          key: ${{ matrix.target }}
+          cache-workspace-crates: true
+      - name: Build
+        run: cargo build --locked --release -p figstudio-cli -p figstudio-mcp --target ${{ matrix.target }}
+      - name: Smoke test
+        run: |
+          bin=target/${{ matrix.target }}/release
+          for b in figstudio-cli figstudio-mcp; do
+            file "$bin/$b" | tee /dev/stderr | grep -qE "static(ally|-pie) linked"
+          done
+          "$bin/figstudio-cli" info tests/fixtures/structure.fig >/dev/null
+          "$bin/figstudio-mcp" --help >/dev/null
+      - name: Package
+        run: |
+          rm -rf dist && mkdir dist
+          tar -C target/${{ matrix.target }}/release -czf \
+            "dist/figstudio-cli-mcp-$TAG-linux-${{ matrix.arch }}.tar.gz" figstudio-cli figstudio-mcp
+      - name: Attach to the release
+        run: gh release upload "$TAG" dist/* --clobber -R "$GITHUB_REPOSITORY"
+
+  checksums:
+    needs: [release-please, macos, linux]
+    # Only when every build attached its files, so SHA256SUMS covers the whole release.
+    if: >-
+      !cancelled() && needs.macos.result == 'success' && needs.linux.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release upload
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Write SHA256SUMS
+        run: |
+          mkdir dist && cd dist
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*.zip' -p '*.tar.gz'
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber -R "$GITHUB_REPOSITORY"
