@@ -562,6 +562,15 @@ impl CjkNeed {
     }
 }
 
+/// What CJK `texts` (names the UI shows without a document, such as Recents cards) need.
+#[cfg_attr(
+    not(any(test, target_arch = "wasm32")),
+    expect(dead_code, reason = "only the browser fetches a CJK font")
+)]
+pub fn cjk_need_of<'a>(texts: impl IntoIterator<Item = &'a str>) -> CjkNeed {
+    texts.into_iter().fold(CjkNeed::None, CjkNeed::add)
+}
+
 /// What CJK anything the UI shows for this document (file name, page and layer names, text
 /// contents) needs.
 pub fn cjk_need(doc: &figstudio_fig::Document, file_name: &str) -> CjkNeed {
@@ -781,6 +790,12 @@ fn system_fonts() -> &'static SystemFonts {
         }
         fonts
     })
+}
+
+/// Whether an installed CJK face was found (a machine without one shows boxes).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn has_cjk_face() -> bool {
+    system_fonts().cjk.is_some()
 }
 
 /// The symbol code points (General Punctuation to Misc Symbols and Arrows, and the emoji
@@ -1071,6 +1086,16 @@ mod tests {
         nodes[3].name = "按鈕".into();
         doc.set_nodes(nodes).unwrap();
         assert_eq!(cjk_need(&doc, "structure.fig"), CjkNeed::Any, "layer name");
+    }
+
+    #[test]
+    fn recents_names_ask_for_the_cjk_face_without_a_document() {
+        assert_eq!(cjk_need_of(["a.fig", "Latin — b.fig"]), CjkNeed::None);
+        assert_eq!(cjk_need_of(["a.fig", "設計メモ.fig"]), CjkNeed::Any);
+        assert_eq!(cjk_need_of(["かな.fig"]), CjkNeed::Any, "kana alone");
+        assert_eq!(cjk_need_of(["디자인.fig"]), CjkNeed::HangulOnly);
+        assert_eq!(cjk_need_of(["디자인.fig", "設計.fig"]), CjkNeed::Any);
+        assert_eq!(cjk_need_of(["「a」.fig"]), CjkNeed::Shared);
     }
 
     #[test]

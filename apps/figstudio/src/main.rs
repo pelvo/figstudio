@@ -766,13 +766,7 @@ impl App {
                 } => {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
-                    match cjk {
-                        theme::CjkNeed::None => {}
-                        theme::CjkNeed::HangulOnly => self.web.load_hangul_font(ctx),
-                        theme::CjkNeed::Shared | theme::CjkNeed::Any => {
-                            self.web.load_cjk_font(ctx);
-                        }
-                    }
+                    self.web.load_cjk_for(ctx, cjk);
                     #[cfg(target_arch = "wasm32")]
                     self.web
                         .symbols

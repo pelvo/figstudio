@@ -560,6 +560,9 @@ pub struct Inbox {
     pub font_choice: Variant,
     /// A Hangul-only file is open this session, so KR is in use instead of `font_choice`.
     pub korean_override: bool,
+    /// The most the Recents names asked for so far. Each level acts once, so a View menu
+    /// pick is not undone on the next frame.
+    labels_cjk: crate::theme::CjkNeed,
     pub symbols: crate::symbols::Loader,
 }
 
@@ -587,7 +590,27 @@ impl Inbox {
             font_state: FontState::NotNeeded,
             font_choice: cjk_default(),
             korean_override: false,
+            labels_cjk: crate::theme::CjkNeed::None,
             symbols: crate::symbols::Loader::default(),
+        }
+    }
+
+    /// Fetches the CJK font that `need` asks for (KR for Hangul only).
+    pub fn load_cjk_for(&mut self, ctx: &egui::Context, need: crate::theme::CjkNeed) {
+        use crate::theme::CjkNeed;
+        match need {
+            CjkNeed::None => {}
+            CjkNeed::HangulOnly => self.load_hangul_font(ctx),
+            CjkNeed::Shared | CjkNeed::Any => self.load_cjk_font(ctx),
+        }
+    }
+
+    /// Fetches the CJK font for names shown before any file opens (the Recents page).
+    pub fn load_cjk_for_labels(&mut self, ctx: &egui::Context, labels: &[String]) {
+        let need = crate::theme::cjk_need_of(labels.iter().map(String::as_str));
+        if need > self.labels_cjk {
+            self.labels_cjk = need;
+            self.load_cjk_for(ctx, need);
         }
     }
 
