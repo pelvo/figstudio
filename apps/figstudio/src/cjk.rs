@@ -84,13 +84,66 @@ impl FaceFor {
             other => other,
         }
     }
+}
 
-    /// The last file closed: what it asked for no longer holds.
-    pub fn after_files_closed(self) -> Self {
-        match self {
-            Self::File => Self::Unasked,
-            other => other,
+/// The session's CJK face state: why the face is what it is, and the most the Recents
+/// names asked for so far. Kept apart from the browser calls so every path is tested.
+#[cfg_attr(
+    not(any(test, target_arch = "wasm32")),
+    expect(dead_code, reason = "only the browser fetches a CJK font")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Face {
+    pub reason: FaceFor,
+    names: crate::theme::CjkNeed,
+}
+
+impl Default for Face {
+    fn default() -> Self {
+        Self {
+            reason: FaceFor::Unasked,
+            names: crate::theme::CjkNeed::None,
         }
+    }
+}
+
+#[cfg_attr(
+    not(any(test, target_arch = "wasm32")),
+    expect(dead_code, reason = "only the browser fetches a CJK font")
+)]
+impl Face {
+    /// Whether KR is in use instead of the saved choice.
+    pub fn korean(self) -> bool {
+        self.reason.korean()
+    }
+
+    /// An opened file's CJK need (never `None`).
+    pub fn document(&mut self, hangul_only: bool) {
+        self.reason = self.reason.after_document(hangul_only);
+    }
+
+    /// A View menu pick.
+    pub fn pick(&mut self) {
+        self.reason = FaceFor::Picked;
+    }
+
+    /// One paint of the Recents page with these names' `need`; true when a CJK font should
+    /// be fetched. Each level acts once, so a menu pick is not undone on the next frame.
+    /// With no file open, what a file asked for no longer holds, and the names ask again.
+    pub fn recents(&mut self, need: crate::theme::CjkNeed, files_open: bool) -> bool {
+        use crate::theme::{CjkNeed, names_rank};
+        if !files_open && self.reason == FaceFor::File {
+            self.reason = FaceFor::Unasked;
+            self.names = CjkNeed::None;
+        }
+        if names_rank(need) <= names_rank(self.names) {
+            return false;
+        }
+        self.names = need;
+        if need == CjkNeed::HangulOnly {
+            self.reason = self.reason.after_names();
+        }
+        true
     }
 }
 
@@ -144,44 +197,48 @@ mod tests {
 
     #[test]
     fn files_decide_the_face_while_open_and_recents_names_after() {
-        use FaceFor::*;
-        assert_eq!(
-            Unasked.after_names(),
-            HangulName,
-            "Recents with a Hangul name first"
+        use crate::theme::CjkNeed::{Any, HangulOnly};
+        // Recents with a Hangul name, a Japanese file, then Recents after it closed.
+        let mut face = Face::default();
+        assert!(face.recents(HangulOnly, false) && face.korean());
+        face.document(false);
+        assert!(!face.korean(), "the open file takes the saved face back");
+        assert!(
+            !face.recents(HangulOnly, true),
+            "Recents opened with + while it is open"
         );
-        assert_eq!(
-            HangulName.after_document(false),
-            File,
-            "a Japanese file takes it back"
+        assert!(!face.korean());
+        assert!(
+            face.recents(HangulOnly, false),
+            "closed: the names ask again"
         );
-        assert_eq!(File.after_names(), File, "Recents while that file is open");
-        assert_eq!(File.after_files_closed(), Unasked, "the file closed");
-        assert_eq!(
-            Unasked.after_names(),
-            HangulName,
-            "so Recents asks for KR again"
-        );
-        assert_eq!(HangulName.after_document(true), HangulFile);
-        assert_eq!(HangulFile.after_names(), HangulFile);
-        assert_eq!(
-            HangulFile.after_document(false),
-            HangulFile,
-            "unchanged from before"
-        );
-        assert_eq!(
-            HangulFile.after_files_closed(),
-            HangulFile,
-            "until a pick or a reload"
-        );
-        assert_eq!(
-            Picked.after_names(),
-            Picked,
-            "a pick is not undone by names"
-        );
-        assert_eq!(Picked.after_document(false), Picked);
-        assert_eq!(Picked.after_files_closed(), Picked);
-        assert!(HangulName.korean() && HangulFile.korean());
-        assert!(!Unasked.korean() && !File.korean() && !Picked.korean());
+        assert!(face.korean());
+        assert!(!face.recents(HangulOnly, false), "and only once");
+
+        // A Japanese file before Recents ever asked, closed, then Hangul names.
+        let mut face = Face::default();
+        face.document(false);
+        assert!(face.recents(HangulOnly, false) && face.korean());
+
+        // Kana first, Hangul later: KR, which also has kana.
+        let mut face = Face::default();
+        assert!(face.recents(Any, false) && !face.korean());
+        assert!(face.recents(HangulOnly, false) && face.korean());
+
+        // A menu pick is not undone by names, with or without files.
+        let mut face = Face::default();
+        face.pick();
+        assert!(face.recents(HangulOnly, false) && !face.korean());
+        assert!(!face.recents(HangulOnly, false) && !face.korean());
+
+        // A Hangul-only file keeps KR, also after it closes, until a pick.
+        let mut face = Face::default();
+        face.document(true);
+        face.document(false);
+        assert!(face.korean(), "unchanged from before");
+        face.recents(Any, false);
+        assert!(face.korean());
+        face.pick();
+        assert!(!face.korean());
     }
 }

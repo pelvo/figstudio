@@ -558,13 +558,8 @@ pub struct Inbox {
     pub font_state: FontState,
     /// The View menu choice (saved, or the browser language default).
     pub font_choice: Variant,
-    /// What decides the face: KR for Hangul, else `font_choice`.
-    pub face_for: crate::cjk::FaceFor,
-    /// Whether a file was open when the Recents page last asked.
-    files_were_open: bool,
-    /// The most the Recents names asked for so far. Each level acts once, so a View menu
-    /// pick is not undone on the next frame.
-    labels_cjk: crate::theme::CjkNeed,
+    /// Why the face is KR (for Hangul) or `font_choice`, and what the Recents names asked.
+    pub face: crate::cjk::Face,
     pub symbols: crate::symbols::Loader,
 }
 
@@ -591,9 +586,7 @@ impl Inbox {
             fonts,
             font_state: FontState::NotNeeded,
             font_choice: cjk_default(),
-            face_for: crate::cjk::FaceFor::Unasked,
-            files_were_open: false,
-            labels_cjk: crate::theme::CjkNeed::None,
+            face: crate::cjk::Face::default(),
             symbols: crate::symbols::Loader::default(),
         }
     }
@@ -606,38 +599,23 @@ impl Inbox {
             return;
         }
         let hangul_only = need == CjkNeed::HangulOnly;
-        self.switch(ctx, |inbox| {
-            inbox.face_for = inbox.face_for.after_document(hangul_only);
-        });
+        self.switch(ctx, |inbox| inbox.face.document(hangul_only));
         self.load_cjk_font(ctx);
     }
 
-    /// Fetches the CJK font for the Recents page's names: KR when any has Hangul and no
-    /// file or menu pick decided the face. Each level acts once, so a View menu pick is not
-    /// undone on the next frame; when the last file closes, the names are asked again.
+    /// Fetches the CJK font for the Recents page's names (see [`crate::cjk::Face::recents`]).
     pub fn load_cjk_for_labels(
         &mut self,
         ctx: &egui::Context,
         labels: &[String],
         files_open: bool,
     ) {
-        use crate::theme::{CjkNeed, names_rank};
-        if self.files_were_open && !files_open {
-            self.labels_cjk = CjkNeed::None;
-            self.switch(ctx, |inbox| {
-                inbox.face_for = inbox.face_for.after_files_closed()
-            });
-        }
-        self.files_were_open = files_open;
         let need = crate::theme::cjk_need_of(labels.iter().map(String::as_str));
-        if names_rank(need) <= names_rank(self.labels_cjk) {
-            return;
+        let mut fetch = false;
+        self.switch(ctx, |inbox| fetch = inbox.face.recents(need, files_open));
+        if fetch {
+            self.load_cjk_font(ctx);
         }
-        self.labels_cjk = need;
-        if need == CjkNeed::HangulOnly {
-            self.switch(ctx, |inbox| inbox.face_for = inbox.face_for.after_names());
-        }
-        self.load_cjk_font(ctx);
     }
 
     /// Fetches the CJK font once; it arrives in `fonts`.
@@ -659,7 +637,7 @@ impl Inbox {
     /// The face in use: KR while a Hangul-only file or Recents name asked for it, else the
     /// menu choice.
     pub fn font_variant(&self) -> Variant {
-        if self.face_for.korean() {
+        if self.face.korean() {
             Variant::Kr
         } else {
             self.font_choice
@@ -675,7 +653,7 @@ impl Inbox {
         }
         self.switch(ctx, |inbox| {
             inbox.font_choice = variant;
-            inbox.face_for = crate::cjk::FaceFor::Picked;
+            inbox.face.pick();
         });
     }
 

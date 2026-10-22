@@ -35,7 +35,7 @@ impl App {
                 if ui.radio(item.checked == Some(true), item.label).clicked() {
                     self.apply(action, ui.ctx());
                 }
-                let why = match self.web.face_for {
+                let why = match self.web.face.reason {
                     crate::cjk::FaceFor::HangulFile => Some("a file has only Hangul"),
                     crate::cjk::FaceFor::HangulName => Some("a recent file name has Hangul"),
                     _ => None,
