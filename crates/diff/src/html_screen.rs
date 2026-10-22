@@ -109,10 +109,10 @@ pub(crate) fn screen_section(
         return;
     }
     out.push_str("</div>");
-    if screen.regions.is_empty() || !screen.regions.iter().any(pictured) {
+    if screen.regions.is_empty() || !screen.regions.iter().all(pictured) {
         // Layer edits that draw nothing at this scale (clipped, hidden, sub-pixel) still get
-        // a picture of the screen, so the reader can see why no area is boxed; so do areas
-        // kept without their crops (the page byte cap).
+        // a picture of the screen, so the reader can see why no area is boxed; so does any
+        // area shown here that was kept without its crops (the page byte cap).
         no_visible_change(out, screen);
     }
     let groups: BTreeSet<_> = screen.regions.iter().filter_map(|r| r.shared).collect();

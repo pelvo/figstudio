@@ -226,4 +226,20 @@ fn an_area_without_crop_pictures_shows_no_before_after_control() {
     );
     assert!(html.contains(".area.bare .info{grid-column:1/-1}"));
     assert!(html.contains("class=\"cmp thumbs\""), "{html}");
+    // One area folding into a shared card does not hide the screen pictures the others need.
+    report.pages[0].screens[0].regions[2].shared = Some(0);
+    report.shared_changes.push(figstudio_diff::SharedChange {
+        id: 0,
+        width: 30,
+        height: 40,
+        count: 2,
+        old_png: Some("render/shared-before.png".into()),
+        new_png: Some("render/shared-after.png".into()),
+        occurrences: Vec::new(),
+        component: None,
+        component_view: false,
+        image_width: Some(60),
+        image_height: Some(80),
+    });
+    assert!(render_html(&report).contains("class=\"cmp thumbs\""));
 }
