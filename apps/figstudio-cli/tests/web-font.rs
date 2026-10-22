@@ -114,11 +114,10 @@ fn writes_all_five_faces_and_the_license() {
     };
 
     let out = TempDir::new("success");
-    // This test is about the CJK group. The script builds the symbol and emoji group
-    // after it, which needs four more Noto fonts that the skip check above does not look
-    // for, so a machine with CJK and fontTools but no Noto Emoji failed here. The symbol
-    // group's own opt-out keeps it out of this test; `symbols::tests` and web-font.sh's
-    // own checks cover it.
+    // This test is about the CJK group. The script builds the symbol group after it,
+    // which needs four more Noto fonts that the skip check above does not look for, so a
+    // machine with CJK and fontTools but without them failed here. The symbol group's
+    // opt-out lets that machine pass; below, it may only have skipped a missing font.
     let res = Command::new(SCRIPT)
         .env_remove("FIGSTUDIO_ALLOW_MISSING_CJK")
         .env("FIGSTUDIO_ALLOW_MISSING_SYMBOLS", "1")
@@ -126,11 +125,21 @@ fn writes_all_five_faces_and_the_license() {
         .arg(&out.0)
         .output()
         .unwrap();
+    let stderr = String::from_utf8_lossy(&res.stderr);
     assert!(
         res.status.success(),
-        "with inputs present the script must succeed: {}",
-        String::from_utf8_lossy(&res.stderr)
+        "with inputs present the script must succeed: {stderr}"
     );
+    if let Some(skipped) = stderr.lines().find(|l| l.contains("symbol fallback omitted")) {
+        assert!(
+            skipped.starts_with("web-font: missing "),
+            "with its fonts installed the symbol group must build: {skipped}"
+        );
+    } else {
+        for face in ["symbols", "symbols2", "math", "emoji"] {
+            assert!(out.0.join(format!("{face}.ttf")).is_file(), "{face}.ttf");
+        }
+    }
 
     let license = fs::read_to_string(out.0.join("cjk-LICENSE.txt")).unwrap();
     assert!(
