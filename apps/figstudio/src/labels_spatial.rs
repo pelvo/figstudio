@@ -29,7 +29,7 @@ fn small((x0, y0, x1, y1): (i32, i32, i32, i32)) -> bool {
 
 impl<T> Grid<T> {
     pub(super) fn insert(&mut self, bounds: Rect, item: T) {
-        if !bounds.is_positive() {
+        if !bounds.is_finite() || bounds.is_negative() {
             return;
         }
         let index = self.items.len();
@@ -50,7 +50,11 @@ impl<T> Grid<T> {
     pub(super) fn any(&self, bounds: Rect, mut hit: impl FnMut(&T) -> bool) -> bool {
         let mut overlaps = |index: usize| {
             let (r, item) = &self.items[index];
-            bounds.intersect(*r).is_positive() && hit(item)
+            bounds.min.x < r.max.x
+                && r.min.x < bounds.max.x
+                && bounds.min.y < r.max.y
+                && r.min.y < bounds.max.y
+                && hit(item)
         };
         let range = cells(bounds);
         if !small(range) {
