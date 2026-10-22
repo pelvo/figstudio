@@ -101,8 +101,8 @@ const MAX_COPY_COMPARISONS: usize = 4096;
 /// Pairs the one-sided layers that share a [`Path`], as `(old, new, compared)` in the new
 /// side's walk order. Pairs are taken cheapest first (fewest changed fields, then walk
 /// order), each copy at most once, so only the side with more copies has copies left over;
-/// on equal costs those are the last copies in walk order. A path with too many copies to
-/// compare is paired in walk order, with `compared` false.
+/// when every pair costs the same, those are the last copies in walk order. A path with too
+/// many copies to compare is paired in walk order, with `compared` false.
 fn pair_up(
     docs: (&Document, &Document),
     old: &[(Path, Guid)],
