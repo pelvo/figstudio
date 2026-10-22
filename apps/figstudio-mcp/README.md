@@ -14,6 +14,16 @@ app, a Figma account or a network connection.
 
 ## Install
 
+Nothing to install with Node.js: `npx -y figstudio-mcp` runs a prebuilt binary (Linux x64
+and arm64, macOS arm64 and x64, Windows x64) from the
+[`figstudio-mcp`](https://www.npmjs.com/package/figstudio-mcp) npm package. Give it to Claude
+Code with the public browser app in one line (see
+[the browser proxy](#in-the-browser-local-zero-upload-proxy---browser-proxy)):
+
+```sh
+claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
+```
+
 On macOS (Apple silicon), Homebrew installs it together with the desktop app and
 `figstudio-cli`, and links both binaries into `$(brew --prefix)/bin`, so `figstudio-mcp`
 is on your `PATH`:
@@ -26,18 +36,16 @@ On Linux (x86_64 or arm64), each release has a static tarball with `figstudio-mc
 `figstudio-cli`; see [Try it](../../README.md#try-it) for the download steps, which check it
 against the release's `SHA256SUMS`.
 
-Or install it with cargo (Rust 1.95 or newer):
+Or build it with Rust 1.95 or newer; that puts `figstudio-mcp` in `~/.cargo/bin`:
 
 ```sh
 cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp
 ```
 
-That puts `figstudio-mcp` in `~/.cargo/bin`. To give it to Claude Code with the public
-browser app in one line (see [the browser proxy](#in-the-browser-local-zero-upload-proxy---browser-proxy)):
-
-```sh
-cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp && claude mcp add figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev
-```
+How the npm packages are made: `npm/figstudio-mcp` is a small launcher that runs the binary
+from one of the `@pelvo/figstudio-mcp-<os>-<cpu>` packages, which npm installs as optional
+dependencies matching your computer (no install script). `scripts/npm-pack.mjs` assembles
+them and the release workflow publishes them.
 
 ## Build
 
@@ -123,9 +131,11 @@ pairing token (a wrong one closes the socket with 4401), so another web page can
 files at it. One browser connection at a time: a newer tab replaces the older one. Logs
 show counts only, never names or contents.
 
-Not verified: whether Safari or a newer Chrome blocks an `https://` page opening
-`ws://127.0.0.1` (mixed content / Local Network Access prompt). If your browser blocks it,
-use the local `--serve` build over `http://127.0.0.1:8765`.
+An `https://` page opening `ws://127.0.0.1` needs Chrome's Local Network Access
+permission (Chrome 142+; a headless browser fails with
+`ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`) and is blocked by Safari as mixed content.
+If your browser blocks it, use the local `--serve` build over `http://127.0.0.1:8765`.
+`--browser-proxy` avoids this by serving the page itself (below).
 
 ### Deploying the browser app (two methods)
 
@@ -141,7 +151,10 @@ Build the browser bundle first with `scripts/web-build.sh` (output in `web/dist`
    - If the site sits behind an access gateway (such as Cloudflare Access with Google
      sign-in), keep the whole origin protected with **no `/mcp/*` bypass**: your local agent
      spawns `figstudio-mcp --browser-proxy` over `stdio`, and your already-signed-in browser
-     connects outbound to `ws://127.0.0.1:<port>/bridge`.
+     connects outbound to `ws://127.0.0.1:<port>/bridge`. The proxy cannot mirror a gated
+     origin (it has none of the browser's cookies), so when the start page redirects to the
+     sign-in host or is the gateway's own sign-in page it opens the origin itself, and Chrome
+     asks for local network access.
    - Nothing to configure for the app: once per page load it asks `GET /mcp/`, which only
      the relay Worker answers (`204` with a `figstudio-relay` header). Anywhere else that
      path is a missing asset, so **Settings → Agents** hides **Cloud relay** and opens no
@@ -162,15 +175,19 @@ whenever `--origin` is passed without `FILE.fig` or `--bridge`) combines the zer
 Wasm RPC executor with a local `stdio` proxy inspired by `googlecolab/colab-mcp` — no `.fig`
 upload, no Cloudflare Access bypass, and no manual token pasting.
 
-**One-line install and setup (`colab-mcp` style):**
+**One-line setup (`colab-mcp` style):**
 
 ```sh
-cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp
-claude mcp add figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev
+claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
 ```
 
-`https://figstudio.pelvo.dev` is the public browser build (static, no cloud relay, no
-sign-in). Use your own deploy's origin in its place if you run one.
+It opens the app from `https://figstudio.pelvo.dev`, the public browser build (static, no
+cloud relay, no sign-in), served on the proxy's own `http://127.0.0.1:<port>` (see
+**Loopback mirror** below). That default is a trust decision: the page's code comes from that host and
+reads the files you open in it, so zero upload holds as long as the deployment serves this
+repository's build (`PUBLIC_ORIGIN` is always allowed to pair). For your own deploy, pass `--origin https://<your-deploy-domain>` instead of
+`--browser-proxy`; for the local web build (`scripts/web-build.sh --serve`),
+`--origin http://127.0.0.1:8765`.
 
 Or in `.mcp.json` / Cursor / Windsurf:
 
@@ -178,29 +195,43 @@ Or in `.mcp.json` / Cursor / Windsurf:
 {
   "mcpServers": {
     "figstudio": {
-      "command": "figstudio-mcp",
-      "args": ["--origin", "https://figstudio.pelvo.dev"]
+      "command": "npx",
+      "args": ["-y", "figstudio-mcp", "--browser-proxy"]
     }
   }
 }
 ```
 
-- `figstudio-mcp --origin https://figstudio.pelvo.dev` (or `figstudio-mcp --browser-proxy`
-  for a local `http://127.0.0.1:8765` web build; without `--origin` that local address is
-  what `open_figstudio_browser` opens) speaks `stdio` to the agent, binds
+- `figstudio-mcp --browser-proxy` (or `--origin <URL>` for another web app; the local web
+  build at `http://127.0.0.1:8765` may always pair) speaks `stdio` to the agent, binds
   `ws://127.0.0.1:<port>/bridge` on loopback (trying `3845..=3855` first, then an ephemeral
   port), and mints a 256-bit process token (never printed to `stderr`).
-- When the agent calls `open_figstudio_browser`, the proxy opens the first `--origin` as
-  `https://figstudio.pelvo.dev/#mcpProxyPort=<port>&mcpProxyToken=<token>` (your own
-  deploy's origin if you passed that instead) in your default browser (`$BROWSER`, `open`,
-  `xdg-open`, or `rundll32 url.dll,FileProtocolHandler`). The page strips the `#fragment`
-  immediately, and the proxy waits up to 60 s for the tab's `ready` v2 frame before emitting
-  `notifications/tools/list_changed`.
-- **Safari cannot pair with an `https://` origin:** WebKit blocks `ws://127.0.0.1` from
-  `https://` pages as mixed content (Chromium, Edge and Firefox allow loopback). With
-  Safari as the default browser, set `BROWSER` to another one, for example
-  `claude mcp add figstudio -e 'BROWSER=open -a "Google Chrome"' -- figstudio-mcp --origin https://figstudio.pelvo.dev`,
-  or use `--browser-proxy` with the local `http://127.0.0.1:8765` build.
+- **Loopback mirror (default):** the same port serves the first `--origin` (by default
+  `https://figstudio.pelvo.dev`). The proxy fetches each file from that origin on first
+  request, keeps it in memory (up to 256 MiB, 128 MiB per file) and answers with the
+  cross-origin isolation headers of `web/_headers`. The page therefore loads from
+  `http://127.0.0.1:<port>` and reaches `ws://127.0.0.1:<port>/bridge` on its own address,
+  which needs no Local Network Access permission: a headless Chrome pairs instead of
+  failing with `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`. Only `GET`/`HEAD` with a
+  loopback `Host` are served (a DNS-rebinding page gets 403), requests never leave the
+  origin's host, and `/mcp/` answers 404 so the app hides Cloud relay. A loopback
+  `--origin` (the local build) is opened directly, and so is an origin whose start page
+  the proxy cannot fetch within 15 s, that redirects to another host, or that is not
+  figstudio's (it must import `./figstudio.js`; a sign-in gateway's own page does not). `--no-mirror` always opens the origin itself (Chrome then asks for
+  local network access, Safari cannot pair). On loopback the page could also reach other
+  local ports and private addresses without a prompt, so the mirror sends a
+  Content-Security-Policy with `default-src 'self'`: every script, style, font, image,
+  worker and connection comes from its own port (plus the inline script and style of
+  `index.html`, Wasm compilation and blob workers, which the app needs), and no frames,
+  objects or form posts. Compressed files are fetched with gzip/brotli
+  and served decoded. The tab's storage (recents, settings) belongs to
+  `http://127.0.0.1:<port>`, not to the public origin.
+- When the agent calls `open_figstudio_browser`, the proxy opens
+  `http://127.0.0.1:<port>/#mcpProxyPort=<port>&mcpProxyToken=<token>` (with
+  `--no-mirror` or a loopback `--origin`, that origin instead) in your default browser
+  (`$BROWSER`, `open`, `xdg-open`, or `rundll32 url.dll,FileProtocolHandler`). The page
+  strips the `#fragment` immediately, and the proxy waits up to 60 s for the tab's `ready`
+  v2 frame before emitting `notifications/tools/list_changed`.
 - `list_sessions` and `select_session` work identically when multiple tabs connect.
 
 ### In the browser (cloud relay and multi-device sessions)
@@ -357,11 +388,12 @@ command = "/path/to/figstudio-mcp"
 args = ["/path/to/design.fig"]
 ```
 
-For the browser proxy instead of a file, replace the arguments with
-`["--origin", "https://figstudio.pelvo.dev"]` (Codex: `args = ["--origin", "https://figstudio.pelvo.dev"]`).
+For the browser proxy instead of a file, run it through npm:
+`"command": "npx", "args": ["-y", "figstudio-mcp", "--browser-proxy"]` (Codex:
+`command = "npx"`, `args = ["-y", "figstudio-mcp", "--browser-proxy"]`).
 
 These examples are written from each client's documented config format. With Claude Code
-2.1.304, `claude mcp add -s project figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev`
+2.1.304, `claude mcp add -s project figstudio -- npx -y figstudio-mcp --browser-proxy`
 writes this `.mcp.json` entry (without `-s project`, the default `local` scope stores the
 same entry privately for that project):
 
@@ -370,8 +402,8 @@ same entry privately for that project):
   "mcpServers": {
     "figstudio": {
       "type": "stdio",
-      "command": "figstudio-mcp",
-      "args": ["--origin", "https://figstudio.pelvo.dev"],
+      "command": "npx",
+      "args": ["-y", "figstudio-mcp", "--browser-proxy"],
       "env": {}
     }
   }
@@ -461,7 +493,7 @@ renderer), so the browser MCP build does not register them.
 | `reveal_node` *(app only)* | `nodeId` (or a link), `fileKey?` | One line: the node is revealed in tab N | Selects the node in the app; the tab becomes active and the view fits the node. A page ID switches to that page. An instance path reveals its outer instance and says so. Waits 5 s for the app; then the error "the app did not respond" (a minimised window may not run frames, so the reveal can time out). A figma.com link (without `fileKey`) is shown only in the file it names, never in some other active tab. The desktop app resolves it: the matching open tab, or else the local copy named after the link (`<file name>.fig`) in its link folders (`FIGSTUDIO_LINK_DIRS`, a path list, else `~/Downloads`; or the folder chosen in File → Open Figma link…), which it opens first (`revealed 1:2 in tab 3 (opened the local copy)`); it waits up to 60 s for that. When several files match equally (two documents can share a name), the call fails and asks for a pick in the app. The node ID is checked first, so a link without a valid `node-id` never opens a file. Replies about links carry no paths or file names. In the browser bridge, which cannot open local copies, the link must name exactly one open tab. |
 | `list_sessions` *(cloud relay only)* | none | `{sessions: [{session, device: {label}, focused, docs: [{tab, name, fileKey, key, pages}], secondsSinceReady}], selectedSession, socketsInUse, socketCap}` | Answered by the relay Durable Object even when no tab is connected. `docs[].fileKey` is the tool `fileKey` argument; `docs[].key` is the first 16 hex of SHA-256 over the 8-byte little-endian file size and first 4 MiB. `device.id` is never exposed. |
 | `select_session` *(cloud relay / browser proxy)* | `session` (`s_…` or `""` to clear) | `{selected: <sessionSummary>}` or `{cleared: true, ...}` | Pins a target session in memory for subsequent tool calls from this MCP client (keyed by the `Mcp-Session-Id` header issued on `initialize`, capped at 64 clients). If the pinned tab disconnects, subsequent calls return `-32002`; if the isolate restarts or evicts the `Mcp-Session-Id`, requests carrying the stale header return HTTP 404 (`-32002`) so the client re-initializes instead of falling through to another device. |
-| `open_figstudio_browser` *(`--browser-proxy` only)* | `timeoutSeconds?` (1–120, default 60) | `{connected, launched, sessions}` | Opens `<origin>/#mcpProxyPort=<port>&mcpProxyToken=<token>` in the system browser if no tab is connected yet and waits for the tab to send `ready` v2. |
+| `open_figstudio_browser` *(`--browser-proxy` only)* | `timeoutSeconds?` (1–120, default 60) | `{connected, launched, sessions}` | Opens `http://127.0.0.1:<port>/#mcpProxyPort=<port>&mcpProxyToken=<token>` (the loopback mirror; `<origin>/…` with `--no-mirror`) in the system browser if no tab is connected yet and waits for the tab to send `ready` v2. |
 
 ### Comparing versions
 

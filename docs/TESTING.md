@@ -48,11 +48,20 @@ scripts/check.sh            # fmt --check, clippy -D warnings, all tests, releas
 scripts/check.sh --cross    # also cargo check for aarch64-apple-darwin
 FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh   # if the default Rust is older than 1.95
 scripts/check.sh --lint     # only fmt + clippy; CI runs --lint and --test as its two jobs
-scripts/check.sh --test     # tests, release build, wasm32; CI job "build + test"
+scripts/check.sh --test     # tests, npm launcher tests, release build, wasm32; CI job "build + test"
 scripts/check.sh --lint-one fmt   # one slice, for a local run
 # CI is the two required jobs. The cache prefix is `v1-rust` so the next miss saves
 # this repo's crates. A later exact hit does not update that snapshot.
 ```
+
+The `tests-npm` slice runs `node --test npm/figstudio-mcp/test/*.test.mjs` (the npm launcher and
+`scripts/npm-pack.mjs`, including a check that the release workflow builds every platform
+the launcher knows); it is skipped when `node` is not installed. The signal tests set
+`FIGSTUDIO_MCP_TEST_HOLD_AFTER_SPAWN_MS=300`, which holds the launcher right after
+`spawn()`, so a signal handler installed after the hold fails them. A handler placed
+between `spawn()` and the hold would still pass them, so a source test checks the order:
+every `process.on` comes before `spawn()` and the hold is the next statement. The hold is
+capped at `TEST_HOLD_MAX_MS` (300 ms), and a test sets 5000 to check the cap.
 
 It must end with `== all checks passed` before you commit. If clippy or rustfmt is missing:
 `rustup component add clippy rustfmt --toolchain <version>`.
