@@ -7,10 +7,10 @@ use rmcp::{ServiceExt, transport::StreamableHttpClientTransport};
 use serde_json::json;
 use std::sync::Arc;
 use support::*;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 
-/// Reads stderr until the `Web:` line; returns the MCP address and the token.
-async fn banner(stderr: tokio::process::ChildStderr) -> (String, String) {
+/// Reads the pairing banner, then drains the owned stderr until the child exits.
+async fn banner(stderr: impl AsyncRead + Unpin + Send + 'static) -> (String, String) {
     let mut lines = BufReader::new(stderr).lines();
     let (mut mcp, mut token) = (None, None);
     while let Some(line) = lines.next_line().await.unwrap() {
@@ -26,7 +26,34 @@ async fn banner(stderr: tokio::process::ChildStderr) -> (String, String) {
             break;
         }
     }
+    // Keep ownership beyond the banner and consume later output so the child cannot
+    // hit either a broken pipe or a full pipe. EOF ends the task when the child exits.
+    tokio::spawn(async move {
+        let _ = tokio::io::copy(&mut lines.into_inner(), &mut tokio::io::sink()).await;
+    });
     (mcp.expect("MCP line"), token.expect("token line"))
+}
+
+#[tokio::test]
+async fn banner_keeps_stderr_open_for_later_output() {
+    let (mut writer, reader) = tokio::io::duplex(1024);
+    writer
+        .write_all(
+            b"MCP: http://127.0.0.1:3845/mcp\nLocal: http://127.0.0.1:8765/#mcp=test-token\n",
+        )
+        .await
+        .unwrap();
+    let wait = std::time::Duration::from_secs(2);
+    let (mcp, token) = tokio::time::timeout(wait, banner(reader))
+        .await
+        .expect("banner parsing timed out");
+    assert_eq!(mcp, "http://127.0.0.1:3845/mcp");
+    assert_eq!(token, "test-token");
+    // More than the duplex capacity: the helper must own AND drain the reader.
+    tokio::time::timeout(wait, writer.write_all(&[b'x'; 4096]))
+        .await
+        .expect("stderr was kept open but not drained")
+        .expect("reading the banner must not close the child's stderr pipe");
 }
 
 #[tokio::test]
