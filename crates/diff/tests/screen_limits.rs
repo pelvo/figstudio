@@ -595,4 +595,34 @@ fn crop_pictures_count_toward_the_page_byte_cap() {
     assert_eq!(screens.len(), 4);
     let cropped = screens.iter().filter(|s| !s.regions.is_empty()).count();
     assert_eq!(cropped, 1);
+    // Screens past the cap still list their areas and the layers in them.
+    let page = &report.pages[0];
+    assert!(
+        page.screens
+            .iter()
+            .all(|s| s.regions.len() == 1 && !s.regions[0].nodes.is_empty())
+    );
+    assert!(
+        report.truncated.iter().any(|n| n.contains("without crops")),
+        "{:?}",
+        report.truncated
+    );
+    // When the first screen's own pictures fill the cap, it keeps its area too.
+    let limits = ScreenLimits {
+        page_bytes: page_picture_bytes(&old, &new) + 1,
+        ..ScreenLimits::default()
+    };
+    let mut report = diff_documents(&old, &new);
+    let images = attach_render_diffs(&old, &new, &mut report, &limited(limits));
+    let drawn = report.pages[0]
+        .screens
+        .iter()
+        .position(|s| s.pixels_changed.is_some())
+        .unwrap();
+    assert_eq!(report.pages[0].screens[drawn].regions.len(), 1);
+    assert!(
+        images[&report.pages[0].id].screens[drawn]
+            .regions
+            .is_empty()
+    );
 }

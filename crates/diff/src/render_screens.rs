@@ -62,6 +62,7 @@ pub(crate) fn attach_screens(
     page.screens_moved = 0;
     let pairs = match_screens(docs.0, docs.1, page.id);
     let mut capped_any = false;
+    let mut crops_left_out = false;
     let mut tally = PageTally::new(opts.screen_limits, doc_pixels);
     tally.keep_page(images);
     let members: Vec<_> = pairs
@@ -150,8 +151,10 @@ pub(crate) fn attach_screens(
         let cuts = crops(pair, &screen);
         croppers_left -= usize::from(cuts);
         // Crop pictures count toward the page byte cap too: once it is reached, later
-        // screens keep their whole-screen pictures but cut no crops.
-        let share = if cuts && !tally.bytes_full() {
+        // screens keep their whole-screen pictures and their areas but cut no crops.
+        let full = cuts && tally.bytes_full();
+        crops_left_out |= full;
+        let share = if cuts && !full {
             crop_budget / (croppers_left + 1)
         } else {
             0
@@ -170,7 +173,7 @@ pub(crate) fn attach_screens(
             pair,
             readers,
             opts,
-            &mut available,
+            (!full).then_some(&mut available),
             screen,
         );
         crop_budget -= share - available;
@@ -232,6 +235,12 @@ pub(crate) fn attach_screens(
         signatures.push(region_keys);
     }
     notes.extend(tally.note(page.id));
+    if crops_left_out {
+        notes.push(format!(
+            "page {} picture byte limit reached; later screens show their areas without crops",
+            page.id
+        ));
+    }
     if capped_any {
         notes.push(format!(
             "page {} screen/crops capped by side, pixel budget or region limit",
@@ -307,7 +316,7 @@ pub(crate) fn render_screen(
         pair,
         readers,
         opts,
-        remaining,
+        Some(remaining),
         drawn,
     ))
 }
@@ -402,14 +411,15 @@ fn draw_screen(
     })
 }
 
-/// Cuts the drawn screen's crops from `remaining` and attaches the layers in each area.
+/// Cuts the drawn screen's crops from `remaining` (`None`: keep the areas, cut no crops)
+/// and attaches the layers in each area.
 fn finish_screen(
     renderers: (&mut Renderer, &mut Renderer),
     docs: (&Document, &Document),
     pair: ScreenPair,
     readers: (ImageReader<'_>, ImageReader<'_>),
     opts: &RenderOpts,
-    remaining: &mut usize,
+    remaining: Option<&mut usize>,
     drawn: DrawnScreen,
 ) -> ScreenRender {
     let DrawnScreen {
@@ -427,7 +437,7 @@ fn finish_screen(
     let mask: Vec<bool> = (0..width as usize * height as usize)
         .map(|i| mask.contains(i))
         .collect();
-    if let (Some(a), Some(b)) = (pair.old, pair.new) {
+    if let (Some(a), Some(b), Some(remaining)) = (pair.old, pair.new, remaining) {
         let result = crate::render_crops::render_crops(
             renderers,
             docs,
