@@ -219,7 +219,10 @@ fn every_variant_counts_toward_the_view_limit() {
         .unwrap();
     assert!(note.contains("5 component views were not drawn"), "{note}");
     assert!(
-        note.ends_with("a variant without one is left out"),
+        note.ends_with(
+            "a card without its view shows its changed-area crop, or is left out when no \
+             crop was kept, and a variant without one is left out"
+        ),
         "{note}"
     );
 }
