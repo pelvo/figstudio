@@ -766,7 +766,7 @@ impl App {
                 } => {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
-                    self.web.load_cjk_for(ctx, cjk);
+                    self.web.load_cjk_for(ctx, cjk, &path);
                     #[cfg(target_arch = "wasm32")]
                     self.web
                         .symbols

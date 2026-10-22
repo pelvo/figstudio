@@ -92,10 +92,12 @@ impl FaceFor {
     not(any(test, target_arch = "wasm32")),
     expect(dead_code, reason = "only the browser fetches a CJK font")
 )]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Face {
     pub reason: FaceFor,
     names: crate::theme::CjkNeed,
+    /// The files that asked for the saved face, by path.
+    files: std::collections::HashSet<std::path::PathBuf>,
 }
 
 impl Default for Face {
@@ -103,6 +105,7 @@ impl Default for Face {
         Self {
             reason: FaceFor::Unasked,
             names: crate::theme::CjkNeed::None,
+            files: std::collections::HashSet::new(),
         }
     }
 }
@@ -113,13 +116,16 @@ impl Default for Face {
 )]
 impl Face {
     /// Whether KR is in use instead of the saved choice.
-    pub fn korean(self) -> bool {
+    pub fn korean(&self) -> bool {
         self.reason.korean()
     }
 
-    /// An opened file's CJK need (never `None`).
-    pub fn document(&mut self, hangul_only: bool) {
+    /// The CJK need (never `None`) of the file opened at `path`.
+    pub fn document(&mut self, hangul_only: bool, path: &std::path::Path) {
         self.reason = self.reason.after_document(hangul_only);
+        if !hangul_only {
+            self.files.insert(path.to_owned());
+        }
     }
 
     /// A View menu pick.
@@ -127,14 +133,21 @@ impl Face {
         self.reason = FaceFor::Picked;
     }
 
-    /// One paint of the Recents page with these names' `need`; true when a CJK font should
-    /// be fetched. Each level acts once, so a menu pick is not undone on the next frame.
-    /// With no file open, what a file asked for no longer holds, and the names ask again.
-    pub fn recents(&mut self, need: crate::theme::CjkNeed, files_open: bool) -> bool {
+    /// One paint of the Recents page with these names' `need`, while the files at `open`
+    /// are open; true when a CJK font should be fetched. Each level acts once, so a menu
+    /// pick is not undone on the next frame. Once none of the files that asked for the saved
+    /// face is open, that request ends and the names ask again. A Hangul-only file's KR and
+    /// a menu pick stay after their file closes.
+    pub fn recents<'a>(
+        &mut self,
+        need: crate::theme::CjkNeed,
+        open: impl IntoIterator<Item = &'a std::path::Path>,
+    ) -> bool {
         use crate::theme::{CjkNeed, names_rank};
-        if !files_open && self.reason == FaceFor::File {
+        if self.reason == FaceFor::File && !open.into_iter().any(|p| self.files.contains(p)) {
             self.reason = FaceFor::Unasked;
             self.names = CjkNeed::None;
+            self.files.clear();
         }
         if names_rank(need) <= names_rank(self.names) {
             return false;
@@ -197,46 +210,54 @@ mod tests {
 
     #[test]
     fn files_decide_the_face_while_open_and_recents_names_after() {
-        use crate::theme::CjkNeed::{Any, HangulOnly};
+        use crate::theme::CjkNeed::{Any, HangulOnly, None as NoNames};
+        use std::path::Path;
+        let (a, b) = (Path::new("a.fig"), Path::new("b.fig"));
         // Recents with a Hangul name, a Japanese file, then Recents after it closed.
         let mut face = Face::default();
-        assert!(face.recents(HangulOnly, false) && face.korean());
-        face.document(false);
+        assert!(face.recents(HangulOnly, []) && face.korean());
+        face.document(false, a);
         assert!(!face.korean(), "the open file takes the saved face back");
         assert!(
-            !face.recents(HangulOnly, true),
+            !face.recents(HangulOnly, [a]),
             "Recents opened with + while it is open"
         );
         assert!(!face.korean());
-        assert!(
-            face.recents(HangulOnly, false),
-            "closed: the names ask again"
-        );
+        assert!(face.recents(HangulOnly, []), "closed: the names ask again");
         assert!(face.korean());
-        assert!(!face.recents(HangulOnly, false), "and only once");
+        assert!(!face.recents(HangulOnly, []), "and only once");
 
-        // A Japanese file before Recents ever asked, closed, then Hangul names.
+        // A Japanese file before Recents ever asked: Recents opened with + keeps its face,
+        // and after it closes the names decide.
         let mut face = Face::default();
-        face.document(false);
-        assert!(face.recents(HangulOnly, false) && face.korean());
+        face.document(false, a);
+        assert!(face.recents(HangulOnly, [a]), "the names are new");
+        assert!(!face.korean(), "but the open file's face stays");
+        assert!(face.recents(HangulOnly, []) && face.korean());
+
+        // The Japanese file closes while another file without CJK stays open.
+        let mut face = Face::default();
+        face.document(false, a);
+        assert!(!face.recents(NoNames, [a, b]));
+        assert!(face.recents(HangulOnly, [b]) && face.korean());
 
         // Kana first, Hangul later: KR, which also has kana.
         let mut face = Face::default();
-        assert!(face.recents(Any, false) && !face.korean());
-        assert!(face.recents(HangulOnly, false) && face.korean());
+        assert!(face.recents(Any, []) && !face.korean());
+        assert!(face.recents(HangulOnly, []) && face.korean());
 
         // A menu pick is not undone by names, with or without files.
         let mut face = Face::default();
         face.pick();
-        assert!(face.recents(HangulOnly, false) && !face.korean());
-        assert!(!face.recents(HangulOnly, false) && !face.korean());
+        assert!(face.recents(HangulOnly, []) && !face.korean());
+        assert!(!face.recents(HangulOnly, []) && !face.korean());
 
         // A Hangul-only file keeps KR, also after it closes, until a pick.
         let mut face = Face::default();
-        face.document(true);
-        face.document(false);
+        face.document(true, a);
+        face.document(false, a);
         assert!(face.korean(), "unchanged from before");
-        face.recents(Any, false);
+        face.recents(Any, []);
         assert!(face.korean());
         face.pick();
         assert!(!face.korean());
