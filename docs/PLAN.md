@@ -311,6 +311,25 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
+- 2026-10-22 — PR #49 review: replace the borrowed-reader regression with an owned
+  stream passed to the same banner helper as the child process. The helper drains stderr
+  in a task until EOF; a late write exceeding the duplex capacity verifies both ownership
+  and draining. Removing the drain failed with `BrokenPipe` with the test unchanged;
+  a mismatched parser prefix failed at the new two-second timeout. All five bridge tests
+  and Rust 1.99.0 `scripts/check.sh` passed (Noto Emoji supplied through
+  `FIGSTUDIO_EMOJI_FONT`). Applied M-INTEGRATION-TESTS; no new dependency or production
+  change. Not verified: macOS/Windows or a real browser/client.
+
+- 2026-10-22 — PR #32 CI bridge test: keep the child's stderr open after parsing the
+  pairing banner, so later startup output cannot race a closed pipe and reset the
+  WebSocket connection. The late-write regression failed with `BrokenPipe` before the
+  fix; all five bridge tests and 100 consecutive pairing runs passed afterwards.
+  Rust 1.99.0 `scripts/check.sh` ended `all checks passed` after supplying the missing
+  Noto Emoji font through `FIGSTUDIO_EMOJI_FONT` (the first run failed the web-font
+  prerequisite). Applied M-INTEGRATION-TESTS; reused Tokio's duplex stream, no new
+  dependency. Not verified: macOS/Windows or a real browser/client; GitHub CI awaits
+  the fix PR.
+
 - 2026-10-20 — Browser UI names now lazily fetch outline-only Noto Symbols, Symbols 2, Math and Emoji subsets only for glyphs the loaded faces lack. Four subsets total 1,705,404 bytes (121,792 / 577,556 / 240,496 / 765,560); full OFL notice accompanies them. Missing sources fail builds unless explicitly opted out. CJK stays ahead of symbols regardless of load order; simultaneous updates wait a frame to preserve font definitions. Predicate and fallback-order tests failed before their fixes and now pass, as do bad-font/source and subset-coverage controls. `scripts/web-build.sh`, the existing Chromium harness's symbol-font smoke test and `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed; the public-fixture UI screenshot was viewed. Reused existing fontTools/ttf-parser; browser canvas remains counted/skipped, not silently monochrome. Applied M-PANIC-IS-STOP (validate fetched fonts), M-PUBLIC-DEBUG (loader) and M-ERR-ERROR-TYPES (existing anyhow boundary). Not verified: other browsers/platform colour faces, all emoji sequence shaping, runtime profiling or deployed hosting.
 
 - 2026-10-20 — Stored emoji markers no longer paint their placeholder blobs. Native rendering uses bounded PNG colour strikes or counted monochrome/base-scalar approximations; missing faces and browser canvas glyphs are counted as skipped. Added `emoji_approximated`/`emoji_skipped` through tile summaries, app warnings, CLI info/doctor, MCP notes and diff JSON. Synthetic sbix, empty-database, outline fallback, opacity/clip/replay and decoder-limit tests pass; square and colour regressions failed before the fix, limit/strike negative controls failed as expected. All seven public fixture renders match the baseline byte for byte; thumbnail sheet viewed. `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed. Reused `ttf-parser` and `image`; no new dependency or unsafe. Applied M-PANIC-IS-STOP (bounded untrusted image decoding), M-PUBLIC-DEBUG (glyph type), M-ERR-ERROR-TYPES (existing optional-font error boundary). Not verified: macOS/Windows colour faces, real COLR fonts, browser UI fallback (next lane), or runtime profiling.
