@@ -121,7 +121,8 @@ async fn start_fake_web_app() -> (String, std::sync::Arc<std::sync::atomic::Atom
                 "/named/" => (
                     axum::http::StatusCode::OK,
                     [("content-type", "text/html")],
-                    "<!doctype html><p>Sign in to load ./figstudio.js</p>".to_owned(),
+                    "<!doctype html><p>Sign in to load the app from './figstudio.js'</p><img src=\"./figstudio.js\">"
+                        .to_owned(),
                 ),
                 _ => (
                     axum::http::StatusCode::NOT_FOUND,

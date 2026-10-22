@@ -297,11 +297,12 @@ async fn read_capped(mut upstream: reqwest::Response) -> Result<axum::body::Byte
     }
 }
 
-/// Whether `body` loads `./figstudio.js` as a module: a quoted specifier right after
-/// `import(`, `from` or `src=`. A page that only names the file, or `figstudio.json`, does not.
+/// Whether `body` loads `./figstudio.js` as a module, the two ways a figstudio start page
+/// can: `import('./figstudio.js')` (what `web/index.html` does) or
+/// `<script … src="./figstudio.js">`. A page that only names the file, or `figstudio.json`,
+/// does not.
 fn imports_the_app(body: &[u8]) -> bool {
     const SPECIFIER: &[u8] = b"./figstudio.js";
-    const LOADERS: [&[u8]; 3] = [b"import(", b"from", b"src="];
     (1..body.len().saturating_sub(SPECIFIER.len())).any(|start| {
         let quote = body[start - 1];
         let end = start + SPECIFIER.len();
@@ -309,10 +310,52 @@ fn imports_the_app(body: &[u8]) -> bool {
             && body[start..end] == *SPECIFIER
             && body[end] == quote
             && {
-                let before = body[..start - 1].trim_ascii_end();
-                LOADERS.iter().any(|loader| before.ends_with(loader))
+                let before = &body[..start - 1];
+                is_dynamic_import(before) || is_script_src(before)
             }
     })
+}
+
+/// Whether `before` ends with the `import(` call, `import` being its own token.
+fn is_dynamic_import(before: &[u8]) -> bool {
+    let Some(callee) = before.trim_ascii_end().strip_suffix(b"(") else {
+        return false;
+    };
+    callee
+        .trim_ascii_end()
+        .strip_suffix(b"import")
+        .is_some_and(|rest| !rest.last().is_some_and(|&b| is_identifier_byte(b)))
+}
+
+/// Whether `before` ends inside a `<script` tag with its `src=` attribute.
+fn is_script_src(before: &[u8]) -> bool {
+    let Some(attribute) = before.trim_ascii_end().strip_suffix(b"=") else {
+        return false;
+    };
+    let attribute = attribute.trim_ascii_end();
+    let Some(tag) = attribute
+        .len()
+        .checked_sub(b"src".len())
+        .filter(|&at| attribute[at..].eq_ignore_ascii_case(b"src"))
+        .map(|at| &attribute[..at])
+    else {
+        return false;
+    };
+    if !tag.last().is_some_and(u8::is_ascii_whitespace) {
+        return false;
+    }
+    let Some(open) = tag.iter().rposition(|&b| b == b'<') else {
+        return false;
+    };
+    let tag = &tag[open + 1..];
+    !tag.contains(&b'>')
+        && tag.len() > b"script".len()
+        && tag[..b"script".len()].eq_ignore_ascii_case(b"script")
+        && tag[b"script".len()].is_ascii_whitespace()
+}
+
+fn is_identifier_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'$' | b'.')
 }
 
 fn host_is_loopback(headers: &HeaderMap) -> bool {
@@ -338,7 +381,7 @@ mod tests {
         assert!(imports_the_app(&index));
         for page in [
             "<script type=\"module\" src=\"./figstudio.js\"></script>",
-            "<script type=module>import { x } from './figstudio.js';</script>",
+            "<SCRIPT\ttype=module SRC = './figstudio.js'></SCRIPT>",
             "<script type=module>await import( \"./figstudio.js\" );</script>",
         ] {
             assert!(imports_the_app(page.as_bytes()), "{page}");
@@ -350,6 +393,15 @@ mod tests {
             "<script src=\"./myfigstudio.js\"></script>",
             "<script>fetch('./figstudio.js')</script>",
             "./figstudio.js",
+            "<p>Sign in to load the app from './figstudio.js'</p>",
+            "<p>copied from \"./figstudio.js\" after login</p>",
+            "<img alt=logo src=\"./figstudio.js\">",
+            "<div data-src=\"./figstudio.js\"></div>",
+            "<scripts src=\"./figstudio.js\">",
+            "<script>x</script><img src=\"./figstudio.js\">",
+            "wherefrom './figstudio.js'",
+            "reimport('./figstudio.js')",
+            "x.import('./figstudio.js')",
         ] {
             assert!(!imports_the_app(page.as_bytes()), "{page}");
         }
