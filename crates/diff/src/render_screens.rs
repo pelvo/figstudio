@@ -58,13 +58,20 @@ pub(crate) fn attach_screens(
             })
         })
         .collect();
-    // Draw order: screens with change lines, then screens with other layer edits (a move has
-    // no line), then the rest, which are usually unchanged. Screens that turn out unchanged
-    // cannot use up the screen caps first. The report keeps document order.
-    let tier = |i: usize| match (has_lines[i], members[i].is_empty()) {
+    // Draw order: screens with change lines, then screens with other edits inside them (a
+    // moved layer has no line), then the rest, which are usually unchanged: edits to the
+    // screen root alone (a canvas move, a recreated screen's new ids) do not change its own
+    // picture. Screens that turn out unchanged cannot use up the screen caps first, and the
+    // report keeps document order.
+    let inner = |i: usize| {
+        members[i]
+            .iter()
+            .any(|id| Some(*id) != pairs[i].old && Some(*id) != pairs[i].new)
+    };
+    let tier = |i: usize| match (has_lines[i], inner(i)) {
         (true, _) => 0,
-        (false, false) => 1,
-        (false, true) => 2,
+        (false, true) => 1,
+        (false, false) => 2,
     };
     let mut order: Vec<usize> = (0..pairs.len()).collect();
     order.sort_by_key(|&i| (tier(i), i));

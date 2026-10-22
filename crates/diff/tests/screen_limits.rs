@@ -371,6 +371,8 @@ fn unchanged_screens_do_not_dilute_a_changed_screens_crop_share() {
     let images = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
     let page = &report.pages[0];
     assert_eq!(page.screens.len(), 1);
+    // The ten frames were matched and dropped, so they were in the running for the budget.
+    assert_eq!(page.screens_unchanged, 10);
     let crop = &images[&page.id].screens[0].regions[0];
     let png = image::load_from_memory(&crop.after).unwrap();
     assert!(
@@ -378,5 +380,51 @@ fn unchanged_screens_do_not_dilute_a_changed_screens_crop_share() {
         "{}x{}",
         png.width(),
         png.height()
+    );
+}
+
+#[test]
+fn canvas_moves_do_not_dilute_an_inner_moves_crop_share() {
+    // Screen 2's child moves (no change line, real pixels); ten later frames only move on the
+    // canvas, which does not change their own pictures. The inner move keeps the full budget.
+    let frame = |id, x| {
+        let mut n = filled_rectangle_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 1000.0, 1000.0);
+        n.data.set("type", Val::Str("FRAME".into()));
+        Node::from_data(n.data).unwrap()
+    };
+    let side = |new: bool| {
+        let shift = if new { 50.0 } else { 0.0 };
+        document(
+            std::iter::once(frame(2, 0.0))
+                .chain(std::iter::once(filled_rectangle_at(
+                    3,
+                    2,
+                    (1.0, 0.0, 0.0),
+                    100.0 + shift * 10.0,
+                    100.0,
+                    600.0,
+                    600.0,
+                )))
+                .chain((10..20).map(|id| frame(id, f64::from(id) * 1200.0 + shift)))
+                .collect(),
+        )
+    };
+    let (old, new) = (side(false), side(true));
+    let mut report = diff_documents(&old, &new);
+    let images = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+    let page = &report.pages[0];
+    assert_eq!(page.screens.len(), 1, "{page:?}");
+    assert_eq!((page.screens_unchanged, page.screens_moved), (10, 10));
+    // Not scaled down: the crop is drawn at 2x its area.
+    let region = &page.screens[0].regions[0];
+    let crop = &images[&page.id].screens[0].regions[0];
+    let png = image::load_from_memory(&crop.after).unwrap();
+    assert!(
+        png.width() >= 2 * region.width && png.height() >= 2 * region.height,
+        "{}x{} for {}x{}",
+        png.width(),
+        png.height(),
+        region.width,
+        region.height
     );
 }
