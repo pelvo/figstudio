@@ -24,6 +24,25 @@ pub(crate) struct ScreenRender {
     capped: bool,
 }
 
+/// Whether a root edit can change the screen's own picture. The screen is drawn in its own
+/// frame, so the root's whole `transform` (move, rotation, flip, scale) cancels out, and so
+/// does `parentIndex`. A rename, description, export settings or constraints cannot draw
+/// either; a paint transform, size, opacity or effect can.
+fn can_redraw_root(field: &str) -> bool {
+    let head = field.split('.').next().unwrap_or(field);
+    !matches!(
+        head,
+        "transform"
+            | "parentIndex"
+            | "name"
+            | "description"
+            | "exportSettings"
+            | "constraints"
+            | "horizontalConstraint"
+            | "verticalConstraint"
+    )
+}
+
 pub(crate) fn attach_screens(
     renderers: (&mut Renderer, &mut Renderer),
     masters: &mut Masters,
@@ -59,14 +78,23 @@ pub(crate) fn attach_screens(
             })
         })
         .collect();
-    // First pass: draw each screen and find what changed. Screens with change lines go
-    // first, then screens with any other edit, so screens that turn out unchanged cannot use
-    // up the screen caps before them. Unchanged screens are dropped here.
+    // First pass: draw each screen and find what changed. The screen caps are spent in draw
+    // order, so screens with change lines go first, then screens with an edit that can change
+    // their own picture (a layer inside it, a resized root, a recreated screen), then the
+    // rest. Only the caps depend on this guess; crops are shared by what was drawn.
+    let root = |i: usize, id: &Guid| Some(*id) == pairs[i].old || Some(*id) == pairs[i].new;
+    let root_redrawn = |id: &Guid| {
+        page.changed
+            .iter()
+            .find(|n| n.id == *id)
+            .is_some_and(|n| n.changes.iter().any(|c| can_redraw_root(&c.field)))
+    };
+    let drawing = |i: usize| {
+        pairs[i].matched_by == Some(MatchBy::NameSize)
+            || members[i].iter().any(|id| !root(i, id) || root_redrawn(id))
+    };
     let mut order: Vec<usize> = (0..pairs.len()).collect();
-    order.sort_by_key(|&i| {
-        let edited = !members[i].is_empty() || pairs[i].matched_by == Some(MatchBy::NameSize);
-        (!has_lines[i], !edited, i)
-    });
+    order.sort_by_key(|&i| (!has_lines[i], !drawing(i), i));
     let mut drawn: Vec<(usize, DrawnScreen)> = Vec::new();
     let mut kept: Vec<(usize, ScreenDiff, ScreenImages, Vec<RegionKey>)> = Vec::new();
     for index in order {
@@ -119,10 +147,12 @@ pub(crate) fn attach_screens(
         .count();
     for (index, screen) in drawn {
         let pair = pairs[index];
-        let share = if crops(pair, &screen) {
-            let share = crop_budget / croppers_left.max(1);
-            croppers_left -= 1;
-            share
+        let cuts = crops(pair, &screen);
+        croppers_left -= usize::from(cuts);
+        // Crop pictures count toward the page byte cap too: once it is reached, later
+        // screens keep their whole-screen pictures but cut no crops.
+        let share = if cuts && !tally.bytes_full() {
+            crop_budget / (croppers_left + 1)
         } else {
             0
         };
@@ -447,5 +477,38 @@ fn finish_screen(
         transforms,
         mask,
         capped,
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::can_redraw_root;
+
+    #[test]
+    fn only_edits_that_can_draw_count_as_root_edits() {
+        for field in [
+            "transform.m00",
+            "transform.m01",
+            "transform.m02",
+            "transform.m10",
+            "transform.m11",
+            "transform.m12",
+            "parentIndex.position",
+            "name",
+            "description",
+            "exportSettings.0.suffix",
+            "constraints.horizontal",
+            "horizontalConstraint",
+            "verticalConstraint",
+        ] {
+            assert!(!can_redraw_root(field), "{field}");
+        }
+        for field in [
+            "fillPaints.0.transform.m02",
+            "size.x",
+            "opacity",
+            "effects.0.offset.x",
+        ] {
+            assert!(can_redraw_root(field), "{field}");
+        }
     }
 }

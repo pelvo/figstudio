@@ -60,6 +60,11 @@ impl<'a> PageTally<'a> {
         !over
     }
 
+    /// Whether the pictures this page holds have reached the byte cap.
+    pub(crate) fn bytes_full(&self) -> bool {
+        self.bytes >= self.limits.page_bytes
+    }
+
     /// Counts the whole-page pictures already held for this page.
     pub(crate) fn keep_page(&mut self, images: &crate::RenderImages) {
         let len = |v: &Option<Vec<u8>>| v.as_ref().map_or(0, Vec::len);
