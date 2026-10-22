@@ -271,4 +271,6 @@ fn an_area_without_crop_pictures_shows_no_before_after_control() {
         assert!(html.contains(&label), "{html}");
     }
     assert!(!html.contains("class=\"cmp thumbs\""), "{html}");
+    // The label too, so renaming the class alone cannot hide a pair that is still drawn.
+    assert!(!html.contains("aria-label=\"Screen: Before"), "{html}");
 }
