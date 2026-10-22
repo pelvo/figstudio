@@ -677,7 +677,8 @@ impl App {
                     std::iter::once(card.name.clone()).chain(list.then(|| place_label(&card.id)))
                 })
                 .collect();
-            // With no file open, no document asked for the CJK face: the names do.
+            // The names choose the CJK face only when no open file or menu pick has; this
+            // page also shows with files open (the + control), so it says whether any are.
             self.web
                 .load_cjk_for_labels(&ctx, &labels, !self.tabs.is_empty());
             self.web.symbols.load_labels_if_needed(&ctx, &labels);
