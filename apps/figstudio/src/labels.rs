@@ -6,6 +6,8 @@ use figstudio_fig::{Document, Guid, Node};
 use figstudio_render::geom;
 use figstudio_render::kurbo::Point;
 
+#[path = "labels_backdrop.rs"]
+mod backdrop;
 #[path = "labels_named.rs"]
 mod candidates;
 #[path = "labels_quad.rs"]
@@ -157,13 +159,12 @@ fn backdrops(doc: &Document, named: &[candidates::Named], page: Color32) -> Vec<
             .and_then(|n| n.data.get("fillPaints"))
             .map(figstudio_fig::Val::items)
             .unwrap_or_default();
-        // shortcut: only solid fills count; gradient/image sections keep the backdrop below.
+        // shortcut: image fills keep the backdrop below; sample images if contrast needs it.
         let top = fills.iter().fold(back, |acc, p| {
-            if p.flag("visible") == Some(false) || p.text("type").unwrap_or("SOLID") != "SOLID" {
+            if p.flag("visible") == Some(false) {
                 return acc;
             }
-            let opacity = p.num("opacity").unwrap_or(1.0);
-            figstudio_render::paint::color(p.get("color"), opacity).map_or(acc, |c| {
+            backdrop::color_for(p).map_or(acc, |c| {
                 let [r, g, b, a] = c.components;
                 let solid = crate::canvas::to_color32(figstudio_render::color::AlphaColor::new([
                     r, g, b, 1.0,
@@ -284,3 +285,7 @@ mod work_tests;
 #[cfg(test)]
 #[path = "labels_rotation_tests.rs"]
 mod rotation_tests;
+
+#[cfg(test)]
+#[path = "labels_backdrop_tests.rs"]
+mod backdrop_tests;
