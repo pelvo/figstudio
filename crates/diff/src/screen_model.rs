@@ -138,11 +138,12 @@ fn list_paired_edits(
         };
         let mut changes = crate::properties::changes(Some(&a.data), Some(&b.data));
         // Ids always differ. Sibling positions are regenerated with the new ids, and the
-        // root's own translation is where the screen sits on the canvas, not an edit.
+        // root's own transform is where the screen sits on the canvas: a move, as for
+        // screens that kept their ids, not an edit.
         changes.retain(|c| {
             let head = c.field.split('.').next().unwrap_or(&c.field);
             !matches!(head, "guid" | "parentIndex" | "overrideKey")
-                && !(root && matches!(c.field.as_str(), "transform.m02" | "transform.m12"))
+                && !(root && head == "transform")
         });
         if changes.is_empty() || page.changed.iter().any(|n| n.id == b.id) {
             continue;

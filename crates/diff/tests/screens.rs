@@ -351,10 +351,37 @@ fn recreated_screen_lists_edits_of_layers_that_pair_by_name() {
             }
         }
         assert_eq!(report.summary.nodes_changed, 3);
+        assert_eq!(report.summary.properties_changed, 6);
         let html = render_html(&report);
         let screen = html.split("id=\"page-0-s1\"").nth(1).unwrap();
         assert!(screen.contains(">Dot<"), "{screen}");
     }
+}
+
+#[test]
+fn a_recreated_screen_that_is_only_rotated_or_scaled_is_a_move_not_an_edit() {
+    let turned = |mut n: Node| {
+        let x = n.data.get("transform").and_then(|t| t.get("m02")).cloned();
+        n.data.set(
+            "transform",
+            object(&[
+                ("m00", Val::Float(0.0)),
+                ("m01", Val::Float(-1.0)),
+                ("m02", x.unwrap_or(Val::Float(0.0))),
+                ("m10", Val::Float(1.0)),
+                ("m11", Val::Float(0.0)),
+                ("m12", Val::Float(0.0)),
+            ]),
+        );
+        Node::from_data(n.data).unwrap()
+    };
+    let old = document(vec![screen(4, 1, 0.0, "FRAME")]);
+    let new = document(vec![turned(screen(7, 1, 600.0, "FRAME"))]);
+    let report = diff_documents(&old, &new);
+    let page = &report.pages[0];
+    assert!(page.changed.iter().all(|n| n.id != Guid(0, 7)), "{page:?}");
+    assert_eq!((page.screens_unchanged, page.screens_moved), (1, 1));
+    assert_eq!(report.summary.nodes_changed, 0, "{:?}", report.summary);
 }
 
 #[test]
