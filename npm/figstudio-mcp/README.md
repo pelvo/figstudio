@@ -13,8 +13,11 @@ claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
 
 When the agent first needs a file it opens https://figstudio.pelvo.dev in your browser,
 paired with this local server; open your `.fig` in that tab (Figma → File → Save local
-copy). The file stays in the tab and nothing is uploaded. If the browser asks to let the
-page reach devices on your local network, allow it: that is this server on `127.0.0.1`.
+copy). The file stays in the tab and nothing is uploaded, as long as figstudio.pelvo.dev
+serves figstudio's own build: that page's code reads your file, so you trust that
+deployment (to keep everything local, use the local build below). If the browser asks to
+let the page reach devices on your local network, allow it: that is this server on
+`127.0.0.1`.
 
 **Safari cannot pair:** it blocks an `https://` page from reaching `ws://127.0.0.1`
 (Chrome, Edge and Firefox allow it). If Safari is your default browser, have this server

@@ -56,18 +56,19 @@ test("the launcher passes argv, stdin, stdout and the exit code through", { skip
   assert.equal(res.stdout, 'args:--browser-proxy a b|{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
 });
 
-// Runs the launcher on a fake binary that prints "ready <pid>", sends it `signals` 200 ms
-// apart, and returns its exit code and the time from the first signal to its exit. A
-// launcher that never exits is reported as "stuck" after 8 s and killed, and the fake is
-// always killed afterwards, so a regression fails the test instead of hanging the run or
-// leaving a signal-ignoring process behind.
+// Runs the launcher on a fake binary that prints "ready <pid>" and sends it `signals` 200 ms
+// apart, while the launcher is held for 300 ms right after spawn() (the window a handler
+// installed too late would leave open). Returns its exit code and the time from the first
+// signal to its exit. A launcher that never exits is reported as "stuck" after 8 s and
+// killed, and the fake is always killed afterwards, so a regression fails the test instead
+// of hanging the run or leaving a signal-ignoring process behind.
 async function signalled(script, signals) {
   const dir = mkdtempSync(join(tmpdir(), "figstudio-npm-"));
   const fake = join(dir, "fake-mcp");
   writeFileSync(fake, script);
   chmodSync(fake, 0o755);
   const child = spawn(process.execPath, [launcher], {
-    env: { ...process.env, FIGSTUDIO_MCP_BINARY: fake },
+    env: { ...process.env, FIGSTUDIO_MCP_BINARY: fake, FIGSTUDIO_MCP_TEST_HOLD_AFTER_SPAWN_MS: "300" },
     stdio: ["ignore", "pipe", "inherit"],
   });
   const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));

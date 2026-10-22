@@ -95,6 +95,10 @@ function run(argv = process.argv.slice(2)) {
   };
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, forward);
   child = spawn(bin, argv, { stdio: "inherit", windowsHide: true });
+  // Test hook, never set in use: launcher.test.mjs holds the launcher here so its signals
+  // land in the window a handler installed after spawn() would leave open.
+  const holdMs = Number(process.env.FIGSTUDIO_MCP_TEST_HOLD_AFTER_SPAWN_MS) || 0;
+  if (holdMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, holdMs);
   child.on("error", (error) => {
     process.stderr.write(`figstudio-mcp: could not start ${bin}: ${error.message}\n`);
     process.exit(1);

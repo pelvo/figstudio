@@ -184,6 +184,8 @@ jobs:
   # token that can publish figstudio-mcp and the @pelvo/figstudio-mcp-* packages. Without
   # it the Publish step fails, so a release that never reached npm is not green. A version
   # already on npm is skipped, so a retry is safe. Only the Publish step sees the token.
+  # Every release-please release publishes to npm: an owner decision (2026-10-22, PR #43
+  # review 6312154812 F2), not an oversight.
   npm-publish:
     needs: [release-please, npm-build]
     if: ${{ !cancelled() && needs.npm-build.result == 'success' }}

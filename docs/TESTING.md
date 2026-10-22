@@ -56,7 +56,9 @@ scripts/check.sh --lint-one fmt   # one slice, for a local run
 
 The `tests-npm` slice runs `node --test npm/figstudio-mcp/test/*.test.mjs` (the npm launcher and
 `scripts/npm-pack.mjs`, including a check that the release workflow builds every platform
-the launcher knows); it is skipped when `node` is not installed.
+the launcher knows); it is skipped when `node` is not installed. The signal tests set
+`FIGSTUDIO_MCP_TEST_HOLD_AFTER_SPAWN_MS=300`, which holds the launcher right after
+`spawn()`, so a signal handler installed after `spawn()` (a reverted fix) fails them.
 
 It must end with `== all checks passed` before you commit. If clippy or rustfmt is missing:
 `rustup component add clippy rustfmt --toolchain <version>`.

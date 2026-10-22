@@ -37,6 +37,9 @@ Protocol (MCP) server, written in Rust.
 
   The first time the agent needs a file it calls `open_figstudio_browser`, which opens
   https://figstudio.pelvo.dev paired with the local server; open your `.fig` in that tab.
+  **What you trust:** that page's code comes from figstudio.pelvo.dev and reads the files
+  you open in it, so "nothing is uploaded" holds as long as that deployment serves this
+  repository's build. To keep everything on your machine, use the local build below.
   If the browser asks to let the page reach devices on your local network, allow it: that
   is `figstudio-mcp` on `127.0.0.1`. **Safari cannot pair:** it blocks an `https://` page
   from reaching `ws://127.0.0.1` (Chrome, Edge and Firefox allow it). If Safari is your

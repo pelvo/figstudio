@@ -165,7 +165,9 @@ claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
 ```
 
 It opens `https://figstudio.pelvo.dev`, the public browser build (static, no cloud relay,
-no sign-in). For your own deploy, pass `--origin https://<your-deploy-domain>` instead of
+no sign-in). That default is a trust decision: the page's code comes from that host and
+reads the files you open in it, so zero upload holds as long as the deployment serves this
+repository's build (`PUBLIC_ORIGIN` is always allowed to pair). For your own deploy, pass `--origin https://<your-deploy-domain>` instead of
 `--browser-proxy`; for the local web build (`scripts/web-build.sh --serve`),
 `--origin http://127.0.0.1:8765`.
 
