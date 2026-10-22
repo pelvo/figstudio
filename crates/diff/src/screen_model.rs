@@ -80,6 +80,8 @@ fn list_recreated_changes(docs: (&Document, &Document), page: &mut PageDiff, pai
         } else {
             &mut page.added
         };
+        // A layer that kept its id may already list a recreated child that paired: churn too.
+        list.retain(|n| !side.iter().any(|(_, id)| *id == n.id) || ids.contains(&n.id));
         for (_, id) in side {
             let Some(node) = doc.node(*id) else { continue };
             let parent_listed = node.parent.is_some_and(|p| p != root && ids.contains(&p));

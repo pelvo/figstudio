@@ -210,3 +210,46 @@ fn recreated_screen_lists_layers_it_gained_or_lost_but_not_identity_churn() {
     let html = render_html(&report);
     assert!(html.contains("class=\"sg\">-</span><span class=\"hd\"><span class=\"nm\">Badge"));
 }
+
+#[test]
+fn recreated_screen_does_not_list_churn_below_a_layer_that_kept_its_id() {
+    let named = |mut n: Node, name: &str, kind: &str| {
+        n.data.set("name", Val::Str(name.into()));
+        n.data.set("type", Val::Str(kind.into()));
+        Node::from_data(n.data).unwrap()
+    };
+    let group = |parent| {
+        named(
+            filled_rectangle_at(5, parent, (1.0, 1.0, 1.0), 0.0, 0.0, 200.0, 200.0),
+            "Group",
+            "FRAME",
+        )
+    };
+    let dot = |id| {
+        named(
+            filled_rectangle_at(id, 5, (1.0, 0.0, 0.0), 10.0, 10.0, 20.0, 20.0),
+            "Dot",
+            "RECTANGLE",
+        )
+    };
+    // The group keeps its id under the recreated root, so the diff lists its recreated dot
+    // on its own. The dot pairs by path and is churn; the badge is a real addition.
+    let old = document(vec![screen(4, 1, 0.0, "FRAME"), group(4), dot(6)]);
+    let badge = named(
+        filled_rectangle_at(9, 5, (0.0, 0.0, 1.0), 100.0, 10.0, 20.0, 20.0),
+        "Badge",
+        "RECTANGLE",
+    );
+    let new = document(vec![screen(7, 1, 0.0, "FRAME"), group(7), dot(8), badge]);
+    for render in [false, true] {
+        let mut report = diff_documents(&old, &new);
+        if render {
+            let _ = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+        }
+        let page = &report.pages[0];
+        assert_eq!(page.screens.len(), 1, "render {render}: {page:?}");
+        let html = render_html(&report);
+        assert!(html.contains(">Badge<"), "{html}");
+        assert!(!html.contains(">Dot<"), "render {render}: {html}");
+    }
+}
