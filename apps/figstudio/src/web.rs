@@ -510,6 +510,7 @@ impl std::fmt::Debug for WebSource {
 impl Drop for WebSource {
     fn drop(&mut self) {
         let _ = self.requests.send(FileRequest::Close(self.file));
+        crate::web_wake::wake();
     }
 }
 

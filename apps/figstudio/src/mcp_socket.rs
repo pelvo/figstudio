@@ -82,7 +82,15 @@ impl Conn {
                             .start(generation, id.clone(), body.clone())
                     });
                     if !started {
-                        push(&s, &c, Event::Rpc { id, body });
+                        push(
+                            &s,
+                            &c,
+                            Event::Rpc {
+                                generation,
+                                id,
+                                body,
+                            },
+                        );
                     }
                 }
             } else if let Ok(message) = serde_json::from_str::<ServerMessage>(&text) {

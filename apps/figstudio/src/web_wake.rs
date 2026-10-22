@@ -15,7 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use web_sys::{BroadcastChannel, MessageEvent};
 
-/// The channel name; set by the first [`listen`], so a wake before it is a no-op.
+/// The channel name; set once the first [`listen`] is receiving, so a wake before that is
+/// a no-op (a message posted with nobody listening would leave [`POSTED`] stuck).
 static NAME: OnceLock<String> = OnceLock::new();
 /// A wake message is in flight; cleared by the listener before it runs the pumps.
 static POSTED: AtomicBool = AtomicBool::new(false);
@@ -40,16 +41,16 @@ pub fn listen(pump: impl FnMut() + 'static) {
             return;
         }
         // Per page load, so another tab of this origin never runs this page's pumps.
-        let name = NAME.get_or_init(|| {
-            let salt = (js_sys::Math::random() * 9_007_199_254_740_992.0) as u64;
-            format!("figstudio-wake-{salt:016x}")
-        });
-        let Ok(channel) = BroadcastChannel::new(name) else {
+        let salt = (js_sys::Math::random() * 9_007_199_254_740_992.0) as u64;
+        let name = format!("figstudio-wake-{salt:016x}");
+        let Ok(channel) = BroadcastChannel::new(&name) else {
             return;
         };
         let on_message = Closure::<dyn FnMut(MessageEvent)>::new(|_| run());
         channel.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
         *listener = Some((channel, on_message));
+        POSTED.store(false, Ordering::Release);
+        let _ = NAME.set(name);
     });
 }
 

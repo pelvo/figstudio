@@ -62,6 +62,9 @@ pub struct McpHost {
     /// Bumped per connection so a stale upload task's report is ignored.
     generation: u32,
     last_key: Option<Key>,
+    /// Events to handle again at the next `frame` (a call queued before its socket was
+    /// welcomed).
+    later: Vec<Event>,
     /// Toasts raised outside `frame` (shown by the next `frame`).
     notices: Vec<String>,
     /// The fragment as last seen by `hashchange`; `sync` reads it every frame.
@@ -149,6 +152,7 @@ impl Default for McpHost {
             uploading: None,
             generation: 0,
             last_key: None,
+            later: Vec::new(),
             notices,
             link: link_cell,
             proposal,
@@ -206,7 +210,8 @@ impl McpHost {
                 let _ = ack.send(result);
             }
         }
-        let events: Vec<Event> = self.shared.events.borrow_mut().drain(..).collect();
+        let mut events = std::mem::take(&mut self.later);
+        events.extend(self.shared.events.borrow_mut().drain(..));
         for event in events {
             if let Some(message) = self.handle(event, tabs, active) {
                 toast.get_or_insert(message);
@@ -530,6 +535,7 @@ impl McpHost {
     /// Close the socket; open documents stay. No automatic retry follows.
     pub fn stop(&mut self) {
         self.conn = None;
+        self.later.clear();
         self.reconnect.cancel();
         self.calls.borrow_mut().publish(None, &[], 0);
         self.reset_link();

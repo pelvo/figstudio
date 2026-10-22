@@ -9,10 +9,29 @@ impl McpHost {
     ) -> Option<String> {
         match event {
             // A call the socket callback could not start yet (it came before a frame saw
-            // the connection welcomed): start it against this frame's tabs.
-            Event::Rpc { id, body } => {
+            // the connection welcomed): start it against this frame's tabs. One from a
+            // replaced socket is dropped (the relay failed it when that socket closed); one
+            // that still cannot start waits for the next pass instead of being lost.
+            Event::Rpc {
+                generation,
+                id,
+                body,
+            } => {
+                if generation != self.generation {
+                    return None;
+                }
                 self.publish(tabs, *active);
-                self.calls.borrow_mut().start(self.generation, id, body);
+                let started = self
+                    .calls
+                    .borrow_mut()
+                    .start(generation, id.clone(), body.clone());
+                if !started && self.conn.is_some() {
+                    self.later.push(Event::Rpc {
+                        generation,
+                        id,
+                        body,
+                    });
+                }
                 None
             }
             Event::Pong { generation } => {
@@ -121,10 +140,13 @@ impl McpHost {
             Event::Closed(_) if self.conn.is_none() => None,
             Event::Closed(code) => {
                 let welcomed = self.conn.take().is_some_and(|c| c.welcomed);
+                // Read before `reset_link` starts a fresh heartbeat.
+                let proven = self.heartbeat.proven();
                 self.reset_link();
                 if self.relay {
-                    // A failed attempt of a retry series is retried again without a toast.
-                    let quiet = !welcomed && self.reconnect.retrying();
+                    // A failed attempt of a retry series (it never answered a keepalive,
+                    // even if its handshake opened) is retried again without a toast.
+                    let quiet = !proven && self.reconnect.retrying();
                     self.calls.borrow_mut().publish(None, &[], 0);
                     self.reconnect.lost(Instant::now());
                     if quiet {

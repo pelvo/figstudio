@@ -17,7 +17,9 @@ const MAX_BUFFERED: u32 = 4 * 1024 * 1024;
 /// What socket callbacks and upload tasks tell the host; drained once per frame.
 pub(crate) enum Event {
     Opened,
+    /// A relay call the socket callback could not start yet, from connection `generation`.
     Rpc {
+        generation: u32,
         id: String,
         body: serde_json::Value,
     },
