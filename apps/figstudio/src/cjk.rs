@@ -96,8 +96,9 @@ impl FaceFor {
 pub struct Face {
     pub reason: FaceFor,
     names: crate::theme::CjkNeed,
-    /// The files that asked for the saved face, by path.
-    files: std::collections::HashSet<std::path::PathBuf>,
+    /// The tabs whose files asked for the saved face. Tab ids are never reused, so a closed
+    /// file is not mistaken for another open under the same name.
+    files: std::collections::HashSet<u64>,
 }
 
 impl Default for Face {
@@ -120,11 +121,11 @@ impl Face {
         self.reason.korean()
     }
 
-    /// The CJK need (never `None`) of the file opened at `path`.
-    pub fn document(&mut self, hangul_only: bool, path: &std::path::Path) {
+    /// The CJK need (never `None`) of the file opened in tab `tab`.
+    pub fn document(&mut self, hangul_only: bool, tab: u64) {
         self.reason = self.reason.after_document(hangul_only);
         if !hangul_only {
-            self.files.insert(path.to_owned());
+            self.files.insert(tab);
         }
     }
 
@@ -133,18 +134,20 @@ impl Face {
         self.reason = FaceFor::Picked;
     }
 
-    /// One paint of the Recents page with these names' `need`, while the files at `open`
-    /// are open; true when a CJK font should be fetched. Each level acts once, so a menu
+    /// One paint of the Recents page with these names' `need`, while the tabs `open` are
+    /// open; true when a CJK font should be fetched. Each level acts once, so a menu
     /// pick is not undone on the next frame. Once none of the files that asked for the saved
     /// face is open, that request ends and the names ask again. A Hangul-only file's KR and
     /// a menu pick stay after their file closes.
-    pub fn recents<'a>(
+    pub fn recents(
         &mut self,
         need: crate::theme::CjkNeed,
-        open: impl IntoIterator<Item = &'a std::path::Path>,
+        open: impl IntoIterator<Item = u64>,
     ) -> bool {
         use crate::theme::{CjkNeed, names_rank};
-        if self.reason == FaceFor::File && !open.into_iter().any(|p| self.files.contains(p)) {
+        let open: std::collections::HashSet<u64> = open.into_iter().collect();
+        self.files.retain(|tab| open.contains(tab));
+        if self.reason == FaceFor::File && self.files.is_empty() {
             self.reason = FaceFor::Unasked;
             self.names = CjkNeed::None;
             self.files.clear();
@@ -211,8 +214,7 @@ mod tests {
     #[test]
     fn files_decide_the_face_while_open_and_recents_names_after() {
         use crate::theme::CjkNeed::{Any, HangulOnly, None as NoNames};
-        use std::path::Path;
-        let (a, b) = (Path::new("a.fig"), Path::new("b.fig"));
+        let (a, b, c) = (1, 2, 3);
         // Recents with a Hangul name, a Japanese file, then Recents after it closed.
         let mut face = Face::default();
         assert!(face.recents(HangulOnly, []) && face.korean());
@@ -235,11 +237,37 @@ mod tests {
         assert!(!face.korean(), "but the open file's face stays");
         assert!(face.recents(HangulOnly, []) && face.korean());
 
-        // The Japanese file closes while another file without CJK stays open.
+        // Beside a file without CJK: the Japanese file keeps its face while it is open, and
+        // the names decide once it closes.
+        let mut face = Face::default();
+        face.document(false, a);
+        assert!(face.recents(HangulOnly, [a, b]) && !face.korean());
+        assert!(
+            face.recents(HangulOnly, [b]) && face.korean(),
+            "closed: the names ask again"
+        );
         let mut face = Face::default();
         face.document(false, a);
         assert!(!face.recents(NoNames, [a, b]));
         assert!(face.recents(HangulOnly, [b]) && face.korean());
+
+        // A closed Japanese file does not count for another tab, whatever its name, and a
+        // second Japanese tab keeps the face until it closes too.
+        let mut face = Face::default();
+        face.document(false, a);
+        face.document(false, b);
+        assert!(!face.recents(NoNames, [b, c]));
+        assert!(face.recents(HangulOnly, [b, c]) && !face.korean());
+        assert!(
+            face.recents(HangulOnly, [c]) && face.korean(),
+            "both closed"
+        );
+        let mut face = Face::default();
+        face.document(false, a);
+        assert!(
+            face.recents(HangulOnly, [c]) && face.korean(),
+            "a closed, c is a new tab"
+        );
 
         // Kana first, Hangul later: KR, which also has kana.
         let mut face = Face::default();

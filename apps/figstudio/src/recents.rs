@@ -679,11 +679,8 @@ impl App {
                 .collect();
             // The names choose the CJK face only when no open file or menu pick has; this
             // page also shows with files open (the + control), so it says which are.
-            self.web.load_cjk_for_labels(
-                &ctx,
-                &labels,
-                self.tabs.iter().map(|tab| tab.path.as_path()),
-            );
+            self.web
+                .load_cjk_for_labels(&ctx, &labels, self.tabs.iter().map(|tab| tab.id));
             self.web.symbols.load_labels_if_needed(&ctx, &labels);
         }
 

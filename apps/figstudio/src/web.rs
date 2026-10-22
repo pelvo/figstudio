@@ -593,27 +593,22 @@ impl Inbox {
 
     /// Fetches the CJK font that an opened file's `need` asks for (KR for Hangul only).
     /// Otherwise it is the saved face, also when only Recents names had switched to KR.
-    pub fn load_cjk_for(
-        &mut self,
-        ctx: &egui::Context,
-        need: crate::theme::CjkNeed,
-        path: &std::path::Path,
-    ) {
+    pub fn load_cjk_for(&mut self, ctx: &egui::Context, need: crate::theme::CjkNeed, tab: u64) {
         use crate::theme::CjkNeed;
         if need == CjkNeed::None {
             return;
         }
         let hangul_only = need == CjkNeed::HangulOnly;
-        self.switch(ctx, |inbox| inbox.face.document(hangul_only, path));
+        self.switch(ctx, |inbox| inbox.face.document(hangul_only, tab));
         self.load_cjk_font(ctx);
     }
 
     /// Fetches the CJK font for the Recents page's names (see [`crate::cjk::Face::recents`]).
-    pub fn load_cjk_for_labels<'a>(
+    pub fn load_cjk_for_labels(
         &mut self,
         ctx: &egui::Context,
         labels: &[String],
-        open: impl IntoIterator<Item = &'a std::path::Path>,
+        open: impl IntoIterator<Item = u64>,
     ) {
         let need = crate::theme::cjk_need_of(labels.iter().map(String::as_str));
         let mut fetch = false;
