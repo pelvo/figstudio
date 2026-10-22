@@ -477,3 +477,53 @@ fn a_resized_root_without_a_change_line_is_not_diluted_by_unchanged_screens() {
         );
     }
 }
+
+#[test]
+fn edits_that_draw_nothing_do_not_dilute_an_earlier_real_change() {
+    // Screen 2 comes first and its child moves (real pixels, no change line). Ten later
+    // screens each have a child that is only renamed, so their pictures stay the same. Only
+    // screens with changed areas share the crop budget, so the move keeps all of it.
+    let frame = |id, x| {
+        let mut n = filled_rectangle_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 1000.0, 1000.0);
+        n.data.set("type", Val::Str("FRAME".into()));
+        Node::from_data(n.data).unwrap()
+    };
+    let side = |new: bool| {
+        let child = |id, parent, x, name: &str| {
+            let mut n = filled_rectangle_at(id, parent, (1.0, 0.0, 0.0), x, 100.0, 600.0, 600.0);
+            n.data.set("name", Val::Str(name.into()));
+            Node::from_data(n.data).unwrap()
+        };
+        let mut nodes = vec![
+            frame(2, 0.0),
+            child(3, 2, if new { 600.0 } else { 100.0 }, "Moved"),
+        ];
+        for id in 10..20 {
+            nodes.push(frame(id, f64::from(id) * 1200.0));
+            nodes.push(child(
+                id + 100,
+                id,
+                100.0,
+                if new { "Renamed" } else { "Child" },
+            ));
+        }
+        document(nodes)
+    };
+    let (old, new) = (side(false), side(true));
+    let mut report = diff_documents(&old, &new);
+    let images = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+    let page = &report.pages[0];
+    assert_eq!(page.screens.len(), 1, "{page:?}");
+    assert_eq!(page.screens_unchanged, 10);
+    let region = &page.screens[0].regions[0];
+    let crop = &images[&page.id].screens[0].regions[0];
+    let png = image::load_from_memory(&crop.after).unwrap();
+    assert!(
+        png.width() >= 2 * region.width && png.height() >= 2 * region.height,
+        "{}x{} for {}x{}",
+        png.width(),
+        png.height(),
+        region.width,
+        region.height
+    );
+}

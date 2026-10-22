@@ -51,6 +51,7 @@ fn with_context(rect: Rect, canvas: (u32, u32)) -> Rect {
     Rect::new(x0, y0, x1, y1)
 }
 
+/// Also returns the index, in `regions`, of each area that kept its crop.
 pub(crate) fn render_crops(
     renderers: (&mut Renderer, &mut Renderer),
     docs: (&Document, &Document),
@@ -64,12 +65,13 @@ pub(crate) fn render_crops(
         (u32, u32),
     ),
     remaining: &mut usize,
-) -> (Vec<Region>, Vec<RegionImages>, bool) {
+) -> (Vec<Region>, Vec<RegionImages>, bool, Vec<usize>) {
     let (old_renderer, new_renderer) = renderers;
     let (old, new) = docs;
     let (old_page, new_page) = pages;
     let mut capped = false;
     let mut kept = Vec::new();
+    let mut indices = Vec::new();
     let mut pictures = Vec::new();
     let count = regions.len();
     for (i, mut region) in regions.into_iter().enumerate() {
@@ -122,10 +124,11 @@ pub(crate) fn render_crops(
             region.image_width = Some(width);
             region.image_height = Some(height);
             kept.push(region);
+            indices.push(i);
             pictures.push(RegionImages { before, after });
         }
     }
-    (kept, pictures, capped)
+    (kept, pictures, capped, indices)
 }
 
 #[cfg(test)]
