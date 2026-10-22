@@ -49,6 +49,9 @@ Protocol (MCP) server, written in Rust.
   mkdir -p ~/.local/bin && curl -fsSL "https://github.com/pelvo/figstudio/releases/download/$v/figstudio-cli-mcp-$v-linux-$arch.tar.gz" | tar -xz -C ~/.local/bin
   ```
 
+  If `~/.local/bin` is not on your `PATH` yet (Debian and Ubuntu add it only at login, and
+  only if it existed then), add `export PATH="$HOME/.local/bin:$PATH"` to your shell
+  profile, or register the server by its full path (`~/.local/bin/figstudio-mcp`).
   `SHA256SUMS` in the same release lists every file's checksum.
 - **Give it to Claude Code in one line** (needs Rust 1.95 or newer for `cargo`):
 
