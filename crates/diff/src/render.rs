@@ -212,13 +212,15 @@ pub fn attach_render_diffs_with_sink(
     }
     report.truncated.extend(notes);
     groups.finish(report, (old, new));
-    if let Some(images) = crate::render_shared::component_views(
+    let mut images = crate::render_shared::component_views(
         (&mut old_renderer, &mut new_renderer),
         (old, new),
         (old_read, new_read),
         opts,
         report,
-    ) {
+    );
+    crate::shared::drop_unpictured(report, images.as_mut());
+    if let Some(images) = images {
         sink(SHARED_IMAGES_ID, &images);
     }
 }

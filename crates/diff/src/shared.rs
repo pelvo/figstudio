@@ -149,12 +149,7 @@ impl SharedGroups {
                 &report.pages[o.page_index].screens[o.screen_index].regions[o.region_index]
             };
             // An area kept without its crop (the page byte cap) has no picture to lead with.
-            // With no crop at all the card would be empty, so its screens stay unfolded and
-            // keep their own locator and whole-screen pictures.
             let cropped = |o: &SharedOccurrence| region(o).image_width.is_some();
-            if !marked.iter().any(|(at, _)| cropped(at)) {
-                continue;
-            }
             let area = |o: &SharedOccurrence| {
                 let r = region(o);
                 u64::from(r.width) * u64::from(r.height)
@@ -191,6 +186,39 @@ impl SharedGroups {
             });
         }
         report.shared_changes = shared;
+    }
+}
+
+/// Drops the shared cards left with no picture: no occurrence kept its crop (the page byte
+/// cap) and no component view was drawn. Their screens then stay unfolded and show their own
+/// areas. Card ids stay contiguous, in `report` and in the component pictures of `images`.
+pub(crate) fn drop_unpictured(report: &mut DiffReport, images: Option<&mut crate::RenderImages>) {
+    let mut ids = Vec::with_capacity(report.shared_changes.len());
+    let mut kept = 0;
+    report.shared_changes.retain_mut(|group| {
+        let pictured = group.image_width.is_some();
+        ids.push(pictured.then_some(kept));
+        if pictured {
+            group.id = kept;
+            kept += 1;
+        }
+        pictured
+    });
+    if kept == ids.len() {
+        return;
+    }
+    for region in report
+        .pages
+        .iter_mut()
+        .flat_map(|p| &mut p.screens)
+        .flat_map(|s| &mut s.regions)
+    {
+        region.shared = region.shared.and_then(|id| ids.get(id).copied().flatten());
+    }
+    if let Some(images) = images {
+        let remap = |id: &mut usize| ids.get(*id).copied().flatten().map(|new| *id = new);
+        images.shared.retain_mut(|(id, _)| remap(id).is_some());
+        images.variants.retain_mut(|(id, ..)| remap(id).is_some());
     }
 }
 
@@ -317,9 +345,23 @@ mod tests {
             finish(&doc, &[(20, false), (40, true)]).shared_changes[0].width,
             40
         );
-        // No occurrence has a picture: no card, and the screens stay unfolded.
-        let report = finish(&doc, &[(20, false), (40, false)]);
-        assert!(report.shared_changes.is_empty());
+        // No occurrence has a picture: the card waits for a component view, and without
+        // one it is dropped and the screens stay unfolded.
+        let mut report = finish(&doc, &[(20, false), (40, false)]);
+        assert_eq!(report.shared_changes.len(), 1);
+        // A later card with a component view stays and takes the first id, pictures too.
+        let mut viewed = report.shared_changes[0].clone();
+        viewed.id = 1;
+        viewed.image_width = Some(10);
+        report.shared_changes.push(viewed);
+        let mut images = crate::RenderImages {
+            shared: vec![(1, crate::RegionImages::default())],
+            ..crate::RenderImages::default()
+        };
+        super::drop_unpictured(&mut report, Some(&mut images));
+        assert_eq!(report.shared_changes.len(), 1);
+        assert_eq!(report.shared_changes[0].id, 0);
+        assert_eq!(images.shared.iter().map(|s| s.0).collect::<Vec<_>>(), [0]);
         let page = report.pages.last().unwrap();
         assert!(page.screens.iter().all(|s| s.regions[0].shared.is_none()));
     }

@@ -604,17 +604,17 @@ fn crop_pictures_count_toward_the_page_byte_cap() {
     );
     let note = |report: &figstudio_diff::DiffReport, screens: &str| {
         let note = format!(
-            "page {} picture byte limit reached; {screens} without crops",
+            "page {} picture byte limit reached; crops left out for {screens}",
             report.pages[0].id
         );
         assert!(report.truncated.contains(&note), "{:?}", report.truncated);
     };
-    note(&report, "3 screens show their areas");
+    note(&report, "3 screens");
     // The same dot changed on every screen: the shared card leads with the one crop.
     let lead = report.shared_changes[0].occurrences[0];
     assert_eq!(images[&page.id].screens[lead.screen_index].regions.len(), 1);
     // With no room for any crop, no shared card is left without a picture: each screen
-    // stays unfolded with its own area and whole-screen pictures.
+    // stays unfolded with its own area (the HTML side is in `area_html`).
     let limits = ScreenLimits {
         page_bytes: page_picture_bytes(&old, &new) + whole,
         ..ScreenLimits::default()
@@ -639,7 +639,7 @@ fn crop_pictures_count_toward_the_page_byte_cap() {
             .iter()
             .all(|s| s.regions[0].shared.is_none())
     );
-    note(&report, "4 screens show their areas");
+    note(&report, "4 screens");
     // When the first screen's own pictures fill the cap, it keeps its area too.
     let limits = ScreenLimits {
         page_bytes: page_picture_bytes(&old, &new) + 1,
@@ -659,5 +659,5 @@ fn crop_pictures_count_toward_the_page_byte_cap() {
             .is_empty()
     );
     // The screens past it were not rendered at all, so the note names only that one.
-    note(&report, "1 screen shows its areas");
+    note(&report, "1 screen");
 }

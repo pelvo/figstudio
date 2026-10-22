@@ -236,14 +236,12 @@ pub(crate) fn attach_screens(
     }
     notes.extend(tally.note(page.id));
     if uncropped > 0 {
-        let screens = if uncropped == 1 {
-            "1 screen shows its areas".to_owned()
-        } else {
-            format!("{uncropped} screens show their areas")
-        };
+        // Their areas may still fold into a shared card with another screen's crop, so the
+        // note says only what was left out.
         notes.push(format!(
-            "page {} picture byte limit reached; {screens} without crops",
-            page.id
+            "page {} picture byte limit reached; crops left out for {}",
+            page.id,
+            crate::html::plural(uncropped, "screen", "screens")
         ));
     }
     if capped_any {

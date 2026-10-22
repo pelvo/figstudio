@@ -215,7 +215,15 @@ fn an_area_without_crop_pictures_shows_no_before_after_control() {
     }
     let html = render_html(&report);
     assert!(!html.contains("class=\"cmp\" tabindex"), "{html}");
-    assert!(!html.contains("Showing After"));
-    // The area itself and where it is on the screen still show.
+    assert!(!html.contains("aria-label=\"Area"), "{html}");
+    // The area itself and where it is on the screen still show, its change lines take the
+    // whole row, and the whole-screen pictures stand in for the missing crops.
     assert!(html.contains("class=\"loc\""));
+    assert_eq!(
+        html.matches("<article class=\"area bare\"").count(),
+        2,
+        "{html}"
+    );
+    assert!(html.contains(".area.bare .info{grid-column:1/-1}"));
+    assert!(html.contains("class=\"cmp thumbs\""), "{html}");
 }
