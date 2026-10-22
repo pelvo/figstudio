@@ -7,17 +7,10 @@ use vello_cpu::kurbo::{Affine, BezPath};
 /// Empty when the file has none (older files, or text never laid out by the editor).
 pub fn stored_glyphs(data: &Val, blobs: &[Vec<u8>]) -> Vec<BezPath> {
     let mut out = Vec::new();
-    let Some(glyphs) = data.path(&["derivedTextData", "glyphs"]) else {
-        return out;
-    };
-    // Truncated text stores every line's glyphs plus the ellipsis glyph; the visible run ends
-    // at `truncationStartIndex`, a glyph index just past that ellipsis.
-    let glyphs = glyphs.items();
-    let visible = data
-        .path(&["derivedTextData", "truncationStartIndex"])
-        .and_then(Val::as_u32)
-        .map_or(glyphs.len(), |i| glyphs.len().min(i as usize));
-    for glyph in &glyphs[..visible] {
+    for glyph in visible_glyphs(data) {
+        if is_emoji(glyph) {
+            continue;
+        }
         let Some(index) = glyph.get("commandsBlob").and_then(Val::as_u32) else {
             continue;
         };
@@ -38,6 +31,25 @@ pub fn stored_glyphs(data: &Val, blobs: &[Vec<u8>]) -> Vec<BezPath> {
     out
 }
 
+pub(crate) fn visible_glyphs(data: &Val) -> &[Val] {
+    let glyphs = data
+        .path(&["derivedTextData", "glyphs"])
+        .map(Val::items)
+        .unwrap_or_default();
+    // The visible run ends just past the stored ellipsis, including emoji markers.
+    let visible = data
+        .path(&["derivedTextData", "truncationStartIndex"])
+        .and_then(Val::as_u32)
+        .map_or(glyphs.len(), |i| glyphs.len().min(i as usize));
+    &glyphs[..visible]
+}
+
+pub(crate) fn is_emoji(glyph: &Val) -> bool {
+    glyph
+        .get("emojiCodePoints")
+        .is_some_and(|v| !v.items().is_empty())
+}
+
 pub fn characters(data: &Val) -> &str {
     data.path(&["textData", "characters"])
         .and_then(Val::as_str)
@@ -46,6 +58,8 @@ pub fn characters(data: &Val) -> &str {
 
 #[cfg(feature = "system-fonts")]
 pub use system::SystemFonts;
+#[cfg(feature = "system-fonts")]
+pub(crate) use system::{Builder, SYMBOL_FAMILIES};
 
 /// Stand-in without the `system-fonts` feature (browser build): never finds a font.
 #[cfg(not(feature = "system-fonts"))]
@@ -56,6 +70,10 @@ pub struct SystemFonts {
 
 #[cfg(not(feature = "system-fonts"))]
 impl SystemFonts {
+    pub(crate) fn emoji(&mut self, _ch: char, _pixels: u16) -> Option<crate::emoji::Glyph> {
+        None
+    }
+
     pub fn layout(&mut self, _data: &Val) -> Option<Vec<BezPath>> {
         None
     }
@@ -63,7 +81,9 @@ impl SystemFonts {
 
 #[cfg(feature = "system-fonts")]
 mod system {
-    use std::collections::HashMap;
+    #[cfg(test)]
+    mod cache_tests;
+    use std::collections::{HashMap, VecDeque};
     use std::sync::Arc;
 
     use figstudio_fig::Val;
@@ -84,6 +104,10 @@ mod system {
         "Source Han Sans",
         "Hiragino Sans",
         "PingFang TC",
+    ];
+
+    pub(crate) const SYMBOL_FAMILIES: &[&str] = &[
+        "Noto Emoji",
         "Noto Sans Symbols",
         "Noto Sans Symbols 2",
         "Noto Sans Symbols2",
@@ -103,9 +127,12 @@ mod system {
         db: Option<Database>,
         faces: HashMap<ID, Option<FaceData>>,
         fallbacks: Option<Vec<ID>>,
+        emojis: HashMap<char, Option<crate::emoji_font::Resolved>>,
+        emoji_order: VecDeque<char>,
+        emoji_bytes: usize,
     }
 
-    struct Builder(BezPath);
+    pub(crate) struct Builder(pub(crate) BezPath);
 
     impl OutlineBuilder for Builder {
         fn move_to(&mut self, x: f32, y: f32) {
@@ -146,11 +173,37 @@ mod system {
     impl SystemFonts {
         /// Fonts from `db` instead of the installed ones.
         #[cfg(test)]
-        pub(super) fn with_database(db: Database) -> Self {
+        pub(crate) fn with_database(db: Database) -> Self {
             Self {
                 db: Some(db),
                 ..Self::default()
             }
+        }
+
+        pub(crate) fn emoji(&mut self, ch: char, pixels: u16) -> Option<crate::emoji::Glyph> {
+            self.db();
+            let db = self.db.as_ref()?;
+            if !self.emojis.contains_key(&ch) {
+                let resolved = crate::emoji_font::resolve(db, ch, pixels);
+                self.emoji_bytes += resolved.as_ref().map_or(0, |r| r.bytes());
+                self.emojis.insert(ch, resolved);
+            }
+            self.emoji_order.retain(|key| *key != ch);
+            self.emoji_order.push_back(ch);
+            // Font lookup is per character; decoded images live on their actual strike.
+            let resolved = self.emojis.get_mut(&ch).and_then(Option::as_mut);
+            let before = resolved.as_ref().map_or(0, |r| r.bytes());
+            let (glyph, after) = resolved.map_or((None, 0), |r| (r.glyph(db, pixels), r.bytes()));
+            self.emoji_bytes = self.emoji_bytes - before + after;
+            while self.emojis.len() > 64 || self.emoji_bytes > crate::emoji_font::CACHED_BYTES {
+                let Some(oldest) = self.emoji_order.pop_front() else {
+                    break;
+                };
+                if let Some(Some(old)) = self.emojis.remove(&oldest) {
+                    self.emoji_bytes -= old.bytes();
+                }
+            }
+            glyph
         }
 
         fn db(&mut self) -> &Database {
@@ -187,7 +240,7 @@ mod system {
                 return list.clone();
             }
             let mut list = Vec::new();
-            for name in FALLBACK_FAMILIES {
+            for name in FALLBACK_FAMILIES.iter().chain(SYMBOL_FAMILIES) {
                 if let Some(id) = self.query(name, Weight::NORMAL, Style::Normal) {
                     list.push(id);
                 }

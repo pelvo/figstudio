@@ -94,6 +94,64 @@ Code: the text path in `Ctx::draw_node` (`crates/render/src/lib.rs`). Text with
 
 **Exact fix:** in the system-font layout fallback, cut the last visible line and add "…".
 
+### C7. emoji approximated / emoji skipped
+
+Code: `text::stored_glyphs`, `Ctx::emojis`, `Ctx::draw_placed_emojis`, and
+`emoji_font::resolve` (`crates/render/src`).
+Counts are per visible stored emoji glyph, not per text node; not included in the older totals above.
+`emojiCodePoints` marks an editor placeholder, so its stored square is never painted.
+
+- `emoji_approximated`: an outline-only face (including flattened COLR layers) drawn with the
+  text paint, a multi-code-point sequence drawn using its first base scalar, or an injected
+  raster whose source cannot attest complete-cluster shaping. Limitations count once per
+  glyph. COLR palette, clips and compositing are not reproduced. Browser counts are
+  conservative: Canvas cannot identify the font/glyphs used, so even correctly drawn emoji
+  remain counted rather than silently accepting tofu or partial cluster fallback.
+- `emoji_skipped`: no usable installed face, invalid marker, unsupported or malformed strike,
+  or a build without `system-fonts` and without an injected `EmojiSource`. Empty or
+  transparent platform rasters are skipped. Skipped glyphs leave no box; truncated-away
+  markers do not count. The browser's lazy monochrome font is UI-only.
+- Native colour PNG strikes use `ttf-parser` for sbix/outline lookup, Fontations
+  `read-fonts` for a single walk of CBDT/CBLC, bdat/bloc and EBDT/EBLC size records,
+  and `image` for PNG decoding, bounded to
+  1024 pixels per side and 8 MiB decoder allocation; encoded strikes are capped at 4 MiB.
+  Native caches retain only font/strike metadata and lazily decoded images, not copied PNG
+  payloads. Character hits refresh LRU recency; decoded strikes have bounded retention too,
+  so an over-budget font cannot force whole-character reallocation on every frame.
+  Placement uses strike pixel origin and ppem at the stored font size and baseline. sbix
+  adds the contour's `(xMin, yMin)` in design units; contourless sbix and CBDT do not.
+  Draws retain node transforms, parent clips and paint/node opacity. Emoji shadows use a
+  counted rectangular ink bound rather than the bitmap's alpha silhouette.
+  Recordings replay the same image paint; GPU-unsupported image tiles fall back to CPU and
+  increment the existing `gpu_fallback_tiles` counter.
+- The browser app injects a platform-free `EmojiSource` (`emoji_source.rs`) through its
+  renderer factory, used by the canvas worker and PNG exports. `emoji_canvas.rs` creates
+  OffscreenCanvas and its 2D context on the calling worker; JS handles never cross threads.
+  It draws full stored clusters (ZWJ/variation selectors included), using measured baseline
+  ink bounds and advance. Oversized boxes are remeasured at a smaller ppem and scaled at draw
+  time; absent ink metrics use font bounds or an em square. Successful rasters are drawn,
+  but counted unless the source explicitly attests verified shaping (`with_verified_shaping`).
+  Browser Canvas provides no such attestation; pixel/tofu comparisons cannot prove support.
+  Straight-alpha RGBA is premultiplied once. Renderer-local LRU caches bound results to 256
+  entries and 16 MiB of pixels. Sources declare a canonical request size so capped rasters
+  serve all larger zooms. Misses get one immediate retry, then one retry per 64 later cache
+  calls; negative entries share the same LRU bound. Oversized results draw uncached without
+  evicting hot entries.
+  Keys and raster dimensions are bounded too. Recordings retain owned pixels and need no
+  browser API on replay.
+
+The warning chip, copied-image warning, CLI render/doctor counts, CLI info emoji summary,
+MCP screenshot notes and diff JSON carry these counters. `Stats::max_with` retains them
+across tiles. As with other render counters, work-budget truncation makes totals lower bounds.
+
+**Remaining work:** shape complete sequences natively and support native colour-outline
+formats. Browser shaping and colours depend on the browser's installed emoji fonts;
+unsupported clusters can still produce the platform's fallback glyph. UI-only monochrome
+fallback does not clear canvas counters. Browser UI names now get four lazy monochrome outline subsets,
+validated before installation and kept after CJK fallbacks; their combined size is 1,705,404
+bytes for the checked source fonts. Cross-platform colour faces and real COLR fonts remain
+to be checked.
+
 ## Plan
 
 One fix at a time (they all touch `crates/render/src/lib.rs`), each with a synthetic test

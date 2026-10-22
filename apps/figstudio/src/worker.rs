@@ -19,9 +19,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use figstudio_fig::{Document, Guid};
+use figstudio_render::Stats;
 use figstudio_render::color::{AlphaColor, Srgb};
 use figstudio_render::images::{ImageRequest, Images};
-use figstudio_render::{Renderer, Stats};
 use web_time::{Duration, Instant};
 
 #[cfg(target_arch = "wasm32")]
@@ -292,7 +292,7 @@ impl Workers {
         let count = in_flight.clone();
         let images = queue.clone();
         let render_loop = move || {
-            let mut renderer = Renderer::with_images(images.images.clone());
+            let mut renderer = crate::renderer(images.images.clone());
             let mut recordings = Recordings::default();
             let mut queue = Queue::default();
             loop {
@@ -599,6 +599,7 @@ pub fn export_png_with(
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod export_tests {
     use super::*;
+    use figstudio_render::Renderer;
 
     fn structure() -> Document {
         let path = concat!(

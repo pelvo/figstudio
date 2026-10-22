@@ -10,7 +10,7 @@ publish = false
 [features]
 default = ["system-fonts"]
 # Draw text that has no stored glyph outlines with fonts installed on this machine.
-system-fonts = ["dep:fontdb", "dep:ttf-parser"]
+system-fonts = ["dep:fontdb", "dep:ttf-parser", "dep:read-fonts"]
 # `Renderer::render_parallel`: horizontal strips on the current Rayon pool (desktop or wasm threads).
 parallel = ["dep:rayon"]
 # `Recording::gpu_scene`: replay a recorded tile into a `vello_gpu::Scene` (app canvas on the GPU).
@@ -23,6 +23,7 @@ image = { workspace = true }
 tracing.workspace = true
 fontdb = { workspace = true, optional = true }
 ttf-parser = { workspace = true, optional = true }
+read-fonts = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 vello_gpu = { workspace = true, optional = true }
 

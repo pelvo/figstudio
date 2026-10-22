@@ -8,6 +8,19 @@ pub use child_layout::{ChildLayout, InspectionWork};
 pub use paint_order::children_topmost_first;
 mod connector;
 mod effects;
+mod emoji;
+mod emoji_source;
+pub use emoji_source::{EmojiRaster, EmojiSource};
+#[cfg(feature = "system-fonts")]
+mod emoji_bitmap;
+#[cfg(feature = "system-fonts")]
+mod emoji_font;
+#[cfg(all(test, feature = "system-fonts"))]
+mod emoji_review_tests;
+#[cfg(all(test, feature = "system-fonts"))]
+mod emoji_tests;
+#[cfg(all(test, feature = "system-fonts"))]
+mod emoji_zoom_tests;
 mod focus;
 pub mod geom;
 #[cfg(feature = "gpu")]
@@ -72,6 +85,10 @@ pub struct Stats {
     /// Truncated text (`textTruncation`) without usable stored glyphs: the fallback layout
     /// draws every line instead of ending with an ellipsis.
     pub text_truncation_ignored: usize,
+    /// Stored emoji drawn monochromatically or as the first base of a sequence.
+    pub emoji_approximated: usize,
+    /// Stored emoji not drawn because no usable font glyph was available.
+    pub emoji_skipped: usize,
     pub missing_images: usize,
     /// Image paints drawn with a placeholder or a blurrier copy while the image is read
     /// (lazily opened documents; see [`Frame::wanted`]).
@@ -119,6 +136,8 @@ impl Stats {
             text_system_fonts,
             text_missing,
             text_truncation_ignored,
+            emoji_approximated,
+            emoji_skipped,
             missing_images,
             images_loading,
             missing_symbols,
@@ -147,6 +166,8 @@ impl Stats {
         self.text_system_fonts = self.text_system_fonts.max(*text_system_fonts);
         self.text_missing = self.text_missing.max(*text_missing);
         self.text_truncation_ignored = self.text_truncation_ignored.max(*text_truncation_ignored);
+        self.emoji_approximated = self.emoji_approximated.max(*emoji_approximated);
+        self.emoji_skipped = self.emoji_skipped.max(*emoji_skipped);
         self.missing_images = self.missing_images.max(*missing_images);
         self.images_loading = self.images_loading.max(*images_loading);
         self.missing_symbols = self.missing_symbols.max(*missing_symbols);
@@ -187,6 +208,8 @@ impl fmt::Display for Stats {
         note(self.text_system_fonts, "text (system fonts)")?;
         note(self.text_missing, "text not drawn")?;
         note(self.text_truncation_ignored, "text truncation ignored")?;
+        note(self.emoji_approximated, "emoji approximated")?;
+        note(self.emoji_skipped, "emoji skipped")?;
         note(self.masks, "masks")?;
         note(self.shadows, "drop shadows")?;
         note(self.inner_shadows, "inner shadows")?;
@@ -244,6 +267,7 @@ pub struct Renderer {
     inspection_work: InspectionWork,
     images: Images,
     fonts: text::SystemFonts,
+    emoji_source: emoji_source::Cache,
     /// Lay out text with installed fonts when the file has no stored glyph outlines.
     pub system_fonts: bool,
     /// Property and style indexes of the last document drawn, by [`Document::instance`]:
@@ -275,6 +299,7 @@ impl Default for Renderer {
         Renderer {
             images: Images::default(),
             fonts: text::SystemFonts::default(),
+            emoji_source: emoji_source::Cache::default(),
             system_fonts: true,
             indexes: None,
             inspection_work: InspectionWork::default(),
@@ -289,6 +314,7 @@ struct Ctx<'a> {
     images: &'a Images,
     wanted: Vec<ImageRequest>,
     fonts: Option<&'a mut text::SystemFonts>,
+    emoji_source: &'a mut emoji_source::Cache,
     /// Override scopes of the instances being drawn (the merge shared with `fig::resolve`).
     overrides: Overrides,
     variables: Arc<variables::Variables>,
@@ -302,6 +328,8 @@ struct Ctx<'a> {
     /// How far (output pixels) the open filter layers of enclosing nodes spread what is drawn
     /// now: culling grows each node by it, so a blur still reaching the output keeps it.
     inherited_reach: f64,
+    /// Metadata walk: resolve visible stored emoji, but issue no drawing commands or culling.
+    emoji_only: bool,
 }
 
 impl Renderer {
@@ -316,6 +344,12 @@ impl Renderer {
             images,
             ..Self::default()
         }
+    }
+
+    /// Install a platform emoji source and clear cached rasters. Set before recording;
+    /// callers replacing a source must also discard their existing page recordings.
+    pub fn set_emoji_source(&mut self, source: Option<Arc<dyn EmojiSource>>) {
+        self.emoji_source = emoji_source::Cache::new(source);
     }
 
     /// The image cache (a shared handle).
@@ -353,11 +387,12 @@ impl Renderer {
         mut read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
         draw: impl Fn(&mut Self) -> Frame,
     ) -> Frame {
+        self.emoji_source.take_retry_due();
         // Thumbnail first, then the image, then perhaps a finer level: a few rounds at most.
         for _ in 0..6 {
             let frame = draw(self);
             if frame.wanted.is_empty() && self.images.in_flight() == 0 {
-                return frame;
+                return self.retry_emoji(frame, &draw);
             }
             for want in &frame.wanted {
                 match read(want) {
@@ -368,7 +403,18 @@ impl Renderer {
                 }
             }
         }
-        draw(self)
+        let frame = draw(self);
+        self.retry_emoji(frame, &draw)
+    }
+
+    /// A complete frame is often kept (a Recents thumbnail, an export), so a platform emoji
+    /// that missed for the first time (a font still loading) gets its one retry in this call.
+    fn retry_emoji(&mut self, frame: Frame, draw: &impl Fn(&mut Self) -> Frame) -> Frame {
+        if self.emoji_source.take_retry_due() {
+            draw(self)
+        } else {
+            frame
+        }
     }
 
     /// Bytes of decoded pixels held by the image cache.
@@ -600,6 +646,7 @@ impl Renderer {
                 ..Stats::default()
             },
             images: &self.images,
+            emoji_source: &mut self.emoji_source,
             wanted: Vec::new(),
             fonts: if self.system_fonts {
                 Some(&mut self.fonts)
@@ -615,8 +662,31 @@ impl Renderer {
             exhausted: false,
             screen,
             inherited_reach: 0.0,
+            emoji_only: false,
         }
     }
+    /// Counts visible stored emoji on every page using the draw walk's overrides, truncation
+    /// and font lookup, without scene geometry, layout or viewport culling. Platform emoji
+    /// sources may rasterize on cache misses. Counts
+    /// are lower bounds when `budget_exhausted` or `depth_skipped` is nonzero. Clipping and
+    /// masks do not remove glyphs from this metadata inventory.
+    pub fn emoji_counts(&mut self, doc: &Document) -> Stats {
+        // No Vello drawing in metadata mode; the platform source can still rasterize.
+        let mut canvas = RenderContext::new(1, 1);
+        let mut ctx = self.context(doc, &mut canvas, Rect::ZERO, MAX_RENDER_WORK, 0);
+        ctx.emoji_only = true;
+        for page in &doc.pages {
+            if let Some(node) = doc.node(*page) {
+                ctx.draw_children(node, &node.data, Affine::IDENTITY, None);
+            }
+            if ctx.exhausted {
+                break;
+            }
+        }
+        ctx.stats.attempted_work = MAX_RENDER_WORK.saturating_sub(ctx.work_left);
+        ctx.stats
+    }
+
     pub fn render_fit(
         &mut self,
         doc: &Document,
@@ -1044,6 +1114,22 @@ impl Ctx<'_> {
         }
         let kind = node.kind.as_str();
         let world = parent * affine(data.get("transform"));
+        if self.emoji_only {
+            if kind == "TEXT" {
+                if !stale_glyphs {
+                    self.emojis(data, world);
+                }
+            } else if kind == "INSTANCE" {
+                self.draw_instance(data, world, path);
+            } else if kind == "CONNECTOR" {
+                self.draw_connector(node, world);
+            } else {
+                let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
+                self.draw_children(node, data, world, child_path);
+            }
+            self.depth -= 1;
+            return;
+        }
         let (w, h) = size(data);
         if self.off_screen(node, kind, data, world, w, h) {
             self.stats.culled += 1;
@@ -1078,16 +1164,27 @@ impl Ctx<'_> {
         {
             fill_paths.push(GeomPath::plain(shape));
         }
-        let casts = casts_shadow(data, &fill_paths);
+        let emojis = if kind == "TEXT" && !stale_glyphs {
+            self.emojis(data, world)
+        } else {
+            Vec::new()
+        };
+        // Emoji rectangles cast shadows, but must not be painted as ordinary text fills.
+        let fill_count = fill_paths.len();
+        fill_paths.extend(emojis.iter().map(|g| GeomPath::plain(g.rect.to_path(0.1))));
+        let shadow_paths = fill_paths;
+        let fill_paths = &shadow_paths[..fill_count];
+        let casts = casts_shadow(data, &shadow_paths);
         let mut shadows = Vec::new();
         let mut layers = 0;
         let mut shadow_layers = 0;
         let outer_reach = self.inherited_reach;
         let silhouette = casts
-            && effects::approximate_silhouette(
-                data,
-                !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
-            );
+            && (!emojis.is_empty()
+                || effects::approximate_silhouette(
+                    data,
+                    !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
+                ));
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
             if effect.flag("visible") == Some(false) {
@@ -1101,7 +1198,7 @@ impl Ctx<'_> {
                 Some("DROP_SHADOW" | "INNER_SHADOW") if casts => {
                     self.stats.approximated_effects += usize::from(effects::is_approximate(
                         effect,
-                        &fill_paths,
+                        &shadow_paths,
                         world,
                         silhouette,
                         false,
@@ -1153,17 +1250,18 @@ impl Ctx<'_> {
             .into_iter()
             .partition(|e| e.text("type") == Some("DROP_SHADOW"));
         for effect in behind {
-            self.draw_drop_shadow(effect, &fill_paths, world);
+            self.draw_drop_shadow(effect, &shadow_paths, world);
         }
-        self.paint_paths(data, "fillPaints", &fill_paths, world, w, h);
+        self.paint_paths(data, "fillPaints", fill_paths, world, w, h);
+        self.draw_placed_emojis(data, world, w, h, emojis);
         for effect in above {
-            self.draw_inner_shadow(effect, &fill_paths, world);
+            self.draw_inner_shadow(effect, &shadow_paths, world);
         }
 
         // A frame that clips its content draws its stroke above its children; others below.
         let clips = kind != "TEXT" && clips_content(kind, data);
         if !clips {
-            self.draw_strokes(kind, data, &fill_paths, world, (w, h));
+            self.draw_strokes(kind, data, fill_paths, world, (w, h));
         }
 
         // Children.
@@ -1176,13 +1274,7 @@ impl Ctx<'_> {
             if kind == "INSTANCE" {
                 self.draw_instance(data, world, path);
             } else if kind == "CONNECTOR" {
-                let parts = connector::parts(node);
-                // Nothing stored to draw the connector from: counted, never hidden.
-                self.stats.unsupported_paints += usize::from(parts.is_empty());
-                for (part, parent) in parts {
-                    let data = Cow::Borrowed(&part.data);
-                    self.draw_with_data(&part, world * parent, None, Some((data, false, false)));
-                }
+                self.draw_connector(node, world);
             } else {
                 // Override paths contain instance ancestors, not ordinary frame/group ancestors.
                 let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
@@ -1192,7 +1284,7 @@ impl Ctx<'_> {
                 self.rc.pop_layer();
             }
             if clips {
-                self.draw_strokes(kind, data, &fill_paths, world, (w, h));
+                self.draw_strokes(kind, data, fill_paths, world, (w, h));
             }
         }
         for _ in 0..layers {
@@ -1302,7 +1394,7 @@ impl Ctx<'_> {
     fn text_paths(&mut self, data: &Val, stale_glyphs: bool) -> Vec<BezPath> {
         if !stale_glyphs {
             let stored = text::stored_glyphs(data, &self.doc.blobs);
-            if !stored.is_empty() {
+            if !stored.is_empty() || text::visible_glyphs(data).iter().any(text::is_emoji) {
                 self.stats.text_stored_glyphs += 1;
                 return stored;
             }
@@ -1325,6 +1417,16 @@ impl Ctx<'_> {
 
     /// Paints `paths` with the node's `key` paints. Paths with a vector style id use the paints
     /// from `vectorData.styleOverrideTable` instead, when that entry overrides them.
+    fn draw_connector(&mut self, node: &Node, world: Affine) {
+        let parts = connector::parts(node);
+        // Generated labels have fresh glyphs even when their connector has stale text.
+        self.stats.unsupported_paints += usize::from(parts.is_empty());
+        for (part, parent) in parts {
+            let data = Cow::Borrowed(&part.data);
+            self.draw_with_data(&part, world * parent, None, Some((data, false, false)));
+        }
+    }
+
     fn paint_paths(
         &mut self,
         data: &Val,
@@ -1403,6 +1505,9 @@ impl Ctx<'_> {
             let (child_path, (child_data, stale_glyphs, approximate_ink)) =
                 self.child_patch(node, data, child, path);
             if child_data.flag("mask") == Some(true) && visible(&child_data) {
+                if self.emoji_only {
+                    continue;
+                }
                 if !self.charge_work() {
                     break;
                 }

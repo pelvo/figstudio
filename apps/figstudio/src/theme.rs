@@ -585,7 +585,7 @@ pub fn cjk_need(doc: &figstudio_fig::Document, file_name: &str) -> CjkNeed {
     need
 }
 
-/// Adds `bytes` (a CJK font) as the last fallback of every family.
+/// Adds `bytes` (a CJK font) after bundled faces, before any browser symbol fallbacks.
 #[cfg_attr(
     not(any(test, target_arch = "wasm32")),
     expect(dead_code, reason = "only the browser fetches a CJK font")
@@ -603,7 +603,11 @@ pub fn add_cjk_font(ctx: &egui::Context, bytes: Vec<u8>) {
     ] {
         let names = fonts.families.entry(family).or_default();
         names.retain(|name| name != "cjk");
-        names.push("cjk".into());
+        let index = names
+            .iter()
+            .position(|name| name.starts_with("web-symbols-"))
+            .unwrap_or(names.len());
+        names.insert(index, "cjk".into());
     }
     ctx.set_fonts(fonts);
 }

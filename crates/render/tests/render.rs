@@ -917,11 +917,15 @@ fn stats_max_with_keeps_the_larger_count_of_every_field() {
     let mut a = Stats {
         nodes: 5,
         culled: 1,
+        emoji_approximated: 3,
+        emoji_skipped: 1,
         ..Stats::default()
     };
     let b = Stats {
         nodes: 3,
         culled: 4,
+        emoji_approximated: 1,
+        emoji_skipped: 2,
         approximated_paints: 2,
         ..Stats::default()
     };
@@ -929,6 +933,8 @@ fn stats_max_with_keeps_the_larger_count_of_every_field() {
     let want = Stats {
         nodes: 5,
         culled: 4,
+        emoji_approximated: 3,
+        emoji_skipped: 2,
         approximated_paints: 2,
         ..Stats::default()
     };
