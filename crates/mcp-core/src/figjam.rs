@@ -129,7 +129,7 @@ fn picture(
         Ok(_) => vec![Block::text(Payload::omitted(id))],
         Err(error) => vec![Block::text(format!(
             "{id}: {}",
-            crate::error::CoreError::encode("PNG", error)
+            crate::error::CoreError::encode(rendering.format.extension(), error)
         ))],
     }
 }

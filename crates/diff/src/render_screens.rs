@@ -7,7 +7,7 @@ use crate::{
     render::{ImageReader, MAX_RENDER_PIXELS},
     render_pixels::{compare_mask, encode},
     screen_bounds,
-    screens::{MatchBy, ScreenPair, match_screens},
+    screens::{ScreenPair, match_screens},
 };
 use figstudio_fig::{Document, Guid};
 use figstudio_render::{Renderer, Viewport, absolute_transform, geom::size, kurbo::Affine};
@@ -44,7 +44,30 @@ pub(crate) fn attach_screens(
     let mut capped_any = false;
     let mut tally = PageTally::new(opts.screen_limits, doc_pixels);
     tally.keep_page(images);
-    for (index, pair) in pairs.iter().copied().enumerate() {
+    let members: Vec<_> = pairs
+        .iter()
+        .map(|&pair| screen_bounds::members(page, docs, pair))
+        .collect();
+    let has_lines: Vec<bool> = pairs
+        .iter()
+        .zip(&members)
+        .map(|(pair, nodes)| {
+            lines.items.iter().any(|l| {
+                nodes.contains(&l.id)
+                    && crate::screen_model::counts(l, pair.matched_by, (pair.old, pair.new))
+            })
+        })
+        .collect();
+    // Screens with change lines are drawn first, so screens that turn out unchanged cannot
+    // use up the screen caps before them; the report keeps document order.
+    let mut order: Vec<usize> = (0..pairs.len()).collect();
+    order.sort_by_key(|&i| (!has_lines[i], i));
+    // Only screens present on both sides crop, so only they share the crop budget.
+    let crops = |pair: &ScreenPair| pair.old.is_some() && pair.new.is_some();
+    let mut croppers_left = pairs.iter().filter(|p| crops(p)).count();
+    let mut kept: Vec<(usize, ScreenDiff, ScreenImages, Vec<RegionKey>)> = Vec::new();
+    for index in order {
+        let pair = pairs[index];
         let Some(node) = pair
             .new
             .and_then(|id| docs.1.node(id))
@@ -53,13 +76,16 @@ pub(crate) fn attach_screens(
             continue;
         };
         let moved = crate::screen_model::moved(docs, pair);
-        let nodes = screen_bounds::members(page, docs, pair);
-        let has_lines = lines.items.iter().any(|l| {
-            nodes.contains(&l.id) && (pair.matched_by != Some(MatchBy::NameSize) || l.sign == "~")
-        });
+        let nodes = members[index].clone();
         let (_, w, h, _) = dimensions(docs, pair);
         let over = !tally.admit(u64::from(w) * u64::from(h) * 2);
-        let share = crop_budget / (pairs.len() - index);
+        let share = if crops(&pair) {
+            let share = crop_budget / croppers_left.max(1);
+            croppers_left = croppers_left.saturating_sub(1);
+            share
+        } else {
+            0
+        };
         let mut available = share;
         let rendered = if over {
             None
@@ -82,9 +108,7 @@ pub(crate) fn attach_screens(
                 .iter()
                 .find(|s| s.old_id == pair.old && s.new_id == pair.new)
             {
-                page.screens.push(screen.clone());
-                images.screens.push(ScreenImages::default());
-                signatures.push(Vec::new());
+                kept.push((index, screen.clone(), ScreenImages::default(), Vec::new()));
             }
             continue;
         };
@@ -124,7 +148,7 @@ pub(crate) fn attach_screens(
         if pair.old.is_some()
             && pair.new.is_some()
             && screen.pixels_changed == Some(0)
-            && !has_lines
+            && !has_lines[index]
         {
             page.screens_unchanged += 1;
             page.screens_moved += usize::from(moved);
@@ -134,6 +158,10 @@ pub(crate) fn attach_screens(
         tally.keep(&pictures);
         screen.name.clone_from(&node.name);
         screen.kind.clone_from(&node.kind);
+        kept.push((index, screen, pictures, region_keys));
+    }
+    kept.sort_by_key(|(index, ..)| *index);
+    for (_, screen, pictures, region_keys) in kept {
         page.screens.push(screen);
         images.screens.push(pictures);
         signatures.push(region_keys);

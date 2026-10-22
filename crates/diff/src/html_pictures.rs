@@ -71,7 +71,9 @@ pub(crate) fn compare_sized(
     );
     picture_sized(out, old, "Before", "bf", size);
     picture_sized(out, new, "After", "af", size);
-    out.push_str("<span class=\"hint\">Showing After · hover or focus to see Before</span></div>");
+    out.push_str(
+        "<span class=\"hint\">Showing After · hover, focus or press to see Before</span></div>",
+    );
 }
 
 pub(crate) fn locator(out: &mut String, render: &ScreenDiff, region: &Region) {

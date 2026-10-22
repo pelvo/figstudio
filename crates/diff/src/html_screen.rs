@@ -25,7 +25,7 @@ pub(crate) fn screen_lines<'a>(
 ) -> impl Iterator<Item = &'a ChangeLine> {
     lines.items.iter().filter(move |l| {
         screen.nodes.contains(&l.id)
-            && !(screen.matched_by == Some(crate::MatchedBy::NameSize) && l.sign != "~")
+            && crate::screen_model::counts(l, screen.matched_by, (screen.old_id, screen.new_id))
     })
 }
 
@@ -47,7 +47,7 @@ fn no_visible_change(out: &mut String, screen: &ScreenDiff) {
         picture(out, &screen.thumb_old, "Before", "bf");
         picture(out, &screen.thumb_new, "After", "af");
         out.push_str(
-            "<span class=\"hint\">Showing After · hover or focus to see Before</span></div>",
+            "<span class=\"hint\">Showing After · hover, focus or press to see Before</span></div>",
         );
     }
 }

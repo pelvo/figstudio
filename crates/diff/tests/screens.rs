@@ -166,3 +166,47 @@ fn inherited_instance_change_is_not_erased_by_moving_its_section() {
     assert!(html.contains("<section"));
     assert!(html.contains(" with no matched change line"));
 }
+
+#[test]
+fn recreated_screen_lists_layers_it_gained_or_lost_but_not_identity_churn() {
+    let named = |mut n: Node, name: &str| {
+        n.data.set("name", Val::Str(name.into()));
+        Node::from_data(n.data).unwrap()
+    };
+    let dot = |id, parent| {
+        named(
+            filled_rectangle_at(id, parent, (1.0, 0.0, 0.0), 10.0, 10.0, 20.0, 20.0),
+            "Dot",
+        )
+    };
+    let old = document(vec![screen(4, 1, 0.0, "FRAME"), dot(5, 4)]);
+    // Same screen recreated with new ids: the dot pairs by name; the badge is new and sits
+    // outside the frame, so it draws no pixel and only its + line can show it.
+    let badge = named(
+        filled_rectangle_at(9, 7, (0.0, 0.0, 1.0), 900.0, 10.0, 20.0, 20.0),
+        "Badge",
+    );
+    let new = document(vec![screen(7, 1, 0.0, "FRAME"), dot(8, 7), badge]);
+    for render in [false, true] {
+        let mut report = diff_documents(&old, &new);
+        if render {
+            let _ = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+        }
+        let page = &report.pages[0];
+        assert_eq!(page.screens.len(), 1, "render {render}: {page:?}");
+        assert_eq!(
+            page.screens[0].matched_by,
+            Some(figstudio_diff::MatchedBy::NameSize)
+        );
+        let html = render_html(&report);
+        let screen = html.split("id=\"page-0-s1\"").nth(1).unwrap();
+        assert!(screen.contains(">Badge<"), "{screen}");
+        assert!(!screen.contains(">Dot<"), "{screen}");
+        assert_eq!(screen.matches("class=\"sg\">").count(), 1, "{screen}");
+    }
+    // Losing a layer shows a - line the same way.
+    let mut report = diff_documents(&new, &old);
+    let _ = attach_render_diffs(&new, &old, &mut report, &RenderOpts::default());
+    let html = render_html(&report);
+    assert!(html.contains("class=\"sg\">-</span><span class=\"hd\"><span class=\"nm\">Badge"));
+}

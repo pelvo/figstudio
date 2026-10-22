@@ -84,7 +84,7 @@ h4.sub{font-size:12px;font-weight:600;color:var(--mu);letter-spacing:.02em;margi
 #view-overlay:checked~.shell .cmp{grid-template-columns:1fr;cursor:ew-resize}
 #view-overlay:checked~.shell .cmp figure{grid-area:1/1}
 #view-overlay:checked~.shell .cmp .bf{z-index:1;opacity:0;transition:opacity .12s}
-#view-overlay:checked~.shell .cmp:hover .bf,#view-overlay:checked~.shell .cmp:focus .bf{opacity:1}
+#view-overlay:checked~.shell .cmp:hover .bf,#view-overlay:checked~.shell .cmp:focus-within .bf,#view-overlay:checked~.shell .cmp:active .bf{opacity:1}
 #view-overlay:checked~.shell .cmp .hint{display:block;grid-row:2;font-size:11px;color:var(--fa);text-align:left}
 .cmp:focus{outline:none}.cmp:focus-visible{outline:2px solid var(--ac);outline-offset:3px;border-radius:6px}
 /* ── change lines ── */
