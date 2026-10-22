@@ -3,13 +3,13 @@
 mod support;
 use figstudio_diff::{RenderOpts, ScreenStatus, attach_render_diffs, diff_documents, render_html};
 use figstudio_fig::{Node, Val};
-use support::{document, filled_rectangle_at};
+use support::{document, filled_rectangle_at, frame_at, named};
 
 fn screen() -> Node {
-    let mut n = filled_rectangle_at(2, 1, (1.0, 1.0, 1.0), 0.0, 0.0, 300.0, 200.0);
-    n.data.set("type", Val::Str("FRAME".into()));
-    n.data.set("name", Val::Str("Screen".into()));
-    Node::from_data(n.data).unwrap()
+    named(
+        frame_at(2, 1, (1.0, 1.0, 1.0), 0.0, 0.0, 300.0, 200.0),
+        "Screen",
+    )
 }
 
 #[test]

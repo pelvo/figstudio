@@ -109,3 +109,35 @@ fn page_level_text_only_and_move_only_screens_obey_visibility_rule() {
             .contains("fontSize")
     );
 }
+
+#[test]
+fn paint_opacity_and_visibility_rows_name_their_paint() {
+    let paint = |opacity: f64, visible: bool| {
+        let one = |extra: (&str, Val)| {
+            Val::Arr(vec![object(&[
+                ("type", Val::Str("SOLID".into())),
+                (
+                    "color",
+                    object(&[
+                        ("r", Val::Float(1.0)),
+                        ("g", Val::Float(0.0)),
+                        ("b", Val::Float(0.0)),
+                        ("a", Val::Float(1.0)),
+                    ]),
+                ),
+                extra,
+            ])])
+        };
+        let mut n = filled_rectangle_at(4, 2, (1.0, 0.0, 0.0), 20.0, 20.0, 40.0, 40.0);
+        n.data
+            .set("fillPaints", one(("opacity", Val::Float(opacity))));
+        n.data
+            .set("strokePaints", one(("visible", Val::Bool(visible))));
+        Node::from_data(n.data).unwrap()
+    };
+    let old = document(vec![screen(2, 1), paint(1.0, true)]);
+    let new = document(vec![screen(2, 1), paint(0.5, false)]);
+    let html = render_html(&diff_documents(&old, &new));
+    assert!(html.contains("Fill opacity:"), "{html}");
+    assert!(html.contains("Stroke visible:"), "{html}");
+}

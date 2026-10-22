@@ -77,6 +77,31 @@ pub fn filled_rectangle_at(
     Node::from_data(rect.data).unwrap()
 }
 
+/// `n` with its `name` set.
+pub fn named(mut n: Node, name: &str) -> Node {
+    n.data.set("name", Val::Str(name.into()));
+    Node::from_data(n.data).unwrap()
+}
+
+/// `n` with its `type` set.
+pub fn typed(mut n: Node, kind: &str) -> Node {
+    n.data.set("type", Val::Str(kind.into()));
+    Node::from_data(n.data).unwrap()
+}
+
+/// A solid-filled frame; origin is `(x, y)` in parent space.
+pub fn frame_at(
+    id: u32,
+    parent: u32,
+    rgb: (f64, f64, f64),
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+) -> Node {
+    typed(filled_rectangle_at(id, parent, rgb, x, y, w, h), "FRAME")
+}
+
 /// A 40x40 rectangle at the page origin with an opaque solid fill.
 pub fn filled_rectangle(id: u32, parent: u32, rgb: (f64, f64, f64)) -> Node {
     filled_rectangle_at(id, parent, rgb, 0.0, 0.0, 40.0, 40.0)

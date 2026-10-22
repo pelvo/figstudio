@@ -272,6 +272,22 @@ each row. Known differences that are not bugs:
 The script prints each file's `Stats`; anything "skipped", "missing" or "approximated" there
 is a known gap, not a pass.
 
+### Compare report (`crates/diff`, browser)
+
+`crates/diff/tests/sample_report.rs` builds a sample comparison (a recoloured card, a nudged
+icon, an added, a removed and a canvas-moved screen) and checks the report is self-contained.
+To look at it in a browser, write it out and run the layout checks:
+
+```sh
+FIGSTUDIO_SAMPLE_REPORT=/tmp/sample cargo test -p figstudio-diff --test sample_report
+cd web/e2e && npm i --no-save @playwright/test
+FIGSTUDIO_SAMPLE_REPORT=/tmp/sample npx playwright test compare-report.spec.mjs
+```
+
+The spec checks that every picture loads, that the page does not scroll sideways at 1280 and
+390 px, and that the overlay reveals Before on hover. It attaches screenshots; look at them
+after a change to the report's HTML or CSS. Without the variable the spec is skipped.
+
 ## 7. GUI smoke test (Linux)
 
 ```sh

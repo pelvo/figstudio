@@ -101,7 +101,7 @@ fn node_rows(node: &NodeDiff, other_props: &mut usize) -> Vec<String> {
             continue;
         }
         let kind = classify(change);
-        if matches!(kind, Kind::Paint) && is_new_default(change) {
+        if matches!(kind, Kind::Paint { .. }) && is_new_default(change) {
             *other_props += 1;
             continue;
         }
@@ -114,16 +114,7 @@ fn node_rows(node: &NodeDiff, other_props: &mut usize) -> Vec<String> {
         };
         match kind {
             Kind::Font => font.push(row(&label_of(&change.field))),
-            Kind::Paint => {
-                let segs: Vec<&str> = change.field.split('.').collect();
-                let n = segs.len();
-                let place = if segs[n - 3] == "strokePaints" {
-                    "Stroke"
-                } else {
-                    "Fill"
-                };
-                paint.push(row(&format!("{place} {}", segs[n - 1])));
-            }
+            Kind::Paint { place, field } => paint.push(row(&format!("{place} {field}"))),
             Kind::Colour { prefix, label, ch } => {
                 let at = colours
                     .iter()
