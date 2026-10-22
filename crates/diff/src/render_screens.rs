@@ -23,6 +23,23 @@ pub(crate) struct ScreenRender {
     capped: bool,
 }
 
+/// Whether a root edit can change the screen's own picture. Moving the root on the canvas
+/// (its own `transform.m02` / `m12`, or `parentIndex`) cannot, nor can a rename, export
+/// settings or constraints; a paint transform, size, opacity or effect can.
+fn can_redraw_root(field: &str) -> bool {
+    let head = field.split('.').next().unwrap_or(field);
+    !(matches!(field, "transform.m02" | "transform.m12")
+        || matches!(
+            head,
+            "parentIndex"
+                | "name"
+                | "exportSettings"
+                | "constraints"
+                | "horizontalConstraint"
+                | "verticalConstraint"
+        ))
+}
+
 pub(crate) fn attach_screens(
     renderers: (&mut Renderer, &mut Renderer),
     masters: &mut Masters,
@@ -66,11 +83,10 @@ pub(crate) fn attach_screens(
     let root =
         |i: usize, id: &figstudio_fig::Guid| Some(*id) == pairs[i].old || Some(*id) == pairs[i].new;
     let root_edited = |id: &figstudio_fig::Guid| {
-        page.changed.iter().find(|n| n.id == *id).is_some_and(|n| {
-            n.changes
-                .iter()
-                .any(|c| !crate::html_changes::is_position(&c.field))
-        })
+        page.changed
+            .iter()
+            .find(|n| n.id == *id)
+            .is_some_and(|n| n.changes.iter().any(|c| can_redraw_root(&c.field)))
     };
     let inner = |i: usize| {
         pairs[i].matched_by == Some(MatchBy::NameSize)
@@ -356,4 +372,29 @@ pub(crate) fn render_screen(
         mask,
         capped,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::can_redraw_root;
+
+    #[test]
+    fn only_edits_that_can_draw_count_as_root_edits() {
+        for field in [
+            "transform.m02",
+            "transform.m12",
+            "parentIndex.position",
+            "name",
+        ] {
+            assert!(!can_redraw_root(field), "{field}");
+        }
+        for field in [
+            "fillPaints.0.transform.m02",
+            "size.x",
+            "opacity",
+            "effects.0.offset.x",
+        ] {
+            assert!(can_redraw_root(field), "{field}");
+        }
+    }
 }

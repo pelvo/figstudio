@@ -120,8 +120,8 @@ fn a_small_change_inside_a_wide_layer_is_matched_to_that_layer() {
 #[test]
 fn a_small_change_at_the_screen_edge_goes_to_the_layer_that_drew_it() {
     // At the top edge the area's padding is one-sided, so its centre falls below a thin bar.
-    // A wider covered layer also changed fill but shows no pixel: the smallest changed layer
-    // holding the changed pixels is the one the area belongs to.
+    // A wider covered layer also changed fill but shows no pixel. Each changed pixel goes to
+    // the smallest changed layer holding it, and every layer that wins a pixel is kept.
     let side = |rgb| {
         // Stacking follows the position strings: Under, Bar, then the grey covers.
         let named = |mut n: Node, name: &str| {
