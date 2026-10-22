@@ -66,7 +66,11 @@ test("overlay shows After and reveals Before on hover and focus", async ({ page 
   await hidden();
   // A real press also hovers and focuses the card, so `:active` can't be driven on its own;
   // check the overlay rule still lists it, for touch screens that have no hover.
-  const rules = await page.evaluate(() =>
-    [...document.styleSheets].flatMap(sheet => [...sheet.cssRules].map(rule => rule.cssText)).join("\n"));
-  expect(rules).toContain(".cmp:active .bf");
+  // Top-level rules only, so a move into `@media (hover: hover)` fails too.
+  const pressed = await page.evaluate(() =>
+    [...document.styleSheets]
+      .flatMap(sheet => [...sheet.cssRules])
+      .filter(rule => rule instanceof CSSStyleRule && rule.selectorText.includes(".cmp:active .bf"))
+      .map(rule => rule.style.opacity));
+  expect(pressed).toEqual(["1"]);
 });

@@ -90,4 +90,11 @@ fn the_sample_report_is_self_contained_and_shows_each_kind_of_screen() {
     // The recolour has a change line; the nudged icon is a move, which shows only as an area.
     assert!(html.contains(">Card<"), "{html}");
     assert_eq!(page.screens[0].regions.len(), 2, "{:?}", page.screens[0]);
+    // Each area's Before and After crop is on the page, not only the whole-page pictures.
+    for region in &page.screens[0].regions {
+        for path in [&region.old_png, &region.new_png] {
+            let path = path.as_deref().unwrap_or_else(|| panic!("{region:?}"));
+            assert!(pictures.contains(&path), "{path} not in the page");
+        }
+    }
 }
