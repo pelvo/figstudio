@@ -84,11 +84,27 @@ fn a_connect_by_hand_starts_a_fresh_series() {
     for now in [0, 1, 3] {
         reconnect.lost(Secs(now));
     }
-    reconnect.restart();
+    reconnect.starting(false);
     assert!(!reconnect.retrying());
     assert_eq!(reconnect.poll(Secs(100)), Retry::Idle);
     reconnect.lost(Secs(100));
     assert_eq!(reconnect.poll(Secs(100)), Retry::Wait(FIRST_RETRY));
+}
+
+#[test]
+fn a_planned_retry_keeps_its_series() {
+    let mut reconnect = Reconnect::default();
+    for now in [0, 1, 3] {
+        reconnect.lost(Secs(now));
+    }
+    reconnect.starting(true);
+    assert!(reconnect.retrying(), "its failure stays quiet");
+    assert_eq!(reconnect.poll(Secs(100)), Retry::Idle);
+    reconnect.lost(Secs(100));
+    assert_eq!(
+        reconnect.poll(Secs(100)),
+        Retry::Wait(Duration::from_secs(8))
+    );
 }
 
 #[test]

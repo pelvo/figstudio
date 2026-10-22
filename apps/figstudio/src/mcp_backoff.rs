@@ -61,16 +61,20 @@ impl<T: Clock> Reconnect<T> {
         self.next = FIRST_RETRY;
     }
 
-    /// A retry is starting, or someone disconnected by hand: drop the planned retry. The
-    /// delay keeps growing if the retry fails too.
+    /// Someone disconnected by hand: drop the planned retry.
     pub(crate) fn cancel(&mut self) {
         self.planned = None;
     }
 
-    /// Someone connected by hand: drop the plan and start any later series from the first
-    /// delay, so this attempt's failure is reported, not taken as one more quiet retry.
-    pub(crate) fn restart(&mut self) {
-        *self = Self::default();
+    /// A connect is starting. A planned retry (`planned`) keeps the series, so its delay
+    /// keeps growing and its failure stays quiet. Any other connect (by hand, a new link)
+    /// starts afresh, so its failure is reported.
+    pub(crate) fn starting(&mut self, planned: bool) {
+        if planned {
+            self.cancel();
+        } else {
+            *self = Self::default();
+        }
     }
 
     /// The page became visible or the browser came back online: a planned retry is due

@@ -289,8 +289,9 @@ impl McpHost {
         if self.relay && self.conn.is_none() {
             match self.reconnect.poll(Instant::now()) {
                 Retry::Now => {
+                    // Quiet only when nothing else asked for this connect already.
+                    self.retrying_now = !self.want_connect;
                     self.want_connect = true;
-                    self.retrying_now = true;
                 }
                 Retry::Wait(resume) => ctx.request_repaint_after(resume),
                 Retry::Idle => {}
@@ -315,6 +316,7 @@ impl McpHost {
                 self.token = token;
                 self.relay = false;
                 self.want_connect = true;
+                self.retrying_now = false;
                 self.proposal = None;
             } else {
                 if let Some(proxy) = change.proxy {
@@ -322,6 +324,7 @@ impl McpHost {
                     self.proxy = Some(proxy);
                     self.relay = true;
                     self.want_connect = true;
+                    self.retrying_now = false;
                 }
                 if let Some(pair) = proposed_pair(change.pair, pairing, self.pair.as_ref()) {
                     self.proposal = Some(RoomProposal::new(pair));
@@ -507,11 +510,8 @@ impl McpHost {
             return Err("Could not generate a secure MCP device identity".to_owned());
         }
         self.generation = self.generation.wrapping_add(1);
-        if std::mem::take(&mut self.retrying_now) {
-            self.reconnect.cancel();
-        } else {
-            self.reconnect.restart();
-        }
+        self.reconnect
+            .starting(std::mem::take(&mut self.retrying_now));
         self.reset_link();
         self.shared.events.borrow_mut().clear();
         let (url, protocols) = if self.relay {
