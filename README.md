@@ -28,6 +28,17 @@ Protocol (MCP) server, written in Rust.
 - **Website:** https://pelvo.dev
 - **In the browser, nothing to install:** https://figstudio.pelvo.dev. Open or drop a `.fig`
   (Figma → File → Save local copy); it stays in the tab and nothing is uploaded.
+- **macOS (Apple silicon) with Homebrew:**
+
+  ```sh
+  brew install --cask pelvo/tap/figstudio
+  ```
+
+  This installs `figstudio.app` in `/Applications` and puts `figstudio-cli` and
+  `figstudio-mcp` on your `PATH`. Update with `brew upgrade --cask figstudio`; remove with
+  `brew uninstall --cask figstudio` (add `--zap` to delete its settings as well). The app
+  is ad-hoc signed, not notarized; the cask clears the download quarantine so it opens
+  normally. The tap is [pelvo/homebrew-tap](https://github.com/pelvo/homebrew-tap).
 - **Give it to Claude Code in one line** (needs Rust 1.95 or newer for `cargo`):
 
   ```sh
