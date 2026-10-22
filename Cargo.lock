@@ -1621,6 +1621,7 @@ name = "figstudio-mcp-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "epaint_default_fonts",
  "figstudio-fig",
  "figstudio-render",
  "html-escape",
@@ -1632,6 +1633,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "url",
+ "vello_cpu 0.3.0",
 ]
 
 [[package]]

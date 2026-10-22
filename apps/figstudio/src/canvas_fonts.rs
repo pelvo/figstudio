@@ -46,7 +46,7 @@ pub fn sync(ctx: &egui::Context) -> bool {
 }
 
 /// Only render workers take the blocking lock; parsing happens after it is released.
-fn snapshot() -> (u64, Vec<Font>) {
+pub fn snapshot() -> (u64, Vec<Font>) {
     let fonts = FONTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

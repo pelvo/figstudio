@@ -210,6 +210,12 @@ impl Inbox {
                         }),
                         Default::default(),
                     );
+                    #[cfg(target_arch = "wasm32")]
+                    let rendering = {
+                        let mut rendering = rendering;
+                        rendering.fonts = crate::canvas_fonts::snapshot().1;
+                        rendering
+                    };
                     McpTab {
                         id: tab.id,
                         name: tab.title(),
