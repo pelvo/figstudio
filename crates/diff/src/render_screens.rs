@@ -23,21 +23,23 @@ pub(crate) struct ScreenRender {
     capped: bool,
 }
 
-/// Whether a root edit can change the screen's own picture. Moving the root on the canvas
-/// (its own `transform.m02` / `m12`, or `parentIndex`) cannot, nor can a rename, export
-/// settings or constraints; a paint transform, size, opacity or effect can.
+/// Whether a root edit can change the screen's own picture. The screen is drawn in its own
+/// frame, so the root's whole `transform` (move, rotation, flip, scale) cancels out, and so
+/// does `parentIndex`. A rename, description, export settings or constraints cannot draw
+/// either; a paint transform, size, opacity or effect can.
 fn can_redraw_root(field: &str) -> bool {
     let head = field.split('.').next().unwrap_or(field);
-    !(matches!(field, "transform.m02" | "transform.m12")
-        || matches!(
-            head,
-            "parentIndex"
-                | "name"
-                | "exportSettings"
-                | "constraints"
-                | "horizontalConstraint"
-                | "verticalConstraint"
-        ))
+    !matches!(
+        head,
+        "transform"
+            | "parentIndex"
+            | "name"
+            | "description"
+            | "exportSettings"
+            | "constraints"
+            | "horizontalConstraint"
+            | "verticalConstraint"
+    )
 }
 
 pub(crate) fn attach_screens(
@@ -381,10 +383,19 @@ mod tests {
     #[test]
     fn only_edits_that_can_draw_count_as_root_edits() {
         for field in [
+            "transform.m00",
+            "transform.m01",
             "transform.m02",
+            "transform.m10",
+            "transform.m11",
             "transform.m12",
             "parentIndex.position",
             "name",
+            "description",
+            "exportSettings.0.suffix",
+            "constraints.horizontal",
+            "horizontalConstraint",
+            "verticalConstraint",
         ] {
             assert!(!can_redraw_root(field), "{field}");
         }

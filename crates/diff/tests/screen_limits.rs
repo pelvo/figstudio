@@ -1,7 +1,7 @@
 mod support;
 use figstudio_diff::{MAX_REGIONS, RenderOpts, ScreenLimits, attach_render_diffs, diff_documents};
 use figstudio_fig::{Node, Val};
-use support::{document, filled_rectangle_at};
+use support::{document, filled_rectangle_at, object};
 
 #[test]
 fn screen_region_cap_does_not_undercount_changed_pixels_and_is_noted() {
@@ -432,34 +432,44 @@ fn canvas_moves_do_not_dilute_an_inner_moves_crop_share() {
 #[test]
 fn a_resized_root_without_a_change_line_is_not_diluted_by_unchanged_screens() {
     // Screen 2 is resized (a root edit with no change line, but new pixels); ten frames that
-    // are unchanged, or only renamed, follow it. The resize keeps the full crop budget.
-    let frame = |id, x, w, name: &str| {
+    // are unchanged, only renamed, or only flipped follow it. A screen is drawn in its own
+    // frame, so a flip cannot change it. The resize keeps the full crop budget.
+    let frame = |id, x, w, name: &str, flipped: bool| {
         let mut n = filled_rectangle_at(id, 1, (1.0, 0.0, 0.0), x, 0.0, w, 1000.0);
         n.data.set("type", Val::Str("FRAME".into()));
         n.data.set("name", Val::Str(name.into()));
+        if flipped {
+            let matrix = [("m00", -1.0), ("m02", x + w), ("m12", 0.0)];
+            let matrix: Vec<_> = matrix.iter().map(|&(k, v)| (k, Val::Float(v))).collect();
+            n.data.set("transform", object(&matrix));
+        }
         Node::from_data(n.data).unwrap()
     };
-    let side = |w, name: &str| {
+    let side = |w, name: &str, flipped| {
         document(
-            std::iter::once(frame(2, 0.0, w, "Resized"))
-                .chain((10..20).map(|id| frame(id, f64::from(id) * 1200.0, 1000.0, name)))
+            std::iter::once(frame(2, 0.0, w, "Resized", false))
+                .chain((10..20).map(|id| frame(id, f64::from(id) * 1200.0, 1000.0, name, flipped)))
                 .collect(),
         )
     };
-    for renamed in [false, true] {
-        let old = side(400.0, "Frame");
-        let new = side(1000.0, if renamed { "Renamed" } else { "Frame" });
+    for (renamed, flipped) in [(false, false), (true, false), (false, true)] {
+        let old = side(400.0, "Frame", false);
+        let new = side(1000.0, if renamed { "Renamed" } else { "Frame" }, flipped);
         let mut report = diff_documents(&old, &new);
         let images = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
         let page = &report.pages[0];
-        assert_eq!(page.screens.len(), 1, "renamed {renamed}: {page:?}");
+        assert_eq!(
+            page.screens.len(),
+            1,
+            "renamed {renamed}, flipped {flipped}: {page:?}"
+        );
         assert_eq!(page.screens_unchanged, 10);
         let region = &page.screens[0].regions[0];
         let crop = &images[&page.id].screens[0].regions[0];
         let png = image::load_from_memory(&crop.after).unwrap();
         assert!(
             png.width() >= 2 * region.width && png.height() >= 2 * region.height,
-            "renamed {renamed}: {}x{} for {}x{}",
+            "renamed {renamed}, flipped {flipped}: {}x{} for {}x{}",
             png.width(),
             png.height(),
             region.width,
