@@ -189,7 +189,7 @@ fn surfaces(doc: &Document, named: &[candidates::Named], page: Color32) -> Vec<C
         let opacity = node
             .and_then(|n| n.data.num("opacity"))
             .unwrap_or(1.0)
-            .clamp(0.0, 1.0) as f32;
+            .clamp(0.0, 1.0);
         let fills = node
             .and_then(|n| n.data.get("fillPaints"))
             .map(figstudio_fig::Val::items)

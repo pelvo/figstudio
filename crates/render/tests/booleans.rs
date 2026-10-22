@@ -396,3 +396,39 @@ fn an_operand_outside_the_boolean_box_is_not_hit() {
         "inside the result, selection still drills into the operands"
     );
 }
+
+#[test]
+fn a_fallback_boolean_still_draws_its_whole_stored_stroke() {
+    let mut doc = boolean_doc("UNION", Some("strokeGeometry"));
+    doc.nodes[1].data.set("strokePaints", paint(0.0, 0.0, 1.0));
+    // The stored stroke is away from the grey operands; the fill result is missing.
+    let blob = doc.blobs.last_mut().unwrap();
+    for offset in [1, 10, 19, 28] {
+        let x = f32::from_le_bytes(blob[offset..offset + 4].try_into().unwrap());
+        blob[offset..offset + 4].copy_from_slice(&(x + 45.0).to_le_bytes());
+    }
+    doc.nodes[3].kind = "RECTANGLE".into();
+    doc.nodes[3].data.set("type", Val::Str("RECTANGLE".into()));
+    let frame = render(&doc);
+    let px = frame.pixmap.data_as_u8_slice();
+    assert_eq!(pixel(px, 20, 20), [128, 128, 128, 255], "operands stand in");
+    assert_eq!(pixel(px, 60, 20), [0, 0, 255, 255], "the stored stroke");
+    assert_eq!(frame.stats.approximated_booleans, 1);
+}
+
+#[test]
+fn an_unstroked_boolean_does_not_count_its_stale_stroke_geometry() {
+    let skipped = |stale: bool| {
+        let mut doc = boolean_doc("UNION", Some("fillGeometry"));
+        doc.nodes[1].data.set("strokePaints", Val::Arr(vec![]));
+        if stale {
+            doc.nodes[1]
+                .data
+                .set("strokeGeometry", Val::Arr(vec![obj(&[])]));
+        }
+        let frame = render(&doc);
+        assert_eq!(frame.stats.approximated_booleans, 0, "stale={stale}");
+        frame.stats.unsupported_paints
+    };
+    assert_eq!(skipped(true), skipped(false));
+}

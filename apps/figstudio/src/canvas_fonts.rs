@@ -14,6 +14,14 @@ static FONTS: Mutex<Fonts> = Mutex::new(Fonts {
     faces: Vec::new(),
 });
 
+thread_local! {
+    /// The UI thread's copy of the last synced faces: it must not wait on `FONTS`
+    /// (a browser main thread cannot block on an atomic wait).
+    static LATEST: std::cell::RefCell<Vec<(Font, u32)>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
 /// Called after egui applies pending font definitions. Never block the browser UI.
 pub fn sync(ctx: &egui::Context) -> bool {
     let definitions = ctx.fonts(|fonts| fonts.definitions().clone());
@@ -21,7 +29,7 @@ pub fn sync(ctx: &egui::Context) -> bool {
         ctx.request_repaint();
         return false;
     };
-    let faces: Vec<_> = definitions.font_data.values().cloned().collect();
+    let faces = crate::canvas_font_order::by_priority(&definitions);
     if faces.len() == fonts.faces.len()
         && faces
             .iter()
@@ -42,7 +50,18 @@ pub fn sync(ctx: &egui::Context) -> bool {
         })
         .collect();
     fonts.generation += 1;
+    let latest = fonts
+        .faces
+        .iter()
+        .map(|(face, bytes)| (bytes.clone(), face.index))
+        .collect();
+    LATEST.with(|l| *l.borrow_mut() = latest);
     true
+}
+
+/// The faces as of the last [`sync`], for the UI thread; never takes the lock.
+pub fn latest() -> Vec<(Font, u32)> {
+    LATEST.with(|l| l.borrow().clone())
 }
 
 /// Only render workers take the blocking lock; parsing happens after it is released.

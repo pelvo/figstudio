@@ -201,6 +201,8 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
+mod canvas_font_order;
 #[cfg(target_arch = "wasm32")]
 mod canvas_fonts;
 

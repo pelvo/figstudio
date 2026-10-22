@@ -1181,19 +1181,19 @@ impl Ctx<'_> {
         {
             fill_paths.push(GeomPath::plain(shape));
         }
-        // Decoded only where it is drawn (stroke paints) or decides a boolean result, so a
-        // stale blob on an unstroked node does not count as a skipped paint.
-        let mut stroke_paths = if kind == "BOOLEAN_OPERATION"
-            || data
-                .get("strokePaints")
-                .is_some_and(|p| !p.items().is_empty())
-        {
-            geometry(
-                data,
-                "strokeGeometry",
-                &self.doc.blobs,
-                &mut self.stats.unsupported_paints,
-            )
+        // A blob that does not decode counts as a skipped paint only where a stroke is
+        // painted; a boolean decodes it either way, to decide whether its result is whole.
+        let stroked = data
+            .get("strokePaints")
+            .is_some_and(|p| !p.items().is_empty());
+        let mut stroke_paths = if stroked || kind == "BOOLEAN_OPERATION" {
+            let mut unpainted = 0;
+            let skipped = if stroked {
+                &mut self.stats.unsupported_paints
+            } else {
+                &mut unpainted
+            };
+            geometry(data, "strokeGeometry", &self.doc.blobs, skipped)
         } else {
             Vec::new()
         };
@@ -1211,8 +1211,12 @@ impl Ctx<'_> {
             && (!visible("fillPaints") || has_fill)
             && (!visible("strokePaints") || has_stroke);
         if kind == "BOOLEAN_OPERATION" && !boolean_result {
+            // The operands stand in for the fill; a whole stored stroke is still the
+            // result's outline, and nothing else would draw it.
             fill_paths.clear();
-            stroke_paths.clear();
+            if !has_stroke {
+                stroke_paths.clear();
+            }
         }
         self.stats.approximated_booleans +=
             usize::from(kind == "BOOLEAN_OPERATION" && !boolean_result);

@@ -197,6 +197,9 @@ impl Inbox {
         }
         self.pending += 1;
         let keys = crate::mcp_wire::relay_keys(tabs);
+        // This runs on the UI thread, which must not wait on the workers' font lock.
+        #[cfg(target_arch = "wasm32")]
+        let fonts = crate::canvas_fonts::latest();
         let env = Snapshot {
             tabs: tabs
                 .iter()
@@ -213,7 +216,7 @@ impl Inbox {
                     #[cfg(target_arch = "wasm32")]
                     let rendering = {
                         let mut rendering = rendering;
-                        rendering.fonts = crate::canvas_fonts::snapshot().1;
+                        rendering.fonts = fonts.clone();
                         rendering
                     };
                     McpTab {
