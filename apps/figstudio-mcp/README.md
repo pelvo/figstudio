@@ -14,6 +14,20 @@ app, a Figma account or a network connection.
 
 ## Install
 
+On macOS (Apple silicon), Homebrew installs it together with the desktop app and
+`figstudio-cli`, and links both binaries into `$(brew --prefix)/bin`, so `figstudio-mcp`
+is on your `PATH`:
+
+```sh
+brew install --cask pelvo/tap/figstudio
+```
+
+On Linux (x86_64 or arm64), each release has a static tarball with `figstudio-mcp` and
+`figstudio-cli`; see [Try it](../../README.md#try-it) for the download steps, which check it
+against the release's `SHA256SUMS`.
+
+Or install it with cargo (Rust 1.95 or newer):
+
 ```sh
 cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp
 ```
