@@ -1,5 +1,8 @@
 mod support;
-use figstudio_diff::{MAX_COMPONENT_VIEWS, RenderOpts, attach_render_diffs, diff_documents};
+use figstudio_diff::{
+    MAX_COMPONENT_VIEWS, RenderOpts, ScreenLimits, attach_render_diffs, diff_documents,
+    render_page_pair,
+};
 use figstudio_fig::{Document, Guid, Node, Val};
 use support::{filled_rectangle_at, node, object, two_page_document};
 
@@ -32,12 +35,20 @@ fn instance(id: u32, parent: u32, x: f64, symbol: u32, new: bool) -> Node {
 
 /// Component `k` is used on screens `k % 7` and `k % 7 + 7`, ten instances per screen.
 fn pair(components: u32, master_size: (f64, f64)) -> (Document, Document) {
+    pair_on(components, master_size, false)
+}
+
+/// [`pair`], with each screen on its own page (canvas `200 + s`) when `spread`.
+fn pair_on(components: u32, master_size: (f64, f64), spread: bool) -> (Document, Document) {
     let side = |new: bool| {
         let mut page = Vec::new();
         for s in 0..SCREENS {
+            if spread {
+                page.push(node(200 + s, Some(0), "CANVAS", &format!("c{s:02}")));
+            }
             let mut frame = filled_rectangle_at(
                 100 + s,
-                1,
+                if spread { 200 + s } else { 1 },
                 (1.0, 1.0, 1.0),
                 f64::from(s) * 1500.0,
                 0.0,
@@ -121,6 +132,42 @@ fn component_views_stop_at_the_global_count_and_the_rest_keep_their_crop() {
         .filter(|s| !s.component_view)
         .collect();
     assert!(plain.len() >= 6 && plain.iter().all(|s| s.image_width.is_some()));
+}
+
+#[test]
+fn a_card_past_the_view_limit_with_no_crop_kept_is_left_out_and_counted() {
+    let (old, new) = pair_on(COMPONENTS, (60.0, 40.0), true);
+    // Each page holds its whole-page pictures and then one screen, with no room for crops.
+    let page_bytes = (0..SCREENS)
+        .filter_map(|s| {
+            let page = Some(Guid(0, 200 + s));
+            let (_, images) = render_page_pair(&old, &new, page, page, &RenderOpts::default())?;
+            let len = |p: &Option<Vec<u8>>| p.as_ref().map_or(0, Vec::len);
+            Some(len(&images.before) + len(&images.after) + len(&images.diff))
+        })
+        .max()
+        .unwrap()
+        + 1;
+    let opts = RenderOpts {
+        screen_limits: ScreenLimits {
+            page_bytes,
+            ..ScreenLimits::default()
+        },
+        ..RenderOpts::default()
+    };
+    let mut report = diff_documents(&old, &new);
+    let _ = attach_render_diffs(&old, &new, &mut report, &opts);
+    let note = report
+        .truncated
+        .iter()
+        .find(|n| n.contains("component view limit"))
+        .unwrap_or_else(|| panic!("{:?}", report.truncated));
+    assert!(
+        note.ends_with("6 component views were not drawn: 6 cards with no crop kept are left out"),
+        "{note}"
+    );
+    assert_eq!(report.shared_changes.len(), MAX_COMPONENT_VIEWS);
+    assert!(report.shared_changes.iter().all(|s| s.component_view));
 }
 
 #[test]
