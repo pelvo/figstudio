@@ -368,6 +368,8 @@ fn stroke_geometry_on_an_unstroked_node_is_not_decoded() {
 #[test]
 fn an_operand_outside_the_boolean_box_is_not_hit() {
     let mut doc = boolean_doc("SUBTRACT", Some("fillGeometry"));
+    // Unstroked, so the stored fill is the whole result.
+    doc.nodes[1].data.set("strokePaints", Val::Arr(vec![]));
     // The first operand reaches past the 40×40 result.
     doc.nodes[2].data.set("size", size(70.0, 70.0));
     let mut behind = node(6, 1, "RECTANGLE");
@@ -398,21 +400,38 @@ fn an_operand_outside_the_boolean_box_is_not_hit() {
 }
 
 #[test]
+fn a_fallback_boolean_operand_outside_its_box_is_still_hit() {
+    let mut doc = boolean_doc("SUBTRACT", None);
+    // Without a stored result the operands are painted whole, past the 40×40 box.
+    doc.nodes[2].data.set("size", size(70.0, 70.0));
+    assert_eq!(
+        figstudio_render::hit_test(&doc, id(1), (60.0, 60.0).into()),
+        Some(id(3)),
+        "the painted operand"
+    );
+}
+
+#[test]
 fn a_fallback_boolean_still_draws_its_whole_stored_stroke() {
     let mut doc = boolean_doc("UNION", Some("strokeGeometry"));
     doc.nodes[1].data.set("strokePaints", paint(0.0, 0.0, 1.0));
-    // The stored stroke is away from the grey operands; the fill result is missing.
+    // The stored stroke half overlaps the grey operands; the fill result is missing.
     let blob = doc.blobs.last_mut().unwrap();
     for offset in [1, 10, 19, 28] {
         let x = f32::from_le_bytes(blob[offset..offset + 4].try_into().unwrap());
-        blob[offset..offset + 4].copy_from_slice(&(x + 45.0).to_le_bytes());
+        blob[offset..offset + 4].copy_from_slice(&(x + 20.0).to_le_bytes());
     }
     doc.nodes[3].kind = "RECTANGLE".into();
     doc.nodes[3].data.set("type", Val::Str("RECTANGLE".into()));
     let frame = render(&doc);
     let px = frame.pixmap.data_as_u8_slice();
-    assert_eq!(pixel(px, 20, 20), [128, 128, 128, 255], "operands stand in");
-    assert_eq!(pixel(px, 60, 20), [0, 0, 255, 255], "the stored stroke");
+    assert_eq!(pixel(px, 10, 20), [128, 128, 128, 255], "operands stand in");
+    assert_eq!(
+        pixel(px, 30, 20),
+        [0, 0, 255, 255],
+        "the stroke is above the operands"
+    );
+    assert_eq!(pixel(px, 50, 20), [0, 0, 255, 255], "the stored stroke");
     assert_eq!(frame.stats.approximated_booleans, 1);
 }
 

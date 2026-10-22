@@ -314,3 +314,46 @@ fn a_see_through_section_lets_the_page_decide_the_label_colour() {
         "label {color:?} unreadable on the page {page:?} behind a hidden section"
     );
 }
+
+#[test]
+fn the_label_colour_is_sampled_at_the_middle_of_the_drawn_label() {
+    // Labels for a frame `y` below the dark section's top, and how far above its frame
+    // the middle of each label is drawn.
+    let shaped = |y: f64| {
+        let doc = document(vec![
+            node(1, 0, "CANVAS", "page", 0.0, 0.0),
+            dark_section(),
+            // Clear of the section's own pill.
+            at_y(node(3, 2, "FRAME", "Inside", 500.0, 400.0), y),
+        ]);
+        let ctx = egui::Context::default();
+        let mut out = None;
+        let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ls = labels(
+                ui.painter(),
+                &doc,
+                Guid(9, 1),
+                View {
+                    pan: Vec2::new(0.0, 100.0),
+                    zoom: 1.0,
+                },
+                Pos2::ZERO,
+                Rect::from_min_size(Pos2::ZERO, Vec2::splat(2000.0)),
+            );
+            let l = ls.iter().find(|l| l.text == "Inside").unwrap();
+            out = Some((l.color, l.at.y - rect(ui.painter(), l).center().y));
+        });
+        frame.textures_delta.clear();
+        out.unwrap()
+    };
+    let (on_section, rise) = shaped(60.0);
+    let (on_page, _) = shaped(0.0);
+    assert_ne!(on_section, on_page);
+    let rise = f64::from(rise);
+    assert_eq!(
+        shaped(rise + 0.5).0,
+        on_section,
+        "middle just inside the section"
+    );
+    assert_eq!(shaped(rise - 0.5).0, on_page, "middle just above it");
+}

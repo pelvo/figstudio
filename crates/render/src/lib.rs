@@ -893,6 +893,25 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
     hit_chain(doc, page, point).last().copied()
 }
 
+/// Whether a boolean draws its stored result instead of its operands, given how many of its
+/// stored fill and stroke paths decoded: some geometry is whole, and each kind of paint that
+/// shows has whole geometry. Empty decoded geometry is authoritative; missing or partially
+/// decoded is not.
+fn draws_stored_result(data: &Val, fills: usize, strokes: usize) -> bool {
+    let whole = |key, decoded: usize| matches!(data.get(key), Some(Val::Arr(paths)) if paths.len() == decoded);
+    let (has_fill, has_stroke) = (
+        whole("fillGeometry", fills),
+        whole("strokeGeometry", strokes),
+    );
+    let visible = |key| {
+        data.get(key)
+            .is_some_and(|paints| paints.items().iter().any(effects::paint_has_alpha))
+    };
+    (has_fill || has_stroke)
+        && (!visible("fillPaints") || has_fill)
+        && (!visible("strokePaints") || has_stroke)
+}
+
 /// Topmost hit's ancestry, from the page's child to the deepest visible layer.
 /// Instances remain leaves; sections are traversed but never selected themselves.
 pub fn hit_chain(doc: &Document, page: Guid, point: Point) -> Vec<Guid> {
@@ -917,9 +936,18 @@ pub fn hit_chain(doc: &Document, page: Guid, point: Point) -> Vec<Guid> {
             let (w, h) = size(&node.data);
             let local = tf.inverse() * point;
             let inside = local.x >= 0.0 && local.y >= 0.0 && local.x <= w && local.y <= h;
-            // A boolean paints only its result, inside its own box, so an operand reaching
-            // outside it is not under the pointer there.
-            let clips = clips_content(&node.kind, &node.data) || node.kind == "BOOLEAN_OPERATION";
+            // A boolean that paints its stored result paints only inside its own box, so an
+            // operand reaching outside it is not under the pointer there. One that falls back
+            // paints its operands whole.
+            let clips = clips_content(&node.kind, &node.data)
+                || (node.kind == "BOOLEAN_OPERATION" && {
+                    let mut ignored = 0;
+                    draws_stored_result(
+                        &node.data,
+                        geometry(&node.data, "fillGeometry", &doc.blobs, &mut ignored).len(),
+                        geometry(&node.data, "strokeGeometry", &doc.blobs, &mut ignored).len(),
+                    )
+                });
             if node.kind != "INSTANCE"
                 && (inside || !clips)
                 && let Some(mut hit) = walk(doc, id, tf, point, seen, depth + 1)
@@ -1198,18 +1226,10 @@ impl Ctx<'_> {
             Vec::new()
         };
         // Empty decoded geometry is authoritative; missing or partially decoded is not.
-        let has_fill = matches!(data.get("fillGeometry"), Some(Val::Arr(paths))
-            if paths.len() == fill_paths.len());
         let has_stroke = matches!(data.get("strokeGeometry"), Some(Val::Arr(paths))
             if paths.len() == stroke_paths.len());
-        let visible = |key| {
-            data.get(key)
-                .is_some_and(|paints| paints.items().iter().any(effects::paint_has_alpha))
-        };
         let boolean_result = kind == "BOOLEAN_OPERATION"
-            && (has_fill || has_stroke)
-            && (!visible("fillPaints") || has_fill)
-            && (!visible("strokePaints") || has_stroke);
+            && draws_stored_result(data, fill_paths.len(), stroke_paths.len());
         if kind == "BOOLEAN_OPERATION" && !boolean_result {
             // The operands stand in for the fill; a whole stored stroke is still the
             // result's outline, and nothing else would draw it.
@@ -1316,8 +1336,11 @@ impl Ctx<'_> {
         }
 
         // A frame that clips its content draws its stroke above its children; others below.
+        // A boolean's stored stroke outlines its result, so it stays above the operands that
+        // stand in for a missing fill.
         let clips = kind != "TEXT" && clips_content(kind, data);
-        if !clips {
+        let stroke_last = clips || kind == "BOOLEAN_OPERATION";
+        if !stroke_last {
             self.draw_strokes(kind, data, (fill_paths, &stroke_paths), world, (w, h));
         }
 
@@ -1341,7 +1364,7 @@ impl Ctx<'_> {
             if clip.is_some() {
                 self.rc.pop_layer();
             }
-            if clips {
+            if stroke_last {
                 self.draw_strokes(kind, data, (fill_paths, &stroke_paths), world, (w, h));
             }
         }

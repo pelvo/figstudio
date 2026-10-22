@@ -119,7 +119,15 @@ pub fn labels(
             MIN_FRAME_WIDTH
         };
         if width >= min && screen.expand(width).contains(at) {
-            let back = backdrop_at(doc, &named, &surfaces, page_bg, index, view.zoom);
+            let rise = f64::from(middle(painter, section, style(node, page_bg).0.is_some()));
+            let back = backdrop_at(
+                doc,
+                &named,
+                &surfaces,
+                page_bg,
+                index,
+                rise / f64::from(view.zoom),
+            );
             let (icon, color) = style(node, back);
             let mut label = Label {
                 id,
@@ -147,23 +155,20 @@ pub fn labels(
     out
 }
 
-/// Screen points from a label's anchor (the frame's top-left) up to the middle of its
-/// text: the label sits above the frame, 4 points clear of it.
-const LABEL_MIDDLE: f64 = 12.0;
-
-/// The colour under the label of `named[index]`: the innermost enclosing section that the
-/// label's middle lies in, else the page. A frame at a section's top edge has its label
-/// above the section, on whatever is behind that.
+/// The colour under the label of `named[index]`, whose middle is `rise` page units above
+/// the frame's top-left: the innermost enclosing section that the middle lies in, else the
+/// page. A frame at a section's top edge has its label above the section, on whatever is
+/// behind that.
 fn backdrop_at(
     doc: &Document,
     named: &[candidates::Named],
     surfaces: &[Color32],
     page: Color32,
     index: usize,
-    zoom: f32,
+    rise: f64,
 ) -> Color32 {
     let anchor = named[index].world * Point::new(0.0, 0.0);
-    let at = Point::new(anchor.x, anchor.y - LABEL_MIDDLE / f64::from(zoom));
+    let at = Point::new(anchor.x, anchor.y - rise);
     let mut parent = named[index].parent;
     while let Some(p) = parent {
         let (w, h) = doc
@@ -248,11 +253,32 @@ thread_local! {
     static SHAPED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+fn label_font(section: bool) -> FontId {
+    FontId::proportional(if section { 13.0 } else { 12.0 })
+}
+
+/// Room around a section's name inside its pill.
+fn label_pad(section: bool) -> Vec2 {
+    if section {
+        Vec2::new(6.0, 3.0)
+    } else {
+        Vec2::ZERO
+    }
+}
+
+/// Screen points from a label's anchor up to the middle of what [`layout`] draws, known
+/// before the colour is chosen: one row of text or the icon, padded, 4 points clear.
+fn middle(painter: &egui::Painter, section: bool, icon: bool) -> f32 {
+    let row = painter.fonts_mut(|f| f.row_height(&label_font(section)));
+    let height = row.max(if icon { ICON_SIZE } else { 0.0 });
+    4.0 + label_pad(section).y + height / 2.0
+}
+
 /// Text, full label bounds (including icon or pill) and text position.
 fn layout(painter: &egui::Painter, l: &Label) -> (std::sync::Arc<egui::Galley>, Rect, Pos2) {
     #[cfg(test)]
     SHAPED.set(SHAPED.get() + 1);
-    let font = FontId::proportional(if l.section { 13.0 } else { 12.0 });
+    let font = label_font(l.section);
     let leading = if l.icon.is_some() {
         ICON_SIZE + ICON_GAP
     } else {
@@ -263,11 +289,7 @@ fn layout(painter: &egui::Painter, l: &Label) -> (std::sync::Arc<egui::Galley>, 
     job.wrap.max_rows = 1;
     job.wrap.overflow_character = Some('…');
     let galley = painter.layout_job(job);
-    let pad = if l.section {
-        Vec2::new(6.0, 3.0)
-    } else {
-        Vec2::ZERO
-    };
+    let pad = label_pad(l.section);
     let height = galley
         .size()
         .y
