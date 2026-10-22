@@ -677,8 +677,9 @@ impl App {
                     std::iter::once(card.name.clone()).chain(list.then(|| place_label(&card.id)))
                 })
                 .collect();
-            // No file is open yet, so no document asked for the CJK face: the names do.
-            self.web.load_cjk_for_labels(&ctx, &labels);
+            // With no file open, no document asked for the CJK face: the names do.
+            self.web
+                .load_cjk_for_labels(&ctx, &labels, !self.tabs.is_empty());
             self.web.symbols.load_labels_if_needed(&ctx, &labels);
         }
 

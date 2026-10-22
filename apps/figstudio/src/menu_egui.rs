@@ -35,10 +35,10 @@ impl App {
                 if ui.radio(item.checked == Some(true), item.label).clicked() {
                     self.apply(action, ui.ctx());
                 }
-                let why = match self.web.korean {
-                    crate::cjk::KoreanFor::Nothing => None,
-                    crate::cjk::KoreanFor::Document => Some("a file has only Hangul"),
-                    crate::cjk::KoreanFor::Names => Some("a recent file name has Hangul"),
+                let why = match self.web.face_for {
+                    crate::cjk::FaceFor::HangulFile => Some("a file has only Hangul"),
+                    crate::cjk::FaceFor::HangulName => Some("a recent file name has Hangul"),
+                    _ => None,
                 };
                 if let Some(why) = why
                     && v == *crate::cjk::Variant::ALL.last().unwrap_or(&v)
