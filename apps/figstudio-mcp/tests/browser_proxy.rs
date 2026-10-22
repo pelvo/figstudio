@@ -170,23 +170,28 @@ async fn web_mirror_serves_the_app_from_the_proxy_port_and_pairs_with_it() {
         assert_eq!(index.headers()["cross-origin-opener-policy"], "same-origin");
         // Loopback lifts Chrome's local network prompt, so the policy keeps the page's
         // connections on this port and its images and frames off other addresses.
+        // Every directive is pinned, so an extra host in any source list fails here.
         let csp = index.headers()["content-security-policy"].to_str().unwrap();
-        assert!(
-            csp.contains(&format!("connect-src 'self' ws://127.0.0.1:{port};")),
+        let directives: Vec<&str> = csp.split(';').map(str::trim).collect();
+        let connect = format!("connect-src 'self' ws://127.0.0.1:{port}");
+        assert_eq!(
+            directives,
+            [
+                "default-src 'self'",
+                "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:",
+                "style-src 'self' 'unsafe-inline'",
+                "worker-src 'self' blob:",
+                &connect,
+                "img-src 'self' data: blob:",
+                "media-src 'self' data: blob:",
+                "font-src 'self' data: blob:",
+                "frame-src 'none'",
+                "object-src 'none'",
+                "form-action 'none'",
+                "base-uri 'self'",
+            ],
             "{csp}"
         );
-        for directive in [
-            "default-src 'self';",
-            "script-src 'self' ",
-            "style-src 'self' ",
-            "font-src 'self' ",
-            "worker-src 'self' ",
-            "frame-src 'none'",
-            "form-action 'none'",
-            "img-src 'self' data: blob:",
-        ] {
-            assert!(csp.contains(directive), "{csp}");
-        }
         assert_eq!(
             index.headers()["cross-origin-embedder-policy"],
             "require-corp"
