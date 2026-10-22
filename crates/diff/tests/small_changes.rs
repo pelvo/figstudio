@@ -116,3 +116,61 @@ fn a_small_change_inside_a_wide_layer_is_matched_to_that_layer() {
     assert!(area.contains("class=\"nm\">Bar<"), "{area}");
     assert!(!html.contains("with no matched change line"), "{html}");
 }
+
+#[test]
+fn a_small_change_at_the_screen_edge_goes_to_the_layer_that_drew_it() {
+    // At the top edge the area's padding is one-sided, so its centre falls below a thin bar.
+    // A wider covered layer also changed fill but shows no pixel: the smallest changed layer
+    // holding the changed pixels is the one the area belongs to.
+    let side = |rgb| {
+        // Stacking follows the position strings: Under, Bar, then the grey covers.
+        let named = |mut n: Node, name: &str| {
+            n.data.set("name", Val::Str(name.into()));
+            let position = match name {
+                "Under" => "a",
+                "Bar" => "b",
+                "Cover" => "c",
+                "Low" => "d",
+                _ => "e",
+            };
+            n.data.set(
+                "parentIndex",
+                support::object(&[
+                    ("guid", figstudio_fig::Guid(0, 2).to_val()),
+                    ("position", Val::Str(position.into())),
+                ]),
+            );
+            Node::from_data(n.data).unwrap()
+        };
+        document(vec![
+            screen(),
+            named(
+                filled_rectangle_at(6, 2, rgb, 10.0, 0.0, 280.0, 60.0),
+                "Under",
+            ),
+            named(
+                filled_rectangle_at(3, 2, rgb, 20.0, 0.0, 260.0, 10.0),
+                "Bar",
+            ),
+            named(
+                filled_rectangle_at(4, 2, (0.5, 0.5, 0.5), 26.0, 0.0, 264.0, 60.0),
+                "Cover",
+            ),
+            named(
+                filled_rectangle_at(5, 2, (0.5, 0.5, 0.5), 10.0, 6.0, 16.0, 54.0),
+                "Low",
+            ),
+            named(
+                filled_rectangle_at(7, 2, (0.5, 0.5, 0.5), 10.0, 0.0, 10.0, 6.0),
+                "Left",
+            ),
+        ])
+    };
+    let (old, new) = (side((1.0, 0.0, 0.0)), side((0.0, 1.0, 0.0)));
+    let mut report = diff_documents(&old, &new);
+    let _ = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+    let s = &report.pages[0].screens[0];
+    assert_eq!(s.pixels_changed, Some(36), "{s:?}");
+    assert_eq!(s.regions.len(), 1);
+    assert_eq!(s.regions[0].nodes, vec![figstudio_fig::Guid(0, 3)]);
+}

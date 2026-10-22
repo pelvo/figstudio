@@ -142,8 +142,13 @@ pub(crate) fn attach_screens(
                 .filter(|id| region.nodes.contains(id))
                 .collect();
             if region.nodes.is_empty() {
-                region.nodes =
-                    screen_bounds::containing_leaves(region, &nodes, docs, pair, transforms);
+                region.nodes = screen_bounds::containing_leaves(
+                    region,
+                    &nodes,
+                    docs,
+                    pair,
+                    (transforms, (&mask, screen.width as usize)),
+                );
             }
         }
         screen.nodes = nodes;
