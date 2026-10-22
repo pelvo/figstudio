@@ -97,12 +97,14 @@ geometry whose networks use per-vertex and per-segment styles (10–18 of each).
 
 ### Boolean operations approximated (not measured in the historical sample)
 
-Code: `Ctx::draw_with_data` (`crates/render/src/lib.rs`), `Stats::approximated_booleans`.
+Code: `Ctx::draw_with_data` and `Ctx::draw_children` (`crates/render/src/lib.rs`),
+`Stats::approximated_booleans`.
 
 A boolean with no usable stored fill or stroke geometry draws its operand children instead
-of a computed result. Each such drawn boolean counts once. With stored geometry, only the
+of a computed result. Each such drawn boolean counts once. A boolean mask with missing or
+partly decoded `fillGeometry` also counts once: it clips to what decoded, or not at all. With stored geometry, only the
 result is painted with the boolean's own fills, strokes and effects; operands remain
-available for selection and bounds. The CLI, warning chip and MCP screenshots report the
+available for selection inside the boolean's box and for bounds. The CLI, warning chip and MCP screenshots report the
 fallback, and tile summaries preserve it.
 
 **Exact fix:** compute the requested boolean operation from its operands when the file has

@@ -227,9 +227,17 @@ fn plain_frame_labels_are_readable_on_light_and_dark_pages() {
     }
 }
 
-#[test]
-fn frame_labels_inside_a_dark_section_read_on_the_section_not_the_page() {
-    let mut section = node(2, 1, "SECTION", "Dark section", 0.0, 1000.0);
+fn tall(mut n: Node, h: f64) -> Node {
+    let mut size = n.data.get("size").cloned().unwrap();
+    if let Val::Obj(o) = &mut size {
+        o.insert("y", Val::Float(h));
+    }
+    n.data.set("size", size);
+    n
+}
+
+fn dark_section() -> Node {
+    let mut section = tall(node(2, 1, "SECTION", "Dark section", 0.0, 1000.0), 1000.0);
     let mut fill = Obj::new();
     let mut c = Obj::new();
     for channel in ["r", "g", "b"] {
@@ -241,9 +249,14 @@ fn frame_labels_inside_a_dark_section_read_on_the_section_not_the_page() {
     section
         .data
         .set("fillPaints", Val::Arr(vec![Val::Obj(fill)]));
+    section
+}
+
+#[test]
+fn frame_labels_inside_a_dark_section_read_on_the_section_not_the_page() {
     let doc = document(vec![
         node(1, 0, "CANVAS", "page", 0.0, 0.0),
-        section,
+        dark_section(),
         at_y(node(3, 2, "FRAME", "Inside", 20.0, 900.0), 60.0),
         at_y(node(4, 2, "SYMBOL", "Component", 20.0, 900.0), 300.0),
     ]);
@@ -257,4 +270,47 @@ fn frame_labels_inside_a_dark_section_read_on_the_section_not_the_page() {
     );
     // Component purple is a fixed palette colour; the section picks the dark one.
     assert_eq!(find("Component"), theme::DARK.component);
+}
+
+fn page_gray(doc: &Document) -> Color32 {
+    crate::canvas::to_color32(figstudio_render::page_background(doc, Guid(9, 1)))
+}
+
+#[test]
+fn a_frame_at_the_top_of_a_section_has_its_label_on_what_is_above_the_section() {
+    let doc = document(vec![
+        node(1, 0, "CANVAS", "page", 0.0, 0.0),
+        dark_section(),
+        // At the section's top edge: the label is drawn above it, on the page.
+        node(3, 2, "FRAME", "At the top", 500.0, 400.0),
+    ]);
+    let labels = visible_labels(&doc);
+    let color = labels
+        .iter()
+        .find(|l| l.text == "At the top")
+        .unwrap()
+        .color;
+    let page = page_gray(&doc);
+    assert!(
+        theme::contrast(color, page) >= 4.5,
+        "label {color:?} unreadable on the page {page:?} it is drawn on"
+    );
+}
+
+#[test]
+fn a_see_through_section_lets_the_page_decide_the_label_colour() {
+    let mut section = dark_section();
+    section.data.set("opacity", Val::Float(0.0));
+    let doc = document(vec![
+        node(1, 0, "CANVAS", "page", 0.0, 0.0),
+        section,
+        at_y(node(3, 2, "FRAME", "Inside", 20.0, 900.0), 60.0),
+    ]);
+    let labels = visible_labels(&doc);
+    let color = labels.iter().find(|l| l.text == "Inside").unwrap().color;
+    let page = page_gray(&doc);
+    assert!(
+        theme::contrast(color, page) >= 4.5,
+        "label {color:?} unreadable on the page {page:?} behind a hidden section"
+    );
 }

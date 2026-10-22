@@ -190,6 +190,18 @@ fn hidden_boolean_paint_does_not_require_geometry() {
     for hidden in [
         obj(&[("visible", Val::Bool(false))]),
         obj(&[("opacity", Val::Float(0.0))]),
+        obj(&[
+            ("type", Val::Str("SOLID".into())),
+            (
+                "color",
+                obj(&[
+                    ("r", Val::Float(1.0)),
+                    ("g", Val::Float(0.0)),
+                    ("b", Val::Float(0.0)),
+                    ("a", Val::Float(0.0)),
+                ]),
+            ),
+        ]),
     ] {
         let mut doc = boolean_doc("UNION", Some("fillGeometry"));
         for index in [1, 3] {
@@ -315,4 +327,72 @@ fn empty_boolean_masks_clip_all_following_content() {
             assert!(tile.pixmap.data_as_u8_slice().iter().all(|&b| b == 0));
         }
     }
+}
+
+#[test]
+fn a_boolean_mask_without_usable_geometry_is_counted() {
+    for geometry in [None, Some(Val::Arr(vec![obj(&[])]))] {
+        let mut doc = boolean_doc("UNION", None);
+        doc.nodes[1].data.set("mask", Val::Bool(true));
+        if let Some(geometry) = geometry.clone() {
+            doc.nodes[1].data.set("fillGeometry", geometry);
+        }
+        let frame = render(&doc);
+        assert_eq!(frame.stats.approximated_booleans, 1, "{geometry:?}");
+    }
+}
+
+#[test]
+fn stroke_geometry_on_an_unstroked_node_is_not_decoded() {
+    let skipped = |stroked: bool| {
+        let mut doc = boolean_doc("UNION", Some("fillGeometry"));
+        let mut shape = node(6, 1, "RECTANGLE");
+        shape.data.set("fillPaints", paint(0.0, 1.0, 0.0));
+        // A stale entry that does not decode.
+        shape.data.set("strokeGeometry", Val::Arr(vec![obj(&[])]));
+        if stroked {
+            shape.data.set("strokePaints", paint(0.0, 0.0, 1.0));
+        }
+        let mut nodes = doc.nodes.clone();
+        nodes.push(shape);
+        doc.set_nodes(nodes).unwrap();
+        render(&doc).stats.unsupported_paints
+    };
+    assert_eq!(
+        skipped(true),
+        skipped(false) + 1,
+        "counted only when stroked"
+    );
+}
+
+#[test]
+fn an_operand_outside_the_boolean_box_is_not_hit() {
+    let mut doc = boolean_doc("SUBTRACT", Some("fillGeometry"));
+    // The first operand reaches past the 40×40 result.
+    doc.nodes[2].data.set("size", size(70.0, 70.0));
+    let mut behind = node(6, 1, "RECTANGLE");
+    behind.data.set("size", size(80.0, 80.0));
+    behind.data.set("fillPaints", paint(0.0, 1.0, 0.0));
+    // Below the boolean (position "002") in z-order.
+    behind.data.set(
+        "parentIndex",
+        obj(&[
+            ("guid", id(1).to_val()),
+            ("position", Val::Str("001".into())),
+        ]),
+    );
+    let behind = figstudio_fig::Node::from_data(behind.data).unwrap();
+    let mut nodes = doc.nodes.clone();
+    nodes.push(behind);
+    doc.set_nodes(nodes).unwrap();
+    assert_eq!(
+        figstudio_render::hit_test(&doc, id(1), (60.0, 60.0).into()),
+        Some(id(6)),
+        "the layer behind, not the hidden operand"
+    );
+    assert_eq!(
+        figstudio_render::hit_test(&doc, id(1), (20.0, 20.0).into()),
+        Some(id(5)),
+        "inside the result, selection still drills into the operands"
+    );
 }

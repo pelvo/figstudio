@@ -97,7 +97,7 @@ pub fn labels(
     let mut out = Vec::new();
     let page_bg = crate::canvas::to_color32(figstudio_render::page_background(doc, page));
     let named = candidates::collect(doc, page);
-    let backdrops = backdrops(doc, &named, page_bg);
+    let surfaces = surfaces(doc, &named, page_bg);
     let frames = blockers(doc, &named, view, origin, screen);
     let mut placed = spatial::Grid::default();
     for (index, candidate) in named.iter().enumerate() {
@@ -119,7 +119,8 @@ pub fn labels(
             MIN_FRAME_WIDTH
         };
         if width >= min && screen.expand(width).contains(at) {
-            let (icon, color) = style(node, backdrops[index]);
+            let back = backdrop_at(doc, &named, &surfaces, page_bg, index, view.zoom);
+            let (icon, color) = style(node, back);
             let mut label = Label {
                 id,
                 text: node.name.clone(),
@@ -146,16 +147,50 @@ pub fn labels(
     out
 }
 
-/// The colour under each label: its enclosing section's fill over that section's backdrop,
-/// or the page. Parents precede their children in `named`, so one pass resolves nesting.
-fn backdrops(doc: &Document, named: &[candidates::Named], page: Color32) -> Vec<Color32> {
+/// Screen points from a label's anchor (the frame's top-left) up to the middle of its
+/// text: the label sits above the frame, 4 points clear of it.
+const LABEL_MIDDLE: f64 = 12.0;
+
+/// The colour under the label of `named[index]`: the innermost enclosing section that the
+/// label's middle lies in, else the page. A frame at a section's top edge has its label
+/// above the section, on whatever is behind that.
+fn backdrop_at(
+    doc: &Document,
+    named: &[candidates::Named],
+    surfaces: &[Color32],
+    page: Color32,
+    index: usize,
+    zoom: f32,
+) -> Color32 {
+    let anchor = named[index].world * Point::new(0.0, 0.0);
+    let at = Point::new(anchor.x, anchor.y - LABEL_MIDDLE / f64::from(zoom));
+    let mut parent = named[index].parent;
+    while let Some(p) = parent {
+        let (w, h) = doc
+            .node(named[p].id)
+            .map_or((0.0, 0.0), |n| geom::size(&n.data));
+        let local = named[p].world.inverse() * at;
+        if (0.0..=w).contains(&local.x) && (0.0..=h).contains(&local.y) {
+            return surfaces[p];
+        }
+        parent = named[p].parent;
+    }
+    page
+}
+
+/// Each candidate's own surface colour: its fills, at its layer opacity, over its enclosing
+/// section's surface or the page. Parents precede their children in `named`, so one pass
+/// resolves nesting.
+fn surfaces(doc: &Document, named: &[candidates::Named], page: Color32) -> Vec<Color32> {
     let mut surface: Vec<Color32> = Vec::with_capacity(named.len());
-    let mut under = Vec::with_capacity(named.len());
     for candidate in named {
         let back = candidate.parent.map_or(page, |p| surface[p]);
-        under.push(back);
-        let fills = doc
-            .node(candidate.id)
+        let node = doc.node(candidate.id);
+        let opacity = node
+            .and_then(|n| n.data.num("opacity"))
+            .unwrap_or(1.0)
+            .clamp(0.0, 1.0) as f32;
+        let fills = node
             .and_then(|n| n.data.get("fillPaints"))
             .map(figstudio_fig::Val::items)
             .unwrap_or_default();
@@ -172,9 +207,9 @@ fn backdrops(doc: &Document, named: &[candidates::Named], page: Color32) -> Vec<
                 acc.lerp_to_gamma(solid, a.clamp(0.0, 1.0))
             })
         });
-        surface.push(top);
+        surface.push(back.lerp_to_gamma(top, opacity));
     }
-    under
+    surface
 }
 
 fn blockers(

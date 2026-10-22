@@ -917,7 +917,9 @@ pub fn hit_chain(doc: &Document, page: Guid, point: Point) -> Vec<Guid> {
             let (w, h) = size(&node.data);
             let local = tf.inverse() * point;
             let inside = local.x >= 0.0 && local.y >= 0.0 && local.x <= w && local.y <= h;
-            let clips = clips_content(&node.kind, &node.data);
+            // A boolean paints only its result, inside its own box, so an operand reaching
+            // outside it is not under the pointer there.
+            let clips = clips_content(&node.kind, &node.data) || node.kind == "BOOLEAN_OPERATION";
             if node.kind != "INSTANCE"
                 && (inside || !clips)
                 && let Some(mut hit) = walk(doc, id, tf, point, seen, depth + 1)
@@ -1179,23 +1181,30 @@ impl Ctx<'_> {
         {
             fill_paths.push(GeomPath::plain(shape));
         }
-        let mut stroke_paths = geometry(
-            data,
-            "strokeGeometry",
-            &self.doc.blobs,
-            &mut self.stats.unsupported_paints,
-        );
+        // Decoded only where it is drawn (stroke paints) or decides a boolean result, so a
+        // stale blob on an unstroked node does not count as a skipped paint.
+        let mut stroke_paths = if kind == "BOOLEAN_OPERATION"
+            || data
+                .get("strokePaints")
+                .is_some_and(|p| !p.items().is_empty())
+        {
+            geometry(
+                data,
+                "strokeGeometry",
+                &self.doc.blobs,
+                &mut self.stats.unsupported_paints,
+            )
+        } else {
+            Vec::new()
+        };
         // Empty decoded geometry is authoritative; missing or partially decoded is not.
         let has_fill = matches!(data.get("fillGeometry"), Some(Val::Arr(paths))
             if paths.len() == fill_paths.len());
         let has_stroke = matches!(data.get("strokeGeometry"), Some(Val::Arr(paths))
             if paths.len() == stroke_paths.len());
         let visible = |key| {
-            data.get(key).is_some_and(|paints| {
-                paints.items().iter().any(|p| {
-                    p.flag("visible") != Some(false) && p.num("opacity").unwrap_or(1.0) > 0.0
-                })
-            })
+            data.get(key)
+                .is_some_and(|paints| paints.items().iter().any(effects::paint_has_alpha))
         };
         let boolean_result = kind == "BOOLEAN_OPERATION"
             && (has_fill || has_stroke)
@@ -1557,9 +1566,12 @@ impl Ctx<'_> {
                     &self.doc.blobs,
                     &mut self.stats.unsupported_paints,
                 );
-                let stored_boolean = child.kind == "BOOLEAN_OPERATION"
+                let boolean = child.kind == "BOOLEAN_OPERATION";
+                let stored_boolean = boolean
                     && matches!(child_data.get("fillGeometry"), Some(Val::Arr(paths))
                         if paths.len() == shapes.len());
+                // Missing or partly decoded: the clip is what decoded, or none at all.
+                self.stats.approximated_booleans += usize::from(boolean && !stored_boolean);
                 if shapes.is_empty() && !stored_boolean {
                     shapes.extend(base_shape(&child.kind, &child_data).map(GeomPath::plain));
                 }

@@ -95,10 +95,10 @@ fn gradient_opacity_and_transparent_stops_preserve_the_underlying_backdrop() {
             at_y(node(3, 2, "FRAME", "Inside", 20.0, 900.0), 60.0),
         ]);
         let named = candidates::collect(&doc, Guid(9, 1));
-        let colours = backdrops(&doc, &named, Color32::WHITE);
+        let colours = surfaces(&doc, &named, Color32::WHITE);
         let expected = (255.0 * (1.0 - opacity * 0.5)).round() as u8;
         assert_eq!(
-            colours[1],
+            colours[0],
             Color32::from_gray(expected),
             "opacity={opacity}"
         );
