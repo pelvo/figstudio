@@ -360,28 +360,39 @@ fn recreated_screen_lists_edits_of_layers_that_pair_by_name() {
 
 #[test]
 fn a_recreated_screen_that_is_only_rotated_or_scaled_is_a_move_not_an_edit() {
-    let turned = |mut n: Node| {
-        let x = n.data.get("transform").and_then(|t| t.get("m02")).cloned();
-        n.data.set(
+    // A quarter turn and a 2x scale, each in place (no translation).
+    for (m00, m01, m10, m11) in [(0.0, -1.0, 1.0, 0.0), (2.0, 0.0, 0.0, 2.0)] {
+        let mut root = screen(7, 1, 0.0, "FRAME");
+        root.data.set(
             "transform",
             object(&[
-                ("m00", Val::Float(0.0)),
-                ("m01", Val::Float(-1.0)),
-                ("m02", x.unwrap_or(Val::Float(0.0))),
-                ("m10", Val::Float(1.0)),
-                ("m11", Val::Float(0.0)),
+                ("m00", Val::Float(m00)),
+                ("m01", Val::Float(m01)),
+                ("m02", Val::Float(0.0)),
+                ("m10", Val::Float(m10)),
+                ("m11", Val::Float(m11)),
                 ("m12", Val::Float(0.0)),
             ]),
         );
-        Node::from_data(n.data).unwrap()
-    };
-    let old = document(vec![screen(4, 1, 0.0, "FRAME")]);
-    let new = document(vec![turned(screen(7, 1, 600.0, "FRAME"))]);
-    let report = diff_documents(&old, &new);
-    let page = &report.pages[0];
-    assert!(page.changed.iter().all(|n| n.id != Guid(0, 7)), "{page:?}");
-    assert_eq!((page.screens_unchanged, page.screens_moved), (1, 1));
-    assert_eq!(report.summary.nodes_changed, 0, "{:?}", report.summary);
+        let old = document(vec![screen(4, 1, 0.0, "FRAME")]);
+        let new = document(vec![Node::from_data(root.data).unwrap()]);
+        for render in [false, true] {
+            let mut report = diff_documents(&old, &new);
+            if render {
+                let _ = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+            }
+            let page = &report.pages[0];
+            assert!(page.changed.iter().all(|n| n.id != Guid(0, 7)), "{page:?}");
+            assert!(page.screens.is_empty(), "{m00} render {render}: {page:?}");
+            assert_eq!((page.screens_unchanged, page.screens_moved), (1, 1));
+            let summary = &report.summary;
+            assert_eq!(
+                (summary.nodes_changed, summary.properties_changed),
+                (0, 0),
+                "{summary:?}"
+            );
+        }
+    }
 }
 
 #[test]

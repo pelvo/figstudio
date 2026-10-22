@@ -147,7 +147,8 @@ fn pair_up(
 
 /// The property changes between two paired layers that count as edits. Ids always differ,
 /// and sibling positions are regenerated with the new ids. The root's own transform is
-/// where the screen sits on the canvas: a move, as for screens that kept their ids.
+/// where the screen sits on the canvas, so it shows only as a screen move; unlike a screen
+/// that kept its id, it gets no transform row.
 fn edits(
     docs: (&Document, &Document),
     (old, new): (Guid, Guid),
