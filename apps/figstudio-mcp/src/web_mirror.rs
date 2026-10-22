@@ -7,6 +7,10 @@
 //! `http://127.0.0.1:<port>` is already on loopback and needs no permission to reach its
 //! own port, so the proxy fetches the app's static files from the origin and serves them
 //! here, with the cross-origin isolation headers the Wasm threads need.
+//!
+//! Being on loopback also lifts the prompt for everything else the page might reach, so a
+//! Content-Security-Policy keeps its connections on this port and stops it loading
+//! images, frames or form posts from any other address.
 
 use axum::{
     body::Body,
@@ -24,6 +28,9 @@ const MAX_ASSET_BYTES: u64 = 128 * 1024 * 1024;
 /// Total bytes kept in memory; files past it are still served, just fetched again next time.
 const MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long `open_figstudio_browser` waits on the start page before opening the origin.
+const START_PAGE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Host names a mirrored page may be requested under. Any other `Host` (a DNS-rebinding
 /// page, for example) is refused.
 const LOOPBACK_HOSTS: [&str; 3] = ["127.0.0.1", "localhost", "[::1]"];
@@ -54,6 +61,7 @@ struct Cached {
 /// An in-memory, read-through copy of one web app origin.
 pub struct WebMirror {
     origin: url::Url,
+    csp: HeaderValue,
     client: OnceLock<Option<reqwest::Client>>,
     cache: Mutex<(HashMap<String, Arc<Cached>>, usize)>,
 }
@@ -67,15 +75,26 @@ impl std::fmt::Debug for WebMirror {
 }
 
 impl WebMirror {
-    /// A mirror of `origin` (`scheme://host[:port]`), or `None` when it is not one.
+    /// A mirror of `origin` (`scheme://host[:port]`) served on loopback `port`, or `None`
+    /// when `origin` is not one.
     #[must_use]
-    pub fn new(origin: &str) -> Option<Self> {
+    pub fn new(origin: &str, port: u16) -> Option<Self> {
         let origin = url::Url::parse(origin).ok()?;
         if !matches!(origin.scheme(), "http" | "https") || origin.host().is_none() {
             return None;
         }
+        // `'self'` covers the page's own scheme, host and port (and `ws:` to it); the
+        // launch URL's `ws://127.0.0.1:<port>/bridge` is named too for a page opened as
+        // `localhost`. Scripts, styles, workers and fonts are left as the app needs them.
+        let csp = HeaderValue::from_str(&format!(
+            "connect-src 'self' ws://127.0.0.1:{port}; img-src 'self' data: blob:; \
+             media-src 'self' data: blob:; frame-src 'none'; object-src 'none'; \
+             form-action 'none'; base-uri 'self'"
+        ))
+        .ok()?;
         Some(Self {
             origin,
+            csp,
             client: OnceLock::new(),
             cache: Mutex::new((HashMap::new(), 0)),
         })
@@ -88,6 +107,7 @@ impl WebMirror {
                 let port = self.origin.port_or_known_default();
                 reqwest::Client::builder()
                     .timeout(FETCH_TIMEOUT)
+                    .connect_timeout(CONNECT_TIMEOUT)
                     // Follow redirects only within the origin, so a path can never make the
                     // proxy fetch from another host.
                     .redirect(reqwest::redirect::Policy::custom(move |attempt| {
@@ -163,8 +183,48 @@ impl WebMirror {
         if let Some(content_type) = &cached.content_type {
             out.insert(header::CONTENT_TYPE, content_type.clone());
         }
-        isolation_headers(out);
+        self.page_headers(out);
         response
+    }
+
+    /// Whether the origin's start page can be fetched from here: an origin behind a sign-in
+    /// gateway redirects to another host (or refuses) without the browser's cookies, so it
+    /// has to be opened in the browser itself.
+    pub async fn start_page_loads(&self) -> bool {
+        let Some(url) = self.upstream_url(&Uri::from_static("/")) else {
+            return false;
+        };
+        match tokio::time::timeout(START_PAGE_TIMEOUT, self.fetch(url)).await {
+            Ok(Ok(page)) => page.content_type.as_ref().is_some_and(|value| {
+                value
+                    .to_str()
+                    .is_ok_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"))
+            }),
+            Ok(Err(_)) | Err(_) => false,
+        }
+    }
+
+    /// The headers `web/_headers` sets on the deployed app (Wasm threads need a
+    /// cross-origin isolated page for `SharedArrayBuffer`), plus the policy above.
+    fn page_headers(&self, out: &mut HeaderMap) {
+        out.insert(
+            "cross-origin-opener-policy",
+            HeaderValue::from_static("same-origin"),
+        );
+        out.insert(
+            "cross-origin-embedder-policy",
+            HeaderValue::from_static("require-corp"),
+        );
+        out.insert(
+            "cross-origin-resource-policy",
+            HeaderValue::from_static("same-origin"),
+        );
+        out.insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        );
+        out.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        out.insert(header::CONTENT_SECURITY_POLICY, self.csp.clone());
     }
 
     async fn fetch(&self, url: url::Url) -> Result<Arc<Cached>, Box<Response>> {
@@ -191,7 +251,7 @@ impl WebMirror {
         let body = read_capped(upstream).await?;
         if !status.is_success() {
             let mut response = (status, body).into_response();
-            isolation_headers(response.headers_mut());
+            self.page_headers(response.headers_mut());
             return Err(Box::new(response));
         }
         let cached = Arc::new(Cached { content_type, body });
@@ -226,28 +286,6 @@ async fn read_capped(mut upstream: reqwest::Response) -> Result<axum::body::Byte
             }
         }
     }
-}
-
-/// The headers `web/_headers` sets on the deployed app: Wasm threads need a cross-origin
-/// isolated page (`SharedArrayBuffer`).
-fn isolation_headers(out: &mut HeaderMap) {
-    out.insert(
-        "cross-origin-opener-policy",
-        HeaderValue::from_static("same-origin"),
-    );
-    out.insert(
-        "cross-origin-embedder-policy",
-        HeaderValue::from_static("require-corp"),
-    );
-    out.insert(
-        "cross-origin-resource-policy",
-        HeaderValue::from_static("same-origin"),
-    );
-    out.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    out.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
 }
 
 fn host_is_loopback(headers: &HeaderMap) -> bool {
@@ -286,7 +324,7 @@ mod tests {
 
     #[test]
     fn a_request_path_never_leaves_the_origin() {
-        let mirror = WebMirror::new("https://figstudio.example.com").unwrap();
+        let mirror = WebMirror::new("https://figstudio.example.com", 3845).unwrap();
         let url = |path: &str| mirror.upstream_url(&path.parse::<Uri>().unwrap());
         assert_eq!(
             url("/figstudio_bg.wasm?v=1").unwrap().as_str(),

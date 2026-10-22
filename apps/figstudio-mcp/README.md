@@ -139,7 +139,9 @@ Build the browser bundle first with `scripts/web-build.sh` (output in `web/dist`
    - If the site sits behind an access gateway (such as Cloudflare Access with Google
      sign-in), keep the whole origin protected with **no `/mcp/*` bypass**: your local agent
      spawns `figstudio-mcp --browser-proxy` over `stdio`, and your already-signed-in browser
-     connects outbound to `ws://127.0.0.1:<port>/bridge`.
+     connects outbound to `ws://127.0.0.1:<port>/bridge`. The proxy cannot mirror a gated
+     origin (it has none of the browser's cookies), so when the start page redirects to the
+     sign-in host it opens the origin itself, and Chrome asks for local network access.
    - Nothing to configure for the app: once per page load it asks `GET /mcp/`, which only
      the relay Worker answers (`204` with a `figstudio-relay` header). Anywhere else that
      path is a missing asset, so **Settings → Agents** hides **Cloud relay** and opens no
@@ -166,8 +168,9 @@ upload, no Cloudflare Access bypass, and no manual token pasting.
 claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
 ```
 
-It opens `https://figstudio.pelvo.dev`, the public browser build (static, no cloud relay,
-no sign-in). That default is a trust decision: the page's code comes from that host and
+It opens the app from `https://figstudio.pelvo.dev`, the public browser build (static, no
+cloud relay, no sign-in), served on the proxy's own `http://127.0.0.1:<port>` (see
+**Loopback mirror** below). That default is a trust decision: the page's code comes from that host and
 reads the files you open in it, so zero upload holds as long as the deployment serves this
 repository's build (`PUBLIC_ORIGIN` is always allowed to pair). For your own deploy, pass `--origin https://<your-deploy-domain>` instead of
 `--browser-proxy`; for the local web build (`scripts/web-build.sh --serve`),
@@ -199,9 +202,15 @@ Or in `.mcp.json` / Cursor / Windsurf:
   failing with `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`. Only `GET`/`HEAD` with a
   loopback `Host` are served (a DNS-rebinding page gets 403), requests never leave the
   origin's host, and `/mcp/` answers 404 so the app hides Cloud relay. A loopback
-  `--origin` (the local build) is opened directly. `--no-mirror` opens the origin itself
-  (Chrome then asks for local network access, Safari cannot pair). The tab's storage
-  (recents, settings) belongs to `http://127.0.0.1:<port>`, not to the public origin.
+  `--origin` (the local build) is opened directly, and so is an origin whose start page
+  the proxy cannot fetch within 15 s or that redirects to another host (a sign-in
+  gateway, offline). `--no-mirror` always opens the origin itself (Chrome then asks for
+  local network access, Safari cannot pair). On loopback the page could also reach other
+  local ports and private addresses without a prompt, so the mirror sends a
+  Content-Security-Policy: `connect-src` only to its own port, images and media only from
+  it, no frames, objects or form posts. Compressed files are fetched with gzip/brotli
+  and served decoded. The tab's storage (recents, settings) belongs to
+  `http://127.0.0.1:<port>`, not to the public origin.
 - When the agent calls `open_figstudio_browser`, the proxy opens
   `http://127.0.0.1:<port>/#mcpProxyPort=<port>&mcpProxyToken=<token>` (with
   `--no-mirror` or a loopback `--origin`, that origin instead) in your default browser

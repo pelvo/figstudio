@@ -20,7 +20,7 @@ base64.workspace = true
 html-escape.workspace = true
 image.workspace = true
 rmcp.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util"] }
+tokio = { workspace = true, features = ["fs", "io-util", "time"] }
 axum = { workspace = true, features = ["ws"] }
 getrandom = "0.4"
 sha2 = "0.10"
@@ -35,10 +35,12 @@ clap.workspace = true
 url.workspace = true
 tokio-util.workspace = true
 tempfile.workspace = true
-# HTTPS fetches of the web app for the loopback mirror (web_mirror.rs).
-reqwest = { workspace = true, features = ["rustls"] }
+# HTTPS fetches of the web app for the loopback mirror (web_mirror.rs); gzip/brotli so
+# the Wasm module downloads compressed (reqwest decodes it before it is served).
+reqwest = { workspace = true, features = ["rustls", "gzip", "brotli"] }
 
 [dev-dependencies]
+flate2.workspace = true
 zip = { workspace = true }
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 reqwest.workspace = true

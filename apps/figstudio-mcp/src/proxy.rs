@@ -129,11 +129,20 @@ impl ProxyConfig {
     /// the proxy's own `http://127.0.0.1:<port>` when mirroring, else `launch_origin`.
     #[must_use]
     pub fn launch_url(&self, port: u16) -> String {
-        let page = if self.mirror {
-            format!("http://127.0.0.1:{port}")
+        if self.mirror {
+            self.page_url(&format!("http://127.0.0.1:{port}"), port)
         } else {
-            self.launch_origin.trim_end_matches('/').to_owned()
-        };
+            self.origin_url(port)
+        }
+    }
+
+    /// `launch_origin` itself with the pairing fragment, as `--no-mirror` opens it.
+    #[must_use]
+    pub fn origin_url(&self, port: u16) -> String {
+        self.page_url(self.launch_origin.trim_end_matches('/'), port)
+    }
+
+    fn page_url(&self, page: &str, port: u16) -> String {
         format!("{page}/#mcpProxyPort={port}&mcpProxyToken={}", self.token)
     }
 }
@@ -404,7 +413,7 @@ impl ProxyState {
     pub fn new(mut config: ProxyConfig, port: u16, shutdown: CancellationToken) -> Arc<Self> {
         let mirror = config
             .mirror
-            .then(|| WebMirror::new(&config.launch_origin))
+            .then(|| WebMirror::new(&config.launch_origin, port))
             .flatten();
         config.mirror = mirror.is_some();
         if config.mirror {
@@ -429,6 +438,21 @@ impl ProxyState {
             tools_changed_notify: Notify::new(),
             shutdown,
         })
+    }
+
+    /// The URL `open_figstudio_browser` opens: the loopback mirror while the origin's start
+    /// page can be fetched, else the origin itself (a sign-in gateway, an offline origin),
+    /// where the browser has the cookies and asks for local network access.
+    pub async fn launch_url(&self) -> String {
+        match &self.mirror {
+            Some(mirror) if !mirror.start_page_loads().await => {
+                tracing::warn!(
+                    "the web app's start page could not be fetched for the loopback mirror; opening the origin itself"
+                );
+                self.config.origin_url(self.port)
+            }
+            _ => self.config.launch_url(self.port),
+        }
     }
 
     fn next_order(&self) -> u64 {
@@ -511,7 +535,7 @@ impl ProxyState {
                 }),
             );
         }
-        let url = self.config.launch_url(self.port);
+        let url = self.launch_url().await;
         let launched = if self.config.launch_browser {
             open_system_browser(&url)
         } else {

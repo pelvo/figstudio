@@ -15,7 +15,7 @@ async fn start_in_process_proxy() -> (u16, String, std::sync::Arc<ProxyState>, C
         .await
         .unwrap();
     let port = listener.local_addr().unwrap().port();
-    let config = ProxyConfig::new(&["https://figstudio.example.com".to_owned()], false).unwrap();
+    let config = ProxyConfig::new(&["https://figstudio.invalid".to_owned()], false).unwrap();
     let token = config.token.clone();
     let shutdown = CancellationToken::new();
     let state = ProxyState::new(config, port, shutdown.clone());
@@ -61,15 +61,15 @@ fn without_an_origin_the_proxy_opens_the_public_build_and_still_pairs_the_local_
     }
 
     // `--origin` still wins, and the public build stays allowed next to it.
-    let custom = ProxyConfig::new(&["https://figstudio.example.com/".to_owned()], false).unwrap();
-    assert_eq!(custom.launch_origin, "https://figstudio.example.com");
+    let custom = ProxyConfig::new(&["https://figstudio.invalid/".to_owned()], false).unwrap();
+    assert_eq!(custom.launch_origin, "https://figstudio.invalid");
     assert!(custom.mirror);
     assert!(custom.origins.iter().any(|o| o == PUBLIC_ORIGIN));
     assert!(
         custom
             .origins
             .iter()
-            .any(|o| o == "https://figstudio.example.com")
+            .any(|o| o == "https://figstudio.invalid")
     );
 }
 
@@ -103,6 +103,12 @@ async fn start_fake_web_app() -> (String, std::sync::Arc<std::sync::atomic::Atom
                     axum::http::StatusCode::OK,
                     [("content-type", "application/wasm")],
                     "\0asm".to_owned(),
+                ),
+                // A login gateway: the start page sends the browser to another host.
+                "/gated/" => (
+                    axum::http::StatusCode::FOUND,
+                    [("location", "http://127.0.0.1:9/sign-in")],
+                    String::new(),
                 ),
                 _ => (
                     axum::http::StatusCode::NOT_FOUND,
@@ -148,6 +154,20 @@ async fn web_mirror_serves_the_app_from_the_proxy_port_and_pairs_with_it() {
         assert_eq!(index.status(), 200);
         assert_eq!(index.headers()["content-type"], "text/html");
         assert_eq!(index.headers()["cross-origin-opener-policy"], "same-origin");
+        // Loopback lifts Chrome's local network prompt, so the policy keeps the page's
+        // connections on this port and its images and frames off other addresses.
+        let csp = index.headers()["content-security-policy"].to_str().unwrap();
+        assert!(
+            csp.starts_with(&format!("connect-src 'self' ws://127.0.0.1:{port};")),
+            "{csp}"
+        );
+        for directive in [
+            "frame-src 'none'",
+            "form-action 'none'",
+            "img-src 'self' data: blob:",
+        ] {
+            assert!(csp.contains(directive), "{csp}");
+        }
         assert_eq!(
             index.headers()["cross-origin-embedder-policy"],
             "require-corp"
@@ -195,6 +215,91 @@ async fn web_mirror_serves_the_app_from_the_proxy_port_and_pairs_with_it() {
             .await
             .is_err()
     );
+    assert!(
+        state
+            .launch_url()
+            .await
+            .starts_with(&format!("http://127.0.0.1:{port}/#mcpProxyPort={port}&"))
+    );
+    shutdown.cancel();
+}
+
+/// Start a proxy that mirrors `origin`, as a public `--origin` would be.
+async fn start_mirroring_proxy(
+    origin: &str,
+) -> (u16, std::sync::Arc<ProxyState>, CancellationToken) {
+    let listener = bind_proxy_listener(Some("127.0.0.1:0".parse().unwrap()))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let mut config = ProxyConfig::new(&[origin.to_owned()], false).unwrap();
+    config.mirror = true;
+    let shutdown = CancellationToken::new();
+    let state = ProxyState::new(config, port, shutdown.clone());
+    let server_state = state.clone();
+    tokio::spawn(async move {
+        let _ = serve_proxy_ws(listener, server_state).await;
+    });
+    (port, state, shutdown)
+}
+
+#[tokio::test]
+async fn an_origin_behind_a_sign_in_redirect_is_opened_directly() {
+    // The proxy has none of the browser's cookies, so a gateway's redirect to its sign-in
+    // host can only be followed in the browser, on the origin itself.
+    let (upstream, _hits) = start_fake_web_app().await;
+    let gated = format!("{upstream}/gated");
+    let (port, state, shutdown) = start_mirroring_proxy(&gated).await;
+    let url = state.launch_url().await;
+    assert!(
+        url.starts_with(&format!("{gated}/#mcpProxyPort={port}&")),
+        "{url}"
+    );
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn a_compressed_file_is_served_decoded() {
+    use std::io::Write;
+    // Cloudflare compresses the Wasm module when asked; the mirror asks, then hands the
+    // browser the plain bytes under the original content type.
+    let wasm: Vec<u8> = b"\0asm".iter().copied().cycle().take(64 * 1024).collect();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(&wasm).unwrap();
+    let gz = gz.finish().unwrap();
+    let app = axum::Router::new().fallback(move |headers: axum::http::HeaderMap| {
+        let gz = gz.clone();
+        async move {
+            let accepts = headers
+                .get("accept-encoding")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.contains("gzip"));
+            assert!(accepts, "the mirror asks for a compressed body");
+            (
+                [
+                    ("content-type", "application/wasm"),
+                    ("content-encoding", "gzip"),
+                ],
+                gz,
+            )
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let (port, _state, shutdown) = start_mirroring_proxy(&upstream).await;
+    let served = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{port}/figstudio_bg.wasm"))
+        .header("accept-encoding", "identity")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(served.status(), 200);
+    assert_eq!(served.headers()["content-type"], "application/wasm");
+    assert!(served.headers().get("content-encoding").is_none());
+    assert_eq!(served.bytes().await.unwrap().as_ref(), wasm.as_slice());
     shutdown.cancel();
 }
 
@@ -227,17 +332,17 @@ async fn bridge_refuses_foreign_origin_or_bad_subprotocol_and_accepts_valid_proo
             .is_err()
     );
     assert!(
-        connect_ws(port, "https://figstudio.example.com", None)
+        connect_ws(port, "https://figstudio.invalid", None)
             .await
             .is_err()
     );
     assert!(
-        connect_ws(port, "https://figstudio.example.com", Some(&bad_proto))
+        connect_ws(port, "https://figstudio.invalid", Some(&bad_proto))
             .await
             .is_err()
     );
 
-    let mut ws = connect_ws(port, "https://figstudio.example.com", Some(&good_proto))
+    let mut ws = connect_ws(port, "https://figstudio.invalid", Some(&good_proto))
         .await
         .expect("valid origin + subprotocol connects");
     ws.send(Message::Text("ping".into())).await.unwrap();
@@ -268,7 +373,7 @@ async fn open_figstudio_browser_waits_for_ready_and_forwards_zero_upload_rpc() {
     });
 
     tokio::time::sleep(Duration::from_millis(80)).await;
-    let mut ws = connect_ws(port, "https://figstudio.example.com", Some(&good_proto))
+    let mut ws = connect_ws(port, "https://figstudio.invalid", Some(&good_proto))
         .await
         .unwrap();
     ws.send(Message::Text(
@@ -502,7 +607,7 @@ async fn browser_proxy_binary_speaks_stdio_never_logs_token_and_launches_browser
         opener.display()
     );
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_figstudio-mcp"))
-        .args(["--origin", "https://figstudio.example.com"])
+        .args(["--origin", "https://figstudio.invalid"])
         .env("BROWSER", &browser_env)
         .kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
@@ -572,12 +677,14 @@ async fn browser_proxy_binary_speaks_stdio_never_logs_token_and_launches_browser
         }
     }
     let (port, token) = (port.unwrap(), token.unwrap());
+    // `.invalid` never resolves, so the mirror cannot fetch the start page and the proxy
+    // opens the origin itself (the loopback launch is covered by `web_mirror_*`).
     assert!(
-        launch_url.starts_with(&format!("http://127.0.0.1:{port}/#")),
-        "the tab opens the loopback mirror, not the public origin: {launch_url}"
+        launch_url.starts_with("https://figstudio.invalid/#mcpProxyPort="),
+        "an unreachable origin is opened directly: {launch_url}"
     );
     let proto = format!("{EXEC_PROTOCOL}, {token}");
-    let mut ws = connect_ws(port, "https://figstudio.example.com", Some(&proto))
+    let mut ws = connect_ws(port, "https://figstudio.invalid", Some(&proto))
         .await
         .unwrap();
     ws.send(Message::Text(
