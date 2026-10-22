@@ -204,6 +204,10 @@ jobs:
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        # One upload for the archives and their sums, so a rebuild does not leave the
-        # release with new archives and old sums.
-        run: gh release upload "$TAG" dist/* --clobber -R "$GITHUB_REPOSITORY"
+        # Archives first, SHA256SUMS last: --clobber replaces each asset on its own and gh
+        # uploads one call's files concurrently, so a failed archive upload must not leave
+        # sums for files the release does not have.
+        run: |
+          shopt -s nullglob
+          gh release upload "$TAG" dist/*.zip dist/*.tar.gz --clobber -R "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" dist/SHA256SUMS --clobber -R "$GITHUB_REPOSITORY"

@@ -47,8 +47,8 @@ Protocol (MCP) server, written in Rust.
   ```sh
   v=$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/pelvo/figstudio/releases/latest); v=${v##*/}
   f=figstudio-cli-mcp-$v-linux-$(uname -m | sed 's/aarch64/arm64/').tar.gz
-  cd "$(mktemp -d)" && curl -fsSL -O "https://github.com/pelvo/figstudio/releases/download/$v/$f" -O "https://github.com/pelvo/figstudio/releases/download/$v/SHA256SUMS"
-  grep " $f\$" SHA256SUMS | sha256sum -c - && mkdir -p ~/.local/bin && tar -xzf "$f" -C ~/.local/bin
+  (cd "$(mktemp -d)" && curl -fsSL -O "https://github.com/pelvo/figstudio/releases/download/$v/$f" -O "https://github.com/pelvo/figstudio/releases/download/$v/SHA256SUMS" &&
+    awk -v f="$f" '$2 == f' SHA256SUMS | sha256sum -c - && mkdir -p ~/.local/bin && tar -xzf "$f" -C ~/.local/bin)
   ```
 
   If `~/.local/bin` is not on your `PATH` yet (Debian and Ubuntu add it only at login, and
