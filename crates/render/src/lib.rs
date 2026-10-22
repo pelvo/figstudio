@@ -1557,14 +1557,17 @@ impl Ctx<'_> {
                     &self.doc.blobs,
                     &mut self.stats.unsupported_paints,
                 );
-                if shapes.is_empty() {
+                let stored_boolean = child.kind == "BOOLEAN_OPERATION"
+                    && matches!(child_data.get("fillGeometry"), Some(Val::Arr(paths))
+                        if paths.len() == shapes.len());
+                if shapes.is_empty() && !stored_boolean {
                     shapes.extend(base_shape(&child.kind, &child_data).map(GeomPath::plain));
                 }
                 let mut combined = BezPath::new();
                 for g in shapes {
                     combined.extend(g.path);
                 }
-                if !combined.elements().is_empty() {
+                if stored_boolean || !combined.elements().is_empty() {
                     self.stats.masks += 1;
                     self.stats.approximated_instance_ink += usize::from(approximate_ink);
                     self.rc.set_transform(tf);

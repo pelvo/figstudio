@@ -272,3 +272,47 @@ fn malformed_boolean_geometry_is_not_a_trusted_empty_result() {
         );
     }
 }
+
+#[test]
+fn empty_boolean_masks_clip_all_following_content() {
+    for empty_list in [false, true] {
+        let mut doc = boolean_doc("SUBTRACT", Some("fillGeometry"));
+        doc.blobs.last_mut().unwrap().clear();
+        doc.nodes[1].data.set("mask", Val::Bool(true));
+        if empty_list {
+            doc.nodes[1].data.set("fillGeometry", Val::Arr(vec![]));
+        }
+        let mut content = node(6, 1, "RECTANGLE");
+        content.data.set("fillPaints", paint(0.0, 1.0, 0.0));
+        let mut nodes = doc.nodes.clone();
+        nodes.push(content);
+        doc.set_nodes(nodes).unwrap();
+        let frame = render(&doc);
+        assert!(
+            frame.pixmap.data_as_u8_slice().iter().all(|&b| b == 0),
+            "list={empty_list}"
+        );
+        assert_eq!(frame.stats.masks, 1);
+        assert_eq!(frame.stats.approximated_booleans, 0);
+        #[cfg(feature = "parallel")]
+        {
+            let (recording, _) = Renderer::new().record(
+                &doc,
+                id(1),
+                Affine::IDENTITY,
+                figstudio_render::kurbo::Rect::new(0.0, 0.0, 80.0, 80.0),
+                usize::MAX,
+            );
+            let (tile, _) = recording
+                .unwrap()
+                .render(&Viewport {
+                    width: 80,
+                    height: 80,
+                    transform: Affine::IDENTITY,
+                    background: None,
+                })
+                .unwrap();
+            assert!(tile.pixmap.data_as_u8_slice().iter().all(|&b| b == 0));
+        }
+    }
+}
