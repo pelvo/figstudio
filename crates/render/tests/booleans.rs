@@ -147,7 +147,7 @@ fn boolean_without_computed_geometry_draws_operands_and_reports_approximation() 
 #[test]
 fn incomplete_boolean_paint_geometry_falls_back_to_operands() {
     for missing in ["fillGeometry", "strokeGeometry"] {
-        for empty in [false, true] {
+        for malformed in [false, true] {
             let present = if missing == "fillGeometry" {
                 "strokeGeometry"
             } else {
@@ -161,9 +161,9 @@ fn incomplete_boolean_paint_geometry_falls_back_to_operands() {
                 let x = f32::from_le_bytes(blob[offset..offset + 4].try_into().unwrap());
                 blob[offset..offset + 4].copy_from_slice(&(x + 45.0).to_le_bytes());
             }
-            if empty {
+            if malformed {
                 let index = doc.blobs.len();
-                doc.blobs.push(vec![]);
+                doc.blobs.push(vec![255]);
                 doc.nodes[1].data.set(
                     missing,
                     Val::Arr(vec![obj(&[("commandsBlob", Val::Int(index as i64))])]),
@@ -175,11 +175,11 @@ fn incomplete_boolean_paint_geometry_falls_back_to_operands() {
             assert_eq!(
                 pixel(frame.pixmap.data_as_u8_slice(), 20, 20),
                 [128, 128, 128, 255],
-                "missing {missing}, empty={empty}"
+                "missing {missing}, malformed={malformed}"
             );
             assert_eq!(
                 frame.stats.approximated_booleans, 1,
-                "missing {missing}, empty={empty}"
+                "missing {missing}, malformed={malformed}"
             );
         }
     }
@@ -223,4 +223,52 @@ fn computed_boolean_masks_use_result_geometry_not_operand_bounds() {
     assert_eq!(pixel(px, 20, 20), [0, 255, 0, 255]);
     assert_eq!(pixel(px, 50, 20), [0, 0, 0, 0]);
     assert_eq!(frame.stats.masks, 1);
+}
+
+#[test]
+fn decoded_empty_boolean_result_never_draws_operands() {
+    for field in ["fillGeometry", "strokeGeometry"] {
+        for empty_list in [false, true] {
+            let mut doc = boolean_doc("SUBTRACT", Some(field));
+            doc.blobs.last_mut().unwrap().clear();
+            for index in [1, 3] {
+                let unused = if field == "fillGeometry" {
+                    "strokePaints"
+                } else {
+                    "fillPaints"
+                };
+                doc.nodes[index].data.set(unused, Val::Arr(vec![]));
+                if empty_list {
+                    doc.nodes[index].data.set(field, Val::Arr(vec![]));
+                }
+            }
+            let frame = render(&doc);
+            assert_eq!(
+                frame.stats.approximated_booleans, 0,
+                "{field}, list={empty_list}"
+            );
+            assert!(frame.pixmap.data_as_u8_slice().iter().all(|&b| b == 0));
+        }
+    }
+}
+
+#[test]
+fn malformed_boolean_geometry_is_not_a_trusted_empty_result() {
+    for geometry in [
+        Val::Bool(false),
+        Val::Arr(vec![obj(&[])]),
+        Val::Arr(vec![obj(&[("commandsBlob", Val::Int(0))]), obj(&[])]),
+    ] {
+        let mut doc = boolean_doc("SUBTRACT", None);
+        doc.nodes[1].data.set("fillGeometry", geometry);
+        doc.nodes[1].data.set("strokePaints", Val::Arr(vec![]));
+        doc.nodes[3].kind = "RECTANGLE".into();
+        doc.nodes[3].data.set("type", Val::Str("RECTANGLE".into()));
+        let frame = render(&doc);
+        assert_eq!(frame.stats.approximated_booleans, 1);
+        assert_eq!(
+            pixel(frame.pixmap.data_as_u8_slice(), 20, 20),
+            [128, 128, 128, 255]
+        );
+    }
 }

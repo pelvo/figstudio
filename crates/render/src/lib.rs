@@ -1184,9 +1184,11 @@ impl Ctx<'_> {
             &self.doc.blobs,
             &mut self.stats.unsupported_paints,
         );
-        // Booleans have no base_shape fallback: these are their stored result paths.
-        let has_fill = fill_paths.iter().any(|g| !g.path.elements().is_empty());
-        let has_stroke = stroke_paths.iter().any(|g| !g.path.elements().is_empty());
+        // Empty decoded geometry is authoritative; missing or partially decoded is not.
+        let has_fill = matches!(data.get("fillGeometry"), Some(Val::Arr(paths))
+            if paths.len() == fill_paths.len());
+        let has_stroke = matches!(data.get("strokeGeometry"), Some(Val::Arr(paths))
+            if paths.len() == stroke_paths.len());
         let visible = |key| {
             data.get(key).is_some_and(|paints| {
                 paints.items().iter().any(|p| {
