@@ -241,5 +241,21 @@ fn an_area_without_crop_pictures_shows_no_before_after_control() {
         image_width: Some(60),
         image_height: Some(80),
     });
-    assert!(render_html(&report).contains("class=\"cmp thumbs\""));
+    let html = render_html(&report);
+    assert!(
+        html.contains("aria-label=\"Screen: Before / After\"")
+            && html.contains("src=\"./render/screen-after.png\""),
+        "{html}"
+    );
+    assert_eq!(
+        html.matches("<article class=\"area bare\"").count(),
+        2,
+        "{html}"
+    );
+    // With the other areas cropped again, the shared one alone does not add the pair.
+    for region in &mut report.pages[0].screens[0].regions[..2] {
+        region.old_png = Some("render/zoom-before.png".into());
+        region.new_png = Some("render/zoom-after.png".into());
+    }
+    assert!(!render_html(&report).contains("class=\"cmp thumbs\""));
 }
