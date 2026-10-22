@@ -893,6 +893,21 @@ pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
     hit_chain(doc, page, point).last().copied()
 }
 
+/// Whether nothing of a node's content outside its box is drawn, so a point there cannot hit
+/// its children: a frame that clips its content, or a boolean that draws its stored result
+/// (one that falls back paints its operands whole).
+pub fn clips_hits(kind: &str, data: &Val, blobs: &[Vec<u8>]) -> bool {
+    clips_content(kind, data)
+        || (kind == "BOOLEAN_OPERATION" && {
+            let mut ignored = 0;
+            draws_stored_result(
+                data,
+                geometry(data, "fillGeometry", blobs, &mut ignored).len(),
+                geometry(data, "strokeGeometry", blobs, &mut ignored).len(),
+            )
+        })
+}
+
 /// Whether a boolean draws its stored result instead of its operands, given how many of its
 /// stored fill and stroke paths decoded: some geometry is whole, and each kind of paint that
 /// shows has whole geometry. Empty decoded geometry is authoritative; missing or partially
@@ -936,20 +951,10 @@ pub fn hit_chain(doc: &Document, page: Guid, point: Point) -> Vec<Guid> {
             let (w, h) = size(&node.data);
             let local = tf.inverse() * point;
             let inside = local.x >= 0.0 && local.y >= 0.0 && local.x <= w && local.y <= h;
-            // A boolean that paints its stored result paints only inside its own box, so an
-            // operand reaching outside it is not under the pointer there. One that falls back
-            // paints its operands whole.
-            let clips = clips_content(&node.kind, &node.data)
-                || (node.kind == "BOOLEAN_OPERATION" && {
-                    let mut ignored = 0;
-                    draws_stored_result(
-                        &node.data,
-                        geometry(&node.data, "fillGeometry", &doc.blobs, &mut ignored).len(),
-                        geometry(&node.data, "strokeGeometry", &doc.blobs, &mut ignored).len(),
-                    )
-                });
+            // Only asked outside the box, so inside it stored geometry is not decoded.
+            let clips = || clips_hits(&node.kind, &node.data, &doc.blobs);
             if node.kind != "INSTANCE"
-                && (inside || !clips)
+                && (inside || !clips())
                 && let Some(mut hit) = walk(doc, id, tf, point, seen, depth + 1)
             {
                 if node.kind != "SECTION" {
@@ -1034,7 +1039,8 @@ fn effect_reach(e: &Val) -> f64 {
 impl Ctx<'_> {
     /// True when the node certainly draws nothing inside the output. Only nodes whose content
     /// stays within their frame are tested: leaves, clipping frames and instances, and boolean
-    /// operations. Other containers are walked so their children decide for themselves.
+    /// operations that draw their stored result. Other containers are walked so their
+    /// children decide for themselves.
     fn off_screen(
         &self,
         node: &Node,
@@ -1045,7 +1051,7 @@ impl Ctx<'_> {
         h: f64,
     ) -> bool {
         let leaf = kind != "INSTANCE" && self.doc.children(node.id).is_empty();
-        let bounded = leaf || kind == "BOOLEAN_OPERATION" || clips_content(kind, data);
+        let bounded = leaf || clips_hits(kind, data, &self.doc.blobs);
         if !bounded {
             return false;
         }

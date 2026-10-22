@@ -451,3 +451,26 @@ fn an_unstroked_boolean_does_not_count_its_stale_stroke_geometry() {
     };
     assert_eq!(skipped(true), skipped(false));
 }
+
+#[test]
+fn a_fallback_boolean_is_not_culled_by_its_box() {
+    let mut doc = boolean_doc("SUBTRACT", None);
+    // The operand reaches past the 40×40 box; the view shows only that part.
+    doc.nodes[2].data.set("size", size(70.0, 70.0));
+    let frame = Renderer::new().render(
+        &doc,
+        id(1),
+        &Viewport {
+            width: 80,
+            height: 80,
+            transform: Affine::translate((-50.0, -50.0)),
+            background: None,
+        },
+    );
+    let px = frame.pixmap.data_as_u8_slice();
+    assert_eq!(
+        pixel(px, 5, 5),
+        [128, 128, 128, 255],
+        "the operand past the box"
+    );
+}
