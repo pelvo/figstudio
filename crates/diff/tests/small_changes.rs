@@ -130,6 +130,7 @@ fn a_small_change_at_the_screen_edge_goes_to_the_layer_that_drew_it() {
                 "Under" => "a",
                 "Bar" => "b",
                 "Cover" => "c",
+                "Dot" => "bb",
                 "Low" => "d",
                 _ => "e",
             };
@@ -164,6 +165,9 @@ fn a_small_change_at_the_screen_edge_goes_to_the_layer_that_drew_it() {
                 filled_rectangle_at(7, 2, (0.5, 0.5, 0.5), 10.0, 0.0, 10.0, 6.0),
                 "Left",
             ),
+            // A smaller changed layer over part of the bar's visible corner owns those pixels;
+            // the bar keeps the rest, so both are on the area.
+            named(filled_rectangle_at(8, 2, rgb, 22.0, 0.0, 4.0, 4.0), "Dot"),
         ])
     };
     let (old, new) = (side((1.0, 0.0, 0.0)), side((0.0, 1.0, 0.0)));
@@ -172,5 +176,10 @@ fn a_small_change_at_the_screen_edge_goes_to_the_layer_that_drew_it() {
     let s = &report.pages[0].screens[0];
     assert_eq!(s.pixels_changed, Some(36), "{s:?}");
     assert_eq!(s.regions.len(), 1);
-    assert_eq!(s.regions[0].nodes, vec![figstudio_fig::Guid(0, 3)]);
+    let mut nodes = s.regions[0].nodes.clone();
+    nodes.sort();
+    assert_eq!(
+        nodes,
+        vec![figstudio_fig::Guid(0, 3), figstudio_fig::Guid(0, 8)]
+    );
 }

@@ -128,7 +128,7 @@ fn is_component_set(node: &figstudio_fig::Node) -> bool {
 }
 
 /// Changed pixels inside the region's box, optionally only those within `rect`.
-pub(crate) fn changed_in((mask, width): (&[bool], usize), r: &Region, rect: Option<Rect>) -> usize {
+fn changed_in((mask, width): (&[bool], usize), r: &Region, rect: Option<Rect>) -> usize {
     let (x0, y0) = (r.x as usize, r.y as usize);
     let (mut x1, mut y1) = (x0 + r.width as usize, y0 + r.height as usize);
     let (mut lo_x, mut lo_y) = (x0, y0);

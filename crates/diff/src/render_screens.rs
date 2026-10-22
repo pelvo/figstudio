@@ -7,7 +7,7 @@ use crate::{
     render::{ImageReader, MAX_RENDER_PIXELS},
     render_pixels::{compare_mask, encode},
     screen_bounds,
-    screens::{ScreenPair, match_screens},
+    screens::{MatchBy, ScreenPair, match_screens},
 };
 use figstudio_fig::{Document, Guid};
 use figstudio_render::{Renderer, Viewport, absolute_transform, geom::size, kurbo::Affine};
@@ -58,15 +58,23 @@ pub(crate) fn attach_screens(
             })
         })
         .collect();
-    // Draw order: screens with change lines, then screens with other edits inside them (a
-    // moved layer has no line), then the rest, which are usually unchanged: edits to the
-    // screen root alone (a canvas move, a recreated screen's new ids) do not change its own
-    // picture. Screens that turn out unchanged cannot use up the screen caps first, and the
-    // report keeps document order.
+    // Draw order: screens with change lines, then screens with other edits that can change
+    // their picture (a moved layer, a resized root: no line), then the rest, which are usually
+    // unchanged. A root moved on the canvas does not change its own picture; a recreated
+    // screen (new ids) may, as its paired children are compared by pixels only. Screens that
+    // turn out unchanged cannot use up the screen caps first; the report keeps document order.
+    let root =
+        |i: usize, id: &figstudio_fig::Guid| Some(*id) == pairs[i].old || Some(*id) == pairs[i].new;
+    let root_edited = |id: &figstudio_fig::Guid| {
+        page.changed.iter().find(|n| n.id == *id).is_some_and(|n| {
+            n.changes
+                .iter()
+                .any(|c| !crate::html_changes::is_position(&c.field))
+        })
+    };
     let inner = |i: usize| {
-        members[i]
-            .iter()
-            .any(|id| Some(*id) != pairs[i].old && Some(*id) != pairs[i].new)
+        pairs[i].matched_by == Some(MatchBy::NameSize)
+            || members[i].iter().any(|id| !root(i, id) || root_edited(id))
     };
     let tier = |i: usize| match (has_lines[i], inner(i)) {
         (true, _) => 0,
@@ -143,20 +151,20 @@ pub(crate) fn attach_screens(
         capped_any |= capped;
         screen.moved = moved;
         for region in &mut screen.regions {
+            // Layers mostly inside the area, plus the leaf layers that own its changed pixels
+            // (a small change inside a wider layer), in member order.
+            let owners = screen_bounds::containing_leaves(
+                region,
+                &nodes,
+                docs,
+                pair,
+                (transforms, (&mask, screen.width as usize)),
+            );
             region.nodes = nodes
                 .iter()
                 .copied()
-                .filter(|id| region.nodes.contains(id))
+                .filter(|id| region.nodes.contains(id) || owners.contains(id))
                 .collect();
-            if region.nodes.is_empty() {
-                region.nodes = screen_bounds::containing_leaves(
-                    region,
-                    &nodes,
-                    docs,
-                    pair,
-                    (transforms, (&mask, screen.width as usize)),
-                );
-            }
         }
         screen.nodes = nodes;
         let components = masters.keys(

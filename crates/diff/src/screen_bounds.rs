@@ -4,7 +4,7 @@ use figstudio_fig::{Document, Guid};
 use figstudio_render::{
     absolute_transform,
     geom::size,
-    kurbo::{Affine, Rect},
+    kurbo::{Affine, Point, Rect},
 };
 use std::collections::BTreeSet;
 
@@ -55,38 +55,66 @@ pub(crate) fn screen_box(doc: &Document, id: Guid, transform: Affine) -> Option<
         .then_some(rect)
 }
 
-/// The smallest changed leaf layer (no children, not a screen root) holding changed pixels of
-/// `region`: a small change inside a wide layer, such as one new glyph of a long text line,
-/// which the half-of-the-layer rule in [`region_nodes`] cannot match. A pixel counts when its
-/// centre is inside the layer's box (the region itself is padded, so its centre is not used).
+/// Changed leaf layers (no children, not a screen root) that own changed pixels of `region`:
+/// a small change inside a wide layer, such as one new glyph of a long text line, which the
+/// half-of-the-layer rule in [`region_nodes`] cannot match. Each changed pixel goes to the
+/// smallest such layer whose box holds the pixel's centre; every layer that owns one is kept.
 pub(crate) fn containing_leaves(
     region: &Region,
     changed: &[Guid],
     docs: (&Document, &Document),
     pair: ScreenPair,
-    (transforms, mask): ((Affine, Affine), (&[bool], usize)),
+    (transforms, (mask, width)): ((Affine, Affine), (&[bool], usize)),
 ) -> Vec<Guid> {
     let sides = [
         (docs.0, subtree(docs.0, pair.old), transforms.0),
         (docs.1, subtree(docs.1, pair.new), transforms.1),
     ];
+    let area = Rect::new(
+        region.x as f64,
+        region.y as f64,
+        (region.x + region.width) as f64,
+        (region.y + region.height) as f64,
+    );
+    // (box, area, index into `changed`), only boxes that reach the region.
+    let mut boxes: Vec<(Rect, f64, usize)> = Vec::new();
+    for (k, id) in changed.iter().enumerate() {
+        if Some(*id) == pair.old || Some(*id) == pair.new {
+            continue;
+        }
+        for (doc, members, t) in &sides {
+            if members.contains(id)
+                && doc.children(*id).is_empty()
+                && let Some(r) = screen_box(doc, *id, *t)
+                && r.intersect(area).area() > 0.0
+            {
+                boxes.push((r, r.area(), k));
+            }
+        }
+    }
+    let mut owns = vec![false; changed.len()];
+    if boxes.is_empty() {
+        return Vec::new();
+    }
+    for y in region.y as usize..(region.y + region.height) as usize {
+        for x in region.x as usize..(region.x + region.width) as usize {
+            if !mask.get(y * width + x).copied().unwrap_or(false) {
+                continue;
+            }
+            let centre = Point::new(x as f64 + 0.5, y as f64 + 0.5);
+            if let Some((_, _, k)) = boxes
+                .iter()
+                .filter(|(r, ..)| r.contains(centre))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+            {
+                owns[*k] = true;
+            }
+        }
+    }
     changed
         .iter()
-        .copied()
-        .filter(|id| Some(*id) != pair.old && Some(*id) != pair.new)
-        .filter_map(|id| {
-            sides
-                .iter()
-                .filter(|(doc, members, _)| members.contains(&id) && doc.children(id).is_empty())
-                .filter_map(|(doc, _, t)| screen_box(doc, id, *t))
-                .filter(|r| crate::shared_component::changed_in(mask, region, Some(*r)) > 0)
-                .map(|r| r.area())
-                .reduce(f64::min)
-                .map(|area| (area, id))
-        })
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, id)| id)
-        .into_iter()
+        .zip(owns)
+        .filter_map(|(id, owned)| owned.then_some(*id))
         .collect()
 }
 

@@ -11,7 +11,7 @@ use crate::html_swatch::{Channels, swatch};
 use crate::{Category, NodeDiff, PageDiff, PropertyChange};
 
 /// A move or reposition: only `transform.m02`/`m12` (or the sibling order) changed.
-fn is_position(field: &str) -> bool {
+pub(crate) fn is_position(field: &str) -> bool {
     field.starts_with("parentIndex")
         || field.ends_with("transform.m02")
         || field.ends_with("transform.m12")

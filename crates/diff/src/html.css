@@ -54,7 +54,7 @@ h1{font-size:20px;line-height:1.35;font-weight:600;margin:0 0 14px;letter-spacin
 .sh{display:flex;align-items:center;gap:12px;margin:0 0 10px}
 .sh h3{font-size:13px;font-weight:600;margin:0;letter-spacing:.02em}
 /* each screen is its own block: a rule between screens, a larger title than its areas */
-.screen~.sec{border-top:1px solid var(--bd2)}
+.screen~.screen,.screen~.sec{border-top:1px solid var(--bd2)}
 .screen>.sh{margin-top:4px}.screen>.sh h3{font-size:15px;overflow-wrap:anywhere}
 h4.sub{font-size:12px;font-weight:600;color:var(--mu);letter-spacing:.02em;margin:14px 0 8px}
 .cmp.thumbs{max-width:640px;margin:8px 0 4px}

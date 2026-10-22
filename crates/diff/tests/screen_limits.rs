@@ -428,3 +428,38 @@ fn canvas_moves_do_not_dilute_an_inner_moves_crop_share() {
         region.height
     );
 }
+
+#[test]
+fn a_resized_root_without_a_change_line_is_not_diluted_by_unchanged_screens() {
+    // Screen 2 is resized (a root edit with no change line, but new pixels); ten unchanged
+    // frames follow it. The resize keeps the full crop budget.
+    let frame = |id, x, w| {
+        let mut n = filled_rectangle_at(id, 1, (1.0, 0.0, 0.0), x, 0.0, w, 1000.0);
+        n.data.set("type", Val::Str("FRAME".into()));
+        Node::from_data(n.data).unwrap()
+    };
+    let side = |w| {
+        document(
+            std::iter::once(frame(2, 0.0, w))
+                .chain((10..20).map(|id| frame(id, f64::from(id) * 1200.0, 1000.0)))
+                .collect(),
+        )
+    };
+    let (old, new) = (side(400.0), side(1000.0));
+    let mut report = diff_documents(&old, &new);
+    let images = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+    let page = &report.pages[0];
+    assert_eq!(page.screens.len(), 1, "{page:?}");
+    assert_eq!(page.screens_unchanged, 10);
+    let region = &page.screens[0].regions[0];
+    let crop = &images[&page.id].screens[0].regions[0];
+    let png = image::load_from_memory(&crop.after).unwrap();
+    assert!(
+        png.width() >= 2 * region.width && png.height() >= 2 * region.height,
+        "{}x{} for {}x{}",
+        png.width(),
+        png.height(),
+        region.width,
+        region.height
+    );
+}
