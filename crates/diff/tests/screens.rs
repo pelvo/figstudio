@@ -291,9 +291,29 @@ fn recreated_screen_lists_edits_of_layers_that_pair_by_name() {
         n.data.set("name", Val::Str("Dot".into()));
         Node::from_data(n.data).unwrap()
     };
-    // The screen is recreated with new ids; its dot pairs by name and turns from red to blue.
-    let old = document(vec![screen(4, 1, 0.0, "FRAME"), dot(5, 4, (1.0, 0.0, 0.0))]);
-    let new = document(vec![screen(7, 1, 0.0, "FRAME"), dot(8, 7, (0.0, 0.0, 1.0))]);
+    let label = |id, parent, text: &str| {
+        let mut n = node(id, Some(parent), "TEXT", "b");
+        n.data.set("name", Val::Str("Label".into()));
+        n.data
+            .set("textData", object(&[("characters", Val::Str(text.into()))]));
+        Node::from_data(n.data).unwrap()
+    };
+    let tinted = |mut n: Node| {
+        n.data.set("fillPaints", support::solid(0.9, 0.9, 0.9));
+        Node::from_data(n.data).unwrap()
+    };
+    // The screen is recreated with new ids and moved on the canvas. Its own fill, its dot's
+    // colour and its label's text change; each pairs by name, so each is a change.
+    let old = document(vec![
+        screen(4, 1, 0.0, "FRAME"),
+        dot(5, 4, (1.0, 0.0, 0.0)),
+        label(6, 4, "Old"),
+    ]);
+    let new = document(vec![
+        tinted(screen(7, 1, 600.0, "FRAME")),
+        dot(8, 7, (0.0, 0.0, 1.0)),
+        label(9, 7, "New"),
+    ]);
     for render in [false, true] {
         let mut report = diff_documents(&old, &new);
         if render {
@@ -301,13 +321,69 @@ fn recreated_screen_lists_edits_of_layers_that_pair_by_name() {
         }
         let page = &report.pages[0];
         assert_eq!(page.screens.len(), 1, "render {render}: {page:?}");
+        let changed = |id| page.changed.iter().find(|n| n.id == Guid(0, id));
+        let fields = |id| -> Vec<String> {
+            changed(id).map_or_else(Vec::new, |n| {
+                n.changes.iter().map(|c| c.field.clone()).collect()
+            })
+        };
+        assert_eq!(fields(8), ["fillPaints.0.color.b", "fillPaints.0.color.r"]);
+        let red = &changed(8).unwrap().changes[1];
+        assert_eq!(
+            (&red.old, &red.new),
+            (&Some(Val::Float(1.0)), &Some(Val::Float(0.0)))
+        );
+        assert!(changed(9).unwrap().text.is_some(), "{page:?}");
+        // The root's fill is an edit; where it sits on the canvas is not.
+        assert!(
+            fields(7).iter().all(|f| f.starts_with("fillPaints")),
+            "{:?}",
+            fields(7)
+        );
+        assert!(!fields(7).is_empty());
+        for n in &page.changed {
+            for c in &n.changes {
+                let head = c.field.split('.').next().unwrap();
+                assert!(
+                    !["guid", "parentIndex", "overrideKey"].contains(&head),
+                    "{c:?}"
+                );
+            }
+        }
+        assert_eq!(report.summary.nodes_changed, 3);
         let html = render_html(&report);
         let screen = html.split("id=\"page-0-s1\"").nth(1).unwrap();
-        assert!(
-            screen.contains("class=\"sg\">~</span>"),
-            "render {render}: {screen}"
-        );
         assert!(screen.contains(">Dot<"), "{screen}");
-        assert!(!screen.contains("guid"), "{screen}");
     }
+}
+
+#[test]
+fn recreated_screen_keeps_repeated_names_silent_when_a_copy_is_inserted() {
+    let card = |id, parent, y, text: &str, position: &str| {
+        let mut frame = node(id, Some(parent), "FRAME", position);
+        frame.data.set("name", Val::Str("Card".into()));
+        frame
+            .data
+            .set("transform", object(&[("m12", Val::Float(y))]));
+        let mut title = node(id + 1, Some(id), "TEXT", "a");
+        title.data.set("name", Val::Str("Title".into()));
+        title
+            .data
+            .set("textData", object(&[("characters", Val::Str(text.into()))]));
+        [
+            Node::from_data(frame.data).unwrap(),
+            Node::from_data(title.data).unwrap(),
+        ]
+    };
+    // A new card goes in front of the old one: walk order would pair the new card's title
+    // with the old title and report a text edit that did not happen.
+    let mut old = vec![screen(4, 1, 0.0, "FRAME")];
+    old.extend(card(5, 4, 100.0, "Kept", "b"));
+    let mut new = vec![screen(7, 1, 0.0, "FRAME")];
+    new.extend(card(20, 7, 0.0, "Inserted", "a"));
+    new.extend(card(8, 7, 100.0, "Kept", "b"));
+    let report = diff_documents(&document(old), &document(new));
+    let page = &report.pages[0];
+    assert!(page.changed.is_empty(), "{:?}", page.changed);
+    assert_eq!(report.summary.nodes_changed, 0);
 }

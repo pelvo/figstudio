@@ -171,7 +171,10 @@ pub fn diff_documents(old: &Document, new: &Document) -> DiffReport {
     }
     pages.retain(|p| p.status != PageStatus::Unchanged);
     for page in &mut pages {
-        screen_model::prepare((old, new), page);
+        // Layers of recreated screens compared by name; their new ids still count as added.
+        let (rows, props) = screen_model::prepare((old, new), page);
+        summary.nodes_changed += rows;
+        summary.properties_changed += props;
     }
     DiffReport {
         old: structure::meta(old),

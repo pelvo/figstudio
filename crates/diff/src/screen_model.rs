@@ -50,9 +50,14 @@ fn one_sided(doc: &Document, other: &Document, root: Guid) -> Vec<(Path, Guid)> 
 /// A recreated screen's whole subtree has new ids, but only the new root is listed as added
 /// (and the old root as removed). Layers that pair up by name and kind path are the same
 /// churn; the rest were really added or removed, so their subtree roots are listed too.
-fn list_recreated_changes(docs: (&Document, &Document), page: &mut PageDiff, pair: ScreenPair) {
+/// Returns the change rows and property changes it added, for the report summary.
+fn list_recreated_changes(
+    docs: (&Document, &Document),
+    page: &mut PageDiff,
+    pair: ScreenPair,
+) -> (usize, usize) {
     let (Some(old_root), Some(new_root)) = (pair.old, pair.new) else {
-        return;
+        return (0, 0);
     };
     let old = one_sided(docs.0, docs.1, old_root);
     let new = one_sided(docs.1, docs.0, new_root);
@@ -77,7 +82,7 @@ fn list_recreated_changes(docs: (&Document, &Document), page: &mut PageDiff, pai
         }
         out
     };
-    list_paired_edits(docs, page, &old, &new);
+    let edits = list_paired_edits(docs, page, (old_root, new_root), &old, &new);
     for (doc, side, root, old_side) in [
         (docs.0, &old, old_root, true),
         (docs.1, &new, new_root, false),
@@ -98,39 +103,51 @@ fn list_recreated_changes(docs: (&Document, &Document), page: &mut PageDiff, pai
             }
         }
     }
+    edits
 }
 
 /// Layers of a recreated screen that pair by [`Path`] have new ids, so the structural diff
-/// never compares them. Their own edits (a new colour, new text) are listed as changes of
-/// the new layer; the id fields that always differ are left out.
+/// never compares them. A layer whose path occurs once on each side is the same layer, and
+/// its own edits (a new colour, new text) are listed as changes of the new layer; so are the
+/// screen root's. A repeated path is paired by walk order only, which an inserted copy
+/// shifts, so those pairs stay silent. Returns the rows and property changes added.
 fn list_paired_edits(
     docs: (&Document, &Document),
     page: &mut PageDiff,
+    roots: (Guid, Guid),
     old: &[(Path, Guid)],
     new: &[(Path, Guid)],
-) {
-    let mut olds: BTreeMap<&Path, Vec<Guid>> = BTreeMap::new();
+) -> (usize, usize) {
+    let mut sides: BTreeMap<&Path, (Vec<Guid>, Vec<Guid>)> = BTreeMap::new();
     for (key, id) in old {
-        olds.entry(key).or_default().push(*id);
+        sides.entry(key).or_default().0.push(*id);
     }
-    let mut taken: BTreeMap<&Path, usize> = BTreeMap::new();
-    for (key, new_id) in new {
-        let rank = taken.entry(key).or_default();
-        let Some(&old_id) = olds.get(key).and_then(|ids| ids.get(*rank)) else {
-            continue;
-        };
-        *rank += 1;
-        let (Some(a), Some(b)) = (docs.0.node(old_id), docs.1.node(*new_id)) else {
+    for (key, id) in new {
+        sides.entry(key).or_default().1.push(*id);
+    }
+    let unique = sides
+        .values()
+        .filter_map(|(a, b)| match (a.as_slice(), b.as_slice()) {
+            ([a], [b]) => Some((*a, *b, false)),
+            _ => None,
+        });
+    let mut added = (0, 0);
+    for (old_id, new_id, root) in std::iter::once((roots.0, roots.1, true)).chain(unique) {
+        let (Some(a), Some(b)) = (docs.0.node(old_id), docs.1.node(new_id)) else {
             continue;
         };
         let mut changes = crate::properties::changes(Some(&a.data), Some(&b.data));
+        // Ids always differ. Sibling positions are regenerated with the new ids, and the
+        // root's own translation is where the screen sits on the canvas, not an edit.
         changes.retain(|c| {
             let head = c.field.split('.').next().unwrap_or(&c.field);
             !matches!(head, "guid" | "parentIndex" | "overrideKey")
+                && !(root && matches!(c.field.as_str(), "transform.m02" | "transform.m12"))
         });
         if changes.is_empty() || page.changed.iter().any(|n| n.id == b.id) {
             continue;
         }
+        added = (added.0 + 1, added.1 + changes.len());
         page.changed.push(crate::NodeDiff {
             id: b.id,
             kind: b.kind.clone(),
@@ -141,6 +158,7 @@ fn list_paired_edits(
             changes,
         });
     }
+    added
 }
 
 pub(crate) fn moved(docs: (&Document, &Document), pair: ScreenPair) -> bool {
@@ -156,13 +174,16 @@ pub(crate) fn moved(docs: (&Document, &Document), pair: ScreenPair) -> bool {
     }
 }
 
-pub(crate) fn prepare(docs: (&Document, &Document), page: &mut PageDiff) {
+/// Returns the change rows and property changes added for recreated screens.
+pub(crate) fn prepare(docs: (&Document, &Document), page: &mut PageDiff) -> (usize, usize) {
     let pairs = match_screens(docs.0, docs.1, page.id);
+    let mut edits = (0, 0);
     for pair in pairs
         .iter()
         .filter(|p| p.matched_by == Some(MatchBy::NameSize))
     {
-        list_recreated_changes(docs, page, *pair);
+        let (rows, props) = list_recreated_changes(docs, page, *pair);
+        edits = (edits.0 + rows, edits.1 + props);
     }
     let lines = crate::html_changes::page_lines(page);
     let mut owned = BTreeSet::new();
@@ -216,4 +237,5 @@ pub(crate) fn prepare(docs: (&Document, &Document), page: &mut PageDiff) {
             .filter(|id| !owned.contains(id))
             .collect(),
     );
+    edits
 }
