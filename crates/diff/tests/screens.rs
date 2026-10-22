@@ -239,7 +239,7 @@ fn recreated_screen_does_not_list_churn_below_a_layer_that_kept_its_id() {
     );
     // Two rows keep their ids under the recreated root, so the diff lists their recreated
     // children on their own. Row 5's dot pairs and is churn; the badge is a real addition.
-    // Row 6 lost a dot and the same-named row 50 gained one: both are real.
+    // Row 60 lost a dot and the same-named row 50 gained one: both are real.
     let old = document(vec![
         screen(4, 1, 0.0, "FRAME"),
         row(5, 4, 0.0),
@@ -264,6 +264,13 @@ fn recreated_screen_does_not_list_churn_below_a_layer_that_kept_its_id() {
         }
         let page = &report.pages[0];
         assert_eq!(page.screens.len(), 1, "render {render}: {page:?}");
+        let ids = |list: &[figstudio_diff::NodeRef]| {
+            let mut ids: Vec<_> = list.iter().map(|n| n.id.1).collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(ids(&page.added), vec![7, 9, 51], "render {render}");
+        assert_eq!(ids(&page.removed), vec![4, 61], "render {render}");
         let html = render_html(&report);
         let screen = html.split("id=\"page-0-s1\"").nth(1).unwrap();
         assert!(screen.contains(">Badge<"), "{screen}");
@@ -272,6 +279,7 @@ fn recreated_screen_does_not_list_churn_below_a_layer_that_kept_its_id() {
             2,
             "render {render}: {screen}"
         );
+        assert!(!screen.contains("class=\"ct\""), "{screen}");
         assert_eq!(screen.matches("class=\"sg\">").count(), 3, "{screen}");
     }
 }

@@ -20,23 +20,26 @@ pub(crate) fn counts(
         || (Some(line.id) != roots.0 && Some(line.id) != roots.1)
 }
 
-/// The layers only one side of the screen has, keyed by their name/kind path below the root,
-/// or below the nearest layer both sides kept (named by its id, so same-named kept layers
-/// stay apart).
-fn one_sided(doc: &Document, other: &Document, root: Guid) -> Vec<(Vec<(String, String)>, Guid)> {
+/// Where a one-sided layer sits: the nearest layer both sides kept (`None` for the screen
+/// root), then the name/kind path below it. The kept layer's id keeps same-named kept
+/// layers apart.
+type Path = (Option<Guid>, Vec<(String, String)>);
+
+/// The layers only one side of the screen has, keyed by their [`Path`].
+fn one_sided(doc: &Document, other: &Document, root: Guid) -> Vec<(Path, Guid)> {
     let mut out = Vec::new();
-    let mut stack: Vec<(Guid, Vec<(String, String)>)> = doc
+    let mut stack: Vec<(Guid, Path)> = doc
         .children(root)
         .iter()
         .rev()
-        .map(|&id| (id, Vec::new()))
+        .map(|&id| (id, (None, Vec::new())))
         .collect();
     while let Some((id, mut key)) = stack.pop() {
         let Some(node) = doc.node(id) else { continue };
         if other.node(id).is_some() {
-            key = vec![(format!("{id:?}"), String::new())];
+            key = (Some(id), Vec::new());
         } else {
-            key.push((node.name.clone(), node.kind.clone()));
+            key.1.push((node.name.clone(), node.kind.clone()));
             out.push((key.clone(), id));
         }
         stack.extend(doc.children(id).iter().rev().map(|&c| (c, key.clone())));
@@ -53,7 +56,7 @@ fn list_recreated_changes(docs: (&Document, &Document), page: &mut PageDiff, pai
     };
     let old = one_sided(docs.0, docs.1, old_root);
     let new = one_sided(docs.1, docs.0, new_root);
-    let mut tally: BTreeMap<&[(String, String)], (usize, usize)> = BTreeMap::new();
+    let mut tally: BTreeMap<&Path, (usize, usize)> = BTreeMap::new();
     for (key, _) in &old {
         tally.entry(key).or_default().0 += 1;
     }
@@ -61,11 +64,11 @@ fn list_recreated_changes(docs: (&Document, &Document), page: &mut PageDiff, pai
         tally.entry(key).or_default().1 += 1;
     }
     // With n copies on one side and m on the other, the first min(n, m) pair up.
-    let unpaired = |side: &[(Vec<(String, String)>, Guid)], old_side: bool| {
-        let mut seen: BTreeMap<&[(String, String)], usize> = BTreeMap::new();
+    let unpaired = |side: &[(Path, Guid)], old_side: bool| {
+        let mut seen: BTreeMap<&Path, usize> = BTreeMap::new();
         let mut out = BTreeSet::new();
         for (key, id) in side {
-            let (n, m) = tally[key.as_slice()];
+            let (n, m) = tally[key];
             let rank = seen.entry(key).or_default();
             *rank += 1;
             if *rank > if old_side { m } else { n } {
