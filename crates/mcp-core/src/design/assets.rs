@@ -3,6 +3,7 @@ use super::jsx::Writer;
 use super::walk::Target;
 use super::{MAX_ASSETS, MAX_INLINE_BYTES};
 use crate::screenshot::{Root, approximations, layer_shot};
+use figstudio_render::encoding::ImageFormat;
 use std::path::PathBuf;
 
 /// Where `get_design_context` puts rendered assets.
@@ -37,8 +38,9 @@ impl Assets {
 }
 
 /// A stable file name for the asset of node `id` in file `key`: only ASCII letters, digits,
-/// `-` and `_` before `.png`, so it can never name a parent directory or a hidden file.
-pub(super) fn name(key: &str, id: &str) -> String {
+/// `-` and `_` before the `format` extension, so it can never name a parent directory or a
+/// hidden file. The code's `src` and the written asset both use this one name.
+pub(super) fn name(key: &str, id: &str, format: ImageFormat) -> String {
     let clean = |s: &str| -> String {
         s.chars()
             .map(|c| match c {
@@ -48,7 +50,7 @@ pub(super) fn name(key: &str, id: &str) -> String {
             })
             .collect()
     };
-    format!("{}_{}.png", clean(key), clean(id))
+    format!("{}_{}.{}", clean(key), clean(id), format.extension())
 }
 
 /// Writes `bytes` as `dir/name` (creating `dir`) and returns the written path. The bytes go to
@@ -84,15 +86,10 @@ pub(super) struct Asset {
 /// Asset render scale: sharp on high-density screens.
 const ASSET_SCALE: f64 = 2.0;
 
-/// Renders `target` to the PNG asset `name`; `false` (counted) when it could not be
+/// Renders `target` to the asset `name` (see [`name`]); `false` (counted) when it could not be
 /// rendered or stored, or would exceed the asset caps.
 pub(super) fn render(w: &mut Writer<'_>, target: &Target, name: String) -> bool {
     let format = w.options.rendering.format;
-    let name = if format == figstudio_render::encoding::ImageFormat::Webp {
-        format!("{}.webp", name.trim_end_matches(".png"))
-    } else {
-        name
-    };
     if w.out.assets.len() >= MAX_ASSETS {
         w.out.notes.add("assets not rendered (asset cap)");
         return false;
