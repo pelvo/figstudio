@@ -92,7 +92,7 @@ impl Hit<'_> {
                 && local.y >= 0.0
                 && local.x <= w
                 && local.y <= h;
-            if inside || !geom::clips_content(&node.kind, &data) {
+            if inside || !figstudio_render::clips_hits(&node.kind, &data, &self.doc.blobs) {
                 let mut hit = self.walk(instance, Some(&resolved.path), point, depth + 1);
                 if !hit.is_empty() {
                     if node.kind != "SECTION" {

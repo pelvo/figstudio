@@ -201,17 +201,21 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
+mod canvas_font_order;
+#[cfg(target_arch = "wasm32")]
+mod canvas_fonts;
+
 /// Configure pixels once for canvas workers and both export paths, before recording.
 fn renderer(images: figstudio_render::images::Images) -> figstudio_render::Renderer {
-    let renderer = figstudio_render::Renderer::with_images(images);
     #[cfg(target_arch = "wasm32")]
     {
-        let mut renderer = renderer;
-        renderer.set_emoji_source(Some(std::sync::Arc::new(emoji_canvas::BrowserEmoji)));
-        renderer
+        canvas_fonts::renderer(images).1
     }
     #[cfg(not(target_arch = "wasm32"))]
-    renderer
+    {
+        figstudio_render::Renderer::with_images(images)
+    }
 }
 
 /// Renders `root` for export, reading every image it needs at full sharpness.
@@ -900,6 +904,17 @@ impl App {
     #[cfg(target_arch = "wasm32")]
     fn poll_web(&mut self, ctx: &egui::Context) {
         self.web.serve_ranges(ctx);
+        if canvas_fonts::sync(ctx) {
+            self.workers.fonts_changed();
+            self.tiles.fonts_changed(self.workers.images_arrived());
+            for tab in &mut self.tabs {
+                self.tiles.forget(tab.doc.instance);
+                tab.tile_requests.clear();
+            }
+            for i in 0..self.tabs.len() {
+                self.refresh_recent_thumbnail(ctx, i);
+            }
+        }
         let mut cjk_updated = false;
         while let Ok((variant, font)) = self.web.fonts.try_recv() {
             if variant != self.web.font_variant() {

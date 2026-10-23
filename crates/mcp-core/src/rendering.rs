@@ -15,6 +15,8 @@ pub type EntryReader = Arc<dyn Fn(&Entry) -> Option<Vec<u8>> + Send + Sync>;
 pub struct Rendering {
     /// Lay out text that has no stored glyph outlines with installed fonts.
     pub system_fonts: bool,
+    /// Browser-supplied faces, shared with the canvas font snapshot.
+    pub fonts: Vec<(Arc<Vec<u8>>, u32)>,
     /// The registered file, read for the images a lazily opened document did not load.
     /// `None`: those images count as missing.
     pub path: Option<PathBuf>,
@@ -75,7 +77,10 @@ impl Rendering {
                 .unwrap_or_else(PoisonError::into_inner)
         });
         let mut renderer = Renderer::with_images(self.images.clone());
-        renderer.system_fonts = self.system_fonts;
+        renderer.system_fonts = self.system_fonts || !self.fonts.is_empty();
+        for (font, index) in &self.fonts {
+            renderer.add_font_data(font.clone(), *index);
+        }
         let read = |want: &figstudio_render::images::ImageRequest| self.read(&want.entry);
         match root {
             Root::Node(id) => renderer.render_complete(doc, id, viewport, read),

@@ -6,6 +6,7 @@
 //! uploading `.fig` files.
 
 use crate::bridge::{DEFAULT_ORIGINS, pairing_token};
+use crate::web_mirror::{WebMirror, is_loopback_origin, mirror_origins};
 use axum::{
     extract::{
         State, WebSocketUpgrade,
@@ -46,6 +47,11 @@ const AMBIGUOUS_SESSION_CODE: i32 = -32002;
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_OPEN_TIMEOUT_SECS: u64 = 60;
 
+/// The public browser build (static, no cloud relay, no sign-in). `open_figstudio_browser`
+/// opens it unless `--origin` or `FIGSTUDIO_WEB_ORIGIN` names another; the local web build
+/// on `http://127.0.0.1:8765` stays allowed to pair for development.
+pub const PUBLIC_ORIGIN: &str = "https://figstudio.pelvo.dev";
+
 /// Configuration for [`ProxyState`]. `Debug` redacts the secret token.
 #[derive(Clone)]
 pub struct ProxyConfig {
@@ -57,6 +63,9 @@ pub struct ProxyConfig {
     pub launch_origin: String,
     /// Whether `open_figstudio_browser` launches the system browser command.
     pub launch_browser: bool,
+    /// Serve `launch_origin` from the proxy's own loopback port and open it there (see
+    /// [`crate::web_mirror`]). On by default unless `launch_origin` is already loopback.
+    pub mirror: bool,
 }
 
 impl std::fmt::Debug for ProxyConfig {
@@ -65,18 +74,24 @@ impl std::fmt::Debug for ProxyConfig {
             .field("origins", &self.origins)
             .field("launch_origin", &self.launch_origin)
             .field("launch_browser", &self.launch_browser)
+            .field("mirror", &self.mirror)
             .finish_non_exhaustive()
     }
 }
 
 impl ProxyConfig {
     /// Build a configuration from extra `--origin` flags (and `FIGSTUDIO_WEB_ORIGIN`).
+    /// Without either, the launch URL is [`PUBLIC_ORIGIN`].
     ///
     /// # Errors
     /// Returns [`getrandom::Error`] if OS entropy fails.
     pub fn new(extra_origins: &[String], launch_browser: bool) -> Result<Self, getrandom::Error> {
         let token = pairing_token()?;
-        let mut origins: Vec<String> = DEFAULT_ORIGINS.iter().map(|s| (*s).to_owned()).collect();
+        let mut origins: Vec<String> = DEFAULT_ORIGINS
+            .iter()
+            .chain(std::iter::once(&PUBLIC_ORIGIN))
+            .map(|s| (*s).to_owned())
+            .collect();
         if let Ok(env_origin) = std::env::var("FIGSTUDIO_WEB_ORIGIN") {
             let trimmed = env_origin.trim().trim_end_matches('/').to_owned();
             if !trimmed.is_empty() && !origins.contains(&trimmed) {
@@ -99,23 +114,36 @@ impl ProxyConfig {
                     .map(|s| s.trim().trim_end_matches('/').to_owned())
                     .filter(|s| !s.is_empty())
             })
-            .unwrap_or_else(|| DEFAULT_ORIGINS[0].to_owned());
+            .unwrap_or_else(|| PUBLIC_ORIGIN.to_owned());
+        let mirror = !is_loopback_origin(&launch_origin);
         Ok(Self {
             token,
             origins,
             launch_origin,
             launch_browser,
+            mirror,
         })
     }
 
-    /// URL with the `#mcpProxyPort=<port>&mcpProxyToken=<token>` fragment that pairs a tab.
+    /// URL with the `#mcpProxyPort=<port>&mcpProxyToken=<token>` fragment that pairs a tab:
+    /// the proxy's own `http://127.0.0.1:<port>` when mirroring, else `launch_origin`.
     #[must_use]
     pub fn launch_url(&self, port: u16) -> String {
-        format!(
-            "{}/#mcpProxyPort={port}&mcpProxyToken={}",
-            self.launch_origin.trim_end_matches('/'),
-            self.token
-        )
+        if self.mirror {
+            self.page_url(&format!("http://127.0.0.1:{port}"), port)
+        } else {
+            self.origin_url(port)
+        }
+    }
+
+    /// `launch_origin` itself with the pairing fragment, as `--no-mirror` opens it.
+    #[must_use]
+    pub fn origin_url(&self, port: u16) -> String {
+        self.page_url(self.launch_origin.trim_end_matches('/'), port)
+    }
+
+    fn page_url(&self, page: &str, port: u16) -> String {
+        format!("{page}/#mcpProxyPort={port}&mcpProxyToken={}", self.token)
     }
 }
 
@@ -155,6 +183,7 @@ pub struct ProxyState {
     pending: Mutex<HashMap<String, PendingCall>>,
     stdio_pin: Mutex<Option<String>>,
     native_session_tools: Mutex<HashSet<String>>,
+    mirror: Option<WebMirror>,
     pub ready_notify: Notify,
     pub tools_changed_notify: Notify,
     pub shutdown: CancellationToken,
@@ -381,7 +410,19 @@ fn augment_tools(
 
 impl ProxyState {
     #[must_use]
-    pub fn new(config: ProxyConfig, port: u16, shutdown: CancellationToken) -> Arc<Self> {
+    pub fn new(mut config: ProxyConfig, port: u16, shutdown: CancellationToken) -> Arc<Self> {
+        let mirror = config
+            .mirror
+            .then(|| WebMirror::new(&config.launch_origin, port))
+            .flatten();
+        config.mirror = mirror.is_some();
+        if config.mirror {
+            for origin in mirror_origins(port) {
+                if !config.origins.contains(&origin) {
+                    config.origins.push(origin);
+                }
+            }
+        }
         Arc::new(Self {
             config,
             port,
@@ -392,10 +433,26 @@ impl ProxyState {
             pending: Mutex::new(HashMap::new()),
             stdio_pin: Mutex::new(None),
             native_session_tools: Mutex::new(HashSet::new()),
+            mirror,
             ready_notify: Notify::new(),
             tools_changed_notify: Notify::new(),
             shutdown,
         })
+    }
+
+    /// The URL `open_figstudio_browser` opens: the loopback mirror while the origin's start
+    /// page can be fetched, else the origin itself (a sign-in gateway, an offline origin),
+    /// where the browser has the cookies and asks for local network access.
+    pub async fn launch_url(&self) -> String {
+        match &self.mirror {
+            Some(mirror) if !mirror.start_page_loads().await => {
+                tracing::warn!(
+                    "the origin's start page is not figstudio's from here (sign-in or offline); opening the origin itself"
+                );
+                self.config.origin_url(self.port)
+            }
+            _ => self.config.launch_url(self.port),
+        }
     }
 
     fn next_order(&self) -> u64 {
@@ -478,7 +535,7 @@ impl ProxyState {
                 }),
             );
         }
-        let url = self.config.launch_url(self.port);
+        let url = self.launch_url().await;
         let launched = if self.config.launch_browser {
             open_system_browser(&url)
         } else {
@@ -1173,6 +1230,18 @@ pub async fn upgrade_bridge(
         .on_upgrade(move |socket| handle_socket(socket, state))
 }
 
+async fn serve_mirror(
+    State(state): State<Arc<ProxyState>>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+) -> Response {
+    match &state.mirror {
+        Some(mirror) => mirror.serve(&method, &uri, &headers).await,
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 async fn handle_socket(mut socket: WebSocket, state: Arc<ProxyState>) {
     let conn_id = state.conn_seq.fetch_add(1, Ordering::Relaxed) + 1;
     let first_order = state.next_order();
@@ -1405,9 +1474,11 @@ pub async fn serve_proxy_ws(
         None
     };
 
-    let router = axum::Router::new()
-        .route("/bridge", axum::routing::get(upgrade_bridge))
-        .with_state(state.clone());
+    let mut router = axum::Router::new().route("/bridge", axum::routing::get(upgrade_bridge));
+    if state.mirror.is_some() {
+        router = router.fallback(serve_mirror);
+    }
+    let router = router.with_state(state.clone());
 
     let shutdown = state.shutdown.clone();
     let mut tasks = vec![tokio::spawn({

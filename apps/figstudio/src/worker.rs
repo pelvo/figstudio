@@ -292,7 +292,11 @@ impl Workers {
         let count = in_flight.clone();
         let images = queue.clone();
         let render_loop = move || {
+            #[cfg(not(target_arch = "wasm32"))]
             let mut renderer = crate::renderer(images.images.clone());
+            #[cfg(target_arch = "wasm32")]
+            let (mut font_generation, mut renderer) =
+                crate::canvas_fonts::renderer(images.images.clone());
             let mut recordings = Recordings::default();
             let mut queue = Queue::default();
             loop {
@@ -321,6 +325,12 @@ impl Workers {
                     count.fetch_sub(1, Ordering::Relaxed);
                     continue;
                 };
+                #[cfg(target_arch = "wasm32")]
+                {
+                    if crate::canvas_fonts::refresh(&mut font_generation, &mut renderer) {
+                        recordings = Recordings::default();
+                    }
+                }
                 let start = Instant::now();
                 let drawn = gpu.draw(&mut recordings, &mut renderer, job, &key);
                 let elapsed = start.elapsed();
@@ -454,6 +464,12 @@ impl Workers {
     /// Counts images read so far; when it changes, views showing placeholders render again.
     pub fn images_arrived(&self) -> u64 {
         self.queue.arrived.load(Ordering::Relaxed)
+    }
+
+    /// Font changes use the same freshness stamp as arriving images.
+    #[cfg(target_arch = "wasm32")]
+    pub fn fonts_changed(&self) {
+        self.queue.arrived.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The image cache shared by every render (for exports).

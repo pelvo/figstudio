@@ -1,0 +1,18 @@
+{
+  "name": "figstudio-mcp",
+  "version": "0.0.0",
+  "description": "Offline MCP server for Figma .fig local copies: hands the exact frame to Claude Code, Cursor or Codex. Prebuilt figstudio-mcp binaries.",
+  "license": "Apache-2.0",
+  "homepage": "https://pelvo.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pelvo/figstudio.git",
+    "directory": "npm/figstudio-mcp"
+  },
+  "bugs": "https://github.com/pelvo/figstudio/issues",
+  "keywords": ["mcp", "model-context-protocol", "figma", "fig", "claude", "cursor", "codex", "design-to-code"],
+  "bin": { "figstudio-mcp": "bin/figstudio-mcp.js" },
+  "files": ["bin/", "README.md", "LICENSE"],
+  "engines": { "node": ">=18" },
+  "optionalDependencies": {}
+}
