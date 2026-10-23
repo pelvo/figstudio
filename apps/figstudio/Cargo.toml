@@ -65,7 +65,7 @@ pollster = { workspace = true }
 # persistence: window size and place, panel widths and the sidebar state survive a restart.
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11", "persistence"] }
 rfd = { workspace = true }
-fontdb = { workspace = true }
+fontdb = { workspace = true, features = ["fs", "memmap", "fontconfig"] }
 # The platform's config folder for saved space styles (spaces.rs).
 dirs = "6"
 # Recents: reading the page pictures back (already built for figstudio-render).

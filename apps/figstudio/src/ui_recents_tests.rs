@@ -44,6 +44,46 @@ fn with_nothing_opened_before_the_page_welcomes_and_offers_open_file() {
     assert!(!has(&h, "Grid view"), "no view toggle over an empty page");
 }
 
+/// Whether each character of `text` gets a glyph of its own in `h`'s fonts, not the
+/// replacement box (compared with an unassigned plane-16 character).
+fn boxed_characters(h: &Harness<'_, App>, font: egui::FontId, text: &str) -> Vec<char> {
+    h.ctx.fonts_mut(|fonts| {
+        let mut drawn = |s: String| {
+            let galley = fonts.layout_no_wrap(s, font.clone(), egui::Color32::WHITE);
+            galley.rows[0].glyphs[0].uv_rect
+        };
+        let tofu = drawn("\u{10FFFD}".into());
+        text.chars()
+            .filter(|c| !c.is_whitespace())
+            .filter(|&c| drawn(c.into()) == tofu)
+            .collect()
+    })
+}
+
+#[test]
+fn a_japanese_file_name_on_the_page_is_drawn_not_boxed() {
+    // Desktop reads an installed CJK face at start; a machine without one cannot pass.
+    if !crate::theme::has_cjk_face() {
+        eprintln!("skipped: no CJK font installed");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let name = "設計メモ・かな.fig";
+    let h = with_recents(&[temp_copy(&dir, name)]);
+    assert!(has(&h, name), "the card shows the name");
+    // The card name is semibold, the filter and the rows' folders regular.
+    for font in [
+        crate::theme::semibold(13.5),
+        egui::FontId::proportional(12.0),
+    ] {
+        assert_eq!(
+            boxed_characters(&h, font.clone(), name),
+            Vec::<char>::new(),
+            "{font:?}"
+        );
+    }
+}
+
 #[test]
 fn the_welcome_waits_for_the_saved_list() {
     let mut h = with_recents(&[]);

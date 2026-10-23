@@ -48,11 +48,20 @@ scripts/check.sh            # fmt --check, clippy -D warnings, all tests, releas
 scripts/check.sh --cross    # also cargo check for aarch64-apple-darwin
 FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh   # if the default Rust is older than 1.95
 scripts/check.sh --lint     # only fmt + clippy; CI runs --lint and --test as its two jobs
-scripts/check.sh --test     # tests, release build, wasm32; CI job "build + test"
+scripts/check.sh --test     # tests, npm launcher tests, release build, wasm32; CI job "build + test"
 scripts/check.sh --lint-one fmt   # one slice, for a local run
 # CI is the two required jobs. The cache prefix is `v1-rust` so the next miss saves
 # this repo's crates. A later exact hit does not update that snapshot.
 ```
+
+The `tests-npm` slice runs `node --test npm/figstudio-mcp/test/*.test.mjs` (the npm launcher and
+`scripts/npm-pack.mjs`, including a check that the release workflow builds every platform
+the launcher knows); it is skipped when `node` is not installed. The signal tests set
+`FIGSTUDIO_MCP_TEST_HOLD_AFTER_SPAWN_MS=300`, which holds the launcher right after
+`spawn()`, so a signal handler installed after the hold fails them. A handler placed
+between `spawn()` and the hold would still pass them, so a source test checks the order:
+every `process.on` comes before `spawn()` and the hold is the next statement. The hold is
+capped at `TEST_HOLD_MAX_MS` (300 ms), and a test sets 5000 to check the cap.
 
 It must end with `== all checks passed` before you commit. If clippy or rustfmt is missing:
 `rustup component add clippy rustfmt --toolchain <version>`.
@@ -168,6 +177,22 @@ These tests do not exercise a real browser Web Worker, HTTP relay or UI reveal q
 those belong to the later browser/relay lanes. The core reveal hook reports admission,
 not completion of a UI frame. Entry readers return decompressed bytes using the existing
 archive parser; a failed custom read does not fall through to a native path.
+
+### Browser outline-less text
+
+`cargo test -p figstudio-render --no-default-features --features parallel --test
+registered_fonts` checks late font registration, missing-font counts and recorded
+parallel pixels without installed fonts. Remove the `add_font_data` body to prove
+that the missing-text assertion fails.
+
+Generate the synthetic browser input with `FIGSTUDIO_TEXT_FIXTURE=/absolute/output.fig
+cargo test --release -p figstudio-render --test registered_fonts
+outline_less_text_measurement -- --ignored --nocapture`. This also reports a warm
+median of 15 renders of 500 outline-less labels. After `scripts/web-build.sh`, serve
+`web/dist` with `scripts/web-serve.py`. In `web/e2e`, run
+`FIGSTUDIO_TEXT_FIXTURE=/absolute/output.fig npx playwright test text.spec.mjs`.
+The test holds CJK responses until canvas and Recents are blank, then checks red
+text pixels on CPU and GPU workers after release. The pre-fix browser stays blank.
 
 ## 4. Writing tests
 

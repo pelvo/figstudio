@@ -18,6 +18,8 @@ mod prompts;
 /// Local zero-upload browser proxy (`--browser-proxy`).
 pub mod proxy;
 pub mod tools;
+/// The `--origin` web app served from the browser proxy's loopback port.
+pub mod web_mirror;
 
 use files::{FileRegistry, Files};
 use rmcp::{

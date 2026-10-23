@@ -155,3 +155,60 @@ fn wide_instance_hidden_prefix_cannot_hide_frontmost_child() {
         vec![path(&[top]), path(&[2500])]
     );
 }
+
+/// An instance whose only child is a boolean (60×60) with an operand reaching to 100×100.
+fn boolean_instance(stored: bool) -> Document {
+    let mut doc = inner_fixture::document();
+    let mut nodes = doc.nodes.clone();
+    nodes.retain(|n| !matches!(n.id, Guid(99, 101..=107)));
+    let mut boolean = child(&doc, 300, 100, "BOOLEAN_OPERATION");
+    boolean.data.set("strokePaints", Val::Arr(vec![]));
+    let mut operand = child(&doc, 301, 300, "RECTANGLE");
+    let size = |w: f64| {
+        let mut o = figstudio_fig::Obj::new();
+        o.insert("x", Val::Float(w));
+        o.insert("y", Val::Float(w));
+        Val::Obj(o)
+    };
+    operand.data.set("size", size(100.0));
+    if stored {
+        let mut commands = Vec::new();
+        for (op, x, y) in [
+            (1, 0.0_f32, 0.0_f32),
+            (2, 60.0, 0.0),
+            (2, 60.0, 60.0),
+            (2, 0.0, 60.0),
+        ] {
+            commands.push(op);
+            commands.extend(x.to_le_bytes());
+            commands.extend(y.to_le_bytes());
+        }
+        commands.push(0);
+        let index = i64::try_from(doc.blobs.len()).unwrap();
+        doc.blobs.push(commands);
+        let mut path = figstudio_fig::Obj::new();
+        path.insert("commandsBlob", Val::Int(index));
+        boolean
+            .data
+            .set("fillGeometry", Val::Arr(vec![Val::Obj(path)]));
+    }
+    nodes.push(Node::from_data(boolean.data).unwrap());
+    nodes.push(Node::from_data(operand.data).unwrap());
+    doc.set_nodes(nodes).unwrap();
+    doc
+}
+
+#[test]
+fn inside_an_instance_a_boolean_operand_past_the_box_is_hit_only_when_painted() {
+    let point = Point::new(80.0, 80.0);
+    assert_eq!(
+        crate::instance_pick::hit_chain(&boolean_instance(true), id(200), point),
+        Vec::new(),
+        "a stored result paints nothing there"
+    );
+    assert_eq!(
+        crate::instance_pick::hit_chain(&boolean_instance(false), id(200), point),
+        vec![path(&[300]), path(&[301])],
+        "a fallback paints the operand whole"
+    );
+}

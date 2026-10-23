@@ -273,6 +273,9 @@ impl Inbox {
             return Some(busy_reply(&id, &rpc_id));
         }
         self.pending += 1;
+        // This runs on the UI thread, which must not wait on the workers' font lock.
+        #[cfg(target_arch = "wasm32")]
+        let fonts = crate::canvas_fonts::latest();
         let env = Snapshot {
             tabs: view
                 .tabs
@@ -286,6 +289,12 @@ impl Inbox {
                         }),
                         Default::default(),
                     );
+                    #[cfg(target_arch = "wasm32")]
+                    let rendering = {
+                        let mut rendering = rendering;
+                        rendering.fonts = fonts.clone();
+                        rendering
+                    };
                     McpTab {
                         id: tab.id,
                         name: tab.name.clone(),
