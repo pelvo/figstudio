@@ -562,6 +562,37 @@ impl CjkNeed {
     }
 }
 
+/// What CJK `texts` (names the UI shows without a document, such as Recents cards) need.
+/// Unlike one document's text, the names are independent, so Hangul in any of them needs
+/// KR (the only face with Hangul, and it has kana and ideographs too): it is `HangulOnly`
+/// even next to kana or ideographs.
+#[cfg_attr(
+    not(any(test, target_arch = "wasm32")),
+    expect(dead_code, reason = "only the browser fetches a CJK font")
+)]
+pub fn cjk_need_of<'a>(texts: impl IntoIterator<Item = &'a str>) -> CjkNeed {
+    let (need, hangul) = texts
+        .into_iter()
+        .fold((CjkNeed::None, false), |(need, hangul), text| {
+            (need.add(text), hangul || text.chars().any(is_hangul))
+        });
+    if hangul { CjkNeed::HangulOnly } else { need }
+}
+
+/// The order in which names' needs replace each other: `HangulOnly` (KR) covers `Any`.
+#[cfg_attr(
+    not(any(test, target_arch = "wasm32")),
+    expect(dead_code, reason = "only the browser fetches a CJK font")
+)]
+pub fn names_rank(need: CjkNeed) -> u8 {
+    match need {
+        CjkNeed::None => 0,
+        CjkNeed::Shared => 1,
+        CjkNeed::Any => 2,
+        CjkNeed::HangulOnly => 3,
+    }
+}
+
 /// What CJK anything the UI shows for this document (file name, page and layer names, text
 /// contents) needs.
 pub fn cjk_need(doc: &figstudio_fig::Document, file_name: &str) -> CjkNeed {
@@ -781,6 +812,12 @@ fn system_fonts() -> &'static SystemFonts {
         }
         fonts
     })
+}
+
+/// Whether an installed CJK face was found (a machine without one shows boxes).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn has_cjk_face() -> bool {
+    system_fonts().cjk.is_some()
 }
 
 /// The symbol code points (General Punctuation to Misc Symbols and Arrows, and the emoji
@@ -1071,6 +1108,26 @@ mod tests {
         nodes[3].name = "按鈕".into();
         doc.set_nodes(nodes).unwrap();
         assert_eq!(cjk_need(&doc, "structure.fig"), CjkNeed::Any, "layer name");
+    }
+
+    #[test]
+    fn recents_names_ask_for_the_cjk_face_without_a_document() {
+        assert_eq!(cjk_need_of(["a.fig", "Latin — b.fig"]), CjkNeed::None);
+        assert_eq!(cjk_need_of(["a.fig", "設計メモ.fig"]), CjkNeed::Any);
+        assert_eq!(cjk_need_of(["かな.fig"]), CjkNeed::Any, "kana alone");
+        assert_eq!(cjk_need_of(["디자인.fig"]), CjkNeed::HangulOnly);
+        assert_eq!(
+            cjk_need_of(["디자인.fig", "設計.fig"]),
+            CjkNeed::HangulOnly,
+            "only KR draws both names"
+        );
+        assert_eq!(cjk_need_of(["設計.fig", "디자인.fig"]), CjkNeed::HangulOnly);
+        assert!(
+            names_rank(CjkNeed::HangulOnly) > names_rank(CjkNeed::Any),
+            "Hangul seen after kana still asks for KR"
+        );
+        assert!(names_rank(CjkNeed::Any) > names_rank(CjkNeed::Shared));
+        assert_eq!(cjk_need_of(["「a」.fig"]), CjkNeed::Shared);
     }
 
     #[test]

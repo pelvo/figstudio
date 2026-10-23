@@ -770,14 +770,6 @@ impl App {
                 } => {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
-                    match cjk {
-                        theme::CjkNeed::None => {}
-                        theme::CjkNeed::HangulOnly => self.web.load_hangul_font(ctx),
-                        theme::CjkNeed::Shared | theme::CjkNeed::Any => {
-                            self.web.load_cjk_font(ctx);
-                        }
-                    }
-                    #[cfg(target_arch = "wasm32")]
                     self.web
                         .symbols
                         .load_if_needed(ctx, &doc, &path.to_string_lossy());
@@ -795,6 +787,8 @@ impl App {
                     self.next_id += 1;
                     #[cfg(target_arch = "wasm32")]
                     web::bind_upload(&path, id);
+                    #[cfg(target_arch = "wasm32")]
+                    self.web.load_cjk_for(ctx, cjk, id);
                     let mut tab = Tab::new(id, path.clone(), doc, source, elapsed)
                         .with_doc_key(doc_key)
                         .with_real_path(real_path);
