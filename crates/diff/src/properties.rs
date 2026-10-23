@@ -60,6 +60,65 @@ pub(crate) fn changes(old: Option<&Val>, new: Option<&Val>) -> Vec<PropertyChang
     out
 }
 
+/// How many fields [`changes`] would list between `old` and `new`, leaving out the top-level
+/// keys in `skip`, without building them. Each value pair visited spends one of `budget`;
+/// `None` once it runs out.
+pub(crate) fn count_changes(
+    old: Option<&Val>,
+    new: Option<&Val>,
+    skip: &[&str],
+    budget: &mut usize,
+) -> Option<usize> {
+    let mut pending = vec![(true, old, new)];
+    let mut count = 0;
+    while let Some((top, old, new)) = pending.pop() {
+        *budget = budget.checked_sub(1)?;
+        if old == new {
+            continue;
+        }
+        match (old, new) {
+            (Some(Val::Obj(_)), Some(Val::Obj(_)))
+            | (Some(Val::Obj(_)), None)
+            | (None, Some(Val::Obj(_))) => {
+                let keys: BTreeSet<_> = [old, new]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| match v {
+                        Val::Obj(o) => Some(o),
+                        _ => None,
+                    })
+                    .flat_map(|o| o.keys())
+                    .collect();
+                if !keys.is_empty() {
+                    for key in keys.into_iter().filter(|k| !(top && skip.contains(k))) {
+                        pending.push((
+                            false,
+                            old.and_then(|v| v.get(key)),
+                            new.and_then(|v| v.get(key)),
+                        ));
+                    }
+                    continue;
+                }
+            }
+            (Some(Val::Arr(_)), Some(Val::Arr(_)))
+            | (Some(Val::Arr(_)), None)
+            | (None, Some(Val::Arr(_))) => {
+                let a = old.map(Val::items).unwrap_or_default();
+                let b = new.map(Val::items).unwrap_or_default();
+                if !a.is_empty() || !b.is_empty() {
+                    for i in 0..a.len().max(b.len()) {
+                        pending.push((false, a.get(i), b.get(i)));
+                    }
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        count += 1;
+    }
+    Some(count)
+}
+
 fn join(path: &str, key: &str) -> String {
     if path.is_empty() {
         key.into()
@@ -206,4 +265,60 @@ pub(crate) fn text_change(old: &Val, new: &Val, changes: &[PropertyChange]) -> O
             .map(|(index, changes)| RunChange { index, changes })
             .collect(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{changes, count_changes};
+    use figstudio_fig::{Obj, Val};
+
+    fn obj(fields: Vec<(&str, Val)>) -> Val {
+        let mut out = Obj::new();
+        for (key, value) in fields {
+            out.insert(key, value);
+        }
+        Val::Obj(out)
+    }
+
+    #[test]
+    fn the_count_matches_the_changes_it_skips_and_stops_at_the_budget() {
+        let old = obj(vec![
+            ("guid", Val::Int(1)),
+            ("name", Val::Str("a".into())),
+            ("fills", Val::Arr(vec![Val::Int(1), Val::Int(2)])),
+            (
+                "size",
+                obj(vec![("x", Val::Float(1.0)), ("y", Val::Float(2.0))]),
+            ),
+        ]);
+        let new = obj(vec![
+            ("guid", Val::Int(9)),
+            ("name", Val::Str("b".into())),
+            (
+                "fills",
+                Val::Arr(vec![Val::Int(1), Val::Int(3), Val::Int(4)]),
+            ),
+            (
+                "size",
+                obj(vec![("x", Val::Float(1.0)), ("y", Val::Float(5.0))]),
+            ),
+        ]);
+        let listed = changes(Some(&old), Some(&new))
+            .into_iter()
+            .filter(|c| !c.field.starts_with("guid"))
+            .count();
+        let mut budget = 100;
+        assert_eq!(
+            count_changes(Some(&old), Some(&new), &["guid"], &mut budget),
+            Some(listed)
+        );
+        assert_eq!(listed, 4);
+        // The root, three fields past `guid`, three fill items and two size fields.
+        assert_eq!(budget, 91);
+        let mut budget = 8;
+        assert_eq!(
+            count_changes(Some(&old), Some(&new), &["guid"], &mut budget),
+            None
+        );
+    }
 }

@@ -493,7 +493,7 @@ fn repeated_copies_share_one_comparison_budget_per_recreated_screen() {
         Node::from_data(n.data).unwrap()
     };
     // 50 copies of "Alpha" and of "Beta" on each side: 2 × 2,500 comparisons is past the
-    // screen's 4,096, so Alpha (first in path order) is compared and Beta pairs in walk
+    // document's 4,096, so Alpha (first in path order) is compared and Beta pairs in walk
     // order without being compared. Copy 20 of each, and the one "Only" layer, is edited.
     let side = |new: bool| {
         let (root, base) = if new { (7, 20_000) } else { (4, 10_000) };
@@ -515,7 +515,62 @@ fn repeated_copies_share_one_comparison_budget_per_recreated_screen() {
         document(nodes)
     };
     let report = diff_documents(&side(false), &side(true));
-    let rows: Vec<_> = report.pages[0].changed.iter().map(|n| n.id.1).collect();
+    let page = &report.pages[0];
+    let rows: Vec<_> = page.changed.iter().map(|n| n.id.1).collect();
     // A unique name is still compared once the budget is spent.
-    assert_eq!(rows, [20_020, 20_999], "{:?}", report.pages[0].changed);
+    assert_eq!(rows, [20_020, 20_999], "{:?}", page.changed);
+    // The uncompared copies still pair, so only the roots are added and removed.
+    let ids = |list: &[figstudio_diff::NodeRef]| list.iter().map(|n| n.id.1).collect::<Vec<_>>();
+    assert_eq!(ids(&page.added), [7], "{:?}", page.added);
+    assert_eq!(ids(&page.removed), [4], "{:?}", page.removed);
+    assert!(
+        report.truncated.iter().any(|n| n.ends_with(
+            "copy comparison limit reached; 50 repeated layers on recreated screens paired \
+             in order without listing their edits"
+        )),
+        "{:?}",
+        report.truncated
+    );
+    assert!(report.complete);
+}
+
+#[test]
+fn rows_of_a_recreated_screen_stay_in_tree_order_with_other_changes() {
+    // A recreated screen comes first on the page, a screen that kept its ids second; both
+    // have an edited child, and the recreated one also keeps an edited child's id.
+    let text = |id, parent, name: &str, value: &str, position: &str| {
+        let mut n = node(id, Some(parent), "TEXT", position);
+        n.data.set("name", Val::Str(name.into()));
+        n.data.set(
+            "textData",
+            object(&[("characters", Val::Str(value.into()))]),
+        );
+        Node::from_data(n.data).unwrap()
+    };
+    let placed = |mut n: Node, name: &str, position: &str| {
+        n.data.set("name", Val::Str(name.into()));
+        n.data.set(
+            "parentIndex",
+            object(&[
+                ("guid", Guid(0, 1).to_val()),
+                ("position", Val::Str(position.into())),
+            ]),
+        );
+        Node::from_data(n.data).unwrap()
+    };
+    let side = |new: bool| {
+        let v = |s: &str| if new { format!("{s}2") } else { s.to_owned() };
+        let first = if new { 20 } else { 4 };
+        document(vec![
+            placed(screen(first, 1, 0.0, "FRAME"), "Recreated", "a"),
+            text(first + 1, first, "Title", &v("t"), "a"),
+            text(30, first, "Same id", &v("s"), "b"),
+            placed(screen(8, 1, 1000.0, "FRAME"), "Kept", "b"),
+            text(9, 8, "Body", &v("b"), "a"),
+        ])
+    };
+    let report = diff_documents(&side(false), &side(true));
+    let page = &report.pages[0];
+    let rows: Vec<_> = page.changed.iter().map(|n| n.id.1).collect();
+    assert_eq!(rows, [21, 30, 9], "{:?}", page.changed);
 }

@@ -36,11 +36,15 @@ pub struct Summary {
     pub nodes_added: usize,
     /// Unmatched old nodes, excluding page/document containers.
     pub nodes_removed: usize,
-    /// Matched changed nodes, including moves and ungrouped nodes.
+    /// Matched changed nodes, including moves and ungrouped nodes. A layer of a recreated
+    /// screen that pairs by name and has edits counts here too, while its new id also counts
+    /// in `nodes_added` (and its old id in `nodes_removed`), so the counts overlap.
     pub nodes_changed: usize,
     /// Matched nodes whose parent or sibling position changed.
     pub nodes_moved: usize,
-    /// Stored leaf deltas, excluding redundant parentIndex rows on moves.
+    /// Stored leaf deltas, excluding redundant parentIndex rows on moves. For layers of a
+    /// recreated screen paired by name, id fields and the screen root's transform are left
+    /// out.
     pub properties_changed: usize,
 }
 
