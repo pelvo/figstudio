@@ -8,7 +8,9 @@ pub struct ScreenLimits {
     pub page_screens: usize,
     /// Pixels (both sides) drawn for standalone screens across the whole document.
     pub document_pixels: u64,
-    /// Encoded picture bytes one page may hold in memory before the sink takes them.
+    /// Encoded picture bytes one page may hold in memory before the sink takes them. It is
+    /// checked before each screen is drawn and before it cuts crops, so the last screen
+    /// admitted may go over it by that screen's own pictures and crops.
     pub page_bytes: usize,
 }
 
