@@ -144,6 +144,18 @@ async fn lossless_formats_cover_all_image_tools() {
                     .filter(|p| p.extension().is_some_and(|e| e == format))
                     .collect();
                 assert!(!paths.is_empty());
+                // Every `src` in the generated code names a written asset of this format.
+                let code = json["content"][0]["text"].as_str().unwrap();
+                let srcs: Vec<_> = code
+                    .split("src=\"")
+                    .skip(1)
+                    .map(|rest| rest.split('"').next().unwrap())
+                    .collect();
+                assert!(!srcs.is_empty(), "{code}");
+                for src in srcs {
+                    assert!(src.ends_with(&format!(".{format}")), "{src}");
+                    assert!(std::path::Path::new(src).is_file(), "{src}");
+                }
                 for path in paths {
                     assert!(text.contains(path.file_name().unwrap().to_str().unwrap()));
                     let bytes = std::fs::read(path).unwrap();
