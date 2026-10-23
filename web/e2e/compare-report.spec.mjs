@@ -5,7 +5,8 @@ import { join } from "node:path";
 // Opens the sample compare report written by crates/diff/tests/sample_report.rs:
 //   FIGSTUDIO_SAMPLE_REPORT=/tmp/sample cargo test -p figstudio-diff --test sample_report
 //   FIGSTUDIO_SAMPLE_REPORT=/tmp/sample npx playwright test compare-report.spec.mjs
-// Screenshots are attached to the run for a look by eye; the checks cover layout only.
+// Screenshots are attached to the run for a look by eye. The checks cover layout, console
+// errors, and the overlay: Before shows on hover, on keyboard focus and while pressed.
 const dir = process.env.FIGSTUDIO_SAMPLE_REPORT;
 test.skip(!dir, "set FIGSTUDIO_SAMPLE_REPORT to the sample report folder");
 

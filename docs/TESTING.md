@@ -284,8 +284,9 @@ cd web/e2e && npm i --no-save @playwright/test
 FIGSTUDIO_SAMPLE_REPORT=/tmp/sample npx playwright test compare-report.spec.mjs
 ```
 
-The spec checks that every picture loads, that the page does not scroll sideways at 1280 and
-390 px, and that the overlay reveals Before on hover. It attaches screenshots; look at them
+The spec checks that every picture loads, that the page logs no console errors and does not
+scroll sideways at 1280 and 390 px, and that the overlay reveals Before on hover, on keyboard
+focus and while pressed (the exact top-level `:active` rule). It attaches screenshots; look at them
 after a change to the report's HTML or CSS. Without the variable the spec is skipped.
 
 ## 7. GUI smoke test (Linux)

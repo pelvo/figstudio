@@ -124,7 +124,7 @@ fn a_small_change_at_the_screen_edge_goes_to_the_layer_that_drew_it() {
     // the smallest changed layer holding it, and every layer that wins a pixel is kept.
     let side = |rgb| {
         // Stacking follows the position strings: Under, Bar, then the grey covers.
-        let named = |mut n: Node, name: &str| {
+        let stacked = |mut n: Node, name: &str| {
             n.data.set("name", Val::Str(name.into()));
             let position = match name {
                 "Under" => "a",
@@ -145,29 +145,29 @@ fn a_small_change_at_the_screen_edge_goes_to_the_layer_that_drew_it() {
         };
         document(vec![
             screen(),
-            named(
+            stacked(
                 filled_rectangle_at(6, 2, rgb, 10.0, 0.0, 280.0, 60.0),
                 "Under",
             ),
-            named(
+            stacked(
                 filled_rectangle_at(3, 2, rgb, 20.0, 0.0, 260.0, 10.0),
                 "Bar",
             ),
-            named(
+            stacked(
                 filled_rectangle_at(4, 2, (0.5, 0.5, 0.5), 26.0, 0.0, 264.0, 60.0),
                 "Cover",
             ),
-            named(
+            stacked(
                 filled_rectangle_at(5, 2, (0.5, 0.5, 0.5), 10.0, 6.0, 16.0, 54.0),
                 "Low",
             ),
-            named(
+            stacked(
                 filled_rectangle_at(7, 2, (0.5, 0.5, 0.5), 10.0, 0.0, 10.0, 6.0),
                 "Left",
             ),
             // A smaller changed layer over part of the bar's visible corner owns those pixels;
             // the bar keeps the rest, so both are on the area.
-            named(filled_rectangle_at(8, 2, rgb, 22.0, 0.0, 4.0, 4.0), "Dot"),
+            stacked(filled_rectangle_at(8, 2, rgb, 22.0, 0.0, 4.0, 4.0), "Dot"),
         ])
     };
     let (old, new) = (side((1.0, 0.0, 0.0)), side((0.0, 1.0, 0.0)));

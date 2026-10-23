@@ -6,10 +6,9 @@ use support::{document, filled_rectangle_at, frame_at, named, object};
 #[test]
 fn screen_region_cap_does_not_undercount_changed_pixels_and_is_noted() {
     let side = |new| {
-        let mut root = filled_rectangle_at(2, 1, (1.0, 1.0, 1.0), 0.0, 0.0, 1200.0, 300.0);
-        root.data.set("type", Val::Str("FRAME".into()));
+        let root = frame_at(2, 1, (1.0, 1.0, 1.0), 0.0, 0.0, 1200.0, 300.0);
         document(
-            std::iter::once(Node::from_data(root.data).unwrap())
+            std::iter::once(root)
                 .chain((0..14).map(|i| {
                     filled_rectangle_at(
                         i + 3,
@@ -93,7 +92,7 @@ fn frames(count: u32, side: f64, new: impl Fn(u32) -> bool) -> figstudio_fig::Do
         (0..count)
             .flat_map(|i| {
                 let root = 10 + i * 2;
-                let mut frame = filled_rectangle_at(
+                let frame = frame_at(
                     root,
                     1,
                     (1.0, 1.0, 1.0),
@@ -102,14 +101,13 @@ fn frames(count: u32, side: f64, new: impl Fn(u32) -> bool) -> figstudio_fig::Do
                     side,
                     side.min(1000.0),
                 );
-                frame.data.set("type", Val::Str("FRAME".into()));
                 let dot = if new(i) {
                     (0.0, 1.0, 0.0)
                 } else {
                     (1.0, 0.0, 0.0)
                 };
                 [
-                    Node::from_data(frame.data).unwrap(),
+                    frame,
                     filled_rectangle_at(root + 1, root, dot, 10.0, 10.0, 20.0, 20.0),
                 ]
             })
@@ -500,12 +498,8 @@ fn a_renamed_or_moved_root_does_not_use_up_the_screen_cap_before_a_real_change()
     // Screen 2 comes first and is only renamed or moved on the canvas, which cannot change
     // its picture; screen 3's child moves (real pixels, no change line). With room for one
     // screen, screen 3 is the one drawn.
-    let frame = |id, x, name: &str| {
-        let mut n = filled_rectangle_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 200.0, 200.0);
-        n.data.set("type", Val::Str("FRAME".into()));
-        n.data.set("name", Val::Str(name.into()));
-        Node::from_data(n.data).unwrap()
-    };
+    let frame =
+        |id, x, name: &str| named(frame_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 200.0, 200.0), name);
     for edit in ["rename", "canvas move"] {
         let side = |new: bool| {
             let (name, x) = match (new, edit) {
