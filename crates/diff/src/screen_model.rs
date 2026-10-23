@@ -55,13 +55,14 @@ fn list_recreated_changes(
     docs: (&Document, &Document),
     page: &mut PageDiff,
     pair: ScreenPair,
+    budget: &mut CopyBudget,
 ) -> (usize, usize) {
     let (Some(old_root), Some(new_root)) = (pair.old, pair.new) else {
         return (0, 0);
     };
     let old = one_sided(docs.0, docs.1, old_root);
     let new = one_sided(docs.1, docs.0, new_root);
-    let pairs = pair_up(docs, &old, &new);
+    let pairs = pair_up(docs, &old, &new, budget);
     let paired: [BTreeSet<Guid>; 2] = [
         pairs.iter().map(|p| p.0).collect(),
         pairs.iter().map(|p| p.1).collect(),
@@ -95,21 +96,47 @@ fn list_recreated_changes(
     edits
 }
 
-/// Pairwise comparisons of repeated copies per recreated screen, across all its paths. A
-/// path whose copies would go past what is left pairs in walk order instead.
+/// Pairwise comparisons of repeated copies per document, across every recreated screen.
 const MAX_COPY_COMPARISONS: usize = 4096;
+/// Value pairs those comparisons may visit per document, so large layers (long text) cannot
+/// make them slow.
+const MAX_COPY_VALUES: usize = 1 << 22;
+/// Fields that differ in every recreated layer: ids, and sibling positions regenerated with
+/// them. They are never edits.
+const ID_FIELDS: [&str; 3] = ["guid", "parentIndex", "overrideKey"];
+
+/// What comparing repeated copies may still spend in this document, and how many copies
+/// paired without it.
+#[derive(Debug)]
+pub(crate) struct CopyBudget {
+    comparisons: usize,
+    values: usize,
+    /// Copies paired in walk order, uncompared, because the budget ran out.
+    pub(crate) uncompared: usize,
+}
+
+impl Default for CopyBudget {
+    fn default() -> Self {
+        Self {
+            comparisons: MAX_COPY_COMPARISONS,
+            values: MAX_COPY_VALUES,
+            uncompared: 0,
+        }
+    }
+}
 
 /// Pairs the one-sided layers that share a [`Path`], as `(old, new, compared)` in the new
 /// side's walk order. Pairs are taken cheapest first (fewest changed fields, then walk
 /// order), each copy at most once, so only the side with more copies has copies left over;
 /// when every comparison costs the same, those are the last copies in walk order. A path
-/// with more copies than the screen's [`MAX_COPY_COMPARISONS`] has left to compare is
-/// paired in walk order, with `compared` false. One copy on each side always pairs and is
-/// compared, outside the budget.
+/// whose comparisons do not fit in what the document's [`CopyBudget`] has left is paired in
+/// walk order, with `compared` false; paths spend the budget in [`Path`] order. One copy on
+/// each side always pairs and is compared, outside the budget.
 fn pair_up(
     docs: (&Document, &Document),
     old: &[(Path, Guid)],
     new: &[(Path, Guid)],
+    budget: &mut CopyBudget,
 ) -> Vec<(Guid, Guid, bool)> {
     let mut sides: BTreeMap<&Path, (Vec<Guid>, Vec<Guid>)> = BTreeMap::new();
     for (key, id) in old {
@@ -119,23 +146,16 @@ fn pair_up(
         sides.entry(key).or_default().1.push(*id);
     }
     let mut pairs = Vec::new();
-    let mut left = MAX_COPY_COMPARISONS;
     for (a, b) in sides.values() {
         if let ([x], [y]) = (a.as_slice(), b.as_slice()) {
             pairs.push((*x, *y, true));
             continue;
         }
-        let Some(rest) = left.checked_sub(a.len() * b.len()) else {
+        let Some(mut costs) = copy_costs(docs, (a, b), budget) else {
+            budget.uncompared += a.len().min(b.len());
             pairs.extend(a.iter().zip(b).map(|(x, y)| (*x, *y, false)));
             continue;
         };
-        left = rest;
-        let mut costs = Vec::with_capacity(a.len() * b.len());
-        for (i, x) in a.iter().enumerate() {
-            for (j, y) in b.iter().enumerate() {
-                costs.push((edits(docs, (*x, *y), false).len(), i, j));
-            }
-        }
         costs.sort_unstable();
         let (mut used_a, mut used_b) = (vec![false; a.len()], vec![false; b.len()]);
         for (_, i, j) in costs {
@@ -155,6 +175,33 @@ fn pair_up(
     pairs
 }
 
+/// `(changed fields, old index, new index)` for every pair of copies, or `None` (and the
+/// value budget spent) when they do not fit in `budget`.
+fn copy_costs(
+    docs: (&Document, &Document),
+    (a, b): (&[Guid], &[Guid]),
+    budget: &mut CopyBudget,
+) -> Option<Vec<(usize, usize, usize)>> {
+    budget.comparisons = budget.comparisons.checked_sub(a.len() * b.len())?;
+    let mut costs = Vec::with_capacity(a.len() * b.len());
+    for (i, x) in a.iter().enumerate() {
+        for (j, y) in b.iter().enumerate() {
+            let count = crate::properties::count_changes(
+                docs.0.node(*x).map(|n| &n.data),
+                docs.1.node(*y).map(|n| &n.data),
+                &ID_FIELDS,
+                &mut budget.values,
+            );
+            let Some(count) = count else {
+                budget.values = 0;
+                return None;
+            };
+            costs.push((count, i, j));
+        }
+    }
+    Some(costs)
+}
+
 /// The property changes between two paired layers that count as edits. Ids always differ,
 /// and sibling positions are regenerated with the new ids. The root's own transform is
 /// where the screen sits on the canvas, so it shows only as a screen move; unlike a screen
@@ -170,7 +217,7 @@ fn edits(
     let mut changes = crate::properties::changes(Some(&a.data), Some(&b.data));
     changes.retain(|c| {
         let head = c.field.split('.').next().unwrap_or(&c.field);
-        !matches!(head, "guid" | "parentIndex" | "overrideKey") && !(root && head == "transform")
+        !ID_FIELDS.contains(&head) && !(root && head == "transform")
     });
     changes
 }
@@ -223,15 +270,25 @@ pub(crate) fn moved(docs: (&Document, &Document), pair: ScreenPair) -> bool {
 }
 
 /// Returns the change rows and property changes added for recreated screens.
-pub(crate) fn prepare(docs: (&Document, &Document), page: &mut PageDiff) -> (usize, usize) {
+pub(crate) fn prepare(
+    docs: (&Document, &Document),
+    page: &mut PageDiff,
+    budget: &mut CopyBudget,
+) -> (usize, usize) {
     let pairs = match_screens(docs.0, docs.1, page.id);
     let mut edits = (0, 0);
+    let mut recreated = false;
     for pair in pairs
         .iter()
         .filter(|p| p.matched_by == Some(MatchBy::NameSize))
     {
-        let (rows, props) = list_recreated_changes(docs, page, *pair);
+        let (rows, props) = list_recreated_changes(docs, page, *pair, budget);
         edits = (edits.0 + rows, edits.1 + props);
+        recreated = true;
+    }
+    if recreated {
+        // The rows above were appended; screen members and lines below read tree order.
+        crate::structure::sort_rows(docs, page);
     }
     let lines = crate::html_changes::page_lines(page);
     let mut owned = BTreeSet::new();
