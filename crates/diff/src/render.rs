@@ -78,6 +78,7 @@ pub const SHARED_IMAGES_ID: Guid = Guid(u32::MAX, u32::MAX);
 pub struct ScreenImages {
     pub before: Option<Vec<u8>>,
     pub after: Option<Vec<u8>>,
+    /// One crop per area of the screen, in area order, or none at all.
     pub regions: Vec<RegionImages>,
 }
 

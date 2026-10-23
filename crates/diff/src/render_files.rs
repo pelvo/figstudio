@@ -62,6 +62,8 @@ impl RenderLinks {
         for (screen, links) in page.screens.iter_mut().zip(self.screens) {
             screen.thumb_old = links.before;
             screen.thumb_new = links.after;
+            // A screen has one crop per area, in order, or none (see `finish_screen`).
+            debug_assert!(links.regions.is_empty() || links.regions.len() == screen.regions.len());
             for (region, (before, after)) in screen.regions.iter_mut().zip(links.regions) {
                 region.old_png = Some(before);
                 region.new_png = Some(after);
