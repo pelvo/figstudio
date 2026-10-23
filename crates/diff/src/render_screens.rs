@@ -1,6 +1,6 @@
 //! Standalone screen comparison; canvas placement never enters the pixel mask.
 use crate::screen_limits::PageTally;
-use crate::shared::RegionKey;
+use crate::shared::{ComponentKey, RegionKey};
 use crate::shared_component::Masters;
 use crate::{PageDiff, RenderImages, RenderOpts, ScreenDiff, ScreenImages, ScreenStatus};
 use crate::{
@@ -11,7 +11,6 @@ use crate::{
 };
 use figstudio_fig::{Document, Guid};
 use figstudio_render::{Renderer, Viewport, absolute_transform, geom::size, kurbo::Affine};
-use fixedbitset::FixedBitSet;
 
 const SCREEN_PIXELS: usize = 4_194_304;
 
@@ -19,10 +18,15 @@ pub(crate) struct ScreenRender {
     pub(crate) screen: ScreenDiff,
     pub(crate) pictures: ScreenImages,
     signatures: Vec<crate::shared::Signature>,
-    transforms: (Affine, Affine),
-    mask: Vec<bool>,
+    /// Per area, when the screen was drawn with [`Owners`]: the leaf layers that own its
+    /// changed pixels and the changed component it belongs to.
+    owners: Vec<(Vec<Guid>, Option<ComponentKey>)>,
     capped: bool,
 }
+
+/// A page screen's members and the page's components: what [`draw_screen`] needs to find,
+/// while it still holds the changed-pixel mask, which layers and component own each area.
+type Owners<'m, 'a> = (&'m [Guid], &'m mut Masters<'a>);
 
 /// Whether a root edit can change the screen's own picture. The screen is drawn in its own
 /// frame, so the root's whole `transform` (move, rotation, flip, scale) cancels out, and so
@@ -115,7 +119,7 @@ pub(crate) fn attach_screens(
                 pair,
                 readers,
                 opts,
-                false,
+                (false, Some((&members[index][..], &mut *masters))),
             )
         };
         let Some(screen) = screen else {
@@ -164,8 +168,7 @@ pub(crate) fn attach_screens(
             mut screen,
             mut pictures,
             signatures: region_signatures,
-            transforms,
-            mask,
+            owners,
             capped,
         } = finish_screen(
             (&mut *old_renderer, &mut *new_renderer),
@@ -187,29 +190,18 @@ pub(crate) fn attach_screens(
         pictures.regions = crops_only.regions;
         screen.moved = crate::screen_model::moved(docs, pair);
         let nodes = members[index].clone();
-        for region in &mut screen.regions {
+        let mut components = Vec::with_capacity(owners.len());
+        for (region, (owners, component)) in screen.regions.iter_mut().zip(owners) {
             // Layers mostly inside the area, plus the leaf layers that own its changed pixels
             // (a small change inside a wider layer), in member order.
-            let owners = screen_bounds::containing_leaves(
-                region,
-                &nodes,
-                docs,
-                pair,
-                (transforms, (&mask, screen.width as usize)),
-            );
             region.nodes = nodes
                 .iter()
                 .copied()
                 .filter(|id| region.nodes.contains(id) || owners.contains(id))
                 .collect();
+            components.push(component);
         }
         screen.nodes = nodes;
-        let components = masters.keys(
-            (pair.old, pair.new),
-            transforms,
-            &screen.regions,
-            (&mask, screen.width as usize),
-        );
         let region_keys: Vec<_> = region_signatures
             .into_iter()
             .zip(components)
@@ -289,12 +281,12 @@ pub(crate) struct DrawnScreen {
     height: u32,
     capped: bool,
     transforms: (Affine, Affine),
-    /// The changed-pixel mask, one bit per pixel: every changed screen is held between the
-    /// two passes, so it is packed (a bool per pixel would be eight times larger).
-    mask: FixedBitSet,
-    /// Changed areas, before crops are cut; `signatures` has one per area.
+    /// Changed areas, before crops are cut; `signatures` has one per area, and so has
+    /// `owners` when the screen was drawn with [`Owners`]. The mask itself is not kept
+    /// between the two passes.
     regions: Vec<crate::Region>,
     signatures: Vec<crate::shared::Signature>,
+    owners: Vec<(Vec<Guid>, Option<ComponentKey>)>,
     /// Every changed pixel, including specks left out of the areas.
     pixels: u64,
     /// The whole-screen pictures; crops are added by [`finish_screen`].
@@ -312,7 +304,14 @@ pub(crate) fn render_screen(
     merge: bool,
 ) -> Option<ScreenRender> {
     let (old, new) = renderers;
-    let drawn = draw_screen((&mut *old, &mut *new), docs, pair, readers, opts, merge)?;
+    let drawn = draw_screen(
+        (&mut *old, &mut *new),
+        docs,
+        pair,
+        readers,
+        opts,
+        (merge, None),
+    )?;
     Some(finish_screen(
         (old, new),
         docs,
@@ -325,14 +324,15 @@ pub(crate) fn render_screen(
 }
 
 /// Draws both sides of a screen in its own frame and finds the changed areas. The frames
-/// are dropped once the pictures are encoded and the areas' signatures taken.
+/// and the mask are dropped once the pictures are encoded and the areas' signatures (and,
+/// with [`Owners`], their owners) taken. `merge` folds all areas into one box.
 fn draw_screen(
     renderers: (&mut Renderer, &mut Renderer),
     docs: (&Document, &Document),
     pair: ScreenPair,
     readers: (ImageReader<'_>, ImageReader<'_>),
     opts: &RenderOpts,
-    merge: bool,
+    (merge, annotate): (bool, Option<Owners<'_, '_>>),
 ) -> Option<DrawnScreen> {
     let (scale, width, height, mut capped) = dimensions(docs, pair);
     let local = |doc: &Document, id: Option<Guid>| {
@@ -392,10 +392,24 @@ fn draw_screen(
         regions.clear();
     }
     let signatures = crate::shared::signatures(&regions, &mask, width, &before, &after);
-    let mut bits = FixedBitSet::with_capacity(mask.len());
-    for (i, _) in mask.iter().enumerate().filter(|(_, changed)| **changed) {
-        bits.insert(i);
-    }
+    let owners = annotate.map_or_else(Vec::new, |(members, masters)| {
+        let mask = (&mask[..], width as usize);
+        let components = masters.keys((pair.old, pair.new), transforms, &regions, mask);
+        regions
+            .iter()
+            .zip(components)
+            .map(|(region, component)| {
+                let leaves = screen_bounds::containing_leaves(
+                    region,
+                    members,
+                    docs,
+                    pair,
+                    (transforms, mask),
+                );
+                (leaves, component)
+            })
+            .collect()
+    });
     Some(DrawnScreen {
         scale,
         width,
@@ -405,7 +419,7 @@ fn draw_screen(
         regions,
         signatures,
         pixels,
-        mask: bits,
+        owners,
         pictures: ScreenImages {
             before: before.as_ref().and_then(|f| encode(f, opts.format)),
             after: after.as_ref().and_then(|f| encode(f, opts.format)),
@@ -415,7 +429,8 @@ fn draw_screen(
 }
 
 /// Cuts the drawn screen's crops from `remaining` (`None`: keep the areas, cut no crops)
-/// and attaches the layers in each area.
+/// and attaches the layers in each area. An area whose crop could not be cut is dropped,
+/// so the screen ends with one crop per area, in order, or none.
 fn finish_screen(
     renderers: (&mut Renderer, &mut Renderer),
     docs: (&Document, &Document),
@@ -431,15 +446,12 @@ fn finish_screen(
         height,
         mut capped,
         transforms,
-        mask,
         mut regions,
         mut signatures,
+        mut owners,
         pixels,
         mut pictures,
     } = drawn;
-    let mask: Vec<bool> = (0..width as usize * height as usize)
-        .map(|i| mask.contains(i))
-        .collect();
     if let (Some(a), Some(b), Some(remaining)) = (pair.old, pair.new, remaining) {
         let result = crate::render_crops::render_crops(
             renderers,
@@ -456,6 +468,10 @@ fn finish_screen(
         capped |= crops_capped;
         let mut all = signatures.into_iter().map(Some).collect::<Vec<_>>();
         signatures = indices.iter().filter_map(|&i| all[i].take()).collect();
+        if !owners.is_empty() {
+            let mut all = owners.into_iter().map(Some).collect::<Vec<_>>();
+            owners = indices.iter().filter_map(|&i| all[i].take()).collect();
+        }
     }
     // Membership is restricted to each side's subtree, never to overlapping screens.
     let ids = crate::screen_bounds::subtree(docs.0, pair.old)
@@ -487,8 +503,7 @@ fn finish_screen(
         },
         pictures,
         signatures,
-        transforms,
-        mask,
+        owners,
         capped,
     }
 }
