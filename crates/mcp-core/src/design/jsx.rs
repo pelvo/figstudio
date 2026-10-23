@@ -235,7 +235,11 @@ impl Writer<'_> {
         );
         style::common(&mut classes, &item.data, &mut self.out.notes);
         let classes = attr(&classes.join()).into_owned();
-        let name = assets::name(&self.options.file_key, &item.target.id());
+        let name = assets::name(
+            &self.options.file_key,
+            &item.target.id(),
+            self.options.rendering.format,
+        );
         let src = match &self.options.assets {
             Assets::Inline => name.clone(),
             Assets::Dir(dir) => dir.join(&name).display().to_string(),
