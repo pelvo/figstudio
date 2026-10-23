@@ -230,6 +230,19 @@ impl Recents {
         &self.entries
     }
 
+    /// Whether the file `id` names has a card: its own, never another file's that shares
+    /// its name.
+    #[cfg_attr(
+        not(any(target_arch = "wasm32", test)),
+        expect(
+            dead_code,
+            reason = "the browser repaints a card when its tab changes page"
+        )
+    )]
+    pub fn has_card(&self, id: &Id) -> bool {
+        self.entries.iter().any(|entry| entry.id() == *id)
+    }
+
     pub fn is_missing(&self, id: &Id) -> bool {
         self.missing.contains(id)
     }
@@ -715,6 +728,30 @@ impl App {
 }
 
 impl App {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn refresh_recent_thumbnail(&mut self, ctx: &egui::Context, i: usize) {
+        let Some(tab) = self.tabs.get(i) else { return };
+        // Only a file listed by `note_recent` has a card, under the handle it was opened by.
+        let Some(origin) = crate::web::upload_origin(tab.id) else {
+            return;
+        };
+        let id = Id {
+            path: tab.path.clone(),
+            handle: origin.handle,
+        };
+        if self.recents.has_card(&id) {
+            self.recents.paint_thumb(
+                ctx,
+                &id,
+                ThumbJob {
+                    doc: tab.doc.clone(),
+                    page: tab.page,
+                    source: tab.source.clone(),
+                },
+            );
+        }
+    }
+
     /// Lists tab `i`'s file and queues the picture of the page it shows. Called once the
     /// file is loaded and any link has moved it to its node's page. Bytes dropped without a
     /// file (only a name) are not listed: there is nothing to open again.
@@ -1148,6 +1185,24 @@ mod tests {
             ]
         );
         assert_eq!(r.entries().len(), MAX_ENTRIES, "capped after the merge");
+    }
+
+    #[test]
+    fn a_file_repaints_only_its_own_card_when_another_shares_its_name() {
+        let at = |handle| Id {
+            path: "a.fig".into(),
+            handle,
+        };
+        let mut r = Recents::memory();
+        r.add(at(Some(1)), None, 10, true);
+        r.add(at(Some(2)), None, 20, true);
+        r.add(at(None), None, 30, true);
+        assert!(r.has_card(&at(Some(1))));
+        assert!(r.has_card(&at(None)));
+        assert!(
+            !r.has_card(&at(Some(9))),
+            "a file of the same name without a card"
+        );
     }
 
     #[test]

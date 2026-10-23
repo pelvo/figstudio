@@ -39,7 +39,8 @@ crates/render/src/       Document -> pixels with vello_cpu; builds for wasm with
   record.rs              Canvas trait (where drawing goes); Recorder for parallel strips
   geom.rs                transforms, sizes, path blobs, base shapes, clipping rules
   paint.rs               solid / gradient / image paints, image cache
-  text.rs                stored glyph outlines; installed-font layout (feature system-fonts)
+  text.rs                stored glyph outlines; layout with installed fonts (feature
+                         system-fonts) and supplied ones (`add_font_data`, the browser's faces)
   focus.rs               render_path / path_bounds: draw one node inside an instance on its own,
                          laid out as the instance draws it (used by MCP instance-path shots)
 crates/mcp-core/src/     the MCP tool logic, with no SDK types (shared by the standalone server
@@ -141,6 +142,12 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   keymap.rs              shortcuts the user can change: Binding (label, group, default,
                          action) and the Keymap of changes, saved in Prefs
   canvas.rs              canvas input, render requests, frame re-projection, outlines
+  canvas_fonts.rs        browser: snapshots of egui's faces shared with render and thumbnail
+                         workers, which supply them to the renderer
+  canvas_font_order.rs   the order those faces are supplied in: egui's fallback priority
+  labels.rs              frame and section name labels on the canvas (placement, colour)
+  labels_*.rs            their parts: named (candidates in page order), spatial and quad
+                         (overlap phases), backdrop (the colour behind a label); tests, bench
   tab.rs                 per-document state (Tab, with its tint) and the page<->screen mapping
   panels.rs              Pages list, Layers tree, Properties card
   worker.rs              background threads: file loading, rendering (OS threads or Web Workers)
@@ -908,8 +915,11 @@ and git-ignored). `web/index.html` loads the module, starts the Rayon pool
 - **JavaScript objects stay on the main thread.** A worker that needs bytes of a lazily
   opened file sends a request (`web::WebSource`) and polls for the answer; the main thread
   reads the slice asynchronously in `Inbox::serve_ranges`, called every frame.
-- No installed fonts: text without stored glyph outlines and stored emoji markers are not
-  drawn on the browser canvas (counted). egui's built-in faces have limited non-Latin coverage,
+- No installed fonts: text without stored glyph outlines is laid out with egui's faces, which
+  `canvas_fonts` supplies to the render and thumbnail workers in egui's fallback order
+  (`canvas_font_order`); the renderer keeps that order, so the first face (the UI's text
+  face) sets line height and later ones (emoji, CJK) only fill missing characters. Stored
+  emoji markers are not drawn on the browser canvas (counted). egui's built-in faces have limited non-Latin coverage,
   so when a file's name, page or layer names or text contain
   CJK (`theme::cjk_need`, checked on the worker that opens it) the app fetches
   `fonts/cjk-<variant>.otf` and adds it after bundled faces (`theme::add_cjk_font`).
@@ -1116,7 +1126,7 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T7 | Progressive blur, noise / grain / texture | `crates/render/src/lib.rs` | `noise_and_grain.fig` matches its thumbnail more closely; skipped count drops |
 | T8 | Rotated / skewed gradient check | `crates/render/src/paint.rs` | A fixture with rotated gradients compared with its thumbnail (needs a real Figma file) |
 | T9 | ~~wasm build~~ done: browser app with threads (`scripts/web-build.sh`) | — | — |
-| T14 | Browser: ~~CJK UI font~~ (done: fetched on demand), text without stored outlines | `apps/figstudio/src/web.rs`, `theme.rs` | Chinese layer names readable in the browser |
+| T14 | Browser: ~~CJK UI font~~ (done: fetched on demand), ~~text without stored outlines~~ (done: egui's faces supplied to the renderer), stored emoji markers | `apps/figstudio/src/web.rs`, `theme.rs` | Chinese layer names readable in the browser |
 | T15 | Faster walk for `render_parallel`: it is single-threaded and is most of the time at fit zoom (`patched()` clones node data) | `crates/render/src/lib.rs` | Stress page at fit: render time falls with more threads |
 | T10 | `render --all-pages`, `info --json` | CLI | Covered by T1-style tests |
 | T11 | CI running `scripts/check.sh` on Linux and macOS | `.github/workflows` | **Ask the owner first** (private-repo minutes). Green on both. Linux CI is the two required jobs only |

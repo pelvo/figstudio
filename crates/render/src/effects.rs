@@ -21,7 +21,7 @@ pub(crate) fn casts_shadow(data: &Val, fill_paths: &[GeomPath]) -> bool {
             .is_some_and(|p| p.items().iter().any(paint_has_alpha))
 }
 
-fn paint_has_alpha(p: &Val) -> bool {
+pub(crate) fn paint_has_alpha(p: &Val) -> bool {
     p.flag("visible") != Some(false)
         && p.num("opacity").unwrap_or(1.0) > 0.0
         && (p.text("type") != Some("SOLID")

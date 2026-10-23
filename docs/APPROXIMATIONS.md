@@ -8,6 +8,14 @@ The numbers come from a large private real-world file (42 pages, ~170k layers). 
 measured with a temporary debug build that printed the reason at each counter site; the
 build was thrown away. Re-measure after each fix and update the table and the log below.
 
+## Font fallback
+
+`text_system_fonts` counts text laid out from font bytes rather than stored glyph
+outlines. Native uses installed fonts; the browser uses its existing UI, CJK and
+symbol faces. Both use the same approximate layout. `text_missing` still counts
+text for which neither stored outlines nor usable fallback fonts are available.
+Browser font arrival discards cached tiles and recordings and refreshes Recents.
+
 ## Measurement (2026-10-11, branch `fix/known-gaps` at `4e36127`)
 
 Totals over all 42 pages, `figstudio-cli render --page N --scale 0.1`:
@@ -86,6 +94,21 @@ geometry whose networks use per-vertex and per-segment styles (10–18 of each).
 
 **Exact fix:** carry vertex/segment style ids into the rebuilt paths and resolve them through
 `styleOverrideTable`.
+
+### Boolean operations approximated (not measured in the historical sample)
+
+Code: `Ctx::draw_with_data` and `Ctx::draw_children` (`crates/render/src/lib.rs`),
+`Stats::approximated_booleans`.
+
+A boolean with no usable stored fill or stroke geometry draws its operand children instead
+of a computed result. Each such drawn boolean counts once. A boolean mask with missing or
+partly decoded `fillGeometry` also counts once: it clips to what decoded, or not at all. With stored geometry, only the
+result is painted with the boolean's own fills, strokes and effects; operands remain
+available for selection inside the boolean's box and for bounds. The CLI, warning chip and MCP screenshots report the
+fallback, and tile summaries preserve it.
+
+**Exact fix:** compute the requested boolean operation from its operands when the file has
+no usable result geometry. The current fallback does not attempt boolean path arithmetic.
 
 ### C6. text truncation ignored (42)
 

@@ -178,6 +178,22 @@ those belong to the later browser/relay lanes. The core reveal hook reports admi
 not completion of a UI frame. Entry readers return decompressed bytes using the existing
 archive parser; a failed custom read does not fall through to a native path.
 
+### Browser outline-less text
+
+`cargo test -p figstudio-render --no-default-features --features parallel --test
+registered_fonts` checks late font registration, missing-font counts and recorded
+parallel pixels without installed fonts. Remove the `add_font_data` body to prove
+that the missing-text assertion fails.
+
+Generate the synthetic browser input with `FIGSTUDIO_TEXT_FIXTURE=/absolute/output.fig
+cargo test --release -p figstudio-render --test registered_fonts
+outline_less_text_measurement -- --ignored --nocapture`. This also reports a warm
+median of 15 renders of 500 outline-less labels. After `scripts/web-build.sh`, serve
+`web/dist` with `scripts/web-serve.py`. In `web/e2e`, run
+`FIGSTUDIO_TEXT_FIXTURE=/absolute/output.fig npx playwright test text.spec.mjs`.
+The test holds CJK responses until canvas and Recents are blank, then checks red
+text pixels on CPU and GPU workers after release. The pre-fix browser stays blank.
+
 ## 4. Writing tests
 
 ### Decoder / writer (`crates/fig/tests`)

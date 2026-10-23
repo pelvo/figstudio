@@ -107,6 +107,8 @@ pub struct Stats {
     pub approximated_paints: usize,
     /// Inside or outside strokes drawn without clipping to their shape (vector-like nodes).
     pub approximated_strokes: usize,
+    /// Boolean operations drawn from operands because no usable computed geometry is stored.
+    pub approximated_booleans: usize,
     /// Inherited stored geometry or other ink lengths not recomputed for a uniform instance scale.
     pub approximated_instance_ink: usize,
     /// Layers skipped because they are outside the viewport or smaller than a pixel.
@@ -151,6 +153,7 @@ impl Stats {
             approximated_blends,
             approximated_paints,
             approximated_strokes,
+            approximated_booleans,
             approximated_instance_ink,
             culled,
             budget_exhausted,
@@ -181,6 +184,7 @@ impl Stats {
         self.approximated_blends = self.approximated_blends.max(*approximated_blends);
         self.approximated_paints = self.approximated_paints.max(*approximated_paints);
         self.approximated_strokes = self.approximated_strokes.max(*approximated_strokes);
+        self.approximated_booleans = self.approximated_booleans.max(*approximated_booleans);
         self.approximated_instance_ink = self
             .approximated_instance_ink
             .max(*approximated_instance_ink);
@@ -223,6 +227,10 @@ impl fmt::Display for Stats {
         note(self.approximated_blends, "blend modes approximated")?;
         note(self.approximated_paints, "paints approximated")?;
         note(self.approximated_strokes, "stroke alignments approximated")?;
+        note(
+            self.approximated_booleans,
+            "boolean operations approximated",
+        )?;
         note(self.approximated_instance_ink, "instance ink approximated")?;
         note(self.culled, "off screen")?;
         note(self.budget_exhausted, "layers skipped (work budget)")?;
@@ -344,6 +352,13 @@ impl Renderer {
             images,
             ..Self::default()
         }
+    }
+
+    /// Register an app-supplied fallback face, sharing its bytes without copying.
+    /// `index` selects a face in a collection; an invalid index registers no face.
+    /// Discard existing recordings and rendered tiles after adding fonts.
+    pub fn add_font_data(&mut self, bytes: Arc<Vec<u8>>, index: u32) {
+        self.fonts.add_font_data(bytes, index);
     }
 
     /// Install a platform emoji source and clear cached rasters. Set before recording;
@@ -858,11 +873,13 @@ fn content_bounds_with_budget(
         let margin = overhang(&child.kind, &child.data, w, h);
         let mut bounds =
             transformed_bounds(world, Rect::new(-margin, -margin, w + margin, h + margin));
+        // A clipping frame cuts its own stroke and effects too; a boolean's stored result
+        // keeps them, and only its operands stay out.
         if clips_content(&child.kind, &child.data) {
             bounds = bounds.intersect(transformed_bounds(world, Rect::new(0.0, 0.0, w, h)));
         }
         out = Some(out.map_or(bounds, |current| current.union(bounds)));
-        if !clips_content(&child.kind, &child.data) {
+        if !clips_hits(&child.kind, &child.data, &doc.blobs) {
             stack.extend(doc.children(id).iter().rev().map(|id| (*id, world)));
         }
     }
@@ -876,6 +893,40 @@ fn content_bounds_with_budget(
 /// Topmost, deepest visible node under `point` (page coordinates). Instances count as one layer.
 pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
     hit_chain(doc, page, point).last().copied()
+}
+
+/// Whether nothing of a node's content outside its box is drawn, so a point there cannot hit
+/// its children: a frame that clips its content, or a boolean that draws its stored result
+/// (one that falls back paints its operands whole).
+pub fn clips_hits(kind: &str, data: &Val, blobs: &[Vec<u8>]) -> bool {
+    clips_content(kind, data)
+        || (kind == "BOOLEAN_OPERATION" && {
+            let mut ignored = 0;
+            draws_stored_result(
+                data,
+                geometry(data, "fillGeometry", blobs, &mut ignored).len(),
+                geometry(data, "strokeGeometry", blobs, &mut ignored).len(),
+            )
+        })
+}
+
+/// Whether a boolean draws its stored result instead of its operands, given how many of its
+/// stored fill and stroke paths decoded: some geometry is whole, and each kind of paint that
+/// shows has whole geometry. Empty decoded geometry is authoritative; missing or partially
+/// decoded is not.
+fn draws_stored_result(data: &Val, fills: usize, strokes: usize) -> bool {
+    let whole = |key, decoded: usize| matches!(data.get(key), Some(Val::Arr(paths)) if paths.len() == decoded);
+    let (has_fill, has_stroke) = (
+        whole("fillGeometry", fills),
+        whole("strokeGeometry", strokes),
+    );
+    let visible = |key| {
+        data.get(key)
+            .is_some_and(|paints| paints.items().iter().any(effects::paint_has_alpha))
+    };
+    (has_fill || has_stroke)
+        && (!visible("fillPaints") || has_fill)
+        && (!visible("strokePaints") || has_stroke)
 }
 
 /// Topmost hit's ancestry, from the page's child to the deepest visible layer.
@@ -902,9 +953,10 @@ pub fn hit_chain(doc: &Document, page: Guid, point: Point) -> Vec<Guid> {
             let (w, h) = size(&node.data);
             let local = tf.inverse() * point;
             let inside = local.x >= 0.0 && local.y >= 0.0 && local.x <= w && local.y <= h;
-            let clips = clips_content(&node.kind, &node.data);
+            // Only asked outside the box, so inside it stored geometry is not decoded.
+            let clips = || clips_hits(&node.kind, &node.data, &doc.blobs);
             if node.kind != "INSTANCE"
-                && (inside || !clips)
+                && (inside || !clips())
                 && let Some(mut hit) = walk(doc, id, tf, point, seen, depth + 1)
             {
                 if node.kind != "SECTION" {
@@ -989,7 +1041,8 @@ fn effect_reach(e: &Val) -> f64 {
 impl Ctx<'_> {
     /// True when the node certainly draws nothing inside the output. Only nodes whose content
     /// stays within their frame are tested: leaves, clipping frames and instances, and boolean
-    /// operations. Other containers are walked so their children decide for themselves.
+    /// operations that draw their stored result. Other containers are walked so their
+    /// children decide for themselves.
     fn off_screen(
         &self,
         node: &Node,
@@ -1000,15 +1053,17 @@ impl Ctx<'_> {
         h: f64,
     ) -> bool {
         let leaf = kind != "INSTANCE" && self.doc.children(node.id).is_empty();
-        let bounded = leaf || kind == "BOOLEAN_OPERATION" || clips_content(kind, data);
-        if !bounded {
+        let bounded = leaf || clips_content(kind, data);
+        if !bounded && kind != "BOOLEAN_OPERATION" {
             return false;
         }
         let m = overhang(kind, data, w, h);
         let r = self.inherited_reach;
         let b = transformed_bounds(world, Rect::new(-m, -m, w + m, h + m)).inflate(r, r);
         if !b.overlaps(self.screen) {
-            return true;
+            // Whether a boolean draws its stored result decides only here, so its geometry is
+            // decoded only for a box that misses the output.
+            return bounded || clips_hits(kind, data, &self.doc.blobs);
         }
         // A leaf smaller than a quarter pixel each way contributes nothing visible.
         leaf && kind != "TEXT" && {
@@ -1164,6 +1219,37 @@ impl Ctx<'_> {
         {
             fill_paths.push(GeomPath::plain(shape));
         }
+        // A blob that does not decode counts as a skipped paint only where a stroke is
+        // painted; a boolean decodes it either way, to decide whether its result is whole.
+        let stroked = data
+            .get("strokePaints")
+            .is_some_and(|p| !p.items().is_empty());
+        let mut stroke_paths = if stroked || kind == "BOOLEAN_OPERATION" {
+            let mut unpainted = 0;
+            let skipped = if stroked {
+                &mut self.stats.unsupported_paints
+            } else {
+                &mut unpainted
+            };
+            geometry(data, "strokeGeometry", &self.doc.blobs, skipped)
+        } else {
+            Vec::new()
+        };
+        // Empty decoded geometry is authoritative; missing or partially decoded is not.
+        let has_stroke = matches!(data.get("strokeGeometry"), Some(Val::Arr(paths))
+            if paths.len() == stroke_paths.len());
+        let boolean_result = kind == "BOOLEAN_OPERATION"
+            && draws_stored_result(data, fill_paths.len(), stroke_paths.len());
+        if kind == "BOOLEAN_OPERATION" && !boolean_result {
+            // The operands stand in for the fill; a whole stored stroke is still the
+            // result's outline, and nothing else would draw it.
+            fill_paths.clear();
+            if !has_stroke {
+                stroke_paths.clear();
+            }
+        }
+        self.stats.approximated_booleans +=
+            usize::from(kind == "BOOLEAN_OPERATION" && !boolean_result);
         let emojis = if kind == "TEXT" && !stale_glyphs {
             self.emojis(data, world)
         } else {
@@ -1183,7 +1269,8 @@ impl Ctx<'_> {
             && (!emojis.is_empty()
                 || effects::approximate_silhouette(
                     data,
-                    !self.doc.children(node.id).is_empty() || kind == "INSTANCE",
+                    (!boolean_result && !self.doc.children(node.id).is_empty())
+                        || kind == "INSTANCE",
                 ));
 
         for effect in data.get("effects").map(Val::items).unwrap_or_default() {
@@ -1259,9 +1346,12 @@ impl Ctx<'_> {
         }
 
         // A frame that clips its content draws its stroke above its children; others below.
+        // A boolean's stored stroke outlines its result, so it stays above the operands that
+        // stand in for a missing fill.
         let clips = kind != "TEXT" && clips_content(kind, data);
-        if !clips {
-            self.draw_strokes(kind, data, fill_paths, world, (w, h));
+        let stroke_last = clips || kind == "BOOLEAN_OPERATION";
+        if !stroke_last {
+            self.draw_strokes(kind, data, (fill_paths, &stroke_paths), world, (w, h));
         }
 
         // Children.
@@ -1275,7 +1365,8 @@ impl Ctx<'_> {
                 self.draw_instance(data, world, path);
             } else if kind == "CONNECTOR" {
                 self.draw_connector(node, world);
-            } else {
+            } else if !boolean_result {
+                // A computed boolean paints its result, never its operand children.
                 // Override paths contain instance ancestors, not ordinary frame/group ancestors.
                 let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
                 self.draw_children(node, data, world, child_path);
@@ -1283,8 +1374,8 @@ impl Ctx<'_> {
             if clip.is_some() {
                 self.rc.pop_layer();
             }
-            if clips {
-                self.draw_strokes(kind, data, fill_paths, world, (w, h));
+            if stroke_last {
+                self.draw_strokes(kind, data, (fill_paths, &stroke_paths), world, (w, h));
             }
         }
         for _ in 0..layers {
@@ -1299,7 +1390,7 @@ impl Ctx<'_> {
         &mut self,
         kind: &str,
         data: &Val,
-        fill_paths: &[GeomPath],
+        (fill_paths, outlines): (&[GeomPath], &[GeomPath]),
         world: Affine,
         (w, h): (f64, f64),
     ) {
@@ -1307,12 +1398,6 @@ impl Ctx<'_> {
             .get("strokePaints")
             .is_some_and(|p| !p.items().is_empty())
         {
-            let outlines = geometry(
-                data,
-                "strokeGeometry",
-                &self.doc.blobs,
-                &mut self.stats.unsupported_paints,
-            );
             // Per-side borders are built already aligned, so they skip the clip below.
             let ring = (outlines.is_empty() && is_box_shape(kind))
                 .then(|| stroke::sides(kind, data))
@@ -1328,6 +1413,8 @@ impl Ctx<'_> {
                         && !fill_paths.is_empty()
                         && (is_box_shape(kind)
                             || kind == "TEXT"
+                            // Only drawn from its stored result: a closed fill shape.
+                            || kind == "BOOLEAN_OPERATION"
                             || (kind == "VECTOR" && closed_network(data, &self.doc.blobs))) =>
                 {
                     Some(a == "OUTSIDE")
@@ -1352,7 +1439,7 @@ impl Ctx<'_> {
                 }
             }
             if !outlines.is_empty() {
-                self.paint_paths(data, "strokePaints", &outlines, world, w, h);
+                self.paint_paths(data, "strokePaints", outlines, world, w, h);
             } else if let Some(ring) = ring {
                 self.paint_paths(data, "strokePaints", &[ring], world, w, h);
             } else if let (Some(weight), Some(shape)) =
@@ -1518,14 +1605,20 @@ impl Ctx<'_> {
                     &self.doc.blobs,
                     &mut self.stats.unsupported_paints,
                 );
-                if shapes.is_empty() {
+                let boolean = child.kind == "BOOLEAN_OPERATION";
+                let stored_boolean = boolean
+                    && matches!(child_data.get("fillGeometry"), Some(Val::Arr(paths))
+                        if paths.len() == shapes.len());
+                // Missing or partly decoded: the clip is what decoded, or none at all.
+                self.stats.approximated_booleans += usize::from(boolean && !stored_boolean);
+                if shapes.is_empty() && !stored_boolean {
                     shapes.extend(base_shape(&child.kind, &child_data).map(GeomPath::plain));
                 }
                 let mut combined = BezPath::new();
                 for g in shapes {
                     combined.extend(g.path);
                 }
-                if !combined.elements().is_empty() {
+                if stored_boolean || !combined.elements().is_empty() {
                     self.stats.masks += 1;
                     self.stats.approximated_instance_ink += usize::from(approximate_ink);
                     self.rc.set_transform(tf);
