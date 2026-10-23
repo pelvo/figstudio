@@ -47,31 +47,61 @@ impl<'a> Masters<'a> {
     }
 
     /// A component changed when its subtree (either side) holds a changed node, including its
-    /// own version fields, or holds an instance of another changed component.
+    /// own version fields, or holds an instance of another changed component, at any depth.
+    /// Walks the instance graph with an explicit stack, so a crafted chain of components never
+    /// overflows the call stack (M-PANIC-ON-BUG: a bad file must not abort the process).
     fn is_changed(&mut self, symbol: Guid) -> bool {
         if let Some(known) = self.memo.get(&symbol) {
             return *known;
         }
-        self.memo.insert(symbol, false); // a cycle ends here
-        let mut found = false;
-        if self.is_symbol(symbol) {
-            for doc in [self.docs.0, self.docs.1] {
-                for id in screen_bounds::subtree(doc, Some(symbol)) {
-                    if self.changed.contains(&id) {
-                        found = true;
-                    } else if let Some(inner) = doc
-                        .node(id)
-                        .filter(|n| n.kind == "INSTANCE")
-                        .and_then(|n| symbol_id(&n.data))
-                        .filter(|inner| *inner != symbol)
-                    {
-                        found = found || self.is_changed(inner);
+        let mut seen = HashSet::from([symbol]);
+        let mut stack = vec![symbol];
+        while let Some(current) = stack.pop() {
+            let (direct, inner) = self.scan(current);
+            if direct {
+                self.memo.insert(symbol, true);
+                return true;
+            }
+            for inner in inner {
+                match self.memo.get(&inner) {
+                    Some(true) => {
+                        self.memo.insert(symbol, true);
+                        return true;
+                    }
+                    Some(false) => {}
+                    None => {
+                        if seen.insert(inner) {
+                            stack.push(inner);
+                        }
                     }
                 }
             }
         }
-        self.memo.insert(symbol, found);
-        found
+        // Nothing reachable from `symbol` changed, so the same holds for every symbol seen.
+        self.memo.extend(seen.into_iter().map(|id| (id, false)));
+        false
+    }
+
+    /// Whether `symbol`'s own subtree holds a changed node, and the components its instances use.
+    fn scan(&self, symbol: Guid) -> (bool, Vec<Guid>) {
+        let mut inner = Vec::new();
+        if !self.is_symbol(symbol) {
+            return (false, inner);
+        }
+        for doc in [self.docs.0, self.docs.1] {
+            for id in screen_bounds::subtree(doc, Some(symbol)) {
+                if self.changed.contains(&id) {
+                    return (true, inner);
+                }
+                inner.extend(
+                    doc.node(id)
+                        .filter(|n| n.kind == "INSTANCE")
+                        .and_then(|n| symbol_id(&n.data))
+                        .filter(|nested| *nested != symbol),
+                );
+            }
+        }
+        (false, inner)
     }
 
     /// Per region: the group and master of the smallest changed-master instance holding at least half

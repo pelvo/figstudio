@@ -199,3 +199,67 @@ fn legacy_shared_json_without_component_fields_parses() {
     assert!(legacy.shared_changes[0].component.is_none());
     assert!(!legacy.shared_changes[0].component_view);
 }
+
+/// A screen instance of component 100, which holds an instance of component 101, and so on;
+/// only the last component's rectangle differs between the two sides.
+fn chain(links: u32) -> (Document, Document) {
+    let nested = |id: u32, parent: u32, target: u32| {
+        let mut n = instance(id, parent, 0.0, 0.0, false);
+        n.data.set(
+            "symbolData",
+            object(&[("symbolID", Guid(0, target).to_val())]),
+        );
+        Node::from_data(n.data).unwrap()
+    };
+    let side = |new: bool| {
+        let mut second = Vec::new();
+        for i in 0..links {
+            let mut symbol = node(100 + i, Some(11), "SYMBOL", "a");
+            symbol.data.set(
+                "size",
+                object(&[("x", Val::Float(60.0)), ("y", Val::Float(40.0))]),
+            );
+            second.push(Node::from_data(symbol.data).unwrap());
+            if i + 1 < links {
+                second.push(nested(1_000_000 + i, 100 + i, 101 + i));
+            }
+        }
+        let color = if new {
+            (0.0, 1.0, 0.0)
+        } else {
+            (1.0, 0.0, 0.0)
+        };
+        second.push(filled_rectangle_at(
+            2_000_000,
+            99 + links,
+            color,
+            0.0,
+            0.0,
+            60.0,
+            40.0,
+        ));
+        let page = vec![frame(2, 300.0, 0.0), nested(4, 2, 100)];
+        two_page_document(page, second)
+    };
+    (side(false), side(true))
+}
+
+#[test]
+fn a_component_chain_deeper_than_the_instance_limit_does_not_overflow_the_stack() {
+    let links = 1_000;
+    assert!(links > figstudio_fig::resolve::MAX_INSTANCE_DEPTH as u32);
+    // 128 KiB: far below what one stack frame per link needs.
+    let report = std::thread::Builder::new()
+        .stack_size(128 << 10)
+        .spawn(move || {
+            let (old, new) = chain(links);
+            let mut report = diff_documents(&old, &new);
+            let _ = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+            report
+        })
+        .unwrap()
+        .join()
+        .expect("deep component chain must not crash");
+    // Pages still diff; the renderer stops at its own depth limit, the walk does not crash.
+    assert!(!report.pages.is_empty());
+}
