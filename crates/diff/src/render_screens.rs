@@ -479,6 +479,8 @@ fn finish_screen(
         .copied()
         .collect::<Vec<_>>();
     screen_bounds::region_nodes(&mut regions, &ids, docs, pair, transforms, (width, height));
+    // `render_files` pairs `screen.regions` with these crops by position.
+    debug_assert!(pictures.regions.is_empty() || pictures.regions.len() == regions.len());
     let status = match (pair.old, pair.new) {
         (None, _) => ScreenStatus::Added,
         (_, None) => ScreenStatus::Removed,
