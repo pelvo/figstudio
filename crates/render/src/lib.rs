@@ -1413,6 +1413,8 @@ impl Ctx<'_> {
                         && !fill_paths.is_empty()
                         && (is_box_shape(kind)
                             || kind == "TEXT"
+                            // Only drawn from its stored result: a closed fill shape.
+                            || kind == "BOOLEAN_OPERATION"
                             || (kind == "VECTOR" && closed_network(data, &self.doc.blobs))) =>
                 {
                     Some(a == "OUTSIDE")

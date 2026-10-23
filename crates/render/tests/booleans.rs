@@ -534,3 +534,37 @@ fn page_bounds_keep_a_stored_boolean_shadow() {
         "the shadow past the box is painted: {bounds:?}"
     );
 }
+
+#[test]
+fn a_stored_boolean_aligns_an_inside_stroke_to_its_result() {
+    let mut doc = boolean_doc("UNION", Some("fillGeometry"));
+    doc.nodes[1].data.set("strokePaints", paint(0.0, 0.0, 1.0));
+    doc.nodes[1].data.set("strokeWeight", Val::Float(4.0));
+    doc.nodes[1]
+        .data
+        .set("strokeAlign", Val::Str("INSIDE".into()));
+    // Stored as Figma stores it: centred on the edge at twice the weight (here the right one).
+    let mut band = Vec::new();
+    for (op, x, y) in [
+        (1, 36.0_f32, 0.0_f32),
+        (2, 44.0, 0.0),
+        (2, 44.0, 40.0),
+        (2, 36.0, 40.0),
+    ] {
+        band.push(op);
+        band.extend(x.to_le_bytes());
+        band.extend(y.to_le_bytes());
+    }
+    band.push(0);
+    let index = doc.blobs.len() as i64;
+    doc.blobs.push(band);
+    doc.nodes[1].data.set(
+        "strokeGeometry",
+        Val::Arr(vec![obj(&[("commandsBlob", Val::Int(index))])]),
+    );
+    let frame = render(&doc);
+    let px = frame.pixmap.data_as_u8_slice();
+    assert_eq!(pixel(px, 38, 20), [0, 0, 255, 255], "inside the result");
+    assert_eq!(pixel(px, 42, 20)[3], 0, "nothing outside the result");
+    assert_eq!(frame.stats.approximated_strokes, 0);
+}

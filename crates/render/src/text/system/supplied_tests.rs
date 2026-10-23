@@ -87,3 +87,52 @@ fn supplied_collection_uses_only_the_selected_face_and_its_source() {
         }
     }
 }
+
+/// The vertical distance between the two lines of "A\nA" in a font family no supplied face has.
+fn line_pitch(supplied: &[&'static [u8]]) -> f64 {
+    let mut fonts = SystemFonts {
+        db: Some(Database::new()),
+        ..SystemFonts::default()
+    };
+    for bytes in supplied {
+        fonts.add_font_data(Arc::new(bytes.to_vec()), 0);
+    }
+    let object = |pairs: &[(&str, Val)]| {
+        let mut object = Val::Obj(Default::default());
+        for (key, value) in pairs {
+            object.set(key, value.clone());
+        }
+        object
+    };
+    let data = object(&[
+        ("fontSize", Val::Float(20.0)),
+        (
+            "textData",
+            object(&[("characters", Val::Str("A\nA".into()))]),
+        ),
+        (
+            "fontName",
+            object(&[("family", Val::Str("Unavailable family".into()))]),
+        ),
+    ]);
+    let paths = fonts.layout(&data).unwrap();
+    let tops: Vec<f64> = paths
+        .iter()
+        .map(|path| vello_cpu::kurbo::Shape::bounding_box(path).y0)
+        .collect();
+    assert_eq!(tops.len(), 2);
+    tops[1] - tops[0]
+}
+
+#[test]
+fn supplied_fonts_keep_their_order_as_fallbacks_without_installed_fonts() {
+    let alone = line_pitch(&[epaint_default_fonts::UBUNTU_LIGHT]);
+    let with_emoji = line_pitch(&[
+        epaint_default_fonts::UBUNTU_LIGHT,
+        epaint_default_fonts::NOTO_EMOJI_REGULAR,
+    ]);
+    assert!(
+        (alone - with_emoji).abs() < 1e-9,
+        "a later supplied emoji face set the line height: {alone} vs {with_emoji}"
+    );
+}

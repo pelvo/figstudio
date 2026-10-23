@@ -112,6 +112,9 @@ mod system {
         faces: HashMap<ID, Option<FaceData>>,
         fallbacks: Option<Vec<ID>>,
         supplied: Vec<ID>,
+        /// Whether `db` holds the installed fonts. Without them (the browser) the supplied
+        /// faces are the fallbacks, in the order they were supplied.
+        installed: bool,
         #[cfg(feature = "system-fonts")]
         emojis: HashMap<char, Option<crate::emoji_font::Resolved>>,
         #[cfg(feature = "system-fonts")]
@@ -223,6 +226,7 @@ mod system {
                 let db = {
                     let mut db = db;
                     db.load_system_fonts();
+                    self.installed = true;
                     db
                 };
                 db
@@ -254,22 +258,31 @@ mod system {
             if let Some(list) = &self.fallbacks {
                 return list.clone();
             }
-            let mut list = Vec::new();
+            self.db();
+            // Without installed fonts, a name lookup would only find a supplied face out of
+            // its supplied order (an emoji face ahead of the text face that sets line height).
+            let mut list = if self.installed {
+                Vec::new()
+            } else {
+                self.supplied.clone()
+            };
+            let mut found = Vec::new();
             for name in FALLBACK_FAMILIES.iter().chain(SYMBOL_FAMILIES) {
-                if let Some(id) = self.query(name, Weight::NORMAL, Style::Normal) {
-                    list.push(id);
-                }
+                found.extend(self.query(name, Weight::NORMAL, Style::Normal));
             }
             for generic in [Family::SansSerif, Family::Serif] {
                 let families = [generic];
-                if let Some(id) = self.db().query(&Query {
+                found.extend(self.db().query(&Query {
                     families: &families,
                     ..Query::default()
-                }) {
+                }));
+            }
+            found.extend(self.supplied.iter().copied());
+            for id in found {
+                if !list.contains(&id) {
                     list.push(id);
                 }
             }
-            list.extend(self.supplied.iter().copied());
             self.fallbacks = Some(list.clone());
             list
         }

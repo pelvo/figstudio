@@ -65,6 +65,10 @@ run_slice() {
     tests-mcp-core)
       cargo $TC test --profile fast -p figstudio-mcp-core --no-default-features
       ;;
+    # The browser's text: supplied fonts only, no installed-font discovery (`system-fonts` off).
+    tests-browser-fonts)
+      cargo $TC test --profile fast -p figstudio-render --no-default-features --features parallel --test registered_fonts
+      ;;
     release)
       cargo $TC build --release --workspace
       ;;
@@ -78,7 +82,7 @@ run_slice() {
     *)
       echo "unknown check slice: $1" >&2
       echo "lint: fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp" >&2
-      echo "test: tests-workspace tests-gpu tests-mcp-core release wasm32" >&2
+      echo "test: tests-workspace tests-gpu tests-mcp-core tests-browser-fonts release wasm32" >&2
       exit 2
       ;;
   esac
@@ -87,7 +91,7 @@ run_slice() {
 MODE="${1:-}"
 SLICE="${2:-}"
 lint_names="fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp"
-test_names="tests-workspace tests-gpu tests-mcp-core release wasm32"
+test_names="tests-workspace tests-gpu tests-mcp-core tests-browser-fonts release wasm32"
 if [ "$MODE" = "--lint-one" ] || [ "$MODE" = "--test-one" ]; then
   [ -n "$SLICE" ] || { echo "$MODE needs a slice name" >&2; exit 2; }
   case "$MODE" in
@@ -115,7 +119,7 @@ fi
 # --test includes release and wasm32. A pull request never runs the macOS release job,
 # and that job does not build wasm32, so dropping either here would leave the required
 # check green for a break it used to catch.
-for name in tests-workspace tests-gpu tests-mcp-core release wasm32; do
+for name in tests-workspace tests-gpu tests-mcp-core tests-browser-fonts release wasm32; do
   step "$name"
   run_slice "$name"
 done

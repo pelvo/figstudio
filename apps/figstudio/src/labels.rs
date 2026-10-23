@@ -30,6 +30,8 @@ const MIN_FRAME_WIDTH: f32 = 220.0;
 const MAX_LABELS: usize = 2_000;
 const ICON_SIZE: f32 = 16.0;
 const ICON_GAP: f32 = 4.0;
+/// Screen points between a label and the top of its frame.
+const LABEL_GAP: f32 = 4.0;
 
 /// A label to draw: its frame, text, anchor (bottom-left, screen space) and whether it is
 /// a section.
@@ -266,12 +268,16 @@ fn label_pad(section: bool) -> Vec2 {
     }
 }
 
+/// The height of a label's content, unpadded: its text or its icon, whichever is taller.
+fn content_height(text: f32, icon: bool) -> f32 {
+    text.max(if icon { ICON_SIZE } else { 0.0 })
+}
+
 /// Screen points from a label's anchor up to the middle of what [`layout`] draws, known
-/// before the colour is chosen: one row of text or the icon, padded, 4 points clear.
+/// before the colour is chosen: one row of text or the icon, padded, [`LABEL_GAP`] clear.
 fn middle(painter: &egui::Painter, section: bool, icon: bool) -> f32 {
     let row = painter.fonts_mut(|f| f.row_height(&label_font(section)));
-    let height = row.max(if icon { ICON_SIZE } else { 0.0 });
-    4.0 + label_pad(section).y + height / 2.0
+    LABEL_GAP + label_pad(section).y + content_height(row, icon) / 2.0
 }
 
 /// Text, full label bounds (including icon or pill) and text position.
@@ -290,12 +296,9 @@ fn layout(painter: &egui::Painter, l: &Label) -> (std::sync::Arc<egui::Galley>, 
     job.wrap.overflow_character = Some('…');
     let galley = painter.layout_job(job);
     let pad = label_pad(l.section);
-    let height = galley
-        .size()
-        .y
-        .max(if l.icon.is_some() { ICON_SIZE } else { 0.0 });
+    let height = content_height(galley.size().y, l.icon.is_some());
     let size = Vec2::new(galley.size().x + leading, height) + pad * 2.0;
-    let bounds = Rect::from_min_size(l.at - Vec2::new(0.0, size.y + 4.0), size);
+    let bounds = Rect::from_min_size(l.at - Vec2::new(0.0, size.y + LABEL_GAP), size);
     let text_at = bounds.min + pad + Vec2::new(leading, (height - galley.size().y) / 2.0);
     (galley, bounds, text_at)
 }
