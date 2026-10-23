@@ -116,7 +116,7 @@ impl Host {
                 if self.relay {
                     let quiet = self.reconnect.retrying();
                     self.stop();
-                    self.reconnect.lost(Instant::now());
+                    self.reconnect.lost(Instant::now(), js_sys::Math::random());
                     if quiet {
                         return Ok(None);
                     }
@@ -145,7 +145,7 @@ impl Host {
                     // even if its handshake opened) is retried again without a toast.
                     let quiet = !proven && self.reconnect.retrying();
                     self.calls.borrow_mut().live(None);
-                    self.reconnect.lost(Instant::now());
+                    self.reconnect.lost(Instant::now(), js_sys::Math::random());
                     if quiet {
                         return Ok(None);
                     }

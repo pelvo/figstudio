@@ -584,7 +584,7 @@ impl Host {
         if !quiet {
             self.notices.push(notice.to_owned());
         }
-        self.reconnect.lost(Instant::now());
+        self.reconnect.lost(Instant::now(), js_sys::Math::random());
         self.plan_retry(ctx);
         ctx.request_repaint();
     }

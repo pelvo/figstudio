@@ -1,5 +1,6 @@
 //! Reconnect pacing tests: a synthetic second clock drives the delays, their cap, the
-//! reset after a proven connection and the early retry on visible or online.
+//! reset after a proven connection, the random spread and the early retry on visible or
+//! online.
 use super::*;
 
 /// Synthetic monotonic clock: seconds since an arbitrary epoch.
@@ -26,7 +27,7 @@ fn nothing_is_planned_until_a_loss() {
 #[test]
 fn a_lost_connection_is_retried_after_the_first_delay() {
     let mut reconnect = Reconnect::default();
-    reconnect.lost(Secs(10));
+    reconnect.lost(Secs(10), 0.0);
     assert_eq!(reconnect.poll(Secs(10)), Retry::Wait(FIRST_RETRY));
     assert_eq!(reconnect.poll(Secs(11)), Retry::Now);
     // The plan is used up; only another loss plans the next retry.
@@ -39,7 +40,7 @@ fn failed_retries_double_the_delay_up_to_the_cap() {
     let mut now = 0;
     let mut waits = Vec::new();
     for _ in 0..9 {
-        reconnect.lost(Secs(now));
+        reconnect.lost(Secs(now), 0.0);
         let Retry::Wait(wait) = reconnect.poll(Secs(now)) else {
             panic!("a loss must plan a retry");
         };
@@ -55,12 +56,12 @@ fn failed_retries_double_the_delay_up_to_the_cap() {
 fn a_proven_connection_starts_the_next_series_from_the_first_delay() {
     let mut reconnect = Reconnect::default();
     for now in [0, 1, 3] {
-        reconnect.lost(Secs(now));
+        reconnect.lost(Secs(now), 0.0);
         reconnect.poll(Secs(now + 10));
     }
     reconnect.proven();
     assert!(!reconnect.retrying());
-    reconnect.lost(Secs(100));
+    reconnect.lost(Secs(100), 0.0);
     assert_eq!(reconnect.poll(Secs(100)), Retry::Wait(FIRST_RETRY));
 }
 
@@ -68,7 +69,7 @@ fn a_proven_connection_starts_the_next_series_from_the_first_delay() {
 fn becoming_visible_or_online_retries_at_once() {
     let mut reconnect = Reconnect::default();
     for _ in 0..6 {
-        reconnect.lost(Secs(0));
+        reconnect.lost(Secs(0), 0.0);
     }
     assert_eq!(reconnect.poll(Secs(5)), Retry::Wait(secs(27)));
     reconnect.hurry();
@@ -82,12 +83,12 @@ fn becoming_visible_or_online_retries_at_once() {
 fn a_connect_by_hand_starts_a_fresh_series() {
     let mut reconnect = Reconnect::default();
     for now in [0, 1, 3] {
-        reconnect.lost(Secs(now));
+        reconnect.lost(Secs(now), 0.0);
     }
     reconnect.starting(false);
     assert!(!reconnect.retrying());
     assert_eq!(reconnect.poll(Secs(100)), Retry::Idle);
-    reconnect.lost(Secs(100));
+    reconnect.lost(Secs(100), 0.0);
     assert_eq!(reconnect.poll(Secs(100)), Retry::Wait(FIRST_RETRY));
 }
 
@@ -95,12 +96,12 @@ fn a_connect_by_hand_starts_a_fresh_series() {
 fn a_planned_retry_keeps_its_series() {
     let mut reconnect = Reconnect::default();
     for now in [0, 1, 3] {
-        reconnect.lost(Secs(now));
+        reconnect.lost(Secs(now), 0.0);
     }
     reconnect.starting(true);
     assert!(reconnect.retrying(), "its failure stays quiet");
     assert_eq!(reconnect.poll(Secs(100)), Retry::Idle);
-    reconnect.lost(Secs(100));
+    reconnect.lost(Secs(100), 0.0);
     assert_eq!(
         reconnect.poll(Secs(100)),
         Retry::Wait(Duration::from_secs(8))
@@ -110,7 +111,25 @@ fn a_planned_retry_keeps_its_series() {
 #[test]
 fn a_cancelled_plan_never_fires() {
     let mut reconnect = Reconnect::default();
-    reconnect.lost(Secs(0));
+    reconnect.lost(Secs(0), 0.0);
     reconnect.cancel();
     assert_eq!(reconnect.poll(Secs(1_000)), Retry::Idle);
+}
+
+#[test]
+fn each_wait_adds_up_to_a_quarter_of_its_delay_at_random() {
+    let mut reconnect = Reconnect::default();
+    reconnect.lost(Secs(0), 0.5);
+    assert_eq!(
+        reconnect.poll(Secs(0)),
+        Retry::Wait(Duration::from_millis(1_125))
+    );
+    // The spread never feeds the doubling, and stays within bounds at the cap too.
+    for _ in 0..8 {
+        reconnect.lost(Secs(0), 0.0);
+    }
+    reconnect.lost(Secs(0), 7.0);
+    assert_eq!(reconnect.poll(Secs(0)), Retry::Wait(secs(75)));
+    reconnect.lost(Secs(0), -1.0);
+    assert_eq!(reconnect.poll(Secs(0)), Retry::Wait(MAX_RETRY));
 }
