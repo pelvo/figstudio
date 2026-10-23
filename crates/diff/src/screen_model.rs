@@ -95,14 +95,17 @@ fn list_recreated_changes(
     edits
 }
 
-/// Copies of one path compared pairwise at most; beyond this they pair in walk order.
+/// Pairwise comparisons of repeated copies per recreated screen, across all its paths. A
+/// path whose copies would go past what is left pairs in walk order instead.
 const MAX_COPY_COMPARISONS: usize = 4096;
 
 /// Pairs the one-sided layers that share a [`Path`], as `(old, new, compared)` in the new
 /// side's walk order. Pairs are taken cheapest first (fewest changed fields, then walk
 /// order), each copy at most once, so only the side with more copies has copies left over;
 /// when every comparison costs the same, those are the last copies in walk order. A path
-/// with too many copies to compare is paired in walk order, with `compared` false.
+/// with more copies than the screen's [`MAX_COPY_COMPARISONS`] has left to compare is
+/// paired in walk order, with `compared` false. One copy on each side always pairs and is
+/// compared, outside the budget.
 fn pair_up(
     docs: (&Document, &Document),
     old: &[(Path, Guid)],
@@ -116,11 +119,17 @@ fn pair_up(
         sides.entry(key).or_default().1.push(*id);
     }
     let mut pairs = Vec::new();
+    let mut left = MAX_COPY_COMPARISONS;
     for (a, b) in sides.values() {
-        if a.len() * b.len() > MAX_COPY_COMPARISONS {
-            pairs.extend(a.iter().zip(b).map(|(x, y)| (*x, *y, false)));
+        if let ([x], [y]) = (a.as_slice(), b.as_slice()) {
+            pairs.push((*x, *y, true));
             continue;
         }
+        let Some(rest) = left.checked_sub(a.len() * b.len()) else {
+            pairs.extend(a.iter().zip(b).map(|(x, y)| (*x, *y, false)));
+            continue;
+        };
+        left = rest;
         let mut costs = Vec::with_capacity(a.len() * b.len());
         for (i, x) in a.iter().enumerate() {
             for (j, y) in b.iter().enumerate() {

@@ -482,3 +482,40 @@ fn recreated_screen_lists_an_edit_of_a_repeated_name_in_tree_order() {
     assert!(render_html(&report).contains("Two edited"));
     assert!(page.added.iter().all(|n| n.id.1 == 7), "{:?}", page.added);
 }
+
+#[test]
+fn repeated_copies_share_one_comparison_budget_per_recreated_screen() {
+    let label = |id, parent, name: &str, text: &str| {
+        let mut n = node(id, Some(parent), "TEXT", "a");
+        n.data.set("name", Val::Str(name.into()));
+        n.data
+            .set("textData", object(&[("characters", Val::Str(text.into()))]));
+        Node::from_data(n.data).unwrap()
+    };
+    // 50 copies of "Alpha" and of "Beta" on each side: 2 × 2,500 comparisons is past the
+    // screen's 4,096, so Alpha (first in path order) is compared and Beta pairs in walk
+    // order without being compared. Copy 20 of each, and the one "Only" layer, is edited.
+    let side = |new: bool| {
+        let (root, base) = if new { (7, 20_000) } else { (4, 10_000) };
+        let edit = |text: &str| {
+            if new {
+                format!("{text} edited")
+            } else {
+                text.to_owned()
+            }
+        };
+        let mut nodes = vec![screen(root, 1, 0.0, "FRAME")];
+        for (k, name) in [(0, "Alpha"), (100, "Beta")] {
+            for i in 0..50 {
+                let text = if i == 20 { edit(name) } else { name.to_owned() };
+                nodes.push(label(base + k + i, root, name, &text));
+            }
+        }
+        nodes.push(label(base + 999, root, "Only", &edit("Only")));
+        document(nodes)
+    };
+    let report = diff_documents(&side(false), &side(true));
+    let rows: Vec<_> = report.pages[0].changed.iter().map(|n| n.id.1).collect();
+    // A unique name is still compared once the budget is spent.
+    assert_eq!(rows, [20_020, 20_999], "{:?}", report.pages[0].changed);
+}
