@@ -48,11 +48,20 @@ scripts/check.sh            # fmt --check, clippy -D warnings, all tests, releas
 scripts/check.sh --cross    # also cargo check for aarch64-apple-darwin
 FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh   # if the default Rust is older than 1.95
 scripts/check.sh --lint     # only fmt + clippy; CI runs --lint and --test as its two jobs
-scripts/check.sh --test     # tests, release build, wasm32; CI job "build + test"
+scripts/check.sh --test     # tests, npm launcher tests, release build, wasm32; CI job "build + test"
 scripts/check.sh --lint-one fmt   # one slice, for a local run
 # CI is the two required jobs. The cache prefix is `v1-rust` so the next miss saves
 # this repo's crates. A later exact hit does not update that snapshot.
 ```
+
+The `tests-npm` slice runs `node --test npm/figstudio-mcp/test/*.test.mjs` (the npm launcher and
+`scripts/npm-pack.mjs`, including a check that the release workflow builds every platform
+the launcher knows); it is skipped when `node` is not installed. The signal tests set
+`FIGSTUDIO_MCP_TEST_HOLD_AFTER_SPAWN_MS=300`, which holds the launcher right after
+`spawn()`, so a signal handler installed after the hold fails them. A handler placed
+between `spawn()` and the hold would still pass them, so a source test checks the order:
+every `process.on` comes before `spawn()` and the hold is the next statement. The hold is
+capped at `TEST_HOLD_MAX_MS` (300 ms), and a test sets 5000 to check the cap.
 
 It must end with `== all checks passed` before you commit. If clippy or rustfmt is missing:
 `rustup component add clippy rustfmt --toolchain <version>`.
@@ -645,7 +654,14 @@ FigJam and most design-context mappings; the fixtures have no variables or FigJa
   `whoami`, an unknown tool, and a non-loopback `Host` that must be refused.
 - `bridge*.rs` (browser bridge): a tokio-tungstenite client plays the browser against
   `serve_bridge` in process; `bridge_cli.rs` spawns the real `--bridge` binary, parses its printed
-  token and pairs a socket. The wasm client itself (`mcp_web.rs`) is checked by hand; its pure
+  token and pairs a socket. The banner helper takes ownership of stderr and hands it to a
+  drain task after parsing; EOF ends the task when the child exits. This prevents later
+  output from hitting a closed or full pipe. `banner_keeps_stderr_open_for_later_output`
+  moves an owned Tokio duplex reader into the same helper, then writes more than the pipe
+  capacity after it returns. Removing the drain task fails with `BrokenPipe` without
+  changing the test. Both parsing and the late write have two-second timeouts; a mutated
+  banner prefix was verified to fail with the parsing timeout instead of hanging.
+  The wasm client itself (`mcp_web.rs`) is checked by hand; its pure
   helpers (`mcp_wire.rs`, `mcp_state.rs`) have native unit tests in the app crate.
 - `prompts.rs`, `files.rs` and most per-tool files use rmcp's client over an in-process duplex
   pipe against the same handler the transports use.

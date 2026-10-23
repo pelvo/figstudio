@@ -28,24 +28,60 @@ Protocol (MCP) server, written in Rust.
 - **Website:** https://pelvo.dev
 - **In the browser, nothing to install:** https://figstudio.pelvo.dev. Open or drop a `.fig`
   (Figma → File → Save local copy); it stays in the tab and nothing is uploaded.
-- **Give it to Claude Code in one line** (needs Rust 1.95 or newer for `cargo`):
+- **macOS (Apple silicon) with Homebrew:**
 
   ```sh
-  cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp && claude mcp add figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev
+  brew install --cask pelvo/tap/figstudio
+  ```
+
+  This installs `figstudio.app` in `/Applications` and puts `figstudio-cli` and
+  `figstudio-mcp` on your `PATH`. Update with `brew upgrade --cask figstudio`; remove with
+  `brew uninstall --cask figstudio` (add `--zap` to delete its settings as well). The app
+  is ad-hoc signed, not notarized; the cask clears the download quarantine so it opens
+  normally. The tap is [pelvo/homebrew-tap](https://github.com/pelvo/homebrew-tap).
+- **Linux (x86_64 or arm64), CLI and MCP server:** each release has a static
+  `figstudio-cli-mcp-vX.Y.Z-linux-<arch>.tar.gz` (any distro, Alpine too; from the release
+  after v0.1.0). To check the latest one against the release's `SHA256SUMS` and put it in
+  `~/.local/bin`:
+
+  ```sh
+  v=$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/pelvo/figstudio/releases/latest); v=${v##*/}
+  f=figstudio-cli-mcp-$v-linux-$(uname -m | sed 's/aarch64/arm64/').tar.gz
+  (cd "$(mktemp -d)" && curl -fsSL -O "https://github.com/pelvo/figstudio/releases/download/$v/$f" -O "https://github.com/pelvo/figstudio/releases/download/$v/SHA256SUMS" &&
+    awk -v f="$f" '$2 == f' SHA256SUMS | sha256sum -c - && mkdir -p ~/.local/bin && tar -xzf "$f" -C ~/.local/bin)
+  ```
+
+  If `~/.local/bin` is not on your `PATH` yet (Debian and Ubuntu add it only at login, and
+  only if it existed then), run `export PATH="$HOME/.local/bin:$PATH"` in this shell and add
+  the same line to your shell profile for later sessions. Registering the server by its full
+  path (`~/.local/bin/figstudio-mcp`) also works without it.
+- **Give it to Claude Code in one line** (needs Node.js; npm fetches a prebuilt binary for
+  Linux, macOS or Windows, nothing is compiled):
+
+  ```sh
+  claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
   ```
 
   The first time the agent needs a file it calls `open_figstudio_browser`, which opens
-  https://figstudio.pelvo.dev paired with the local server; open your `.fig` in that tab.
-  If the browser asks to let the page reach devices on your local network, allow it: that
-  is `figstudio-mcp` on `127.0.0.1`. **Safari cannot pair:** it blocks an `https://` page
-  from reaching `ws://127.0.0.1` (Chrome, Edge and Firefox allow it). If Safari is your
-  default browser, have `figstudio-mcp` open another one, for example Chrome:
-  `claude mcp add figstudio -e 'BROWSER=open -a "Google Chrome"' -- figstudio-mcp --origin https://figstudio.pelvo.dev`
-  (`open -a "Microsoft Edge"` or `open -a Firefox` for those). Or use the local build:
+  the figstudio.pelvo.dev app paired with the local server; open your `.fig` in that tab.
+  `figstudio-mcp` fetches the app from figstudio.pelvo.dev and serves it on its own
+  `http://127.0.0.1:<port>`, so the page reaches the server without a local network
+  access prompt (a headless browser cannot answer one). `--no-mirror` opens
+  https://figstudio.pelvo.dev itself instead; Chrome then asks to let the page reach
+  devices on your local network, and Safari cannot pair at all (it blocks an `https://`
+  page from reaching `ws://127.0.0.1`).
+  **What you trust:** that page's code comes from figstudio.pelvo.dev and reads the files
+  you open in it, so "nothing is uploaded" holds as long as that deployment serves this
+  repository's build. To keep everything on your machine, use the local build:
   serve it with `scripts/web-build.sh --serve` and register
-  `claude mcp add figstudio -- figstudio-mcp --browser-proxy`; `open_figstudio_browser`
-  then opens `http://127.0.0.1:8765`. To serve a file from disk instead, with no browser:
-  `claude mcp add figstudio -- figstudio-mcp /path/to/design.fig`.
+  `claude mcp add figstudio -- npx -y figstudio-mcp --origin http://127.0.0.1:8765`;
+  `open_figstudio_browser` then opens that address. To serve a file from disk instead,
+  with no browser: `claude mcp add figstudio -- npx -y figstudio-mcp /path/to/design.fig`.
+
+  Without Node, install `figstudio-mcp` with Homebrew or the Linux tarball above (from the
+  release after v0.1.0; v0.1.0's `--browser-proxy` opens `http://127.0.0.1:8765` instead) and
+  register `claude mcp add figstudio -- figstudio-mcp --browser-proxy`, or build it with Rust
+  1.95 or newer: `cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp && claude mcp add figstudio -- figstudio-mcp --browser-proxy`.
 
 ---
 
@@ -65,6 +101,10 @@ Protocol (MCP) server, written in Rust.
 ---
 
 ## Quick start
+
+These commands build from a checkout. To install a release instead, see [Try it](#try-it):
+Homebrew on macOS (the app, `figstudio-cli` and `figstudio-mcp`) or the Linux tarball
+(`figstudio-cli` and `figstudio-mcp`).
 
 ### 1. Desktop app (`figstudio`)
 
@@ -131,17 +171,18 @@ cargo run --release -p figstudio-cli -- doctor path/to/design.fig
 
 ### 4. MCP server (`figstudio-mcp`)
 
-Install the server on its own with
-`cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp` (or
-`cargo build --release -p figstudio-mcp` in a checkout). Full setup and tool documentation
+Run the server with `npx -y figstudio-mcp` (prebuilt binaries on npm), install it with
+Homebrew or the Linux tarball (see [Try it](#try-it)), on its own with
+`cargo install --locked --git https://github.com/pelvo/figstudio figstudio-mcp`, or build it
+in a checkout with `cargo build --release -p figstudio-mcp`. Full setup and tool documentation
 is in [`apps/figstudio-mcp/README.md`](apps/figstudio-mcp/README.md):
 
 ```sh
-# Browser proxy (zero upload): the agent opens figstudio in your browser and pairs with it
-claude mcp add figstudio -- figstudio-mcp --origin https://figstudio.pelvo.dev
+# Browser proxy (zero upload): the agent opens https://figstudio.pelvo.dev and pairs with it
+claude mcp add figstudio -- npx -y figstudio-mcp --browser-proxy
 
 # Offline file mode (stdio): serve files from disk, no browser
-claude mcp add figstudio -- figstudio-mcp /path/to/design.fig
+claude mcp add figstudio -- npx -y figstudio-mcp /path/to/design.fig
 
 # Desktop app: turn on Settings → Agents → Agent access, then use the address the status
 # pill shows (3845, or the first free port of 3846–3855 when 3845 is busy)
