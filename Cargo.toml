@@ -21,7 +21,7 @@ ruzstd = "0.9"
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
 vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "png", "u8_pipeline"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-fontdb = { version = "0.24", default-features = false, features = ["std", "fs", "memmap", "fontconfig"] }
+fontdb = { version = "0.24", default-features = false, features = ["std"] }
 ttf-parser = { version = "0.25", default-features = false, features = ["std", "variable-fonts"] }
 # Fontations exposes embedded bitmap size records (ttf-parser's selector does not).
 read-fonts = "0.41"

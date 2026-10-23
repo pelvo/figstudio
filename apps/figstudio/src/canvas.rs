@@ -247,7 +247,7 @@ pub fn show(
 
     // Overlays.
     let labels = if frame_labels {
-        crate::labels::labels(&tab.doc, tab.page, tab.view, origin, rect)
+        crate::labels::labels(&painter, &tab.doc, tab.page, tab.view, origin, rect)
     } else {
         Vec::new()
     };
@@ -500,6 +500,10 @@ pub fn to_color32(c: AlphaColor<figstudio_render::color::Srgb>) -> Color32 {
         (a * 255.0) as u8,
     )
 }
+
+#[cfg(test)]
+#[path = "canvas_find_tests.rs"]
+mod find_tests;
 
 #[cfg(test)]
 mod tests {

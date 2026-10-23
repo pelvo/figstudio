@@ -269,6 +269,10 @@ pub fn approximations(stats: &Stats) -> Vec<String> {
         (stats.approximated_blends, "blend modes approximated"),
         (stats.approximated_paints, "paints approximated"),
         (stats.approximated_strokes, "stroke alignments approximated"),
+        (
+            stats.approximated_booleans,
+            "boolean operations approximated",
+        ),
         (stats.approximated_instance_ink, "instance ink approximated"),
         (stats.culled, "off screen or subpixel layers omitted"),
         (stats.budget_exhausted, "layers skipped (work budget)"),

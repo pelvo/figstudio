@@ -52,6 +52,8 @@ impl std::fmt::Debug for Tile {
 #[derive(Debug)]
 pub struct Tiles {
     cache: Cache<Tile>,
+    #[cfg(any(test, target_arch = "wasm32"))]
+    font_stamp: u64,
     /// Registers GPU tiles with egui (desktop with the GPU canvas).
     #[cfg(not(target_arch = "wasm32"))]
     pub gpu: Option<crate::gpu_tiles::Registry>,
@@ -64,6 +66,8 @@ impl Default for Tiles {
     fn default() -> Self {
         Tiles {
             cache: Cache::new(BUDGET_BYTES / TILE_BYTES),
+            #[cfg(any(test, target_arch = "wasm32"))]
+            font_stamp: 0,
             gpu: None,
         }
     }
@@ -87,8 +91,12 @@ impl Tiles {
             .is_some_and(crate::gpu_tiles_web::WebGpu::busy)
     }
 
-    /// Renders this frame's share of the scenes from the worker (browser) and stores them; a
-    /// tile whose GPU work failed is not stored, so it is asked for again (on the CPU).
+    #[cfg(any(test, target_arch = "wasm32"))]
+    pub fn fonts_changed(&mut self, stamp: u64) {
+        self.font_stamp = stamp;
+    }
+
+    /// Renders queued browser scenes; failed tiles are requested again on the CPU.
     #[cfg(target_arch = "wasm32")]
     pub fn pump_gpu(&mut self, tabs: &mut [Tab]) {
         let Some(gpu) = &mut self.gpu else {
@@ -101,6 +109,10 @@ impl Tiles {
             let Some(tab) = tabs.iter_mut().find(|t| t.id == done.tab) else {
                 return;
             };
+            if done.images < self.font_stamp {
+                tab.tiles_received.push((done.key, done.images));
+                return;
+            }
             received(tab, &done);
             if let Some(texture) = texture {
                 store(cache, &done, Texture::Gpu(texture));
@@ -110,6 +122,11 @@ impl Tiles {
 
     /// Uploads a finished tile and stores it.
     pub fn accept(&mut self, ctx: &egui::Context, tab: &mut Tab, done: RenderDone) {
+        #[cfg(any(test, target_arch = "wasm32"))]
+        if done.images < self.font_stamp {
+            tab.tiles_received.push((done.key, done.images));
+            return;
+        }
         #[cfg(target_arch = "wasm32")]
         if let (Pixels::Gpu(_), Some(gpu)) = (&done.pixels, &mut self.gpu) {
             // Still requested and not received until the main thread renders (or drops) it.
@@ -396,6 +413,10 @@ fn store(cache: &mut Cache<Tile>, done: &RenderDone, texture: Texture) {
     };
     cache.insert(done.key, tile, done.stats.clone(), images);
 }
+
+#[cfg(test)]
+#[path = "tiles_font_tests.rs"]
+mod font_tests;
 
 #[cfg(test)]
 mod rounded_tests {

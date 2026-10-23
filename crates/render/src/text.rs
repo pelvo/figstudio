@@ -56,34 +56,18 @@ pub fn characters(data: &Val) -> &str {
         .unwrap_or("")
 }
 
-#[cfg(feature = "system-fonts")]
 pub use system::SystemFonts;
 #[cfg(feature = "system-fonts")]
 pub(crate) use system::{Builder, SYMBOL_FAMILIES};
 
-/// Stand-in without the `system-fonts` feature (browser build): never finds a font.
-#[cfg(not(feature = "system-fonts"))]
-#[derive(Default)]
-pub struct SystemFonts {
-    _none: (),
-}
-
-#[cfg(not(feature = "system-fonts"))]
-impl SystemFonts {
-    pub(crate) fn emoji(&mut self, _ch: char, _pixels: u16) -> Option<crate::emoji::Glyph> {
-        None
-    }
-
-    pub fn layout(&mut self, _data: &Val) -> Option<Vec<BezPath>> {
-        None
-    }
-}
-
-#[cfg(feature = "system-fonts")]
 mod system {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "system-fonts"))]
     mod cache_tests;
-    use std::collections::{HashMap, VecDeque};
+    #[cfg(test)]
+    mod supplied_tests;
+    use std::collections::HashMap;
+    #[cfg(feature = "system-fonts")]
+    use std::collections::VecDeque;
     use std::sync::Arc;
 
     use figstudio_fig::Val;
@@ -127,8 +111,15 @@ mod system {
         db: Option<Database>,
         faces: HashMap<ID, Option<FaceData>>,
         fallbacks: Option<Vec<ID>>,
+        supplied: Vec<ID>,
+        /// Whether `db` holds the installed fonts. Without them (the browser) the supplied
+        /// faces are the fallbacks, in the order they were supplied.
+        installed: bool,
+        #[cfg(feature = "system-fonts")]
         emojis: HashMap<char, Option<crate::emoji_font::Resolved>>,
+        #[cfg(feature = "system-fonts")]
         emoji_order: VecDeque<char>,
+        #[cfg(feature = "system-fonts")]
         emoji_bytes: usize,
     }
 
@@ -172,7 +163,7 @@ mod system {
 
     impl SystemFonts {
         /// Fonts from `db` instead of the installed ones.
-        #[cfg(test)]
+        #[cfg(all(test, feature = "system-fonts"))]
         pub(crate) fn with_database(db: Database) -> Self {
             Self {
                 db: Some(db),
@@ -180,6 +171,28 @@ mod system {
             }
         }
 
+        pub fn add_font_data(&mut self, bytes: Arc<Vec<u8>>, index: u32) {
+            self.db();
+            if let Some(db) = &mut self.db {
+                let ids = db.load_font_source(fontdb::Source::Binary(bytes.clone()));
+                for id in ids {
+                    if db.face(id).is_some_and(|face| face.index == index) {
+                        self.supplied.push(id);
+                        self.faces.insert(id, Some((bytes.clone(), index)));
+                    } else {
+                        db.remove_face(id);
+                    }
+                }
+            }
+            self.fallbacks = None;
+        }
+
+        #[cfg(not(feature = "system-fonts"))]
+        pub(crate) fn emoji(&mut self, _ch: char, _pixels: u16) -> Option<crate::emoji::Glyph> {
+            None
+        }
+
+        #[cfg(feature = "system-fonts")]
         pub(crate) fn emoji(&mut self, ch: char, pixels: u16) -> Option<crate::emoji::Glyph> {
             self.db();
             let db = self.db.as_ref()?;
@@ -208,8 +221,14 @@ mod system {
 
         fn db(&mut self) -> &Database {
             self.db.get_or_insert_with(|| {
-                let mut db = Database::new();
-                db.load_system_fonts();
+                let db = Database::new();
+                #[cfg(feature = "system-fonts")]
+                let db = {
+                    let mut db = db;
+                    db.load_system_fonts();
+                    self.installed = true;
+                    db
+                };
                 db
             })
         }
@@ -239,18 +258,28 @@ mod system {
             if let Some(list) = &self.fallbacks {
                 return list.clone();
             }
-            let mut list = Vec::new();
+            self.db();
+            // Without installed fonts, a name lookup would only find a supplied face out of
+            // its supplied order (an emoji face ahead of the text face that sets line height).
+            let mut list = if self.installed {
+                Vec::new()
+            } else {
+                self.supplied.clone()
+            };
+            let mut found = Vec::new();
             for name in FALLBACK_FAMILIES.iter().chain(SYMBOL_FAMILIES) {
-                if let Some(id) = self.query(name, Weight::NORMAL, Style::Normal) {
-                    list.push(id);
-                }
+                found.extend(self.query(name, Weight::NORMAL, Style::Normal));
             }
             for generic in [Family::SansSerif, Family::Serif] {
                 let families = [generic];
-                if let Some(id) = self.db().query(&Query {
+                found.extend(self.db().query(&Query {
                     families: &families,
                     ..Query::default()
-                }) {
+                }));
+            }
+            found.extend(self.supplied.iter().copied());
+            for id in found {
+                if !list.contains(&id) {
                     list.push(id);
                 }
             }

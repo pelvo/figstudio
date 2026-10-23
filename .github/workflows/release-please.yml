@@ -1,14 +1,21 @@
 # Releases with release-please. Every push to main updates one release PR (version bump in
 # Cargo.toml and Cargo.lock, CHANGELOG.md from the Conventional Commit titles). Merging that
-# PR tags vX.Y.Z and publishes a GitHub release; the job below then builds the macOS app and
-# attaches it to the release.
+# PR tags vX.Y.Z and publishes a GitHub release; the jobs below then build the macOS app and
+# the Linux CLI/MCP binaries (x86_64 and arm64, static musl) as workflow artifacts, and the
+# `publish` job attaches whatever built to the release, then SHA256SUMS for every archive
+# the release then has (pelvo/homebrew-tap reads it). Only `publish` can write; the build
+# jobs run with a read-only token.
 #
 # The build runs in this workflow, not on `release: published`: a release made with
 # GITHUB_TOKEN does not start other workflows.
 #
-# Retry: if the macOS build failed, or a release has no assets, run this workflow by hand
+# Retry: if a build failed, or a release has no assets, run this workflow by hand
 # (Actions > release-please > Run workflow) with the release's tag. It rebuilds that tag and
-# replaces the assets.
+# replaces the assets. A build that fails leaves its old asset (if any) in place. SHA256SUMS
+# is rewritten only after every archive uploaded; if an archive upload fails, the step fails
+# and the old SHA256SUMS stays, and --clobber may already have removed that archive, so run
+# the workflow again. With "npm dry run" ticked instead, it builds the npm packages from the
+# chosen branch, checks the npm token and runs npm publish --dry-run: nothing is published.
 #
 # Token: GITHUB_TOKEN, which needs Settings > Actions > General > Workflow permissions >
 # "Allow GitHub Actions to create and approve pull requests" (on in the org and this repo).
@@ -31,9 +38,20 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to rebuild and attach assets to (for example v0.1.0)
-        required: true
+        description: >-
+          Existing release tag to rebuild and attach assets to (for example v0.1.0). Leave
+          it empty only for a dry run; with neither, the run starts no jobs.
+        required: false
         type: string
+      dry_run:
+        description: >-
+          npm dry run: build the npm packages from the chosen branch, check the npm token
+          (npm whoami) and run npm publish --dry-run. Publishes nothing; the tag is not used.
+          Dispatch it from main: the npm_key environment only deploys main, so a run from
+          another branch stops before it gets the token.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -60,18 +78,18 @@ jobs:
     needs: release-please
     # !cancelled(): on a manual run the release-please job is skipped, which would skip this
     # job too without it.
+    # A manual run with no tag and no dry run starts nothing.
     if: >-
-      !cancelled() && (github.event_name == 'workflow_dispatch'
-      || needs.release-please.outputs.release_created == 'true')
+      !cancelled() && ((github.event_name == 'workflow_dispatch' && !inputs.dry_run
+      && inputs.tag != '') || needs.release-please.outputs.release_created == 'true')
     # Apple silicon runner: the build is arm64.
     runs-on: macos-latest
-    permissions:
-      contents: write # gh release upload
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null
@@ -80,6 +98,7 @@ jobs:
           # Fully qualified: checkout resolves a bare name to a branch before a tag, so a
           # branch named like the tag would be built and its assets uploaded.
           ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -95,11 +114,257 @@ jobs:
       - name: Package
         run: |
           rm -rf dist && mkdir dist
-          app="figstudio-$TAG-macos-arm64.zip"
-          tools="figstudio-cli-mcp-$TAG-macos-arm64.tar.gz"
           # ditto keeps the bundle's signature and symlinks intact (plain zip does not).
-          ditto -c -k --keepParent target/release/figstudio.app "dist/$app"
-          tar -C target/release -czf "dist/$tools" figstudio-cli figstudio-mcp
-          (cd dist && shasum -a 256 "$app" "$tools" > SHA256SUMS)
+          ditto -c -k --keepParent target/release/figstudio.app "dist/figstudio-$TAG-macos-arm64.zip"
+          tar -C target/release -czf "dist/figstudio-cli-mcp-$TAG-macos-arm64.tar.gz" figstudio-cli figstudio-mcp
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-macos-arm64
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    needs: release-please
+    # A manual run with no tag and no dry run starts nothing.
+    if: >-
+      !cancelled() && ((github.event_name == 'workflow_dispatch' && !inputs.dry_run
+      && inputs.tag != '') || needs.release-please.outputs.release_created == 'true')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x86_64, target: x86_64-unknown-linux-musl, runner: ubuntu-24.04}
+          - {arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm}
+    # Native runner per arch, pinned (not ubuntu-latest) so a label move does not change the
+    # release build. musl links statically, so one binary runs on any distro (glibc or
+    # Alpine); renders measured as fast as the glibc build.
+    runs-on: ${{ matrix.runner }}
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
+    steps:
+      - name: Check the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup default stable
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-rust
+          key: ${{ matrix.target }}
+          cache-workspace-crates: true
+      - name: Build
+        run: cargo build --locked --release -p figstudio-cli -p figstudio-mcp --target ${{ matrix.target }}
+      - name: Smoke test
+        run: |
+          bin=target/${{ matrix.target }}/release
+          for b in figstudio-cli figstudio-mcp; do
+            file "$bin/$b" | tee /dev/stderr | grep -qE "static(ally|-pie) linked"
+          done
+          "$bin/figstudio-cli" render tests/fixtures/structure.fig -o "$RUNNER_TEMP/smoke.png"
+          "$bin/figstudio-mcp" --help >/dev/null
+      - name: Package
+        run: |
+          rm -rf dist && mkdir dist
+          tar -C target/${{ matrix.target }}/release -czf \
+            "dist/figstudio-cli-mcp-$TAG-linux-${{ matrix.arch }}.tar.gz" figstudio-cli figstudio-mcp
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [release-please, macos, linux]
+    # Runs when any build ran, so a failed arch does not hold back the others (or the cask
+    # bump, which needs only the macOS zip's line). The failed job still fails the run.
+    if: >-
+      !cancelled() && (needs.macos.result != 'skipped' || needs.linux.result != 'skipped')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # gh release upload
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Write SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Hash the new archives plus the release's archives this run did not rebuild, so
+          # SHA256SUMS lists exactly what the release has after the upload below.
+          mkdir sums
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' > names
+          while read -r name; do
+            case "$name" in
+              *.zip | *.tar.gz)
+                [ -e "dist/$name" ] || gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D sums -p "$name" ;;
+            esac
+          done < names
+          cp dist/* sums/
+          (cd sums && sha256sum -- * > ../dist/SHA256SUMS)
+          cat dist/SHA256SUMS
       - name: Attach to the release
-        run: gh release upload "$TAG" dist/* --clobber -R "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Archives first, SHA256SUMS last: --clobber replaces each asset on its own and gh
+        # uploads one call's files concurrently, so a failed archive upload must not leave
+        # sums for files the release does not have.
+        run: |
+          shopt -s nullglob
+          gh release upload "$TAG" dist/*.zip dist/*.tar.gz --clobber -R "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" dist/SHA256SUMS --clobber -R "$GITHUB_REPOSITORY"
+
+  # npm: `npx -y figstudio-mcp` runs one of these binaries through the launcher in
+  # npm/figstudio-mcp. Each binary is its own package with `os` and `cpu` set, listed as an
+  # optional dependency, so npm installs only the matching one and no install script runs.
+  # Linux builds are static (musl) and run on any distribution. The list here and PLATFORMS
+  # in npm/figstudio-mcp/bin/figstudio-mcp.js must agree (npm/figstudio-mcp/test checks it).
+  npm-build:
+    needs: release-please
+    # A manual run with no tag and no dry run starts nothing.
+    if: >-
+      !cancelled() && ((github.event_name == 'workflow_dispatch'
+      && (inputs.dry_run || inputs.tag != ''))
+      || needs.release-please.outputs.release_created == 'true')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            npm: linux-x64
+            # Pinned like the linux job, so a label move does not change the release build.
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            npm: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            npm: darwin-arm64
+            runner: macos-latest
+          - target: x86_64-apple-darwin
+            npm: darwin-x64
+            runner: macos-latest
+          - target: x86_64-pc-windows-msvc
+            npm: win32-x64
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check the tag
+        if: ${{ !inputs.dry_run }}
+        run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # A dry run builds the commit it was started on (github.sha, not the branch tip,
+          # so every job packs the same commit even if the branch moves meanwhile).
+          ref: ${{ inputs.dry_run && github.sha || format('refs/tags/{0}', env.TAG) }}
+          persist-credentials: false
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal --target "${{ matrix.target }}" && rustup default stable
+      # musl-gcc, so aws-lc-sys (rustls, for the loopback mirror's fetches) compiles its C
+      # against musl's headers rather than the runner's glibc; as the linux job does.
+      - name: musl tools
+        if: ${{ endsWith(matrix.target, '-linux-musl') }}
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-rust
+          # The two macOS targets run the same job id on the same runner image.
+          key: ${{ matrix.target }}
+      - name: Build figstudio-mcp
+        run: cargo build --release --locked -p figstudio-mcp --target "${{ matrix.target }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-bin-${{ matrix.npm }}
+          path: target/${{ matrix.target }}/release/figstudio-mcp${{ matrix.npm == 'win32-x64' && '.exe' || '' }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # Publishes from the `npm_key` environment, whose secret NPMAPIKEY is an npm automation
+  # token that can publish figstudio-mcp and the @pelvo/figstudio-mcp-* packages. Without
+  # it the Publish step fails, so a release that never reached npm is not green. A version
+  # already on npm is skipped, so a retry is safe. Only the Publish step sees the token.
+  # Every release-please release publishes to npm: an owner decision (2026-10-22, PR #43
+  # review 6312154812 F2), not an oversight.
+  npm-publish:
+    needs: [release-please, npm-build]
+    if: ${{ !cancelled() && needs.npm-build.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: npm_key
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
+      DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.dry_run && github.sha || format('refs/tags/{0}', env.TAG) }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: npm-bin-*
+          path: bins
+      - name: Assemble the packages
+        run: |
+          if [ "$DRY_RUN" = true ]; then v="0.0.0-dryrun.$GITHUB_RUN_NUMBER"; else v="${TAG#v}"; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          node scripts/npm-pack.mjs --version "$v" --out dist/npm --require-all \
+            --bin linux-x64=bins/npm-bin-linux-x64/figstudio-mcp \
+            --bin linux-arm64=bins/npm-bin-linux-arm64/figstudio-mcp \
+            --bin darwin-arm64=bins/npm-bin-darwin-arm64/figstudio-mcp \
+            --bin darwin-x64=bins/npm-bin-darwin-x64/figstudio-mcp \
+            --bin win32-x64=bins/npm-bin-win32-x64/figstudio-mcp.exe
+      - name: Publish
+        # The token is on this step only: the pack script above runs from the checked-out
+        # ref (the tag, or the branch of a dry run) and never sees it. setup-node's .npmrc
+        # reads it when npm runs.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPMAPIKEY }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::NPMAPIKEY is not set in the npm_key environment; nothing was published"
+            exit 1
+          fi
+          v="$VERSION"
+          if [ "$DRY_RUN" = true ]; then
+            # Its own command, so a wrong or expired token fails the step: set -e does not
+            # see a failure inside `echo "$(...)"`, and npm publish --dry-run never checks
+            # the token.
+            npm whoami
+          fi
+          # Platform packages first, so the launcher never names a version that is not there.
+          for dir in dist/npm/figstudio-mcp-* dist/npm/figstudio-mcp; do
+            name=$(node -p "require('./$dir/package.json').name")
+            if [ "$DRY_RUN" = true ]; then
+              npm publish "./$dir" --access public --dry-run
+              continue
+            fi
+            if npm view "$name@$v" version >/dev/null 2>&1; then
+              echo "$name@$v is already on npm"
+              continue
+            fi
+            npm publish "./$dir" --access public --provenance
+          done
