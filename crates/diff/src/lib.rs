@@ -159,19 +159,25 @@ pub fn diff_documents(old: &Document, new: &Document) -> DiffReport {
             PageStatus::Changed => summary.pages_changed += 1,
             PageStatus::Unchanged => {}
         }
-        let a = structure::order(old, page.id);
-        let b = structure::order(new, page.id);
-        let rank = |id: Guid, order: &HashMap<Guid, usize>| {
-            (order.get(&id).copied().unwrap_or(usize::MAX), id)
-        };
-        page.added.sort_by_key(|n| rank(n.id, &b));
-        page.removed.sort_by_key(|n| rank(n.id, &a));
-        page.changed.sort_by_key(|n| rank(n.id, &b));
-        page.moved_out.sort_by_key(|&id| rank(id, &a));
+        structure::sort_rows((old, new), page);
     }
     pages.retain(|p| p.status != PageStatus::Unchanged);
+    let mut copies = screen_model::CopyBudget::default();
+    let mut notes = Vec::new();
     for page in &mut pages {
-        screen_model::prepare((old, new), page);
+        // Layers of recreated screens compared by name; their new ids still count as added.
+        let uncompared = copies.uncompared;
+        let (rows, props) = screen_model::prepare((old, new), page, &mut copies);
+        summary.nodes_changed += rows;
+        summary.properties_changed += props;
+        if copies.uncompared > uncompared {
+            notes.push(format!(
+                "page {}: copy comparison limit reached; {} repeated layers on recreated \
+                 screens paired in order without listing their edits",
+                page.id,
+                copies.uncompared - uncompared
+            ));
+        }
     }
     DiffReport {
         old: structure::meta(old),
@@ -180,12 +186,16 @@ pub fn diff_documents(old: &Document, new: &Document) -> DiffReport {
         pages,
         shared_changes: Vec::new(),
         complete: ungrouped == 0,
-        truncated: if ungrouped == 0 {
-            Vec::new()
-        } else {
-            vec![format!(
-                "{ungrouped} added, removed or changed nodes outside pages are not grouped"
-            )]
+        truncated: {
+            if ungrouped > 0 {
+                notes.insert(
+                    0,
+                    format!(
+                        "{ungrouped} added, removed or changed nodes outside pages are not grouped"
+                    ),
+                );
+            }
+            notes
         },
     }
 }

@@ -283,3 +283,294 @@ fn recreated_screen_does_not_list_churn_below_a_layer_that_kept_its_id() {
         assert_eq!(screen.matches("class=\"sg\">").count(), 3, "{screen}");
     }
 }
+
+#[test]
+fn recreated_screen_lists_edits_of_layers_that_pair_by_name() {
+    let dot = |id, parent, rgb| {
+        let mut n = filled_rectangle_at(id, parent, rgb, 10.0, 10.0, 20.0, 20.0);
+        n.data.set("name", Val::Str("Dot".into()));
+        Node::from_data(n.data).unwrap()
+    };
+    let label = |id, parent, text: &str| {
+        let mut n = node(id, Some(parent), "TEXT", "b");
+        n.data.set("name", Val::Str("Label".into()));
+        n.data
+            .set("textData", object(&[("characters", Val::Str(text.into()))]));
+        Node::from_data(n.data).unwrap()
+    };
+    let tinted = |mut n: Node| {
+        n.data.set("fillPaints", support::solid(0.9, 0.9, 0.9));
+        Node::from_data(n.data).unwrap()
+    };
+    // The screen is recreated with new ids and moved on the canvas. Its own fill, its dot's
+    // colour and its label's text change; each pairs by name, so each is a change.
+    let old = document(vec![
+        screen(4, 1, 0.0, "FRAME"),
+        dot(5, 4, (1.0, 0.0, 0.0)),
+        label(6, 4, "Old"),
+    ]);
+    let new = document(vec![
+        tinted(screen(7, 1, 600.0, "FRAME")),
+        dot(8, 7, (0.0, 0.0, 1.0)),
+        label(9, 7, "New"),
+    ]);
+    for render in [false, true] {
+        let mut report = diff_documents(&old, &new);
+        if render {
+            let _ = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+        }
+        let page = &report.pages[0];
+        assert_eq!(page.screens.len(), 1, "render {render}: {page:?}");
+        let changed = |id| page.changed.iter().find(|n| n.id == Guid(0, id));
+        let fields = |id| -> Vec<String> {
+            changed(id).map_or_else(Vec::new, |n| {
+                n.changes.iter().map(|c| c.field.clone()).collect()
+            })
+        };
+        assert_eq!(fields(8), ["fillPaints.0.color.b", "fillPaints.0.color.r"]);
+        let red = &changed(8).unwrap().changes[1];
+        assert_eq!(
+            (&red.old, &red.new),
+            (&Some(Val::Float(1.0)), &Some(Val::Float(0.0)))
+        );
+        assert!(changed(9).unwrap().text.is_some(), "{page:?}");
+        // The root's fill is an edit; where it sits on the canvas is not.
+        assert!(
+            fields(7).iter().all(|f| f.starts_with("fillPaints")),
+            "{:?}",
+            fields(7)
+        );
+        assert!(!fields(7).is_empty());
+        for n in &page.changed {
+            for c in &n.changes {
+                let head = c.field.split('.').next().unwrap();
+                assert!(
+                    !["guid", "parentIndex", "overrideKey"].contains(&head),
+                    "{c:?}"
+                );
+            }
+        }
+        assert_eq!(report.summary.nodes_changed, 3);
+        assert_eq!(report.summary.properties_changed, 6);
+        let html = render_html(&report);
+        let screen = html.split("id=\"page-0-s1\"").nth(1).unwrap();
+        assert!(screen.contains(">Dot<"), "{screen}");
+    }
+}
+
+#[test]
+fn a_recreated_screen_that_is_only_rotated_or_scaled_is_a_move_not_an_edit() {
+    // A quarter turn and a 2x scale, each in place (no translation).
+    for (m00, m01, m10, m11) in [(0.0, -1.0, 1.0, 0.0), (2.0, 0.0, 0.0, 2.0)] {
+        let mut root = screen(7, 1, 0.0, "FRAME");
+        root.data.set(
+            "transform",
+            object(&[
+                ("m00", Val::Float(m00)),
+                ("m01", Val::Float(m01)),
+                ("m02", Val::Float(0.0)),
+                ("m10", Val::Float(m10)),
+                ("m11", Val::Float(m11)),
+                ("m12", Val::Float(0.0)),
+            ]),
+        );
+        // A small mark inside, so a leaked scale or turn would move it on the screen picture.
+        let mark = |id, parent| {
+            let mut n = filled_rectangle_at(id, parent, (0.0, 0.0, 0.0), 20.0, 20.0, 40.0, 30.0);
+            n.data.set("name", Val::Str("Mark".into()));
+            Node::from_data(n.data).unwrap()
+        };
+        let old = document(vec![screen(4, 1, 0.0, "FRAME"), mark(5, 4)]);
+        let new = document(vec![Node::from_data(root.data).unwrap(), mark(8, 7)]);
+        for render in [false, true] {
+            let mut report = diff_documents(&old, &new);
+            if render {
+                let _ = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+                assert!(report.pages[0].render.is_some());
+            }
+            let page = &report.pages[0];
+            assert!(page.changed.iter().all(|n| n.id != Guid(0, 7)), "{page:?}");
+            assert!(page.screens.is_empty(), "{m00} render {render}: {page:?}");
+            assert_eq!((page.screens_unchanged, page.screens_moved), (1, 1));
+            let summary = &report.summary;
+            assert_eq!(
+                (summary.nodes_changed, summary.properties_changed),
+                (0, 0),
+                "{summary:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn recreated_screen_keeps_repeated_names_silent_when_a_copy_is_inserted() {
+    let card = |id, parent, y, text: &str, position: &str| {
+        let mut frame = node(id, Some(parent), "FRAME", position);
+        frame.data.set("name", Val::Str("Card".into()));
+        frame
+            .data
+            .set("transform", object(&[("m12", Val::Float(y))]));
+        let mut title = node(id + 1, Some(id), "TEXT", "a");
+        title.data.set("name", Val::Str("Title".into()));
+        title
+            .data
+            .set("textData", object(&[("characters", Val::Str(text.into()))]));
+        [
+            Node::from_data(frame.data).unwrap(),
+            Node::from_data(title.data).unwrap(),
+        ]
+    };
+    // A new card goes in front of the old one: walk order would pair the new card's title
+    // with the old title and report a text edit that did not happen.
+    let mut old = vec![screen(4, 1, 0.0, "FRAME")];
+    old.extend(card(5, 4, 100.0, "Kept", "b"));
+    let mut new = vec![screen(7, 1, 0.0, "FRAME")];
+    new.extend(card(20, 7, 0.0, "Inserted", "a"));
+    new.extend(card(8, 7, 100.0, "Kept", "b"));
+    let report = diff_documents(&document(old), &document(new));
+    let page = &report.pages[0];
+    assert!(page.changed.is_empty(), "{:?}", page.changed);
+    assert_eq!(report.summary.nodes_changed, 0);
+    // The unchanged copy pairs with the old card, so the inserted one is the addition.
+    let ids = |list: &[figstudio_diff::NodeRef]| list.iter().map(|n| n.id.1).collect::<Vec<_>>();
+    assert_eq!(ids(&page.added), [7, 20], "{:?}", page.added);
+    assert_eq!(ids(&page.removed), [4], "{:?}", page.removed);
+}
+
+#[test]
+fn recreated_screen_lists_an_edit_of_a_repeated_name_in_tree_order() {
+    let card = |id, parent, y, text: &str, position: &str| {
+        let mut frame = node(id, Some(parent), "FRAME", position);
+        frame.data.set("name", Val::Str("Card".into()));
+        frame
+            .data
+            .set("transform", object(&[("m12", Val::Float(y))]));
+        let mut title = node(id + 1, Some(id), "TEXT", "a");
+        title.data.set("name", Val::Str("Title".into()));
+        title
+            .data
+            .set("textData", object(&[("characters", Val::Str(text.into()))]));
+        [
+            Node::from_data(frame.data).unwrap(),
+            Node::from_data(title.data).unwrap(),
+        ]
+    };
+    let label = |id, parent, name: &str, text: &str, position: &str| {
+        let mut n = node(id, Some(parent), "TEXT", position);
+        n.data.set("name", Val::Str(name.into()));
+        n.data
+            .set("textData", object(&[("characters", Val::Str(text.into()))]));
+        Node::from_data(n.data).unwrap()
+    };
+    // Two cards on each side, in the same order; only the second title changes. Zebra is
+    // the earlier sibling of Apple, and both change.
+    let mut old = vec![screen(4, 1, 0.0, "FRAME")];
+    old.extend(card(5, 4, 0.0, "One", "a"));
+    old.extend(card(10, 4, 100.0, "Two", "b"));
+    old.push(label(12, 4, "Zebra", "z", "c"));
+    old.push(label(13, 4, "Apple", "a", "d"));
+    let mut new = vec![screen(7, 1, 0.0, "FRAME")];
+    new.extend(card(20, 7, 0.0, "One", "a"));
+    new.extend(card(30, 7, 100.0, "Two edited", "b"));
+    new.push(label(32, 7, "Zebra", "z2", "c"));
+    new.push(label(33, 7, "Apple", "a2", "d"));
+    let report = diff_documents(&document(old), &document(new));
+    let page = &report.pages[0];
+    let rows: Vec<_> = page.changed.iter().map(|n| n.id.1).collect();
+    assert_eq!(rows, [31, 32, 33], "{:?}", page.changed);
+    assert_eq!(page.screens.len(), 1, "{page:?}");
+    assert!(render_html(&report).contains("Two edited"));
+    assert!(page.added.iter().all(|n| n.id.1 == 7), "{:?}", page.added);
+}
+
+#[test]
+fn repeated_copies_share_one_comparison_budget_per_recreated_screen() {
+    let label = |id, parent, name: &str, text: &str| {
+        let mut n = node(id, Some(parent), "TEXT", "a");
+        n.data.set("name", Val::Str(name.into()));
+        n.data
+            .set("textData", object(&[("characters", Val::Str(text.into()))]));
+        Node::from_data(n.data).unwrap()
+    };
+    // 50 copies of "Alpha" and of "Beta" on each side: 2 × 2,500 comparisons is past the
+    // document's 4,096, so Alpha (first in path order) is compared and Beta pairs in walk
+    // order without being compared. Copy 20 of each, and the one "Only" layer, is edited.
+    let side = |new: bool| {
+        let (root, base) = if new { (7, 20_000) } else { (4, 10_000) };
+        let edit = |text: &str| {
+            if new {
+                format!("{text} edited")
+            } else {
+                text.to_owned()
+            }
+        };
+        let mut nodes = vec![screen(root, 1, 0.0, "FRAME")];
+        for (k, name) in [(0, "Alpha"), (100, "Beta")] {
+            for i in 0..50 {
+                let text = if i == 20 { edit(name) } else { name.to_owned() };
+                nodes.push(label(base + k + i, root, name, &text));
+            }
+        }
+        nodes.push(label(base + 999, root, "Only", &edit("Only")));
+        document(nodes)
+    };
+    let report = diff_documents(&side(false), &side(true));
+    let page = &report.pages[0];
+    let rows: Vec<_> = page.changed.iter().map(|n| n.id.1).collect();
+    // A unique name is still compared once the budget is spent.
+    assert_eq!(rows, [20_020, 20_999], "{:?}", page.changed);
+    // The uncompared copies still pair, so only the roots are added and removed.
+    let ids = |list: &[figstudio_diff::NodeRef]| list.iter().map(|n| n.id.1).collect::<Vec<_>>();
+    assert_eq!(ids(&page.added), [7], "{:?}", page.added);
+    assert_eq!(ids(&page.removed), [4], "{:?}", page.removed);
+    assert!(
+        report.truncated.iter().any(|n| n.ends_with(
+            "copy comparison limit reached; 50 repeated layers on recreated screens paired \
+             in order without listing their edits"
+        )),
+        "{:?}",
+        report.truncated
+    );
+    assert!(report.complete);
+}
+
+#[test]
+fn rows_of_a_recreated_screen_stay_in_tree_order_with_other_changes() {
+    // A recreated screen comes first on the page, a screen that kept its ids second; both
+    // have an edited child, and the recreated one also keeps an edited child's id.
+    let text = |id, parent, name: &str, value: &str, position: &str| {
+        let mut n = node(id, Some(parent), "TEXT", position);
+        n.data.set("name", Val::Str(name.into()));
+        n.data.set(
+            "textData",
+            object(&[("characters", Val::Str(value.into()))]),
+        );
+        Node::from_data(n.data).unwrap()
+    };
+    let placed = |mut n: Node, name: &str, position: &str| {
+        n.data.set("name", Val::Str(name.into()));
+        n.data.set(
+            "parentIndex",
+            object(&[
+                ("guid", Guid(0, 1).to_val()),
+                ("position", Val::Str(position.into())),
+            ]),
+        );
+        Node::from_data(n.data).unwrap()
+    };
+    let side = |new: bool| {
+        let v = |s: &str| if new { format!("{s}2") } else { s.to_owned() };
+        let first = if new { 20 } else { 4 };
+        document(vec![
+            placed(screen(first, 1, 0.0, "FRAME"), "Recreated", "a"),
+            text(first + 1, first, "Title", &v("t"), "a"),
+            text(30, first, "Same id", &v("s"), "b"),
+            placed(screen(8, 1, 1000.0, "FRAME"), "Kept", "b"),
+            text(9, 8, "Body", &v("b"), "a"),
+        ])
+    };
+    let report = diff_documents(&side(false), &side(true));
+    let page = &report.pages[0];
+    let rows: Vec<_> = page.changed.iter().map(|n| n.id.1).collect();
+    assert_eq!(rows, [21, 30, 9], "{:?}", page.changed);
+}
