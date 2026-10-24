@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.0](https://github.com/pelvo/figstudio/compare/v0.1.0...v0.2.0) (2026-10-24)
+
+
+### Features
+
+* **ci,docs:** linux release binaries and homebrew install docs ([#55](https://github.com/pelvo/figstudio/issues/55)) ([7fc6fb6](https://github.com/pelvo/figstudio/commit/7fc6fb670b6b410645de07b368831dac29f1902a))
+* **compare:** screen-by-screen report and lossless WebP output ([#52](https://github.com/pelvo/figstudio/issues/52)) ([4bffd00](https://github.com/pelvo/figstudio/commit/4bffd00a17d7da61de3e50a361d812597fdb6d1a))
+* **diff:** list edits of layers a recreated screen pairs by name ([#57](https://github.com/pelvo/figstudio/issues/57)) ([7a992f2](https://github.com/pelvo/figstudio/commit/7a992f227ce7084e772e66be7ed9a414c337c8fc))
+* **mcp:** run with npx -y figstudio-mcp, open the public build by ([7a6f9b0](https://github.com/pelvo/figstudio/commit/7a6f9b08b320127d7c9e4617671872d8ffb5debb))
+* **mcp:** run with npx -y figstudio-mcp, open the public build by default ([#43](https://github.com/pelvo/figstudio/issues/43)) ([7a6f9b0](https://github.com/pelvo/figstudio/commit/7a6f9b08b320127d7c9e4617671872d8ffb5debb))
+
+
+### Bug Fixes
+
+* **render,app,web:** draw boolean results, Figma-style canvas labels, browser text layout ([#50](https://github.com/pelvo/figstudio/issues/50)) ([1b46309](https://github.com/pelvo/figstudio/commit/1b46309ebdb092f0fa84bdaf102d9cd9a896c08c))
+* **web:** draw cjk file names on the recents page ([#51](https://github.com/pelvo/figstudio/issues/51)) ([00a5e73](https://github.com/pelvo/figstudio/commit/00a5e73da555d2acf64a9e954d94ee89c5762dbb))
+
 ## 0.1.0 (2026-10-22)
 
 
