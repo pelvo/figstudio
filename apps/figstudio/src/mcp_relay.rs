@@ -4,12 +4,13 @@ use crate::{
     mcp_wire::{busy_reply, encode_failed_reply, rpc_reply},
     tab::Tab,
 };
-use figstudio_fig::Guid;
+use figstudio_fig::{Document, Guid};
 use figstudio_mcp_core::{
     CoreError,
     rendering::Rendering,
     wasm_rpc::{McpTab, McpTabEnv, handle_request},
 };
+use std::collections::VecDeque;
 use std::sync::{
     Arc,
     atomic::{AtomicU8, Ordering},
@@ -63,8 +64,13 @@ pub(crate) struct Inbox {
     tx: Sender<Done>,
     pub rx: Receiver<Done>,
     pub pending: usize,
+    /// Reveals drained by [`Self::take_replies`], kept for the UI frame that applies them.
+    reveals: VecDeque<Done>,
     /// Test seam for [`REVEAL_ACK_TIMEOUT`]: dispatch copies it into each snapshot.
     ack_timeout: Duration,
+    /// Called on the pool after a reply is queued, so the page sends it without waiting
+    /// for a frame (`web_wake::wake` in the browser; a hidden tab gets few frames).
+    wake: fn(),
 }
 
 impl Default for Inbox {
@@ -74,7 +80,66 @@ impl Default for Inbox {
             tx,
             rx,
             pending: 0,
+            reveals: VecDeque::new(),
             ack_timeout: REVEAL_ACK_TIMEOUT,
+            #[cfg(target_arch = "wasm32")]
+            wake: crate::web_wake::wake,
+            #[cfg(not(target_arch = "wasm32"))]
+            wake: || {},
+        }
+    }
+}
+
+/// One tab as a UI frame last saw it: what a relay call reads, so a call can start
+/// between frames (the socket callback starts it; a hidden tab draws no frames).
+#[derive(Clone)]
+struct TabView {
+    id: u64,
+    name: String,
+    file_key: String,
+    doc: Arc<Document>,
+    source: Option<crate::source::Source>,
+    page: Guid,
+    selection: Option<Guid>,
+    viewport: [f64; 4],
+}
+
+/// The open tabs as a UI frame last saw them (see [`TabView`]).
+#[derive(Clone, Default)]
+pub(crate) struct RelayTabs {
+    tabs: Vec<TabView>,
+    active: Option<u64>,
+}
+
+impl std::fmt::Debug for RelayTabs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelayTabs")
+            .field("tabs", &self.tabs.len())
+            .field("active", &self.active)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RelayTabs {
+    /// Capture `tabs` for calls that start before the next frame.
+    pub fn capture(tabs: &[Tab], active: usize) -> Self {
+        let keys = crate::mcp_wire::relay_keys(tabs);
+        Self {
+            tabs: tabs
+                .iter()
+                .zip(keys)
+                .map(|(tab, file_key)| TabView {
+                    id: tab.id,
+                    name: tab.title(),
+                    file_key,
+                    doc: tab.doc.clone(),
+                    source: tab.source.clone(),
+                    page: tab.page,
+                    selection: tab.selection,
+                    viewport: viewport(tab).unwrap_or([0.; 4]),
+                })
+                .collect(),
+            active: tabs.get(active).map(|t| t.id),
         }
     }
 }
@@ -182,6 +247,7 @@ pub(crate) fn apply_reveal(
 impl Inbox {
     /// Queue one relay call on the pool. Returns the busy frame to send when the tab is
     /// already running [`MAX_INFLIGHT`] jobs (the call is refused, not stacked).
+    #[cfg(test)]
     pub fn dispatch(
         &mut self,
         generation: u32,
@@ -190,21 +256,31 @@ impl Inbox {
         tabs: &[Tab],
         active: usize,
     ) -> Option<String> {
+        self.dispatch_view(generation, id, body, &RelayTabs::capture(tabs, active))
+    }
+
+    /// [`Self::dispatch`] against tabs a frame captured earlier ([`RelayTabs::capture`]).
+    pub fn dispatch_view(
+        &mut self,
+        generation: u32,
+        id: String,
+        body: serde_json::Value,
+        view: &RelayTabs,
+    ) -> Option<String> {
         // The relay forwards requests only with an id, so `body.id` is the caller's.
         let rpc_id = body.get("id").cloned().unwrap_or(serde_json::Value::Null);
         if self.pending >= MAX_INFLIGHT {
             return Some(busy_reply(&id, &rpc_id));
         }
         self.pending += 1;
-        let keys = crate::mcp_wire::relay_keys(tabs);
         // This runs on the UI thread, which must not wait on the workers' font lock.
         #[cfg(target_arch = "wasm32")]
         let fonts = crate::canvas_fonts::latest();
         let env = Snapshot {
-            tabs: tabs
+            tabs: view
+                .tabs
                 .iter()
-                .zip(keys)
-                .map(|(tab, file_key)| {
+                .map(|tab| {
                     let source = tab.source.clone();
                     // Separate cache from the canvas worker's in-flight image requests.
                     let rendering = Rendering::with_reader(
@@ -221,21 +297,22 @@ impl Inbox {
                     };
                     McpTab {
                         id: tab.id,
-                        name: tab.title(),
-                        file_key,
+                        name: tab.name.clone(),
+                        file_key: tab.file_key.clone(),
                         doc: tab.doc.clone(),
                         rendering,
                         page: tab.page,
                         selection: tab.selection,
-                        viewport: viewport(tab).unwrap_or([0.; 4]),
+                        viewport: tab.viewport,
                     }
                 })
                 .collect(),
-            active: tabs.get(active).map(|t| t.id),
+            active: view.active,
             tx: self.tx.clone(),
             generation,
             ack_timeout: self.ack_timeout,
         };
+        let wake = self.wake;
         spawn(move || {
             let result = handle_request(&body.to_string(), &env);
             // The dispatcher returns serialized JSON; malformed output still completes the
@@ -244,8 +321,30 @@ impl Inbox {
             let text = rpc_reply(&id, result.as_deref())
                 .unwrap_or_else(|_| encode_failed_reply(&id, &rpc_id));
             let _ = env.tx.send(Done::Reply { generation, text });
+            wake();
         });
         None
+    }
+
+    /// The finished calls' replies, as `(generation, frame)`; reveals drained on the way
+    /// stay queued for the UI frame ([`Self::take_reveals`]).
+    pub fn take_replies(&mut self) -> Vec<(u32, String)> {
+        let mut replies = Vec::new();
+        while let Ok(done) = self.rx.try_recv() {
+            match done {
+                Done::Reply { generation, text } => {
+                    self.pending = self.pending.saturating_sub(1);
+                    replies.push((generation, text));
+                }
+                reveal @ Done::Reveal { .. } => self.reveals.push_back(reveal),
+            }
+        }
+        replies
+    }
+
+    /// The reveals waiting for the UI; call [`Self::take_replies`] first.
+    pub fn take_reveals(&mut self) -> VecDeque<Done> {
+        std::mem::take(&mut self.reveals)
     }
 }
 

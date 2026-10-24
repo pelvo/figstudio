@@ -18,7 +18,7 @@ pub(super) fn watch_fragment(link: Rc<RefCell<Option<Link>>>) {
     on_hash.forget();
 }
 
-impl McpHost {
+impl Host {
     /// Ask about a pending linked room before anything joins it. Drawn ahead of the app
     /// shortcuts so the dialog's Escape is consumed first.
     pub fn confirm(&mut self, ctx: &egui::Context) {

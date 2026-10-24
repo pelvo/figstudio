@@ -510,6 +510,7 @@ impl std::fmt::Debug for WebSource {
 impl Drop for WebSource {
     fn drop(&mut self) {
         let _ = self.requests.send(FileRequest::Close(self.file));
+        crate::web_wake::wake();
     }
 }
 
@@ -523,6 +524,8 @@ impl ImageSource for WebSource {
                 reply,
             })
             .map_err(|_| anyhow::anyhow!("app closed"))?;
+        // A hidden tab draws few frames; the wake serves the read without one.
+        crate::web_wake::wake();
         // Workers may wait; they poll rather than block so a one-thread pool keeps running.
         // The nap doubles from 2 ms to 16 ms so a slow read does not spin.
         let mut nap = 2;
@@ -552,7 +555,10 @@ pub struct Inbox {
     pub exports_tx: Sender<Exported>,
     pub exports: Receiver<Exported>,
     ranges_tx: Sender<FileRequest>,
-    ranges: Receiver<FileRequest>,
+    /// Shared with the wake pump, which serves reads between frames.
+    ranges: std::rc::Rc<Receiver<FileRequest>>,
+    /// The wake pump is registered (by the first `serve_ranges`, which has the context).
+    serving: std::cell::Cell<bool>,
     fonts_tx: Sender<FontResult>,
     pub fonts: Receiver<FontResult>,
     pub font_state: FontState,
@@ -581,7 +587,8 @@ impl Inbox {
             exports_tx,
             exports,
             ranges_tx,
-            ranges,
+            ranges: std::rc::Rc::new(ranges),
+            serving: std::cell::Cell::new(false),
             fonts_tx,
             fonts,
             font_state: FontState::NotNeeded,
@@ -728,27 +735,44 @@ impl Inbox {
         })
     }
 
-    /// Starts reading the byte ranges workers asked for (call every frame).
+    /// Starts reading the byte ranges workers asked for (call every frame). Also serves
+    /// them on each worker wake, so a hidden tab answers without waiting for a frame.
     pub fn serve_ranges(&self, ctx: &egui::Context) {
-        while let Ok(req) = self.ranges.try_recv() {
-            let (id, entry, reply) = match req {
-                FileRequest::Close(id) => {
-                    drop_file(id);
-                    continue;
-                }
-                FileRequest::Read { file, entry, reply } => (file, entry, reply),
-            };
-            let ctx = ctx.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let result = match file(id) {
-                    Some(f) => read_raw(&f, &entry).await,
-                    None => Err(anyhow::anyhow!("file closed")),
-                };
-                let _ = reply.send(result);
-                ctx.request_repaint();
-            });
+        if !self.serving.replace(true) {
+            let (ranges, ctx) = (self.ranges.clone(), ctx.clone());
+            crate::web_wake::listen(move || serve(&ranges, &ctx));
         }
+        serve(&self.ranges, ctx);
     }
+}
+
+fn serve(ranges: &Receiver<FileRequest>, ctx: &egui::Context) {
+    while let Ok(req) = ranges.try_recv() {
+        let (id, entry, reply) = match req {
+            FileRequest::Close(id) => {
+                drop_file(id);
+                continue;
+            }
+            FileRequest::Read { file, entry, reply } => (file, entry, reply),
+        };
+        let ctx = ctx.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = match file(id) {
+                Some(f) => read_raw(&f, &entry).await,
+                None => Err(anyhow::anyhow!("file closed")),
+            };
+            let _ = reply.send(result);
+            ctx.request_repaint();
+        });
+    }
+}
+
+/// The page is hidden (a background tab, a minimized window): eframe then runs
+/// `App::logic` only, on a throttled timer, and never `App::ui`.
+pub fn page_hidden() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .is_some_and(|document| document.hidden())
 }
 
 /// Opens a lazily picked file on a worker: inflates the eager entries (read raw by

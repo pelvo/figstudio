@@ -181,3 +181,51 @@ fn a_reveal_never_acked_times_out_as_a_tool_error() {
         "{error}"
     );
 }
+
+#[test]
+fn a_finished_call_wakes_the_page_to_send_its_reply() {
+    use std::sync::atomic::AtomicUsize;
+    static WAKES: AtomicUsize = AtomicUsize::new(0);
+    let mut inbox = Inbox {
+        wake: || {
+            WAKES.fetch_add(1, Ordering::SeqCst);
+        },
+        ..Default::default()
+    };
+    let call = json!({"jsonrpc":"2.0", "id":1, "method":"tools/list"});
+    assert_eq!(inbox.dispatch(1, "r1".to_owned(), call, &tabs(), 0), None);
+    // The wake follows the queued reply: a hidden tab sends it then, not at a frame.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while WAKES.load(Ordering::SeqCst) == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the finished call never woke the page"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let replies = inbox.take_replies();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].0, 1);
+    assert_eq!(inbox.pending, 0);
+}
+
+#[test]
+fn draining_replies_keeps_reveals_for_the_frame() {
+    let mut inbox = Inbox {
+        ack_timeout: Duration::from_millis(30),
+        ..Default::default()
+    };
+    inbox.dispatch(1, "r".to_owned(), reveal_call(), &tabs(), 0);
+    // The reveal expires unacked, so its error reply follows it on the channel.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut replies = Vec::new();
+    while replies.is_empty() {
+        assert!(Instant::now() < deadline, "no reply");
+        replies.extend(inbox.take_replies());
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let reveals = inbox.take_reveals();
+    assert_eq!(reveals.len(), 1, "the reveal stays queued for the UI frame");
+    assert!(matches!(reveals[0], Done::Reveal { tab: 7, .. }));
+    assert!(inbox.take_reveals().is_empty());
+}
