@@ -1,13 +1,11 @@
 mod support;
 use figstudio_diff::{RenderOpts, ScreenStatus, attach_render_diffs, diff_documents, render_html};
 use figstudio_fig::{Document, Guid, Node, Val};
-use support::{document, filled_rectangle_at, node, object};
+use support::{document, filled_rectangle_at, named, node, object, typed};
 
 fn screen(id: u32, parent: u32, x: f64, kind: &str) -> Node {
-    let mut n = filled_rectangle_at(id, parent, (1.0, 1.0, 1.0), x, 0.0, 400.0, 300.0);
-    n.data.set("type", Val::Str(kind.into()));
-    n.data.set("name", Val::Str("Screen".into()));
-    Node::from_data(n.data).unwrap()
+    let n = filled_rectangle_at(id, parent, (1.0, 1.0, 1.0), x, 0.0, 400.0, 300.0);
+    named(typed(n, kind), "Screen")
 }
 fn pair(recolored: bool) -> (Document, Document) {
     let side = |new: bool| {
@@ -169,10 +167,6 @@ fn inherited_instance_change_is_not_erased_by_moving_its_section() {
 
 #[test]
 fn recreated_screen_lists_layers_it_gained_or_lost_but_not_identity_churn() {
-    let named = |mut n: Node, name: &str| {
-        n.data.set("name", Val::Str(name.into()));
-        Node::from_data(n.data).unwrap()
-    };
     let dot = |id, parent| {
         named(
             filled_rectangle_at(id, parent, (1.0, 0.0, 0.0), 10.0, 10.0, 20.0, 20.0),
@@ -213,26 +207,22 @@ fn recreated_screen_lists_layers_it_gained_or_lost_but_not_identity_churn() {
 
 #[test]
 fn recreated_screen_does_not_list_churn_below_a_layer_that_kept_its_id() {
-    let named = |mut n: Node, name: &str, kind: &str| {
-        n.data.set("name", Val::Str(name.into()));
-        n.data.set("type", Val::Str(kind.into()));
-        Node::from_data(n.data).unwrap()
-    };
+    let named_kind = |n: Node, name: &str, kind: &str| named(typed(n, kind), name);
     let row = |id, parent, y| {
-        named(
+        named_kind(
             filled_rectangle_at(id, parent, (1.0, 1.0, 1.0), 0.0, y, 200.0, 100.0),
             "Row",
             "FRAME",
         )
     };
     let dot = |id, parent| {
-        named(
+        named_kind(
             filled_rectangle_at(id, parent, (1.0, 0.0, 0.0), 10.0, 10.0, 20.0, 20.0),
             "Dot",
             "RECTANGLE",
         )
     };
-    let badge = named(
+    let badge = named_kind(
         filled_rectangle_at(9, 5, (0.0, 0.0, 1.0), 100.0, 10.0, 20.0, 20.0),
         "Badge",
         "RECTANGLE",
@@ -287,9 +277,10 @@ fn recreated_screen_does_not_list_churn_below_a_layer_that_kept_its_id() {
 #[test]
 fn recreated_screen_lists_edits_of_layers_that_pair_by_name() {
     let dot = |id, parent, rgb| {
-        let mut n = filled_rectangle_at(id, parent, rgb, 10.0, 10.0, 20.0, 20.0);
-        n.data.set("name", Val::Str("Dot".into()));
-        Node::from_data(n.data).unwrap()
+        named(
+            filled_rectangle_at(id, parent, rgb, 10.0, 10.0, 20.0, 20.0),
+            "Dot",
+        )
     };
     let label = |id, parent, text: &str| {
         let mut n = node(id, Some(parent), "TEXT", "b");

@@ -16,7 +16,11 @@ pub(crate) enum Kind<'a> {
         label: &'a str,
         ch: usize,
     },
-    Paint,
+    /// A paint's `opacity` or `visible`: its place ("Fill" or "Stroke") and that field.
+    Paint {
+        place: &'a str,
+        field: &'a str,
+    },
     Font,
     Hidden,
 }
@@ -64,11 +68,13 @@ pub(crate) fn classify(change: &PropertyChange) -> Kind<'static> {
         };
     }
     if n >= 3
-        && matches!(segs[n - 1], "opacity" | "visible")
+        && let Some(field) = ["opacity", "visible"]
+            .into_iter()
+            .find(|f| *f == segs[n - 1])
         && is_index(segs[n - 2])
-        && label(segs[n - 3]).is_some()
+        && let Some(place) = label(segs[n - 3])
     {
-        return Kind::Paint;
+        return Kind::Paint { place, field };
     }
     if change.category == Category::Font || segs.iter().any(|s| is_font_key(s)) {
         return Kind::Font;

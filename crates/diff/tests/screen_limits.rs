@@ -1,15 +1,14 @@
 mod support;
 use figstudio_diff::{MAX_REGIONS, RenderOpts, ScreenLimits, attach_render_diffs, diff_documents};
 use figstudio_fig::{Node, Val};
-use support::{document, filled_rectangle_at, object};
+use support::{document, filled_rectangle_at, frame_at, named, object};
 
 #[test]
 fn screen_region_cap_does_not_undercount_changed_pixels_and_is_noted() {
     let side = |new| {
-        let mut root = filled_rectangle_at(2, 1, (1.0, 1.0, 1.0), 0.0, 0.0, 1200.0, 300.0);
-        root.data.set("type", Val::Str("FRAME".into()));
+        let root = frame_at(2, 1, (1.0, 1.0, 1.0), 0.0, 0.0, 1200.0, 300.0);
         document(
-            std::iter::once(Node::from_data(root.data).unwrap())
+            std::iter::once(root)
                 .chain((0..14).map(|i| {
                     filled_rectangle_at(
                         i + 3,
@@ -41,19 +40,7 @@ fn page_crop_budget_is_shared_without_starving_later_screens() {
     let side = |color| {
         document(
             (2..6)
-                .map(|id| {
-                    let mut n = filled_rectangle_at(
-                        id,
-                        1,
-                        color,
-                        f64::from(id) * 1200.0,
-                        0.0,
-                        1000.0,
-                        1000.0,
-                    );
-                    n.data.set("type", Val::Str("FRAME".into()));
-                    Node::from_data(n.data).unwrap()
-                })
+                .map(|id| frame_at(id, 1, color, f64::from(id) * 1200.0, 0.0, 1000.0, 1000.0))
                 .collect(),
         )
     };
@@ -105,7 +92,7 @@ fn frames(count: u32, side: f64, new: impl Fn(u32) -> bool) -> figstudio_fig::Do
         (0..count)
             .flat_map(|i| {
                 let root = 10 + i * 2;
-                let mut frame = filled_rectangle_at(
+                let frame = frame_at(
                     root,
                     1,
                     (1.0, 1.0, 1.0),
@@ -114,14 +101,13 @@ fn frames(count: u32, side: f64, new: impl Fn(u32) -> bool) -> figstudio_fig::Do
                     side,
                     side.min(1000.0),
                 );
-                frame.data.set("type", Val::Str("FRAME".into()));
                 let dot = if new(i) {
                     (0.0, 1.0, 0.0)
                 } else {
                     (1.0, 0.0, 0.0)
                 };
                 [
-                    Node::from_data(frame.data).unwrap(),
+                    frame,
                     filled_rectangle_at(root + 1, root, dot, 10.0, 10.0, 20.0, 20.0),
                 ]
             })
@@ -289,11 +275,7 @@ fn dropped_unchanged_screens_do_not_consume_the_page_byte_cap() {
 fn unchanged_screens_do_not_use_up_the_screen_cap_before_changed_ones() {
     // Screen 2 is unchanged and comes first in id order; screen 3's child is recoloured.
     let side = |rgb| {
-        let frame = |id, x| {
-            let mut n = filled_rectangle_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 200.0, 200.0);
-            n.data.set("type", Val::Str("FRAME".into()));
-            Node::from_data(n.data).unwrap()
-        };
+        let frame = |id, x| frame_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 200.0, 200.0);
         document(vec![
             frame(2, 0.0),
             frame(3, 400.0),
@@ -320,11 +302,7 @@ fn unchanged_screens_do_not_use_up_the_screen_cap_before_changed_ones() {
 #[test]
 fn added_and_removed_screens_do_not_take_a_crop_share() {
     // One changed 1000×1000 screen next to many added screens: it gets the whole budget.
-    let frame = |id, x, rgb| {
-        let mut n = filled_rectangle_at(id, 1, rgb, x, 0.0, 1000.0, 1000.0);
-        n.data.set("type", Val::Str("FRAME".into()));
-        Node::from_data(n.data).unwrap()
-    };
+    let frame = |id, x, rgb| frame_at(id, 1, rgb, x, 0.0, 1000.0, 1000.0);
     let old = document(vec![frame(2, 0.0, (1.0, 0.0, 0.0))]);
     let new = document(
         std::iter::once(frame(2, 0.0, (0.0, 1.0, 0.0)))
@@ -353,11 +331,7 @@ fn added_and_removed_screens_do_not_take_a_crop_share() {
 fn unchanged_screens_do_not_dilute_a_changed_screens_crop_share() {
     // Ten unchanged 1000×1000 screens and one changed one: the changed crop gets the whole
     // budget (2x, so at least 2000 px a side), not a tenth of it.
-    let frame = |id, x, rgb| {
-        let mut n = filled_rectangle_at(id, 1, rgb, x, 0.0, 1000.0, 1000.0);
-        n.data.set("type", Val::Str("FRAME".into()));
-        Node::from_data(n.data).unwrap()
-    };
+    let frame = |id, x, rgb| frame_at(id, 1, rgb, x, 0.0, 1000.0, 1000.0);
     let side = |rgb| {
         document(
             (2..12)
@@ -387,11 +361,7 @@ fn unchanged_screens_do_not_dilute_a_changed_screens_crop_share() {
 fn canvas_moves_do_not_dilute_an_inner_moves_crop_share() {
     // Screen 2's child moves (no change line, real pixels); ten later frames only move on the
     // canvas, which does not change their own pictures. The inner move keeps the full budget.
-    let frame = |id, x| {
-        let mut n = filled_rectangle_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 1000.0, 1000.0);
-        n.data.set("type", Val::Str("FRAME".into()));
-        Node::from_data(n.data).unwrap()
-    };
+    let frame = |id, x| frame_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 1000.0, 1000.0);
     let side = |new: bool| {
         let shift = if new { 50.0 } else { 0.0 };
         document(
@@ -435,9 +405,7 @@ fn a_resized_root_without_a_change_line_is_not_diluted_by_unchanged_screens() {
     // are unchanged, only renamed, or only flipped follow it. A screen is drawn in its own
     // frame, so a flip cannot change it. The resize keeps the full crop budget.
     let frame = |id, x, w, name: &str, flipped: bool| {
-        let mut n = filled_rectangle_at(id, 1, (1.0, 0.0, 0.0), x, 0.0, w, 1000.0);
-        n.data.set("type", Val::Str("FRAME".into()));
-        n.data.set("name", Val::Str(name.into()));
+        let mut n = named(frame_at(id, 1, (1.0, 0.0, 0.0), x, 0.0, w, 1000.0), name);
         if flipped {
             let matrix = [("m00", -1.0), ("m02", x + w), ("m12", 0.0)];
             let matrix: Vec<_> = matrix.iter().map(|&(k, v)| (k, Val::Float(v))).collect();
@@ -483,16 +451,13 @@ fn edits_that_draw_nothing_do_not_dilute_an_earlier_real_change() {
     // Screen 2 comes first and its child moves (real pixels, no change line). Ten later
     // screens each have a child that is only renamed, so their pictures stay the same. Only
     // screens with changed areas share the crop budget, so the move keeps all of it.
-    let frame = |id, x| {
-        let mut n = filled_rectangle_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 1000.0, 1000.0);
-        n.data.set("type", Val::Str("FRAME".into()));
-        Node::from_data(n.data).unwrap()
-    };
+    let frame = |id, x| frame_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 1000.0, 1000.0);
     let side = |new: bool| {
         let child = |id, parent, x, name: &str| {
-            let mut n = filled_rectangle_at(id, parent, (1.0, 0.0, 0.0), x, 100.0, 600.0, 600.0);
-            n.data.set("name", Val::Str(name.into()));
-            Node::from_data(n.data).unwrap()
+            named(
+                filled_rectangle_at(id, parent, (1.0, 0.0, 0.0), x, 100.0, 600.0, 600.0),
+                name,
+            )
         };
         let mut nodes = vec![
             frame(2, 0.0),
@@ -533,12 +498,8 @@ fn a_renamed_or_moved_root_does_not_use_up_the_screen_cap_before_a_real_change()
     // Screen 2 comes first and is only renamed or moved on the canvas, which cannot change
     // its picture; screen 3's child moves (real pixels, no change line). With room for one
     // screen, screen 3 is the one drawn.
-    let frame = |id, x, name: &str| {
-        let mut n = filled_rectangle_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 200.0, 200.0);
-        n.data.set("type", Val::Str("FRAME".into()));
-        n.data.set("name", Val::Str(name.into()));
-        Node::from_data(n.data).unwrap()
-    };
+    let frame =
+        |id, x, name: &str| named(frame_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 200.0, 200.0), name);
     for edit in ["rename", "canvas move"] {
         let side = |new: bool| {
             let (name, x) = match (new, edit) {
