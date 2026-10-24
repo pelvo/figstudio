@@ -1,7 +1,8 @@
-//! Headless figstudio: inspect `.fig` files and render pages or nodes to PNG.
+//! Headless figstudio: inspect `.fig` files and render lossless PNG/WebP images.
 
 mod compare;
 mod doctor;
+mod image_output;
 mod synth;
 
 use std::fmt;
@@ -11,6 +12,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, anyhow, bail};
 use figstudio_fig::{Document, Guid};
 use figstudio_render::color::{AlphaColor, Srgb};
+use figstudio_render::encoding::{ImageFormat, encode_pixmap};
 use figstudio_render::{Renderer, page_background};
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
@@ -21,9 +23,9 @@ const USAGE: &str = "figstudio-cli — headless tools for Figma .fig files
 USAGE:
   figstudio-cli info <file.fig>
   figstudio-cli tree <file.fig> [--page <n|name>] [--depth <n>]
-  figstudio-cli render <file.fig> [-o <out.png>] [--page <n|name>] [--node <id>]
+  figstudio-cli render <file.fig> [-o <out.png|out.webp>] [--format png|webp] [--page <n|name>] [--node <id>]
                      [--scale <x>] [--background page|transparent|#rrggbb] [--no-system-fonts]
-  figstudio-cli thumbnail <file.fig> -o <out.png>
+  figstudio-cli thumbnail <file.fig> -o <out.png|out.webp> [--format png|webp]
   figstudio-cli doctor <file.fig>
       Structure report safe to share: counts, features, timings and memory only.
       No layer names, text, images or file paths are printed.
@@ -32,8 +34,9 @@ USAGE:
   figstudio-cli synth <file.fig> -o <out.fig> [--copies <n>] [--pages <n>]
       Stress-test file: the first page's layers copied n times on each of n pages.
   figstudio-cli compare <old.fig> <new.fig> -o <dir> [--scale <x>] [--no-render]
-                        [--json-only] [--no-system-fonts]
-      Version report: report.json, report.html and per-page PNGs under <dir>/render.
+                        [--json-only] [--no-system-fonts] [--format png|webp]
+      Version report: report.json, report.html and lossless WebP images under <dir>/render.
+      Compare defaults to WebP; render/thumbnail infer .webp from -o, otherwise PNG.
 
 Pages are numbered from 1. Node ids look like 12:34 (see `tree`).";
 
@@ -64,6 +67,7 @@ struct Args {
     pages: usize,
     no_render: bool,
     json_only: bool,
+    format: Option<ImageFormat>,
 }
 
 fn command_error(command: &str, has_output: bool) -> Option<String> {
@@ -123,6 +127,7 @@ fn parse_args(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         pages: 1,
         no_render: false,
         json_only: false,
+        format: None,
     };
     let mut file = None;
     while let Some(a) = raw.next() {
@@ -162,6 +167,13 @@ fn parse_args(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
             "--no-system-fonts" => args.system_fonts = false,
             "--no-render" => args.no_render = true,
             "--json-only" => args.json_only = true,
+            "--format" => {
+                args.format = Some(
+                    value("--format")?
+                        .parse()
+                        .map_err(|e: std::io::Error| e.to_string())?,
+                )
+            }
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             path if file.is_none() => file = Some(PathBuf::from(path)),
             path if args.command == "compare" && args.file2.is_none() => {
@@ -265,7 +277,7 @@ fn run(args: Args) -> Result<()> {
             args.scale,
             args.system_fonts,
             !args.no_render,
-            !args.json_only,
+            (!args.json_only, args.format.unwrap_or(ImageFormat::Webp)),
         );
     }
     let doc = Document::open(&args.file)?;
@@ -340,14 +352,14 @@ fn run(args: Args) -> Result<()> {
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or("out".into());
-                PathBuf::from(format!("{stem}.png"))
+                PathBuf::from(format!(
+                    "{stem}.{}",
+                    args.format.unwrap_or_default().extension()
+                ))
             });
             let (w, h) = (frame.pixmap.width(), frame.pixmap.height());
-            let png = frame
-                .pixmap
-                .into_png()
-                .map_err(|e| anyhow!("PNG encode failed: {e}"))?;
-            std::fs::write(&out, png).map_err(|e| anyhow!("{}: {e}", out.display()))?;
+            let bytes = encode_pixmap(frame.pixmap, image_output::format(args.format, &out))?;
+            std::fs::write(&out, bytes).map_err(|e| anyhow!("{}: {e}", out.display()))?;
             info!(width = w, height = h, "page rendered");
             println!("{} {w}x{h}", out.display());
             println!("{}", frame.stats);
@@ -358,7 +370,14 @@ fn run(args: Args) -> Result<()> {
                 .thumbnail
                 .as_ref()
                 .context("this file has no stored thumbnail")?;
-            std::fs::write(&out, thumb).map_err(|e| anyhow!("{}: {e}", out.display()))?;
+            let format = image_output::format(args.format, &out);
+            let bytes = if format == ImageFormat::Png {
+                thumb.to_vec()
+            } else {
+                let rgba = image::load_from_memory(thumb)?.to_rgba8();
+                figstudio_render::encoding::encode(&rgba, rgba.width(), rgba.height(), format)?
+            };
+            std::fs::write(&out, bytes).map_err(|e| anyhow!("{}: {e}", out.display()))?;
             println!("{}", out.display());
         }
         "resave" => {

@@ -25,12 +25,14 @@ pub(crate) struct DesignInput {
     client_languages: Option<String>,
     /// Most layers to write (default 1000, at most 5000).
     max_nodes: Option<usize>,
+    /// Lossless asset format: png (default) or webp, for inline and disk images.
+    format: Option<super::image_format::ImageFormat>,
 }
 
 #[tool_router(router = design_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Get React + Tailwind reference code for a local node (data-node-id and data-name on every element), then instructions for the agent and the rendered assets. Auto-layout becomes flex, other children absolute; fills, gradients, strokes, radii, shadows, blurs, opacity, blend modes, typography and style runs are carried over; bound colour variables become var(--name,fallback). Vectors, boolean operations and image-filled leaves become <img> PNG assets rendered locally (written to the server's assets directory, or inline images). Instances show their resolved content with overrides; nodeId may be an instance path (I1:2;3:4). Large trees are cut (maxNodes, 24 kB code cap by default (--max-output-bytes), 30 assets, 4 MB of inline images) with a note: use get_metadata for the outline, then call this on children."
+        description = "Choose lossless asset format png (default) or webp. Get React + Tailwind reference code for a local node (data-node-id and data-name on every element), then instructions for the agent and the rendered assets. Auto-layout becomes flex, other children absolute; fills, gradients, strokes, radii, shadows, blurs, opacity, blend modes, typography and style runs are carried over; bound colour variables become var(--name,fallback). Vectors, boolean operations and image-filled leaves become <img> assets rendered locally (written to the server's assets directory, or inline images). Instances show their resolved content with overrides; nodeId may be an instance path (I1:2;3:4). Large trees are cut (maxNodes, 24 kB code cap by default (--max-output-bytes), 30 assets, 4 MB of inline images) with a note: use get_metadata for the outline, then call this on children."
     )]
     async fn get_design_context(
         &self,
@@ -53,7 +55,7 @@ impl FigstudioServer {
             .files()
             .rendering(key, &document, !self.no_system_fonts())
         {
-            Ok(rendering) => rendering,
+            Ok(rendering) => rendering.with_format(input.format.unwrap_or_default().into()),
             Err(error) => return tool_error(error),
         };
         let options = Options {

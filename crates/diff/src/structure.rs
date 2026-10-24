@@ -41,6 +41,10 @@ pub(crate) fn pages(old: &Document, new: &Document) -> Vec<PageDiff> {
                 changed: Vec::new(),
                 moved_out: Vec::new(),
                 render: None,
+                screens: Vec::new(),
+                screens_unchanged: 0,
+                screens_moved: 0,
+                other_nodes: None,
             }
         })
         .collect()

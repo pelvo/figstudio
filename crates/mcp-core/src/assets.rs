@@ -39,6 +39,8 @@ pub enum AssetFormat {
     /// Lossless, keeps transparency.
     #[default]
     Png,
+    /// Lossless WebP, keeps transparency.
+    Webp,
     /// Lossy; transparent areas are flattened onto white.
     Jpg,
 }
@@ -185,6 +187,14 @@ fn rendered(
         AssetFormat::Png => (
             pixmap.into_png().map_err(|e| CoreError::encode("PNG", e))?,
             "image/png",
+        ),
+        AssetFormat::Webp => (
+            figstudio_render::encoding::encode_pixmap(
+                pixmap,
+                figstudio_render::encoding::ImageFormat::Webp,
+            )
+            .map_err(|e| CoreError::encode("WebP", e))?,
+            "image/webp",
         ),
         AssetFormat::Jpg => {
             text.push_str("\nflattened onto white");

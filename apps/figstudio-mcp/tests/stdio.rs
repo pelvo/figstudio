@@ -199,7 +199,7 @@ async fn stdio_discovers_and_calls_tools() {
                 .keys()
                 .map(|k| k.as_str().to_owned())
                 .collect::<std::collections::BTreeSet<_>>(),
-            ["includeRender", "newFile", "oldFile"]
+            ["format", "includeRender", "newFile", "oldFile"]
                 .into_iter()
                 .map(str::to_owned)
                 .collect::<std::collections::BTreeSet<_>>()

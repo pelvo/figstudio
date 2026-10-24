@@ -1,210 +1,180 @@
+use crate::html_changes::{PageLines, page_lines};
+use crate::html_page::{is_shown, page_section, shared_only};
+use crate::html_pictures::effective;
+use crate::{DiffReport, FileMeta, PageDiff};
 use std::fmt::Write;
 
-use figstudio_fig::Val;
-
-use crate::{DiffReport, NodeDiff, NodeRef, PropertyChange, RenderDiff};
-
-fn escape(text: &str) -> String {
+pub(crate) fn escape(text: &str) -> String {
     html_escape::encode_quoted_attribute(text).into_owned()
 }
 
-/// Produces a self-contained, script-free HTML report from the canonical diff.
-#[must_use]
-pub fn render_html(report: &DiffReport) -> String {
-    let mut out = String::from(concat!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
-        "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">",
-        "<title>Version comparison</title><style>",
-        "body{font-family:system-ui,sans-serif;max-width:72rem;margin:2rem auto;padding:0 1rem;color:#222}",
-        "section{border-top:1px solid #aaa;margin-top:2rem}li{margin:.6rem 0;overflow-wrap:anywhere}",
-        "pre{white-space:pre-wrap}small{display:block;color:#555}",
-        "</style></head><body><header><h1>Version comparison</h1>"
-    ));
+/// `1 screen`, `2 screens`: the count and the noun, singular only for exactly one.
+pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+pub(crate) fn page_name(page: &PageDiff) -> &str {
+    page.new_name
+        .as_deref()
+        .or(page.old_name.as_deref())
+        .unwrap_or("(unnamed)")
+}
+
+fn file_card(out: &mut String, label: &str, file: &FileMeta) {
     let _ = write!(
         out,
-        "<p>{} → {}</p>",
-        escape(&report.old.path_label),
-        escape(&report.new.path_label)
+        "<div class=\"file\"><b>{label}</b><span class=\"fn\">{}</span><span class=\"fm\">{} pages · {} layers</span></div>",
+        escape(&file.path_label),
+        file.page_count,
+        file.node_count
     );
+}
+
+fn hidden_pages(out: &mut String, hidden: &[&PageDiff]) {
+    if hidden.is_empty() {
+        return;
+    }
+    let _ = write!(
+        out,
+        "<details><summary>{} with no visible change</summary><ul>",
+        plural(hidden.len(), "page", "pages")
+    );
+    for page in hidden {
+        let _ = write!(out, "<li>{}</li>", escape(page_name(page)));
+    }
+    out.push_str("</ul></details>");
+}
+
+fn header(out: &mut String, report: &DiffReport, hidden: &[&PageDiff]) {
+    out.push_str("<header class=\"top\"><p class=\"brand\">figstudio · Version comparison</p>");
+    let title = report
+        .new
+        .path_label
+        .strip_suffix(".fig")
+        .unwrap_or(&report.new.path_label);
+    let _ = write!(
+        out,
+        "<h1>{}</h1><div class=\"files\">",
+        escape(if title.is_empty() {
+            "Version comparison"
+        } else {
+            title
+        })
+    );
+    file_card(out, "BEFORE", &report.old);
+    out.push_str("<span class=\"arrow\">→</span>");
+    file_card(out, "AFTER", &report.new);
+    out.push_str("</div><div class=\"stats\">");
     let s = &report.summary;
-    let _ = write!(
-        out,
-        "<p>Pages: {} added, {} removed, {} changed</p><p>Nodes: {} added, {} removed, {} changed, {} moved</p><p>Properties: {}</p>",
-        s.pages_added,
-        s.pages_removed,
-        s.pages_changed,
-        s.nodes_added,
-        s.nodes_removed,
-        s.nodes_changed,
-        s.nodes_moved,
-        s.properties_changed
-    );
+    for (label, added, removed, changed) in [
+        ("Pages", s.pages_added, s.pages_removed, s.pages_changed),
+        ("Layers", s.nodes_added, s.nodes_removed, s.nodes_changed),
+    ] {
+        let _ = write!(
+            out,
+            "<div class=\"stat\"><b>{label}</b><span class=\"a\">+{added}</span><span class=\"d\">−{removed}</span><span class=\"m\">~{changed}</span></div>"
+        );
+    }
     let coverage = if report.complete {
         "complete"
     } else {
         "incomplete"
     };
-    let _ = write!(out, "<p>Stored-change coverage: {coverage}</p><ul>");
-    for note in &report.truncated {
-        let _ = write!(out, "<li>{}</li>", escape(note));
-    }
-    out.push_str("</ul></header><main>");
-    for page in &report.pages {
-        let name = page
-            .new_name
-            .as_deref()
-            .or(page.old_name.as_deref())
-            .unwrap_or("(unnamed)");
-        let _ = write!(
-            out,
-            "<section><h2>{}</h2><p>{:?}</p>",
-            escape(name),
-            page.status
-        );
-        if page.old_name != page.new_name {
-            let _ = write!(
-                out,
-                "<p>Page name: {} → {}</p>",
-                escape(page.old_name.as_deref().unwrap_or("(absent)")),
-                escape(page.new_name.as_deref().unwrap_or("(absent)"))
-            );
-        }
-        if let Some(render) = &page.render {
-            render_links(&mut out, render);
-            render_measures(&mut out, render);
-        }
-        if !page.moved_out.is_empty() {
-            let ids: Vec<_> = page.moved_out.iter().map(ToString::to_string).collect();
-            let _ = write!(out, "<p>Moved out: {}</p>", ids.join(", "));
-        }
-        references(&mut out, "Added", &page.added);
-        references(&mut out, "Removed", &page.removed);
-        out.push_str("<h3>Changed</h3><ul>");
-        for change in &page.changed {
-            changed(&mut out, change);
-        }
-        out.push_str("</ul></section>");
-    }
-    out.push_str("</main></body></html>");
-    out
-}
-
-fn render_links(out: &mut String, render: &RenderDiff) {
-    for (label, path) in [
-        ("Before PNG", &render.old_png),
-        ("After PNG", &render.new_png),
-        ("Diff PNG", &render.diff_png),
-    ] {
-        if let Some(path) = path.as_deref().filter(|path| relative_link(path)) {
-            // A fixed ./ prefix prevents an input scheme from becoming an active URL.
-            let _ = write!(out, "<p><a href=\"./{}\">{label}</a></p>", escape(path));
-        }
-    }
-}
-
-fn render_measures(out: &mut String, render: &RenderDiff) {
-    let mut parts = Vec::new();
-    if let Some(pixels) = render.pixels_changed {
-        parts.push(format!("{pixels} pixels changed"));
-    }
-    if let Some(worst) = render.worst_channel_delta {
-        parts.push(format!("worst channel delta {worst}"));
-    }
-    if let (Some(width), Some(height)) = (render.width, render.height) {
-        parts.push(format!("{width}x{height}"));
-    }
-    if !parts.is_empty() {
-        let _ = writeln!(out, "<p>{}</p>", parts.join(", "));
-    }
-}
-
-fn relative_link(path: &str) -> bool {
-    !path.is_empty()
-        && !path.starts_with('/')
-        && !path.contains([':', '\\', '?', '#', '%'])
-        && !path.chars().any(char::is_control)
-        && path.split('/').all(|part| !matches!(part, ".." | ""))
-}
-
-fn references(out: &mut String, heading: &str, nodes: &[NodeRef]) {
-    let _ = write!(out, "<h3>{heading}</h3><ul>");
-    for node in nodes {
-        let _ = write!(
-            out,
-            "<li>{} ({}) — {} (subtree size incl. movers)<small>{}</small></li>",
-            escape(&node.name),
-            escape(&node.kind),
-            node.descendants,
-            escape(&node.path.join(" / "))
-        );
-    }
-    out.push_str("</ul>");
-}
-
-fn changed(out: &mut String, node: &NodeDiff) {
     let _ = write!(
         out,
-        "<li>{} ({})<small>{}</small>",
-        escape(&node.name),
-        escape(&node.kind),
-        escape(&node.path.join(" / "))
+        "<div class=\"stat\"><b>Moved</b><span>{}</span></div><div class=\"stat\"><b>Coverage</b><span>{coverage}</span></div></div><div class=\"notes\">",
+        s.nodes_moved
     );
-    if let Some(moved) = &node.moved {
-        let parent =
-            |id: Option<figstudio_fig::Guid>| id.map_or_else(|| "(root)".into(), |v| v.to_string());
+    hidden_pages(out, hidden);
+    let moved: usize = report.pages.iter().map(|p| p.screens_moved).sum();
+    if moved > 0 {
         let _ = write!(
             out,
-            "<p>Moved: {} at {} → {} at {}</p>",
-            parent(moved.old_parent),
-            escape(&moved.old_position),
-            parent(moved.new_parent),
-            escape(&moved.new_position)
+            "<div class=\"warn\">{} moved or re-parented without change (hidden)</div>",
+            plural(moved, "screen", "screens")
         );
     }
-    properties(
-        out,
-        node.changes.iter().filter(|change| {
-            node.text.as_ref().is_none_or(|text| {
-                !text
-                    .runs
-                    .iter()
-                    .any(|run| run.changes.iter().any(|c| c.field == change.field))
-            })
-        }),
-    );
-    if let Some(text) = &node.text {
+    if !report.truncated.is_empty() {
         let _ = write!(
             out,
-            "<pre>Text: {} → {}</pre>",
-            escape(&text.old),
-            escape(&text.new)
+            "<details><summary>{}</summary><ul>",
+            plural(report.truncated.len(), "report note", "report notes")
         );
-        for run in &text.runs {
-            let _ = write!(out, "<p>Style run {}</p>", run.index);
-            properties(out, &run.changes);
+        for note in &report.truncated {
+            let _ = write!(out, "<li>{}</li>", escape(note));
         }
+        out.push_str("</ul></details>");
     }
-    out.push_str("</li>");
+    out.push_str("</div></header>");
 }
 
-fn properties<'a>(out: &mut String, changes: impl IntoIterator<Item = &'a PropertyChange>) {
-    out.push_str("<ul>");
-    for change in changes {
+fn index(out: &mut String, shown: &[(usize, &PageDiff, PageLines)], hidden: &[&PageDiff]) {
+    let pixels = |p: &PageDiff| p.render.as_ref().and_then(effective).unwrap_or(0);
+    let max = shown.iter().map(|(_, p, _)| pixels(p)).max().unwrap_or(0);
+    let _ = write!(
+        out,
+        "<nav class=\"side\" aria-label=\"Pages\"><h2>PAGES · {} CHANGED</h2><ul class=\"idx\">",
+        shown.len()
+    );
+    for (n, page, lines) in shown {
+        let count = if shared_only(page, lines) {
+            "shared only".to_owned()
+        } else {
+            let changed = page
+                .screens
+                .iter()
+                .filter(|s| s.status == crate::ScreenStatus::Changed)
+                .count();
+            format!("{} changed", plural(changed, "screen", "screens"))
+        };
+        let px = pixels(page);
+        let width = if max == 0 {
+            0.0
+        } else {
+            100.0 * (px as f64 + 1.0).ln() / (max as f64 + 1.0).ln()
+        };
         let _ = write!(
             out,
-            "<li>{}: {} → {}</li>",
-            escape(&change.field),
-            value(change.old.as_ref()),
-            value(change.new.as_ref())
+            "<li><a href=\"#page-{n}\"><span class=\"dot {}\"></span><span class=\"nm\">{}</span><span class=\"mt\"><span>{px} px</span><span>{count}</span><span class=\"bar\" style=\"--w:{width:.0}%\"></span></span></a></li>",
+            format!("{:?}", page.status).to_lowercase(),
+            escape(page_name(page))
         );
     }
     out.push_str("</ul>");
+    hidden_pages(out, hidden);
+    out.push_str("</nav>");
 }
 
-fn value(value: Option<&Val>) -> String {
-    value.map_or_else(
-        || "(absent)".into(),
-        |v| escape(&serde_json::to_string(v).expect("nonfinite floats are serialized as bits")),
-    )
+/// Produces a self-contained, script-free HTML report from the canonical diff.
+#[must_use]
+pub fn render_html(report: &DiffReport) -> String {
+    let mut out = format!(
+        concat!(
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self'; style-src 'unsafe-inline'\">",
+            "<title>Version comparison</title><style>{}</style></head><body>",
+            "<input class=\"mr\" type=\"radio\" name=\"view\" id=\"view-side\" checked aria-label=\"Side by side\">",
+            "<input class=\"mr\" type=\"radio\" name=\"view\" id=\"view-overlay\" aria-label=\"Overlay\">",
+            "<div class=\"tool\"><span>View</span><span class=\"seg\"><label class=\"ls\" for=\"view-side\">Side by side</label><label class=\"lh\" for=\"view-overlay\">Overlay</label></span></div>",
+            "<div class=\"shell\">"
+        ),
+        include_str!("html.css")
+    );
+    let (shown, hidden): (Vec<_>, Vec<_>) = report
+        .pages
+        .iter()
+        .enumerate()
+        .map(|(n, p)| (n, p, page_lines(p)))
+        .partition(|(_, p, l)| is_shown(p, l));
+    let hidden: Vec<_> = hidden.iter().map(|(_, p, _)| *p).collect();
+    header(&mut out, report, &hidden);
+    index(&mut out, &shown, &hidden);
+    out.push_str("<main>");
+    crate::html_shared::shared_section(&mut out, report);
+    for (n, page, lines) in &shown {
+        page_section(&mut out, *n, page, lines, &report.shared_changes);
+    }
+    out.push_str("<footer class=\"foot\">Full machine record: report.json</footer></main></div></body></html>");
+    out
 }

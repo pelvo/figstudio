@@ -17,6 +17,7 @@ fn menu_items(h: &Harness<'_, App>) -> Vec<&'static str> {
         "Copy link",
         "Copy for agent",
         "Copy as PNG",
+        "Copy as WebP",
         "Copy region",
         "Copy region as PNG",
     ]
@@ -43,7 +44,8 @@ fn right_click_on_a_node_offers_the_copy_items_and_copies_the_link() {
             "Copy node ID",
             "Copy link",
             "Copy for agent",
-            "Copy as PNG"
+            "Copy as PNG",
+            "Copy as WebP"
         ]
     );
     click_label(&mut h, &mut c, "Copy link");

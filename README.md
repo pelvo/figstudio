@@ -18,7 +18,7 @@ Protocol (MCP) server, written in Rust.
   on Vello CPU with optional `vello_gpu` and custom text layout on `fontdb` / `ttf-parser`),
   and MCP tool core (`figstudio-mcp-core`).
 - **Built-in AI agent access (MCP):** inspect node trees (`get_metadata`), React + Tailwind
-  code hints (`get_design_context`), variables and tokens (`get_variable_defs`), rendered PNG
+  code hints (`get_design_context`), variables and tokens (`get_variable_defs`), rendered PNG/WebP
   screenshots (`get_screenshot`), and embedded raster images (`download_assets`; offline SVG
   and PDF export are not available), compare `.fig` versions, or highlight nodes in the live
   canvas from Claude Code, Cursor, Codex, or any MCP client.
@@ -91,7 +91,7 @@ Protocol (MCP) server, written in Rust.
 |---|---|
 | `crates/fig` (`figstudio-fig`) | `.fig` archive reader/writer, Kiwi binary schema decoder, node tree and property model |
 | `crates/render` (`figstudio-render`) | Vello CPU (`vello_cpu`) + optional `vello_gpu` 2D renderer with text layout on `fontdb` / `ttf-parser` |
-| `crates/diff` (`figstudio-diff`) | Structural and pixel diff between two `.fig` files (`report.json`, self-contained `report.html`, per-page PNGs) |
+| `crates/diff` (`figstudio-diff`) | Structural and pixel diff between two `.fig` files (`report.json`, self-contained `report.html`, lossless WebP/PNG images) |
 | `crates/mcp-core` (`figstudio-mcp-core`) | Shared MCP tool implementations and schemas used by both the native server and the browser Wasm build |
 | `apps/figstudio` (`figstudio`) | Interactive desktop (`wgpu`) and browser (`wasm32` + WebGPU/CPU tile workers) viewer, including the in-process desktop MCP server |
 | `apps/figstudio-cli` (`figstudio-cli`) | Headless CLI for inspecting, rendering, stress-testing, and comparing `.fig` files |
@@ -113,7 +113,8 @@ cargo run --release -p figstudio -- path/to/design.fig
 ```
 
 - Pan and zoom the canvas, switch pages, search layers, inspect properties, and export any
-  selection or page to PNG.
+  selection or page to PNG. The node Copy menu also offers **Copy as WebP**, with real
+  WebP clipboard bytes on desktop; browsers download a `.webp` file instead.
 - Paste a `figma.com` or `figstudio://` URL into the command bar (⌘L, Ctrl+L elsewhere), then
   press Enter to open its matching local `.fig` copy and reveal the linked node. No download
   from Figma is needed. If several copies match, pick one in the link window.
@@ -159,10 +160,12 @@ cargo run --release -p figstudio-cli -- info path/to/design.fig
 # Print the layer tree of page 1
 cargo run --release -p figstudio-cli -- tree path/to/design.fig --page 1 --depth 3
 
-# Render a page or specific node (e.g. 12:34) to PNG
-cargo run --release -p figstudio-cli -- render path/to/design.fig --node 12:34 --scale 2 -o out.png
+# Render a page or node: .webp selects WebP, otherwise PNG; --format png|webp overrides it
+cargo run --release -p figstudio-cli -- render path/to/design.fig --node 12:34 --scale 2 -o out.webp
+# Thumbnail uses the same extension inference and --format option
+cargo run --release -p figstudio-cli -- thumbnail path/to/design.fig -o thumbnail.webp
 
-# Compare two versions of a .fig file (writes report.json, report.html, and diff PNGs)
+# Compare two versions (report.json, report.html, lossless WebP images; --format png to opt out)
 cargo run --release -p figstudio-cli -- compare old.fig new.fig -o diff-report
 
 # Shareable diagnostics (counts, timings, memory — no layer names, text, or paths)

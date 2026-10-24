@@ -11,6 +11,7 @@ pub mod design;
 pub mod design_system;
 /// FigJam boards as metadata XML with FigJam details.
 pub mod figjam;
+mod image_format;
 /// Live-mode tools: open tabs, selection, reveal.
 pub mod live;
 /// Sparse XML page lists and node subtrees.

@@ -100,7 +100,10 @@ pub fn design_context(doc: &Document, node_id: &str, options: &Options) -> Outpu
                 asset.name, asset.node, asset.reference
             ));
             if let Some(png) = &asset.inline {
-                images.push(Block::image(STANDARD.encode(png), "image/png"));
+                images.push(Block::image(
+                    STANDARD.encode(png),
+                    options.rendering.format.mime(),
+                ));
             }
         }
     }

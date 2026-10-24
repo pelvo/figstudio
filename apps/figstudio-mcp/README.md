@@ -6,7 +6,7 @@ agent (Claude Code, Cursor, VS Code, Codex) can work from a local copy without t
 app, a Figma account or a network connection.
 
 - It **never writes the `.fig`**. The only files it writes are the Code Connect sidecar
-  and the `get_design_context` asset PNGs (see [Writes](#writes)).
+  and the `get_design_context` PNG/WebP assets (see [Writes](#writes)).
 - The tool names and inputs follow the official server as researched on **2026-10-11**
   (37 tools at that date). The official surface changes often. Tool names here are pinned
   to that date.
@@ -72,7 +72,7 @@ figstudio-mcp [--http[=ADDR]] [--no-system-fonts] [--assets-dir DIR | --assets i
 | `--http` | Serve Streamable HTTP on `127.0.0.1:3845`, path `/mcp`; when 3845 is busy, the first free port of 3846–3855 (the chosen address is printed to stderr). Without it, the server talks over stdio. |
 | `--http=ADDR` | Same, on exactly this address, for example `--http=127.0.0.1:4567`; a busy address is an error, never another port. The `=` is required, so `--http FILE.fig` is not read as an address. |
 | `--no-system-fonts` | Do not use installed fonts when a text layer has no stored glyph outlines. |
-| `--assets-dir DIR` | Where `get_design_context` writes its PNG assets. Default `./figma-assets`, resolved against the current directory. |
+| `--assets-dir DIR` | Where `get_design_context` writes its PNG/WebP assets. Default `./figma-assets`, resolved against the current directory. |
 | `--assets inline` | Return those assets as image content instead of files. Cannot be combined with `--assets-dir`. |
 | `--max-output-bytes N` | Byte cap of the text from `get_metadata`, `get_design_context` and `get_figjam` (default 24000, accepted 4000–100000). Claude Code delivered 20,166- and 25,810-character replies and rejected 44,674 and 74,213 characters, so the default stays under the delivered sizes. Raising it risks a rejected reply. |
 | `--allow-host NAME` | With a non-loopback `--http=ADDR`: another `Host` name to accept (repeatable), for example a Tailscale name. The bound IP is accepted automatically. See [Remote agents](#remote-agents). |
@@ -97,7 +97,7 @@ off and on to retry, or restart the app once the address/port is available.
 - Tabs are the files: `fileKey` is the file's stem (or its full path when two open files
   share a stem), as `list_open_tabs` shows.
 - The app serves every tool of this server, plus the three live tools (below), on the open
-  tabs. Assets come back inline, so the app writes no PNG files.
+  tabs. Assets come back inline, so the app writes no image files.
 
 ```sh
 claude mcp add --transport http figstudio http://127.0.0.1:3845/mcp
@@ -475,18 +475,18 @@ renderer), so the browser MCP build does not register them.
 | `whoami` | none | `{mode:"offline", server, files}` | Stub: no account. |
 | `list_files` | none | `{files:[{key,path,pages}]}` | Not in the official server. `pages` is null until the file is first opened. |
 | `get_metadata` | `nodeId?`, `fileKey?`, `depth?` | Sparse XML: `id name x y width height`, parent-relative, rotation in degrees (counter-clockwise positive). No `nodeId` lists the pages. | Instances expand with overrides applied (`I…;…` ids, `componentId`). Max 5000 elements and 24 kB of XML by default (`--max-output-bytes`) (`truncated="true"` when cut; call again with a child `nodeId` or a smaller `depth`). Text cut at 200 characters plus `…`. An XML comment counts instances that could not be expanded. |
-| `get_screenshot` | `nodeId`, `fileKey?`, `scale?` | PNG image plus a text line `WxH px, scale S` and an `approximations:` line | `scale` 0.01–4 (default 1). Without `scale` the longest side is capped at 2048 px (about 1–2 MB PNGs, under Claude's 1568 px downscale threshold and the 5 MB base64 limit); with an explicit `scale` at 4096 px (3.1–3.7 MB PNGs measured). Cropped to the node's own box, so shadows and strokes outside it are cut. Transparent background (pages use the page colour). An instance path renders that node alone, as laid out inside its instance; ancestor masks and clips are not applied. A `figstudio://…?page=…&rect=…` region link in `nodeId` renders that rectangle of the page on the page colour, with the same scale and size caps. |
+| `get_screenshot` | `nodeId`, `fileKey?`, `scale?`, `format?` | Lossless PNG (default) or WebP image plus a text line `WxH px, scale S` and an `approximations:` line | `scale` 0.01–4 (default 1). Without `scale` the longest side is capped at 2048 px (about 1–2 MB PNGs, under Claude's 1568 px downscale threshold and the 5 MB base64 limit); with an explicit `scale` at 4096 px (3.1–3.7 MB PNGs measured). Cropped to the node's own box, so shadows and strokes outside it are cut. Transparent background (pages use the page colour). An instance path renders that node alone, as laid out inside its instance; ancestor masks and clips are not applied. A `figstudio://…?page=…&rect=…` region link in `nodeId` renders that rectangle of the page on the page colour, with the same scale and size caps. |
 | `get_nodes_in_region` | `region?` or `page?` + `rect?`, `fileKey?`, `limit?` | JSON `{page, rect, nodes: [{nodeId, name, kind}], total, truncated}` | Visible nodes of a page whose box overlaps the rectangle, top-level first. `region` is a `figstudio://<key>?page=0-1&rect=x,y,w,h` link as the app's Copy region gives; `rect` is `[x, y, w, h]` in page units. `limit` 1–500, default 50. A bad rect, an unknown page or both forms at once is a tool error. |
 | `get_variable_defs` | `nodeId`, `fileKey?` | Flat JSON map `name → value` of the variables and styles used under the node | All modes (extra modes as `name (Mode)`), aliases resolved, instances walked with overrides. Reads effective node data only, not component property storage. Colours `#RRGGBB(AA)`. |
-| `get_design_context` | `nodeId`, `fileKey?`, `clientFrameworks?`, `clientLanguages?`, `maxNodes?` | React + Tailwind JSX (`data-node-id`, `data-name` on every element), agent instructions, an asset list and an `approximations:` line | Always React + Tailwind; the client hints are only echoed. No shader runtime. Vectors, boolean operations and image-filled leaves become PNG `<img>` assets at scale 2. Caps: `maxNodes` default 1000, at most 5000; 24 000 bytes of code by default (`--max-output-bytes`); 30 assets; 4 MB of inline images. Past a cap the output is cut with a note: call `get_metadata`, then this tool on children. |
-| `download_assets` | `nodeIds` (1–20), `fileKey?`, `format?` (`png`\|`jpg`), `scale?`, `original?` | One text line plus one image per node. With `original=true`, the stored bytes of the image fills inside each node. | No SVG or PDF. JPG (quality 90) is flattened onto white. Max 12 originals per call (`MAX_ORIGINALS`: Claude Code cuts a reply at 25k tokens and each image costs about 1.5k), each image once. A reply holds at most 10 MiB of image data (`MAX_PAYLOAD_BYTES`, the stdio line limit) and no image over 3.75 MB raw (`MAX_IMAGE_BYTES`: 5 MB of base64, the per-image limit on Bedrock and Vertex); a larger one is reported with its size and not sent. The text lines come before the images in every reply. `get_figjam` `includeImages` shares the 10 MiB budget. One node failing does not fail the call. |
-| `get_figjam` | `nodeId?`, `fileKey?`, `depth?`, `includeImages?`, `imageScale?` | `get_metadata` XML plus FigJam details: sticky text and colour, shape text, connector ends, section status, table and code-block text, widget and stamp names | The renderer does not draw FigJam kinds yet: `includeImages` shows them as plain boxes (max 20 images, `imageScale` 0.01–0.5, default 0.25), and an XML comment counts those kinds. Field shapes come from the schema, not a real FigJam file. |
+| `get_design_context` | `nodeId`, `fileKey?`, `clientFrameworks?`, `clientLanguages?`, `maxNodes?`, `format?` | React + Tailwind JSX (`data-node-id`, `data-name` on every element), agent instructions, an asset list and an `approximations:` line | Always React + Tailwind; the client hints are only echoed. No shader runtime. Vectors, boolean operations and image-filled leaves become lossless PNG (default) or WebP `<img>` assets at scale 2. Caps: `maxNodes` default 1000, at most 5000; 24 000 bytes of code by default (`--max-output-bytes`); 30 assets; 4 MB of inline images. Past a cap the output is cut with a note: call `get_metadata`, then this tool on children. |
+| `download_assets` | `nodeIds` (1–20), `fileKey?`, `format?` (`png`\|`webp`\|`jpg`), `scale?`, `original?` | One text line plus one image per node. With `original=true`, the stored bytes of the image fills inside each node. | Lossless PNG by default, or lossless WebP (transparency kept), or JPG (no transparency: flattened onto white, pages keep their page background). No SVG or PDF render export. Max 12 originals per call (`MAX_ORIGINALS`: Claude Code cuts a reply at 25k tokens and each image costs about 1.5k), each image once. A reply holds at most 10 MiB of image data (`MAX_PAYLOAD_BYTES`, the stdio line limit) and no image over 3.75 MB raw (`MAX_IMAGE_BYTES`: 5 MB of base64, the per-image limit on Bedrock and Vertex); a larger one is reported with its size and not sent. The text lines come before the images in every reply. `get_figjam` `includeImages` shares the 10 MiB budget. One node failing does not fail the call. |
+| `get_figjam` | `nodeId?`, `fileKey?`, `depth?`, `includeImages?`, `imageScale?`, `format?` | `get_metadata` XML plus FigJam details: sticky text and colour, shape text, connector ends, section status, table and code-block text, widget and stamp names | The renderer does not draw FigJam kinds yet: `includeImages` shows them as plain boxes (max 20 images, `imageScale` 0.01–0.5, default 0.25), and an XML comment counts those kinds. Field shapes come from the schema, not a real FigJam file. |
 | `get_context_for_code_connect` | `nodeId`, `fileKey?` | JSON: component properties, variants (component sets), nested instances | Component, component set, instance or instance path. Property lists capped at 100; unknown property types are kept as strings. |
 | `get_code_connect_map` | `nodeId?`, `fileKey?`, `clientFrameworks?`, `clientLanguages?` | JSON map of `nodeId → mapping` | Reads the local sidecar, not Figma's cloud. Lookup falls back instance → component → component set; the requested id is the key. Framework filters match labels; language filters match source extensions or labels. |
 | `add_code_connect_map` | `nodeId`, `componentName`, `source`, `label`, `snippet?`, `snippetImports?` | The stored mapping | Writes the sidecar atomically. An instance is stored under its component's id. `source` is stored, never fetched. Limits: source 4096 bytes, snippet 100 000 bytes, 100 imports of 4096 bytes. `imports` is accepted as an alias of `snippetImports`. |
 | `search_design_system` | `query`, `kinds?`, `fileKey?` | Ranked matches | This file only (no team libraries). `kinds`: `component`, `component_set`, `style`, `variable`. Exact names first; at most 100 results. |
 | `get_libraries` | `fileKey?` | Summary of this file's components, token collections, modes and styles | Local only; lists capped at 100, with totals. |
-| `compare_files` | `oldFile?`, `newFile?`, `includeRender?` (default false) | JSON `{old, new, summary, complete, truncated, pages, pagesTotal, pagesTruncated, reportJson, reportHtml}` | Writes `report.json`/`report.html` (plus `render/<guid>-{before,after,diff}.png` with `includeRender`) under `<assets-dir>/compare/compare-<random>/` (`$TMPDIR/figstudio-compare/compare-<random>/` in inline mode). At most 100 page entries inline; rendering is capped by the diff crate. Not an official tool; native server only. |
+| `compare_files` | `oldFile?`, `newFile?`, `includeRender?` (default false), `format?` (`webp` default\|`png`) | JSON `{old, new, summary, complete, truncated, pages, pagesTotal, pagesTruncated, reportJson, reportHtml}` | Writes `report.json`/`report.html` (plus `render/<guid>-{before,after,diff}.webp` with `includeRender`, or `.png` with `format: "png"`) under `<assets-dir>/compare/compare-<random>/` (`$TMPDIR/figstudio-compare/compare-<random>/` in inline mode). At most 100 page entries inline; rendering is capped by the diff crate. Not an official tool; native server only. |
 | `compare_page` | `oldFile?`, `newFile?`, `pageId` | One page's `PageDiff` JSON capped at 64 KiB; whole entries omitted as needed, with per-list `Total`/`Omitted` counts and a `truncated` flag | Re-runs the comparison (documents are cached); the report is not cached. MCP schema Guids are `session:local` strings; disk `report.json` keeps native Guid arrays and full entries. When the inline page JSON is over 64 KiB, an `old_name` or `new_name` longer than 128 bytes is shortened to at most 128 bytes, ending in `~`, before any row is dropped; that cut sets `nameTruncated: true`. An unchanged or unknown page is a tool error. Not an official tool; native server only. |
 | `list_open_tabs` *(app only)* | none | `{tabs: [{tabId, fileKey, path, title, page: {id, name}, selection, active}]}` | Lists the app's open tabs. `fileKey` is what the other tools take. |
 | `get_selection` *(app only)* | `fileKey?` | `{fileKey, tabId, page, node: {nodeId, name, kind, bounds: {x, y, width, height}}}`, or `node: null` | The selected node of a tab (default the active tab). Bounds are in page units. |
@@ -548,10 +548,10 @@ MCP output from a private file into a public place.
   it has written it, so adds from several server processes do not lose each other's
   mappings. Other tools that edit the sidecar must take the same lock. A symlink at the
   lock path is refused.
-- **Asset PNGs:** `get_design_context` writes `<fileKey>_<id>.png` files into
+- **Asset images:** `get_design_context` writes `<fileKey>_<id>.png` (default) or `.webp` files into
   `--assets-dir` (or returns them inline with `--assets inline`).
 - **Comparison artifacts:** `compare_files` writes `report.json`, `report.html`
-  and, with `includeRender`, `render/<guid>-{before,after,diff}.png` under
+  and, with `includeRender`, `render/<guid>-{before,after,diff}.webp` (or `.png`) under
   `<assets-dir>/compare/compare-<random>/` (or
   `$TMPDIR/figstudio-compare/compare-<random>/` in inline mode).
 - The `.fig` itself is never opened for writing.
@@ -585,6 +585,17 @@ Things that are approximated or not checked. Where a tool knows, its reply says 
 - **Code Connect and design system** cover this file only. No remote libraries.
 - **Big files:** the whole node tree is held in memory (several GB for 50 MB+ files). Every
   text tool has an output cap; time and size on huge pages were not measured.
+
+### Image formats
+
+`get_screenshot`, `get_design_context`, `download_assets` and `get_figjam` accept
+`format: "png" | "webp"` (default `png` for compatible inline images).
+`get_figjam` uses it when `includeImages` is true. `compare_files` accepts the same
+argument, defaulting to `webp` for report files. Both encodings are lossless;
+inline WebP blocks carry `image/webp`, and asset/report filenames follow the format.
+Other format values are tool errors. `original: true` preserves source image bytes
+and MIME types rather than transcoding them. Browser tools support the same inline
+formats; compare tools are native only.
 
 ## Tests
 

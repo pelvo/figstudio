@@ -10,14 +10,17 @@ use support::{document, filled_rectangle, filled_rectangle_at, object, two_page_
 const RED: (f64, f64, f64) = (1.0, 0.0, 0.0);
 const GREEN: (f64, f64, f64) = (0.0, 1.0, 0.0);
 
+fn filled_frame(rgb: (f64, f64, f64)) -> Node {
+    let mut n = filled_rectangle(2, 1, rgb);
+    n.data.set("type", Val::Str("FRAME".into()));
+    Node::from_data(n.data).unwrap()
+}
+
 #[test]
 fn recolor_changes_only_that_page() {
-    let old = two_page_document(
-        vec![filled_rectangle(2, 1, RED)],
-        vec![filled_rectangle(12, 11, RED)],
-    );
+    let old = two_page_document(vec![filled_frame(RED)], vec![filled_rectangle(12, 11, RED)]);
     let new = two_page_document(
-        vec![filled_rectangle(2, 1, GREEN)],
+        vec![filled_frame(GREEN)],
         vec![filled_rectangle(12, 11, RED)],
     );
     let mut report = diff_documents(&old, &new);
@@ -34,6 +37,13 @@ fn recolor_changes_only_that_page() {
     assert_eq!(*id, Guid(0, 1));
     assert!(entry.before.is_some() && entry.after.is_some() && entry.diff.is_some());
     assert_eq!(report.truncated, Vec::<String>::new());
+    let screen = &page.screens[0];
+    assert_eq!(screen.regions.len(), 1, "one changed blob, one area");
+    assert_eq!(screen.regions[0].pixels_changed, count);
+    assert_eq!(entry.screens[0].regions.len(), 1);
+    let (w, h) = (screen.regions[0].width, screen.regions[0].height);
+    let crop = image::load_from_memory(&entry.screens[0].regions[0].after).unwrap();
+    assert_eq!((crop.width(), crop.height()), (w * 2, h * 2));
 }
 
 #[test]
@@ -96,7 +106,7 @@ fn removed_page_counts_present_side_ink() {
 #[test]
 fn oversized_page_is_scaled_down_and_noted() {
     // 6000x3000 at scale 1 is 18M px, over the 16M budget.
-    let mut rect = filled_rectangle(2, 1, RED);
+    let mut rect = filled_frame(RED);
     rect.data.set(
         "size",
         support::object(&[
@@ -110,7 +120,24 @@ fn oversized_page_is_scaled_down_and_noted() {
     green.data.set("fillPaints", support::solid(0.0, 1.0, 0.0));
     let new = document(vec![figstudio_fig::Node::from_data(green.data).unwrap()]);
     let mut report = diff_documents(&old, &new);
-    let _images = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+    let images = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+    let crops = &images[&Guid(0, 1)].screens[0].regions;
+    let crop = image::load_from_memory(&crops[0].after).unwrap();
+    assert_eq!(crop.width().max(crop.height()), 2048);
+    let crop_pixels: u64 = crops
+        .iter()
+        .map(|c| {
+            let img = image::load_from_memory(&c.after).unwrap();
+            u64::from(img.width()) * u64::from(img.height()) * 2
+        })
+        .sum();
+    assert!(crop_pixels <= MAX_RENDER_PIXELS as u64);
+    assert!(
+        report
+            .truncated
+            .iter()
+            .any(|n| n.contains("crop") && n.contains("capped"))
+    );
     let render = report.pages[0].render.as_ref().expect("render attached");
     let pixels = u64::from(render.width.unwrap()) * u64::from(render.height.unwrap());
     assert!(
@@ -185,9 +212,7 @@ fn tiny_scale_added_page_still_counts_ink() {
         Some(Guid(0, 1)),
         &RenderOpts {
             scale: 0.01,
-            threshold: 8,
-            system_fonts: true,
-            max_pages: None,
+            ..RenderOpts::default()
         },
     )
     .expect("page renders");
