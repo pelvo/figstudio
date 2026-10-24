@@ -3,15 +3,49 @@
 //! This compares stored fields only, without resolving instances or rendering.
 
 mod html;
+mod html_changes;
+mod html_component;
+mod html_kind;
+mod html_lines;
+mod html_page;
+mod html_pictures;
+mod html_screen;
+mod html_shared;
+mod html_swatch;
 mod properties;
+mod regions;
 mod render;
+mod render_crops;
+mod render_files;
+pub use render_files::{RenderLinks, file_label, render_report_to_dir, write_render_images};
+mod render_pair;
+mod render_pixels;
+mod render_screens;
 mod report;
+mod screen_bounds;
+mod screen_model;
+mod screen_types;
 pub use html::render_html;
+pub use regions::{MAX_REGIONS, find_regions};
 pub use render::{
-    ImageReader, MAX_RENDER_PAGES, MAX_RENDER_PIXELS, RenderImages, RenderOpts,
-    attach_render_diffs, attach_render_diffs_with_sink, render_page_pair,
-    render_page_pair_with_readers,
+    DEFAULT_IMAGE_CACHE_BYTES, ImageReader, MAX_RENDER_PAGES, MAX_RENDER_PIXELS, RegionImages,
+    RenderImages, RenderOpts, SHARED_IMAGES_ID, ScreenImages, attach_render_diffs,
+    attach_render_diffs_with_sink, render_page_pair, render_page_pair_with_readers,
 };
+mod screen_limits;
+pub use screen_limits::{
+    MAX_DOCUMENT_SCREEN_PIXELS, MAX_PAGE_PICTURE_BYTES, MAX_PAGE_SCREENS, ScreenLimits,
+};
+pub use screen_types::{MatchedBy, ScreenDiff, ScreenStatus};
+mod render_shared;
+#[cfg(test)]
+mod render_tests;
+pub use render_shared::{MAX_COMPONENT_VIEW_PIXELS, MAX_COMPONENT_VIEWS};
+mod screens;
+mod shared;
+mod shared_component;
+mod shared_types;
+pub use shared_types::{SharedChange, SharedComponent, SharedOccurrence, SharedSet, SharedVariant};
 mod structure;
 mod types;
 pub use types::*;
@@ -125,29 +159,43 @@ pub fn diff_documents(old: &Document, new: &Document) -> DiffReport {
             PageStatus::Changed => summary.pages_changed += 1,
             PageStatus::Unchanged => {}
         }
-        let a = structure::order(old, page.id);
-        let b = structure::order(new, page.id);
-        let rank = |id: Guid, order: &HashMap<Guid, usize>| {
-            (order.get(&id).copied().unwrap_or(usize::MAX), id)
-        };
-        page.added.sort_by_key(|n| rank(n.id, &b));
-        page.removed.sort_by_key(|n| rank(n.id, &a));
-        page.changed.sort_by_key(|n| rank(n.id, &b));
-        page.moved_out.sort_by_key(|&id| rank(id, &a));
+        structure::sort_rows((old, new), page);
     }
     pages.retain(|p| p.status != PageStatus::Unchanged);
+    let mut copies = screen_model::CopyBudget::default();
+    let mut notes = Vec::new();
+    for page in &mut pages {
+        // Layers of recreated screens compared by name; their new ids still count as added.
+        let uncompared = copies.uncompared;
+        let (rows, props) = screen_model::prepare((old, new), page, &mut copies);
+        summary.nodes_changed += rows;
+        summary.properties_changed += props;
+        if copies.uncompared > uncompared {
+            notes.push(format!(
+                "page {}: copy comparison limit reached; {} repeated layers on recreated \
+                 screens paired in order without listing their edits",
+                page.id,
+                copies.uncompared - uncompared
+            ));
+        }
+    }
     DiffReport {
         old: structure::meta(old),
         new: structure::meta(new),
         summary,
         pages,
+        shared_changes: Vec::new(),
         complete: ungrouped == 0,
-        truncated: if ungrouped == 0 {
-            Vec::new()
-        } else {
-            vec![format!(
-                "{ungrouped} added, removed or changed nodes outside pages are not grouped"
-            )]
+        truncated: {
+            if ungrouped > 0 {
+                notes.insert(
+                    0,
+                    format!(
+                        "{ungrouped} added, removed or changed nodes outside pages are not grouped"
+                    ),
+                );
+            }
+            notes
         },
     }
 }

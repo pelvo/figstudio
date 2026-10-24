@@ -212,6 +212,19 @@ text pixels on CPU and GPU workers after release. The pre-fix browser stays blan
 - Allow small per-channel tolerance (±8) for anti-aliasing; never compare whole images exactly.
 - Check `Stats` too: a feature that is counted as skipped must stay counted until it is drawn.
 
+### Lossless output (`crates/render/tests/encoding.rs`)
+- `cargo +1.99.0 test --profile fast -p figstudio-render --test encoding`: exact straight
+  RGBA round trips (including transparency), invalid dimensions/buffer lengths, and smaller
+  WebP output on flat synthetic UI content. All three assertions were mutation-proved.
+- CLI `tests/webp.rs` covers extension inference, overrides, invalid-format usage errors,
+  and decodable comparison images/HTML/JSON paths in both formats.
+- MCP `tests/webp.rs` exercises schemas, invalid values, inline MIME/bytes, design asset
+  files and comparison files through an SDK client. Core `tests/wasm_rpc.rs` also compares
+  browser WebP pixels with PNG screenshots, downloads and inline design assets.
+- Desktop `ui_copy_tests.rs` checks the WebP menu label; `region_png_tests.rs` compares
+  the WebP job's decoded pixels with PNG. Clipboard paste on each OS and live browser
+  download/clipboard permission behavior require a manual check.
+
 ### CLI (`apps/figstudio-cli/tests`)
 - Run the real binary: `Command::new(env!("CARGO_BIN_EXE_figstudio-cli"))`.
 - Check the exit code (0 ok, 1 failure, 2 usage) and the important lines of output.
@@ -258,6 +271,23 @@ each row. Known differences that are not bugs:
 
 The script prints each file's `Stats`; anything "skipped", "missing" or "approximated" there
 is a known gap, not a pass.
+
+### Compare report (`crates/diff`, browser)
+
+`crates/diff/tests/sample_report.rs` builds a sample comparison (a recoloured card, a nudged
+icon, an added, a removed and a canvas-moved screen) and checks the report is self-contained.
+To look at it in a browser, write it out and run the layout checks:
+
+```sh
+FIGSTUDIO_SAMPLE_REPORT=/tmp/sample cargo test -p figstudio-diff --test sample_report
+cd web/e2e && npm i --no-save @playwright/test
+FIGSTUDIO_SAMPLE_REPORT=/tmp/sample npx playwright test compare-report.spec.mjs
+```
+
+The spec checks that every picture loads, that the page logs no console errors and does not
+scroll sideways at 1280 and 390 px, and that the overlay reveals Before on hover, on keyboard
+focus and while pressed (the exact top-level `:active` rule). It attaches screenshots; look at them
+after a change to the report's HTML or CSS. Without the variable the spec is skipped.
 
 ## 7. GUI smoke test (Linux)
 

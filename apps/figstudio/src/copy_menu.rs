@@ -26,6 +26,10 @@ fn menu_items(ui: &mut egui::Ui, items: Vec<Item>, id: Guid, picked: &mut Option
         *picked = Some(Item::png("Copy as PNG", "image", Job::Node(id)));
         ui.close();
     }
+    if ui.button("Copy as WebP").clicked() {
+        *picked = Some(Item::png("Copy as WebP", "WebP image", Job::WebpNode(id)));
+        ui.close();
+    }
 }
 
 /// Right-click on `response` opens the node menu. Returns the item picked this frame.

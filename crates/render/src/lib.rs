@@ -21,6 +21,7 @@ mod emoji_review_tests;
 mod emoji_tests;
 #[cfg(all(test, feature = "system-fonts"))]
 mod emoji_zoom_tests;
+pub mod encoding;
 mod focus;
 pub mod geom;
 #[cfg(feature = "gpu")]

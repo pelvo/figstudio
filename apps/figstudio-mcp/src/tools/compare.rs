@@ -12,10 +12,9 @@ use crate::{
 };
 use artifacts::artifact_dir;
 use figstudio_diff::{
-    DiffReport, RenderImages, RenderOpts, attach_render_diffs_with_sink, diff_documents,
-    render_html,
+    DiffReport, RenderOpts, diff_documents, file_label, render_html, render_report_to_dir,
 };
-use figstudio_fig::{Document, Guid};
+use figstudio_fig::Document;
 use figstudio_render::images::ImageRequest;
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router};
 use schemars::JsonSchema;
@@ -42,8 +41,10 @@ pub(crate) struct CompareFilesInput {
     old_file: Option<String>,
     /// Registered file key (stem or full path) of the newer file.
     new_file: Option<String>,
-    /// Render changed pages and write before/after/diff PNGs (default false).
+    /// Render changed pages and write before/after/diff images (default false).
     include_render: Option<bool>,
+    /// Lossless image format: webp (default) or png.
+    format: Option<super::image_format::ImageFormat>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -60,7 +61,7 @@ pub(crate) struct ComparePageInput {
 #[tool_router(router = compare_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Compare two registered local files: writes report.json and report.html (plus before/after/diff PNGs when includeRender is true) under the server assets directory, and returns counts, artifact paths and at most 100 page entries (id, status, added/removed/changed counts). Use compare_page for bounded single-page detail. Rendering is off by default and capped by the diff crate."
+        description = "Compare two registered local files: writes report.json and report.html (plus lossless images when includeRender is true; format: webp by default, or png) under the server assets directory, and returns counts, artifact paths and at most 100 page entries (id, status, added/removed/changed counts). Use compare_page for bounded single-page detail. Rendering is off by default and capped by the diff crate."
     )]
     async fn compare_files(
         &self,
@@ -75,16 +76,20 @@ impl FigstudioServer {
             Err(error) => return load_error(error, NEW_ERROR),
         };
         let include_render = input.include_render.unwrap_or(false);
+        let format = input
+            .format
+            .unwrap_or(super::image_format::ImageFormat::Webp)
+            .into();
         let system_fonts = !self.no_system_fonts();
         // Rendering resolves by the picked paths (inside each `Rendering`),
         // never by re-looking-up a stem, so duplicate stems stay unambiguous.
         let (old_rendering, new_rendering) = if include_render {
             let old_rendering = match self.files().rendering_picked(&old_path, &old, system_fonts) {
-                Ok(rendering) => rendering,
+                Ok(rendering) => rendering.with_format(format),
                 Err(error) => return load_error(error, OLD_ERROR),
             };
             let new_rendering = match self.files().rendering_picked(&new_path, &new, system_fonts) {
-                Ok(rendering) => rendering,
+                Ok(rendering) => rendering.with_format(format),
                 Err(error) => return load_error(error, NEW_ERROR),
             };
             (Some(old_rendering), Some(new_rendering))
@@ -207,7 +212,7 @@ fn compare_and_write(
     ))
 }
 
-/// Render changed pages like the CLI does: stream each page's PNGs to disk,
+/// Render changed pages like the CLI does: stream each page's images to disk,
 /// then link the written files from the report.
 fn render_pages(
     report: &mut DiffReport,
@@ -229,69 +234,12 @@ fn render_pages(
     let new_read = |want: &ImageRequest| new_rendering.read(&want.entry);
     let opts = RenderOpts {
         scale: 1.0,
+        format: old_rendering.format,
         system_fonts,
         ..RenderOpts::default()
     };
-    let mut written: Vec<(Guid, [Option<String>; 3])> = Vec::new();
-    let mut failed = false;
-    attach_render_diffs_with_sink(
-        old,
-        new,
-        report,
-        &opts,
-        &old_read,
-        &new_read,
-        &mut |id, images| {
-            if failed {
-                return;
-            }
-            match write_page(dir, id, images) {
-                Ok(names) => written.push((id, names)),
-                Err(()) => failed = true,
-            }
-        },
-    );
-    if failed {
-        return Err(WRITE_ERROR);
-    }
-    for (id, [before, after, diff]) in written {
-        if let Some(render) = report
-            .pages
-            .iter_mut()
-            .find(|page| page.id == id)
-            .and_then(|page| page.render.as_mut())
-        {
-            render.old_png = before;
-            render.new_png = after;
-            render.diff_png = diff;
-        }
-    }
-    Ok(())
-}
-
-/// Writes PNGs under `dir/render/`, named only by GUID u32s.
-fn write_page(dir: &Path, id: Guid, images: &RenderImages) -> Result<[Option<String>; 3], ()> {
-    let base = format!("render/{}-{}-", id.0, id.1);
-    let put = |suffix: &str, bytes: &Option<Vec<u8>>| -> Result<Option<String>, ()> {
-        let Some(bytes) = bytes else {
-            return Ok(None);
-        };
-        let name = format!("{base}{suffix}.png");
-        std::fs::write(dir.join(&name), bytes).map_err(|_| ())?;
-        Ok(Some(name))
-    };
-    Ok([
-        put("before", &images.before)?,
-        put("after", &images.after)?,
-        put("diff", &images.diff)?,
-    ])
-}
-
-fn file_label(path: &Path) -> String {
-    path.file_name().map_or_else(
-        || "(unnamed)".into(),
-        |name| name.to_string_lossy().into_owned(),
-    )
+    render_report_to_dir((old, new), report, &opts, (&old_read, &new_read), dir)
+        .map_err(|_| WRITE_ERROR)
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 mod support;
 
-use figstudio_diff::{DiffReport, RenderDiff, diff_documents, render_html};
+use figstudio_diff::{DiffReport, Region, RenderDiff, diff_documents, render_html};
 use figstudio_fig::{Node, Val};
 use support::{document, node, object, rectangle};
 
@@ -66,7 +66,7 @@ fn html_escapes_all_names_values_paths_labels_and_coverage_messages() {
     }
     assert!(html.contains("Content-Security-Policy"));
     assert!(html.contains("default-src 'none'"));
-    assert!(!html.contains("src="));
+    assert!(!html.contains("<img"));
     assert!(!html.contains("<script"));
 }
 
@@ -78,16 +78,14 @@ fn html_has_page_sections_counts_absence_and_text_rows() {
         "new.fig",
         "<section",
         "layer-1",
-        "Added",
-        "Removed",
-        "Changed",
-        "Nodes: 1 added, 1 removed, 1 changed, 0 moved",
-        "Properties: 2",
-        "Stored-change coverage: complete",
-        "textData.characters: (absent)",
-        "Text:",
-        "layer-3",
-        "layer-4",
+        "class=\"sg\">+</span><span class=\"hd\"><span class=\"nm\">layer-4</span><span class=\"kd\">RECTANGLE",
+        "class=\"sg\">-</span><span class=\"hd\"><span class=\"nm\">layer-3</span>",
+        "class=\"sg\">~</span><span class=\"hd\"><span class=\"nm\">&lt;script&gt;alert",
+        "<b>Layers</b><span class=\"a\">+1</span>",
+        "<span class=\"m\">~1</span>",
+        "Full machine record: report.json",
+        "<b>Coverage</b><span>complete</span>",
+        "class=\"lines\"",
     ] {
         assert!(html.contains(expected), "missing {expected}");
     }
@@ -95,7 +93,7 @@ fn html_has_page_sections_counts_absence_and_text_rows() {
     report.complete = false;
     report.truncated.push("Ungrouped changes".into());
     let html = render_html(&report);
-    assert!(html.contains("Stored-change coverage: incomplete"));
+    assert!(html.contains("<b>Coverage</b><span>incomplete</span>"));
     assert!(html.contains("Ungrouped changes"));
 }
 
@@ -138,7 +136,7 @@ fn nested_float(value: &Val) -> &Val {
 #[test]
 fn html_links_only_relative_render_paths_and_omits_missing_images() {
     let mut report = pair();
-    assert!(!render_html(&report).contains("<a "));
+    assert!(!render_html(&report).contains("href=\"./"));
     report.pages[0].render = Some(RenderDiff {
         old_png: Some("pages/before & after.png".into()),
         new_png: Some("javascript:alert(1)".into()),
@@ -151,12 +149,14 @@ fn html_links_only_relative_render_paths_and_omits_missing_images() {
     });
     let html = render_html(&report);
     assert!(html.contains("href=\"./pages/before &amp; after.png\""));
+    assert!(html.contains("<img src=\"./pages/before &amp; after.png\""));
+    assert!(!html.contains("<img src=\"./javascript"));
     assert!(
-        html.contains("<p>42 pixels changed, worst channel delta 7, 3x2</p>"),
+        html.contains("<span>42 pixels changed, worst channel delta 7, 3x2</span>"),
         "{html}"
     );
     assert!(!html.contains("javascript:"));
-    assert!(!html.contains("Diff PNG"));
+    assert!(!html.contains("alt=\"Diff\""));
     for invalid in [
         "../private.png",
         "/absolute.png",
@@ -166,6 +166,119 @@ fn html_links_only_relative_render_paths_and_omits_missing_images() {
         "%2e%2e/private.png",
     ] {
         report.pages[0].render.as_mut().unwrap().old_png = Some(invalid.into());
-        assert!(!render_html(&report).contains("<a "));
+        assert!(!render_html(&report).contains("href=\"./"));
     }
 }
+
+fn text_report(edit: impl Fn(&mut Val)) -> DiffReport {
+    let before = node(2, Some(1), "TEXT", "a");
+    let mut after = before.data.clone();
+    edit(&mut after);
+    let after = Node::from_data(after).unwrap();
+    diff_documents(&document(vec![before]), &document(vec![after]))
+}
+
+#[test]
+fn html_hides_blob_rows_but_json_keeps_them() {
+    let report = text_report(|d| {
+        d.set(
+            "derivedTextData",
+            object(&[("glyphsBlob", Val::Str("2116".into()))]),
+        );
+        d.set("vectorNetworkBlob", Val::Int(7));
+    });
+    let json = serde_json::to_string(&report).unwrap();
+    assert!(json.contains("derivedTextData") && json.contains("vectorNetworkBlob"));
+    let html = render_html(&report);
+    assert!(!html.contains("derivedTextData") && !html.contains("vectorNetworkBlob"));
+    // Blob-only churn is no visible change: the page is folded away, not a section.
+    assert!(!html.contains("<section"), "{html}");
+    assert!(html.contains("1 page with no visible change"), "{html}");
+}
+
+#[test]
+fn html_groups_fill_colour_into_one_row_with_swatches() {
+    let before = support::filled_rectangle(2, 1, (0.1, 0.2, 0.3));
+    let after = support::filled_rectangle(2, 1, (1.0, 0.0, 0.0));
+    let html = render_html(&diff_documents(
+        &document(vec![before]),
+        &document(vec![after]),
+    ));
+    assert!(
+        html.contains("Fill:</span><span class=\"o\"><i class=\"sw\""),
+        "{html}"
+    );
+    assert!(
+        html.contains("#1A334D") && html.contains("#FF0000"),
+        "{html}"
+    );
+    assert_eq!(html.matches("Fill:").count(), 1);
+}
+
+#[test]
+fn html_shows_font_size_and_escaped_text_change() {
+    let report = text_report(|d| {
+        d.set("fontSize", Val::Int(14));
+        d.set(
+            "textData",
+            object(&[("characters", Val::Str("<i>x</i>".into()))]),
+        );
+    });
+    let html = render_html(&report);
+    assert!(
+        html.contains("fontSize:</span><span class=\"o\">(absent)</span><span class=\"ar\">→</span><span class=\"n\">14</span>"),
+        "{html}"
+    );
+    assert!(html.contains("&lt;i&gt;x&lt;/i&gt;") && !html.contains("<i>x</i>"));
+}
+
+#[test]
+fn html_csp_allows_only_same_origin_images() {
+    let html = render_html(&pair());
+    assert!(html.contains("img-src 'self'") && !html.contains("<script"));
+}
+
+#[test]
+fn move_only_node_has_no_tilde_line_but_is_counted() {
+    let before = support::filled_rectangle_at(2, 1, (0.5, 0.5, 0.5), 0.0, 0.0, 40.0, 40.0);
+    let after = support::filled_rectangle_at(2, 1, (0.5, 0.5, 0.5), 30.0, 5.0, 40.0, 40.0);
+    let mut kept = support::filled_rectangle(3, 1, (0.1, 0.1, 0.1));
+    kept.data.set("name", Val::Str("peer".into()));
+    let report = diff_documents(
+        &document(vec![before, kept.clone()]),
+        &document(vec![after, kept]),
+    );
+    assert_eq!(report.pages[0].changed.len(), 1);
+    let html = render_html(&report);
+    assert!(!html.contains("class=\"ln mod\""), "{html}");
+    assert!(!html.contains("<section"), "{html}");
+    assert!(html.contains("1 page with no visible change"), "{html}");
+}
+
+#[test]
+fn newly_written_default_opacity_and_raw_override_paths_are_not_shown() {
+    let report = text_report(|d| {
+        d.set("opacity", Val::Float(1.0));
+        d.set("visible", Val::Bool(true));
+        d.set("fontSize", Val::Int(14));
+    });
+    let html = render_html(&report);
+    assert!(
+        !html.contains("class=\"k\">opacity") && !html.contains("class=\"k\">visible"),
+        "{html}"
+    );
+    let nested = text_report(|d| {
+        d.set(
+            "symbolData",
+            object(&[(
+                "symbolOverrides",
+                Val::Arr(vec![object(&[("fontSize", Val::Int(9))])]),
+            )]),
+        );
+    });
+    let html = render_html(&nested);
+    assert!(!html.contains("symbolOverrides"), "{html}");
+}
+
+#[path = "report/components.rs"]
+mod components;

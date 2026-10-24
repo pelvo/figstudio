@@ -21,6 +21,8 @@ pub enum AssetFormat {
     /// Lossless, keeps transparency.
     #[default]
     Png,
+    /// Lossless WebP, keeps transparency.
+    Webp,
     /// Lossy; transparent areas are flattened onto white.
     Jpg,
 }
@@ -30,6 +32,7 @@ impl From<AssetFormat> for core::AssetFormat {
         match format {
             AssetFormat::Png => Self::Png,
             AssetFormat::Jpg => Self::Jpg,
+            AssetFormat::Webp => Self::Webp,
         }
     }
 }
@@ -44,7 +47,7 @@ pub(crate) struct AssetsInput {
     node_ids: Vec<String>,
     /// Registered file stem or full path; optional for a single file.
     file_key: Option<String>,
-    /// `png` (default) or `jpg`.
+    /// `png` (default), `webp` (both lossless) or `jpg` (flattened onto white).
     format: Option<AssetFormat>,
     /// Pixels per design unit, 0.01 to 4 (default 1). Without it the longest side is capped at
     /// 2048 px; with it, at 4096 px.
@@ -56,7 +59,7 @@ pub(crate) struct AssetsInput {
 #[tool_router(router = assets_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Download up to 20 nodes as PNG or JPG images (format, scale 0.01 to 4; longest side capped at 2048 px without scale, 4096 px with it). JPG has no transparency: nodes are flattened onto white, pages keep their page background. With original=true the call returns the source files of the image fills inside each node (up to 12 per call, each once) with their detected MIME type instead of a render. Each node gets a text line; a node that fails is reported there and does not fail the call. Instance paths (I1:2;3:4) are accepted. SVG and PDF export are not available offline."
+        description = "Download up to 20 nodes as lossless PNG (default), lossless WebP or JPG images (format: png, webp or jpg, scale 0.01 to 4; longest side capped at 2048 px without scale, 4096 px with it). PNG and WebP keep transparency; JPG has no transparency: nodes are flattened onto white, pages keep their page background. With original=true the call returns the source files of the image fills inside each node (up to 12 per call, each once) with their detected MIME type instead of a render. Each node gets a text line; a node that fails is reported there and does not fail the call. Instance paths (I1:2;3:4) are accepted. SVG and PDF export are not available offline."
     )]
     async fn download_assets(
         &self,

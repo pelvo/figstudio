@@ -3,13 +3,6 @@ use crate::{assets, design, output::Output};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum Format {
-    Png,
-    Jpg,
-}
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Input {
@@ -22,7 +15,7 @@ struct Input {
     rect: Option<[f64; 4]>,
     limit: Option<usize>,
     node_ids: Option<Vec<String>>,
-    format: Option<Format>,
+    format: Option<String>,
     original: Option<bool>,
     include_images: Option<bool>,
     image_scale: Option<f64>,
@@ -71,6 +64,23 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
         Ok(tab) => tab,
         Err(e) => return Ok(Output::fault(e.to_string())),
     };
+    // Only the image tools take a format; the others ignore it, as the native server does.
+    let wants_format = matches!(
+        name,
+        "get_screenshot" | "get_design_context" | "download_assets" | "get_figjam"
+    );
+    let requested = input
+        .format
+        .as_deref()
+        .filter(|_| wants_format)
+        .unwrap_or("png");
+    // download_assets alone also takes jpg; renders stay png-encoded underneath.
+    let jpg = name == "download_assets" && requested == "jpg";
+    let format = match if jpg { "png" } else { requested }.parse() {
+        Ok(format) => format,
+        Err(error) => return Ok(Output::fault(format!("{error}"))),
+    };
+    let rendering = tab.rendering.clone().with_format(format);
     let doc = &tab.doc;
     let node = input.node_id.as_deref();
     let target = || live::target(tab, node);
@@ -80,7 +90,7 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
             "reveal_node" => live::reveal(env, tab, &target()?),
             "get_metadata" => crate::metadata::metadata(doc, node, input.depth),
             "get_screenshot" => {
-                crate::screenshot::screenshot(doc, &target()?, input.scale, &tab.rendering)
+                crate::screenshot::screenshot(doc, &target()?, input.scale, &rendering)
             }
             "get_nodes_in_region" => crate::region_tool::nodes_in_region(
                 doc,
@@ -99,7 +109,7 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
                     languages: input.client_languages,
                     max_nodes: input.max_nodes,
                     assets: design::Assets::Inline,
-                    rendering: tab.rendering.clone(),
+                    rendering: rendering.clone(),
                     ..design::Options::default()
                 },
             ),
@@ -111,13 +121,14 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
                 assets::download(
                     doc,
                     &ids,
-                    match input.format {
-                        Some(Format::Jpg) => assets::AssetFormat::Jpg,
-                        _ => assets::AssetFormat::Png,
+                    match format {
+                        _ if jpg => assets::AssetFormat::Jpg,
+                        figstudio_render::encoding::ImageFormat::Webp => assets::AssetFormat::Webp,
+                        figstudio_render::encoding::ImageFormat::Png => assets::AssetFormat::Png,
                     },
                     input.scale,
                     input.original.unwrap_or(false),
-                    &tab.rendering,
+                    &rendering,
                 )
             }
             "get_figjam" => crate::figjam::figjam(
@@ -126,7 +137,7 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
                 input.depth,
                 input.include_images.unwrap_or(false),
                 input.image_scale,
-                &tab.rendering,
+                &rendering,
             ),
             "search_design_system" => crate::design_system::search(
                 doc,

@@ -120,7 +120,7 @@ async fn check_version(version: &str) {
             assert!(files.get("required").is_none() || files["required"] == json!([]), "compare_files required: {files}");
             assert_eq!(
                 files["properties"].as_object().unwrap().keys().map(|k| k.as_str().to_owned()).collect::<std::collections::BTreeSet<_>>(),
-                ["includeRender", "newFile", "oldFile"].into_iter().map(str::to_owned).collect::<std::collections::BTreeSet<_>>()
+                ["format", "includeRender", "newFile", "oldFile"].into_iter().map(str::to_owned).collect::<std::collections::BTreeSet<_>>()
             );
             assert_eq!(files["properties"]["oldFile"]["type"], json!(["string", "null"]));
             assert_eq!(files["properties"]["newFile"]["type"], json!(["string", "null"]));

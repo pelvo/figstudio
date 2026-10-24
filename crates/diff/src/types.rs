@@ -1,3 +1,4 @@
+use crate::ScreenDiff;
 use figstudio_fig::{Guid, Val};
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +11,8 @@ pub struct DiffReport {
     pub pages: Vec<PageDiff>,
     pub complete: bool,
     pub truncated: Vec<String>,
+    #[serde(default)]
+    pub shared_changes: Vec<crate::SharedChange>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,11 +36,15 @@ pub struct Summary {
     pub nodes_added: usize,
     /// Unmatched old nodes, excluding page/document containers.
     pub nodes_removed: usize,
-    /// Matched changed nodes, including moves and ungrouped nodes.
+    /// Matched changed nodes, including moves and ungrouped nodes. A layer of a recreated
+    /// screen that pairs by name and has edits counts here too, while its new id also counts
+    /// in `nodes_added` (and its old id in `nodes_removed`), so the counts overlap.
     pub nodes_changed: usize,
     /// Matched nodes whose parent or sibling position changed.
     pub nodes_moved: usize,
-    /// Stored leaf deltas, excluding redundant parentIndex rows on moves.
+    /// Stored leaf deltas, excluding redundant parentIndex rows on moves. For layers of a
+    /// recreated screen paired by name, id fields and the screen root's transform are left
+    /// out.
     pub properties_changed: usize,
 }
 
@@ -53,8 +60,17 @@ pub struct PageDiff {
     /// Cross-page movers whose detailed row is on their destination page.
     #[serde(default)]
     pub moved_out: Vec<Guid>,
-    /// Optional render lane result; PNG links are set by the caller.
+    /// Optional render lane result; image links are set by the caller.
     pub render: Option<RenderDiff>,
+    #[serde(default)]
+    pub screens: Vec<ScreenDiff>,
+    #[serde(default)]
+    pub screens_unchanged: usize,
+    #[serde(default)]
+    pub screens_moved: usize,
+    /// Line identities outside screens; absent in reports made before screen comparison.
+    #[serde(default)]
+    pub other_nodes: Option<Vec<Guid>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +91,30 @@ pub struct RenderDiff {
     pub old_stats: Option<RenderStats>,
     /// Renderer counters for the new side; `None` when it was not rendered.
     pub new_stats: Option<RenderStats>,
+}
+
+/// One changed area, in pixels of its screen render canvas.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Region {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub pixels_changed: u64,
+    pub old_png: Option<String>,
+    pub new_png: Option<String>,
+    /// Pixel size of the Before/After pictures (at 2x); they show more than the changed box.
+    #[serde(default)]
+    pub image_width: Option<u32>,
+    #[serde(default)]
+    pub image_height: Option<u32>,
+    /// Added, removed and changed layers with at least half their canvas-clamped
+    /// box inside this region on either side, in report order.
+    #[serde(default)]
+    pub nodes: Vec<Guid>,
+    /// Zero-based shared-change group, when this region repeats across screens.
+    #[serde(default)]
+    pub shared: Option<usize>,
 }
 
 /// Renderer work counters copied from `figstudio_render::Stats` (that type is

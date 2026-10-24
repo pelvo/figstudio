@@ -16,9 +16,13 @@ fn cross_page_move_keeps_source_note_without_double_counting() {
     assert_eq!(report.summary.nodes_moved, 1);
     assert_eq!(report.summary.nodes_changed, 1);
     assert_eq!(report.summary.pages_changed, 2);
-    let source_html = render_html(&report);
-    let source_html = source_html.split("</section>").next().unwrap();
-    assert!(source_html.contains("Moved out: 0:2"));
+    let html = render_html(&report);
+    assert!(!html.contains("<section"), "moves alone show no page");
+    assert!(html.contains("2 pages with no visible change"));
+    assert!(
+        !html.contains("layers moved without content change"),
+        "{html}"
+    );
 }
 
 #[test]
@@ -40,7 +44,10 @@ fn html_prints_style_run_changes_once_and_keeps_flat_json() {
     let report = diff_documents(&build(12.0), &build(14.0));
     let html = render_html(&report);
     assert_eq!(html.matches("fontSize").count(), 1, "{html}");
-    assert!(html.contains("Style run 0"));
+    assert!(
+        html.contains("fontSize:</span><span class=\"o\">12</span><span class=\"ar\">→</span><span class=\"n\">14</span>"),
+        "{html}"
+    );
     assert!(
         report
             .to_json()
@@ -50,12 +57,12 @@ fn html_prints_style_run_changes_once_and_keeps_flat_json() {
 }
 
 #[test]
-fn html_labels_stored_coverage_and_subtree_size_precisely() {
+fn html_labels_coverage_and_added_layers_precisely() {
     let report = diff_documents(
         &document(vec![]),
         &document(vec![rectangle(2, 1), rectangle(3, 2)]),
     );
     let html = render_html(&report);
-    assert!(html.contains("1 (subtree size incl. movers)"));
-    assert!(html.contains("Stored-change coverage: complete"));
+    assert!(html.contains("class=\"sg\">+</span><span class=\"hd\"><span class=\"nm\">layer-2</span><span class=\"kd\">RECTANGLE</span>"), "{html}");
+    assert!(html.contains("<b>Coverage</b><span>complete</span>"));
 }

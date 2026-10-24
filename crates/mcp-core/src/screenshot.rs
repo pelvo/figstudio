@@ -37,12 +37,14 @@ pub fn screenshot(
         Err(error) => return Output::fault(error.to_string()),
     };
     let text = shot.describe();
-    match shot.frame.pixmap.into_png() {
+    match figstudio_render::encoding::encode_pixmap(shot.frame.pixmap, rendering.format) {
         Ok(png) => Output::success(vec![
-            Block::image(STANDARD.encode(png), "image/png"),
+            Block::image(STANDARD.encode(png), rendering.format.mime()),
             Block::text(text),
         ]),
-        Err(error) => Output::fault(CoreError::encode("PNG", error).to_string()),
+        Err(error) => {
+            Output::fault(CoreError::encode(rendering.format.extension(), error).to_string())
+        }
     }
 }
 

@@ -1,4 +1,4 @@
-//! Copy as PNG: render a page region (or one node) off the UI thread, then put the image on the
+//! Copy as PNG/WebP: render a page region (or one node) off the UI thread, then put the image on the
 //! clipboard from `drive`, which `main.rs` calls every frame.
 //!
 //! Desktop renders on a `std::thread` holding `Workers::begin_export`'s slot; the browser uses
@@ -7,6 +7,7 @@
 //! "Copy region".
 
 use anyhow::Context;
+use figstudio_render::encoding::{ImageFormat, encode_pixmap};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use figstudio_fig::{Document, Guid};
@@ -33,6 +34,8 @@ pub enum Job {
     },
     /// One node, at 2x.
     Node(Guid),
+    /// One node, at 2x, encoded losslessly as WebP.
+    WebpNode(Guid),
 }
 
 /// A finished render.
@@ -48,12 +51,15 @@ pub struct Done {
     pub height: usize,
     /// Premultiplied RGBA8, as Vello writes it.
     pub rgba: Vec<u8>,
-    /// PNG bytes (browser only, for the download fallback).
+    pub format: ImageFormat,
+    /// Encoded image bytes for WebP clipboard writes or browser downloads.
+    pub encoded: Option<Vec<u8>>,
+    /// PNG twin of a WebP clipboard write, for apps that cannot read WebP.
     #[cfg_attr(
-        all(not(target_arch = "wasm32"), not(test)),
-        expect(dead_code, reason = "browser download only")
+        target_arch = "wasm32",
+        expect(dead_code, reason = "browsers cannot copy WebP")
     )]
-    pub png: Option<Vec<u8>>,
+    pub png_twin: Option<Vec<u8>>,
     /// What the render drew approximately or skipped, e.g. `2 effects skipped`.
     pub gaps: String,
 }
@@ -65,12 +71,17 @@ type Msg = anyhow::Result<Done>;
 pub struct Inbox {
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
+    clipboard: std::cell::RefCell<crate::region_clipboard::Clipboard>,
 }
 
 impl Default for Inbox {
     fn default() -> Self {
         let (tx, rx) = channel();
-        Inbox { tx, rx }
+        Inbox {
+            tx,
+            rx,
+            clipboard: Default::default(),
+        }
     }
 }
 
@@ -92,6 +103,11 @@ pub fn render(
     job: Job,
     want_png: bool,
 ) -> anyhow::Result<Done> {
+    let format = if matches!(job, Job::WebpNode(_)) {
+        ImageFormat::Webp
+    } else {
+        ImageFormat::Png
+    };
     let (frame, name) = match job {
         Job::Region { page, rect, zoom } => {
             let (viewport, _) =
@@ -101,7 +117,7 @@ pub fn render(
             let frame = crate::renderer(images).render_complete(doc, page, &viewport, read);
             (frame, "region".to_string())
         }
-        Job::Node(id) => {
+        Job::Node(id) | Job::WebpNode(id) => {
             let b = node_bounds(doc, id).context("Nothing to copy as an image")?;
             let p =
                 plan(b.width(), b.height(), NODE_SCALE).context("Nothing to copy as an image")?;
@@ -119,8 +135,13 @@ pub fn render(
         usize::from(frame.pixmap.height()),
     );
     let rgba = frame.pixmap.data_as_u8_slice().to_vec();
-    let png = if want_png {
-        Some(frame.pixmap.into_png()?)
+    let png_twin = if format == ImageFormat::Webp {
+        Some(encode_pixmap(frame.pixmap.clone(), ImageFormat::Png)?)
+    } else {
+        None
+    };
+    let png = if want_png || format == ImageFormat::Webp {
+        Some(encode_pixmap(frame.pixmap, format)?)
     } else {
         None
     };
@@ -129,7 +150,9 @@ pub fn render(
         width,
         height,
         rgba,
-        png,
+        format,
+        encoded: png,
+        png_twin,
         gaps,
     })
 }
@@ -175,7 +198,7 @@ pub fn drive(
     }
     while let Ok(msg) = inbox.rx.try_recv() {
         toasts.push(match msg {
-            Ok(done) => finish(ctx, done),
+            Ok(done) => crate::region_clipboard::finish(ctx, done, &inbox.clipboard),
             Err(e) => (figstudio_fig::one_line(e.as_ref()), true),
         });
     }
@@ -219,48 +242,6 @@ fn start(
     workers.run_export(inbox.tx.clone(), move || {
         render(images, &doc, source.as_ref(), job, true)
     })
-}
-
-/// Puts a finished image on the clipboard; in the browser, downloads it when the clipboard
-/// cannot take images. Returns the toast.
-fn finish(ctx: &egui::Context, done: Done) -> (String, bool) {
-    #[cfg(target_arch = "wasm32")]
-    if !can_copy_image() {
-        let file = format!("{}.png", done.name);
-        return match done
-            .png
-            .as_deref()
-            .map(|p| crate::web::download(&file, "image/png", p))
-        {
-            Some(Ok(())) => (
-                format!("This browser cannot copy images here; downloaded {file}"),
-                false,
-            ),
-            Some(Err(e)) => (figstudio_fig::one_line(e.as_ref()), true),
-            None => ("Could not make the image".into(), true),
-        };
-    }
-    let image = egui::ColorImage::from_rgba_premultiplied([done.width, done.height], &done.rgba);
-    ctx.copy_image(image);
-    let text = message(done.width, done.height, &done.gaps);
-    // egui-winit only logs a failed image copy (some Wayland setups cannot copy images).
-    #[cfg(not(target_arch = "wasm32"))]
-    let text = text + "\nIf pasting gives nothing, this system cannot copy images.";
-    (text, false)
-}
-
-/// The browser can write `image/png` to the clipboard: a secure context with `ClipboardItem`.
-/// Safari may still refuse the write later, once the user gesture has expired; that cannot be
-/// seen from here.
-#[cfg(target_arch = "wasm32")]
-fn can_copy_image() -> bool {
-    use wasm_bindgen::JsValue;
-    let global = js_sys::global();
-    let secure = js_sys::Reflect::get(&global, &JsValue::from_str("isSecureContext"))
-        .ok()
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    secure && js_sys::Reflect::has(&global, &JsValue::from_str("ClipboardItem")).unwrap_or(false)
 }
 
 #[cfg(test)]

@@ -41,6 +41,10 @@ pub(crate) fn pages(old: &Document, new: &Document) -> Vec<PageDiff> {
                 changed: Vec::new(),
                 moved_out: Vec::new(),
                 render: None,
+                screens: Vec::new(),
+                screens_unchanged: 0,
+                screens_moved: 0,
+                other_nodes: None,
             }
         })
         .collect()
@@ -59,6 +63,20 @@ pub(crate) fn page_index(doc: &Document, pages: &[PageDiff]) -> HashMap<Guid, Gu
         }
     }
     out
+}
+
+/// Puts a page's rows in tree order: added and changed rows by the new side, removed and
+/// moved-out rows by the old side, unknown ids last, ties by id.
+pub(crate) fn sort_rows((old, new): (&Document, &Document), page: &mut crate::PageDiff) {
+    let a = order(old, page.id);
+    let b = order(new, page.id);
+    let rank = |id: Guid, order: &HashMap<Guid, usize>| {
+        (order.get(&id).copied().unwrap_or(usize::MAX), id)
+    };
+    page.added.sort_by_key(|n| rank(n.id, &b));
+    page.removed.sort_by_key(|n| rank(n.id, &a));
+    page.changed.sort_by_key(|n| rank(n.id, &b));
+    page.moved_out.sort_by_key(|&id| rank(id, &a));
 }
 
 pub(crate) fn order(doc: &Document, page: Guid) -> HashMap<Guid, usize> {

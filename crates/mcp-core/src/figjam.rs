@@ -121,15 +121,15 @@ fn picture(
         Err(message) => return vec![Block::text(format!("{id}: no image: {message}"))],
     };
     let line = format!("{id}: {}", shot.describe());
-    match shot.frame.pixmap.into_png() {
+    match figstudio_render::encoding::encode_pixmap(shot.frame.pixmap, rendering.format) {
         Ok(png) if payload.take(png.len()) => vec![
             Block::text(line),
-            Block::image(STANDARD.encode(png), "image/png"),
+            Block::image(STANDARD.encode(png), rendering.format.mime()),
         ],
         Ok(_) => vec![Block::text(Payload::omitted(id))],
         Err(error) => vec![Block::text(format!(
             "{id}: {}",
-            crate::error::CoreError::encode("PNG", error)
+            crate::error::CoreError::encode(rendering.format.extension(), error)
         ))],
     }
 }
