@@ -477,3 +477,187 @@ fn a_resized_root_without_a_change_line_is_not_diluted_by_unchanged_screens() {
         );
     }
 }
+
+#[test]
+fn edits_that_draw_nothing_do_not_dilute_an_earlier_real_change() {
+    // Screen 2 comes first and its child moves (real pixels, no change line). Ten later
+    // screens each have a child that is only renamed, so their pictures stay the same. Only
+    // screens with changed areas share the crop budget, so the move keeps all of it.
+    let frame = |id, x| {
+        let mut n = filled_rectangle_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 1000.0, 1000.0);
+        n.data.set("type", Val::Str("FRAME".into()));
+        Node::from_data(n.data).unwrap()
+    };
+    let side = |new: bool| {
+        let child = |id, parent, x, name: &str| {
+            let mut n = filled_rectangle_at(id, parent, (1.0, 0.0, 0.0), x, 100.0, 600.0, 600.0);
+            n.data.set("name", Val::Str(name.into()));
+            Node::from_data(n.data).unwrap()
+        };
+        let mut nodes = vec![
+            frame(2, 0.0),
+            child(3, 2, if new { 600.0 } else { 100.0 }, "Moved"),
+        ];
+        for id in 10..20 {
+            nodes.push(frame(id, f64::from(id) * 1200.0));
+            nodes.push(child(
+                id + 100,
+                id,
+                100.0,
+                if new { "Renamed" } else { "Child" },
+            ));
+        }
+        document(nodes)
+    };
+    let (old, new) = (side(false), side(true));
+    let mut report = diff_documents(&old, &new);
+    let images = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+    let page = &report.pages[0];
+    assert_eq!(page.screens.len(), 1, "{page:?}");
+    assert_eq!(page.screens_unchanged, 10);
+    let region = &page.screens[0].regions[0];
+    let crop = &images[&page.id].screens[0].regions[0];
+    let png = image::load_from_memory(&crop.after).unwrap();
+    assert!(
+        png.width() >= 2 * region.width && png.height() >= 2 * region.height,
+        "{}x{} for {}x{}",
+        png.width(),
+        png.height(),
+        region.width,
+        region.height
+    );
+}
+
+#[test]
+fn a_renamed_or_moved_root_does_not_use_up_the_screen_cap_before_a_real_change() {
+    // Screen 2 comes first and is only renamed or moved on the canvas, which cannot change
+    // its picture; screen 3's child moves (real pixels, no change line). With room for one
+    // screen, screen 3 is the one drawn.
+    let frame = |id, x, name: &str| {
+        let mut n = filled_rectangle_at(id, 1, (1.0, 1.0, 1.0), x, 0.0, 200.0, 200.0);
+        n.data.set("type", Val::Str("FRAME".into()));
+        n.data.set("name", Val::Str(name.into()));
+        Node::from_data(n.data).unwrap()
+    };
+    for edit in ["rename", "canvas move"] {
+        let side = |new: bool| {
+            let (name, x) = match (new, edit) {
+                (true, "rename") => ("Renamed", 0.0),
+                (true, _) => ("Frame", -300.0),
+                _ => ("Frame", 0.0),
+            };
+            let child_x = if new { 80.0 } else { 20.0 };
+            document(vec![
+                frame(2, x, name),
+                frame(3, 400.0, "Other"),
+                filled_rectangle_at(4, 3, (1.0, 0.0, 0.0), child_x, 20.0, 40.0, 40.0),
+            ])
+        };
+        let (old, new) = (side(false), side(true));
+        let mut report = diff_documents(&old, &new);
+        let opts = RenderOpts {
+            screen_limits: ScreenLimits {
+                page_screens: 1,
+                ..ScreenLimits::default()
+            },
+            ..RenderOpts::default()
+        };
+        let images = attach_render_diffs(&old, &new, &mut report, &opts);
+        let page = &report.pages[0];
+        let at = page
+            .screens
+            .iter()
+            .position(|s| s.new_id == Some(figstudio_fig::Guid(0, 3)))
+            .unwrap_or_else(|| panic!("{edit}: {page:?}"));
+        assert_eq!(page.screens[at].regions.len(), 1, "{edit}");
+        assert!(images[&page.id].screens[at].after.is_some(), "{edit}");
+    }
+}
+
+#[test]
+fn crop_pictures_count_toward_the_page_byte_cap() {
+    // Room for the page pictures and every whole-screen picture, but not for every crop:
+    // once the first screen's crops fill the cap, later screens cut none.
+    let (old, new) = (many_frames(4, 60.0, false), many_frames(4, 60.0, true));
+    let mut report = diff_documents(&old, &new);
+    let images = attach_render_diffs(&old, &new, &mut report, &RenderOpts::default());
+    let screens = &images[&report.pages[0].id].screens;
+    let len = |v: &Option<Vec<u8>>| v.as_ref().map_or(0, Vec::len);
+    let whole: usize = screens.iter().map(|s| len(&s.before) + len(&s.after)).sum();
+    assert!(screens.iter().all(|s| !s.regions.is_empty()));
+    let limits = ScreenLimits {
+        page_bytes: page_picture_bytes(&old, &new) + whole + 1,
+        ..ScreenLimits::default()
+    };
+    let mut report = diff_documents(&old, &new);
+    let images = attach_render_diffs(&old, &new, &mut report, &limited(limits));
+    let screens = &images[&report.pages[0].id].screens;
+    assert_eq!(screens.len(), 4);
+    let cropped = screens.iter().filter(|s| !s.regions.is_empty()).count();
+    assert_eq!(cropped, 1);
+    // Screens past the cap still list their areas and the layers in them.
+    let page = &report.pages[0];
+    assert!(
+        page.screens
+            .iter()
+            .all(|s| s.regions.len() == 1 && !s.regions[0].nodes.is_empty())
+    );
+    let note = |report: &figstudio_diff::DiffReport, screens: &str| {
+        let note = format!(
+            "page {} picture byte limit reached; crops left out for {screens}",
+            report.pages[0].id
+        );
+        assert!(report.truncated.contains(&note), "{:?}", report.truncated);
+    };
+    note(&report, "3 screens");
+    // The same dot changed on every screen: the shared card leads with the one crop.
+    let lead = report.shared_changes[0].occurrences[0];
+    assert_eq!(images[&page.id].screens[lead.screen_index].regions.len(), 1);
+    // With no room for any crop, no shared card is left without a picture: each screen
+    // stays unfolded with its own area (the HTML side is in `area_html`).
+    let limits = ScreenLimits {
+        page_bytes: page_picture_bytes(&old, &new) + whole,
+        ..ScreenLimits::default()
+    };
+    let mut report = diff_documents(&old, &new);
+    let images = attach_render_diffs(&old, &new, &mut report, &limited(limits));
+    let screens = &images[&report.pages[0].id].screens;
+    assert_eq!(screens.len(), 4);
+    assert!(
+        screens
+            .iter()
+            .all(|s| s.regions.is_empty() && s.after.is_some())
+    );
+    assert!(
+        report.shared_changes.is_empty(),
+        "{:?}",
+        report.shared_changes
+    );
+    assert!(
+        report.pages[0]
+            .screens
+            .iter()
+            .all(|s| s.regions[0].shared.is_none())
+    );
+    note(&report, "4 screens");
+    // When the first screen's own pictures fill the cap, it keeps its area too.
+    let limits = ScreenLimits {
+        page_bytes: page_picture_bytes(&old, &new) + 1,
+        ..ScreenLimits::default()
+    };
+    let mut report = diff_documents(&old, &new);
+    let images = attach_render_diffs(&old, &new, &mut report, &limited(limits));
+    let drawn = report.pages[0]
+        .screens
+        .iter()
+        .position(|s| s.pixels_changed.is_some())
+        .unwrap();
+    assert_eq!(report.pages[0].screens[drawn].regions.len(), 1);
+    assert!(
+        images[&report.pages[0].id].screens[drawn]
+            .regions
+            .is_empty()
+    );
+    // The screens past it were not rendered at all, so the note names only that one.
+    note(&report, "1 screen");
+}

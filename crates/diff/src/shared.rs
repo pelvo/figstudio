@@ -142,15 +142,24 @@ impl SharedGroups {
                 .map_or_else(String::new, |n| n.name.clone())
         };
         let mut shared = Vec::new();
-        for (id, (group, mut marked)) in self.groups().into_iter().enumerate() {
+        for (group, mut marked) in self.groups() {
+            let id = shared.len();
             let count = screens(marked.iter().map(|(at, _)| at));
+            let region = |o: &SharedOccurrence| {
+                &report.pages[o.page_index].screens[o.screen_index].regions[o.region_index]
+            };
+            // An area kept without its crop (the page byte cap) has no picture to lead with.
+            let cropped = |o: &SharedOccurrence| region(o).image_width.is_some();
             let area = |o: &SharedOccurrence| {
-                let r = &report.pages[o.page_index].screens[o.screen_index].regions[o.region_index];
+                let r = region(o);
                 u64::from(r.width) * u64::from(r.height)
             };
-            // The largest region (first on ties) gives the most context and leads the group.
+            // The largest cropped region (first on ties) gives the most context and leads.
             let lead = (0..marked.len())
-                .max_by_key(|i| (area(&marked[*i].0), std::cmp::Reverse(*i)))
+                .max_by_key(|i| {
+                    let at = &marked[*i].0;
+                    (cropped(at), area(at), std::cmp::Reverse(*i))
+                })
                 .unwrap_or(0);
             let first = marked.remove(lead);
             marked.insert(0, first);
@@ -177,6 +186,39 @@ impl SharedGroups {
             });
         }
         report.shared_changes = shared;
+    }
+}
+
+/// Drops the shared cards left with no picture: no occurrence kept its crop (the page byte
+/// cap) and no component view was drawn. Their screens then stay unfolded and show their own
+/// areas. Card ids stay contiguous, in `report` and in the component pictures of `images`.
+pub(crate) fn drop_unpictured(report: &mut DiffReport, images: Option<&mut crate::RenderImages>) {
+    let mut ids = Vec::with_capacity(report.shared_changes.len());
+    let mut kept = 0;
+    report.shared_changes.retain_mut(|group| {
+        let pictured = group.image_width.is_some();
+        ids.push(pictured.then_some(kept));
+        if pictured {
+            group.id = kept;
+            kept += 1;
+        }
+        pictured
+    });
+    if kept == ids.len() {
+        return;
+    }
+    for region in report
+        .pages
+        .iter_mut()
+        .flat_map(|p| &mut p.screens)
+        .flat_map(|s| &mut s.regions)
+    {
+        region.shared = region.shared.and_then(|id| ids.get(id).copied().flatten());
+    }
+    if let Some(images) = images {
+        let remap = |id: &mut usize| ids.get(*id).copied().flatten().map(|new| *id = new);
+        images.shared.retain_mut(|(id, _)| remap(id).is_some());
+        images.variants.retain_mut(|(id, ..)| remap(id).is_some());
     }
 }
 
@@ -235,5 +277,107 @@ fn component(
             name: name_of(group),
         }),
         variants,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ComponentKey, RegionKey, SharedGroups, Signature};
+    use figstudio_fig::{Document, Guid};
+
+    /// One page whose screens each hold one area of the given side, cropped or not.
+    fn report(doc: &Document, areas: &[(u32, bool)]) -> crate::DiffReport {
+        let mut report = crate::diff_documents(doc, doc);
+        let screens: Vec<_> = areas
+            .iter()
+            .map(|&(side, cropped)| {
+                serde_json::json!({
+                    "old_id": [0, 2], "new_id": [0, 2], "name": "", "kind": "FRAME",
+                    "status": "Changed", "matched_by": "Id", "moved": false,
+                    "width": 200, "height": 200, "pixels_changed": 1,
+                    "thumb_old": null, "thumb_new": null,
+                    "regions": [{
+                        "x": 0, "y": 0, "width": side, "height": side, "pixels_changed": 1,
+                        "old_png": null, "new_png": null,
+                        "image_width": cropped.then_some(side * 2),
+                    }],
+                })
+            })
+            .collect();
+        report.pages.push(
+            serde_json::from_value(serde_json::json!({
+                "id": [0, 1], "old_name": null, "new_name": null, "status": "Changed",
+                "added": [], "removed": [], "changed": [], "render": null, "screens": screens,
+            }))
+            .unwrap(),
+        );
+        report
+    }
+
+    fn finish(doc: &Document, areas: &[(u32, bool)]) -> crate::DiffReport {
+        let mut report = report(doc, areas);
+        let mut groups = SharedGroups::default();
+        // One component group across every screen, so sizes can differ.
+        let key = RegionKey {
+            signature: Signature(0, 0, 0),
+            component: Some(ComponentKey {
+                group: Guid(0, 9),
+                master: Guid(0, 9),
+            }),
+        };
+        groups.record(0, areas.iter().map(|_| vec![key]).collect());
+        let page = report.pages.len() - 1;
+        groups.0.iter_mut().for_each(|(at, _)| at.page_index = page);
+        groups.finish(&mut report, (doc, doc));
+        report
+    }
+
+    #[test]
+    fn a_shared_card_leads_with_a_cropped_area_and_is_dropped_without_one() {
+        let doc =
+            Document::from_bytes(include_bytes!("../../../tests/fixtures/structure.fig")).unwrap();
+        // The larger area was kept without its crop (the page byte cap), so the smaller,
+        // cropped one leads.
+        let report = finish(&doc, &[(20, true), (40, false)]);
+        assert_eq!(report.shared_changes[0].occurrences[0].screen_index, 0);
+        assert_eq!(report.shared_changes[0].image_width, Some(40));
+        assert_eq!(
+            finish(&doc, &[(20, false), (40, true)]).shared_changes[0].width,
+            40
+        );
+        // No occurrence has a picture: the card waits for a component view, and without
+        // one it is dropped and the screens stay unfolded.
+        let mut report = finish(&doc, &[(20, false), (40, false)]);
+        assert_eq!(report.shared_changes.len(), 1);
+        // A later card with a component view stays and takes the first id, pictures too.
+        let mut viewed = report.shared_changes[0].clone();
+        viewed.id = 1;
+        viewed.image_width = Some(10);
+        report.shared_changes.push(viewed);
+        let page = report.pages.len() - 1;
+        report.pages[page].screens[1].regions[0].shared = Some(1);
+        let mut images = crate::RenderImages {
+            shared: vec![(1, crate::RegionImages::default())],
+            variants: vec![(1, 1, crate::RegionImages::default())],
+            ..crate::RenderImages::default()
+        };
+        super::drop_unpictured(&mut report, Some(&mut images));
+        assert_eq!(report.shared_changes.len(), 1);
+        assert_eq!(report.shared_changes[0].id, 0);
+        let regions: Vec<_> = report.pages[page]
+            .screens
+            .iter()
+            .map(|s| s.regions[0].shared)
+            .collect();
+        assert_eq!(regions, [None, Some(0)]);
+        assert_eq!(images.shared.iter().map(|s| s.0).collect::<Vec<_>>(), [0]);
+        assert_eq!(
+            images
+                .variants
+                .iter()
+                .map(|v| (v.0, v.1))
+                .collect::<Vec<_>>(),
+            [(0, 1)]
+        );
     }
 }

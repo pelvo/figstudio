@@ -205,3 +205,72 @@ fn before_after_labels_sit_above_the_picture_never_on_it() {
     assert!(css.contains("#view-overlay:checked~.shell .cmp .bf{z-index:1;opacity:0"));
     assert!(css.contains("#view-overlay:checked~.shell .cmp:hover .bf"));
 }
+
+#[test]
+fn an_area_without_crop_pictures_shows_no_before_after_control() {
+    let mut report = report();
+    for region in &mut report.pages[0].screens[0].regions {
+        region.old_png = None;
+        region.new_png = None;
+    }
+    let html = render_html(&report);
+    assert!(!html.contains("class=\"cmp\" tabindex"), "{html}");
+    assert!(!html.contains("aria-label=\"Area"), "{html}");
+    // The area itself and where it is on the screen still show, its change lines take the
+    // whole row, and the whole-screen pictures stand in for the missing crops.
+    assert!(html.contains("class=\"loc\""));
+    assert_eq!(
+        html.matches("<article class=\"area bare\"").count(),
+        2,
+        "{html}"
+    );
+    assert!(html.contains(".area.bare .info{grid-column:1/-1}"));
+    assert!(html.contains("class=\"cmp thumbs\""), "{html}");
+    // One area folding into a shared card does not hide the screen pictures the others need.
+    report.pages[0].screens[0].regions[2].shared = Some(0);
+    report.shared_changes.push(figstudio_diff::SharedChange {
+        id: 0,
+        width: 30,
+        height: 40,
+        count: 2,
+        old_png: Some("render/shared-before.png".into()),
+        new_png: Some("render/shared-after.png".into()),
+        occurrences: Vec::new(),
+        component: None,
+        component_view: false,
+        image_width: Some(60),
+        image_height: Some(80),
+    });
+    let html = render_html(&report);
+    // The pair's own pictures, not the locator images on the area cards.
+    let pair = html
+        .split("<div class=\"cmp thumbs\"")
+        .nth(1)
+        .and_then(|rest| rest.split("</div>").next())
+        .unwrap_or_else(|| panic!("{html}"));
+    assert!(
+        pair.contains("aria-label=\"Screen: Before / After\""),
+        "{pair}"
+    );
+    assert!(pair.contains("src=\"./render/screen-after.png\""), "{pair}");
+    assert_eq!(
+        html.matches("<article class=\"area bare\"").count(),
+        2,
+        "{html}"
+    );
+    // With the other areas cropped again, the shared one alone does not add the pair.
+    for region in &mut report.pages[0].screens[0].regions[..2] {
+        region.old_png = Some("render/zoom-before.png".into());
+        region.new_png = Some("render/zoom-after.png".into());
+    }
+    let html = render_html(&report);
+    assert!(html.contains("src=\"./render/zoom-after.png\""), "{html}");
+    assert!(html.contains("src=\"./render/shared-after.png\""), "{html}");
+    for k in [1, 2] {
+        let label = format!("aria-label=\"Area {k}: Before / After\"");
+        assert!(html.contains(&label), "{html}");
+    }
+    assert!(!html.contains("class=\"cmp thumbs\""), "{html}");
+    // The label too, so renaming the class alone cannot hide a pair that is still drawn.
+    assert!(!html.contains("aria-label=\"Screen: Before"), "{html}");
+}

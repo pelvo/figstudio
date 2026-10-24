@@ -76,18 +76,29 @@ pub(crate) fn component_views(
         ..RenderImages::default()
     };
     let mut spent = Spent::default();
+    // Main components not drawn, split by whether the card keeps a changed-area crop.
+    let mut cards_skipped = (0, 0);
     for group in &mut report.shared_changes {
         let Some(id) = group.component.as_ref().map(|c| c.id) else {
             continue;
         };
-        let Some((region, pictures)) = draw(
+        let before = spent.skipped;
+        let drawn = draw(
             (&mut *old_renderer, &mut *new_renderer),
             docs,
             readers,
             opts,
             &mut spent,
             id,
-        ) else {
+        );
+        if spent.skipped > before {
+            if group.image_width.is_some() {
+                cards_skipped.0 += 1;
+            } else {
+                cards_skipped.1 += 1;
+            }
+        }
+        let Some((region, pictures)) = drawn else {
             continue;
         };
         group.component_view = true;
@@ -122,12 +133,72 @@ pub(crate) fn component_views(
         images.shared.push((group.id, kept.swap_remove(0)));
     }
     if spent.skipped > 0 {
-        report.truncated.push(format!(
-            "component view limit reached ({MAX_COMPONENT_VIEWS} components or \
-             {MAX_COMPONENT_VIEW_PIXELS} pixels); {} component views were not drawn, \
-             their cards keep the changed-area crop",
-            spent.skipped
-        ));
+        let variants_skipped = spent.skipped - cards_skipped.0 - cards_skipped.1;
+        report
+            .truncated
+            .push(limit_note(spent.skipped, cards_skipped, variants_skipped));
     }
     (!images.shared.is_empty()).then_some(images)
+}
+
+/// The component view limit note. A card whose component was drawn keeps that picture even
+/// when its variants are not; a card whose component was not drawn shows its changed-area
+/// crop, or is left out (by `drop_unpictured`) when no crop was kept.
+fn limit_note(skipped: usize, (cropped, cropless): (usize, usize), variants: usize) -> String {
+    let plural = crate::html::plural;
+    let mut why = Vec::new();
+    if cropped > 0 {
+        why.push(plural(
+            cropped,
+            "card shows the changed-area crop instead",
+            "cards show the changed-area crop instead",
+        ));
+    }
+    if cropless > 0 {
+        why.push(plural(
+            cropless,
+            "card with no crop kept is left out",
+            "cards with no crop kept are left out",
+        ));
+    }
+    if variants > 0 {
+        why.push(plural(
+            variants,
+            "other variant picture is left out",
+            "other variant pictures are left out",
+        ));
+    }
+    format!(
+        "component view limit reached ({MAX_COMPONENT_VIEWS} components or \
+         {MAX_COMPONENT_VIEW_PIXELS} pixels); {}: {}",
+        plural(
+            skipped,
+            "component view was not drawn",
+            "component views were not drawn"
+        ),
+        why.join("; ")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::limit_note;
+
+    #[test]
+    fn the_limit_note_says_what_happened_to_each_skipped_view() {
+        let note = limit_note(4, (1, 2), 1);
+        assert!(
+            note.ends_with(
+                "4 component views were not drawn: 1 card shows the changed-area crop \
+                 instead; 2 cards with no crop kept are left out; 1 other variant picture \
+                 is left out"
+            ),
+            "{note}"
+        );
+        let note = limit_note(1, (0, 1), 0);
+        assert!(
+            note.ends_with("1 component view was not drawn: 1 card with no crop kept is left out"),
+            "{note}"
+        );
+    }
 }

@@ -1,6 +1,6 @@
 //! Standalone screen comparison; canvas placement never enters the pixel mask.
 use crate::screen_limits::PageTally;
-use crate::shared::RegionKey;
+use crate::shared::{ComponentKey, RegionKey};
 use crate::shared_component::Masters;
 use crate::{PageDiff, RenderImages, RenderOpts, ScreenDiff, ScreenImages, ScreenStatus};
 use crate::{
@@ -18,10 +18,15 @@ pub(crate) struct ScreenRender {
     pub(crate) screen: ScreenDiff,
     pub(crate) pictures: ScreenImages,
     signatures: Vec<crate::shared::Signature>,
-    transforms: (Affine, Affine),
-    mask: Vec<bool>,
+    /// Per area, when the screen was drawn with [`Owners`]: the leaf layers that own its
+    /// changed pixels and the changed component it belongs to.
+    owners: Vec<(Vec<Guid>, Option<ComponentKey>)>,
     capped: bool,
 }
+
+/// A page screen's members and the page's components: what [`draw_screen`] needs to find,
+/// while it still holds the changed-pixel mask, which layers and component own each area.
+type Owners<'m, 'a> = (&'m [Guid], &'m mut Masters<'a>);
 
 /// Whether a root edit can change the screen's own picture. The screen is drawn in its own
 /// frame, so the root's whole `transform` (move, rotation, flip, scale) cancels out, and so
@@ -61,6 +66,7 @@ pub(crate) fn attach_screens(
     page.screens_moved = 0;
     let pairs = match_screens(docs.0, docs.1, page.id);
     let mut capped_any = false;
+    let mut uncropped = 0;
     let mut tally = PageTally::new(opts.screen_limits, doc_pixels);
     tally.keep_page(images);
     let members: Vec<_> = pairs
@@ -77,75 +83,46 @@ pub(crate) fn attach_screens(
             })
         })
         .collect();
-    // Draw order: screens with change lines, then screens with other edits that can change
-    // their picture (a moved layer, a resized root: no line), then the rest, which are usually
-    // unchanged. A root moved on the canvas does not change its own picture; a recreated
-    // screen (new ids) may, as its paired children are compared by pixels only. Screens that
-    // turn out unchanged cannot use up the screen caps first; the report keeps document order.
-    let root =
-        |i: usize, id: &figstudio_fig::Guid| Some(*id) == pairs[i].old || Some(*id) == pairs[i].new;
-    let root_edited = |id: &figstudio_fig::Guid| {
+    // First pass: draw each screen and find what changed. The screen caps are spent in draw
+    // order, so screens with change lines go first, then screens with an edit that can change
+    // their own picture (a layer inside it, a resized root, a recreated screen), then the
+    // rest. Only the caps depend on this guess; crops are shared by what was drawn.
+    let root = |i: usize, id: &Guid| Some(*id) == pairs[i].old || Some(*id) == pairs[i].new;
+    let root_redrawn = |id: &Guid| {
         page.changed
             .iter()
             .find(|n| n.id == *id)
             .is_some_and(|n| n.changes.iter().any(|c| can_redraw_root(&c.field)))
     };
-    let inner = |i: usize| {
+    let drawing = |i: usize| {
         pairs[i].matched_by == Some(MatchBy::NameSize)
-            || members[i].iter().any(|id| !root(i, id) || root_edited(id))
-    };
-    let tier = |i: usize| match (has_lines[i], inner(i)) {
-        (true, _) => 0,
-        (false, true) => 1,
-        (false, false) => 2,
+            || members[i].iter().any(|id| !root(i, id) || root_redrawn(id))
     };
     let mut order: Vec<usize> = (0..pairs.len()).collect();
-    order.sort_by_key(|&i| (tier(i), i));
-    // Only screens present on both sides crop. Each tier splits what is left of the budget
-    // among its own screens, so likely-unchanged screens drawn later cannot dilute the share
-    // of a known change; their unused shares carry forward.
-    let crops = |pair: &ScreenPair| pair.old.is_some() && pair.new.is_some();
-    let mut croppers_left = [0usize; 3];
-    for (i, pair) in pairs.iter().enumerate() {
-        croppers_left[tier(i)] += usize::from(crops(pair));
-    }
+    order.sort_by_key(|&i| (!has_lines[i], !drawing(i), i));
+    let mut drawn: Vec<(usize, DrawnScreen)> = Vec::new();
     let mut kept: Vec<(usize, ScreenDiff, ScreenImages, Vec<RegionKey>)> = Vec::new();
     for index in order {
         let pair = pairs[index];
-        let Some(node) = pair
-            .new
-            .and_then(|id| docs.1.node(id))
-            .or_else(|| pair.old.and_then(|id| docs.0.node(id)))
-        else {
+        let exists = |doc: &Document, id: Option<Guid>| id.and_then(|i| doc.node(i)).is_some();
+        if !exists(docs.1, pair.new) && !exists(docs.0, pair.old) {
             continue;
-        };
-        let moved = crate::screen_model::moved(docs, pair);
-        let nodes = members[index].clone();
+        }
         let (_, w, h, _) = dimensions(docs, pair);
         let over = !tally.admit(u64::from(w) * u64::from(h) * 2);
-        let share = if crops(&pair) {
-            let left = &mut croppers_left[tier(index)];
-            let share = crop_budget / (*left).max(1);
-            *left = left.saturating_sub(1);
-            share
-        } else {
-            0
-        };
-        let mut available = share;
-        let rendered = if over {
+        let screen = if over {
             None
         } else {
-            render_screen(
+            draw_screen(
                 (&mut *old_renderer, &mut *new_renderer),
                 docs,
                 pair,
                 readers,
                 opts,
-                &mut available,
-                false,
+                (false, Some((&members[index][..], &mut *masters))),
             )
         };
-        let Some(result) = rendered else {
+        let Some(screen) = screen else {
             if !over {
                 notes.push(format!("page {} screen rendering unavailable", page.id));
             }
@@ -157,40 +134,74 @@ pub(crate) fn attach_screens(
             }
             continue;
         };
+        if pair.old.is_some() && pair.new.is_some() && screen.pixels == 0 && !has_lines[index] {
+            page.screens_unchanged += 1;
+            page.screens_moved += usize::from(crate::screen_model::moved(docs, pair));
+            continue;
+        }
+        // Only pictures that stay in `images` count toward the page byte cap.
+        tally.keep(&screen.pictures);
+        drawn.push((index, screen));
+    }
+    // Second pass, in document order: only screens with changed areas on both sides cut
+    // crops, so they split the crop budget among themselves; unused shares carry forward.
+    drawn.sort_by_key(|(index, _)| *index);
+    let mut croppers_left = drawn
+        .iter()
+        .filter(|(index, screen)| crops(pairs[*index], screen))
+        .count();
+    for (index, screen) in drawn {
+        let pair = pairs[index];
+        let cuts = crops(pair, &screen);
+        croppers_left -= usize::from(cuts);
+        // Crop pictures count toward the page byte cap too: once it is reached, later
+        // screens keep their whole-screen pictures and their areas but cut no crops.
+        let full = cuts && tally.bytes_full();
+        uncropped += usize::from(full);
+        let share = if cuts && !full {
+            crop_budget / (croppers_left + 1)
+        } else {
+            0
+        };
+        let mut available = share;
         let ScreenRender {
             mut screen,
-            pictures,
+            mut pictures,
             signatures: region_signatures,
-            transforms,
-            mask,
+            owners,
             capped,
-        } = result;
+        } = finish_screen(
+            (&mut *old_renderer, &mut *new_renderer),
+            docs,
+            pair,
+            readers,
+            opts,
+            (!full).then_some(&mut available),
+            screen,
+        );
         crop_budget -= share - available;
         capped_any |= capped;
-        screen.moved = moved;
-        for region in &mut screen.regions {
+        let regions = std::mem::take(&mut pictures.regions);
+        let crops_only = ScreenImages {
+            regions,
+            ..ScreenImages::default()
+        };
+        tally.keep(&crops_only);
+        pictures.regions = crops_only.regions;
+        screen.moved = crate::screen_model::moved(docs, pair);
+        let nodes = members[index].clone();
+        let mut components = Vec::with_capacity(owners.len());
+        for (region, (owners, component)) in screen.regions.iter_mut().zip(owners) {
             // Layers mostly inside the area, plus the leaf layers that own its changed pixels
             // (a small change inside a wider layer), in member order.
-            let owners = screen_bounds::containing_leaves(
-                region,
-                &nodes,
-                docs,
-                pair,
-                (transforms, (&mask, screen.width as usize)),
-            );
             region.nodes = nodes
                 .iter()
                 .copied()
                 .filter(|id| region.nodes.contains(id) || owners.contains(id))
                 .collect();
+            components.push(component);
         }
         screen.nodes = nodes;
-        let components = masters.keys(
-            (pair.old, pair.new),
-            transforms,
-            &screen.regions,
-            (&mask, screen.width as usize),
-        );
         let region_keys: Vec<_> = region_signatures
             .into_iter()
             .zip(components)
@@ -199,19 +210,14 @@ pub(crate) fn attach_screens(
                 component,
             })
             .collect();
-        if pair.old.is_some()
-            && pair.new.is_some()
-            && screen.pixels_changed == Some(0)
-            && !has_lines[index]
+        if let Some(node) = pair
+            .new
+            .and_then(|id| docs.1.node(id))
+            .or_else(|| pair.old.and_then(|id| docs.0.node(id)))
         {
-            page.screens_unchanged += 1;
-            page.screens_moved += usize::from(moved);
-            continue;
+            screen.name.clone_from(&node.name);
+            screen.kind.clone_from(&node.kind);
         }
-        // Only pictures that stay in `images` count toward the page byte cap.
-        tally.keep(&pictures);
-        screen.name.clone_from(&node.name);
-        screen.kind.clone_from(&node.kind);
         kept.push((index, screen, pictures, region_keys));
     }
     kept.sort_by_key(|(index, ..)| *index);
@@ -221,6 +227,15 @@ pub(crate) fn attach_screens(
         signatures.push(region_keys);
     }
     notes.extend(tally.note(page.id));
+    if uncropped > 0 {
+        // Their areas may still fold into a shared card with another screen's crop, so the
+        // note says only what was left out.
+        notes.push(format!(
+            "page {} picture byte limit reached; crops left out for {}",
+            page.id,
+            crate::html::plural(uncropped, "screen", "screens")
+        ));
+    }
     if capped_any {
         notes.push(format!(
             "page {} screen/crops capped by side, pixel budget or region limit",
@@ -228,6 +243,11 @@ pub(crate) fn attach_screens(
         ));
     }
     signatures
+}
+
+/// Whether a drawn screen cuts crops: both sides exist and something changed.
+fn crops(pair: ScreenPair, screen: &DrawnScreen) -> bool {
+    pair.old.is_some() && pair.new.is_some() && !screen.regions.is_empty()
 }
 
 pub(crate) fn dimensions(docs: (&Document, &Document), pair: ScreenPair) -> (f64, u32, u32, bool) {
@@ -254,6 +274,25 @@ pub(crate) fn dimensions(docs: (&Document, &Document), pair: ScreenPair) -> (f64
     (scale, width, height, scale < 1.0)
 }
 
+/// A screen drawn on both sides and compared, before any crop is cut.
+pub(crate) struct DrawnScreen {
+    scale: f64,
+    width: u32,
+    height: u32,
+    capped: bool,
+    transforms: (Affine, Affine),
+    /// Changed areas, before crops are cut; `signatures` has one per area, and so has
+    /// `owners` when the screen was drawn with [`Owners`]. The mask itself is not kept
+    /// between the two passes.
+    regions: Vec<crate::Region>,
+    signatures: Vec<crate::shared::Signature>,
+    owners: Vec<(Vec<Guid>, Option<ComponentKey>)>,
+    /// Every changed pixel, including specks left out of the areas.
+    pixels: u64,
+    /// The whole-screen pictures; crops are added by [`finish_screen`].
+    pictures: ScreenImages,
+}
+
 /// `merge` folds all changed areas into one box (a component's single Before | After).
 pub(crate) fn render_screen(
     renderers: (&mut Renderer, &mut Renderer),
@@ -264,6 +303,37 @@ pub(crate) fn render_screen(
     remaining: &mut usize,
     merge: bool,
 ) -> Option<ScreenRender> {
+    let (old, new) = renderers;
+    let drawn = draw_screen(
+        (&mut *old, &mut *new),
+        docs,
+        pair,
+        readers,
+        opts,
+        (merge, None),
+    )?;
+    Some(finish_screen(
+        (old, new),
+        docs,
+        pair,
+        readers,
+        opts,
+        Some(remaining),
+        drawn,
+    ))
+}
+
+/// Draws both sides of a screen in its own frame and finds the changed areas. The frames
+/// and the mask are dropped once the pictures are encoded and the areas' signatures (and,
+/// with [`Owners`], their owners) taken. `merge` folds all areas into one box.
+fn draw_screen(
+    renderers: (&mut Renderer, &mut Renderer),
+    docs: (&Document, &Document),
+    pair: ScreenPair,
+    readers: (ImageReader<'_>, ImageReader<'_>),
+    opts: &RenderOpts,
+    (merge, annotate): (bool, Option<Owners<'_, '_>>),
+) -> Option<DrawnScreen> {
     let (scale, width, height, mut capped) = dimensions(docs, pair);
     let local = |doc: &Document, id: Option<Guid>| {
         id.map_or(Affine::IDENTITY, |i| absolute_transform(doc, i).inverse())
@@ -318,8 +388,71 @@ pub(crate) fn render_screen(
     }
     capped |= regions.len() > crate::MAX_REGIONS;
     regions.truncate(crate::MAX_REGIONS);
-    let mut crops = Vec::new();
-    if let (Some(a), Some(b)) = (pair.old, pair.new) {
+    if pair.old.is_none() || pair.new.is_none() {
+        regions.clear();
+    }
+    let signatures = crate::shared::signatures(&regions, &mask, width, &before, &after);
+    let owners = annotate.map_or_else(Vec::new, |(members, masters)| {
+        let mask = (&mask[..], width as usize);
+        let components = masters.keys((pair.old, pair.new), transforms, &regions, mask);
+        regions
+            .iter()
+            .zip(components)
+            .map(|(region, component)| {
+                let leaves = screen_bounds::containing_leaves(
+                    region,
+                    members,
+                    docs,
+                    pair,
+                    (transforms, mask),
+                );
+                (leaves, component)
+            })
+            .collect()
+    });
+    Some(DrawnScreen {
+        scale,
+        width,
+        height,
+        capped,
+        transforms,
+        regions,
+        signatures,
+        pixels,
+        owners,
+        pictures: ScreenImages {
+            before: before.as_ref().and_then(|f| encode(f, opts.format)),
+            after: after.as_ref().and_then(|f| encode(f, opts.format)),
+            regions: Vec::new(),
+        },
+    })
+}
+
+/// Cuts the drawn screen's crops from `remaining` (`None`: keep the areas, cut no crops)
+/// and attaches the layers in each area. An area whose crop could not be cut is dropped,
+/// so the screen ends with one crop per area, in order, or none.
+fn finish_screen(
+    renderers: (&mut Renderer, &mut Renderer),
+    docs: (&Document, &Document),
+    pair: ScreenPair,
+    readers: (ImageReader<'_>, ImageReader<'_>),
+    opts: &RenderOpts,
+    remaining: Option<&mut usize>,
+    drawn: DrawnScreen,
+) -> ScreenRender {
+    let DrawnScreen {
+        scale,
+        width,
+        height,
+        mut capped,
+        transforms,
+        mut regions,
+        mut signatures,
+        mut owners,
+        pixels,
+        mut pictures,
+    } = drawn;
+    if let (Some(a), Some(b), Some(remaining)) = (pair.old, pair.new, remaining) {
         let result = crate::render_crops::render_crops(
             renderers,
             docs,
@@ -329,25 +462,31 @@ pub(crate) fn render_screen(
             (transforms, scale, opts.format, (width, height)),
             remaining,
         );
-        regions = result.0;
-        crops = result.1;
-        capped |= result.2;
-    } else {
-        regions.clear();
+        let (kept, crops, crops_capped, indices) = result;
+        regions = kept;
+        pictures.regions = crops;
+        capped |= crops_capped;
+        let mut all = signatures.into_iter().map(Some).collect::<Vec<_>>();
+        signatures = indices.iter().filter_map(|&i| all[i].take()).collect();
+        if !owners.is_empty() {
+            let mut all = owners.into_iter().map(Some).collect::<Vec<_>>();
+            owners = indices.iter().filter_map(|&i| all[i].take()).collect();
+        }
     }
-    let signatures = crate::shared::signatures(&regions, &mask, width, &before, &after);
     // Membership is restricted to each side's subtree, never to overlapping screens.
     let ids = crate::screen_bounds::subtree(docs.0, pair.old)
         .union(&crate::screen_bounds::subtree(docs.1, pair.new))
         .copied()
         .collect::<Vec<_>>();
     screen_bounds::region_nodes(&mut regions, &ids, docs, pair, transforms, (width, height));
+    // `render_files` pairs `screen.regions` with these crops by position.
+    debug_assert!(pictures.regions.is_empty() || pictures.regions.len() == regions.len());
     let status = match (pair.old, pair.new) {
         (None, _) => ScreenStatus::Added,
         (_, None) => ScreenStatus::Removed,
         _ => ScreenStatus::Changed,
     };
-    Some(ScreenRender {
+    ScreenRender {
         screen: ScreenDiff {
             old_id: pair.old,
             new_id: pair.new,
@@ -364,18 +503,12 @@ pub(crate) fn render_screen(
             regions,
             nodes: Vec::new(),
         },
-        pictures: ScreenImages {
-            before: before.as_ref().and_then(|f| encode(f, opts.format)),
-            after: after.as_ref().and_then(|f| encode(f, opts.format)),
-            regions: crops,
-        },
+        pictures,
         signatures,
-        transforms,
-        mask,
+        owners,
         capped,
-    })
+    }
 }
-
 #[cfg(test)]
 mod tests {
     use super::can_redraw_root;

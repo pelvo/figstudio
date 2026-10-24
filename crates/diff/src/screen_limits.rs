@@ -8,7 +8,10 @@ pub struct ScreenLimits {
     pub page_screens: usize,
     /// Pixels (both sides) drawn for standalone screens across the whole document.
     pub document_pixels: u64,
-    /// Encoded picture bytes one page may hold in memory before the sink takes them.
+    /// Encoded picture bytes one page may hold in memory before the sink takes them. It is
+    /// checked before each screen is drawn and before its crops are cut, so one step can
+    /// pass it: a drawn screen's whole-screen pictures, or, while those fit, one screen's
+    /// crops (later crops are then left out).
     pub page_bytes: usize,
 }
 
@@ -58,6 +61,11 @@ impl<'a> PageTally<'a> {
             *self.doc_pixels += cost;
         }
         !over
+    }
+
+    /// Whether the pictures this page holds have reached the byte cap.
+    pub(crate) fn bytes_full(&self) -> bool {
+        self.bytes >= self.limits.page_bytes
     }
 
     /// Counts the whole-page pictures already held for this page.

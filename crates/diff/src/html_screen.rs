@@ -2,7 +2,7 @@
 use crate::html::{escape, plural};
 use crate::html_changes::PageLines;
 use crate::html_lines::{ChangeLine, count_lines, render_lines};
-use crate::html_pictures::{compare, locator, picture};
+use crate::html_pictures::{compare, locator, picture, relative_link};
 use crate::{Region, ScreenDiff, ScreenStatus, SharedChange};
 use std::{collections::BTreeSet, fmt::Write};
 
@@ -31,6 +31,14 @@ pub(crate) fn screen_lines<'a>(
         screen.nodes.contains(&l.id)
             && crate::screen_model::counts(l, screen.matched_by, (screen.old_id, screen.new_id))
     })
+}
+
+/// Whether an area has a picture of its own, or folds into a shared card that has one.
+fn pictured(region: &Region) -> bool {
+    region.shared.is_some()
+        || [&region.old_png, &region.new_png]
+            .iter()
+            .any(|p| p.as_deref().is_some_and(relative_link))
 }
 
 pub(crate) fn only_shared(screen: &ScreenDiff, lines: &PageLines) -> bool {
@@ -101,9 +109,10 @@ pub(crate) fn screen_section(
         return;
     }
     out.push_str("</div>");
-    if screen.regions.is_empty() {
+    if screen.regions.is_empty() || !screen.regions.iter().all(pictured) {
         // Layer edits that draw nothing at this scale (clipped, hidden, sub-pixel) still get
-        // a picture of the screen, so the reader can see why no area is boxed.
+        // a picture of the screen, so the reader can see why no area is boxed; so does any
+        // area shown here that was kept without its crops (the page byte cap).
         no_visible_change(out, screen);
     }
     let groups: BTreeSet<_> = screen.regions.iter().filter_map(|r| r.shared).collect();
@@ -138,7 +147,12 @@ pub(crate) fn screen_section(
     for (j, region) in full {
         let j = j + 1;
         let selected = || area_lines().filter(|l| region.nodes.contains(&l.id));
-        let _ = write!(out, "<article class=\"area\" id=\"page-{n}-s{k}-a{j}\">");
+        // Without a Before/After control the change lines take the whole row.
+        let bare = if pictured(region) { "" } else { " bare" };
+        let _ = write!(
+            out,
+            "<article class=\"area{bare}\" id=\"page-{n}-s{k}-a{j}\">"
+        );
         area_heading(out, region, j, count_lines(selected()));
         compare(out, region, j);
         out.push_str("<div class=\"info\">");

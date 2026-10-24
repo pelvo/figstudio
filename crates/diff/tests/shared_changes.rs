@@ -86,7 +86,7 @@ fn repeated_change_ignores_unchanged_background_and_renders_once() {
     }
     let html = render_html(&report);
     assert_eq!(html.matches("Shared change #1</a>").count(), 2);
-    assert!(!html.contains("class=\"area\""));
+    assert!(!html.contains("<article class=\"area"));
     assert!(!html.contains("class=\"mini\""));
     assert!(html.contains("Appears in 2 screens on 2 pages"));
     assert!(html.contains("href=\"#page-0-s1\""));
@@ -107,7 +107,7 @@ fn distinct_shared_changes_keep_unrelated_area_and_order_is_deterministic() {
     assert_eq!(groups[0]["occurrences"][0]["region_index"], 0);
     assert_eq!(groups[1]["occurrences"][0]["region_index"], 1);
     let html = render_html(&report);
-    assert_eq!(html.matches("class=\"area\"").count(), 1);
+    assert_eq!(html.matches("<article class=\"area").count(), 1);
     assert_eq!(html.matches("Shared change #1</a>").count(), 2);
     assert_eq!(html.matches("Shared change #2</a>").count(), 2);
     assert_eq!(report, rendered(true));
@@ -128,7 +128,7 @@ fn grouped_region_lines_stay_in_other_changes_even_if_their_bounds_span_another_
         .push(shared_node);
     let html = render_html(&report);
     let area = html
-        .split("<article class=\"area\"")
+        .split("<article class=\"area")
         .nth(1)
         .unwrap()
         .split("</article>")
