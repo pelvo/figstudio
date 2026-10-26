@@ -6,8 +6,19 @@
 //! not install also updates itself: it downloads the release's app zip and `SHA256SUMS`,
 //! checks the zip's SHA-256, unpacks it with `ditto` (as the release workflow packs it),
 //! checks the bundle's signature and version, then swaps it in place of the running bundle.
-//! A restart starts the new one. Homebrew installs are told to use `brew upgrade` (a swapped
-//! bundle would leave the cask's record behind); everything else gets the release page.
+//! The old bundle stays in a hidden `.figstudio-update-*` folder beside it until the next
+//! launch (or install) removes it, so the running copy keeps its files. A restart starts the
+//! new one. Homebrew installs (the running bundle is the one a `Caskroom/figstudio/<version>`
+//! link points to) are told to use `brew upgrade`, as a swapped bundle would leave the cask's
+//! record behind; a copy macOS runs from App Translocation (started from a quarantined
+//! download) is told to move to Applications first; everything else gets the release page.
+//!
+//! Trust: `SHA256SUMS` comes from the same release as the zip, so it catches a corrupt or
+//! partial download, not a release whose assets were replaced. `codesign --verify` on an
+//! ad-hoc signature only shows the bundle is consistent with itself (anyone can ad-hoc
+//! sign), and the download carries no quarantine flag, so Gatekeeper does not assess it.
+//! The trust root is TLS to GitHub plus whoever can upload release assets; artifact
+//! attestations or a signing key built into the app would add a check of their own.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -299,6 +310,9 @@ pub enum Route {
     Bundle(PathBuf),
     /// Installed with Homebrew: `brew upgrade --cask figstudio`.
     Homebrew,
+    /// Run from App Translocation (a quarantined copy started where it was downloaded):
+    /// macOS runs it from a read-only folder, so it must be moved to Applications first.
+    Translocated,
     /// Anything else: the release page.
     Manual,
 }
@@ -313,23 +327,91 @@ fn find_route() -> Route {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         return Route::Manual;
     }
-    let Some(bundle) = std::env::current_exe()
+    let bundle = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .ok()
-        .and_then(|exe| bundle_of(&exe))
-    else {
+        .and_then(|exe| bundle_of(&exe));
+    route_for(bundle, &caskrooms())
+}
+
+/// Homebrew's cask folders: `HOMEBREW_PREFIX` (when set) and the two default prefixes.
+fn caskrooms() -> Vec<PathBuf> {
+    std::env::var_os("HOMEBREW_PREFIX")
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(["/opt/homebrew", "/usr/local"].map(PathBuf::from))
+        .map(|prefix| prefix.join("Caskroom"))
+        .collect()
+}
+
+/// How the bundle at `bundle` (canonical) can be updated, with Homebrew's cask folders at
+/// `caskrooms`.
+fn route_for(bundle: Option<PathBuf>, caskrooms: &[PathBuf]) -> Route {
+    let Some(bundle) = bundle else {
         return Route::Manual;
     };
-    let brew = [
-        "/opt/homebrew/Caskroom/figstudio",
-        "/usr/local/Caskroom/figstudio",
-    ];
-    if brew.iter().any(|p| Path::new(p).exists()) {
+    if bundle
+        .components()
+        .any(|c| c.as_os_str() == "AppTranslocation")
+    {
+        Route::Translocated
+    } else if cask_owns(&bundle, caskrooms) {
         Route::Homebrew
     } else {
         Route::Bundle(bundle)
     }
 }
+
+/// Whether a figstudio cask installed `bundle`: each `Caskroom/figstudio/<version>/
+/// figstudio.app` is a link to where the cask put the app (any `--appdir`). Another copy
+/// on a machine with the cask (a local build, one in Downloads) is not the cask's.
+fn cask_owns(bundle: &Path, caskrooms: &[PathBuf]) -> bool {
+    caskrooms
+        .iter()
+        .filter_map(|room| std::fs::read_dir(room.join("figstudio")).ok())
+        .flatten()
+        .flatten()
+        .filter_map(|version| std::fs::canonicalize(version.path().join("figstudio.app")).ok())
+        .any(|installed| installed == bundle)
+}
+
+/// Removes the hidden `.figstudio-update-*` folders in `folder` that an install left (the
+/// replaced bundle kept until now, or a download that was cut off). Returns how many went.
+fn clean_staging(folder: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name().to_string_lossy().starts_with(STAGING)
+                && e.file_type().is_ok_and(|t| t.is_dir())
+        })
+        .filter(|e| std::fs::remove_dir_all(e.path()).is_ok())
+        .count()
+}
+
+/// At launch, off the UI thread: removes what the last install left beside this bundle
+/// (the bundle it replaced). Nothing happens for other routes.
+pub fn clean_up_at_launch() {
+    let Route::Bundle(bundle) = route() else {
+        return;
+    };
+    let Some(folder) = bundle.parent().map(Path::to_path_buf) else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("figstudio-update-cleanup".into())
+        .spawn(move || {
+            let removed = clean_staging(&folder);
+            if removed > 0 {
+                tracing::info!(removed, "removed what the last update left");
+            }
+        });
+}
+
+/// The start of the hidden staging folders' names, beside the app.
+const STAGING: &str = ".figstudio-update-";
 
 fn client() -> anyhow::Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
@@ -361,10 +443,12 @@ fn install(release: &Release, bundle: &Path, got: &AtomicU64) -> anyhow::Result<
         bail!("this release has no macOS app to install");
     };
     let folder = bundle.parent().context("the app has no folder")?;
+    // A download that was cut off, or a replaced bundle the last launch did not remove.
+    clean_staging(folder);
     // In the app's own folder so the final move is a rename on one volume; this also fails
     // early when the folder is not writable.
     let staging = tempfile::Builder::new()
-        .prefix(".figstudio-update-")
+        .prefix(STAGING)
         .tempdir_in(folder)
         .with_context(|| format!("cannot write to {}", folder.display()))?;
     let http = client()?;
@@ -423,9 +507,15 @@ fn install(release: &Release, bundle: &Path, got: &AtomicU64) -> anyhow::Result<
             release.version
         );
     }
-    swap(&new, bundle, &staging.path().join("old.app"))
-        .with_context(|| format!("could not replace {}", bundle.display()))?;
-    // `staging` (the old bundle and the zip) goes when it drops.
+    swap(&new, bundle, &staging.path().join("old.app")).with_context(|| {
+        format!(
+            "could not replace {} (download it from the release page instead)",
+            bundle.display()
+        )
+    })?;
+    // The replaced bundle is the running one: it stays until the next launch removes it
+    // (`clean_up_at_launch`), so this copy keeps its files and there is a way back.
+    let _ = staging.keep();
     Ok(())
 }
 
@@ -517,21 +607,28 @@ impl Updater {
         }
     }
 
-    /// Checks once per launch when `on` (Settings → About's switch). A release at
-    /// `skipped` ("Don't remind me of this version again") opens no popup then.
+    /// The check at start: decided once, on the first frame. When `on` (Settings → About's
+    /// switch) it checks; turning the switch on later waits for the next launch, as its
+    /// label says. A release at `skipped` ("Don't remind me of this version again") opens
+    /// no popup from this check.
     pub fn at_start(&mut self, on: bool, skipped: &str, ctx: &egui::Context) {
-        if on && !self.started {
-            self.started = true;
-            self.check(ctx);
+        if self.started {
+            return;
+        }
+        self.started = true;
+        // Only a check that started here is the one at start (a Check now still running
+        // keeps its own rules).
+        if on && self.check(ctx) {
             self.auto = true;
             self.skipped = Version::parse(skipped).ok();
         }
     }
 
-    /// Checks now (Check now): a newer release always opens its popup.
-    pub fn check(&mut self, ctx: &egui::Context) {
+    /// Checks now (Check now): a newer release always opens its popup. Returns whether a
+    /// check started (not while another check or an install runs).
+    pub fn check(&mut self, ctx: &egui::Context) -> bool {
         if self.busy() {
-            return;
+            return false;
         }
         self.auto = false;
         self.state = State::Checking;
@@ -540,6 +637,7 @@ impl Updater {
             Ok(None) => State::UpToDate,
             Err(e) => State::Failed(format!("{e:#}")),
         });
+        self.busy()
     }
 
     pub fn install(&mut self, bundle: PathBuf, ctx: &egui::Context) {
@@ -880,6 +978,110 @@ mod tests {
             "a newer one than skipped"
         );
         assert!(opens(true, None));
+    }
+
+    #[test]
+    fn the_check_at_start_is_decided_on_the_first_frame() {
+        let ctx = egui::Context::default();
+        // Off at start: turning the switch on later does not check in this session.
+        let mut updater = Updater::new(true);
+        updater.at_start(false, "", &ctx);
+        updater.at_start(true, "", &ctx);
+        assert!(!updater.busy(), "no check until the next launch");
+        assert_eq!(updater.state, State::Idle);
+    }
+
+    #[test]
+    fn a_check_now_still_running_is_not_taken_for_the_check_at_start() {
+        let ctx = egui::Context::default();
+        let json = list(&[release("v9.0.0", &[])]);
+        let found = newer_release(&json, &Version::new(0, 2, 0))
+            .ok()
+            .flatten()
+            .expect("newer");
+        let mut updater = Updater::new(true);
+        // A Check now in flight (its reply held back until the check at start has run).
+        let (go, wait) = mpsc::channel::<()>();
+        updater.state = State::Checking;
+        updater.spawn(&ctx, move || {
+            let _ = wait.recv();
+            State::Available(found)
+        });
+        updater.at_start(true, "9.0.0", &ctx);
+        assert!(!updater.auto && updater.skipped.is_none());
+        let _ = go.send(());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while updater.poll(&ctx).is_none() {
+            assert!(std::time::Instant::now() < deadline, "the job never ended");
+            std::thread::yield_now();
+        }
+        assert!(
+            updater.notes_open,
+            "Check now shows even the skipped version"
+        );
+    }
+
+    // Homebrew's version folders hold symbolic links (macOS; any Unix for the test).
+    #[cfg(unix)]
+    #[test]
+    fn the_route_follows_the_running_bundle() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = std::fs::canonicalize(dir.path())?;
+        let app = |folder: &str| -> std::io::Result<PathBuf> {
+            let path = root.join(folder).join("figstudio.app");
+            std::fs::create_dir_all(&path)?;
+            Ok(path)
+        };
+        let applications = app("Applications")?;
+        let elsewhere = app("Custom")?;
+        let downloads = app("Downloads")?;
+        let rooms = [root.join("Caskroom")];
+        assert_eq!(
+            route_for(Some(applications.clone()), &rooms),
+            Route::Bundle(applications.clone()),
+            "no cask installed"
+        );
+        let link = root.join("Caskroom/figstudio/0.1.0");
+        std::fs::create_dir_all(&link)?;
+        std::os::unix::fs::symlink(&applications, link.join("figstudio.app"))?;
+        assert_eq!(
+            route_for(Some(applications.clone()), &rooms),
+            Route::Homebrew
+        );
+        // Another copy on a machine with the cask is not the cask's.
+        assert_eq!(
+            route_for(Some(downloads.clone()), &rooms),
+            Route::Bundle(downloads)
+        );
+        // A cask installed with another --appdir links there.
+        let link = root.join("Caskroom/figstudio/0.2.0");
+        std::fs::create_dir_all(&link)?;
+        std::os::unix::fs::symlink(&elsewhere, link.join("figstudio.app"))?;
+        assert_eq!(route_for(Some(elsewhere), &rooms), Route::Homebrew);
+        let moved = PathBuf::from("/private/var/folders/x/T/AppTranslocation/0000/d/figstudio.app");
+        assert_eq!(route_for(Some(moved), &rooms), Route::Translocated);
+        assert_eq!(route_for(None, &rooms), Route::Manual);
+        Ok(())
+    }
+
+    #[test]
+    fn only_the_update_staging_folders_are_cleaned() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let left = dir.path().join(".figstudio-update-abc123");
+        std::fs::create_dir_all(left.join("old.app/Contents"))?;
+        std::fs::create_dir_all(dir.path().join("figstudio.app"))?;
+        std::fs::create_dir_all(dir.path().join("Other.app"))?;
+        std::fs::write(
+            dir.path().join(".figstudio-update-note"),
+            "a file, not ours",
+        )?;
+        assert_eq!(clean_staging(dir.path()), 1);
+        assert!(!left.exists());
+        assert!(dir.path().join("figstudio.app").exists());
+        assert!(dir.path().join("Other.app").exists());
+        assert!(dir.path().join(".figstudio-update-note").exists());
+        assert_eq!(clean_staging(&dir.path().join("missing")), 0);
+        Ok(())
     }
 
     #[test]

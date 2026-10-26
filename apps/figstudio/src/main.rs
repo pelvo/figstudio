@@ -595,6 +595,12 @@ impl App {
             access.remote_addr.clone_from(&app.prefs.agents.remote_addr);
         }
         app.restore_workspace(workspace, files);
+        // What the last install left beside the app (the bundle it replaced). Tests never
+        // touch the app's folder.
+        #[cfg(not(target_arch = "wasm32"))]
+        if !cfg!(test) {
+            update::clean_up_at_launch();
+        }
         app
     }
 

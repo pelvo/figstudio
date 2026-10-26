@@ -56,6 +56,12 @@ pub(crate) fn offer(route: &Route, release: &Release) -> Offer {
             lead: "Installed with Homebrew: copy the brew command, or download it from the ",
             action: Some(("Copy brew command", Ask::CopyBrew)),
         },
+        (Route::Translocated, _) => Offer {
+            note: "Move figstudio to Applications to install updates from here".to_owned(),
+            lead: "Move figstudio to Applications to install updates from here, or download \
+                   it from the ",
+            action: None,
+        },
         _ => Offer {
             note: "Download it from the release page".to_owned(),
             lead: "Download it from the ",
@@ -67,7 +73,9 @@ pub(crate) fn offer(route: &Route, release: &Release) -> Offer {
 impl App {
     pub(crate) fn update_ask(&mut self, ask: Ask, ctx: &egui::Context) {
         match ask {
-            Ask::Check => self.updater.check(ctx),
+            Ask::Check => {
+                self.updater.check(ctx);
+            }
             Ask::Notes => self.updater.notes_open = true,
             Ask::Install(bundle) => self.updater.install(bundle, ctx),
             Ask::Open(page) => {
