@@ -57,8 +57,10 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   WRANGLER: wrangler@4.151.2
-  # google/fonts commit for the symbol, math and emoji faces (see the Fonts step).
+  # Font inputs (see the Fonts step): google/fonts and notofonts/noto-cjk commits, fontTools.
   FONTS_COMMIT: 823468bd7825152bce2b8fd2cf740432ad2fce8d
+  CJK_COMMIT: 165c01b46ea533872e002e0785ff17e44f6d97d8
+  FONTTOOLS: fonttools==4.65.0
 
 jobs:
   build:
@@ -109,25 +111,29 @@ jobs:
           tar -xzf "$a.tar.gz"
           echo "$RUNNER_TEMP/$a" >> "$GITHUB_PATH"
       - name: Fonts
-        # Noto Sans CJK and fontTools for scripts/web-font.sh come from Ubuntu. The faces
-        # web-symbol-font.py needs come from google/fonts at FONTS_COMMIT, checked by SHA-256:
-        # Ubuntu 24.04 ships a 2020 Symbols 2 (family "Noto Sans Symbols2", which the script
-        # rejects) and only the colour emoji font, not the outline Noto Emoji.
+        # Every face comes from upstream at a fixed commit, checked by SHA-256, and fontTools
+        # from PyPI at a fixed version. No apt: installing fonts-noto-cjk took 16 minutes on
+        # one run, and Ubuntu 24.04's Symbols 2 is a 2020 build named "Noto Sans Symbols2",
+        # which web-symbol-font.py rejects (it also has no outline Noto Emoji).
+        # NotoSansCJK-Regular.ttc is the Sans 2.004 collection, the same file as the distro
+        # packages (web-font.sh uses its faces 0..4 and checks each face name).
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fonts-noto-cjk fonttools
+          python3 -m venv "$RUNNER_TEMP/fonttools"
+          "$RUNNER_TEMP/fonttools/bin/pip" install -q --disable-pip-version-check "$FONTTOOLS"
+          echo "$RUNNER_TEMP/fonttools/bin" >> "$GITHUB_PATH"
           dir="$RUNNER_TEMP/fonts"
           mkdir -p "$dir"
-          while read -r var sha path; do
-            f="$dir/$(basename "$path" | sed 's/%5Bwght%5D/-Variable/')"
-            curl -fsSL --retry 3 -o "$f" "https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/$path"
+          while read -r var sha url; do
+            f="$dir/$(basename "$url" | sed 's/%5Bwght%5D/-Variable/')"
+            curl -fsSL --retry 3 -o "$f" "$url"
             echo "$sha  $f" | sha256sum -c
             echo "$var=$f" >> "$GITHUB_ENV"
-          done <<'EOF'
-          FIGSTUDIO_SYMBOLS_FONT f7e7e04b4a24b6c78893d50cbfd2b2f6cae49617ab047bfef668d252adb128f7 notosanssymbols/NotoSansSymbols%5Bwght%5D.ttf
-          FIGSTUDIO_SYMBOLS2_FONT 7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21 notosanssymbols2/NotoSansSymbols2-Regular.ttf
-          FIGSTUDIO_MATH_FONT 3f495fe933c06786e4d5f6d86b8ee70b6753a68ee3b9d87528726de0f6e2c47d notosansmath/NotoSansMath-Regular.ttf
-          FIGSTUDIO_EMOJI_FONT de6c18832938afc99caf132b39d6a30a19bac7f2e812e28db2535b4608d27551 notoemoji/NotoEmoji%5Bwght%5D.ttf
+          done <<EOF
+          FIGSTUDIO_CJK_FONT b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a https://raw.githubusercontent.com/notofonts/noto-cjk/$CJK_COMMIT/Sans/OTC/NotoSansCJK-Regular.ttc
+          FIGSTUDIO_SYMBOLS_FONT f7e7e04b4a24b6c78893d50cbfd2b2f6cae49617ab047bfef668d252adb128f7 https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/notosanssymbols/NotoSansSymbols%5Bwght%5D.ttf
+          FIGSTUDIO_SYMBOLS2_FONT 7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21 https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf
+          FIGSTUDIO_MATH_FONT 3f495fe933c06786e4d5f6d86b8ee70b6753a68ee3b9d87528726de0f6e2c47d https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/notosansmath/NotoSansMath-Regular.ttf
+          FIGSTUDIO_EMOJI_FONT de6c18832938afc99caf132b39d6a30a19bac7f2e812e28db2535b4608d27551 https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf
           EOF
       - name: Build
         run: scripts/web-build.sh
