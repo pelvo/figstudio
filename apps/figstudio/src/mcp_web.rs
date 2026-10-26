@@ -321,6 +321,9 @@ impl Host {
         if self.relay {
             self.seen = (key(tabs, active), crate::mcp_wire::relay_ready_docs(tabs));
             self.calls.borrow_mut().view(tabs, active);
+        } else {
+            // Off the relay, the last view would keep closed documents and their sources.
+            self.calls.borrow_mut().view(&[], 0);
         }
         self.go_live();
     }

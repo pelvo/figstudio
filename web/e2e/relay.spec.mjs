@@ -198,6 +198,11 @@ test("browser executes MCP tools without uploading the local fig", async ({ page
   await expect.poll(async () => structured(await tool("get_selection", {
     fileKey: tab.fileKey,
   })).page?.id).toBe(args.nodeId);
+  // An idle, visible page draws no frame by itself, and a reveal is applied in one (its
+  // ack waits 2 s): the call must ask for that frame. No screenshot call comes just
+  // before this one to repaint for it.
+  await page.waitForTimeout(2_000);
+  await tool("reveal_node", args);
   expect(bodies.length).toBeGreaterThan(0);
   expect(violations).toEqual([]);
 });

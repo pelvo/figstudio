@@ -59,9 +59,12 @@ impl Conn {
         }
         .map_err(|_| "Not a valid WebSocket address".to_owned())?;
         // The wake handles the event (or leaves it for the frame) and asks for a frame.
-        let push = move |shared: &Rc<Shared>, event: Event| {
-            shared.events.borrow_mut().push_back(event);
-            wake();
+        let push = {
+            let wake = wake.clone();
+            move |shared: &Rc<Shared>, event: Event| {
+                shared.events.borrow_mut().push_back(event);
+                wake();
+            }
         };
         let (s, p, calls) = (shared.clone(), push.clone(), Rc::downgrade(calls));
         let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
@@ -83,7 +86,12 @@ impl Conn {
                             .borrow_mut()
                             .start(generation, id.clone(), body.clone())
                     });
-                    if !started {
+                    if started {
+                        // A frame still has work for a started call (a reveal is applied
+                        // in one, and its ack waits only 2 s), and an idle page draws
+                        // none unless asked.
+                        wake();
+                    } else {
                         p(
                             &s,
                             Event::Rpc {
