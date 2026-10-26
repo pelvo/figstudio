@@ -228,6 +228,16 @@ jobs:
           gh release upload "$TAG" dist/*.zip dist/*.tar.gz --clobber -R "$GITHUB_REPOSITORY"
           gh release upload "$TAG" dist/SHA256SUMS --clobber -R "$GITHUB_REPOSITORY"
 
+  # The public browser build at https://figstudio.pelvo.dev, from the new tag (setup and
+  # retries: web-deploy.yml). Only on a new release: a manual run here rebuilds assets and
+  # npm packages, while a web redeploy is web-deploy.yml's own Run workflow.
+  web:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/web-deploy.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+
   # npm: `npx -y figstudio-mcp` runs one of these binaries through the launcher in
   # npm/figstudio-mcp. Each binary is its own package with `os` and `cpu` set, listed as an
   # optional dependency, so npm installs only the matching one and no install script runs.

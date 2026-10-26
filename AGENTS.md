@@ -87,7 +87,8 @@ driver for wgpu, GTK/portal for the file dialog). macOS needs only Xcode command
   open from the Conventional Commit titles on `main`. Merging it bumps the version in
   `Cargo.toml`/`Cargo.lock`, writes `CHANGELOG.md`, tags `vX.Y.Z` and attaches the macOS
   app (`figstudio-vX.Y.Z-macos-arm64.zip`) and the CLI/MCP binaries to the GitHub release.
-  Do not bump versions or edit `CHANGELOG.md` by hand.
+  The same release deploys the browser build to https://figstudio.pelvo.dev
+  (`.github/workflows/web-deploy.yml`). Do not bump versions or edit `CHANGELOG.md` by hand.
 - Do not commit `target/`, generated PNGs, stress files (`synth` output) or private `.fig`
   files. Only the 7 fixtures in `tests/fixtures` (MIT, from fig2sketch) belong in the repo.
 - Do not put people's names, chat names, phone numbers or local paths in commits, issues or

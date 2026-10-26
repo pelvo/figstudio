@@ -1,0 +1,214 @@
+# Builds the browser app (scripts/web-build.sh: Wasm threads, wasm-bindgen, UI fallback
+# fonts) and deploys web/dist to https://figstudio.pelvo.dev, the public static build that
+# `figstudio-mcp --browser-proxy` opens. Static assets only (web/wrangler.public.jsonc): no
+# Worker script, no Durable Object, so no cloud relay there.
+#
+# When it runs:
+# - Every release: release-please.yml calls it with the new tag once the release is made,
+#   so the site always serves the latest release (the npm server and the page it opens
+#   come from the same tag).
+# - By hand: Actions > web-deploy > Run workflow on main, with an existing tag (for example
+#   to redeploy v0.2.0). Tick "dry run" to build and check without deploying.
+# - On a pull request that changes the build or this workflow: build and `wrangler deploy
+#   --dry-run` only. No secrets are used.
+#
+# Deploying needs the `cloudflare` environment (Settings > Environments), limited to the
+# `main` branch, with two secrets:
+#   CLOUDFLARE_API_TOKEN   an API token from the "Edit Cloudflare Workers" template, limited
+#                          to the account that owns figstudio.pelvo.dev and to that zone
+#   CLOUDFLARE_ACCOUNT_ID  that account's ID
+# Only the Deploy step sees them; the build job runs with a read-only token and no secrets.
+#
+# Third-party actions are pinned to commit SHAs; the comment names the release.
+
+name: web-deploy
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to build and deploy (for example v0.2.0).
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and deploy (for example v0.2.0).
+        required: true
+        type: string
+      dry_run:
+        description: Build and run wrangler deploy --dry-run only; deploys nothing.
+        required: false
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - .github/workflows/web-deploy.yml
+      - web/wrangler.public.jsonc
+      - web/index.html
+      - web/_headers
+      - scripts/web-build.sh
+      - scripts/web-font.sh
+      - scripts/web-symbol-font.py
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  WRANGLER: wrangler@4.151.2
+  # google/fonts commit for the symbol, math and emoji faces (see the Fonts step).
+  FONTS_COMMIT: 823468bd7825152bce2b8fd2cf740432ad2fce8d
+
+jobs:
+  build:
+    name: build web/dist
+    # Pinned like the release jobs, so a label move does not change the build.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Check the tag
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Fully qualified, as in release-please.yml: a bare name resolves to a branch first.
+          ref: ${{ github.event_name == 'pull_request' && github.sha || format('refs/tags/{0}', inputs.tag) }}
+          persist-credentials: false
+      - name: Rust toolchain
+        # The nightly web-build.sh pins (-Z build-std and the shared-memory link flags can
+        # break between nightlies), read from the script so the two cannot drift.
+        run: |
+          # shellcheck disable=SC2016 # the pattern matches a literal ${...} in the script
+          tc=$(sed -n 's/^TC="${FIGSTUDIO_WEB_TOOLCHAIN:-\(.*\)}"$/\1/p' scripts/web-build.sh)
+          [ -n "$tc" ] || { echo "no pinned toolchain found in scripts/web-build.sh" >&2; exit 1; }
+          rustup toolchain install "$tc" --profile minimal --component rust-src --target wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-rust
+          key: wasm32-web
+          cache-workspace-crates: true
+      - name: wasm-bindgen-cli
+        # The prebuilt release at the version Cargo.lock pins (web-build.sh refuses any other),
+        # checked against the release's own SHA-256 file.
+        run: |
+          v=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/"/,"",$3); print $3; exit}' Cargo.lock)
+          a="wasm-bindgen-$v-x86_64-unknown-linux-musl"
+          cd "$RUNNER_TEMP"
+          for f in "$a.tar.gz" "$a.tar.gz.sha256sum"; do
+            curl -fsSL --retry 3 -o "$f" "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$v/$f"
+          done
+          # The .sha256sum line names a path from the release build; check the hash only.
+          echo "$(cut -d' ' -f1 "$a.tar.gz.sha256sum")  $a.tar.gz" | sha256sum -c
+          tar -xzf "$a.tar.gz"
+          echo "$RUNNER_TEMP/$a" >> "$GITHUB_PATH"
+      - name: Fonts
+        # Noto Sans CJK and fontTools for scripts/web-font.sh come from Ubuntu. The faces
+        # web-symbol-font.py needs come from google/fonts at FONTS_COMMIT, checked by SHA-256:
+        # Ubuntu 24.04 ships a 2020 Symbols 2 (family "Noto Sans Symbols2", which the script
+        # rejects) and only the colour emoji font, not the outline Noto Emoji.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends fonts-noto-cjk fonttools
+          dir="$RUNNER_TEMP/fonts"
+          mkdir -p "$dir"
+          while read -r var sha path; do
+            f="$dir/$(basename "$path" | sed 's/%5Bwght%5D/-Variable/')"
+            curl -fsSL --retry 3 -o "$f" "https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/$path"
+            echo "$sha  $f" | sha256sum -c
+            echo "$var=$f" >> "$GITHUB_ENV"
+          done <<'EOF'
+          FIGSTUDIO_SYMBOLS_FONT f7e7e04b4a24b6c78893d50cbfd2b2f6cae49617ab047bfef668d252adb128f7 notosanssymbols/NotoSansSymbols%5Bwght%5D.ttf
+          FIGSTUDIO_SYMBOLS2_FONT 7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21 notosanssymbols2/NotoSansSymbols2-Regular.ttf
+          FIGSTUDIO_MATH_FONT 3f495fe933c06786e4d5f6d86b8ee70b6753a68ee3b9d87528726de0f6e2c47d notosansmath/NotoSansMath-Regular.ttf
+          FIGSTUDIO_EMOJI_FONT de6c18832938afc99caf132b39d6a30a19bac7f2e812e28db2535b4608d27551 notoemoji/NotoEmoji%5Bwght%5D.ttf
+          EOF
+      - name: Build
+        run: scripts/web-build.sh
+      - name: Check the bundle
+        run: |
+          for f in index.html _headers figstudio.js figstudio_bg.wasm \
+                   fonts/cjk-jp.otf fonts/cjk-sc.otf fonts/cjk-tc.otf fonts/cjk-hk.otf \
+                   fonts/cjk-kr.otf fonts/emoji.ttf; do
+            [ -s "web/dist/$f" ] || { echo "::error::web/dist/$f is missing or empty"; exit 1; }
+          done
+          grep -q 'Cross-Origin-Embedder-Policy: require-corp' web/dist/_headers
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: wrangler deploy --dry-run
+        # Validates the config and the asset upload list without credentials.
+        run: npx -y "$WRANGLER" deploy --config web/wrangler.public.jsonc --dry-run
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: deploy figstudio.pelvo.dev
+    needs: build
+    if: github.event_name != 'pull_request' && !inputs.dry_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: cloudflare
+      url: https://figstudio.pelvo.dev
+    # One deploy at a time; a queued one waits instead of cancelling a running upload.
+    concurrency:
+      group: web-deploy-figstudio-pelvo-dev
+      cancel-in-progress: false
+    env:
+      SITE: https://figstudio.pelvo.dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+          sparse-checkout: web/wrangler.public.jsonc
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set in the cloudflare environment; nothing was deployed"
+            exit 1
+          fi
+          npx -y "$WRANGLER" deploy --config web/wrangler.public.jsonc
+      - name: Check the live site
+        # The site serves this run's Wasm and keeps the cross-origin isolation headers
+        # (SharedArrayBuffer needs both). New assets usually show within seconds.
+        env:
+          TAG_NAME: ${{ inputs.tag }}
+        run: |
+          want=$(sha256sum web/dist/figstudio_bg.wasm | cut -d' ' -f1)
+          got=""
+          for _ in $(seq 1 24); do
+            got=$(curl -fsS --retry 2 "$SITE/figstudio_bg.wasm" | sha256sum | cut -d' ' -f1) || got=""
+            [ "$got" = "$want" ] && break
+            sleep 5
+          done
+          if [ "$got" != "$want" ]; then
+            echo "::error::$SITE serves figstudio_bg.wasm $got, this build is $want"
+            exit 1
+          fi
+          headers=$(curl -fsSI "$SITE/" | tr -d '\r')
+          grep -qi '^cross-origin-opener-policy: same-origin$' <<<"$headers"
+          grep -qi '^cross-origin-embedder-policy: require-corp$' <<<"$headers"
+          echo "$SITE serves $TAG_NAME ($want)"
