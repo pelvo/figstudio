@@ -1,13 +1,16 @@
 // The public browser build at https://figstudio.pelvo.dev, deployed by
-// .github/workflows/web-deploy.yml on every release. Static assets only: no Worker script and
-// no Durable Object, so no cloud relay (the app hides Cloud relay after its GET /mcp/ probe
-// answers 404). No account ID here: the workflow passes CLOUDFLARE_ACCOUNT_ID.
-// For your own deploy with the relay, use web/wrangler.jsonc (git-ignored, see .gitignore).
+// .github/workflows/web-deploy.yml on every release. The workflow reads this file from its
+// own commit, not from the release tag, so it applies to any tag it deploys. Static assets
+// only: no Worker script and no Durable Object, so no cloud relay (the app hides Cloud relay
+// after its GET /mcp/ probe answers 404). No account ID here: the workflow passes
+// CLOUDFLARE_ACCOUNT_ID. For your own deploy with the relay, start from the root
+// wrangler.jsonc.
 {
   "name": "figstudio-public",
   "compatibility_date": "2026-10-01",
   "assets": { "directory": "dist" },
-  "workers_dev": true,
+  // Served on the custom domain only, not on a second *.workers.dev hostname.
+  "workers_dev": false,
   "preview_urls": false,
   "routes": [{ "pattern": "figstudio.pelvo.dev", "custom_domain": true }]
 }

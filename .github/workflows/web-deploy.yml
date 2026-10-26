@@ -9,15 +9,21 @@
 #   come from the same tag).
 # - By hand: Actions > web-deploy > Run workflow on main, with an existing tag (for example
 #   to redeploy v0.2.0). Tick "dry run" to build and check without deploying.
-# - On a pull request that changes the build or this workflow: build and `wrangler deploy
-#   --dry-run` only. No secrets are used.
+# - On a pull request that changes the build, the code it compiles or this workflow: build
+#   and `wrangler deploy --dry-run` only. No secrets are used.
+#
+# The bundle (web/dist) is built from the tag. The deploy target (web/wrangler.public.jsonc)
+# and wrangler itself (web/deploy/package-lock.json) come from the commit this workflow runs
+# from (github.sha: main for a release or a run by hand), so a tag made before those files
+# existed deploys too.
 #
 # Deploying needs the `cloudflare` environment (Settings > Environments), limited to the
 # `main` branch, with two secrets:
 #   CLOUDFLARE_API_TOKEN   an API token from the "Edit Cloudflare Workers" template, limited
 #                          to the account that owns figstudio.pelvo.dev and to that zone
 #   CLOUDFLARE_ACCOUNT_ID  that account's ID
-# Only the Deploy step sees them; the build job runs with a read-only token and no secrets.
+# Only the Deploy step sees them. wrangler is installed from the lockfile in an earlier step
+# without them, and the build job runs with a read-only token and no secrets.
 #
 # Third-party actions are pinned to commit SHAs; the comment names the release.
 
@@ -45,18 +51,30 @@ on:
     paths:
       - .github/workflows/web-deploy.yml
       - web/wrangler.public.jsonc
+      - web/deploy/**
       - web/index.html
       - web/_headers
       - scripts/web-build.sh
       - scripts/web-font.sh
       - scripts/web-symbol-font.py
+      # Only this workflow builds the wasm32 threads build, so the code it compiles counts
+      # too: a change that breaks only that build (a dependency bump, which every release
+      # PR has) shows on its own PR, not after the release.
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - apps/figstudio/**
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  WRANGLER: wrangler@4.151.2
+  # wasm-bindgen-cli: the version Cargo.lock pins (web-build.sh refuses any other) and the
+  # SHA-256 of that release's x86_64-unknown-linux-musl tarball. A wasm-bindgen bump in
+  # Cargo.lock fails the wasm-bindgen-cli step until both are updated here, in the same PR.
+  WASM_BINDGEN: 0.2.129
+  WASM_BINDGEN_SHA256: 82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e
   # Font inputs (see the Fonts step): google/fonts and notofonts/noto-cjk commits, fontTools.
   FONTS_COMMIT: 823468bd7825152bce2b8fd2cf740432ad2fce8d
   CJK_COMMIT: 165c01b46ea533872e002e0785ff17e44f6d97d8
@@ -97,17 +115,18 @@ jobs:
           key: wasm32-web
           cache-workspace-crates: true
       - name: wasm-bindgen-cli
-        # The prebuilt release at the version Cargo.lock pins (web-build.sh refuses any other),
-        # checked against the release's own SHA-256 file.
+        # The prebuilt release at WASM_BINDGEN, checked against WASM_BINDGEN_SHA256 above and
+        # not the release's own .sha256sum, which a replaced asset would match too.
         run: |
           v=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/"/,"",$3); print $3; exit}' Cargo.lock)
+          if [ "$v" != "$WASM_BINDGEN" ]; then
+            echo "::error::Cargo.lock pins wasm-bindgen $v, this workflow pins $WASM_BINDGEN: update WASM_BINDGEN and WASM_BINDGEN_SHA256 in web-deploy.yml"
+            exit 1
+          fi
           a="wasm-bindgen-$v-x86_64-unknown-linux-musl"
           cd "$RUNNER_TEMP"
-          for f in "$a.tar.gz" "$a.tar.gz.sha256sum"; do
-            curl -fsSL --retry 3 -o "$f" "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$v/$f"
-          done
-          # The .sha256sum line names a path from the release build; check the hash only.
-          echo "$(cut -d' ' -f1 "$a.tar.gz.sha256sum")  $a.tar.gz" | sha256sum -c
+          curl -fsSL --retry 3 -o "$a.tar.gz" "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$v/$a.tar.gz"
+          echo "$WASM_BINDGEN_SHA256  $a.tar.gz" | sha256sum -c
           tar -xzf "$a.tar.gz"
           echo "$RUNNER_TEMP/$a" >> "$GITHUB_PATH"
       - name: Fonts
@@ -135,6 +154,11 @@ jobs:
           FIGSTUDIO_MATH_FONT 3f495fe933c06786e4d5f6d86b8ee70b6753a68ee3b9d87528726de0f6e2c47d https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/notosansmath/NotoSansMath-Regular.ttf
           FIGSTUDIO_EMOJI_FONT de6c18832938afc99caf132b39d6a30a19bac7f2e812e28db2535b4608d27551 https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf
           EOF
+          # The CJK licence (OFL 2: every copy carries it). web-font.sh copies the LICENSE
+          # next to the CJK source font into fonts/cjk-LICENSE.txt. It is at the repo root,
+          # not under Sans/.
+          curl -fsSL --retry 3 -o "$dir/LICENSE" "https://raw.githubusercontent.com/notofonts/noto-cjk/$CJK_COMMIT/LICENSE"
+          echo "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2  $dir/LICENSE" | sha256sum -c
       - name: Build
         run: scripts/web-build.sh
       - name: Check the bundle
@@ -145,12 +169,33 @@ jobs:
             [ -s "web/dist/$f" ] || { echo "::error::web/dist/$f is missing or empty"; exit 1; }
           done
           grep -q 'Cross-Origin-Embedder-Policy: require-corp' web/dist/_headers
+          grep -q 'SIL OPEN FONT LICENSE' web/dist/fonts/cjk-LICENSE.txt || {
+            echo "::error::web/dist/fonts/cjk-LICENSE.txt has no OFL text"; exit 1; }
+      - name: Deploy config from this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .pipeline
+          persist-credentials: false
+          sparse-checkout: |
+            web/wrangler.public.jsonc
+            web/deploy/package.json
+            web/deploy/package-lock.json
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+      - name: Install wrangler
+        # Into the tag's checkout: assets.directory is relative to the config, so the config
+        # sits next to dist. Every package comes from the lockfile, with its integrity hash.
+        run: |
+          cp .pipeline/web/wrangler.public.jsonc web/wrangler.public.jsonc
+          mkdir -p web/deploy
+          cp .pipeline/web/deploy/package.json .pipeline/web/deploy/package-lock.json web/deploy/
+          npm ci --prefix web/deploy --no-audit --no-fund
       - name: wrangler deploy --dry-run
         # Validates the config and the asset upload list without credentials.
-        run: npx -y "$WRANGLER" deploy --config web/wrangler.public.jsonc --dry-run
+        run: web/deploy/node_modules/.bin/wrangler deploy --config web/wrangler.public.jsonc --dry-run
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: web-dist
@@ -167,18 +212,23 @@ jobs:
     environment:
       name: cloudflare
       url: https://figstudio.pelvo.dev
-    # One deploy at a time; a queued one waits instead of cancelling a running upload.
+    # One deploy at a time. A running upload is never cancelled, and a newer queued deploy
+    # replaces an older pending one.
     concurrency:
       group: web-deploy-figstudio-pelvo-dev
       cancel-in-progress: false
     env:
       SITE: https://figstudio.pelvo.dev
     steps:
+      # The deploy target and the wrangler lockfile from this workflow's commit, not the tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ github.sha }}
           persist-credentials: false
-          sparse-checkout: web/wrangler.public.jsonc
+          sparse-checkout: |
+            web/wrangler.public.jsonc
+            web/deploy/package.json
+            web/deploy/package-lock.json
           sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -187,6 +237,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+      - name: Install wrangler
+        # Its own step with no secrets in env: install scripts never see the token.
+        run: npm ci --prefix web/deploy --no-audit --no-fund
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -196,7 +249,7 @@ jobs:
             echo "::error::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set in the cloudflare environment; nothing was deployed"
             exit 1
           fi
-          npx -y "$WRANGLER" deploy --config web/wrangler.public.jsonc
+          web/deploy/node_modules/.bin/wrangler deploy --config web/wrangler.public.jsonc
       - name: Check the live site
         # The site serves this run's Wasm and keeps the cross-origin isolation headers
         # (SharedArrayBuffer needs both). New assets usually show within seconds.

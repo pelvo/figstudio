@@ -1,0 +1,9 @@
+{
+  "name": "figstudio-web-deploy",
+  "private": true,
+  "description": "Pins wrangler and its whole dependency tree (package-lock.json) for .github/workflows/web-deploy.yml.",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "wrangler": "4.151.2"
+  }
+}
