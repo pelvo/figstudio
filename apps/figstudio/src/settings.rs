@@ -775,6 +775,7 @@ impl App {
         // A key that ended a recording was taken from the input, so Escape here is not it.
         let mut close = open
             && self.settings.recording.is_none()
+            && !self.update_notes_up()
             && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
         // Both stay interactable while they fade (inert, sensing only hover): a click then
         // does nothing rather than land on the app under the dimmed screen.
@@ -836,7 +837,7 @@ impl App {
                             Tab::Canvas => self.canvas_tab(&mut content),
                             Tab::Shortcuts => self.shortcuts_tab(&mut content),
                             Tab::Agents => self.agents_tab(&mut content),
-                            Tab::About => about_tab(&mut content),
+                            Tab::About => self.about_tab(&mut content),
                         }
                         let rim = if look.dark {
                             Color32::from_black_alpha(170)
@@ -852,7 +853,11 @@ impl App {
                     });
             });
         let layer = area.response.layer_id;
-        ctx.move_to_top(layer);
+        // egui raises a frame's layers in no fixed order: the update popup above Settings
+        // raises itself, so Settings does not while it is open.
+        if !self.update_notes_up() {
+            ctx.move_to_top(layer);
+        }
         let scale = 0.96 + 0.04 * pop;
         let centre = area.response.rect.center().to_vec2();
         ctx.set_transform_layer(
@@ -1396,49 +1401,141 @@ impl App {
     }
 }
 
-/// The About tab: the mark, the name and version, and what figstudio is.
-fn about_tab(ui: &mut Ui) {
-    let p = theme::of(ui);
-    let look = Look::of(ui);
-    ui.vertical_centered(|ui| {
-        ui.add_space(12.0);
-        let (r, _) = ui.allocate_exact_size(vec2(84.0, 84.0), Sense::hover());
-        let tile = Rect::from_center_size(r.center(), vec2(76.0, 76.0));
-        let tint = theme::tint(theme::HOME_TINT, p.dark);
-        ui.painter()
-            .add(crate::chrome::card_shadow(&p, 16).as_shape(tile, CornerRadius::same(20)));
-        ui.painter()
-            .add(egui::Shape::mesh(crate::chrome::rounded_gradient(
-                tile,
-                20.0,
-                [
-                    tint.glow,
-                    tint.accent,
-                    tint.accent,
-                    tint.accent.lerp_to_gamma(tint.glow, 0.4),
-                ],
-            )));
-        icons::paint(ui.painter(), Icon::Frame, tile.shrink(22.0), Color32::WHITE);
-        ui.add_space(10.0);
-        ui.label(
-            RichText::new(APP_NAME)
-                .font(theme::semibold(22.0))
-                .color(look.text),
+impl App {
+    /// The About tab: the mark, the name and version, what figstudio is, and (desktop) the
+    /// update rows.
+    fn about_tab(&mut self, ui: &mut Ui) {
+        let p = theme::of(ui);
+        let look = Look::of(ui);
+        ui.vertical_centered(|ui| {
+            ui.add_space(12.0);
+            let (r, _) = ui.allocate_exact_size(vec2(84.0, 84.0), Sense::hover());
+            // The app's icon (the PNG has its own margin and shadow); the drawn mark in the
+            // browser, which does not carry the PNG, or if it does not decode.
+            #[cfg(not(target_arch = "wasm32"))]
+            let drawn = crate::chrome::paint_app_icon(ui, r.expand(10.0));
+            #[cfg(target_arch = "wasm32")]
+            let drawn = false;
+            if !drawn {
+                let tint = theme::tint(theme::HOME_TINT, p.dark);
+                crate::chrome::paint_mark(ui.painter(), &p, tint, r.center(), 76.0);
+            }
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(APP_NAME)
+                    .font(theme::semibold(22.0))
+                    .color(look.text),
+            );
+            ui.label(
+                RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(look.dim),
+            );
+            ui.add_space(10.0);
+            ui.label(RichText::new("Opens Figma .fig local copies offline.").color(look.text));
+            #[cfg(target_arch = "wasm32")]
+            let privacy = "Nothing leaves this computer unless you turn on agent access.";
+            #[cfg(not(target_arch = "wasm32"))]
+            let privacy = "Nothing leaves this computer unless you turn on agent access or \
+                           check for updates.";
+            ui.label(RichText::new(privacy).color(look.dim));
+            ui.add_space(16.0);
+            ui.label(
+                RichText::new("Apache-2.0 · sample files from fig2sketch (MIT)")
+                    .small()
+                    .color(look.dim),
+            );
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        self.updates(ui);
+    }
+
+    /// Settings → About's update rows (desktop; the browser is always served the latest).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn updates(&mut self, ui: &mut Ui) {
+        use crate::update::{self, State};
+        use crate::update_view::{Ask, offer};
+        ui.add_space(18.0);
+        let rest = Rect::from_min_max(
+            pos2(ui.max_rect().left(), ui.cursor().top()),
+            ui.max_rect().max,
         );
-        ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(look.dim));
-        ui.add_space(10.0);
-        ui.label(RichText::new("Opens Figma .fig local copies offline.").color(look.text));
-        ui.label(
-            RichText::new("Nothing leaves this computer unless you turn on agent access.")
-                .color(look.dim),
+        let mut rows = ui.new_child(
+            UiBuilder::new()
+                .max_rect(rest)
+                .layout(Layout::top_down(Align::Min)),
         );
-        ui.add_space(16.0);
-        ui.label(
-            RichText::new("MIT or Apache-2.0 · sample files from fig2sketch (MIT)")
-                .small()
-                .color(look.dim),
-        );
-    });
+        let route = update::route();
+        let progress = self.updater.progress();
+        let mut ask = None;
+        list(&mut rows, "about-updates", |ui| {
+            section(ui, "Updates");
+            setting(
+                ui,
+                "Check at start",
+                "Asks GitHub for a newer release once per launch",
+                |ui| {
+                    switch(ui, &mut self.prefs.check_updates, "Check at start");
+                },
+            );
+            let check = |ui: &mut Ui, ask: &mut Option<Ask>, text: &str, enabled: bool| {
+                if pill(ui, text, enabled).clicked() {
+                    *ask = Some(Ask::Check);
+                }
+            };
+            match &self.updater.state {
+                State::Idle => setting(ui, "Check for updates", "", |ui| {
+                    check(ui, &mut ask, "Check now", true);
+                }),
+                State::Checking => setting(ui, "Checking for updates…", "", |ui| {
+                    check(ui, &mut ask, "Check now", false);
+                }),
+                State::UpToDate => {
+                    let note = format!("Version {} is the latest", update::current());
+                    setting(ui, "figstudio is up to date", &note, |ui| {
+                        check(ui, &mut ask, "Check now", true);
+                    });
+                }
+                State::Failed(why) => setting(ui, "The update did not work", why, |ui| {
+                    check(ui, &mut ask, "Try again", true);
+                }),
+                State::Available(release) => {
+                    let title = format!("Version {} is available", release.version);
+                    let offer = offer(&route, release);
+                    setting(ui, &title, &offer.note, |ui| {
+                        if let Some((text, then)) = offer.action
+                            && pill(ui, text, true).clicked()
+                        {
+                            ask = Some(then);
+                        }
+                        if pill(ui, "What's new", true).clicked() {
+                            ask = Some(Ask::Notes);
+                        }
+                    });
+                }
+                State::Installing(release) => {
+                    let title = format!("Installing version {}", release.version);
+                    let note = match progress {
+                        Some(p) if p < 1.0 => format!("Downloading… {:.0}%", p * 100.0),
+                        _ => "Checking and replacing the app…".to_owned(),
+                    };
+                    setting(ui, &title, &note, |ui| {
+                        ui.spinner();
+                    });
+                }
+                State::Installed(release, bundle) => {
+                    let title = format!("Version {} is installed", release.version);
+                    setting(ui, &title, "Restart figstudio to use it", |ui| {
+                        if pill(ui, "Restart now", true).clicked() {
+                            ask = Some(Ask::Restart(bundle.clone()));
+                        }
+                    });
+                }
+            }
+        });
+        if let Some(ask) = ask {
+            let ctx = ui.ctx().clone();
+            self.update_ask(ask, &ctx);
+        }
+    }
 }
 
 #[cfg(test)]

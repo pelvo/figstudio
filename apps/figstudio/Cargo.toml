@@ -80,6 +80,13 @@ tempfile.workspace = true
 figstudio-mcp = { path = "../figstudio-mcp", optional = true }
 tokio = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
+# Update checks (update.rs): the GitHub releases API and the app download, blocking on the
+# update thread, over rustls (the same reqwest as figstudio-mcp); semver orders versions.
+reqwest = { workspace = true, features = ["blocking", "rustls"] }
+semver = "1"
+# The release notes popup: release-please's Markdown, parsed by pulldown-cmark and drawn
+# in the app's own type (update_view.rs). No HTML output.
+pulldown-cmark = { version = "0.13", default-features = false }
 
 # Browser build: see scripts/web-build.sh (nightly, shared memory, Web Worker threads).
 [target.'cfg(target_arch = "wasm32")'.dependencies]

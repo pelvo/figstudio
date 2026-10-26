@@ -327,7 +327,7 @@ fn keys_for(app: &App, ctx: &egui::Context, binding: Binding) -> Option<String> 
 }
 
 /// A word that works as a button: dim, brighter on hover.
-fn text_button(
+pub(crate) fn text_button(
     ui: &mut Ui,
     rect: Rect,
     id: impl std::hash::Hash + std::fmt::Debug,

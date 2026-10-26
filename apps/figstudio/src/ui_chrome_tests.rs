@@ -1191,6 +1191,132 @@ fn settings_open_with_their_shortcut_and_their_tabs_switch() {
 }
 
 #[test]
+fn the_update_check_is_off_until_turned_on_and_is_remembered() {
+    use eframe::App as _;
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut()
+        .settings
+        .show(Some(crate::settings::Tab::About), &ctx);
+    h.run_steps(3);
+    assert!(!h.state().prefs.check_updates, "off on a first launch");
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Check now")
+            .is_some(),
+        "a manual check"
+    );
+    h.get_by_role_and_label(Role::CheckBox, "Check at start")
+        .click();
+    h.run_steps(2);
+    assert!(h.state().prefs.check_updates);
+    assert_eq!(h.state().updater.state, crate::update::State::Idle);
+
+    let mut storage = Memory::default();
+    h.state_mut().save(&mut storage);
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&storage);
+    assert!(App::new(&cc, Vec::new()).prefs.check_updates, "remembered");
+
+    // Preferences saved before the switch existed load with it off.
+    storage.0.insert(
+        crate::UI_STATE_KEY.to_owned(),
+        "(show_left:true,show_right:true,pages_share:0.5,prefs:(renderer:Cpu))".to_owned(),
+    );
+    let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    cc.storage = Some(&storage);
+    let older = App::new(&cc, Vec::new());
+    assert_eq!(older.prefs.renderer, crate::settings::Renderer::Cpu);
+    assert!(!older.prefs.check_updates);
+}
+
+#[test]
+fn about_shows_the_app_icon_and_the_licence() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    let texture = |ctx: &egui::Context| {
+        ctx.data_mut(|d| {
+            d.get_temp::<Option<egui::TextureHandle>>(egui::Id::new("app-icon-texture"))
+        })
+    };
+    assert!(texture(&ctx).is_none(), "not decoded before About is shown");
+    h.state_mut()
+        .settings
+        .show(Some(crate::settings::Tab::About), &ctx);
+    h.run_steps(3);
+    let loaded = texture(&ctx).flatten().expect("assets/icon.png decodes");
+    assert_eq!(loaded.size(), [192, 192], "scaled down once");
+    // figstudio is Apache-2.0 only; the sample files keep their MIT note.
+    assert!(
+        h.query_by_label("Apache-2.0 · sample files from fig2sketch (MIT)")
+            .is_some()
+    );
+    assert!(h.query_by_label_contains("MIT or Apache").is_none());
+}
+
+#[test]
+fn the_update_popup_shows_the_release_notes_above_settings() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut()
+        .settings
+        .show(Some(crate::settings::Tab::About), &ctx);
+    let json = serde_json::json!([{
+        "tag_name": "v9.0.0",
+        "html_url": "https://example.invalid/v9.0.0",
+        "body": "## 9.0.0\n\n### Features\n\n* a sample change",
+    }])
+    .to_string();
+    let release = crate::update::newer_release(&json, &crate::update::current())
+        .ok()
+        .flatten()
+        .expect("newer");
+    h.state_mut().updater.state = crate::update::State::Available(release);
+    h.state_mut().updater.notes_open = true;
+    h.run_steps(3);
+    let shown = |h: &Harness<'_, App>, what: &str| h.query_by_label_contains(what).is_some();
+    assert!(shown(&h, "figstudio 9.0.0 is available"));
+    assert!(shown(&h, "a sample change"), "the notes");
+    assert!(
+        // egui gives its links the Label role.
+        h.query_by_label("release page").is_some(),
+        "the release page is a link in the line above the buttons"
+    );
+    assert!(h.query_by_role_and_label(Role::Button, "Later").is_some());
+    assert!(h.state().update_notes_up());
+
+    // Don't remind me: remembered for this version, and cleared again.
+    let skip = "Don't remind me of this version again";
+    h.get_by_role_and_label(Role::CheckBox, skip).click();
+    h.run_steps(2);
+    assert_eq!(h.state().prefs.skip_update, "9.0.0");
+    h.get_by_role_and_label(Role::CheckBox, skip).click();
+    h.run_steps(2);
+    assert_eq!(h.state().prefs.skip_update, "");
+    h.get_by_role_and_label(Role::CheckBox, skip).click();
+    h.run_steps(2);
+
+    // Escape closes the popup, not Settings under it.
+    h.key_press(Key::Escape);
+    h.run_steps(3);
+    assert!(!h.state().updater.notes_open);
+    assert!(h.state().settings.is_open());
+    assert!(!shown(&h, "a sample change"));
+
+    // About's What's new opens it again; Later closes it.
+    h.get_by_role_and_label(Role::Button, "What's new").click();
+    h.run_steps(3);
+    assert!(h.state().updater.notes_open);
+    h.get_by_role_and_label(Role::Button, "Later").click();
+    h.run_steps(3);
+    assert!(!h.state().updater.notes_open);
+    assert_eq!(
+        h.state().prefs.skip_update,
+        "9.0.0",
+        "Later keeps the choice"
+    );
+}
+
+#[test]
 fn general_and_canvas_settings_change_the_app() {
     let mut h = harness();
     let ctx = h.ctx.clone();
