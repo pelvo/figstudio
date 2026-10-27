@@ -84,6 +84,13 @@ jobs:
       && inputs.tag != '') || needs.release-please.outputs.release_created == 'true')
     # Apple silicon runner: the build is arm64.
     runs-on: macos-latest
+    # id-token, attestations, artifact-metadata: the app zip's build provenance (actions/attest
+    # below). The app's updater installs a zip only if this workflow on main attested it.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
     steps:
@@ -117,6 +124,13 @@ jobs:
           # ditto keeps the bundle's signature and symlinks intact (plain zip does not).
           ditto -c -k --keepParent target/release/figstudio.app "dist/figstudio-$TAG-macos-arm64.zip"
           tar -C target/release -czf "dist/figstudio-cli-mcp-$TAG-macos-arm64.tar.gz" figstudio-cli figstudio-mcp
+      # SLSA build provenance for the app zip, signed through Sigstore with this workflow's
+      # identity (release-please.yml@refs/heads/main for a release from main). The updater
+      # (apps/figstudio/src/update_attest.rs) refuses a zip without it; a run dispatched
+      # from another branch gets another identity, so its zip does not install.
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/figstudio-${{ env.TAG }}-macos-arm64.zip
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-macos-arm64

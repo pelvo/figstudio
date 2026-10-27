@@ -109,6 +109,8 @@ mod ui_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod update;
 #[cfg(not(target_arch = "wasm32"))]
+mod update_attest;
+#[cfg(not(target_arch = "wasm32"))]
 mod update_view;
 #[cfg(target_os = "macos")]
 mod vibrancy;

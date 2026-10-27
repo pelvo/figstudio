@@ -84,6 +84,12 @@ tokio-util = { workspace = true, optional = true }
 # update thread, over rustls (the same reqwest as figstudio-mcp); semver orders versions.
 reqwest = { workspace = true, features = ["blocking", "rustls"] }
 semver = "1"
+# Before an update is swapped in, its GitHub build attestation (Sigstore bundle) must verify
+# for figstudio's release workflow: Sigstore's own verifier, with its built-in production
+# trust root and the crypto (aws-lc-rs) reqwest/rustls already build; snap undoes the raw
+# Snappy compression GitHub stores bundles in (`bundle_url`).
+sigstore-verify = { version = "0.15", default-features = false, features = ["aws-lc-rs"] }
+snap = "1"
 # The release notes popup: release-please's Markdown, parsed by pulldown-cmark and drawn
 # in the app's own type (update_view.rs). No HTML output.
 pulldown-cmark = { version = "0.13", default-features = false }

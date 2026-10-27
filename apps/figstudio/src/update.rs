@@ -13,12 +13,12 @@
 //! record behind; a copy macOS runs from App Translocation (started from a quarantined
 //! download) is told to move to Applications first; everything else gets the release page.
 //!
-//! Trust: `SHA256SUMS` comes from the same release as the zip, so it catches a corrupt or
-//! partial download, not a release whose assets were replaced. `codesign --verify` on an
-//! ad-hoc signature only shows the bundle is consistent with itself (anyone can ad-hoc
-//! sign), and the download carries no quarantine flag, so Gatekeeper does not assess it.
-//! The trust root is TLS to GitHub plus whoever can upload release assets; artifact
-//! attestations or a signing key built into the app would add a check of their own.
+//! Trust: `SHA256SUMS` comes from the same release as the zip, so it only catches a corrupt
+//! or partial download, and `codesign --verify` on an ad-hoc signature only shows the bundle
+//! is consistent with itself (the download carries no quarantine flag, so Gatekeeper does
+//! not assess it). What makes it figstudio's is the build attestation (`update_attest.rs`):
+//! the zip's SHA-256 must be attested, through Sigstore, by figstudio's release workflow on
+//! `main`, so uploading a release asset alone cannot ship code to installs.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -469,21 +469,17 @@ fn install(release: &Release, bundle: &Path, got: &AtomicU64) -> anyhow::Result<
         .and_then(reqwest::blocking::Response::error_for_status)
         .context("could not download the app")?;
     let mut file = std::fs::File::create(&zip).context("could not save the download")?;
-    let mut hash = Sha256::new();
-    let mut buf = vec![0; 64 * 1024];
-    loop {
-        let n = reply.read(&mut buf).context("the download broke off")?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&buf[..n]);
-        std::io::Write::write_all(&mut file, &buf[..n]).context("could not save the download")?;
-        got.fetch_add(n as u64, Ordering::Relaxed);
-    }
+    let limit = if app.size > 0 { app.size } else { MAX_DOWNLOAD };
+    let sum = save_capped(&mut reply, &mut file, limit, got)?;
     drop(file);
-    if format!("{:x}", hash.finalize()) != want {
+    if sum != want {
         bail!("the download does not match its SHA-256; nothing was changed");
     }
+    // Built and signed by figstudio's release workflow, not only uploaded to the release.
+    crate::update_attest::check(&http, &sum).context(
+        "could not confirm figstudio's release workflow built this download; nothing was \
+         changed (download it from the release page instead)",
+    )?;
 
     let unpacked = staging.path().join("unpacked");
     run(Command::new("ditto")
@@ -517,6 +513,41 @@ fn install(release: &Release, bundle: &Path, got: &AtomicU64) -> anyhow::Result<
     // (`clean_up_at_launch`), so this copy keeps its files and there is a way back.
     let _ = staging.keep();
     Ok(())
+}
+
+/// The most a download may be when the release does not list the asset's size.
+const MAX_DOWNLOAD: u64 = 512 * 1024 * 1024;
+
+/// Copies `reader` into `writer`, counting bytes in `got`, and returns the SHA-256 (lower-case
+/// hex). Stops with an error once more than `limit` bytes arrive, so a reply larger than the
+/// release lists cannot fill the app's disk.
+fn save_capped(
+    reader: &mut impl Read,
+    writer: &mut impl std::io::Write,
+    limit: u64,
+    got: &AtomicU64,
+) -> anyhow::Result<String> {
+    let mut hash = Sha256::new();
+    let mut buf = vec![0; 64 * 1024];
+    let mut total = 0_u64;
+    loop {
+        let n = reader.read(&mut buf).context("the download broke off")?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > limit {
+            bail!(
+                "the download is larger than the release lists ({limit} bytes); nothing was changed"
+            );
+        }
+        hash.update(&buf[..n]);
+        writer
+            .write_all(&buf[..n])
+            .context("could not save the download")?;
+        got.fetch_add(n as u64, Ordering::Relaxed);
+    }
+    Ok(format!("{:x}", hash.finalize()))
 }
 
 /// Runs a system tool; its standard output, or its error output as the error.
@@ -1081,6 +1112,29 @@ mod tests {
         assert!(dir.path().join("Other.app").exists());
         assert!(dir.path().join(".figstudio-update-note").exists());
         assert_eq!(clean_staging(&dir.path().join("missing")), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_download_stops_past_the_listed_size() -> anyhow::Result<()> {
+        let got = AtomicU64::new(0);
+        let mut out = Vec::new();
+        let sum = save_capped(&mut &b"abc"[..], &mut out, 3, &got)?;
+        assert_eq!(out, b"abc");
+        assert_eq!(got.load(Ordering::Relaxed), 3);
+        assert_eq!(
+            sum,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let mut out = Vec::new();
+        let big = vec![7_u8; 200 * 1024];
+        let err = save_capped(&mut &big[..], &mut out, 100 * 1024, &AtomicU64::new(0));
+        assert!(err.is_err(), "larger than listed");
+        assert!(
+            out.len() <= 100 * 1024,
+            "stopped at the limit: {}",
+            out.len()
+        );
         Ok(())
     }
 
