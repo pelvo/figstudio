@@ -58,8 +58,10 @@ on:
       - scripts/web-font.sh
       - scripts/web-symbol-font.py
       # Only this workflow builds the wasm32 threads build, so the code it compiles counts
-      # too: a change that breaks only that build (a dependency bump, which every release
-      # PR has) shows on its own PR, not after the release.
+      # too: a change that breaks only that build (a dependency bump, say) shows on its own
+      # PR, not after the release. Release PRs touch Cargo.toml and Cargo.lock too (they
+      # bump figstudio's own versions), so each release is also built here before it is
+      # tagged.
       - Cargo.toml
       - Cargo.lock
       - crates/**
@@ -68,13 +70,15 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request cancels that PR's older run, as in ci.yml. Release and
+# by-hand runs each get their own group (run_id), so they are never cancelled here; the
+# deploy job's own group below keeps deploys one at a time.
+concurrency:
+  group: web-deploy-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
-  # wasm-bindgen-cli: the version Cargo.lock pins (web-build.sh refuses any other) and the
-  # SHA-256 of that release's x86_64-unknown-linux-musl tarball. A wasm-bindgen bump in
-  # Cargo.lock fails the wasm-bindgen-cli step until both are updated here, in the same PR.
-  WASM_BINDGEN: 0.2.129
-  WASM_BINDGEN_SHA256: 82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e
   # Font inputs (see the Fonts step): google/fonts and notofonts/noto-cjk commits, fontTools.
   FONTS_COMMIT: 823468bd7825152bce2b8fd2cf740432ad2fce8d
   CJK_COMMIT: 165c01b46ea533872e002e0785ff17e44f6d97d8
@@ -115,18 +119,25 @@ jobs:
           key: wasm32-web
           cache-workspace-crates: true
       - name: wasm-bindgen-cli
-        # The prebuilt release at WASM_BINDGEN, checked against WASM_BINDGEN_SHA256 above and
-        # not the release's own .sha256sum, which a replaced asset would match too.
+        # The prebuilt release at the version the checked-out Cargo.lock pins (web-build.sh
+        # refuses any other), checked against the SHA-256 of its x86_64-unknown-linux-musl
+        # tarball below, not the release's own .sha256sum, which a replaced asset would match
+        # too. The table lives in this workflow's commit but is looked up with the tag's
+        # Cargo.lock, so it is add-only: a wasm-bindgen bump adds a line in the same PR and
+        # keeps the old ones, and redeploying an older tag still finds its version.
         run: |
           v=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/"/,"",$3); print $3; exit}' Cargo.lock)
-          if [ "$v" != "$WASM_BINDGEN" ]; then
-            echo "::error::Cargo.lock pins wasm-bindgen $v, this workflow pins $WASM_BINDGEN: update WASM_BINDGEN and WASM_BINDGEN_SHA256 in web-deploy.yml"
-            exit 1
-          fi
+          case "$v" in
+            0.2.129) want=82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e ;;
+            *)
+              echo "::error::Cargo.lock pins wasm-bindgen $v, which has no pinned SHA-256: add a line for it to the wasm-bindgen-cli step in web-deploy.yml (keep the old lines)"
+              exit 1
+              ;;
+          esac
           a="wasm-bindgen-$v-x86_64-unknown-linux-musl"
           cd "$RUNNER_TEMP"
           curl -fsSL --retry 3 -o "$a.tar.gz" "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$v/$a.tar.gz"
-          echo "$WASM_BINDGEN_SHA256  $a.tar.gz" | sha256sum -c
+          echo "$want  $a.tar.gz" | sha256sum -c
           tar -xzf "$a.tar.gz"
           echo "$RUNNER_TEMP/$a" >> "$GITHUB_PATH"
       - name: Fonts
