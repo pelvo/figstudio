@@ -13,12 +13,17 @@ Two PRs never edit the same file, so nothing conflicts. Edit only your own PR's 
 an item another PR added is a one-line edit in that PR's file; correct an old progress entry
 with a new one that names it.
 
-- Start: `scripts/plan.sh new <pr|0> <branch> "<title>"` (use 0 before the PR exists, then
-  rename the file and set `pr:` when it opens).
-- Log work: `scripts/plan.sh note <pr> <slug>` appends a timestamped entry to your file.
-- Read: `plan.sh show <phase>` (items from every PR, tagged `(#PR)`), `plan.sh pr <N>` (one PR:
-  items and progress), `plan.sh log [N]` (timeline of all entries, oldest first),
-  `plan.sh status` (done/open per phase and per PR, entry counts).
+- **No PR yet** (the normal start): on your branch run `scripts/plan.sh new "<title>"`. It makes
+  `pr-wip-<branch>.md` (`pr:` empty). `plan.sh note <slug>` and `plan.sh pr` find the file by
+  your current branch, so you never need a number. Commit it with your work.
+- **PR opened**: run `scripts/plan.sh bind` (reads the number from `gh`, or `bind <N>`). It sets
+  `pr:` and renames the file to `pr-<N>.md`; commit that. Do it before merge, because the
+  backfill and `show` tag items `(#N)` from the header, and `(wip)` until bound.
+- Already know the number: `plan.sh new "<title>" <N>`.
+- Log work: `plan.sh note <slug> [N]` appends a timestamped entry (default: this branch's file).
+- Read: `plan.sh show <phase>` (items from every PR, tagged `(#PR)` or `(wip)`), `plan.sh pr [N]`
+  (one file: items and progress), `plan.sh log [N]` (timeline of all entries, oldest first),
+  `plan.sh status` (done/open per phase and per file, entry counts).
 - Backfilled entries from the old PLAN.md log keep their original text; their `### ` heading is
   `<date>T<time>Z-bNNN-<words>` (`NNN` is the old order; time is 000000 when the adding commit
   was on another day).

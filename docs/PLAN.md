@@ -142,4 +142,4 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 ## Progress log
 
 Moved to `docs/plans/pr-<N>.md`, under `## Progress` (one file per PR). Timeline: `scripts/plan.sh log`;
-add an entry: `scripts/plan.sh note <pr> <slug>`.
+add an entry: `scripts/plan.sh note <slug>`.

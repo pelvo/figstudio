@@ -47,10 +47,11 @@ picking up work. Read the three documents below before changing code.
     menu hook in `dock_mac.rs`, the Windows jump list in `jump_list.rs`, the Windows
     foreground permission in `handoff.rs` and the Windows foreground request in
     `foreground_win.rs` (approved by the owner). Ask before adding another.
-11. **Update the plan** when you finish something: in your PR's own file `docs/plans/pr-<N>.md`
-    (`scripts/plan.sh new`) tick the box only after its check really passed, and add a progress
-    entry with `scripts/plan.sh note <pr> <slug>`. One file per PR, so branches do not conflict;
-    `docs/PLAN.md` keeps phases and prose only. Report what you did **not** verify.
+11. **Update the plan** when you finish something: start your branch's file with
+    `scripts/plan.sh new "<title>"` (works before the PR exists; run `plan.sh bind` once it is
+    open), tick the box in it only after its check really passed, and add a progress entry
+    with `scripts/plan.sh note <slug>`. One file per PR in `docs/plans/`, so branches do not
+    conflict; `docs/PLAN.md` keeps phases and prose only. Report what you did **not** verify.
 12. **Use trustworthy crates; do not hand-roll.** For protocols, formats and encodings
     (JSON, MCP/JSON-RPC, HTTP, XML, base64, CLI parsing in new code, …) use a well-known,
     maintained crate (official SDK, high download count, active repo) instead of writing
