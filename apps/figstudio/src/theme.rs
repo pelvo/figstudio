@@ -57,8 +57,8 @@ pub struct Palette {
 pub const LIGHT: Palette = Palette {
     dark: false,
     text: Color32::from_rgb(28, 28, 32),
-    text_dim: Color32::from_rgb(84, 84, 94),
-    text_faint: Color32::from_rgb(112, 112, 122),
+    text_dim: Color32::from_rgb(70, 70, 80),
+    text_faint: Color32::from_rgb(90, 90, 100),
     hover: white(80),
     selected: white(210),
     field: white(120),
@@ -68,17 +68,17 @@ pub const LIGHT: Palette = Palette {
     glass: Color32::from_rgba_premultiplied(232, 232, 232, 232),
     separator: Color32::from_black_alpha(22),
     shadow: Color32::from_black_alpha(34),
-    component: Color32::from_rgb(124, 77, 255),
-    warning: Color32::from_rgb(176, 104, 0),
+    component: Color32::from_rgb(99, 62, 204),
+    warning: Color32::from_rgb(132, 78, 0),
 };
 
 pub const DARK: Palette = Palette {
     dark: true,
     text: Color32::from_rgb(236, 236, 241),
-    text_dim: Color32::from_rgb(170, 170, 180),
-    text_faint: Color32::from_rgb(140, 140, 152),
-    hover: white(16),
-    selected: white(36),
+    text_dim: Color32::from_rgb(196, 196, 207),
+    text_faint: Color32::from_rgb(180, 180, 191),
+    hover: white(12),
+    selected: white(28),
     field: white(22),
     card: Color32::from_rgb(28, 28, 31),
     card_stroke: white(20),
@@ -86,7 +86,7 @@ pub const DARK: Palette = Palette {
     glass: Color32::from_rgba_premultiplied(38, 38, 42, 236),
     separator: white(22),
     shadow: Color32::from_black_alpha(120),
-    component: Color32::from_rgb(178, 150, 255),
+    component: Color32::from_rgb(206, 188, 255),
     warning: Color32::from_rgb(240, 180, 70),
 };
 
@@ -270,6 +270,21 @@ pub fn contrast(a: Color32, b: Color32) -> f32 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
+/// True when every text colour of `p` reads on the window gradient colour `bg`: `text` at 7:1,
+/// the others at WCAG AA (4.5:1), also on a hovered row, and the names of a selected row.
+fn reads_on(p: &Palette, bg: Color32) -> bool {
+    let aa = |fg: Color32, bg: Color32| contrast(fg, bg) >= 4.5;
+    let hovered = bg.blend(p.hover);
+    let selected = bg.blend(p.selected);
+    contrast(p.text, bg) >= 7.0
+        && [p.text_dim, p.text_faint, p.component, p.warning]
+            .into_iter()
+            .all(|fg| aa(fg, bg) && aa(fg, hovered))
+        && aa(p.text, hovered)
+        && aa(p.text, selected)
+        && aa(p.component, selected)
+}
+
 /// Black or white, whichever reads better on `fill` (text on an accent-coloured button).
 pub fn on_accent(fill: Color32) -> Color32 {
     let dark_text = Color32::from_rgb(20, 20, 24);
@@ -284,11 +299,7 @@ pub fn on_accent(fill: Color32) -> Color32 {
 /// it, and an accent that stands out from the cards.
 fn custom_tint(c: Color32, dark: bool) -> Tint {
     let p = if dark { DARK } else { LIGHT };
-    let readable = |bg: Color32| {
-        contrast(p.text, bg) >= 7.0
-            && contrast(p.text_dim, bg) >= 4.5
-            && contrast(p.text_faint, bg) >= 3.0
-    };
+    let readable = |bg: Color32| reads_on(&p, bg);
     // The strongest mix of `c` into `base`, up to `most`, with readable text on it.
     let mix = |base: Color32, most: f32| {
         (0..=20)
@@ -960,7 +971,7 @@ mod tests {
                         p.dark
                     );
                     assert!(
-                        contrast(p.text_faint, bg) >= 3.0,
+                        contrast(p.text_faint, bg) >= 4.5,
                         "{colour:?} dark={}",
                         p.dark
                     );
@@ -995,14 +1006,14 @@ mod tests {
                         p.dark
                     );
                     assert!(
-                        contrast(p.text_faint, bg) >= 3.0,
+                        contrast(p.text_faint, bg) >= 4.5,
                         "faint text on tint {i} dark={}",
                         p.dark
                     );
                 }
             }
             assert!(contrast(p.text, p.card) >= 7.0);
-            assert!(contrast(p.text_faint, p.card) >= 3.0);
+            assert!(contrast(p.text_faint, p.card) >= 4.5);
         }
     }
 
@@ -1027,7 +1038,7 @@ mod tests {
                 for bg in [t.top, t.bottom, t.glow] {
                     assert!(contrast(p.text, bg) >= 7.0, "{rgb:?} dark={}", p.dark);
                     assert!(contrast(p.text_dim, bg) >= 4.5, "{rgb:?} dark={}", p.dark);
-                    assert!(contrast(p.text_faint, bg) >= 3.0, "{rgb:?} dark={}", p.dark);
+                    assert!(contrast(p.text_faint, bg) >= 4.5, "{rgb:?} dark={}", p.dark);
                 }
                 assert!(
                     contrast(t.accent, p.card) >= 3.0,
@@ -1043,6 +1054,67 @@ mod tests {
         // A strong colour shows: the gradient is not just the neutral base.
         let blue = space_tint(Colour::Custom([0, 40, 255]), false);
         assert!(blue.bottom.b() > blue.bottom.r() + 10, "{:?}", blue.bottom);
+    }
+
+    /// Every colour the UI draws text in, on every surface that text sits on, reads at WCAG
+    /// AA (4.5:1): the window gradient of each space (with a hovered row's fill), the cards,
+    /// the wells, dialogs and the pills over any canvas. A selected row shows names in
+    /// `text` or `component` only (its icon is `text_dim`, a graphic: 3:1).
+    #[test]
+    fn every_text_colour_reads_at_aa_on_every_surface_it_uses() {
+        let customs = [
+            [0, 0, 0],
+            [255, 255, 255],
+            [255, 0, 0],
+            [0, 40, 255],
+            [119, 119, 119],
+        ];
+        for p in [LIGHT, DARK] {
+            let roles = [
+                ("text", p.text),
+                ("text_dim", p.text_dim),
+                ("text_faint", p.text_faint),
+                ("component", p.component),
+                ("warning", p.warning),
+            ];
+            let mut surfaces = vec![
+                ("card", p.card),
+                ("well", p.well),
+                ("dialog", visuals(&p).window_fill),
+                ("glass on black", Color32::BLACK.blend(p.glass)),
+                ("glass on white", Color32::WHITE.blend(p.glass)),
+            ];
+            let spaces = (0..TINTS)
+                .map(Colour::Preset)
+                .chain(customs.map(Colour::Custom));
+            for colour in spaces {
+                let t = space_tint(colour, p.dark);
+                let card = p.on_tint(t);
+                surfaces.extend([("tinted card", card.card), ("tinted well", card.well)]);
+                for bg in [t.top, t.bottom, t.glow] {
+                    surfaces.extend([("gradient", bg), ("hovered row", bg.blend(p.hover))]);
+                    let selected = bg.blend(p.selected);
+                    for (role, fg) in [("text", p.text), ("component", p.component)] {
+                        assert!(
+                            contrast(fg, selected) >= 4.5,
+                            "{role} on a selected row, {colour:?} dark={}: {:.2}",
+                            p.dark,
+                            contrast(fg, selected)
+                        );
+                    }
+                }
+            }
+            for (role, fg) in roles {
+                for (surface, bg) in &surfaces {
+                    assert!(
+                        contrast(fg, *bg) >= 4.5,
+                        "{role} on {surface} {bg:?} dark={}: {:.2}",
+                        p.dark,
+                        contrast(fg, *bg)
+                    );
+                }
+            }
+        }
     }
 
     #[test]
