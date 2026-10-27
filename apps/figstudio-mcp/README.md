@@ -148,6 +148,8 @@ Build the browser bundle first with `scripts/web-build.sh` (output in `web/dist`
    - Serve `web/dist` from any static host or Cloudflare Workers static assets
      (`"assets": { "directory": "web/dist" }` in `wrangler.jsonc`, with no `main` Worker
      script or Durable Object needed).
+   - https://figstudio.pelvo.dev is this kind: `web/wrangler.public.jsonc`, deployed by
+     `.github/workflows/web-deploy.yml` on every release (or by hand with a tag).
    - If the site sits behind an access gateway (such as Cloudflare Access with Google
      sign-in), keep the whole origin protected with **no `/mcp/*` bypass**: your local agent
      spawns `figstudio-mcp --browser-proxy` over `stdio`, and your already-signed-in browser
