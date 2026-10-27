@@ -106,6 +106,8 @@ jobs:
           # branch named like the tag would be built and its assets uploaded.
           ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
+          # Full history: the attest step below checks the tag's commit is on main.
+          fetch-depth: 0
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -124,11 +126,26 @@ jobs:
           # ditto keeps the bundle's signature and symlinks intact (plain zip does not).
           ditto -c -k --keepParent target/release/figstudio.app "dist/figstudio-$TAG-macos-arm64.zip"
           tar -C target/release -czf "dist/figstudio-cli-mcp-$TAG-macos-arm64.tar.gz" figstudio-cli figstudio-mcp
+      # The attestation names the workflow, not the code: a manual run from main builds
+      # whatever the tag points at. Only a tag on main's history (reviewed code) is attested,
+      # so a tag pushed at an unreviewed commit still builds and uploads, but its zip does
+      # not self-install.
+      - name: Is the tag on main
+        id: reviewed
+        run: |
+          git fetch --no-tags --quiet origin "+refs/heads/main:refs/remotes/origin/main"
+          if git merge-base --is-ancestor "refs/tags/$TAG^{commit}" origin/main; then
+            echo "on_main=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::$TAG is not on main: its app zip is not attested and will not self-install"
+            echo "on_main=false" >> "$GITHUB_OUTPUT"
+          fi
       # SLSA build provenance for the app zip, signed through Sigstore with this workflow's
       # identity (release-please.yml@refs/heads/main for a release from main). The updater
       # (apps/figstudio/src/update_attest.rs) refuses a zip without it; a run dispatched
       # from another branch gets another identity, so its zip does not install.
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        if: steps.reviewed.outputs.on_main == 'true'
         with:
           subject-path: dist/figstudio-${{ env.TAG }}-macos-arm64.zip
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

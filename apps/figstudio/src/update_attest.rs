@@ -6,7 +6,15 @@
 //!
 //! The bundle is checked by Sigstore's verifier (`sigstore-verify`) against its built-in
 //! production trust root: the certificate chain to Fulcio, the transparency-log entry and
-//! the signature, and that the attested subject is exactly this digest.
+//! the signature, and that the attested subject is exactly this digest. The release
+//! workflow attests only a tag on `main`'s history, so the workflow identity also stands
+//! for reviewed code.
+//!
+//! Trade-off: the trust root is the one compiled into `sigstore-trust-root`, with no TUF
+//! refresh. When Sigstore rotates a Fulcio intermediate, adds a Rekor shard or changes its
+//! timestamp authority, builds already shipped stop verifying new attestations; they fail
+//! safe, pointing to the release page, and a release built after the rotation verifies
+//! again once installed by hand.
 
 use std::io::Read;
 use std::time::Duration;
@@ -59,15 +67,37 @@ pub fn check(http: &reqwest::blocking::Client, sha256: &str) -> anyhow::Result<(
         .and_then(reqwest::blocking::Response::text)
         .context("could not read the build attestations")?;
     let list: List = serde_json::from_str(&text).context("unexpected attestation reply")?;
+    let (bundles, missed) = collect(list, |url| fetch_bundle(http, url));
+    attested(&bundles, sha256, WORKFLOW).map_err(|e| match missed {
+        // Nothing verified, and one could not be fetched: say so too.
+        Some(fetch) => e.context(format!("an attestation could not be fetched ({fetch:#})")),
+        None => e,
+    })
+}
+
+/// The bundles of `list`, inline or fetched with `fetch` from their `bundle_url`. A fetch
+/// that fails is skipped (a later attestation may still verify); the last such error is
+/// returned with them.
+fn collect(
+    list: List,
+    mut fetch: impl FnMut(&str) -> anyhow::Result<String>,
+) -> (Vec<String>, Option<anyhow::Error>) {
     let mut bundles = Vec::new();
+    let mut missed = None;
     for entry in list.attestations.into_iter().take(MAX_ATTESTATIONS) {
         match (entry.bundle, entry.bundle_url) {
             (Some(bundle), _) if !bundle.is_null() => bundles.push(bundle.to_string()),
-            (_, Some(url)) => bundles.push(fetch_bundle(http, &url)?),
+            (_, Some(url)) => match fetch(&url) {
+                Ok(bundle) => bundles.push(bundle),
+                Err(e) => {
+                    tracing::warn!("a build attestation was not fetched: {e:#}");
+                    missed = Some(e);
+                }
+            },
             _ => {}
         }
     }
-    attested(&bundles, sha256, WORKFLOW)
+    (bundles, missed)
 }
 
 /// A bundle from its `bundle_url`: raw Snappy-compressed JSON (or plain JSON).
@@ -168,6 +198,28 @@ mod tests {
         // A good one among bad ones is enough.
         let mixed = ["{}".to_owned(), GH_BUNDLE.to_owned()];
         assert!(attested(&mixed, GH_DEB, GH_WORKFLOW).is_ok());
+    }
+
+    #[test]
+    fn a_failed_fetch_does_not_hide_a_later_attestation() -> anyhow::Result<()> {
+        let list: List = serde_json::from_value(serde_json::json!({
+            "attestations": [
+                { "bundle_url": "https://example.invalid/expired" },
+                { "bundle_url": "https://example.invalid/good" },
+                { "bundle": null },
+            ]
+        }))?;
+        let (bundles, missed) = collect(list, |url| {
+            if url.ends_with("good") {
+                Ok(GH_BUNDLE.to_owned())
+            } else {
+                anyhow::bail!("expired link")
+            }
+        });
+        assert_eq!(bundles.len(), 1, "the one that downloaded");
+        assert!(missed.is_some(), "the failure is kept for the message");
+        assert!(attested(&bundles, GH_DEB, GH_WORKFLOW).is_ok());
+        Ok(())
     }
 
     #[test]
