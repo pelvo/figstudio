@@ -97,6 +97,89 @@ pub fn render_node(
     scale: Option<f64>,
     rendering: &Rendering,
 ) -> Result<Shot, CoreError> {
+    with_target(
+        doc,
+        node_id,
+        scale,
+        |root, bounds, scale, background, max_side| {
+            render(doc, root, bounds, scale, background, max_side, rendering)
+        },
+    )
+}
+
+/// A finished SVG export of one node, cropped like [`render_node`].
+pub struct SvgShot {
+    pub svg: figstudio_render::svg::Svg,
+    pub width: u16,
+    pub height: u16,
+    pub scale: f64,
+}
+
+impl SvgShot {
+    /// "WxH, scale S, N bytes of SVG", then an approximations line when anything was
+    /// drawn inexactly.
+    pub fn describe(&self) -> String {
+        let mut text = format!(
+            "{}x{}, scale {}, {} bytes of SVG",
+            self.width,
+            self.height,
+            significant(self.scale),
+            self.svg.markup.len()
+        );
+        let mut notes = approximations(&self.svg.stats);
+        if self.svg.approximated > 0 {
+            notes.push(format!(
+                "{} drawing steps SVG cannot express",
+                self.svg.approximated
+            ));
+        }
+        if !notes.is_empty() {
+            text.push_str("\napproximations: ");
+            text.push_str(&notes.join(", "));
+        }
+        text
+    }
+}
+
+/// [`render_node`] as SVG (vector paths, text as outlines, images embedded as PNG). The
+/// markup is limited to `limit` bytes; a larger export is an error.
+pub fn svg_node(
+    doc: &Document,
+    node_id: &str,
+    scale: Option<f64>,
+    rendering: &Rendering,
+    limit: usize,
+) -> Result<SvgShot, CoreError> {
+    with_target(
+        doc,
+        node_id,
+        scale,
+        |root, bounds, scale, background, max_side| {
+            let (width, height, viewport) = viewport(bounds, scale, background, max_side)?;
+            let svg = rendering.draw_svg(doc, root, &viewport, limit);
+            if svg.over_limit {
+                return Err(CoreError::limit(format!(
+                    "the SVG is over {limit} bytes; export a smaller node"
+                )));
+            }
+            Ok(SvgShot {
+                svg,
+                width,
+                height,
+                scale: viewport.transform.as_coeffs()[0],
+            })
+        },
+    )
+}
+
+/// Resolves `node_id` to what to draw and its crop box (page units), then calls `draw` with
+/// the root, the box, the requested scale, the page background (pages only) and the side cap.
+fn with_target<R>(
+    doc: &Document,
+    node_id: &str,
+    scale: Option<f64>,
+    draw: impl FnOnce(Root<'_>, Rect, f64, Option<Background>, f64) -> Result<R, CoreError>,
+) -> Result<R, CoreError> {
     // An omitted scale gets the smaller side cap; an explicit one keeps the 4096 px cap.
     let max_side = if scale.is_some() {
         MAX_SIDE_PX
@@ -110,7 +193,8 @@ pub fn render_node(
     let id = match parse_node_id(node_id) {
         Ok(NodeId::Node(id)) => id,
         Ok(NodeId::InstancePath(path)) => {
-            return instance_child(doc, &path, scale, max_side, rendering);
+            let bounds = instance_child_bounds(doc, &path)?;
+            return draw(Root::Path(&path), bounds, scale, None, max_side);
         }
         Err(error) => return Err(error),
     };
@@ -145,16 +229,10 @@ pub fn render_node(
         node_bounds(doc, id).unwrap_or(content)
     };
     let background = is_page.then(|| page_background(doc, page));
-    render(
-        doc,
-        Root::Node(id),
-        bounds,
-        scale,
-        background,
-        max_side,
-        rendering,
-    )
+    draw(Root::Node(id), bounds, scale, background, max_side)
 }
+
+type Background = figstudio_render::color::AlphaColor<figstudio_render::color::Srgb>;
 
 /// What a screenshot draws: a document node, or one node inside an instance on its own.
 #[derive(Clone, Copy)]
@@ -163,14 +241,8 @@ pub enum Root<'p> {
     Path(&'p InstancePath),
 }
 
-/// Renders the instance child at `path` alone, cropped to the box the renderer gives it.
-fn instance_child(
-    doc: &Document,
-    path: &InstancePath,
-    scale: f64,
-    max_side: f64,
-    rendering: &Rendering,
-) -> Result<Shot, CoreError> {
+/// The box the renderer gives the instance child at `path` when drawn alone.
+fn instance_child_bounds(doc: &Document, path: &InstancePath) -> Result<Rect, CoreError> {
     if let Err(error) = resolve_path(doc, path) {
         return Err(CoreError::resolve(path, error));
     }
@@ -184,15 +256,7 @@ fn instance_child(
             "node {path} has zero size, nothing to render"
         )));
     }
-    render(
-        doc,
-        Root::Path(path),
-        bounds,
-        scale,
-        None,
-        max_side,
-        rendering,
-    )
+    Ok(bounds)
 }
 
 /// Renders a layer (not a page) cropped to its own box on a transparent background, as
@@ -217,10 +281,26 @@ fn render(
     root: Root<'_>,
     bounds: Rect,
     scale: f64,
-    background: Option<figstudio_render::color::AlphaColor<figstudio_render::color::Srgb>>,
+    background: Option<Background>,
     max_side: f64,
     rendering: &Rendering,
 ) -> Result<Shot, CoreError> {
+    let (_, _, viewport) = viewport(bounds, scale, background, max_side)?;
+    let frame = rendering.draw(doc, root, &viewport);
+    Ok(Shot {
+        frame,
+        scale: viewport.transform.as_coeffs()[0],
+    })
+}
+
+/// The output size and viewport for `bounds` (page units) at `scale`, its longest side capped
+/// at `max_side`.
+fn viewport(
+    bounds: Rect,
+    scale: f64,
+    background: Option<Background>,
+    max_side: f64,
+) -> Result<(u16, u16, Viewport), CoreError> {
     let longest = bounds.width().max(bounds.height()) * scale;
     if !longest.is_finite() || longest <= 0.0 {
         return Err(CoreError::render("the node has no finite size to render"));
@@ -242,8 +322,7 @@ fn render(
         transform: Affine::scale(scale) * Affine::translate((-bounds.x0, -bounds.y0)),
         background,
     };
-    let frame = rendering.draw(doc, root, &viewport);
-    Ok(Shot { frame, scale })
+    Ok((width, height, viewport))
 }
 
 /// `value` rounded to four significant figures, so a tiny capped scale is not shown as 0.

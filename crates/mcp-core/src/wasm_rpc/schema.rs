@@ -8,7 +8,7 @@ pub fn tool_list() -> Vec<Value> {
     let boolean = json!({"type":["boolean","null"]});
     let strings = json!({"type":["array","null"],"items":{"type":"string"}});
     let format = json!({"type":["string","null"],"enum":["png","webp",null]});
-    let asset_format = json!({"type":["string","null"],"enum":["png","webp","jpg",null]});
+    let asset_format = json!({"type":["string","null"],"enum":["png","webp","jpg","svg",null]});
     let node = vec![("nodeId", string.clone()), ("fileKey", string.clone())];
     let mut metadata = node.clone();
     metadata.push(("depth", integer.clone()));
@@ -93,7 +93,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "download_assets",
-            "Render up to 20 nodes, format png (default), webp or jpg (flattened onto white), or return original image fills. Defaults to selection.",
+            "Render up to 20 nodes, format png (default), webp, jpg (flattened onto white) or svg (vector markup as text), or return original image fills. Defaults to selection.",
             vec![
                 ("nodeIds", strings.clone()),
                 ("fileKey", string.clone()),
