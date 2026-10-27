@@ -3,6 +3,11 @@
 One file per entry, named `<UTC time>-<slug>.md` (`scripts/progress.sh new <slug>`).
 Two branches never touch the same file, so the log cannot conflict. File names sort into
 the timeline; `scripts/progress.sh list` prints it with the commit that added each entry.
+Each entry starts with a `branch:` and `pr:` header (`new` fills the branch; pass the PR
+number as a second argument, or leave it empty: the "(#N)" in the squash-merge commit that
+adds the entry fills it in `list`). `scripts/progress.sh pr <N>` prints every entry of one PR;
+`list` shows the PR beside each entry. Old backfilled entries are matched by the "PR #N" in
+their text.
 Never edit another branch's entry; correct an old one with a new entry that names it.
 Entries `…-bNNN-…` are the old `docs/PLAN.md` log, backfilled verbatim: the date is the one
 in the entry (time of day from the commit that added it when that was the same day, else

@@ -47,8 +47,9 @@ picking up work. Read the three documents below before changing code.
     menu hook in `dock_mac.rs`, the Windows jump list in `jump_list.rs`, the Windows
     foreground permission in `handoff.rs` and the Windows foreground request in
     `foreground_win.rs` (approved by the owner). Ask before adding another.
-11. **Update `docs/PLAN.md`** when you finish something: tick the box only after its check
-    really passed, and add one progress entry with `scripts/progress.sh new <slug>` (one file
+11. **Update the plan** when you finish something: tick the box in your PR's own file
+    `docs/plans/pr-<N>.md` (`scripts/plan.sh new`; `docs/PLAN.md` keeps phases and prose only),
+    only after its check really passed, and add one progress entry with `scripts/progress.sh new <slug>` (one file
     per entry in `docs/progress/`, so branches do not conflict; PLAN.md no longer holds the log). Report what you did **not** verify.
 12. **Use trustworthy crates; do not hand-roll.** For protocols, formats and encodings
     (JSON, MCP/JSON-RPC, HTTP, XML, base64, CLI parsing in new code, …) use a well-known,
