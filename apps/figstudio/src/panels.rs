@@ -432,6 +432,13 @@ pub fn properties(ui: &mut Ui, tab: &Tab) -> Option<Item> {
                 );
             }
             effects(ui, d.get("effects"));
+            let details = tab.inspect.get(doc, node);
+            if let Some(motion) = &details.motion {
+                motion_section(ui, motion, &mut picked);
+            }
+            for shader in &details.shaders {
+                shader_section(ui, shader);
+            }
 
             if node.kind == "TEXT" {
                 section(ui, "Text", |ui| {
@@ -611,6 +618,95 @@ fn paints(ui: &mut Ui, title: &str, list: Option<&Val>) {
                     ui.label(RichText::new(format!("{:.0}%", opacity * 100.0)).color(p.text_dim));
                 });
             });
+        }
+    });
+}
+
+/// The layer's keyframe tracks: one line per animated field, the timeline, and a copy button.
+fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<Item>) {
+    use crate::inspect::{field_label, value_text};
+    section(ui, "Motion", |ui| {
+        let ms = |v: &serde_json::Value| fmt(v.as_f64().unwrap_or(0.0));
+        kv(
+            ui,
+            "Timeline",
+            format!(
+                "{} ms · {}",
+                ms(&motion["durationMs"]),
+                motion["loopMode"].as_str().unwrap_or("once")
+            ),
+        );
+        for binding in motion["keyframeBindings"].as_array().into_iter().flatten() {
+            let keys = binding["keyframes"]
+                .as_array()
+                .map_or(&[][..], Vec::as_slice);
+            let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
+                continue;
+            };
+            let mut label = field_label(binding["field"].as_str().unwrap_or("?"));
+            if let Some(preset) = binding["preset"].as_str() {
+                label.push_str(&format!(" ({preset})"));
+            }
+            let easing = last["easing"]["type"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .replace('_', " ");
+            kv(
+                ui,
+                &label,
+                format!(
+                    "{} → {} · {}–{} ms · {easing}",
+                    value_text(&first["value"]),
+                    value_text(&last["value"]),
+                    ms(&first["timeMs"]),
+                    ms(&last["timeMs"]),
+                ),
+            );
+        }
+        if let Some(css) = motion["codeSnippets"]["css"].as_str()
+            && ui.small_button("Copy CSS animation").clicked()
+        {
+            *picked = Some(Item::text(
+                "Copy CSS animation",
+                "CSS animation",
+                css.to_owned(),
+            ));
+        }
+    });
+}
+
+/// One shader fill or effect: its kind and version, then each parameter's value.
+fn shader_section(ui: &mut Ui, shader: &serde_json::Value) {
+    let title = match shader["type"].as_str() {
+        Some("fill") => "Shader fill",
+        Some("effect") => "Shader effect",
+        _ => "Shader",
+    };
+    section(ui, title, |ui| {
+        let p = theme::of(ui);
+        let version = shader["version"]
+            .as_str()
+            .map_or(String::new(), |v| format!(" · v{v}"));
+        let hidden = if shader["visible"] == false {
+            " · hidden"
+        } else {
+            ""
+        };
+        ui.label(
+            RichText::new(format!(
+                "{}{version}{hidden}",
+                shader["id"].as_str().unwrap_or("not in this file")
+            ))
+            .color(p.text_faint)
+            .small(),
+        );
+        for value in shader["values"].as_array().into_iter().flatten() {
+            kv(
+                ui,
+                value["label"].as_str().unwrap_or("?"),
+                crate::inspect::value_text(&value["value"]),
+            );
         }
     });
 }
