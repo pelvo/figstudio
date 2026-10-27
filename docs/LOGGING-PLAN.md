@@ -109,5 +109,5 @@ widely used and maintained. Add them to `[workspace.dependencies]`.
 - `rg 'FigError\(' crates apps` finds 0 tuple constructions.
 - The privacy test (stderr at `trace` has no fixture names) and `tests/doctor.rs` pass.
 - `scripts/thumb-sheet.py` looks the same as before (no rendering change expected).
-- Add a line to the `docs/PLAN.md` progress log, and a "Logging and errors" section to
+- Add a progress entry (`scripts/plan.sh note <slug>`), and a "Logging and errors" section to
   `docs/IMPLEMENTATION.md`.

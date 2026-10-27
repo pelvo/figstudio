@@ -6,7 +6,7 @@ picking up work. Read the three documents below before changing code.
 
 | Document | What it is for |
 |---|---|
-| `docs/PLAN.md` | Requirements, phases, **what is done and what is open**, progress log |
+| `docs/PLAN.md` | Requirements, phases, **what is done and what is open**, per-PR checklists and progress (`docs/plans/`) |
 | `docs/IMPLEMENTATION.md` | Architecture, data flow, how to add a feature, gotchas, task board |
 | `docs/TESTING.md` | Every test and check, how to write new ones, how to prove a test works |
 | `apps/figstudio-mcp/README.md` | The offline MCP server: install, client setup, tools, limits |
@@ -47,8 +47,12 @@ picking up work. Read the three documents below before changing code.
     menu hook in `dock_mac.rs`, the Windows jump list in `jump_list.rs`, the Windows
     foreground permission in `handoff.rs` and the Windows foreground request in
     `foreground_win.rs` (approved by the owner). Ask before adding another.
-11. **Update `docs/PLAN.md`** when you finish something: tick the box only after its check
-    really passed, and add one line to the progress log. Report what you did **not** verify.
+11. **Update the plan** when you finish something: start your branch's file with
+    `scripts/plan.sh new <slug> "<title>"` (`docs/plans/<date>-<slug>.md`; no PR needed), tick
+    the box in it only after its check really passed, and add a progress entry with
+    `scripts/plan.sh note <slug>`. One file per branch, so branches do not conflict; add the PR
+    number later with `plan.sh link`. `docs/PLAN.md` keeps phases and prose only. Report what
+    you did **not** verify.
 12. **Use trustworthy crates; do not hand-roll.** For protocols, formats and encodings
     (JSON, MCP/JSON-RPC, HTTP, XML, base64, CLI parsing in new code, …) use a well-known,
     maintained crate (official SDK, high download count, active repo) instead of writing
@@ -87,8 +91,7 @@ driver for wgpu, GTK/portal for the file dialog). macOS needs only Xcode command
   open from the Conventional Commit titles on `main`. Merging it bumps the version in
   `Cargo.toml`/`Cargo.lock`, writes `CHANGELOG.md`, tags `vX.Y.Z` and attaches the macOS
   app (`figstudio-vX.Y.Z-macos-arm64.zip`) and the CLI/MCP binaries to the GitHub release.
-  The same release deploys the browser build to https://figstudio.pelvo.dev
-  (`.github/workflows/web-deploy.yml`). Do not bump versions or edit `CHANGELOG.md` by hand.
+  Do not bump versions or edit `CHANGELOG.md` by hand.
 - Do not commit `target/`, generated PNGs, stress files (`synth` output) or private `.fig`
   files. Only the 7 fixtures in `tests/fixtures` (MIT, from fig2sketch) belong in the repo.
 - Do not put people's names, chat names, phone numbers or local paths in commits, issues or
