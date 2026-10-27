@@ -4,31 +4,45 @@
 # "## Progress" section of "### <utc time> <slug>" entries. docs/PLAN.md keeps the phases,
 # prose and Done-when checks.
 #
-#   scripts/plan.sh new <pr|0> <branch> "<title>"   create docs/plans/pr-<pr>.md
-#   scripts/plan.sh note <pr> <slug>                add a timestamped progress entry to that PR's file
-#   scripts/plan.sh show <phase>                    one phase's items from every PR, tagged (#PR)
-#   scripts/plan.sh pr <pr>                         one PR's whole file: items and progress
-#   scripts/plan.sh log [N]                         timeline of all progress entries, oldest first (last N)
-#   scripts/plan.sh status                          done/open per phase and per PR
+#   scripts/plan.sh new "<title>" [pr]    start this branch's file (pr-<pr>.md, or pr-wip-<branch>.md before the PR exists)
+#   scripts/plan.sh bind [pr]              the PR now exists: rename pr-wip-<branch>.md to pr-<pr>.md, set pr: (pr from gh when omitted)
+#   scripts/plan.sh note <slug> [pr]       add a timestamped progress entry to this branch's file (or PR <pr>'s)
+#   scripts/plan.sh show <phase>           one phase's items from every PR, tagged (#PR) or (wip)
+#   scripts/plan.sh pr [pr]                one file whole: items and progress (default: this branch's)
+#   scripts/plan.sh log [N]                timeline of all progress entries, oldest first (last N)
+#   scripts/plan.sh status                 done/open per phase and per PR/branch
 set -euo pipefail
 cd "$(dirname "$0")/../docs/plans"
 
 files() { echo pre-pr.md; ls pr-*.md | sort -V; }
 tag_of() { local pr; pr=$(sed -n 's/^pr: *//p' "$1" | head -1); [ -n "$pr" ] && echo "#$pr" || { [ "$1" = pre-pr.md ] && echo pre-PR || echo wip; }; }
 
+branch=$(git rev-parse --abbrev-ref HEAD)
+wipfile() { echo "pr-wip-${branch//\//-}.md"; }
+# this branch's file: the one whose branch: header matches, else the wip name
+mine() { local f; f=$(grep -l "^branch: $branch\$" pr-*.md 2>/dev/null | head -1 || true); echo "${f:-$(wipfile)}"; }
+target() { if [ -n "${1:-}" ]; then echo "pr-$1.md"; else mine; fi; }
+
 case "${1:-}" in
   new)
-    [[ "${2:-}" =~ ^[0-9]+$ && -n "${3:-}" && -n "${4:-}" ]] || { echo 'usage: plan.sh new <pr|0> <branch> "<title>"' >&2; exit 2; }
-    f="pr-$2.md"; [ "$2" != 0 ] || f="pr-wip-${3//\//-}.md"
+    t="${2:-}"; pr="${3:-}"; [ -n "$t" ] || { echo 'usage: plan.sh new "<title>" [pr]' >&2; exit 2; }
+    [ -z "$pr" ] || [[ "$pr" =~ ^[0-9]+$ ]] || { echo "pr must be a number" >&2; exit 2; }
+    f=$([ -n "$pr" ] && echo "pr-$pr.md" || wipfile)
     [ ! -e "$f" ] || { echo "$f exists" >&2; exit 1; }
-    printf -- '---\npr: %s\nbranch: %s\ntitle: %s\n---\n\n## P? — <phase heading exactly as in PLAN.md>\n- [ ] item\n\n## Progress\n' \
-      "$([ "$2" = 0 ] || echo "$2")" "$3" "$4" > "$f"
+    printf -- '---\npr: %s\nbranch: %s\ntitle: %s\n---\n\n## P? — <phase heading exactly as in PLAN.md>\n- [ ] item\n\n## Progress\n' "$pr" "$branch" "$t" > "$f"
     echo "docs/plans/$f" ;;
+  bind)
+    f=$(mine); [ -e "$f" ] || { echo "no plan file for branch $branch; run: plan.sh new \"<title>\"" >&2; exit 1; }
+    pr="${2:-$(gh pr view --json number -q .number 2>/dev/null || true)}"
+    [[ "$pr" =~ ^[0-9]+$ ]] || { echo "no PR found for $branch yet; open it, or pass the number" >&2; exit 1; }
+    [ ! -e "pr-$pr.md" ] || [ "$f" = "pr-$pr.md" ] || { echo "pr-$pr.md exists" >&2; exit 1; }
+    sed -i "s/^pr:.*/pr: $pr/" "$f"; [ "$f" = "pr-$pr.md" ] || git mv "$f" "pr-$pr.md" 2>/dev/null || mv "$f" "pr-$pr.md"
+    echo "docs/plans/pr-$pr.md" ;;
   note)
-    [[ "${2:-}" =~ ^[0-9]+$ && "${3:-}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || { echo 'usage: plan.sh note <pr> <kebab-slug>' >&2; exit 2; }
-    f="pr-$2.md"; [ -e "$f" ] || { echo "no $f; run: plan.sh new $2 <branch> \"<title>\"" >&2; exit 1; }
+    [[ "${2:-}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ( -z "${3:-}" || "${3:-}" =~ ^[0-9]+$ ) ]] || { echo 'usage: plan.sh note <kebab-slug> [pr]' >&2; exit 2; }
+    f=$(target "${3:-}"); [ -e "$f" ] || { echo "no $f; run: plan.sh new \"<title>\"" >&2; exit 1; }
     grep -q '^## Progress$' "$f" || printf '\n## Progress\n' >> "$f"
-    printf '\n### %s %s\n- What changed and how it was checked:\n- Not verified:\n' "$(date -u +%Y-%m-%dT%H%M%SZ)" "$3" >> "$f"
+    printf '\n### %s %s\n- What changed and how it was checked:\n- Not verified:\n' "$(date -u +%Y-%m-%dT%H%M%SZ)" "$2" >> "$f"
     echo "docs/plans/$f" ;;
   show)
     ph="${2:?phase}"
@@ -40,7 +54,7 @@ case "${1:-}" in
         END{if(blk)print blk}' "$f"
     done ;;
   pr)
-    f="pr-${2:?pr}.md"; [ -e "$f" ] || { echo "no $f" >&2; exit 1; }; cat "$f" ;;
+    f=$(target "${2:-}"); [ -e "$f" ] || { echo "no $f" >&2; exit 1; }; cat "$f" ;;
   log)
     for f in $(files); do
       t=$(tag_of "$f")
@@ -49,8 +63,8 @@ case "${1:-}" in
   status)
     printf '%-10s %5s %5s\n' phase done open
     cat $(files) | awk '/^## /{p=$2} /^- \[x\]/{d[p]++} /^- \[ \]/{o[p]++} END{for(k in d)ks[k];for(k in o)ks[k];for(k in ks)printf "%-10s %5d %5d\n",k,d[k],o[k]}' | sort -V
-    printf '\n%-10s %5s %5s %8s\n' pr done open entries
+    printf '\n%-24s %5s %5s %8s\n' file done open entries
     for f in $(files); do
-      printf '%-10s %5d %5d %8d\n' "${f%.md}" "$(grep -c '^- \[x\]' "$f")" "$(grep -c '^- \[ \]' "$f")" "$(grep -c '^### ' "$f")"; done ;;
+      printf '%-24s %5d %5d %8d\n' "${f%.md}" "$(grep -c '^- \[x\]' "$f")" "$(grep -c '^- \[ \]' "$f")" "$(grep -c '^### ' "$f")"; done ;;
   *) echo "usage: plan.sh new|note|show|pr|log|status ..." >&2; exit 2 ;;
 esac
