@@ -6,7 +6,7 @@ picking up work. Read the three documents below before changing code.
 
 | Document | What it is for |
 |---|---|
-| `docs/PLAN.md` | Requirements, phases, **what is done and what is open**, progress log |
+| `docs/PLAN.md` | Requirements, phases, **what is done and what is open**, progress entries (`docs/progress/`) |
 | `docs/IMPLEMENTATION.md` | Architecture, data flow, how to add a feature, gotchas, task board |
 | `docs/TESTING.md` | Every test and check, how to write new ones, how to prove a test works |
 | `apps/figstudio-mcp/README.md` | The offline MCP server: install, client setup, tools, limits |
@@ -48,7 +48,8 @@ picking up work. Read the three documents below before changing code.
     foreground permission in `handoff.rs` and the Windows foreground request in
     `foreground_win.rs` (approved by the owner). Ask before adding another.
 11. **Update `docs/PLAN.md`** when you finish something: tick the box only after its check
-    really passed, and add one line to the progress log. Report what you did **not** verify.
+    really passed, and add one progress entry with `scripts/progress.sh new <slug>` (one file
+    per entry in `docs/progress/`, so branches do not conflict; do not edit the frozen log in PLAN.md). Report what you did **not** verify.
 12. **Use trustworthy crates; do not hand-roll.** For protocols, formats and encodings
     (JSON, MCP/JSON-RPC, HTTP, XML, base64, CLI parsing in new code, …) use a well-known,
     maintained crate (official SDK, high download count, active repo) instead of writing

@@ -4,7 +4,8 @@ A Rust app for Figma `.fig` local copies. Version 1 opens and displays files; ed
 come later, so the design must not block it. (`figstudio` is a working name.)
 
 This file is the progress tracker. Tick a box only after its **Done when** check has
-actually passed, and add a line to the progress log at the bottom.
+actually passed, and add a progress entry (`scripts/progress.sh new <slug>`, see
+`docs/progress/README.md`; never edit this file for it).
 
 Working on it? Start with `AGENTS.md`, then `docs/IMPLEMENTATION.md` (architecture, recipes,
 task board) and `docs/TESTING.md` (tests, checks, how to prove a test).
@@ -314,7 +315,9 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
   still fail in the browser.
 - Writing `.fig` that Figma accepts is unverified until someone opens a saved file in Figma.
 
-## Progress log
+## Progress log (frozen)
+
+Entries up to 2026-10-26 only. New entries are files in `docs/progress/`; do not append here.
 
 - 2026-10-22 — PR #49 review: replace the borrowed-reader regression with an owned
   stream passed to the same banner helper as the child process. The helper drains stderr
