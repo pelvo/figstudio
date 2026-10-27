@@ -215,19 +215,19 @@ fn desktop_section(ui: &mut Ui, tab: &Tab, node: &Node, component: Guid, faint: 
         ..Form::default()
     });
     ui.label(RichText::new("Not connected").color(faint).small());
-    let name_label = ui.label(RichText::new("Component").color(faint));
-    ui.text_edit_singleline(&mut form.name)
-        .labelled_by(name_label.id);
-    let source_label = ui.label(RichText::new("Source").color(faint));
-    ui.add(egui::TextEdit::singleline(&mut form.source).hint_text("src/components/Button.tsx"))
-        .labelled_by(source_label.id);
-    egui::ComboBox::from_id_salt(("code-connect-label", tab.id, component))
-        .selected_text(LABELS[form.label.min(LABELS.len() - 1)])
-        .show_ui(ui, |ui| {
-            for (i, label) in LABELS.iter().enumerate() {
-                ui.selectable_value(&mut form.label, i, *label);
-            }
-        });
+    field_row(ui, "Component", |ui, label| {
+        field(ui, label, &mut form.name, "");
+    });
+    field_row(ui, "Source", |ui, label| {
+        field(ui, label, &mut form.source, "src/components/Button.tsx");
+    });
+    field_row(ui, "Label", |ui, _| {
+        label_picker(
+            ui,
+            egui::Id::new(("code-connect-labels", tab.id, component)),
+            &mut form.label,
+        );
+    });
     if let Some(error) = &form.error {
         ui.label(
             RichText::new(error)
@@ -235,7 +235,19 @@ fn desktop_section(ui: &mut Ui, tab: &Tab, node: &Node, component: Guid, faint: 
                 .small(),
         );
     }
-    if ui.button("Connect").clicked() {
+    ui.add_space(2.0);
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::hover());
+    let tint = theme::space_tint(tab.colour(), theme::of(ui).dark);
+    let connect = crate::chrome::accent_button(
+        ui,
+        rect,
+        ("code-connect", tab.id, component),
+        "Connect",
+        "Connect",
+        tint,
+    );
+    if connect.clicked() {
         let mapping = Mapping {
             component_name: form.name.trim().to_owned(),
             source: form.source.trim().to_owned(),
@@ -254,6 +266,108 @@ fn desktop_section(ui: &mut Ui, tab: &Tab, node: &Node, component: Guid, faint: 
         }
     }
     ui.data_mut(|d| d.insert_temp(id, form));
+}
+
+/// Width of the form's label column.
+#[cfg(not(target_arch = "wasm32"))]
+const LABEL_WIDTH: f32 = 72.0;
+
+/// Height of a form field, as the layer filter.
+#[cfg(not(target_arch = "wasm32"))]
+const FIELD: f32 = 26.0;
+
+/// A row of the form: a faint label on the left, as in the other sections, then the control.
+#[cfg(not(target_arch = "wasm32"))]
+fn field_row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui, egui::Id)) {
+    let faint = theme::of(ui).text_faint;
+    ui.horizontal(|ui| {
+        let label = ui
+            .allocate_ui_with_layout(
+                egui::vec2(LABEL_WIDTH, FIELD),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    // The column keeps its width whatever the label, so the fields line up.
+                    ui.set_min_width(LABEL_WIDTH);
+                    ui.label(RichText::new(label).color(faint))
+                },
+            )
+            .inner;
+        add(ui, label.id);
+    });
+}
+
+/// A text field drawn like the layer filter: a rounded, tinted frame around a plain edit.
+#[cfg(not(target_arch = "wasm32"))]
+fn field(ui: &mut Ui, label: egui::Id, text: &mut String, hint: &str) {
+    let p = theme::of(ui);
+    egui::Frame::new()
+        .fill(p.field)
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(8, 0))
+        .show(ui, |ui| {
+            ui.add_sized(
+                egui::vec2(ui.available_width(), FIELD),
+                egui::TextEdit::singleline(text)
+                    .hint_text(hint)
+                    .vertical_align(egui::Align::Center)
+                    .frame(egui::Frame::NONE)
+                    .margin(egui::Margin::symmetric(0, 0)),
+            )
+            .labelled_by(label);
+        });
+}
+
+/// The label picker: a field-shaped button that opens the app's menu with Figma's labels.
+#[cfg(not(target_arch = "wasm32"))]
+fn label_picker(ui: &mut Ui, id: egui::Id, chosen: &mut usize) {
+    let p = theme::of(ui);
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), FIELD),
+        egui::Sense::click(),
+    );
+    let current = LABELS[(*chosen).min(LABELS.len() - 1)];
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::ComboBox,
+            true,
+            format!("Label: {current}"),
+        )
+    });
+    let (hover, _) = crate::icons::feedback(ui, &response);
+    let painter = ui.painter();
+    painter.rect_filled(
+        rect,
+        egui::CornerRadius::same(8),
+        p.field.lerp_to_gamma(p.hover, hover * 0.6),
+    );
+    painter.text(
+        rect.left_center() + egui::vec2(8.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        current,
+        egui::FontId::proportional(13.0),
+        p.text,
+    );
+    crate::icons::chevron(
+        painter,
+        egui::Rect::from_center_size(
+            rect.right_center() - egui::vec2(14.0, 0.0),
+            egui::vec2(10.0, 10.0),
+        ),
+        p.text_faint,
+        1.0,
+    );
+    egui::Popup::menu(&response)
+        .style(theme::menu_style)
+        .id(id)
+        .show(|ui| {
+            for (i, label) in LABELS.iter().enumerate() {
+                // One of several, as the app's other menus mark it (View → CJK font).
+                if ui.radio(i == *chosen, *label).clicked() {
+                    *chosen = i;
+                    ui.close();
+                }
+            }
+        });
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -313,14 +427,7 @@ pub fn overview_section(ui: &mut Ui, tab: &Tab) -> Option<Guid> {
             .small(),
         );
         for c in components.iter().take(SHOWN) {
-            let name = c["name"].as_str().unwrap_or("?");
-            let uses = c["instanceCount"].as_u64().unwrap_or(0);
-            let row = ui.add(
-                egui::Button::new(format!("{name}  ·  {uses}×"))
-                    .frame(false)
-                    .truncate(),
-            );
-            if row.clicked() {
+            if suggestion_row(ui, c) {
                 clicked = c["mainComponentNodeId"]
                     .as_str()
                     .and_then(|id| id.parse().ok());
@@ -335,6 +442,62 @@ pub fn overview_section(ui: &mut Ui, tab: &Tab) -> Option<Guid> {
         }
     });
     clicked
+}
+
+/// One suggestion, drawn like a Layers row: the component icon and name, the number of uses
+/// on the right, a fill on hover. Returns whether it was clicked.
+fn suggestion_row(ui: &mut Ui, c: &Value) -> bool {
+    let p = theme::of(ui);
+    let name = c["name"].as_str().unwrap_or("?");
+    let uses = c["instanceCount"].as_u64().unwrap_or(0);
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), crate::panels::ROW),
+        egui::Sense::click(),
+    );
+    let label = format!("{name}  ·  {uses}×");
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    let hover = crate::panels::hover_fade(
+        ui,
+        egui::Id::new("code-connect-hover"),
+        response.id,
+        response.hovered(),
+    );
+    crate::icons::row_fill(ui, rect, hover, false);
+    // Figma's layer list shows component sets with the component icon too.
+    let kind = "SYMBOL";
+    let mid = rect.center().y;
+    crate::icons::paint(
+        ui.painter(),
+        crate::icons::for_kind(kind),
+        egui::Rect::from_center_size(egui::pos2(rect.left() + 12.0, mid), egui::vec2(13.0, 13.0)),
+        p.component,
+    );
+    let count = ui.painter().layout_no_wrap(
+        format!("{uses}×"),
+        egui::FontId::proportional(12.0),
+        p.text_faint,
+    );
+    let right = rect.right() - 8.0;
+    ui.painter().galley(
+        egui::pos2(right - count.size().x, mid - count.size().y / 2.0),
+        count.clone(),
+        p.text_faint,
+    );
+    let left = rect.left() + 26.0;
+    let text = p.text_dim.lerp_to_gamma(p.text, 0.6 + hover * 0.4);
+    let g = crate::chrome::elided(
+        ui,
+        name,
+        egui::FontId::proportional(12.5),
+        text,
+        right - count.size().x - 8.0 - left,
+    );
+    ui.painter()
+        .galley(egui::pos2(left, mid - g.size().y / 2.0), g, text);
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.clicked()
 }
 
 #[cfg(test)]
