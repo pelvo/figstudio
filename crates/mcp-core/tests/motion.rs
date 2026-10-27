@@ -152,14 +152,17 @@ fn a_stored_spring_becomes_a_sampled_css_curve() {
 }
 
 #[test]
-fn rotation_is_flipped_to_clockwise_degrees() {
+fn rotation_turns_clockwise_as_figma_shows_it() {
     let out = motion(&doc(), "1:1106", false);
-    let css = node(&out, "1:1106")["codeSnippets"]["css"]
-        .as_str()
-        .unwrap();
-    // OFFSET track from -2π to 0 radians, counter-clockwise positive.
-    assert!(css.contains("rotate: 360deg;"), "{css}");
-    assert!(out["notes"].to_string().contains("counter-clockwise"));
+    let snippets = &node(&out, "1:1106")["codeSnippets"];
+    let css = snippets["css"].as_str().unwrap();
+    // OFFSET track from -2π to 0 radians. Figma's Motion panel calls this preset
+    // "Clockwise 360°"; CSS degrees are clockwise positive too, so the sign is kept.
+    assert!(css.contains("rotate: -360deg;"), "{css}");
+    assert!(css.contains("rotate: 0deg;"), "{css}");
+    let js = snippets["motion"].as_str().unwrap();
+    assert!(js.contains("rotate: [-360, -360, 0, 0],"), "{js}");
+    assert!(out["notes"].to_string().contains("clockwise positive"));
 }
 
 #[test]
