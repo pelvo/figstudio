@@ -12,7 +12,7 @@ case "${1:-}" in
   new)
     slug="${2:-}"
     [[ "$slug" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || { echo "usage: $0 new <kebab-case-slug>" >&2; exit 2; }
-    f="$(date -u +%Y-%m-%dT%H%MZ)-$slug.md"
+    f="$(date -u +%Y-%m-%dT%H%M%SZ)-$slug.md"
     [ ! -e "$f" ] || { echo "$f exists" >&2; exit 1; }
     printf -- '- PR/branch: \n- What changed and how it was checked:\n- Not verified:\n' > "$f"
     echo "docs/progress/$f"

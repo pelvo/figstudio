@@ -1,0 +1,1 @@
+- 2026-10-13 — PR #16 F1: browser uploads copy each slice into a non-shared buffer before `WebSocket.send` (threads build). Wasm-only, no native test; check.sh and check.sh --web passed. Not verified: an upload in a real browser (reviewer confirmed the fix on the reviewed build).

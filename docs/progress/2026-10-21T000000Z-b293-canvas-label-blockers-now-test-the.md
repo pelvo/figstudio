@@ -1,0 +1,1 @@
+- 2026-10-21 — Canvas label blockers now test the actual transformed frame quad after the AABB pre-filter, keeping labels in rotated neighbours' empty corners while hiding true overlaps at normal and low zoom. Collision and hidden-name find-outline tests pass; old AABB logic and disabled collision/fallback mutations fail the corresponding regressions.

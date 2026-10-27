@@ -1,0 +1,1 @@
+- 2026-10-21 — Boolean stored results now require non-empty geometry for every visible paint kind; incomplete results fall back to operands and count an approximation. Synthetic missing/empty geometry and hidden-paint regressions pass; all seven public fixture renders remain pixel-identical.

@@ -1,0 +1,1 @@
+- 2026-10-16 — Bot review round 2: largest-row inline trimming and name-truncation flags, off-page moved_out correction, and README alignment; regressions red then green, MCP 203 tests passed (2 ignored), diff 45 passed, fmt and touched-crate clippy passed; retention size cap (D) and TOCTOU (E) remain follow-ups; full check.sh and visual inspection not run.

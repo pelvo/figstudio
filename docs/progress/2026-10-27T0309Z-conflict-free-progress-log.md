@@ -1,3 +1,0 @@
-- Branch docs/progress-entries: progress log moved from one appended section of `docs/PLAN.md` to one file per entry in `docs/progress/` (`scripts/progress.sh new|list`), so branches stop conflicting on the last lines of PLAN.md. The old log is frozen in place.
-- Checked: `new` creates the file, rejects bad slugs and duplicates; `list` prints the timeline with the adding commit; two branches each adding an entry merge without conflict.
-- Not verified: CI (no code changed); older worktrees still append to PLAN.md until rebased, which will conflict once with the frozen section.

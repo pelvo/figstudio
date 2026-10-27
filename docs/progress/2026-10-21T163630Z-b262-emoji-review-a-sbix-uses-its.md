@@ -1,0 +1,1 @@
+- 2026-10-21: Emoji review A: sbix uses its contour's design origin; native selection skips unsupported/corrupt strikes before choosing the closest usable PNG. Synthetic nonzero-origin and mixed-strike regressions failed with the old code and passed with the fix. Full gate passed; public fixture sheet inspected. Real platform emoji fonts remain unverified.

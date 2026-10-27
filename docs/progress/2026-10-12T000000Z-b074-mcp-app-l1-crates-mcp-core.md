@@ -1,0 +1,1 @@
+- 2026-10-12 — MCP-APP L1: `crates/mcp-core` (node ids moved, `CoreError`, `figstudio://` and figma.com links, `file_for` in the MCP adapter, wasm32 build step in check.sh); `scripts/mcp-golden.sh 72083b7` identical (197 records), check.sh passed, 7 mutations caught. Not verified: a real MCP client with a figstudio:// link, web build.

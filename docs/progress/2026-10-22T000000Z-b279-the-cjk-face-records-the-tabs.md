@@ -1,0 +1,1 @@
+- The CJK face records the tabs, by id, whose files asked for the saved face, so a closed file is not taken for another open under the same name (browser paths are display names).

@@ -1,0 +1,1 @@
+- 2026-10-16 — Phase 5 Sol re-review: `rendering_for_path` matches `Path` equality (non-UTF8 unix names); MCP compare Guid fields are `session:local` strings (disk report.json unchanged); inline page names asserted at 128 bytes including `~`.

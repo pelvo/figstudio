@@ -1,0 +1,1 @@
+- 2026-10-20 — PR #28 review fixes, misc: the tool pill's zoom percentage reads the view on screen during an ease; the command bar's results are keyed on the page too, so a page turned under the open bar (by an agent) refreshes its layers; layer search keeps only the best 60 while it walks. Tests seen red first

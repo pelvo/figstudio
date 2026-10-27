@@ -1,0 +1,1 @@
+- 2026-10-21: Enabled shared fallback layout from browser-supplied font bytes, with tile/recording and Recents refresh. Synthetic delayed-font CPU/GPU checks passed; registration and stale-tile mutation controls failed as intended. All seven native public fixture PNGs stayed byte-identical. No deployment, private-file or allocation-profile verification.

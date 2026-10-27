@@ -1,0 +1,1 @@
+- Empty stored boolean paths and empty geometry arrays are trusted when every entry decodes; absent, wrong-type and partially malformed results still draw operands and count an approximation. Synthetic red/green regressions cover both paint kinds.

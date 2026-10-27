@@ -1,0 +1,1 @@
+- Empty stored boolean masks now install an empty clip instead of skipping clipping. A synthetic mask regression failed with leaked sibling pixels and now passes for empty paths and arrays in direct and recorded rendering.

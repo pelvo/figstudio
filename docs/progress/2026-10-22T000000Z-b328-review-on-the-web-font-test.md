@@ -1,0 +1,1 @@
+- Review on the web-font test fix: the opt-out also hid a broken symbol subset on a machine that has the fonts. The test now accepts a skipped symbol group only when the script reports a missing font, and otherwise checks that symbols, symbols2, math and emoji .ttf were written. With all four sources pointed at a non-Noto face the new check failed and the previous one passed.

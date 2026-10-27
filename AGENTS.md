@@ -49,7 +49,7 @@ picking up work. Read the three documents below before changing code.
     `foreground_win.rs` (approved by the owner). Ask before adding another.
 11. **Update `docs/PLAN.md`** when you finish something: tick the box only after its check
     really passed, and add one progress entry with `scripts/progress.sh new <slug>` (one file
-    per entry in `docs/progress/`, so branches do not conflict; do not edit the frozen log in PLAN.md). Report what you did **not** verify.
+    per entry in `docs/progress/`, so branches do not conflict; PLAN.md no longer holds the log). Report what you did **not** verify.
 12. **Use trustworthy crates; do not hand-roll.** For protocols, formats and encodings
     (JSON, MCP/JSON-RPC, HTTP, XML, base64, CLI parsing in new code, …) use a well-known,
     maintained crate (official SDK, high download count, active repo) instead of writing
@@ -88,8 +88,7 @@ driver for wgpu, GTK/portal for the file dialog). macOS needs only Xcode command
   open from the Conventional Commit titles on `main`. Merging it bumps the version in
   `Cargo.toml`/`Cargo.lock`, writes `CHANGELOG.md`, tags `vX.Y.Z` and attaches the macOS
   app (`figstudio-vX.Y.Z-macos-arm64.zip`) and the CLI/MCP binaries to the GitHub release.
-  The same release deploys the browser build to https://figstudio.pelvo.dev
-  (`.github/workflows/web-deploy.yml`). Do not bump versions or edit `CHANGELOG.md` by hand.
+  Do not bump versions or edit `CHANGELOG.md` by hand.
 - Do not commit `target/`, generated PNGs, stress files (`synth` output) or private `.fig`
   files. Only the 7 fixtures in `tests/fixtures` (MIT, from fig2sketch) belong in the repo.
 - Do not put people's names, chat names, phone numbers or local paths in commits, issues or

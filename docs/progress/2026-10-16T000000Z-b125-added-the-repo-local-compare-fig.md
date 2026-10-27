@@ -1,0 +1,1 @@
+- 2026-10-16 — Added the repo-local compare-fig-versions agent skill and discovery links; identical-fixture and distinct-public-fixture CLI runs verified artifact files and summary counts; full check.sh passed. Not verified: live MCP client calls or browser display of the HTML report.
