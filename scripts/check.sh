@@ -54,6 +54,17 @@ run_slice() {
     clippy-app-no-mcp)
       cargo $TC clippy --profile fast -p figstudio --no-default-features --all-targets -- -D warnings
       ;;
+    # Screen readers: the shipped desktop app must build eframe with AccessKit. The UI tests
+    # get it from egui_kittest (a dev-dependency), which a release build does not inherit,
+    # so the tests alone cannot catch it missing. `-e normal` leaves dev-dependencies out.
+    accesskit)
+      features=$(cargo $TC tree -p figstudio -e normal -e features -i eframe)
+      if ! grep -q 'eframe feature "accesskit"' <<<"$features"; then
+        echo "the desktop app builds eframe without its accesskit feature (apps/figstudio/Cargo.toml)" >&2
+        exit 1
+      fi
+      echo "eframe is built with accesskit"
+      ;;
     tests-workspace)
       cargo $TC test --profile fast --workspace
       ;;
@@ -94,7 +105,7 @@ run_slice() {
       ;;
     *)
       echo "unknown check slice: $1" >&2
-      echo "lint: fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp" >&2
+      echo "lint: fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp accesskit" >&2
       echo "test: tests-workspace tests-gpu tests-mcp-core tests-npm tests-browser-fonts release wasm32" >&2
       exit 2
       ;;
@@ -103,7 +114,7 @@ run_slice() {
 
 MODE="${1:-}"
 SLICE="${2:-}"
-lint_names="fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp"
+lint_names="fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp accesskit"
 test_names="tests-workspace tests-gpu tests-mcp-core tests-npm tests-browser-fonts release wasm32"
 if [ "$MODE" = "--lint-one" ] || [ "$MODE" = "--test-one" ]; then
   [ -n "$SLICE" ] || { echo "$MODE needs a slice name" >&2; exit 2; }
@@ -122,7 +133,7 @@ if [ "$MODE" = "--lint-one" ] || [ "$MODE" = "--test-one" ]; then
 fi
 
 if [ "$MODE" != "--test" ]; then
-  for name in fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp; do
+  for name in $lint_names; do
     step "$name"
     run_slice "$name"
   done
