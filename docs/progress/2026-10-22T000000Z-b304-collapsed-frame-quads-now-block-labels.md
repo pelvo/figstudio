@@ -1,1 +1,0 @@
-- Collapsed frame quads now block labels as segments or points; the broad phase retains zero-extent bounds and the narrow phase skips zero axes. Both broad/narrow regressions failed first, while strict edge-touch semantics and rotated-frame tests remain passing.

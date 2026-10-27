@@ -1,1 +1,0 @@
-- Supplied font registration retains shared face bytes in each renderer cache and preserves the selected collection index through canvas and relay snapshots. Pointer identity fails before repair and passes for four renderers; collection and invalid-index tests pass. Peak allocation profiling was not run.

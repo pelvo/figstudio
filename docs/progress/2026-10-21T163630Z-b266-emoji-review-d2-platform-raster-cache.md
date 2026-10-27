@@ -1,1 +1,0 @@
-- 2026-10-21: Emoji review D2: platform raster cache evicts only the least-recently-used entries needed to fit its existing entry/byte budgets. Capacity and byte-pressure cases failed with full-clear eviction and passed with LRU (recent hits retained, oldest re-rasterized). Full gate passed; no dependency added.

@@ -1,1 +1,0 @@
-- 2026-10-13 — Web MCP L5: opt-in remote agents (bearer token via `subtle`, Host allowlist, wildcard refused without a flag, app checkbox, README Tailscale + SSH `-R` tunnel). `tests/remote.rs` and unit tests seen failing under mutations; check.sh passed. Not verified: a session from another machine.

@@ -1,1 +1,0 @@
-- Page bounds (fit, thumbnails, tile cover) also use `clips_hits`, so a stored-result boolean's operands no longer widen them. Culling decodes a boolean's geometry only when its box misses the output. A test now pins that a stored result is culled by its box.

@@ -1,1 +1,0 @@
-- 2026-10-15 — Phase 3 review: uniform budget scale, max-side notes, known page-bg ink, straight-alpha PNG, worst_channel_delta, two renderers. Not verified: full check.sh.

@@ -3,10 +3,9 @@
 A Rust app for Figma `.fig` local copies. Version 1 opens and displays files; editing may
 come later, so the design must not block it. (`figstudio` is a working name.)
 
-This file holds the phases and their "Done when" checks. The checklists are one file per PR in
-`docs/plans/` (see its README; `scripts/plan.sh show|pr|status`), and the log of what happened
-is one file per entry in `docs/progress/`. Tick a box only after its **Done when** check has
-actually passed, in your own PR's file; never edit this file for either.
+This file holds the phases and their "Done when" checks. The checklists and the progress log are one file per PR in
+`docs/plans/` (see its README; `scripts/plan.sh show|pr|log|status`). Tick a box only after its
+**Done when** check has actually passed, in your own PR's file; never edit this file for either.
 
 Working on it? Start with `AGENTS.md`, then `docs/IMPLEMENTATION.md` (architecture, recipes,
 task board) and `docs/TESTING.md` (tests, checks, how to prove a test).
@@ -142,5 +141,5 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
-Moved to `docs/progress/`: one file per entry, no shared file to conflict on. Print the
-timeline with `scripts/progress.sh list`; add an entry with `scripts/progress.sh new <slug>`.
+Moved to `docs/plans/pr-<N>.md`, under `## Progress` (one file per PR). Timeline: `scripts/plan.sh log`;
+add an entry: `scripts/plan.sh note <pr> <slug>`.

@@ -1,1 +1,0 @@
-- Label contrast now composites the opacity-weighted average of gradient stop colours over enclosing backdrops; image fills retain the existing backdrop. Dark-section label and transparent-stop regressions failed before repair and pass for all four gradient kinds. Blocked-label shaping keeps egui's existing galley cache rather than adding a second cache.

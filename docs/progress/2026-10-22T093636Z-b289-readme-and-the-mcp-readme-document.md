@@ -1,1 +1,0 @@
-- 2026-10-22: README and the MCP README document `brew install --cask pelvo/tap/figstudio` (macOS arm64). Checked on Homebrew 7.0.9: a fresh tap and install from GitHub puts the app in /Applications, links `figstudio-cli` and `figstudio-mcp`, clears quarantine, and the app opens a fixture; `brew upgrade --cask` works. Not run: `--zap`, Intel Macs, Linux.

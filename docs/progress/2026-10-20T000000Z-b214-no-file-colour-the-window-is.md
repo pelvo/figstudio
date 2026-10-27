@@ -1,1 +1,0 @@
-- 2026-10-20 — No-file colour: the window is Slate instead of Lavender when no file is open, and on the Recents page it takes the colour of the card under the pointer, back to Slate off it. The test failed on both parts before each change. Checked by eye in the macOS app, dark and light. Not checked: Windows, Linux.

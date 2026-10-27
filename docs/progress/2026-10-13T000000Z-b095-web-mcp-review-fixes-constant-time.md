@@ -1,1 +1,0 @@
-- 2026-10-13 — Web MCP review fixes: constant-time pairing-token compare, `error {tab}` names the failed upload (the tab drops it by id), 1 s bound on bridge sends so a stalled peer cannot block re-pairing; tests for hello timeout, error tab, stalled peer, remote `--bridge` bearer, each seen failing under a mutation. Not verified: a real browser session.

@@ -90,3 +90,47 @@ title: items added before pull requests were used
 - [ ] command/undo model over `Document`
 - [ ] move/resize, rename, show/hide, reorder layers, edit text, edit fills
 - [ ] save `.fig` (re-encode message, keep other archive entries), verify Figma opens it
+
+## Progress
+
+### 2026-10-08T131732Z b018-2026-10-08-21-5x-rust
+- 2026-10-08 21:5x — Rust spike: kiwi-schema decode + tiny-skia render of 7 fixtures.
+
+### 2026-10-08T131732Z b020-2026-10-08-22-1x-workspace
+- 2026-10-08 22:1x — Workspace created. P0 done (5 tests pass). P1 renderer compiles with
+  instances, clipping, masks, images, text, shadows. CLI renders all 7 fixtures; output not yet
+  visually checked. GUI not started. Plan committed (92a5207).
+
+### 2026-10-08T132308Z b019-2026-10-08-22-0x-requirements
+- 2026-10-08 22:0x — Requirements fixed (macOS + Linux + headless, wasm optional, Vello,
+  PhotoCraft-style UI). Switched renderer to `vello_cpu`.
+
+### 2026-10-08T132308Z b021-2026-10-08-22-2x-requester
+- 2026-10-08 22:2x — Requester: editing may come later, so not "view" → renamed project to
+  `figstudio` (working name). Mac tested by hand by requester. Large private file cannot be
+  shared → added P1b (round-trip writer, synthetic stress file, privacy-safe `doctor`) and P6.
+  `kiwi-schema` has `Value::encode_bb`, so writing `.fig` back is possible.
+
+### 2026-10-08T133210Z b022-2026-10-08-22-3x-p1
+- 2026-10-08 22:3x — P1 visual check. Side-by-side sheet of 7 fixtures vs thumbnails.
+  Fixed path blobs that draw after a close (text in noise_and_grain was invisible) and vector
+  per-path colours from `styleOverrideTable`. Progressive blur skipped instead of a wrong
+  uniform blur. 8 render tests + 5 decode tests pass. Remaining P1 items are effect gaps.
+
+### 2026-10-08T134531Z b023-2026-10-08-22-4x-p3
+- 2026-10-08 22:4x — P3 desktop app built (egui 0.36 / glow). Checked in Xvfb with xdotool
+  clicks and screenshots. CLI now prints usage only for usage errors. Image cache no longer
+  caches "missing" across documents. clippy + fmt clean on 1.99.0, 13 tests pass.
+
+### 2026-10-09T000943Z b024-2026-10-09-09-xx-p1b
+- 2026-10-09 09:xx — P1b. Writer with byte-identical round trip on all fixtures; direct
+  Kiwi→Val decoder (memory 2.8 GB → 470 MB, decode 2.0 s → 0.3 s on 103k nodes); culling;
+  `synth`, `resave`, `doctor` commands; doctor privacy test. 23 tests, clippy/fmt clean.
+
+### 2026-10-09T003257Z b025-2026-10-09-09-2x-pushed
+- 2026-10-09 09:2x — Pushed to private `pelvo/figstudio` (42d40d9). Requester asked for a test
+  and implementation guide other agents can follow: added `AGENTS.md` (+ `CLAUDE.md`),
+  `docs/IMPLEMENTATION.md`, `docs/TESTING.md` and `scripts/check.sh`, `thumb-sheet.py`,
+  `gui-smoke.sh`; all three scripts run here. Found `figstudio-cli` had no `[lints]`, so the
+  workspace lints never applied to it: added them, changed `unsafe_code` forbid → deny with
+  one local allow for `getrusage`, checked that unsafe elsewhere fails the build.

@@ -1,1 +1,0 @@
-- 2026-10-20 — Cap-message follow-up: preserve the macOS permission hint alongside wait/restart guidance, clarify current-folder timeout versus abandoned-listing cap, and assert the exact cap error before and after switching folders. The platform-message test failed without the permission hint and passes with it. Live permission-dialog recovery was not rerun.

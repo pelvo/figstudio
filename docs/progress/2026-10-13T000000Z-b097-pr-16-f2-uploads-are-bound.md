@@ -1,1 +1,0 @@
-- 2026-10-13 — PR #16 F2: uploads are bound to the tab id, not the file name, so two picked files with one name each stream their own bytes (`mcp_wire::Uploads`; test `two_files_with_one_name_stay_bound_to_their_own_tabs`, seen failing with a name-keyed mutation). check.sh and check.sh --web passed. Not verified: picking two same-name files in a real browser.

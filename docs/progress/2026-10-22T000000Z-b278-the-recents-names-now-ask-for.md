@@ -1,1 +1,0 @@
-- The Recents names now ask for the CJK face again once none of the files that chose the saved face is open, also while another tab without CJK stays open (it used to wait until every tab closed). `cjk::Face` records which files asked; the test walks a Japanese file closing beside a Latin one and failed before the change.

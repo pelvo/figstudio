@@ -1,1 +1,0 @@
-- 2026-10-19 — The space name pill waits until the pointer has rested on a dot for 0.5 s, as Arc's; for 0.4 s after one shows, the next dot's shows at once (running along the row). Test seen red first (the pill came up at once). Not verified: the timing by hand

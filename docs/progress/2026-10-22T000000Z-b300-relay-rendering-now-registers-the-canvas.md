@@ -1,1 +1,0 @@
-- Relay rendering now registers the canvas supplied-font snapshot; a no-system-font MCP draw regression proves visible outline-less text and the font counter.
