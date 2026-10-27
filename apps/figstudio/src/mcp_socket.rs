@@ -1,7 +1,11 @@
-//! Socket callbacks only enqueue events; no browser file reads or RPC run here.
+//! Socket callbacks enqueue events and start relay calls on the pool; no browser file
+//! reads run here. Each event also wakes the host, which handles the connection's own
+//! events without waiting for a frame (`mcp_web_pump.rs`).
+use super::Calls;
 use crate::mcp_upload::{Event, Shared};
 use crate::mcp_wire::{CONNECT_TIMEOUT_MS, parse_rpc};
 use figstudio_mcp_core::bridge::ServerMessage;
+use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{CloseEvent, MessageEvent, WebSocket};
@@ -40,7 +44,8 @@ impl Conn {
         relay: bool,
         generation: u32,
         shared: &Rc<Shared>,
-        ctx: &egui::Context,
+        calls: &Rc<RefCell<Calls>>,
+        wake: Rc<dyn Fn()>,
     ) -> Result<Self, String> {
         let ws = match protocols {
             Some([marker, executor]) => WebSocket::new_with_str_sequence(
@@ -53,11 +58,15 @@ impl Conn {
             None => WebSocket::new(url),
         }
         .map_err(|_| "Not a valid WebSocket address".to_owned())?;
-        let push = |shared: &Rc<Shared>, ctx: &egui::Context, event: Event| {
-            shared.events.borrow_mut().push_back(event);
-            ctx.request_repaint();
+        // The wake handles the event (or leaves it for the frame) and asks for a frame.
+        let push = {
+            let wake = wake.clone();
+            move |shared: &Rc<Shared>, event: Event| {
+                shared.events.borrow_mut().push_back(event);
+                wake();
+            }
         };
-        let (s, c) = (shared.clone(), ctx.clone());
+        let (s, p, calls) = (shared.clone(), push.clone(), Rc::downgrade(calls));
         let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
             let Some(text) = e.data().as_string() else {
                 return;
@@ -68,27 +77,47 @@ impl Conn {
                 // instead of, `rpc` frame parsing, and tagged with this connection's
                 // generation so only its own `pong` can clear its wait.
                 if text == "pong" {
-                    push(&s, &c, Event::Pong { generation });
+                    p(&s, Event::Pong { generation });
                 } else if let Some((id, body)) = parse_rpc(&text) {
-                    push(&s, &c, Event::Rpc { id, body });
+                    // Started here, not at the next frame: a hidden tab may not draw one
+                    // before the relay's deadline (`mcp_web_calls.rs`).
+                    let started = calls.upgrade().is_some_and(|calls| {
+                        calls
+                            .borrow_mut()
+                            .start(generation, id.clone(), body.clone())
+                    });
+                    if started {
+                        // A frame still has work for a started call (a reveal is applied
+                        // in one, and its ack waits only 2 s), and an idle page draws
+                        // none unless asked.
+                        wake();
+                    } else {
+                        p(
+                            &s,
+                            Event::Rpc {
+                                generation,
+                                id,
+                                body,
+                            },
+                        );
+                    }
                 }
             } else if let Ok(message) = serde_json::from_str::<ServerMessage>(&text) {
-                push(&s, &c, Event::Server(message));
+                p(&s, Event::Server(message));
             }
         });
-        let (s, c) = (shared.clone(), ctx.clone());
+        let (s, p) = (shared.clone(), push.clone());
         let on_close = Closure::<dyn FnMut(CloseEvent)>::new(move |e: CloseEvent| {
-            push(&s, &c, Event::Closed(e.code()));
+            p(&s, Event::Closed(e.code()));
         });
-        let (s, c) = (shared.clone(), ctx.clone());
-        let on_open =
-            Closure::<dyn FnMut(web_sys::Event)>::new(move |_| push(&s, &c, Event::Opened));
+        let (s, p) = (shared.clone(), push.clone());
+        let on_open = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| p(&s, Event::Opened));
         ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
         ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
         ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-        let (s, c) = (shared.clone(), ctx.clone());
+        let s = shared.clone();
         let give_up = Closure::<dyn FnMut()>::once(move || {
-            push(&s, &c, Event::ConnectTimeout(generation));
+            push(&s, Event::ConnectTimeout(generation));
         });
         let timer = web_sys::window().and_then(|window| {
             window

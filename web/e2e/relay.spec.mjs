@@ -45,6 +45,24 @@ const mint = (page) => page.evaluate(`(async () => {
   return { executor: "ex_" + hex, room: await derive(bytes) };
 })()`);
 
+// Opens `file` by dropping it on the canvas. The Open shortcut is unreliable here: the
+// first launch's welcome sheet takes the keys, and the first frames may not take any.
+const openFile = async (page, file) => {
+  const bytes = (await readFile(file)).toString("base64");
+  const name = file.split("/").pop();
+  await page.evaluate(([bytes, name]) => {
+    const raw = Uint8Array.from(atob(bytes), (c) => c.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([raw], name));
+    const canvas = document.getElementById("figstudio");
+    for (const type of ["dragenter", "dragover", "drop"]) {
+      canvas.dispatchEvent(new DragEvent(type, {
+        bubbles: true, cancelable: true, dataTransfer: transfer,
+      }));
+    }
+  }, [bytes, name]);
+};
+
 test("executor capability persists, migrates the legacy room and recovers malformed storage", async ({
   page, request,
 }) => {
@@ -148,10 +166,7 @@ test("browser executes MCP tools without uploading the local fig", async ({ page
     JSON.parse(result.content.find((block) => block.type === "text").text);
 
   // egui renders to a canvas: use its Open shortcut rather than DOM-only selectors.
-  await page.locator("#figstudio").click();
-  const chooser = page.waitForEvent("filechooser");
-  await page.keyboard.press(process.platform === "darwin" ? "Meta+o" : "Control+o");
-  await (await chooser).setFiles(fixture);
+  await openFile(page, fixture);
   await expect.poll(async () => (await request.post(url, {
     data: { jsonrpc: "2.0", id: 0, method: "ping" },
   })).status(), { timeout: 60_000 }).toBe(200);
@@ -179,9 +194,15 @@ test("browser executes MCP tools without uploading the local fig", async ({ page
   expect(Buffer.from(image.data, "base64").subarray(0, 8))
     .toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   await tool("reveal_node", args);
+  // Revealing a page shows that page; it selects no layer (`Tab::show_node`).
   await expect.poll(async () => structured(await tool("get_selection", {
     fileKey: tab.fileKey,
-  })).node?.nodeId).toBe(args.nodeId);
+  })).page?.id).toBe(args.nodeId);
+  // An idle, visible page draws no frame by itself, and a reveal is applied in one (its
+  // ack waits 2 s): the call must ask for that frame. No screenshot call comes just
+  // before this one to repaint for it.
+  await page.waitForTimeout(2_000);
+  await tool("reveal_node", args);
   expect(bodies.length).toBeGreaterThan(0);
   expect(violations).toEqual([]);
 });
@@ -213,13 +234,7 @@ test("a #room=&exec= link asks before joining; the joined tab becomes the execut
       return result.result.structuredContent ?? JSON.parse(result.result.content[0].text);
     };
   };
-  const openDoc = async (target, file) => {
-    // egui needs the canvas focused right before the shortcut (the app's focus can drift).
-    await target.locator("#figstudio").click();
-    const chooser = target.waitForEvent("filechooser");
-    await target.keyboard.press(process.platform === "darwin" ? "Meta+o" : "Control+o");
-    await (await chooser).setFiles(file);
-  };
+  const openDoc = openFile;
   // Keyboard-only interaction with the confirmation dialog: Tab reaches Join, Enter picks
   // it. The waits let the dialog paint and take focus first (the app repaints at ≥4 Hz
   // while a proposal is pending).
@@ -241,6 +256,7 @@ test("a #room=&exec= link asks before joining; the joined tab becomes the execut
   await expect.poll(() => mcp(page), { timeout: 60_000 }).toBeTruthy();
   const own = await mcp(page);
   await openDoc(page, fixture);
+  await expect.poll(() => status(own.room), { timeout: 60_000 }).toBe(200);
   const list = await client(own.room);
   await expect.poll(async () => (await list("list_open_tabs", {})).tabs.length, {
     timeout: 60_000,
@@ -463,23 +479,25 @@ test("a relay socket whose keepalives go unanswered is closed by the page", asyn
     body: await page.screenshot({ path: test.info().outputPath("relay-disconnected.png") }),
     contentType: "image/png",
   });
-  // No retry storm: this connection never proved itself, so nothing reconnects on
-  // its own (only the user's Connect starts another socket).
+  // Retried with growing delays (mcp_backoff.rs): the next socket opens about 1 s after
+  // the close, and the black-holed path costs one attempt per delay, not a storm. The
+  // replacement is black-holed too; its own deadline is 10 s away, so it stays alone.
+  await expect.poll(() => sockets.length, { timeout: 10_000 }).toBe(2);
   await page.waitForTimeout(5_000);
-  expect(sockets).toHaveLength(1);
+  expect(sockets).toHaveLength(2);
 });
 
-test("a refused ping retries a proven relay once, not its unproven replacement", async ({ page }) => {
-  test.setTimeout(120_000);
+test("a refused ping drops the relay and retries it with growing delays", async ({ page }) => {
+  test.setTimeout(150_000);
   await page.addInitScript(() => {
     const send = WebSocket.prototype.send;
-    window.relaySend = { sockets: 0, pongs: 0, pings: 0, refused: 0, closed: 0 };
+    window.relaySend = { opened: [], pongs: 0, pings: 0, refused: 0 };
     const NativeWebSocket = WebSocket;
     window.WebSocket = class extends NativeWebSocket {
       constructor(...args) {
         super(...args);
         if (this.url.includes("/bridge/")) {
-          window.relaySend.sockets++;
+          window.relaySend.opened.push(performance.now());
           this.addEventListener("message", (event) => {
             if (event.data === "pong") window.relaySend.pongs++;
           });
@@ -489,7 +507,7 @@ test("a refused ping retries a proven relay once, not its unproven replacement",
     WebSocket.prototype.send = function (message) {
       if (this.url.includes("/bridge/") && message === "ping") {
         // Let the first real ping/pong prove the original connection, then refuse
-        // sends on both it and its replacement through the actual Wasm error path.
+        // sends on it and every replacement through the actual Wasm error path.
         if (++window.relaySend.pings > 1) {
           window.relaySend.refused++;
           throw new DOMException("send refused", "InvalidStateError");
@@ -497,16 +515,202 @@ test("a refused ping retries a proven relay once, not its unproven replacement",
       }
       return send.call(this, message);
     };
-    const close = WebSocket.prototype.close;
-    WebSocket.prototype.close = function (...args) {
-      if (this.url.includes("/bridge/")) window.relaySend.closed++;
-      return close.apply(this, args);
-    };
   });
   await page.goto(`${baseURL}/?renderer=cpu&threads=2`);
   await expect.poll(() => page.evaluate(() => window.relaySend.pongs), { timeout: 60_000 }).toBe(1);
-  await expect.poll(() => page.evaluate(() => window.relaySend), { timeout: 60_000 })
-    .toEqual({ sockets: 2, pongs: 1, pings: 3, refused: 2, closed: 2 });
-  await page.waitForTimeout(5_000);
-  expect(await page.evaluate(() => window.relaySend.sockets)).toBe(2);
+  // The proven socket's next ping (30 s later) is refused; then each replacement's first.
+  await expect.poll(() => page.evaluate(() => window.relaySend.opened.length), {
+    timeout: 90_000,
+  }).toBeGreaterThanOrEqual(4);
+  const { opened, pongs } = await page.evaluate(() => window.relaySend);
+  const gaps = opened.slice(1).map((time, i) => time - opened[i]);
+  // After the first replacement the delays double: 2 s, then 4 s (mcp_backoff.rs).
+  expect(gaps[1]).toBeGreaterThan(1_500);
+  expect(gaps[2]).toBeGreaterThan(3_500);
+  expect(gaps[2]).toBeGreaterThan(gaps[1]);
+  expect(pongs).toBe(1);
+});
+
+test("a hidden tab answers relay calls while its frames are throttled", async ({ page, request }) => {
+  test.setTimeout(180_000);
+  // A background tab: `document.hidden` turns true, eframe then runs only `App::logic`
+  // on a timer, and that timer is held to once a minute as Chrome's intensive
+  // throttling does after a few minutes hidden. Calls must still be answered well inside
+  // the relay's 30 s deadline (mcp_web_calls.rs, web_wake.rs).
+  await page.addInitScript(() => {
+    window.relayHidden = false;
+    const hidden = Object.getOwnPropertyDescriptor(Document.prototype, "hidden");
+    Object.defineProperty(Document.prototype, "hidden", {
+      configurable: true,
+      get() { return window.relayHidden || hidden.get.call(this); },
+    });
+    Object.defineProperty(Document.prototype, "visibilityState", {
+      configurable: true,
+      get() { return window.relayHidden ? "hidden" : "visible"; },
+    });
+    const later = window.setTimeout;
+    // eframe's hidden-tab frame timer asks for 10 ms; nothing else in the page does.
+    window.setTimeout = (callback, delay, ...rest) =>
+      later.call(window, callback, window.relayHidden && delay === 10 ? 60_000 : delay, ...rest);
+  });
+  await page.goto(baseURL);
+  await expect(page.locator("#figstudio")).toBeVisible();
+  await expect.poll(() => mcp(page), { timeout: 60_000 }).toBeTruthy();
+  const { room } = await mcp(page);
+  const url = `${baseURL}/mcp/${room}`;
+  await openFile(page, fixture);
+  const tool = (id, name, args = {}) => request.post(url, {
+    data: { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } },
+    timeout: 60_000,
+  });
+  let fileKey;
+  let nodeId;
+  await expect.poll(async () => {
+    const response = await tool(1, "list_open_tabs");
+    if (response.status() !== 200) return 0;
+    const result = (await response.json()).result;
+    const tabs = (result.structuredContent ??
+      JSON.parse(result.content.find((block) => block.type === "text").text)).tabs;
+    fileKey = tabs[0]?.fileKey;
+    nodeId = tabs[0]?.page.id;
+    return tabs.length;
+  }, { timeout: 60_000 }).toBeGreaterThan(0);
+
+  await page.evaluate(() => {
+    window.relayHidden = true;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  // Let the last visible-timer frame pass, so the next one is a minute away.
+  await page.waitForTimeout(2_000);
+  for (const [id, name, args] of [
+    [2, "get_metadata", { fileKey }],
+    [3, "get_screenshot", { fileKey, nodeId, scale: 0.25 }],
+  ]) {
+    const started = Date.now();
+    const response = await tool(id, name, args);
+    expect(response.status(), `${name} while hidden`).toBe(200);
+    const body = await response.json();
+    expect(body.error).toBeUndefined();
+    expect(body.result.isError, JSON.stringify(body.result.content)).not.toBe(true);
+    expect(Date.now() - started, `${name} answered without a frame`).toBeLessThan(10_000);
+  }
+});
+
+test("a hidden tab reconnects a dropped relay without waiting for a frame", async ({
+  page, request,
+}) => {
+  test.setTimeout(180_000);
+  // The same background tab as above: its frames are a minute apart. A dropped relay
+  // socket (a Worker deploy, a network change) must still be noticed, retried and greeted
+  // with `ready` between frames (mcp_web_pump.rs), or every call meanwhile gets 503.
+  await page.addInitScript(() => {
+    window.relayHidden = false;
+    window.relaySockets = [];
+    const hidden = Object.getOwnPropertyDescriptor(Document.prototype, "hidden");
+    Object.defineProperty(Document.prototype, "hidden", {
+      configurable: true,
+      get() { return window.relayHidden || hidden.get.call(this); },
+    });
+    Object.defineProperty(Document.prototype, "visibilityState", {
+      configurable: true,
+      get() { return window.relayHidden ? "hidden" : "visible"; },
+    });
+    const later = window.setTimeout;
+    window.setTimeout = (callback, delay, ...rest) =>
+      later.call(window, callback, window.relayHidden && delay === 10 ? 60_000 : delay, ...rest);
+    const NativeWebSocket = WebSocket;
+    window.WebSocket = class extends NativeWebSocket {
+      constructor(...args) {
+        super(...args);
+        if (String(args[0]).includes("/bridge/")) window.relaySockets.push(this);
+      }
+    };
+  });
+  await page.goto(baseURL);
+  await expect(page.locator("#figstudio")).toBeVisible();
+  await expect.poll(() => mcp(page), { timeout: 60_000 }).toBeTruthy();
+  const { room } = await mcp(page);
+  const url = `${baseURL}/mcp/${room}`;
+  await openFile(page, fixture);
+  let nextId = 1;
+  const tabs = async () => {
+    const response = await request.post(url, {
+      data: {
+        jsonrpc: "2.0", id: nextId++, method: "tools/call",
+        params: { name: "list_open_tabs", arguments: {} },
+      },
+    });
+    if (response.status() !== 200) return 0;
+    const result = (await response.json()).result;
+    if (result.isError) return 0;
+    return (result.structuredContent ??
+      JSON.parse(result.content.find((block) => block.type === "text").text)).tabs.length;
+  };
+  await expect.poll(tabs, { timeout: 60_000 }).toBeGreaterThan(0);
+
+  await page.evaluate(() => {
+    window.relayHidden = true;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  // Let the last visible-timer frame pass, so the next one is a minute away.
+  await page.waitForTimeout(2_000);
+  expect(await page.evaluate(() => window.relaySockets.length)).toBe(1);
+  const dropped = Date.now();
+  await page.evaluate(() => window.relaySockets[0].close());
+  await expect.poll(tabs, { timeout: 20_000, intervals: [250] }).toBeGreaterThan(0);
+  expect(Date.now() - dropped, "reconnected without a frame").toBeLessThan(15_000);
+  expect(await page.evaluate(() => window.relaySockets.length)).toBe(2);
+});
+
+test("a hidden tab retries a relay whose keepalive went unanswered", async ({ page }) => {
+  test.setTimeout(180_000);
+  // The silent loss in a background tab: a socket whose `pong` never comes back fires no
+  // `close`, so only the keepalive deadline notices it, and the retry after that must be
+  // timed between frames too (`relay_lost`), not by eframe's minute-long hidden timer.
+  await page.addInitScript(() => {
+    window.relayHidden = false;
+    const hidden = Object.getOwnPropertyDescriptor(Document.prototype, "hidden");
+    Object.defineProperty(Document.prototype, "hidden", {
+      configurable: true,
+      get() { return window.relayHidden || hidden.get.call(this); },
+    });
+    Object.defineProperty(Document.prototype, "visibilityState", {
+      configurable: true,
+      get() { return window.relayHidden ? "hidden" : "visible"; },
+    });
+    const later = window.setTimeout;
+    window.setTimeout = (callback, delay, ...rest) =>
+      later.call(window, callback, window.relayHidden && delay === 10 ? 60_000 : delay, ...rest);
+  });
+  // The first socket works; every later one has its `pong` swallowed.
+  const sockets = [];
+  let pongs = 0;
+  await page.routeWebSocket(/\/bridge\//, (ws) => {
+    const index = sockets.push(ws) - 1;
+    const server = ws.connectToServer();
+    ws.onMessage((message) => server.send(message));
+    server.onMessage((message) => {
+      if (message !== "pong") ws.send(message);
+      else if (index === 0 && ++pongs) ws.send(message);
+    });
+    ws.onClose(() => server.close());
+  });
+  await page.goto(baseURL);
+  await expect(page.locator("#figstudio")).toBeVisible();
+  await expect.poll(() => mcp(page), { timeout: 60_000 }).toBeTruthy();
+  await expect.poll(() => pongs, { timeout: 30_000 }).toBeGreaterThan(0);
+
+  await page.evaluate(() => {
+    window.relayHidden = true;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  // Let the last visible-timer frame pass, so the next one is a minute away.
+  await page.waitForTimeout(2_000);
+  const dropped = Date.now();
+  sockets[0].close();
+  // The replacement opens about 1 s later; its first ping goes unanswered, its 10 s
+  // deadline expires, and the next attempt follows 2 s after that.
+  await expect.poll(() => sockets.length, { timeout: 10_000 }).toBe(2);
+  await expect.poll(() => sockets.length, { timeout: 40_000 }).toBe(3);
+  expect(Date.now() - dropped, "retried without a frame").toBeLessThan(25_000);
 });

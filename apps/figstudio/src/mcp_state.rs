@@ -4,7 +4,7 @@ use figstudio_fig::Guid;
 use std::sync::Arc;
 
 type TabKey = (u64, usize, Guid, Option<Guid>, Option<[i64; 4]>);
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Key {
     tabs: Vec<TabKey>,
     active: Option<u64>,

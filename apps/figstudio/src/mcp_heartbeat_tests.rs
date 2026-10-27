@@ -1,5 +1,5 @@
 //! Relay keepalive state machine tests: a synthetic millisecond clock drives every
-//! boundary — cadence, deadline, late pongs, stale generations, the storm bound.
+//! boundary — cadence, deadline, late pongs, stale generations, whether a connection proved itself.
 use super::*;
 use std::time::Duration;
 
@@ -79,7 +79,7 @@ fn a_missing_pong_expires_exactly_at_the_deadline() {
 
 #[test]
 fn an_expired_connection_reports_whether_it_was_ever_proven() {
-    // A connection that cleared one pong is proven; its later expiry may retry once.
+    // A connection that cleared one pong is proven; its later expiry is worth a toast.
     let mut proven = awaiting(1, 0);
     proven.pong(1, at(2));
     assert_send_ping(proven.tick(at(32)));

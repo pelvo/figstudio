@@ -462,6 +462,7 @@ fn sanitize_wire_text(input: &str, max_chars: usize) -> String {
 
 /// Protocol 2 `ready` frame carrying the device identity, page instance, focus state,
 /// and open document summaries for multi-device session routing (`web/worker.mjs`).
+#[cfg(test)]
 pub(crate) fn relay_ready_v2(
     device_id: &str,
     device_label: &str,
@@ -469,9 +470,20 @@ pub(crate) fn relay_ready_v2(
     focused: bool,
     tabs: &[Tab],
 ) -> String {
+    relay_ready_frame(
+        device_id,
+        device_label,
+        instance,
+        focused,
+        &relay_ready_docs(tabs),
+    )
+}
+
+/// The `docs` of a [`relay_ready_v2`] frame. Kept apart so the browser can greet a new
+/// connection between frames with what the last frame saw (`mcp_web_pump.rs`).
+pub(crate) fn relay_ready_docs(tabs: &[Tab]) -> Vec<serde_json::Value> {
     let file_keys = relay_keys(tabs);
-    let docs: Vec<serde_json::Value> = tabs
-        .iter()
+    tabs.iter()
         .zip(file_keys)
         .take(32)
         .map(|(tab, file_key)| {
@@ -487,7 +499,17 @@ pub(crate) fn relay_ready_v2(
             }
             entry
         })
-        .collect();
+        .collect()
+}
+
+/// A [`relay_ready_v2`] frame from docs summarised earlier ([`relay_ready_docs`]).
+pub(crate) fn relay_ready_frame(
+    device_id: &str,
+    device_label: &str,
+    instance: &str,
+    focused: bool,
+    docs: &[serde_json::Value],
+) -> String {
     let cleaned_label = sanitize_wire_text(device_label, 64);
     let label = if cleaned_label.is_empty() {
         "Browser tab".to_owned()

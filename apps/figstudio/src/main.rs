@@ -41,6 +41,8 @@ mod labels;
 mod link_open;
 mod marquee;
 #[cfg(any(test, target_arch = "wasm32"))]
+mod mcp_backoff;
+#[cfg(any(test, target_arch = "wasm32"))]
 mod mcp_heartbeat;
 #[cfg_attr(
     all(not(feature = "mcp"), not(target_arch = "wasm32")),
@@ -108,6 +110,8 @@ mod ui_tests;
 mod vibrancy;
 #[cfg(target_arch = "wasm32")]
 mod web;
+#[cfg(target_arch = "wasm32")]
+mod web_wake;
 mod worker;
 
 use std::path::PathBuf;
@@ -1167,8 +1171,16 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(not(target_arch = "wasm32"))]
         self.open_handed_over(ctx);
+        // A hidden browser tab runs only this, on a throttled timer: keep agent access
+        // alive there (keepalive, reconnect, reveals, image reads). `ui` does it otherwise.
         #[cfg(target_arch = "wasm32")]
-        let _ = ctx;
+        if web::page_hidden() {
+            self.web.serve_ranges(ctx);
+            if let Some(error) = self.mcp.frame(&mut self.tabs, &mut self.active) {
+                self.toast(ctx, error, true);
+            }
+            self.mcp.sync(ctx, &self.tabs, self.active);
+        }
     }
 
     /// Transparent only where the window blurs what is behind it (macOS with the blur
