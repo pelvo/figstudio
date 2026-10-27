@@ -57,8 +57,6 @@ impl FigstudioServer {
     }
 }
 
-pub(crate) use figstudio_mcp_core::fs::persist_file;
-
 /// Map a local document/input error to a tool result, not a protocol failure.
 pub fn tool_error(error: crate::error::McpError) -> CallToolResult {
     CallToolResult::error(vec![rmcp::model::ContentBlock::text(error.to_string())])

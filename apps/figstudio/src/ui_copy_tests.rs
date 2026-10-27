@@ -230,6 +230,9 @@ fn copy_as_svg_puts_the_markup_on_the_clipboard() {
 fn an_animated_layer_offers_and_copies_its_css_animation() {
     let mut h = harness_fixture("motion.fig", 1.0 / 60.0);
     let mut c = Vec::new();
+    // Properties has the same button for the selection; this test is about the menu.
+    h.state_mut().show_right = false;
+    step(&mut h, &mut c);
     // The rotating "Object" on the playground page.
     let object = Guid(1, 1106);
     let at = centre_of(&h, object);
@@ -273,4 +276,43 @@ fn the_properties_panel_shows_a_shader_fill_and_its_values() {
     );
     assert!(h.query_by_label("Ring count").is_some());
     assert!(h.query_by_label("Triangle").is_some());
+}
+
+#[test]
+fn code_connect_suggests_connects_and_removes_a_component() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("local.fig");
+    std::fs::copy(fixture(FIXTURE), &path).unwrap();
+    let sidecar = dir.path().join("local.fig.codeconnect.json");
+    let mut h = harness_fixture(path.to_str().unwrap(), 1.0 / 60.0);
+    let mut c = Vec::new();
+    step(&mut h, &mut c);
+    assert!(
+        h.query_by_label("1 component on this page is not connected")
+            .is_some()
+    );
+    click_label(&mut h, &mut c, "Component 1  ·  2×");
+    step(&mut h, &mut c);
+    assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 37)));
+    assert!(h.query_by_label("Not connected").is_some());
+
+    h.get_by_label("Source").click();
+    step(&mut h, &mut c);
+    h.get_by_label("Source").type_text("src/Button.tsx");
+    step(&mut h, &mut c);
+    click_label(&mut h, &mut c, "Connect");
+    step(&mut h, &mut c);
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+    assert_eq!(stored["1:37"]["componentName"], "Component1");
+    assert_eq!(stored["1:37"]["source"], "src/Button.tsx");
+    assert_eq!(stored["1:37"]["label"], "React");
+    assert!(h.query_by_label("Remove mapping").is_some());
+
+    click_label(&mut h, &mut c, "Remove mapping");
+    step(&mut h, &mut c);
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+    assert_eq!(stored, serde_json::json!({}));
+    assert!(h.query_by_label("Not connected").is_some());
 }

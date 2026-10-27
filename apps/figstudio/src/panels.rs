@@ -341,11 +341,20 @@ fn toggle(tab: &mut Tab, id: Guid) {
 }
 
 /// Returns the Copy menu item picked this frame, if any.
-pub fn properties(ui: &mut Ui, tab: &Tab) -> Option<Item> {
+pub fn properties(ui: &mut Ui, tab: &mut Tab) -> Option<Item> {
+    let (picked, select) = properties_view(ui, tab);
+    if let Some(id) = select {
+        tab.show_node(id);
+    }
+    picked
+}
+
+/// Draws the panel; returns the Copy item picked and a node to select (a Code Connect
+/// suggestion).
+fn properties_view(ui: &mut Ui, tab: &Tab) -> (Option<Item>, Option<Guid>) {
     let doc = &tab.doc;
     let Some(node) = tab.selection.and_then(|id| doc.node(id)) else {
-        document_info(ui, tab);
-        return None;
+        return (None, document_info(ui, tab));
     };
     let d = &node.data;
     let mut picked: Option<Item> = None;
@@ -439,6 +448,9 @@ pub fn properties(ui: &mut Ui, tab: &Tab) -> Option<Item> {
             for shader in &details.shaders {
                 shader_section(ui, shader);
             }
+            if let Some(component) = crate::code_connect::component_of(doc, node) {
+                crate::code_connect::component_section(ui, tab, node, component);
+            }
 
             if node.kind == "TEXT" {
                 section(ui, "Text", |ui| {
@@ -478,10 +490,10 @@ pub fn properties(ui: &mut Ui, tab: &Tab) -> Option<Item> {
                 );
             }
         });
-    picked
+    (picked, None)
 }
 
-fn document_info(ui: &mut Ui, tab: &Tab) {
+fn document_info(ui: &mut Ui, tab: &Tab) -> Option<Guid> {
     let p = theme::of(ui);
     let doc = &tab.doc;
     ui.add(egui::Label::new(RichText::new(tab.title()).font(theme::semibold(15.0))).wrap());
@@ -502,16 +514,18 @@ fn document_info(ui: &mut Ui, tab: &Tab) {
             format!("{:.0} ms", tab.load_time.as_secs_f64() * 1000.0),
         );
     });
+    let select = crate::code_connect::overview_section(ui, tab);
     ui.add_space(4.0);
     ui.label(
         RichText::new("Click a layer on the canvas or in the Layers panel.")
             .color(p.text_faint)
             .small(),
     );
+    select
 }
 
 /// A titled group of rows on a rounded well, like a settings pane.
-fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
+pub(crate) fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
     let p = theme::of(ui);
     ui.add_space(2.0);
     ui.label(
@@ -550,7 +564,7 @@ fn grid(ui: &mut Ui, id: &str, items: &[(&str, String)]) {
         });
 }
 
-fn kv(ui: &mut Ui, k: &str, v: String) {
+pub(crate) fn kv(ui: &mut Ui, k: &str, v: String) {
     let p = theme::of(ui);
     ui.horizontal(|ui| {
         ui.label(RichText::new(k).color(p.text_faint));

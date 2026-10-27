@@ -7,6 +7,7 @@ mod canvas_text;
 mod chrome;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod cjk;
+mod code_connect;
 mod command;
 mod copy;
 mod copy_menu;
