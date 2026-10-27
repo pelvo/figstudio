@@ -45,6 +45,8 @@ pub struct Tab {
     pub doc: Arc<Document>,
     pub pick_cache: crate::pick_cache::PickCache,
     pub a11y_reach: crate::canvas_a11y::ReachCache,
+    /// Motion and shader details of the selected layer (`inspect.rs`).
+    pub inspect: crate::inspect::Cache,
     /// First 16 hex of SHA-256 over the file size and first 4 MiB (`docs[].key`).
     #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     pub doc_key: Option<String>,
@@ -115,6 +117,7 @@ impl Tab {
             id,
             pick_cache: crate::pick_cache::PickCache::new(&doc),
             a11y_reach: Default::default(),
+            inspect: Default::default(),
             real_path: path.clone(),
             path,
             doc,

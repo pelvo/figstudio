@@ -119,6 +119,13 @@ pub fn has_motion(data: &Val) -> bool {
         })
 }
 
+/// One node's own animation as its `get_motion_context` entry (timeline, duration, loop mode,
+/// keyframe bindings, snippets); `None` when it has none.
+pub fn node_motion(doc: &Document, node_id: &str) -> Option<Value> {
+    let out = build(doc, node_id, false, usize::MAX).ok()?;
+    out["nodes"].get(0).cloned()
+}
+
 /// The CSS snippet of one node's animation (its own keyframes, not its descendants'); `None`
 /// when it has none.
 pub fn node_css(doc: &Document, node_id: &str) -> Option<String> {

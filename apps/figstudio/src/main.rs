@@ -35,6 +35,7 @@ mod gpu_tiles_web;
 #[cfg(not(target_arch = "wasm32"))]
 mod handoff;
 mod icons;
+mod inspect;
 mod instance_pick;
 #[cfg(any(windows, test))]
 mod jump_list;

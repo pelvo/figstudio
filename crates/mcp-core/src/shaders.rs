@@ -193,6 +193,69 @@ fn walk<'v>(value: &'v Val, path: &mut String, found: &mut impl FnMut(&str, &'v 
     }
 }
 
+/// The shader fills and effects on one layer: field, type, shader ID, version, visibility and
+/// the values it sets, labelled as in Figma's panel (in panel order, defaults filled in).
+pub fn on_node(doc: &Document, node: &Node) -> Vec<Value> {
+    let mut found = Vec::new();
+    let mut path = String::new();
+    walk(&node.data, &mut path, &mut |field, paint| {
+        found.push((field.to_owned(), paint));
+    });
+    if found.is_empty() {
+        return Vec::new();
+    }
+    let all = shaders(doc);
+    found
+        .into_iter()
+        .map(|(field, paint)| {
+            let shader = paint
+                .get("customEffectId")
+                .and_then(|r| all.iter().find(|s| s.is(r)));
+            let Some(shader) = shader else {
+                return json!({"field": field, "type": null, "id": null,
+                    "visible": paint.flag("visible") != Some(false), "values": []});
+            };
+            let set = |def: &Val| -> Option<Value> {
+                let id = def.get("id").and_then(Val::as_guid)?;
+                paint
+                    .get("componentPropAssignments")
+                    .map_or(&[][..], Val::items)
+                    .iter()
+                    .find(|a| a.get("defID").and_then(Val::as_guid) == Some(id))
+                    .map(|a| {
+                        a.get("varValue")
+                            .map(variable_value)
+                            .or_else(|| a.get("value").map(plain_value))
+                            .unwrap_or(Value::Null)
+                    })
+            };
+            let values: Vec<Value> = shader
+                .definitions()
+                .iter()
+                .map(|def| {
+                    let p = parameter(def);
+                    let value = set(def).unwrap_or_else(|| p["default"].clone());
+                    let label = p["label"].as_str().or(p["name"].as_str()).unwrap_or("?");
+                    // A select shows its option's label, not the stored number.
+                    let shown = p["options"]
+                        .as_array()
+                        .and_then(|o| o.iter().find(|o| o["value"] == value))
+                        .map_or(value.clone(), |o| o["label"].clone());
+                    json!({"label": label, "value": shown})
+                })
+                .collect();
+            json!({
+                "field": field,
+                "type": shader.kind,
+                "id": shader.id(),
+                "version": shader.version(),
+                "visible": paint.flag("visible") != Some(false),
+                "values": values,
+            })
+        })
+        .collect()
+}
+
 /// `list_file_shaders`: the shader fills and effects the file holds, with how many layers use
 /// each.
 pub fn list(doc: &Document) -> Output {

@@ -241,3 +241,36 @@ fn an_animated_layer_offers_and_copies_its_css_animation() {
     assert!(css.contains("@keyframes n1-1106-rotate"), "{css}");
     assert!(css.contains("animation: n1-1106-"), "{css}");
 }
+
+#[test]
+fn the_properties_panel_shows_motion_tracks_and_copies_their_css() {
+    let mut h = harness_fixture("motion.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    h.state_mut().tabs[0].selection = Some(Guid(1, 1106));
+    step(&mut h, &mut c);
+    step(&mut h, &mut c);
+    assert!(h.query_by_label("Motion").is_some(), "no Motion section");
+    assert!(h.query_by_label("Timeline").is_some());
+    assert!(h.query_by_label("Rotation (rotation)").is_some());
+    click_label(&mut h, &mut c, "Copy CSS animation");
+    assert!(
+        c.last()
+            .is_some_and(|css| css.contains("@keyframes n1-1106-rotate")),
+        "{c:?}"
+    );
+}
+
+#[test]
+fn the_properties_panel_shows_a_shader_fill_and_its_values() {
+    let mut h = harness_fixture("shaders.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    h.state_mut().tabs[0].selection = Some(Guid(1, 14622));
+    step(&mut h, &mut c);
+    step(&mut h, &mut c);
+    assert!(
+        h.query_by_label("Shader fill").is_some(),
+        "no shader section"
+    );
+    assert!(h.query_by_label("Ring count").is_some());
+    assert!(h.query_by_label("Triangle").is_some());
+}
