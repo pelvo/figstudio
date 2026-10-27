@@ -296,6 +296,7 @@ pub fn show(
     }
     crate::canvas_text::overlay(&painter, tab, origin);
     marquee::paint(&painter, tab, origin);
+    crate::icons::focus_ring(ui, &response, rect, radius as u8);
     tab.view = target;
 
     let cursor = match tool {

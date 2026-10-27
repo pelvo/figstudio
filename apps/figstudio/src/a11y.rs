@@ -18,6 +18,14 @@ pub fn hide(response: &Response) {
         .accesskit_node_builder(response.id, |n| n.set_hidden());
 }
 
+/// Makes the layer of `ui` (a modal's backdrop) modal: Tab, screen readers' focus and the
+/// pointer stay on it and the layers above it (the dialog), not the app behind. Call it every
+/// frame the modal is open.
+pub fn modal(ui: &Ui) {
+    let layer = ui.layer_id();
+    ui.ctx().memory_mut(|m| m.set_modal_layer(layer));
+}
+
 /// Leaves out the title bar of the `egui::Window` whose id is `window` (shown this frame):
 /// a drag strip without a name. The window itself is named after its title.
 pub fn hide_window_title_bar(ctx: &Context, window: Id) {
@@ -50,14 +58,27 @@ pub fn name_field(response: &Response, label: &str) {
         .accesskit_node_builder(response.id, |n| n.set_label(label));
 }
 
-/// Names the resize handle of the side panel `panel` (the id given to `egui::Panel`). Call it
-/// only when the panel drew its handle this frame: a node egui did not make would be added
-/// with no place on screen.
-pub fn name_panel_handle(ctx: &Context, panel: &str, label: &str) {
-    ctx.accesskit_node_builder(Id::new(panel).with("__resize"), |n| {
+/// Names the resize handle of the side panel `panel` (the id given to `egui::Panel`), and
+/// rings it while it has focus (egui's handle takes Tab focus but shows none). Call it only
+/// when the panel drew its handle this frame: a node egui did not make would be added with
+/// no place on screen.
+pub fn panel_handle(ctx: &Context, panel: &str, label: &str) {
+    let id = Id::new(panel).with("__resize");
+    ctx.accesskit_node_builder(id, |n| {
         n.set_role(Role::Splitter);
         n.set_label(label);
     });
+    if ctx.memory(|m| m.has_focus(id))
+        && let Some(handle) = ctx.read_response(id)
+    {
+        let layer = egui::LayerId::new(egui::Order::Foreground, id.with("focus"));
+        ctx.layer_painter(layer).rect_stroke(
+            handle.rect,
+            egui::CornerRadius::same(3),
+            egui::Stroke::new(2.0, crate::theme::ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
 }
 
 /// Marks `response` (a layer row with children) expanded or collapsed.

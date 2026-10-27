@@ -1399,9 +1399,9 @@ impl App {
         }
         // A hidden sidebar has no handle (no drag to open); Properties always has one.
         if self.show_left {
-            crate::a11y::name_panel_handle(&ctx, chrome::SIDEBAR, "Resize sidebar");
+            crate::a11y::panel_handle(&ctx, chrome::SIDEBAR, "Resize sidebar");
         }
-        crate::a11y::name_panel_handle(&ctx, "properties", "Resize properties");
+        crate::a11y::panel_handle(&ctx, "properties", "Resize properties");
 
         let mut cursor = None;
         egui::CentralPanel::no_frame().show(ui, |ui| {

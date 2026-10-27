@@ -339,6 +339,7 @@ fn keycap(ui: &Ui, text: &str, right: f32, y: f32, recording: bool) -> Rect {
 fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(34.0, 20.0), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, *on, label));
+    icons::focus_ring(ui, &response, rect.expand(3.0), 13);
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
@@ -431,6 +432,7 @@ fn segmented<T: Copy + PartialEq>(
         response.widget_info(|| {
             WidgetInfo::selected(WidgetType::Button, true, *value == current, *label)
         });
+        icons::focus_ring(ui, &response, r, 6);
         ui.painter().text(
             r.center(),
             Align2::CENTER_CENTER,
@@ -458,6 +460,7 @@ fn pill(ui: &mut Ui, text: &str, enabled: bool) -> Response {
     };
     let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x + 28.0, 26.0), sense);
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
+    icons::focus_ring(ui, &response, rect, 6);
     let lift = if enabled && response.hovered() {
         0.08
     } else {
@@ -786,6 +789,9 @@ impl App {
                 let sense = if open { Sense::CLICK } else { Sense::hover() };
                 let response = ui.allocate_rect(screen, sense);
                 crate::a11y::hide(&response);
+                if open {
+                    crate::a11y::modal(ui);
+                }
                 let alpha = (if look.dark { 90.0 } else { 36.0 } * pop.clamp(0.0, 1.0)) as u8;
                 ui.painter()
                     .rect_filled(screen, 0.0, Color32::from_black_alpha(alpha));
@@ -910,6 +916,7 @@ impl App {
             Sense::click(),
         );
         close.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Close settings"));
+        icons::focus_ring(ui, &close, close.rect, 11);
         ui.painter()
             .circle_filled(close_at, 6.5, Color32::from_rgb(255, 95, 87));
         if close.hovered() {

@@ -491,6 +491,9 @@ impl App {
             .show(ctx, |ui| {
                 let sense = if open { Sense::CLICK } else { Sense::hover() };
                 crate::a11y::hide(&ui.allocate_rect(screen, sense));
+                if open {
+                    crate::a11y::modal(ui);
+                }
                 let dim = if p.dark { 120.0 } else { 56.0 };
                 ui.painter().rect_filled(
                     screen,

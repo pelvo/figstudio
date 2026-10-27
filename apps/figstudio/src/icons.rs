@@ -363,8 +363,23 @@ pub fn chevron(painter: &Painter, rect: Rect, color: Color32, turn: f32) {
     ));
 }
 
+/// The keyboard focus ring: an accent outline just inside `rect` while `response` has focus
+/// (Tab, or a screen reader moving to it; a click does not focus egui widgets).
+pub fn focus_ring(ui: &Ui, response: &Response, rect: Rect, radius: u8) {
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(radius),
+            Stroke::new(2.0, theme::ACCENT),
+            StrokeKind::Inside,
+        );
+    }
+}
+
 /// Hover fill and press dip for a custom-painted widget: returns `(hover 0..1, press 0..1)`.
+/// Also draws its focus ring ([`focus_ring`]).
 pub fn feedback(ui: &Ui, response: &Response) -> (f32, f32) {
+    focus_ring(ui, response, response.rect, 8);
     let ctx = ui.ctx();
     let hover = ctx.animate_bool_with_time(
         response.id.with("hover"),

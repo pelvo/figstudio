@@ -82,7 +82,7 @@ pub fn pages(ui: &mut Ui, tab: &mut Tab) {
             ui.spacing_mut().interact_size.y = 30.0;
             ui.visuals_mut().collapsing_header_frame = true;
             ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-            egui::CollapsingHeader::new(
+            let shown = egui::CollapsingHeader::new(
                 RichText::new(format!("Internal pages ({})", doc.internal_pages.len()))
                     .font(theme::semibold(11.0))
                     .color(p.text_dim),
@@ -100,6 +100,8 @@ pub fn pages(ui: &mut Ui, tab: &mut Tab) {
                 icons::chevron(ui.painter(), rect, color, openness);
             })
             .show_unindented(ui, |ui| page_rows(ui, tab, &doc.internal_pages));
+            let header = &shown.header_response;
+            icons::focus_ring(ui, header, header.rect, 8);
         });
     }
 }
@@ -124,6 +126,7 @@ fn page_rows(ui: &mut Ui, tab: &mut Tab, pages: &[Guid]) {
         } else {
             icons::row_fill(ui, rect, hover, false);
         }
+        icons::focus_ring(ui, &response, rect, 8);
         let color = if selected {
             p.text
         } else {
@@ -270,6 +273,7 @@ fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize, tree:
     } else {
         icons::row_fill(ui, rect, hover, false);
     }
+    icons::focus_ring(ui, &response, rect, 8);
     let indent = 6.0 + depth as f32 * 14.0;
     let mid = rect.center().y;
     if has_children {
@@ -285,7 +289,12 @@ fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize, tree:
         hit.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{verb} {name}"))
         });
-        let color = if hit.hovered() { p.text } else { p.text_faint };
+        icons::focus_ring(ui, &hit, arrow, 6);
+        let color = if hit.hovered() || hit.has_focus() {
+            p.text
+        } else {
+            p.text_faint
+        };
         icons::chevron(
             ui.painter(),
             egui::Rect::from_center_size(arrow.center(), vec2(10.0, 10.0)),

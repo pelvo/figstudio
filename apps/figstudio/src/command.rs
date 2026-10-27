@@ -393,6 +393,9 @@ impl App {
                 let sense = if open { Sense::CLICK } else { Sense::hover() };
                 let response = ui.allocate_rect(screen, sense);
                 crate::a11y::hide(&response);
+                if open {
+                    crate::a11y::modal(ui);
+                }
                 let dim = if p.dark { 110.0 } else { 40.0 };
                 let alpha = (dim * pop.clamp(0.0, 1.0)) as u8;
                 ui.painter()

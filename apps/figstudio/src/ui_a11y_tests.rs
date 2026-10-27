@@ -219,3 +219,142 @@ fn a_layer_with_children_says_whether_it_is_open_and_its_arrow_toggles_it() {
     assert_eq!(row(&h), Some(true));
     assert!(h.query_by_label(&format!("Collapse {name}")).is_some());
 }
+
+/// True when `shapes` hold an accent outline (the focus ring) around `rect`.
+fn ring_around(shapes: &[egui::epaint::ClippedShape], rect: egui::Rect) -> bool {
+    fn walk(shape: &egui::Shape, rect: egui::Rect) -> bool {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().any(|s| walk(s, rect)),
+            egui::Shape::Rect(r) => {
+                r.stroke.color == crate::theme::ACCENT
+                    && r.stroke.width >= 1.5
+                    && r.rect.expand(4.0).contains_rect(rect)
+                    && rect.expand(4.0).contains_rect(r.rect)
+            }
+            _ => false,
+        }
+    }
+    shapes.iter().any(|c| walk(&c.shape, rect))
+}
+
+/// Tabs through every control of `h` once and returns the ones that show no focus ring
+/// (text fields show their caret instead).
+fn focus_without_ring(h: &mut Harness<'_, App>) -> Vec<String> {
+    let ctx = h.ctx.clone();
+    let mut seen = std::collections::HashSet::new();
+    let mut missing = Vec::new();
+    for _ in 0..200 {
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+        let Some(id) = ctx.memory(|m| m.focused()) else {
+            continue;
+        };
+        if !seen.insert(id) {
+            break;
+        }
+        if egui::TextEdit::load_state(&ctx, id).is_some() {
+            continue;
+        }
+        let Some(response) = ctx.read_response(id) else {
+            continue;
+        };
+        if !ring_around(&h.output().shapes, response.rect) {
+            let name = h
+                .root()
+                .children_recursive()
+                .map(|n| n.accesskit_node())
+                .find(|a| a.is_focused())
+                .and_then(|a| a.label().or_else(|| a.value()))
+                .unwrap_or_default();
+            missing.push(format!("{name:?} at {:?}", response.rect));
+        }
+    }
+    assert!(seen.len() > 5, "Tab reached {} controls", seen.len());
+    missing
+}
+
+#[test]
+fn every_control_tab_reaches_shows_a_focus_ring() {
+    let mut h = harness();
+    h.run_steps(2);
+    let missing = focus_without_ring(&mut h);
+    assert!(missing.is_empty(), "no focus ring:\n{}", missing.join("\n"));
+
+    let ctx = h.ctx.clone();
+    h.state_mut().apply(MenuAction::Settings, &ctx);
+    h.run_steps(4);
+    let missing = focus_without_ring(&mut h);
+    assert!(
+        missing.is_empty(),
+        "settings, no focus ring:\n{}",
+        missing.join("\n")
+    );
+}
+
+#[test]
+fn every_control_on_the_recents_page_shows_a_focus_ring() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .build_eframe(|cc| App::new(cc, vec![]));
+    h.run_steps(4);
+    let missing = focus_without_ring(&mut h);
+    assert!(missing.is_empty(), "no focus ring:\n{}", missing.join("\n"));
+}
+
+/// The layers Tab reaches in `h`, one walk round the controls.
+fn tab_layers(h: &mut Harness<'_, App>) -> Vec<(egui::Order, String)> {
+    let ctx = h.ctx.clone();
+    let mut seen = std::collections::HashSet::new();
+    let mut layers = Vec::new();
+    for _ in 0..200 {
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+        let Some(id) = ctx.memory(|m| m.focused()) else {
+            continue;
+        };
+        if !seen.insert(id) {
+            break;
+        }
+        let name = h
+            .root()
+            .children_recursive()
+            .map(|n| n.accesskit_node())
+            .find(|a| a.is_focused())
+            .and_then(|a| a.label().or_else(|| a.value()))
+            .unwrap_or_default();
+        if let Some(r) = ctx.read_response(id) {
+            layers.push((r.layer_id.order, name));
+        }
+    }
+    layers
+}
+
+#[test]
+fn tab_stays_inside_a_modal_dialog() {
+    // The welcome sheet takes its keys itself (Enter, arrows, Escape) and holds no focus.
+    for (action, state, reaches) in [
+        (MenuAction::Settings, "settings", true),
+        (MenuAction::CommandBar, "command bar", true),
+        (MenuAction::Welcome, "welcome sheet", false),
+    ] {
+        let mut h = harness();
+        let ctx = h.ctx.clone();
+        h.state_mut().apply(action, &ctx);
+        h.run_steps(6);
+        let layers = tab_layers(&mut h);
+        assert_eq!(
+            !layers.is_empty(),
+            reaches,
+            "{state}: Tab reaches {layers:?}"
+        );
+        let behind: Vec<_> = layers
+            .iter()
+            .filter(|(order, _)| *order != egui::Order::Foreground)
+            .map(|(_, name)| name.as_str())
+            .collect();
+        assert!(
+            behind.is_empty(),
+            "{state}: Tab leaves the dialog for {behind:?}"
+        );
+    }
+}
