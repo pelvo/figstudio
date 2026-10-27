@@ -864,7 +864,9 @@ impl App {
         let mut open = self.link.window;
         let mut go = false;
         let mut picked = None;
-        egui::Window::new("Open Figma link")
+        let window = egui::Id::new("open-figma-link");
+        let shown = egui::Window::new("Open Figma link")
+            .id(window)
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
@@ -875,6 +877,7 @@ impl App {
                         .hint_text("https://www.figma.com/design/\u{2026}?node-id=\u{2026}")
                         .desired_width(460.0),
                 );
+                crate::a11y::name_field(&edit, "Figma link or node ID");
                 if std::mem::take(&mut self.link.focus) {
                     edit.request_focus();
                 }
@@ -891,6 +894,9 @@ impl App {
                 #[cfg(not(target_arch = "wasm32"))]
                 self.link_folders(ui);
             });
+        if shown.is_some() {
+            crate::a11y::hide_window_title_bar(ctx, window);
+        }
         if self.link.window && !open {
             // Closed by the person: the link they asked for is no longer wanted.
             self.cancel_window_search();

@@ -1,5 +1,6 @@
 //! figstudio — desktop and browser app for Figma `.fig` local copies.
 
+mod a11y;
 mod anim;
 mod canvas;
 mod canvas_pick;
@@ -1396,6 +1397,11 @@ impl App {
         if has_tab {
             self.show_right = show_right;
         }
+        // A hidden sidebar has no handle (no drag to open); Properties always has one.
+        if self.show_left {
+            crate::a11y::name_panel_handle(&ctx, chrome::SIDEBAR, "Resize sidebar");
+        }
+        crate::a11y::name_panel_handle(&ctx, "properties", "Resize properties");
 
         let mut cursor = None;
         egui::CentralPanel::no_frame().show(ui, |ui| {

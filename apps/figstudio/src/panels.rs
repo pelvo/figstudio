@@ -14,7 +14,7 @@ use crate::theme::{self, Palette};
 /// Height of a layer row.
 const ROW: f32 = 26.0;
 
-fn display_name(node: &Node) -> String {
+pub(crate) fn display_name(node: &Node) -> String {
     let name = node.data.text("name").unwrap_or("");
     if name.is_empty() {
         node.kind.to_lowercase()
@@ -254,6 +254,9 @@ fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize, tree:
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
     });
+    if has_children {
+        crate::a11y::set_expanded(&response, expanded);
+    }
     if tab.reveal == Some(id) {
         response.scroll_to_me(Some(egui::Align::Center));
     }
@@ -278,6 +281,10 @@ fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize, tree:
             .ctx()
             .animate_bool_with_time(response.id.with("open"), expanded, 0.15);
         let hit = ui.interact(arrow, ui.id().with(("arrow", id)), Sense::click());
+        let verb = if expanded { "Collapse" } else { "Expand" };
+        hit.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{verb} {name}"))
+        });
         let color = if hit.hovered() { p.text } else { p.text_faint };
         icons::chevron(
             ui.painter(),

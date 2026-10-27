@@ -400,6 +400,7 @@ fn icon_picker(ui: &mut egui::Ui, editor: &mut SpaceEditor, tab: &mut Tab) -> Cl
                 .hint_text(format!("Type an emoji {}", spaces::EMOJI_HINT))
                 .desired_width(150.0),
         );
+        crate::a11y::name_field(&typed, "Emoji");
         if typed.changed() {
             let e = editor.emoji.trim();
             tab.style.symbol = (!e.is_empty()).then(|| Symbol::Emoji(e.into()));
@@ -443,6 +444,7 @@ fn rename(ui: &mut egui::Ui, editor: &mut SpaceEditor, tab: &mut Tab) -> Close {
                 .font(egui::FontId::proportional(15.0))
                 .desired_width(f32::INFINITY),
         );
+        crate::a11y::name_field(&field, "New name");
         if std::mem::take(&mut editor.focus) {
             field.request_focus();
         }

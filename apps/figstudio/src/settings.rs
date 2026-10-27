@@ -783,8 +783,9 @@ impl App {
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
             .show(ctx, |ui| {
-                let sense = if open { Sense::click() } else { Sense::hover() };
+                let sense = if open { Sense::CLICK } else { Sense::hover() };
                 let response = ui.allocate_rect(screen, sense);
+                crate::a11y::hide(&response);
                 let alpha = (if look.dark { 90.0 } else { 36.0 } * pop.clamp(0.0, 1.0)) as u8;
                 ui.painter()
                     .rect_filled(screen, 0.0, Color32::from_black_alpha(alpha));
@@ -1221,7 +1222,7 @@ impl App {
                 ))
                 .layout(Layout::left_to_right(Align::Center)),
         );
-        search.add(
+        let field = search.add(
             egui::TextEdit::singleline(&mut self.settings.filter)
                 .hint_text(RichText::new("Type a feature name or shortcut").color(look.title))
                 .font(FontId::proportional(13.5))
@@ -1229,6 +1230,7 @@ impl App {
                 .frame(egui::Frame::NONE)
                 .desired_width(f32::INFINITY),
         );
+        crate::a11y::name_field(&field, "Search shortcuts");
         let mut rows = left.new_child(
             UiBuilder::new()
                 .max_rect(Rect::from_min_max(

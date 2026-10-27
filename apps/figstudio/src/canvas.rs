@@ -107,6 +107,7 @@ pub fn show(
     } = options;
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
+    crate::a11y::describe_canvas(&response, tab);
     let origin = rect.min;
     tab.canvas_rect = Some(rect);
     if tab.fit_pending && rect.width() > 10.0 {

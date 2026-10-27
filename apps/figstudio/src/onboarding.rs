@@ -489,8 +489,8 @@ impl App {
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
             .show(ctx, |ui| {
-                let sense = if open { Sense::click() } else { Sense::hover() };
-                ui.allocate_rect(screen, sense);
+                let sense = if open { Sense::CLICK } else { Sense::hover() };
+                crate::a11y::hide(&ui.allocate_rect(screen, sense));
                 let dim = if p.dark { 120.0 } else { 56.0 };
                 ui.painter().rect_filled(
                     screen,
