@@ -26,6 +26,8 @@ pub mod link;
 pub mod local_copy;
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
+/// Keyframe animation with CSS and motion.dev code.
+pub mod motion;
 /// Accepted Figma node ID formats.
 pub mod node_id;
 /// Tool replies without an SDK type.
