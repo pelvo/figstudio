@@ -467,7 +467,7 @@ pages.
 
 ## Tools
 
-16 tools and 1 prompt, plus 3 live tools in the app. "Official" means Figma's server;
+18 tools and 1 prompt, plus 3 live tools in the app. "Official" means Figma's server;
 "differs offline" lists what a client should expect to be different. The two
 `compare_*` tools are native only (the diff crate renders through the native
 renderer), so the browser MCP build does not register them.
@@ -488,6 +488,8 @@ renderer), so the browser MCP build does not register them.
 | `add_code_connect_map` | `nodeId`, `componentName`, `source`, `label`, `snippet?`, `snippetImports?` | The stored mapping | Writes the sidecar atomically. An instance is stored under its component's id. `source` is stored, never fetched. Limits: source 4096 bytes, snippet 100 000 bytes, 100 imports of 4096 bytes. `imports` is accepted as an alias of `snippetImports`. |
 | `search_design_system` | `query`, `kinds?`, `fileKey?` | Ranked matches | This file only (no team libraries). `kinds`: `component`, `component_set`, `style`, `variable`. Exact names first; at most 100 results. |
 | `get_libraries` | `fileKey?` | Summary of this file's components, token collections, modes and styles | Local only; lists capped at 100, with totals. |
+| `list_file_shaders` | `fileKey?` | JSON `{shaders: [{id, nodeId, key, type, version, published, name, description, parameters, usedBy, files}], total, truncated, note}` | The shader fills and effects stored in the file (`CODE_COMPONENT` nodes with `codeObjectType` `CUSTOM_FILL`/`CUSTOM_EFFECT`); generative plugins are left out. `id` is the published tool ID. `name`, `description` and `files` are null/empty: the `.fig` does not hold them, Figma keeps them (and the source) in its cloud. At most 100. |
+| `get_shader` | `id` (ID, key or node ID), `fileKey?` | JSON: the `list_file_shaders` entry plus `parameters` (name, label, type, control, default, min/max/step, select options, in panel order) and `usages` (nodeId, name, nodeType, field such as `fillPaints[1]`, visible, values by parameter name) | No source code offline. Usages capped at 200 (`usagesTruncated`). Not Figma's `get_shader`, which reads your account library; this one reads the file, like `list_file_shaders`. |
 | `compare_files` | `oldFile?`, `newFile?`, `includeRender?` (default false), `format?` (`webp` default\|`png`) | JSON `{old, new, summary, complete, truncated, pages, pagesTotal, pagesTruncated, reportJson, reportHtml}` | Writes `report.json`/`report.html` (plus `render/<guid>-{before,after,diff}.webp` with `includeRender`, or `.png` with `format: "png"`) under `<assets-dir>/compare/compare-<random>/` (`$TMPDIR/figstudio-compare/compare-<random>/` in inline mode). At most 100 page entries inline; rendering is capped by the diff crate. Not an official tool; native server only. |
 | `compare_page` | `oldFile?`, `newFile?`, `pageId` | One page's `PageDiff` JSON capped at 64 KiB; whole entries omitted as needed, with per-list `Total`/`Omitted` counts and a `truncated` flag | Re-runs the comparison (documents are cached); the report is not cached. MCP schema Guids are `session:local` strings; disk `report.json` keeps native Guid arrays and full entries. When the inline page JSON is over 64 KiB, an `old_name` or `new_name` longer than 128 bytes is shortened to at most 128 bytes, ending in `~`, before any row is dropped; that cut sets `nameTruncated: true`. An unchanged or unknown page is a tool error. Not an official tool; native server only. |
 | `list_open_tabs` *(app only)* | none | `{tabs: [{tabId, fileKey, path, title, page: {id, name}, selection, active}]}` | Lists the app's open tabs. `fileKey` is what the other tools take. |
@@ -526,7 +528,7 @@ client's tool budget.
 |---|---|
 | `use_figma`, `create_new_file`, `generate_figma_design` | They write to Figma's canvas or cloud. This server is read-only. |
 | `generate_image` | Needs a hosted image model. |
-| shader tools, generative-plugin tools | Need Figma's plugin runtime or cloud. |
+| `list_shaders`, `create_shader`, `update_shader`, generative-plugin tools | Need your Figma account library or cloud. Shader source is not in the `.fig`; `list_file_shaders`/`get_shader` return what is. |
 | `weave_*` | Figma Weave is a cloud product. |
 | `get_code_connect_suggestions` | Needs Figma's cloud. |
 | `get_motion_context` | Deferred, not impossible. No public file with motion data exists to validate the schema against. |

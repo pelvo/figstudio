@@ -90,7 +90,8 @@ driver for wgpu, GTK/portal for the file dialog). macOS needs only Xcode command
   The same release deploys the browser build to https://figstudio.pelvo.dev
   (`.github/workflows/web-deploy.yml`). Do not bump versions or edit `CHANGELOG.md` by hand.
 - Do not commit `target/`, generated PNGs, stress files (`synth` output) or private `.fig`
-  files. Only the 7 fixtures in `tests/fixtures` (MIT, from fig2sketch) belong in the repo.
+  files. Only the fixtures in `tests/fixtures` belong in the repo: 7 from fig2sketch (MIT) and
+  2 Figma Community files with their images removed (CC BY 4.0, `LICENSE-figma-community`).
 - Do not put people's names, chat names, phone numbers or local paths in commits, issues or
   docs. Say "the requester" or "a user".
 - **PII check before every commit and push** (ground rule 9). Run

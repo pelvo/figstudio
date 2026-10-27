@@ -229,7 +229,9 @@ node --test web/worker/*.test.mjs
 ## Third-party notices
 
 - Sample `.fig` fixtures under `tests/fixtures/` from `fig2sketch` are MIT-licensed; see
-  [`tests/fixtures/LICENSE-fig2sketch`](tests/fixtures/LICENSE-fig2sketch).
+  [`tests/fixtures/LICENSE-fig2sketch`](tests/fixtures/LICENSE-fig2sketch). `motion.fig` and
+  `shaders.fig` are Figma Community files (CC BY 4.0, images removed); see
+  [`tests/fixtures/LICENSE-figma-community`](tests/fixtures/LICENSE-figma-community).
 - Desktop text rendering uses installed system fonts via `fontdb` (`system-fonts`). For the
   browser build, `scripts/web-font.sh` subsets Noto Sans CJK Regular (SIL Open Font License
   1.1) at build time into `web/dist/fonts/` (`cjk-{jp,sc,tc,hk,kr}.otf` and

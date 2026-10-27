@@ -32,7 +32,7 @@ crates/fig            .fig container + Kiwi schema decode -> Document (nodes, tr
 crates/render         Document -> Vello CPU drawing -> Pixmap; hit test, bounds, render stats
 apps/figstudio-cli    headless: info, tree, render PNG, thumbnail, doctor
 apps/figstudio        desktop app (eframe); later also the wasm web shell
-tests/fixtures        7 sample .fig files (from fig2sketch, see LICENSE-fig2sketch)
+tests/fixtures        9 sample .fig files (7 from fig2sketch, 2 Figma Community; see the LICENSE files)
 ```
 
 Rules:

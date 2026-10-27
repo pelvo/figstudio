@@ -14,3 +14,5 @@ web/wrangler.jsonc
 node_modules/
 web/e2e/test-results/
 web/e2e/playwright-report/
+# Full-size downloads that the trimmed fixtures are made from (images and videos).
+tests/local/

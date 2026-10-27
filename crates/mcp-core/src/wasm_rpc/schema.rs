@@ -122,8 +122,20 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "get_libraries",
             "Bounded inventory of this file's own components and tokens.",
-            vec![("fileKey", string)],
+            vec![("fileKey", string.clone())],
             &[],
+        ),
+        tool(
+            "list_file_shaders",
+            "Shader fills and effects this file uses, with parameter names and usage counts. No source: it stays in Figma's cloud.",
+            vec![("fileKey", string.clone())],
+            &[],
+        ),
+        tool(
+            "get_shader",
+            "One shader's parameters (label, type, range, options, default) and the layers using it with their values. No source.",
+            vec![("id", json!({"type":"string"})), ("fileKey", string)],
+            &["id"],
         ),
         tool(
             "get_context_for_code_connect",

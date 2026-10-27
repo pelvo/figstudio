@@ -156,7 +156,7 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
                          + semibold), CJK font fallback (desktop) / detection (web)
 web/                     index.html (boot: init, thread pool, start), _headers (COOP/COEP)
 scripts/                 check.sh, thumb-sheet.py, gui-smoke.sh, web-build.sh, web-serve.py
-tests/fixtures/          7 sample .fig files (MIT, fig2sketch)
+tests/fixtures/          9 sample .fig files (7 MIT from fig2sketch, 2 CC BY Figma Community)
 ```
 
 Dependencies are declared once in the root `Cargo.toml` (`[workspace.dependencies]`).

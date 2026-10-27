@@ -3,11 +3,13 @@ use std::path::PathBuf;
 
 use figstudio_fig::{Document, Guid, Node, Val};
 
-const FIXTURES: [&str; 7] = [
+const FIXTURES: [&str; 9] = [
     "broken_images",
     "corners",
+    "motion",
     "noise_and_grain",
     "sections",
+    "shaders",
     "stacks_wrap",
     "structure",
     "vector",
