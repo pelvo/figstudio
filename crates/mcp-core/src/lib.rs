@@ -9,6 +9,9 @@ pub mod assets;
 pub mod bridge;
 /// Local Code Connect component context.
 pub mod codeconnect_context;
+/// The local Code Connect sidecar store (needs the `fs` feature).
+#[cfg(feature = "fs")]
+pub mod codeconnect_store;
 /// Components in a selection without a local Code Connect mapping.
 pub mod codeconnect_suggest;
 /// React + Tailwind design context with rendered assets.

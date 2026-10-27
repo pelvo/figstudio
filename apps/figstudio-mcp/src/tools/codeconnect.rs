@@ -6,25 +6,14 @@ use crate::FigstudioServer;
 use figstudio_mcp_core::codeconnect_context;
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use serde::Deserialize;
 
 /// Return schema-preserving component properties and bounded local child context.
 pub fn component_context(doc: &figstudio_fig::Document, input: &str) -> CallToolResult {
     to_call(codeconnect_context::component_context(doc, input))
 }
 
-/// A local source binding for a component.
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct Mapping {
-    pub component_name: String,
-    pub source: String,
-    pub label: String,
-    pub snippet: Option<String>,
-    #[serde(default, alias = "imports")]
-    pub snippet_imports: Vec<String>,
-}
+pub use figstudio_mcp_core::codeconnect_store::Mapping;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -268,7 +257,7 @@ impl FigstudioServer {
     }
 }
 
-type Mappings = BTreeMap<String, Mapping>;
+use figstudio_mcp_core::codeconnect_store::Mappings;
 
 fn fault(message: &str) -> CallToolResult {
     CallToolResult::error(vec![rmcp::model::ContentBlock::text(message)])

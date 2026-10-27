@@ -52,6 +52,8 @@ egui_kittest = { version = "0.36", default-features = false, features = ["eframe
 epaint_default_fonts = "0.36"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Code Connect mappings next to the .fig (code_connect.rs) use the shared sidecar store.
+figstudio-mcp-core = { workspace = true, features = ["fs"] }
 clipboard-rs = { workspace = true }
 tracing-subscriber.workspace = true
 # parallel: page recordings replayed per tile (recordings.rs), as in the browser build.
