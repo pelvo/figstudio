@@ -74,9 +74,10 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
         .as_deref()
         .filter(|_| wants_format)
         .unwrap_or("png");
-    // download_assets alone also takes jpg; renders stay png-encoded underneath.
+    // download_assets alone also takes jpg and svg; renders stay png-encoded underneath.
     let jpg = name == "download_assets" && requested == "jpg";
-    let format = match if jpg { "png" } else { requested }.parse() {
+    let svg = name == "download_assets" && requested == "svg";
+    let format = match if jpg || svg { "png" } else { requested }.parse() {
         Ok(format) => format,
         Err(error) => return Ok(Output::fault(format!("{error}"))),
     };
@@ -123,6 +124,7 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
                     &ids,
                     match format {
                         _ if jpg => assets::AssetFormat::Jpg,
+                        _ if svg => assets::AssetFormat::Svg,
                         figstudio_render::encoding::ImageFormat::Webp => assets::AssetFormat::Webp,
                         figstudio_render::encoding::ImageFormat::Png => assets::AssetFormat::Png,
                     },

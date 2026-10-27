@@ -38,6 +38,7 @@ mod record;
 #[cfg(feature = "parallel")]
 mod replay;
 mod stroke;
+pub mod svg;
 mod text;
 #[cfg(all(test, feature = "system-fonts"))]
 mod text_test_font;
@@ -264,6 +265,23 @@ pub struct Frame {
     pub wanted: Vec<ImageRequest>,
 }
 
+/// Output of one draw that may still want images (see [`Renderer::render_complete`]).
+trait Drawn {
+    fn wanted(&self) -> &[ImageRequest];
+}
+
+impl Drawn for Frame {
+    fn wanted(&self) -> &[ImageRequest] {
+        &self.wanted
+    }
+}
+
+impl Drawn for svg::Svg {
+    fn wanted(&self) -> &[ImageRequest] {
+        &self.wanted
+    }
+}
+
 /// What a frame draws: a document node (or page), or one node inside an instance.
 #[derive(Clone, Copy)]
 enum Target<'p> {
@@ -398,19 +416,19 @@ impl Renderer {
     }
 
     /// Runs `draw` until no image is wanted, reading each wanted image with `read`.
-    fn complete_with(
+    fn complete_with<T: Drawn>(
         &mut self,
         mut read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
-        draw: impl Fn(&mut Self) -> Frame,
-    ) -> Frame {
+        draw: impl Fn(&mut Self) -> T,
+    ) -> T {
         self.emoji_source.take_retry_due();
         // Thumbnail first, then the image, then perhaps a finer level: a few rounds at most.
         for _ in 0..6 {
             let frame = draw(self);
-            if frame.wanted.is_empty() && self.images.in_flight() == 0 {
+            if frame.wanted().is_empty() && self.images.in_flight() == 0 {
                 return self.retry_emoji(frame, &draw);
             }
-            for want in &frame.wanted {
+            for want in frame.wanted() {
                 match read(want) {
                     Some(bytes) => {
                         self.images.insert_encoded(&want.key, &bytes, want.level);
@@ -425,11 +443,75 @@ impl Renderer {
 
     /// A complete frame is often kept (a Recents thumbnail, an export), so a platform emoji
     /// that missed for the first time (a font still loading) gets its one retry in this call.
-    fn retry_emoji(&mut self, frame: Frame, draw: &impl Fn(&mut Self) -> Frame) -> Frame {
+    fn retry_emoji<T>(&mut self, frame: T, draw: &impl Fn(&mut Self) -> T) -> T {
         if self.emoji_source.take_retry_due() {
             draw(self)
         } else {
             frame
+        }
+    }
+
+    /// [`Renderer::render_complete`] written as SVG instead of pixels (see [`svg`]). The
+    /// markup is dropped (and [`svg::Svg::over_limit`] set) past about `limit` bytes.
+    pub fn render_svg_complete(
+        &mut self,
+        doc: &Document,
+        root: Guid,
+        viewport: &Viewport,
+        limit: usize,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> svg::Svg {
+        self.complete_with(read, |this| {
+            this.render_svg(doc, Target::Node(root), viewport, limit)
+        })
+    }
+
+    /// [`Renderer::render_svg_complete`] for a node inside an instance (see
+    /// [`Renderer::render_path`]).
+    pub fn render_path_svg_complete(
+        &mut self,
+        doc: &Document,
+        path: &InstancePath,
+        viewport: &Viewport,
+        limit: usize,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> svg::Svg {
+        self.complete_with(read, |this| {
+            this.render_svg(doc, Target::Path(path), viewport, limit)
+        })
+    }
+
+    fn render_svg(
+        &mut self,
+        doc: &Document,
+        root: Target<'_>,
+        viewport: &Viewport,
+        limit: usize,
+    ) -> svg::Svg {
+        let (w, h) = (
+            f64::from(viewport.width.max(1)),
+            f64::from(viewport.height.max(1)),
+        );
+        let mut canvas = svg::SvgCanvas::new(w, h, limit);
+        if let Some(bg) = viewport.background {
+            canvas.background(bg);
+        }
+        let (stats, wanted) = self.walk(
+            doc,
+            root,
+            viewport.transform,
+            Rect::new(0.0, 0.0, w, h),
+            &mut canvas,
+            MAX_RENDER_WORK,
+            0,
+        );
+        let (markup, approximated, over_limit) = canvas.finish();
+        svg::Svg {
+            markup,
+            stats,
+            wanted,
+            approximated,
+            over_limit,
         }
     }
 

@@ -95,4 +95,29 @@ impl Rendering {
             Root::Path(path) => renderer.render_path_complete(doc, path, viewport, read),
         }
     }
+
+    /// [`Rendering::draw`] as SVG; the markup is dropped past about `limit` bytes.
+    pub fn draw_svg(
+        &self,
+        doc: &Document,
+        root: Root<'_>,
+        viewport: &Viewport,
+        limit: usize,
+    ) -> figstudio_render::svg::Svg {
+        let _guard = (!doc.lazy_images.is_empty()).then(|| {
+            self.lazy_lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        });
+        let mut renderer = Renderer::with_images(self.images.clone());
+        renderer.system_fonts = self.system_fonts || !self.fonts.is_empty();
+        for (font, index) in &self.fonts {
+            renderer.add_font_data(font.clone(), *index);
+        }
+        let read = |want: &figstudio_render::images::ImageRequest| self.read(&want.entry);
+        match root {
+            Root::Node(id) => renderer.render_svg_complete(doc, id, viewport, limit, read),
+            Root::Path(path) => renderer.render_path_svg_complete(doc, path, viewport, limit, read),
+        }
+    }
 }

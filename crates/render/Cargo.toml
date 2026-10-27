@@ -20,6 +20,8 @@ gpu = ["parallel", "dep:vello_gpu"]
 figstudio-fig = { workspace = true }
 vello_cpu = { workspace = true }
 image = { workspace = true }
+# SVG export: images embedded as data URLs.
+base64 = { workspace = true }
 tracing.workspace = true
 fontdb.workspace = true
 ttf-parser.workspace = true

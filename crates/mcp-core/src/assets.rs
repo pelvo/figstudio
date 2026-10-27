@@ -3,7 +3,7 @@ use crate::{
     error::CoreError,
     output::{Block, Output, text_first},
     rendering::Rendering,
-    screenshot::{SCALE_RANGE, render_node},
+    screenshot::{SCALE_RANGE, render_node, svg_node},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use figstudio_fig::Document;
@@ -43,6 +43,8 @@ pub enum AssetFormat {
     Webp,
     /// Lossy; transparent areas are flattened onto white.
     Jpg,
+    /// Vector paths (text as outlines, images embedded as PNG), returned as text.
+    Svg,
 }
 
 /// Renders or extracts the assets for `node_ids`; the result is an error only when the
@@ -180,11 +182,15 @@ fn rendered(
     if payload.is_full() {
         return Err(CoreError::limit(Payload::omitted(id)));
     }
+    if format == AssetFormat::Svg {
+        return svg(doc, id, scale, rendering, payload);
+    }
     let shot = render_node(doc, id, scale, rendering)?;
     let mut text = format!("{id}: {}", shot.describe());
     let pixmap = shot.frame.pixmap;
     let (bytes, mime) = match format {
-        AssetFormat::Png => (
+        // SVG returned above.
+        AssetFormat::Png | AssetFormat::Svg => (
             pixmap.into_png().map_err(|e| CoreError::encode("PNG", e))?,
             "image/png",
         ),
@@ -211,6 +217,25 @@ fn rendered(
     Ok(vec![
         Block::text(text),
         Block::image(STANDARD.encode(bytes), mime),
+    ])
+}
+
+/// A text line and the SVG markup (a second text block) of one node.
+fn svg(
+    doc: &Document,
+    id: &str,
+    scale: Option<f64>,
+    rendering: &Rendering,
+    payload: &mut Payload,
+) -> Result<Vec<Block>, CoreError> {
+    let shot = svg_node(doc, id, scale, rendering, MAX_IMAGE_BYTES)?;
+    let bytes = shot.svg.markup.len();
+    if !payload.take(bytes) {
+        return Err(CoreError::limit(Payload::omitted(id)));
+    }
+    Ok(vec![
+        Block::text(format!("{id}: {}", shot.describe())),
+        Block::text(shot.svg.markup),
     ])
 }
 
