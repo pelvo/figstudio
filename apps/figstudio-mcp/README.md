@@ -467,7 +467,7 @@ pages.
 
 ## Tools
 
-19 tools and 1 prompt, plus 3 live tools in the app. "Official" means Figma's server;
+21 tools and 1 prompt, plus 3 live tools in the app. "Official" means Figma's server;
 "differs offline" lists what a client should expect to be different. The two
 `compare_*` tools are native only (the diff crate renders through the native
 renderer), so the browser MCP build does not register them.
@@ -487,6 +487,8 @@ renderer), so the browser MCP build does not register them.
 | `get_context_for_code_connect` | `nodeId`, `fileKey?` | JSON: component properties, variants (component sets), nested instances | Component, component set, instance or instance path. Property lists capped at 100; unknown property types are kept as strings. |
 | `get_code_connect_map` | `nodeId?`, `fileKey?`, `clientFrameworks?`, `clientLanguages?` | JSON map of `nodeId → mapping` | Reads the local sidecar, not Figma's cloud. Lookup falls back instance → component → component set; the requested id is the key. Framework filters match labels; language filters match source extensions or labels. |
 | `add_code_connect_map` | `nodeId`, `componentName`, `source`, `label`, `snippet?`, `snippetImports?` | The stored mapping | Writes the sidecar atomically. An instance is stored under its component's id. `source` is stored, never fetched. Limits: source 4096 bytes, snippet 100 000 bytes, 100 imports of 4096 bytes. `imports` is accepted as an alias of `snippetImports`. |
+| `get_code_connect_suggestions` | `nodeId`, `fileKey?`, `excludeMappingPrompt?` | JSON `{components: [{mainComponentNodeId, name, type, instanceCount, description, published, fromLibrary, properties?, variantCount?}], total, truncated, prompt?}`, or `{components: [], message}` | Components the selection uses (instances, nested instances, selected components) with no mapping in the sidecar. Every local component counts, published or not; a variant is connected when it or its set is mapped, and unconnected variants are listed once as their set. No thumbnails (use `get_screenshot`). At most 100. Native only. |
+| `send_code_connect_mappings` | `mappings` (1–100 of `{nodeId, componentName, source, label, snippet?, snippetImports?}`), `nodeId?`, `fileKey?` | JSON `{created: [{nodeId, componentId, componentName, source, label}], failed: [{nodeId, error}]}` | Writes the accepted mappings to the sidecar in one locked, atomic write (the `add_code_connect_map` limits apply). A non-component node, a broken limit or an already mapped component goes to `failed` (Figma's wording: "Component is already mapped to code"); `isError` only when nothing was created. Native only. |
 | `search_design_system` | `query`, `kinds?`, `fileKey?` | Ranked matches | This file only (no team libraries). `kinds`: `component`, `component_set`, `style`, `variable`. Exact names first; at most 100 results. |
 | `get_libraries` | `fileKey?` | Summary of this file's components, token collections, modes and styles | Local only; lists capped at 100, with totals. |
 | `list_file_shaders` | `fileKey?` | JSON `{shaders: [{id, nodeId, key, type, version, published, name, description, parameters, usedBy, files}], total, truncated, note}` | The shader fills and effects stored in the file (`CODE_COMPONENT` nodes with `codeObjectType` `CUSTOM_FILL`/`CUSTOM_EFFECT`); generative plugins are left out. `id` is the published tool ID. `name`, `description` and `files` are null/empty: the `.fig` does not hold them, Figma keeps them (and the source) in its cloud. At most 100. |
@@ -529,9 +531,9 @@ client's tool budget.
 |---|---|
 | `use_figma`, `create_new_file`, `generate_figma_design` | They write to Figma's canvas or cloud. This server is read-only. |
 | `generate_image` | Needs a hosted image model. |
+| `upload_assets`, `html_to_figma`, `generate_diagram`, `send_code_to_figma` | They create layers, files or code in Figma's cloud. |
 | `list_shaders`, `create_shader`, `update_shader`, generative-plugin tools | Need your Figma account library or cloud. Shader source is not in the `.fig`; `list_file_shaders`/`get_shader` return what is. |
 | `weave_*` | Figma Weave is a cloud product. |
-| `get_code_connect_suggestions` | Needs Figma's cloud. |
 
 PDF export is also unavailable. SVG comes from `download_assets` with `format: "svg"`.
 
@@ -544,7 +546,7 @@ MCP output from a private file into a public place.
 
 ## Writes
 
-- **Code Connect sidecar:** `add_code_connect_map` writes `<file>.fig.codeconnect.json`
+- **Code Connect sidecar:** `add_code_connect_map` and `send_code_connect_mappings` write `<file>.fig.codeconnect.json`
   beside the registered file (atomic replace, existing permissions kept, new files 0644
   on Unix). A symlink at that path or a sidecar over 10 MiB is refused. Each add holds an
   exclusive lock on the sibling `<file>.fig.codeconnect.json.lock` (an advisory

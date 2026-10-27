@@ -9,6 +9,8 @@ pub mod assets;
 pub mod bridge;
 /// Local Code Connect component context.
 pub mod codeconnect_context;
+/// Components in a selection without a local Code Connect mapping.
+pub mod codeconnect_suggest;
 /// React + Tailwind design context with rendered assets.
 pub mod design;
 /// Local component, style and variable search.

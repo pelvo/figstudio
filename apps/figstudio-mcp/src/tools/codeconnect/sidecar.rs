@@ -5,7 +5,7 @@ use figstudio_mcp_core::codeconnect_context::{component_id, component_set};
 use rmcp::model::CallToolResult;
 use std::{
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 // Bound sidecar and user strings before allocating or persisting them.
@@ -33,43 +33,20 @@ pub(super) fn map(
         Ok(id) => id,
         Err(message) => return fault(message),
     };
-    // Resolve the registered file, not a client-supplied output path.
-    let Ok(path) = path.canonicalize() else {
-        return fault("Cannot locate registered file");
+    let (path, parent) = match sidecar_path(path) {
+        Ok(paths) => paths,
+        Err(message) => return fault(message),
     };
-    let Some(parent) = path.parent() else {
-        return fault("File has no directory");
-    };
-    let Some(name) = path.file_name() else {
-        return fault("File has no name");
-    };
-    let mut name = name.to_os_string();
-    name.push(".codeconnect.json");
-    let path = parent.join(name);
+    let parent = parent.as_path();
     // Held until this function returns, so the read below and the write are one step across
     // processes; the in-process mutex in `codeconnect.rs` covers threads of this server.
     let _lock = match lock_sidecar(&path) {
         Ok(lock) => lock,
         Err(_) => return fault("Cannot lock Code Connect sidecar"),
     };
-    let meta = match std::fs::symlink_metadata(&path) {
-        Ok(meta) if !meta.file_type().is_file() => {
-            return fault("Code Connect sidecar must be a regular file, not a symlink");
-        }
-        Ok(meta) if meta.len() > MAX_SIDECAR_BYTES => {
-            return fault("Code Connect sidecar exceeds 10 MiB");
-        }
-        Ok(meta) => Some(meta),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(_) => return fault("Cannot read Code Connect sidecar"),
-    };
-    let mut mappings = if meta.is_some() {
-        match read(&path) {
-            Ok(mappings) => mappings,
-            Err(message) => return fault(message),
-        }
-    } else {
-        Mappings::new()
+    let (meta, mut mappings) = match load(&path) {
+        Ok(loaded) => loaded,
+        Err(message) => return fault(message),
     };
     let is_add = add.is_some();
     if let Some(mapping) = add {
@@ -121,6 +98,117 @@ pub(super) fn map(
     match serde_json::to_value(mappings) {
         Ok(value) => CallToolResult::structured(value),
         Err(_) => fault("Cannot serialize Code Connect mappings"),
+    }
+}
+
+/// The sidecar next to the registered file, and the directory holding both.
+fn sidecar_path(path: &Path) -> Result<(PathBuf, PathBuf), &'static str> {
+    // Resolve the registered file, not a client-supplied output path.
+    let path = path
+        .canonicalize()
+        .map_err(|_| "Cannot locate registered file")?;
+    let parent = path.parent().ok_or("File has no directory")?;
+    let mut name = path.file_name().ok_or("File has no name")?.to_os_string();
+    name.push(".codeconnect.json");
+    Ok((parent.join(name), parent.to_path_buf()))
+}
+
+/// The sidecar's metadata (`None` when it does not exist yet) and mappings. Call with the lock
+/// held.
+fn load(path: &Path) -> Result<(Option<std::fs::Metadata>, Mappings), &'static str> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err("Code Connect sidecar must be a regular file, not a symlink");
+        }
+        Ok(meta) if meta.len() > MAX_SIDECAR_BYTES => {
+            return Err("Code Connect sidecar exceeds 10 MiB");
+        }
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((None, Mappings::new()));
+        }
+        Err(_) => return Err("Cannot read Code Connect sidecar"),
+    };
+    Ok((Some(meta), read(path)?))
+}
+
+/// Every mapping in the sidecar of the registered file at `path` (empty when there is none).
+pub(super) fn mapped(path: &Path) -> Result<Mappings, &'static str> {
+    let (path, _) = sidecar_path(path)?;
+    let _lock = lock_sidecar(&path).map_err(|_| "Cannot lock Code Connect sidecar")?;
+    Ok(load(&path)?.1)
+}
+
+/// Most mappings one `send_code_connect_mappings` call may hold.
+pub(super) const MAX_BATCH: usize = 100;
+
+/// Adds `items` (node ID, mapping) in one locked write. A mapping whose node is not a local
+/// component (or instance of one), that fails validation, or whose component is already
+/// mapped is reported in `failed` and left out; the others are written together.
+pub(super) fn add_many(
+    doc: &Document,
+    path: &Path,
+    items: Vec<(String, Mapping)>,
+) -> CallToolResult {
+    if items.is_empty() || items.len() > MAX_BATCH {
+        return fault("mappings must hold 1 to 100 entries");
+    }
+    let (path, parent) = match sidecar_path(path) {
+        Ok(paths) => paths,
+        Err(message) => return fault(message),
+    };
+    let _lock = match lock_sidecar(&path) {
+        Ok(lock) => lock,
+        Err(_) => return fault("Cannot lock Code Connect sidecar"),
+    };
+    let (meta, mut mappings) = match load(&path) {
+        Ok(loaded) => loaded,
+        Err(message) => return fault(message),
+    };
+    let mut created = Vec::new();
+    let mut failed = Vec::new();
+    for (node_id, mapping) in items {
+        let result = component_id(doc, &node_id).and_then(|id| {
+            validate(&mapping)?;
+            let key = id.to_string();
+            let set = component_set(doc, id).map(|s| s.id.to_string());
+            if mappings.contains_key(&key) || set.is_some_and(|s| mappings.contains_key(&s)) {
+                return Err("Component is already mapped to code");
+            }
+            Ok(key)
+        });
+        match result {
+            Ok(key) => {
+                created.push(serde_json::json!({
+                    "nodeId": node_id,
+                    "componentId": key,
+                    "componentName": mapping.component_name,
+                    "source": mapping.source,
+                    "label": mapping.label,
+                }));
+                mappings.insert(key, mapping);
+            }
+            Err(reason) => failed.push(serde_json::json!({"nodeId": node_id, "error": reason})),
+        }
+    }
+    if !created.is_empty()
+        && write(
+            &path,
+            &parent,
+            &mappings,
+            meta.map(|meta| meta.permissions()),
+        )
+        .is_err()
+    {
+        return fault("Cannot atomically write Code Connect sidecar");
+    }
+    let value = serde_json::json!({"created": created, "failed": failed});
+    if created.is_empty() {
+        let mut result = CallToolResult::structured(value);
+        result.is_error = Some(true);
+        result
+    } else {
+        CallToolResult::structured(value)
     }
 }
 

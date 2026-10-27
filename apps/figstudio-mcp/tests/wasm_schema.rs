@@ -43,6 +43,8 @@ async fn browser_tools_match_native_names_properties_and_required_arguments() {
     let omitted = [
         "get_code_connect_map",
         "add_code_connect_map",
+        "get_code_connect_suggestions",
+        "send_code_connect_mappings",
         "whoami",
         "compare_files",
         "compare_page",

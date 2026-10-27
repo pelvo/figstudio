@@ -57,6 +57,42 @@ pub(crate) struct AddInput {
     snippet_imports: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SuggestInput {
+    /// Node ID, instance path or Figma URL of the selection. Required, except in the app's live
+    /// mode, where it defaults to the selection.
+    node_id: Option<String>,
+    file_key: Option<String>,
+    /// `true` returns a lightweight list without properties and guidance.
+    exclude_mapping_prompt: Option<bool>,
+}
+
+/// One accepted suggestion for `send_code_connect_mappings`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SendMapping {
+    /// The `mainComponentNodeId` from `get_code_connect_suggestions` (or any component,
+    /// component set or instance).
+    node_id: String,
+    component_name: String,
+    source: String,
+    label: String,
+    snippet: Option<String>,
+    #[serde(default, alias = "imports")]
+    snippet_imports: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SendInput {
+    /// The selection the suggestions came from; picks the file when it is a link.
+    node_id: Option<String>,
+    file_key: Option<String>,
+    /// 1 to 100 mappings to store.
+    mappings: Vec<SendMapping>,
+}
+
 #[tool_router(router = codeconnect_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
@@ -118,6 +154,96 @@ impl FigstudioServer {
             Some(mapping),
         )
         .await
+    }
+
+    #[tool(
+        description = "List the components a selection uses (instances, nested instances, selected components) that have no Code Connect mapping in FILE.fig.codeconnect.json yet: mainComponentNodeId (the component set for variants), name, type, instanceCount, published, fromLibrary, and properties with guidance unless excludeMappingPrompt is true. Offline every local component counts, published or not. Replies with a message when the selection uses no component or all are connected. Confirm matches with send_code_connect_mappings."
+    )]
+    async fn get_code_connect_suggestions(
+        &self,
+        Parameters(input): Parameters<SuggestInput>,
+    ) -> CallToolResult {
+        let key = match self.file_for(input.file_key.as_deref(), input.node_id.as_deref()) {
+            Ok(key) => key,
+            Err(error) => return tool_error(error),
+        };
+        let (key, node_id) = match self.target(key, input.node_id) {
+            Ok(target) => target,
+            Err(error) => return tool_error(error),
+        };
+        let (doc, _, path) = match self.files().open_picked(key.as_deref()).await {
+            Ok(picked) => picked,
+            Err(error) => return tool_error(error),
+        };
+        let lock = self.codeconnect_lock.clone();
+        let exclude = input.exclude_mapping_prompt.unwrap_or(false);
+        match tokio::task::spawn_blocking(move || {
+            let mapped = {
+                let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+                match sidecar::mapped(&path) {
+                    Ok(mapped) => mapped,
+                    Err(message) => return fault(message),
+                }
+            };
+            to_call(figstudio_mcp_core::codeconnect_suggest::suggestions(
+                &doc,
+                &node_id,
+                |id| mapped.contains_key(&id.to_string()),
+                exclude,
+            ))
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => tool_error(crate::error::McpError::token_task(error)),
+        }
+    }
+
+    #[tool(
+        description = "Store accepted Code Connect suggestions in FILE.fig.codeconnect.json in one locked write, without changing the .fig. Each mapping: nodeId (mainComponentNodeId), componentName, source, label, optional snippet and snippetImports. A mapping whose node is not a local component, that breaks the add_code_connect_map limits, or whose component is already mapped is listed in failed with the reason; the rest are written. At most 100 per call."
+    )]
+    async fn send_code_connect_mappings(
+        &self,
+        Parameters(input): Parameters<SendInput>,
+    ) -> CallToolResult {
+        let hint = input
+            .node_id
+            .as_deref()
+            .or_else(|| input.mappings.first().map(|m| m.node_id.as_str()));
+        let key = match self.file_for(input.file_key.as_deref(), hint) {
+            Ok(key) => key,
+            Err(error) => return tool_error(error),
+        };
+        let (doc, _, path) = match self.files().open_picked(key.as_deref()).await {
+            Ok(picked) => picked,
+            Err(error) => return tool_error(error),
+        };
+        let items: Vec<(String, Mapping)> = input
+            .mappings
+            .into_iter()
+            .map(|m| {
+                (
+                    m.node_id,
+                    Mapping {
+                        component_name: m.component_name,
+                        source: m.source,
+                        label: m.label,
+                        snippet: m.snippet,
+                        snippet_imports: m.snippet_imports,
+                    },
+                )
+            })
+            .collect();
+        let lock = self.codeconnect_lock.clone();
+        match tokio::task::spawn_blocking(move || {
+            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            sidecar::add_many(&doc, &path, items)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => tool_error(crate::error::McpError::token_task(error)),
+        }
     }
 
     async fn codeconnect_map(&self, input: MapInput, add: Option<Mapping>) -> CallToolResult {
