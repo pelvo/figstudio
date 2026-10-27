@@ -3,9 +3,9 @@
 A Rust app for Figma `.fig` local copies. Version 1 opens and displays files; editing may
 come later, so the design must not block it. (`figstudio` is a working name.)
 
-This file holds the phases and their "Done when" checks. The checklists and the progress log are one file per PR in
+This file holds the phases and their "Done when" checks. The checklists and the progress log are one file per branch in
 `docs/plans/` (see its README; `scripts/plan.sh show|pr|log|status`). Tick a box only after its
-**Done when** check has actually passed, in your own PR's file; never edit this file for either.
+**Done when** check has actually passed, in your own branch's file; never edit this file for either.
 
 Working on it? Start with `AGENTS.md`, then `docs/IMPLEMENTATION.md` (architecture, recipes,
 task board) and `docs/TESTING.md` (tests, checks, how to prove a test).
@@ -49,12 +49,12 @@ Rules:
 ## Phases
 
 ### P0 — Decoder (`crates/fig`)
-Checklist: `scripts/plan.sh show P0` (items live in `docs/plans/`, one file per PR).
+Checklist: `scripts/plan.sh show P0` (items live in `docs/plans/`, one file per branch).
 
 **Done when:** `cargo test -p figstudio-fig` passes. ✅ 5/5 on 2026-10-08.
 
 ### P1 — Renderer (`crates/render`)
-Checklist: `scripts/plan.sh show P1` (items live in `docs/plans/`, one file per PR).
+Checklist: `scripts/plan.sh show P1` (items live in `docs/plans/`, one file per branch).
 
 Known differences that are **not** bugs: Figma thumbnails show the canvas background
 (black in these fixtures) while we use the page colour; `broken_images.fig` really has
@@ -64,7 +64,7 @@ Known differences that are **not** bugs: Figma thumbnails show the canvas backgr
 (side-by-side sheet reviewed), and `cargo test -p figstudio-render` passes.
 
 ### P1b — Large files (requester's file cannot be shared)
-Checklist: `scripts/plan.sh show P1b` (items live in `docs/plans/`, one file per PR).
+Checklist: `scripts/plan.sh show P1b` (items live in `docs/plans/`, one file per branch).
 
 **Numbers on the 103k-node stress file** (this machine, release build):
 
@@ -82,34 +82,34 @@ tiling would fix it); the Layers panel is not virtualised yet (fine at 9 000 row
 
 
 ### P2 — Headless CLI (`apps/figstudio-cli`)
-Checklist: `scripts/plan.sh show P2` (items live in `docs/plans/`, one file per PR).
+Checklist: `scripts/plan.sh show P2` (items live in `docs/plans/`, one file per branch).
 
 **Done when:** CLI tests pass and output is checked for every fixture.
 
 ### P3 — Desktop app (`apps/figstudio`)
-Checklist: `scripts/plan.sh show P3` (items live in `docs/plans/`, one file per PR).
+Checklist: `scripts/plan.sh show P3` (items live in `docs/plans/`, one file per branch).
 
 **Checked so far (Xvfb + xdotool, 1400×880):** empty state, structure.fig open, tree expand,
 canvas click selects `social-twitter 1` and fills Properties, Ctrl+wheel 73%→241%,
 `=` zoom, ⇧0 to 100%, bad file toast, File → Export submenus.
 
 ### P4 — Platforms
-Checklist: `scripts/plan.sh show P4` (items live in `docs/plans/`, one file per PR).
+Checklist: `scripts/plan.sh show P4` (items live in `docs/plans/`, one file per branch).
 
 **Done when:** Linux and wasm checks pass here; macOS item is ticked only after the
 requester confirms it runs.
 
 ### P5 — Delivery
-Checklist: `scripts/plan.sh show P5` (items live in `docs/plans/`, one file per PR).
+Checklist: `scripts/plan.sh show P5` (items live in `docs/plans/`, one file per branch).
 
 ### Deferred image formats
-Checklist: `scripts/plan.sh show Deferred` (items live in `docs/plans/`, one file per PR).
+Checklist: `scripts/plan.sh show Deferred` (items live in `docs/plans/`, one file per branch).
 
 ### P6 — Editing (later, not started until asked)
-Checklist: `scripts/plan.sh show P6` (items live in `docs/plans/`, one file per PR).
+Checklist: `scripts/plan.sh show P6` (items live in `docs/plans/`, one file per branch).
 
 ### P7 — Offline MCP server (`apps/figstudio-mcp`, plan in `docs/MCP-PLAN.md`)
-Checklist: `scripts/plan.sh show P7` (items live in `docs/plans/`, one file per PR).
+Checklist: `scripts/plan.sh show P7` (items live in `docs/plans/`, one file per branch).
 
 **Done when:** every lane's gate passed (it did, L0–L12). The open boxes need a real motion
 file, a real FigJam file or a person with the clients.
@@ -141,5 +141,5 @@ target/release/figstudio-cli render tests/fixtures/structure.fig -o /tmp/structu
 
 ## Progress log
 
-Moved to `docs/plans/pr-<N>.md`, under `## Progress` (one file per PR). Timeline: `scripts/plan.sh log`;
+Moved to `docs/plans/<date>-<slug>.md`, under `## Progress` (one file per branch). Timeline: `scripts/plan.sh log`;
 add an entry: `scripts/plan.sh note <slug>`.

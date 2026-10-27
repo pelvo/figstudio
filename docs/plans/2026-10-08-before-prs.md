@@ -1,6 +1,6 @@
 ---
 pr:
-branch: main
+branch:
 title: items added before pull requests were used
 ---
 
