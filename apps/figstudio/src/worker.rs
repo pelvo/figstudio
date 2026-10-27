@@ -404,7 +404,7 @@ impl Workers {
         &self,
         doc: Arc<Document>,
         root: Guid,
-        scale: f64,
+        format: ExportFormat,
         path: PathBuf,
         source: Option<Source>,
     ) -> Result<(), &'static str> {
@@ -420,7 +420,7 @@ impl Workers {
             // image cache recovers from a poisoned lock, so no half-changed state leaks out. The
             // browser build aborts on panic instead (see `install_panic_flag`).
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                export_png_with(images, &doc, source.as_ref(), root, scale, &path)
+                export_with(images, &doc, source.as_ref(), root, format, &path)
             }))
             .unwrap_or_else(|_| Err(anyhow::anyhow!("export worker panicked")));
             drop(_release);
@@ -592,24 +592,54 @@ fn export_png(
     scale: f64,
     path: &std::path::Path,
 ) -> anyhow::Result<()> {
-    export_png_with(Images::default(), doc, None, root, scale, path)
+    export_with(
+        Images::default(),
+        doc,
+        None,
+        root,
+        ExportFormat::Png(scale),
+        path,
+    )
 }
 
-/// [`export_png`] drawing from `images` and reading unread images from `source`.
+/// What File → Export writes: a PNG at a scale, or an SVG in design units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ExportFormat {
+    Png(f64),
+    Svg,
+}
+
+impl ExportFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png(_) => "png",
+            Self::Svg => "svg",
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Png(_) => "PNG image",
+            Self::Svg => "SVG image",
+        }
+    }
+}
+
+/// [`export_png`] in `format`, drawing from `images` and reading unread images from `source`.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn export_png_with(
+pub fn export_with(
     images: Images,
     doc: &Document,
     source: Option<&Source>,
     root: Guid,
-    scale: f64,
+    format: ExportFormat,
     path: &std::path::Path,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
-    let frame =
-        crate::export_frame(images, doc, source, root, scale).context("nothing to export")?;
-    let png = frame.pixmap.into_png().context("encode the PNG")?;
-    std::fs::write(path, png).context("write the PNG")
+    let bytes = crate::export_bytes(images, doc, source, root, format)?;
+    std::fs::write(path, bytes)
+        .with_context(|| format!("write the {}", format.extension().to_uppercase()))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -648,6 +678,40 @@ mod export_tests {
     }
 
     #[test]
+    fn export_writes_an_svg_of_the_selection_in_design_units() {
+        let doc = structure();
+        let dir = std::env::temp_dir().join(format!("figstudio-svg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("layer.svg");
+        let layer = Guid(1, 34);
+        export_with(
+            Images::default(),
+            &doc,
+            None,
+            layer,
+            ExportFormat::Svg,
+            &out,
+        )
+        .unwrap();
+        let svg = std::fs::read_to_string(&out).unwrap();
+        let png = Renderer::new()
+            .render_fit(&doc, layer, 1.0, 0.0, None)
+            .unwrap();
+        let size = format!(
+            r#"width="{}" height="{}""#,
+            png.pixmap.width(),
+            png.pixmap.height()
+        );
+        assert!(
+            svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""),
+            "{svg}"
+        );
+        assert!(svg.contains(&size), "{size} in {svg}");
+        assert!(svg.contains("<path"), "{svg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_worker_panic_is_flagged_and_stops_busy() {
         let ctx = egui::Context::default();
         let workers = Workers::new(&ctx);
@@ -678,10 +742,22 @@ mod export_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("page.png");
         workers
-            .export(doc.clone(), doc.pages[0], 0.1, path.clone(), None)
+            .export(
+                doc.clone(),
+                doc.pages[0],
+                ExportFormat::Png(0.1),
+                path.clone(),
+                None,
+            )
             .unwrap();
         assert_eq!(
-            workers.export(doc.clone(), doc.pages[0], 0.1, path.clone(), None),
+            workers.export(
+                doc.clone(),
+                doc.pages[0],
+                ExportFormat::Png(0.1),
+                path.clone(),
+                None
+            ),
             Err("an export is already running")
         );
         let done = workers
@@ -691,7 +767,13 @@ mod export_tests {
         assert!(done.result.is_ok());
         assert!(
             workers
-                .export(doc.clone(), doc.pages[0], 0.1, path.clone(), None)
+                .export(
+                    doc.clone(),
+                    doc.pages[0],
+                    ExportFormat::Png(0.1),
+                    path.clone(),
+                    None
+                )
                 .is_ok()
         );
         let _ = workers
