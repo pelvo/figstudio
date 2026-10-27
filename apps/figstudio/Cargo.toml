@@ -106,7 +106,8 @@ getrandom = { version = "0.3.4", features = ["wasm_js"] }
 figstudio-render = { path = "../../crates/render", default-features = false, features = ["parallel", "gpu"] }
 vello_gpu = { workspace = true }
 # wgpu: WebGPU where the browser has it, else WebGL2 (egui-wgpu enables wgpu/webgpu + webgl).
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "persistence"] }
+# web_screen_reader: Settings → Read controls aloud (eframe has no AccessKit on the web).
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "persistence", "web_screen_reader"] }
 # file-handle-inner: the picked `File`, so big files are read in slices, not whole.
 rfd = { workspace = true, features = ["file-handle-inner"] }
 rayon = { workspace = true }

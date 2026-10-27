@@ -335,6 +335,25 @@ fn keycap(ui: &Ui, text: &str, right: f32, y: f32, recording: bool) -> Rect {
     cap
 }
 
+/// Settings → General in the browser: egui's own screen reader, which speaks what gets focus
+/// or a click with the browser's speech synthesis. eframe has no AccessKit on the web, so a
+/// system screen reader sees only the canvas element. The choice is kept with egui's memory.
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), expect(dead_code))]
+fn read_aloud_setting(ui: &mut Ui) {
+    let ctx = ui.ctx().clone();
+    let mut on = ctx.options(|o| o.screen_reader);
+    setting(
+        ui,
+        "Read controls aloud",
+        "The browser says what has focus or was clicked",
+        |ui| {
+            if switch(ui, &mut on, "Read controls aloud").changed() {
+                ctx.options_mut(|o| o.screen_reader = on);
+            }
+        },
+    );
+}
+
 /// A switch, macOS style: the knob slides, the track fills with blue when on.
 fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(34.0, 20.0), Sense::click());
@@ -1046,6 +1065,8 @@ impl App {
             if let Some(size) = size {
                 ctx.set_zoom_factor(f32::from(size) / 100.0);
             }
+            #[cfg(target_arch = "wasm32")]
+            read_aloud_setting(ui);
             let mut reduce = self.reduce_motion;
             setting(ui, "Reduce motion", "No springs, slides or fades", |ui| {
                 if switch(ui, &mut reduce, "Reduce motion").changed() {
@@ -1622,5 +1643,27 @@ mod look_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod read_aloud_tests {
+    use egui::accesskit::Role;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn the_read_aloud_switch_turns_egui_s_screen_reader_on_and_off() {
+        let mut h = Harness::new_ui(super::read_aloud_setting);
+        h.run();
+        assert!(!h.ctx.options(|o| o.screen_reader));
+        h.get_by_role_and_label(Role::CheckBox, "Read controls aloud")
+            .click();
+        h.run();
+        assert!(h.ctx.options(|o| o.screen_reader));
+        h.get_by_role_and_label(Role::CheckBox, "Read controls aloud")
+            .click();
+        h.run();
+        assert!(!h.ctx.options(|o| o.screen_reader));
     }
 }
