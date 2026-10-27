@@ -661,15 +661,18 @@ fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<I
                 continue;
             };
             let field = binding["field"].as_str().unwrap_or("?");
-            kv(
-                ui,
-                &field_label(field),
-                format!(
-                    "{} → {}",
-                    motion_value(field, &first["value"]),
-                    motion_value(field, &last["value"])
-                ),
-            );
+            // Rotation reads as Figma's Motion panel shows it: "360° clockwise".
+            let value = (field == "MOTION_ROTATION")
+                .then(|| crate::inspect::rotation_turn(&first["value"], &last["value"]))
+                .flatten()
+                .unwrap_or_else(|| {
+                    format!(
+                        "{} → {}",
+                        motion_value(field, &first["value"]),
+                        motion_value(field, &last["value"])
+                    )
+                });
+            kv(ui, &field_label(field), value);
             let ms = |k: &serde_json::Value| k["timeMs"].as_f64().unwrap_or(0.0).round();
             ui.label(
                 RichText::new(format!(

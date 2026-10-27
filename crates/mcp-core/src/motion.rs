@@ -11,6 +11,8 @@
 //! - A preset track's parent is an `ANIMATION_PRESET_INSTANCE`, whose `timelineOffset` (µs)
 //!   delays the whole track.
 //! - Easing on a keyframe shapes the segment that ends at it (the first keyframe's is unused).
+//! - `MOTION_ROTATION` is in radians, clockwise positive: Figma's Motion panel shows the
+//!   playground's -2π → 0 track as "Clockwise 360°".
 //! - A timeline (`timelineDefinitions` entry, or `timelineDuration` on a frame) gives the
 //!   duration and the playback style (`ONCE`, `LOOP`, `BOOMERANG`). An instance shifts its
 //!   component's timeline by `timelineAssignments[].value.offsetUs`.
@@ -41,8 +43,8 @@ const DEFAULT_SPRING: Spring = Spring {
 };
 
 const EASING_NOTE: &str = "Easing on a keyframe shapes the segment that ends at it.";
-const ROTATION_NOTE: &str = "rotate: Figma stores radians, counter-clockwise positive; CSS and \
-motion.dev use degrees clockwise, so the sign is flipped.";
+const ROTATION_NOTE: &str = "rotate: Figma stores motion rotation in radians, clockwise positive \
+(checked against Figma's Motion panel), the same direction as CSS and motion.dev degrees.";
 const TIMING_NOTE: &str = "Snippets run every track over the whole timeline (delays and holds \
 are keyframes), so tracks of one timeline stay in step and loops line up.";
 
@@ -709,7 +711,7 @@ fn css_value(field: &str, value: &Value) -> Option<(&'static str, String)> {
         "OPACITY" => ("opacity", n(num(value)? / 100.0)),
         "WIDTH" => ("width", format!("{}px", n(num(value)?))),
         "HEIGHT" => ("height", format!("{}px", n(num(value)?))),
-        "MOTION_ROTATION" => ("rotate", format!("{}deg", n(-num(value)?.to_degrees()))),
+        "MOTION_ROTATION" => ("rotate", format!("{}deg", n(num(value)?.to_degrees()))),
         "MOTION_TRANSLATION_XY" => {
             let (x, y) = xy(value)?;
             ("translate", format!("{}px {}px", n(x), n(y)))
@@ -730,7 +732,7 @@ fn motion_values(field: &str, value: &Value) -> Option<Vec<(&'static str, String
         "OPACITY" => vec![("opacity", n(num(value)? / 100.0))],
         "WIDTH" => vec![("width", n(num(value)?))],
         "HEIGHT" => vec![("height", n(num(value)?))],
-        "MOTION_ROTATION" => vec![("rotate", n(-num(value)?.to_degrees()))],
+        "MOTION_ROTATION" => vec![("rotate", n(num(value)?.to_degrees()))],
         "MOTION_TRANSLATION_X" => vec![("x", n(num(value)?))],
         "MOTION_TRANSLATION_Y" => vec![("y", n(num(value)?))],
         "MOTION_SCALE_X" => vec![("scaleX", n(num(value)?))],

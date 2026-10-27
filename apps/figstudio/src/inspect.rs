@@ -92,16 +92,29 @@ pub fn colour_of(v: &Value) -> Option<egui::Color32> {
 }
 
 /// A keyframe value in the units the rest of Properties uses: opacity in percent, rotation in
-/// degrees (counter-clockwise positive, as Layout shows it), scale as a factor.
+/// degrees (clockwise positive, as stored), scale as a factor.
 pub fn motion_value(field: &str, v: &Value) -> String {
     let n = v.as_f64();
     match (field, n) {
         ("OPACITY", Some(n)) => format!("{}%", trim(n)),
+        // Clockwise positive, as stored (see `rotation_turn`).
         ("MOTION_ROTATION", Some(n)) => format!("{}°", trim(n.to_degrees())),
         (f, Some(n)) if f.starts_with("MOTION_SCALE") => format!("{}×", trim(n)),
         ("MOTION_SCALE_XY", None) => format!("{}×", value_text(v)),
         _ => value_text(v),
     }
+}
+
+/// A rotation track as Figma's Motion panel shows it: the amount and the direction,
+/// `360° clockwise`. Motion rotation is stored clockwise positive (radians).
+pub fn rotation_turn(first: &Value, last: &Value) -> Option<String> {
+    let delta = (last.as_f64()? - first.as_f64()?).to_degrees();
+    let direction = if delta >= 0.0 {
+        "clockwise"
+    } else {
+        "counter-clockwise"
+    };
+    Some(format!("{}° {direction}", trim(delta.abs())))
 }
 
 /// A length of time: `900 ms`, `1.5 s`.
@@ -243,5 +256,10 @@ mod tests {
         assert_eq!(duration(901.444), "901 ms");
         assert_eq!(duration(3601.0), "3.6 s");
         assert_eq!(easing_label("OUT_CUBIC"), "ease out");
+        // The playground's rotation preset: Figma's Motion panel says "Clockwise 360°".
+        assert_eq!(
+            rotation_turn(&json!(-std::f64::consts::TAU), &json!(0.0)).as_deref(),
+            Some("360° clockwise")
+        );
     }
 }
