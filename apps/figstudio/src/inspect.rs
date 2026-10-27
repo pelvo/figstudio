@@ -48,14 +48,7 @@ fn compute(doc: &Document, node: &Node) -> Details {
 
 /// A short form of a keyframe value: `0.5`, `12, -3` for a point, the JSON otherwise.
 pub fn value_text(v: &Value) -> String {
-    let num = |n: f64| {
-        let r = (n * 100.0).round() / 100.0;
-        if r.fract() == 0.0 {
-            format!("{r:.0}")
-        } else {
-            format!("{r}")
-        }
-    };
+    let num = trim;
     match v {
         Value::Number(n) => n.as_f64().map_or_else(|| n.to_string(), num),
         Value::Bool(b) => if *b { "on" } else { "off" }.into(),
@@ -69,7 +62,89 @@ pub fn value_text(v: &Value) -> String {
             let c = |k: &str| (o[k].as_f64().unwrap_or(0.0).clamp(0.0, 1.0) * 255.0).round() as u8;
             format!("#{:02X}{:02X}{:02X}", c("r"), c("g"), c("b"))
         }
+        // A circle point: centre, radius and angle.
+        Value::Object(o) if o.contains_key("center") && o.contains_key("radius") => {
+            let mut out = format!(
+                "{} · r {}",
+                value_text(&o["center"]),
+                num(o["radius"].as_f64().unwrap_or(0.0))
+            );
+            if let Some(angle) = o.get("angle").and_then(Value::as_f64) {
+                out.push_str(&format!(" · {}°", num(angle)));
+            }
+            out
+        }
+        // A colour point: the colour and where it sits.
+        Value::Object(o) if o.contains_key("color") && o.contains_key("position") => format!(
+            "{} at {}",
+            value_text(&o["color"]),
+            value_text(&o["position"])
+        ),
         other => other.to_string(),
+    }
+}
+
+/// The colour of a shader value, for a swatch: `Some` for `{r, g, b[, a]}`.
+pub fn colour_of(v: &Value) -> Option<egui::Color32> {
+    let o = v.as_object()?;
+    let c = |k: &str| Some((o.get(k)?.as_f64()?.clamp(0.0, 1.0) * 255.0).round() as u8);
+    Some(egui::Color32::from_rgb(c("r")?, c("g")?, c("b")?))
+}
+
+/// A keyframe value in the units the rest of Properties uses: opacity in percent, rotation in
+/// degrees (counter-clockwise positive, as Layout shows it), scale as a factor.
+pub fn motion_value(field: &str, v: &Value) -> String {
+    let n = v.as_f64();
+    match (field, n) {
+        ("OPACITY", Some(n)) => format!("{}%", trim(n)),
+        ("MOTION_ROTATION", Some(n)) => format!("{}°", trim(n.to_degrees())),
+        (f, Some(n)) if f.starts_with("MOTION_SCALE") => format!("{}×", trim(n)),
+        ("MOTION_SCALE_XY", None) => format!("{}×", value_text(v)),
+        _ => value_text(v),
+    }
+}
+
+/// A length of time: `900 ms`, `1.5 s`.
+pub fn duration(ms: f64) -> String {
+    if ms >= 1000.0 {
+        format!("{} s", trim((ms / 100.0).round() / 10.0))
+    } else {
+        format!("{} ms", ms.round())
+    }
+}
+
+/// An easing type as a person names it: `OUT_CUBIC` → `ease out`.
+pub fn easing_label(kind: &str) -> String {
+    match kind {
+        "LINEAR" => "linear".into(),
+        "HOLD" => "hold".into(),
+        "IN_CUBIC" | "EASE_IN" => "ease in".into(),
+        "OUT_CUBIC" => "ease out".into(),
+        "INOUT_CUBIC" => "ease in-out".into(),
+        "IN_BACK_CUBIC" => "back in".into(),
+        "OUT_BACK_CUBIC" => "back out".into(),
+        "INOUT_BACK_CUBIC" => "back in-out".into(),
+        "CUSTOM_CUBIC" => "custom curve".into(),
+        k if k.contains("SPRING") => "spring".into(),
+        other => other.to_lowercase().replace('_', " "),
+    }
+}
+
+/// How a timeline plays.
+pub fn loop_label(mode: &str) -> &'static str {
+    match mode {
+        "loop" => "loops",
+        "boomerang" => "back and forth",
+        _ => "plays once",
+    }
+}
+
+fn trim(n: f64) -> String {
+    let r = (n * 100.0).round() / 100.0;
+    if r.fract() == 0.0 {
+        format!("{r:.0}")
+    } else {
+        format!("{r}")
     }
 }
 
@@ -78,14 +153,17 @@ pub fn field_label(field: &str) -> String {
     let words = field
         .strip_prefix("MOTION_")
         .unwrap_or(field)
-        .replace('_', " ");
-    let mut out = words.to_lowercase();
+        .to_lowercase()
+        .replace('_', " ")
+        .replace("translation", "position");
+    let mut out = words
+        .replace(" xy", "")
+        .replace(" x", " X")
+        .replace(" y", " Y");
     if let Some(first) = out.get_mut(0..1) {
         first.make_ascii_uppercase();
     }
-    out.replace(" xy", " XY")
-        .replace(" x", " X")
-        .replace(" y", " Y")
+    out
 }
 
 #[cfg(test)]
@@ -148,7 +226,22 @@ mod tests {
             "#FF0000"
         );
         assert_eq!(field_label("MOTION_SCALE_X"), "Scale X");
-        assert_eq!(field_label("MOTION_TRANSLATION_XY"), "Translation XY");
+        assert_eq!(field_label("MOTION_TRANSLATION_XY"), "Position");
+        assert_eq!(field_label("MOTION_TRANSLATION_X"), "Position X");
         assert_eq!(field_label("OPACITY"), "Opacity");
+        // The units Layout and Layer use.
+        assert_eq!(motion_value("OPACITY", &json!(100.0)), "100%");
+        assert_eq!(
+            motion_value("MOTION_ROTATION", &json!(-std::f64::consts::TAU)),
+            "-360°"
+        );
+        assert_eq!(motion_value("MOTION_SCALE_X", &json!(0.3)), "0.3×");
+        assert_eq!(
+            value_text(&json!({"angle": -64.3, "center": {"x": 50.0, "y": 50.0}, "radius": 144.0})),
+            "50, 50 · r 144 · -64.3°"
+        );
+        assert_eq!(duration(901.444), "901 ms");
+        assert_eq!(duration(3601.0), "3.6 s");
+        assert_eq!(easing_label("OUT_CUBIC"), "ease out");
     }
 }

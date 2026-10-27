@@ -91,13 +91,16 @@ fn child_layout_matches_path_inspection_on_every_public_fixture() {
         .filter(|p| p.extension().is_some_and(|e| e == "fig"))
         .collect();
     files.sort();
-    assert_eq!(files.len(), 7);
+    // 7 fig2sketch files and 2 Figma Community files (motion, shaders).
+    assert_eq!(files.len(), 9);
     let mut compared = 0;
     for file in files {
         let doc = Document::open(&file).unwrap();
         let mut renderer = Renderer::new();
         let definitions = renderer.definitions(&doc);
-        for instance in doc.nodes.iter().filter(|n| n.kind == "INSTANCE") {
+        // The plain resolver rebuilds the file's definitions on every call: the first 100
+        // instances of a file keep the shaders fixture (3,600 instances) to seconds.
+        for instance in doc.nodes.iter().filter(|n| n.kind == "INSTANCE").take(100) {
             let mut pending = vec![None];
             while let Some(parent) = pending.pop() {
                 for layout in renderer.child_layouts(&doc, instance.id, parent.as_ref(), 2048) {

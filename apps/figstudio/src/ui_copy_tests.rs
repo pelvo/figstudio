@@ -254,7 +254,7 @@ fn the_properties_panel_shows_motion_tracks_and_copies_their_css() {
     step(&mut h, &mut c);
     assert!(h.query_by_label("Motion").is_some(), "no Motion section");
     assert!(h.query_by_label("Timeline").is_some());
-    assert!(h.query_by_label("Rotation (rotation)").is_some());
+    assert!(h.query_by_label("Rotation").is_some());
     click_label(&mut h, &mut c, "Copy CSS animation");
     assert!(
         c.last()

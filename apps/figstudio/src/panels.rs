@@ -12,7 +12,7 @@ use crate::tab::Tab;
 use crate::theme::{self, Palette};
 
 /// Height of a layer row.
-const ROW: f32 = 26.0;
+pub(crate) const ROW: f32 = 26.0;
 
 fn display_name(node: &Node) -> String {
     let name = node.data.text("name").unwrap_or("");
@@ -41,7 +41,7 @@ fn selected_pill(p: &Palette, rect: egui::Rect) -> Shape {
 
 /// Fade-in of the hovered row of a list: one state per list, not per row, so long trees do
 /// not keep an animation per row.
-fn hover_fade(ui: &Ui, list: Id, row: Id, hovered: bool) -> f32 {
+pub(crate) fn hover_fade(ui: &Ui, list: Id, row: Id, hovered: bool) -> f32 {
     if !hovered {
         return 0.0;
     }
@@ -620,6 +620,8 @@ fn paints(ui: &mut Ui, title: &str, list: Option<&Val>) {
                 );
                 let label = match (kind, swatch) {
                     ("SOLID", Some(c)) => format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b()),
+                    // A shader fill: its section below has the details.
+                    ("CUSTOM", _) => "shader".to_owned(),
                     _ => kind.to_lowercase().replace('_', " "),
                 };
                 let text = RichText::new(label);
@@ -636,18 +638,19 @@ fn paints(ui: &mut Ui, title: &str, list: Option<&Val>) {
     });
 }
 
-/// The layer's keyframe tracks: one line per animated field, the timeline, and a copy button.
+/// The layer's keyframe tracks: one row per animated field with its start and end value, a
+/// caption with the time span and easing, the timeline, and a copy button.
 fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<Item>) {
-    use crate::inspect::{field_label, value_text};
+    use crate::inspect::{duration, easing_label, field_label, loop_label, motion_value};
     section(ui, "Motion", |ui| {
-        let ms = |v: &serde_json::Value| fmt(v.as_f64().unwrap_or(0.0));
+        let p = theme::of(ui);
         kv(
             ui,
             "Timeline",
             format!(
-                "{} ms · {}",
-                ms(&motion["durationMs"]),
-                motion["loopMode"].as_str().unwrap_or("once")
+                "{} · {}",
+                duration(motion["durationMs"].as_f64().unwrap_or(0.0)),
+                loop_label(motion["loopMode"].as_str().unwrap_or("once"))
             ),
         );
         for binding in motion["keyframeBindings"].as_array().into_iter().flatten() {
@@ -657,25 +660,26 @@ fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<I
             let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
                 continue;
             };
-            let mut label = field_label(binding["field"].as_str().unwrap_or("?"));
-            if let Some(preset) = binding["preset"].as_str() {
-                label.push_str(&format!(" ({preset})"));
-            }
-            let easing = last["easing"]["type"]
-                .as_str()
-                .unwrap_or("")
-                .to_lowercase()
-                .replace('_', " ");
+            let field = binding["field"].as_str().unwrap_or("?");
             kv(
                 ui,
-                &label,
+                &field_label(field),
                 format!(
-                    "{} → {} · {}–{} ms · {easing}",
-                    value_text(&first["value"]),
-                    value_text(&last["value"]),
-                    ms(&first["timeMs"]),
-                    ms(&last["timeMs"]),
+                    "{} → {}",
+                    motion_value(field, &first["value"]),
+                    motion_value(field, &last["value"])
                 ),
+            );
+            let ms = |k: &serde_json::Value| k["timeMs"].as_f64().unwrap_or(0.0).round();
+            ui.label(
+                RichText::new(format!(
+                    "{}–{} ms · {}",
+                    ms(first),
+                    ms(last),
+                    easing_label(last["easing"]["type"].as_str().unwrap_or(""))
+                ))
+                .color(p.text_faint)
+                .small(),
             );
         }
         if let Some(css) = motion["codeSnippets"]["css"].as_str()
@@ -690,7 +694,8 @@ fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<I
     });
 }
 
-/// One shader fill or effect: its kind and version, then each parameter's value.
+/// One shader fill or effect: its version, then each parameter's value (colours with a swatch,
+/// as Fill shows them).
 fn shader_section(ui: &mut Ui, shader: &serde_json::Value) {
     let title = match shader["type"].as_str() {
         Some("fill") => "Shader fill",
@@ -699,29 +704,47 @@ fn shader_section(ui: &mut Ui, shader: &serde_json::Value) {
     };
     section(ui, title, |ui| {
         let p = theme::of(ui);
-        let version = shader["version"]
+        let mut caption = shader["version"]
             .as_str()
-            .map_or(String::new(), |v| format!(" · v{v}"));
-        let hidden = if shader["visible"] == false {
-            " · hidden"
-        } else {
-            ""
-        };
-        ui.label(
-            RichText::new(format!(
-                "{}{version}{hidden}",
-                shader["id"].as_str().unwrap_or("not in this file")
-            ))
-            .color(p.text_faint)
-            .small(),
-        );
-        for value in shader["values"].as_array().into_iter().flatten() {
-            kv(
-                ui,
-                value["label"].as_str().unwrap_or("?"),
-                crate::inspect::value_text(&value["value"]),
-            );
+            .map_or("Shader not in this file".to_owned(), |v| {
+                format!("Version {v}")
+            });
+        if shader["visible"] == false {
+            caption.push_str(" · hidden");
         }
+        ui.label(RichText::new(caption).color(p.text_faint).small());
+        for value in shader["values"].as_array().into_iter().flatten() {
+            let label = value["label"].as_str().unwrap_or("?");
+            match crate::inspect::colour_of(&value["value"]) {
+                Some(colour) => swatch_row(ui, label, colour),
+                None => kv(ui, label, crate::inspect::value_text(&value["value"])),
+            }
+        }
+    });
+}
+
+/// A label with a colour swatch and its hex value, like a Fill row.
+fn swatch_row(ui: &mut Ui, label: &str, colour: Color32) {
+    let p = theme::of(ui);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).color(p.text_faint));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(format!(
+                "#{:02X}{:02X}{:02X}",
+                colour.r(),
+                colour.g(),
+                colour.b()
+            ));
+            let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+            let radius = CornerRadius::same(4);
+            ui.painter().rect_filled(r, radius, colour);
+            ui.painter().rect_stroke(
+                r,
+                radius,
+                egui::Stroke::new(1.0, p.card_stroke),
+                egui::StrokeKind::Inside,
+            );
+        });
     });
 }
 
@@ -732,11 +755,11 @@ fn effects(ui: &mut Ui, list: Option<&Val>) {
     }
     section(ui, "Effects", |ui| {
         for e in items {
-            let kind = e
-                .text("type")
-                .unwrap_or("?")
-                .to_lowercase()
-                .replace('_', " ");
+            let kind = match e.text("type").unwrap_or("?") {
+                // A shader effect: its section below has the details.
+                "CUSTOM" => "shader".to_owned(),
+                other => other.to_lowercase().replace('_', " "),
+            };
             let radius = e.num("radius").unwrap_or(0.0);
             let visible = e.flag("visible") != Some(false);
             let text = RichText::new(format!("{kind} · {}", fmt(f64::from(radius))));
