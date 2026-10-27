@@ -1024,6 +1024,28 @@ impl App {
             if let Some(a) = picked {
                 self.apply(Action::Appearance(a), &ctx);
             }
+            // egui's zoom of the whole UI: also ⌘+ / ⌘− (Ctrl elsewhere) and ⌘0, remembered
+            // with the window. Percent, so the steps compare exactly.
+            let steps =
+                |key| ctx.format_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, key));
+            let note = format!(
+                "{} and {} for the steps between",
+                steps(egui::Key::Plus),
+                steps(egui::Key::Minus)
+            );
+            let percent = (ctx.zoom_factor() * 100.0).round() as u16;
+            let mut size = None;
+            setting(ui, "Text size", &note, |ui| {
+                size = segmented(
+                    ui,
+                    "text-size",
+                    percent,
+                    &[("100%", 100), ("125%", 125), ("150%", 150), ("200%", 200)],
+                );
+            });
+            if let Some(size) = size {
+                ctx.set_zoom_factor(f32::from(size) / 100.0);
+            }
             let mut reduce = self.reduce_motion;
             setting(ui, "Reduce motion", "No springs, slides or fades", |ui| {
                 if switch(ui, &mut reduce, "Reduce motion").changed() {
@@ -1060,7 +1082,8 @@ impl App {
             &[Glyph::Icon(Icon::Gear)],
             "General",
             "How figstudio looks. The appearance can follow the system or stay light or \
-             dark; each space keeps its own colour (right-click its dot).",
+             dark; each space keeps its own colour (right-click its dot). Text size scales \
+             the whole window, not the design on the canvas.",
         );
     }
 

@@ -1115,10 +1115,11 @@ impl App {
                     i.events.retain(|e| !matches!(e, egui::Event::Copy));
                     i.consume_shortcut(&shortcut) || copy
                 }
-                // `+` where it needs no Shift (a keypad) zooms in too.
+                // `+` where it needs no Shift (a keypad) zooms in too. Not with ⌘ / Ctrl:
+                // that is egui's zoom of the whole UI (larger text).
                 B::ZoomIn if default => {
                     i.consume_shortcut(&shortcut)
-                        || (i.key_pressed(Key::Plus) && !i.modifiers.shift)
+                        || (i.key_pressed(Key::Plus) && i.modifiers.is_none())
                 }
                 _ => i.consume_shortcut(&shortcut),
             });

@@ -358,3 +358,50 @@ fn tab_stays_inside_a_modal_dialog() {
         );
     }
 }
+
+#[test]
+fn command_plus_and_minus_scale_the_whole_ui_and_leave_the_canvas_alone() {
+    use egui::{Key, Modifiers};
+    let mut h = harness();
+    h.run_steps(2);
+    let ctx = h.ctx.clone();
+    let canvas = h.state().tabs[0].view.zoom;
+    for key in [Key::Plus, Key::Equals] {
+        let before = ctx.zoom_factor();
+        h.key_press_modifiers(Modifiers::COMMAND, key);
+        h.run_steps(2);
+        assert!(ctx.zoom_factor() > before, "{key:?}: {}", ctx.zoom_factor());
+        assert_eq!(
+            h.state().tabs[0].view.zoom,
+            canvas,
+            "{key:?} zooms the canvas too"
+        );
+    }
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Minus);
+    h.run_steps(2);
+    assert!(
+        (ctx.zoom_factor() - 1.1).abs() < 1e-3,
+        "{}",
+        ctx.zoom_factor()
+    );
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num0);
+    h.run_steps(2);
+    assert_eq!(ctx.zoom_factor(), 1.0);
+    assert_eq!(h.state().tabs[0].view.zoom, canvas);
+}
+
+#[test]
+fn settings_sets_the_text_size() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    let canvas = h.state().tabs[0].view.zoom;
+    h.state_mut().apply(MenuAction::Settings, &ctx);
+    h.run_steps(4);
+    h.get_by_role_and_label(Role::Button, "150%").click();
+    h.run_steps(4);
+    assert_eq!(ctx.zoom_factor(), 1.5);
+    assert_eq!(h.state().tabs[0].view.zoom, canvas);
+    h.get_by_role_and_label(Role::Button, "100%").click();
+    h.run_steps(4);
+    assert_eq!(ctx.zoom_factor(), 1.0);
+}
