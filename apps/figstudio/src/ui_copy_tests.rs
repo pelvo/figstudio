@@ -18,6 +18,8 @@ fn menu_items(h: &Harness<'_, App>) -> Vec<&'static str> {
         "Copy for agent",
         "Copy as PNG",
         "Copy as WebP",
+        "Copy as SVG",
+        "Copy CSS animation",
         "Copy region",
         "Copy region as PNG",
     ]
@@ -45,7 +47,8 @@ fn right_click_on_a_node_offers_the_copy_items_and_copies_the_link() {
             "Copy link",
             "Copy for agent",
             "Copy as PNG",
-            "Copy as WebP"
+            "Copy as WebP",
+            "Copy as SVG"
         ]
     );
     click_label(&mut h, &mut c, "Copy link");
@@ -206,4 +209,35 @@ fn a_hand_tool_drag_pans_without_a_marquee() {
     );
     assert!(h.state().tabs[0].marquee.rect().is_none());
     assert_eq!(h.state().tabs[0].selection, None);
+}
+
+#[test]
+fn copy_as_svg_puts_the_markup_on_the_clipboard() {
+    let (mut h, mut c) = (harness(), Vec::new());
+    let at = centre_of(&h, NODE);
+    right_click(&mut h, &mut c, at);
+    h.step();
+    click_label(&mut h, &mut c, "Copy as SVG");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !c.iter().any(|t| t.starts_with("<svg xmlns=")) {
+        assert!(Instant::now() < deadline, "no SVG copied: {c:?}");
+        step(&mut h, &mut c);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn an_animated_layer_offers_and_copies_its_css_animation() {
+    let mut h = harness_fixture("motion.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    // The rotating "Object" on the playground page.
+    let object = Guid(1, 1106);
+    let at = centre_of(&h, object);
+    right_click(&mut h, &mut c, at);
+    h.step();
+    assert_eq!(h.state().tabs[0].selection, Some(object));
+    click_label(&mut h, &mut c, "Copy CSS animation");
+    let css = c.last().expect("CSS copied");
+    assert!(css.contains("@keyframes n1-1106-rotate"), "{css}");
+    assert!(css.contains("animation: n1-1106-"), "{css}");
 }

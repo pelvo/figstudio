@@ -102,6 +102,32 @@ struct Notes {
     merged_axes: usize,
 }
 
+/// Whether a node's data binds any field to keyframes (cheap: no track lookups).
+pub fn has_motion(data: &Val) -> bool {
+    data.path(&["parameterConsumptionMap", "entries"])
+        .map_or(&[][..], Val::items)
+        .iter()
+        .any(|e| {
+            e.path(&[
+                "variableData",
+                "value",
+                "expressionValue",
+                "expressionFunction",
+            ])
+            .and_then(Val::as_str)
+                == Some("KEYFRAME")
+        })
+}
+
+/// The CSS snippet of one node's animation (its own keyframes, not its descendants'); `None`
+/// when it has none.
+pub fn node_css(doc: &Document, node_id: &str) -> Option<String> {
+    let out = build(doc, node_id, false, usize::MAX).ok()?;
+    out["nodes"][0]["codeSnippets"]["css"]
+        .as_str()
+        .map(str::to_owned)
+}
+
 /// `get_motion_context` for `node_id` (node, instance path or link). `recursive` adds every
 /// animated descendant, instances included, at most [`MAX_NODES`]; the reply stops before
 /// `max_bytes` of JSON.
@@ -133,7 +159,8 @@ fn build(
             if node.kind == "DOCUMENT" {
                 return Err(CoreError::input("pick a page or a layer, not the document"));
             }
-            let definitions = Arc::new(resolve::definitions(doc));
+            // Built on the first instance only: it scans every node.
+            let mut definitions = None;
             let mut stack = vec![id];
             while let Some(id) = stack.pop() {
                 visited += 1;
@@ -150,8 +177,13 @@ fn build(
                     break;
                 }
                 if node.kind == "INSTANCE"
-                    && let Ok(walk) =
-                        resolve::walk_instance(doc, &definitions, id, None, MAX_VISITED)
+                    && let Ok(walk) = resolve::walk_instance(
+                        doc,
+                        definitions.get_or_insert_with(|| Arc::new(resolve::definitions(doc))),
+                        id,
+                        None,
+                        MAX_VISITED,
+                    )
                 {
                     capped |= walk.truncated;
                     for r in &walk.nodes {

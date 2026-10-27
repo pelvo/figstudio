@@ -1,7 +1,7 @@
 //! `get_motion_context` on the public Figma Motion playground fixture
 //! (`tests/fixtures/motion.fig`, a Figma Community file, images removed).
 use figstudio_fig::Document;
-use figstudio_mcp_core::motion::motion_context;
+use figstudio_mcp_core::motion::{has_motion, motion_context, node_css};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -180,4 +180,17 @@ fn bad_targets_are_tool_errors() {
     let doc = doc();
     assert!(motion_context(&doc, "9:9999", false, 100_000).is_error);
     assert!(motion_context(&doc, "0:0", false, 100_000).is_error);
+}
+
+#[test]
+fn the_copy_menu_helpers_see_only_the_node_itself() {
+    let doc = doc();
+    let data = |id: &str| &doc.node(id.parse().unwrap()).unwrap().data;
+    assert!(has_motion(data("1:749")));
+    // The symbol holds the timeline, but its own fields are not animated.
+    assert!(!has_motion(data("1:748")));
+    let css = node_css(&doc, "1:749").expect("CSS");
+    assert!(css.starts_with("/* 1:749"), "{css}");
+    assert!(css.contains("@keyframes n1-749-opacity"), "{css}");
+    assert_eq!(node_css(&doc, "1:748"), None);
 }
