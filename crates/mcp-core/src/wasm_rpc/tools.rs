@@ -24,6 +24,7 @@ struct Input {
     max_nodes: Option<usize>,
     query: Option<String>,
     kinds: Option<Vec<String>>,
+    id: Option<String>,
 }
 
 pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String> {
@@ -44,6 +45,7 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
     let input: Input = serde_json::from_value(args).map_err(|e| e.to_string())?;
     if (name == "reveal_node" && input.node_id.is_none())
         || (name == "search_design_system" && input.query.is_none())
+        || (name == "get_shader" && input.id.is_none())
     {
         return Err("Missing required tool argument".into());
     }
@@ -147,6 +149,8 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
                 input.kinds.as_deref(),
             ),
             "get_libraries" => Output::structured(crate::design_system::summary(doc)),
+            "list_file_shaders" => crate::shaders::list(doc),
+            "get_shader" => crate::shaders::get(doc, input.id.as_deref().unwrap_or_default()),
             "get_context_for_code_connect" => {
                 crate::codeconnect_context::component_context(doc, &target()?)
             }

@@ -1,0 +1,14 @@
+motion.fig and shaders.fig are local copies of two files Figma published to the Figma
+Community, which licenses free Community files under Creative Commons Attribution 4.0
+International (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/).
+
+- motion.fig: "Figma Motion playground" by Figma,
+  https://www.figma.com/community/file/1663955790391641238
+- shaders.fig: "Generative plugins and shaders playground" by Figma,
+  https://www.figma.com/community/file/1676067142735700190/generative-plugins-and-shaders-playground
+
+Changes: the embedded images/ and videos/ entries were removed to keep the files small
+(about 160 MB each down to 1 MB and 4 MB). The canvas, thumbnail and meta.json are unchanged.
+Image fills in these files therefore point at missing images.
+
+Licence terms: see https://help.figma.com/hc/en-us/articles/360042296374

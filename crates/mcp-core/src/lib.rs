@@ -42,6 +42,8 @@ pub mod region_tool;
 pub mod rendering;
 /// PNG renders of one node.
 pub mod screenshot;
+/// Shader fills and effects a file uses, their parameters and the layers using them.
+pub mod shaders;
 /// Used style and variable definitions of a subtree.
 pub mod variables;
 /// Browser tab snapshot and SDK-free MCP JSON-RPC dispatch.

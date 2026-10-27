@@ -126,6 +126,7 @@ fn tools_dispatch_core_outputs_and_inline_png_assets() {
         ("get_figjam", json!({}), "<"),
         ("get_libraries", json!({}), "components"),
         ("search_design_system", json!({"query":""}), "results"),
+        ("list_file_shaders", json!({}), "shaders"),
         (
             "get_context_for_code_connect",
             json!({"nodeId":"1:37"}),

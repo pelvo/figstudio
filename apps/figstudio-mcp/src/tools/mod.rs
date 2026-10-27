@@ -22,6 +22,8 @@ pub mod region;
 pub mod rendering;
 /// PNG renders of nodes.
 pub mod screenshot;
+/// Shader fills and effects a file uses.
+pub mod shaders;
 /// Used variable and style definitions.
 pub mod variables;
 use crate::FigstudioServer;
