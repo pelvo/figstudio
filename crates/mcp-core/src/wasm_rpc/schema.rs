@@ -86,6 +86,16 @@ pub fn tool_list() -> Vec<Value> {
             &[],
         ),
         tool(
+            "get_motion_context",
+            "Keyframe animation with CSS @keyframes and motion.dev snippets; recursive adds animated descendants. Defaults to selection.",
+            {
+                let mut motion = node.clone();
+                motion.push(("recursive", boolean.clone()));
+                motion
+            },
+            &[],
+        ),
+        tool(
             "get_design_context",
             "React + Tailwind reference code with inline assets, format png (default) or webp; defaults to selection.",
             design,

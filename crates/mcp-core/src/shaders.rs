@@ -370,7 +370,7 @@ fn plain_value(value: &Val) -> Value {
 
 /// Rounds every number to six decimals, so f32 values read as written (0.1, not
 /// 0.10000000149011612).
-fn tidy(value: Value) -> Value {
+pub(crate) fn tidy(value: Value) -> Value {
     match value {
         Value::Number(n) if n.is_f64() => n
             .as_f64()

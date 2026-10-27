@@ -79,6 +79,7 @@ impl FigstudioServer {
                 + Self::codeconnect_router()
                 + Self::design_system_router()
                 + Self::shaders_router()
+                + Self::motion_router()
                 + Self::compare_router(),
         }
     }

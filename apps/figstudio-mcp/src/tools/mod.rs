@@ -16,6 +16,8 @@ mod image_format;
 pub mod live;
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
+/// Keyframe animation with CSS and motion.dev code.
+pub mod motion;
 /// The nodes a page rectangle touches.
 pub mod region;
 /// Render settings and lazy image reads shared by the rendering tools.

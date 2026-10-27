@@ -18,6 +18,7 @@ struct Input {
     format: Option<String>,
     original: Option<bool>,
     include_images: Option<bool>,
+    recursive: Option<bool>,
     image_scale: Option<f64>,
     client_frameworks: Option<String>,
     client_languages: Option<String>,
@@ -103,6 +104,12 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
                 input.limit,
             ),
             "get_variable_defs" => crate::variables::variable_defs(doc, &target()?),
+            "get_motion_context" => crate::motion::motion_context(
+                doc,
+                &target()?,
+                input.recursive.unwrap_or(false),
+                crate::metadata::DEFAULT_OUTPUT_BYTES,
+            ),
             "get_design_context" => crate::design::design_context(
                 doc,
                 &target()?,
