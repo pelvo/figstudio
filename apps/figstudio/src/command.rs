@@ -650,7 +650,12 @@ fn paint_row(ui: &egui::Ui, rect: Rect, e: &Entry, selected: bool, p: &theme::Pa
 fn command_icon(e: &Entry) -> Icon {
     match e.target {
         Target::Action(Action::Open) => Icon::Plus,
-        Target::Action(Action::ExportPage(_) | Action::ExportSelection(_)) => Icon::Image,
+        Target::Action(
+            Action::ExportPage(_)
+            | Action::ExportSelection(_)
+            | Action::ExportPageSvg
+            | Action::ExportSelectionSvg,
+        ) => Icon::Image,
         Target::Action(Action::CloseTab | Action::Quit) => Icon::Close,
         Target::Action(Action::ZoomFit | Action::ActualSize) => Icon::Fit,
         Target::Action(Action::ToggleLayers) => Icon::Sidebar,

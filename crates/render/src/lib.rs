@@ -819,6 +819,27 @@ impl Renderer {
         let (viewport, _, _) = fit_viewport(doc, root, scale, padding, background)?;
         Some(self.render_complete(doc, root, &viewport, read))
     }
+
+    /// [`Renderer::render_fit_complete`] written as SVG (see [`svg`]); `None` when nothing is
+    /// visible. The markup is dropped (and [`svg::Svg::over_limit`] set) past about `limit`
+    /// bytes.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "render_fit_complete plus the size limit"
+    )]
+    pub fn render_fit_svg_complete(
+        &mut self,
+        doc: &Document,
+        root: Guid,
+        scale: f64,
+        padding: f64,
+        background: Option<AlphaColor<Srgb>>,
+        limit: usize,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> Option<svg::Svg> {
+        let (viewport, _, _) = fit_viewport(doc, root, scale, padding, background)?;
+        Some(self.render_svg_complete(doc, root, &viewport, limit, read))
+    }
 }
 
 /// The viewport showing `root`'s content at `scale` (shrunk to fit [`MAX_SIDE`]) with `padding`,

@@ -11,6 +11,8 @@ pub(crate) enum Action {
     SelectParent,
     ExportPage(f64),
     ExportSelection(f64),
+    ExportPageSvg,
+    ExportSelectionSvg,
     CloseTab,
     Quit,
     ZoomFit,
@@ -197,6 +199,12 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                 Item::action("Open Figma link…", Action::OpenLink, true),
                 export("Export page as PNG", false),
                 export("Export selection as PNG", true),
+                Item::action("Export page as SVG…", Action::ExportPageSvg, has_tab),
+                Item::action(
+                    "Export selection as SVG…",
+                    Action::ExportSelectionSvg,
+                    selection,
+                ),
                 Item::separator(),
                 Item::action("Close file", Action::CloseTab, has_tab),
                 Item::action("Settings…", Action::Settings, true),
@@ -258,8 +266,14 @@ impl App {
                     tab.select_all_text();
                 }
             }
-            Action::ExportPage(scale) => self.export_png(ctx, false, scale),
-            Action::ExportSelection(scale) => self.export_png(ctx, true, scale),
+            Action::ExportPage(scale) => {
+                self.export(ctx, false, crate::worker::ExportFormat::Png(scale))
+            }
+            Action::ExportSelection(scale) => {
+                self.export(ctx, true, crate::worker::ExportFormat::Png(scale))
+            }
+            Action::ExportPageSvg => self.export(ctx, false, crate::worker::ExportFormat::Svg),
+            Action::ExportSelectionSvg => self.export(ctx, true, crate::worker::ExportFormat::Svg),
             Action::CloseTab => self.close(self.active),
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::ToggleLayers => self.show_left = !self.show_left,

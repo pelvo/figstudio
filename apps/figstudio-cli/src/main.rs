@@ -18,12 +18,15 @@ use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
 
+/// Largest SVG `render` writes; a bigger one is an error, not a cut file.
+const MAX_SVG_BYTES: usize = 256 * 1024 * 1024;
+
 const USAGE: &str = "figstudio-cli — headless tools for Figma .fig files
 
 USAGE:
   figstudio-cli info <file.fig>
   figstudio-cli tree <file.fig> [--page <n|name>] [--depth <n>]
-  figstudio-cli render <file.fig> [-o <out.png|out.webp>] [--format png|webp] [--page <n|name>] [--node <id>]
+  figstudio-cli render <file.fig> [-o <out.png|out.webp|out.svg>] [--format png|webp|svg] [--page <n|name>] [--node <id>]
                      [--scale <x>] [--background page|transparent|#rrggbb] [--no-system-fonts]
   figstudio-cli thumbnail <file.fig> -o <out.png|out.webp> [--format png|webp]
   figstudio-cli doctor <file.fig>
@@ -36,7 +39,7 @@ USAGE:
   figstudio-cli compare <old.fig> <new.fig> -o <dir> [--scale <x>] [--no-render]
                         [--json-only] [--no-system-fonts] [--format png|webp]
       Version report: report.json, report.html and lossless WebP images under <dir>/render.
-      Compare defaults to WebP; render/thumbnail infer .webp from -o, otherwise PNG.
+      Compare defaults to WebP; render/thumbnail infer .webp (render also .svg) from -o, otherwise PNG.
 
 Pages are numbered from 1. Node ids look like 12:34 (see `tree`).";
 
@@ -68,6 +71,8 @@ struct Args {
     no_render: bool,
     json_only: bool,
     format: Option<ImageFormat>,
+    /// `--format svg`: `render` writes SVG (also inferred from an `.svg` output).
+    svg: bool,
 }
 
 fn command_error(command: &str, has_output: bool) -> Option<String> {
@@ -128,6 +133,7 @@ fn parse_args(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         no_render: false,
         json_only: false,
         format: None,
+        svg: false,
     };
     let mut file = None;
     while let Some(a) = raw.next() {
@@ -167,13 +173,16 @@ fn parse_args(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
             "--no-system-fonts" => args.system_fonts = false,
             "--no-render" => args.no_render = true,
             "--json-only" => args.json_only = true,
-            "--format" => {
-                args.format = Some(
-                    value("--format")?
-                        .parse()
-                        .map_err(|e: std::io::Error| e.to_string())?,
-                )
-            }
+            "--format" => match value("--format")?.as_str() {
+                "svg" => args.svg = true,
+                other => {
+                    args.format = Some(
+                        other
+                            .parse()
+                            .map_err(|e: std::io::Error| format!("{e} (or svg for render)"))?,
+                    )
+                }
+            },
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             path if file.is_none() => file = Some(PathBuf::from(path)),
             path if args.command == "compare" && args.file2.is_none() => {
@@ -337,6 +346,49 @@ fn run(args: Args) -> Result<()> {
             let background = parse_background(&args.background, &doc, page)?;
             let mut renderer = Renderer::new();
             renderer.system_fonts = args.system_fonts;
+            let svg = args.svg
+                || args
+                    .out
+                    .as_ref()
+                    .and_then(|o| o.extension())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
+            let out = args.out.clone().unwrap_or_else(|| {
+                let stem = args
+                    .file
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or("out".into());
+                let ext = if svg {
+                    "svg"
+                } else {
+                    args.format.unwrap_or_default().extension()
+                };
+                PathBuf::from(format!("{stem}.{ext}"))
+            });
+            if svg {
+                let drawn = renderer
+                    .render_fit_svg_complete(
+                        &doc,
+                        root,
+                        args.scale,
+                        16.0 * args.scale.min(2.0),
+                        background,
+                        MAX_SVG_BYTES,
+                        |_| None,
+                    )
+                    .context("nothing visible to render")?;
+                if drawn.over_limit {
+                    bail!("the SVG is over 256 MiB; render a smaller node");
+                }
+                std::fs::write(&out, &drawn.markup)
+                    .map_err(|e| anyhow!("{}: {e}", out.display()))?;
+                println!("{} {} bytes of SVG", out.display(), drawn.markup.len());
+                println!("{}", drawn.stats);
+                if drawn.approximated > 0 {
+                    println!("{} drawing steps SVG cannot express", drawn.approximated);
+                }
+                return Ok(());
+            }
             let frame = renderer
                 .render_fit(
                     &doc,
@@ -346,17 +398,6 @@ fn run(args: Args) -> Result<()> {
                     background,
                 )
                 .context("nothing visible to render")?;
-            let out = args.out.clone().unwrap_or_else(|| {
-                let stem = args
-                    .file
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or("out".into());
-                PathBuf::from(format!(
-                    "{stem}.{}",
-                    args.format.unwrap_or_default().extension()
-                ))
-            });
             let (w, h) = (frame.pixmap.width(), frame.pixmap.height());
             let bytes = encode_pixmap(frame.pixmap, image_output::format(args.format, &out))?;
             std::fs::write(&out, bytes).map_err(|e| anyhow!("{}: {e}", out.display()))?;

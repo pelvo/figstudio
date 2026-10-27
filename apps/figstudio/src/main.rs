@@ -236,6 +236,39 @@ fn export_frame(
     })
 }
 
+/// Largest SVG export: the markup of a huge page is dropped past this (an error, not a cut file).
+const MAX_SVG_EXPORT_BYTES: usize = 256 * 1024 * 1024;
+
+/// Encodes `root` in `format` for export, reading every image it needs at full sharpness.
+fn export_bytes(
+    images: figstudio_render::images::Images,
+    doc: &figstudio_fig::Document,
+    source: Option<&source::Source>,
+    root: figstudio_fig::Guid,
+    format: worker::ExportFormat,
+) -> anyhow::Result<Vec<u8>> {
+    use anyhow::Context;
+    match format {
+        worker::ExportFormat::Png(scale) => export_frame(images, doc, source, root, scale)
+            .context("nothing to export")?
+            .pixmap
+            .into_png()
+            .context("encode the PNG"),
+        worker::ExportFormat::Svg => {
+            let svg = renderer(images)
+                .render_fit_svg_complete(doc, root, 1.0, 0.0, None, MAX_SVG_EXPORT_BYTES, |want| {
+                    source.and_then(|s| s.read(&want.entry).ok())
+                })
+                .context("nothing to export")?;
+            anyhow::ensure!(
+                !svg.over_limit,
+                "the SVG is over 256 MiB; export a smaller layer"
+            );
+            Ok(svg.markup.into_bytes())
+        }
+    }
+}
+
 /// Logs go to stderr; stdout stays free for data. The default level is `warn`, `RUST_LOG`
 /// overrides it. `FIGSTUDIO_PROFILE` also turns on the app's own `info` lines (the frame timings).
 #[cfg(not(target_arch = "wasm32"))]
@@ -688,7 +721,7 @@ impl App {
         }
     }
 
-    fn export_png(&mut self, ctx: &egui::Context, selection_only: bool, scale: f64) {
+    fn export(&mut self, ctx: &egui::Context, selection_only: bool, format: worker::ExportFormat) {
         let Some(tab) = self.tabs.get(self.active) else {
             return;
         };
@@ -707,15 +740,13 @@ impl App {
         let (doc, source) = (tab.doc.clone(), tab.source.clone());
         #[cfg(target_arch = "wasm32")]
         {
-            let file = format!("{name}.png");
+            let file = format!("{name}.{}", format.extension());
             let images = self.workers.images();
             let started = self
                 .workers
                 .run_export(self.web.exports_tx.clone(), move || {
-                    let png = export_frame(images, &doc, source.as_ref(), root, scale)
-                        .ok_or_else(|| anyhow::anyhow!("nothing to export"))
-                        .and_then(|frame| frame.pixmap.into_png().map_err(anyhow::Error::from));
-                    (file, png)
+                    let bytes = export_bytes(images, &doc, source.as_ref(), root, format);
+                    (file, bytes)
                 });
             match started {
                 Ok(()) => self.toast(ctx, "Exporting…", false),
@@ -723,29 +754,30 @@ impl App {
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        self.save_png(ctx, doc, source, root, &name, scale);
+        self.save_export(ctx, doc, source, root, &name, format);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn save_png(
+    fn save_export(
         &mut self,
         ctx: &egui::Context,
         doc: std::sync::Arc<figstudio_fig::Document>,
         source: Option<source::Source>,
         root: figstudio_fig::Guid,
         name: &str,
-        scale: f64,
+        format: worker::ExportFormat,
     ) {
+        let ext = format.extension();
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("PNG image", &["png"])
-            .set_file_name(format!("{name}.png"))
+            .add_filter(format.label(), &[ext])
+            .set_file_name(format!("{name}.{ext}"))
             .save_file()
         else {
             return;
         };
-        // The render and PNG encode run off the UI thread on an immutable snapshot of the
+        // The render and encode run off the UI thread on an immutable snapshot of the
         // document. The result comes back through `poll`, which reports it once.
-        if let Err(e) = self.workers.export(doc, root, scale, path, source) {
+        if let Err(e) = self.workers.export(doc, root, format, path, source) {
             self.toast(ctx, e, true);
         }
     }
@@ -1008,8 +1040,13 @@ impl App {
                 }
             }
         }
-        while let Ok((name, png)) = self.web.exports.try_recv() {
-            match png.and_then(|png| web::download(&name, "image/png", &png)) {
+        while let Ok((name, bytes)) = self.web.exports.try_recv() {
+            let mime = if name.ends_with(".svg") {
+                "image/svg+xml"
+            } else {
+                "image/png"
+            };
+            match bytes.and_then(|bytes| web::download(&name, mime, &bytes)) {
                 Ok(()) => self.toast(ctx, format!("Exported {name}"), false),
                 Err(e) => self.toast(ctx, figstudio_fig::one_line(e.as_ref()), true),
             }
