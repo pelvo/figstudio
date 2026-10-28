@@ -17,7 +17,7 @@
 //! again once installed by hand.
 
 use std::io::Read;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 use sigstore_verify::trust_root::{SIGSTORE_PRODUCTION_TRUSTED_ROOT, TrustedRoot};
@@ -33,8 +33,13 @@ const ISSUER: &str = "https://token.actions.githubusercontent.com";
 const ATTESTATIONS: &str = "https://api.github.com/repos/pelvo/figstudio/attestations/sha256:";
 /// A bundle is a few kilobytes; anything far larger is not one.
 const MAX_BUNDLE: usize = 1 << 20;
-/// At most this many attestations are fetched for one digest.
+/// At most this many attestations are fetched for one digest: one page of the list. A
+/// release zip has one (one more for each re-run of its release job).
 const MAX_ATTESTATIONS: usize = 16;
+/// The most the attestation list may be (its page of inline bundles).
+const MAX_LIST: u64 = 16 * (MAX_BUNDLE as u64) + 64 * 1024;
+/// How long fetching the bundles may take in all, after which the rest are skipped.
+const FETCH_BUDGET: Duration = Duration::from_secs(120);
 
 #[derive(serde::Deserialize)]
 struct List {
@@ -53,8 +58,11 @@ struct Entry {
 /// Fetches the attestations GitHub holds for the artifact with SHA-256 `sha256` (lower-case
 /// hex) and checks that one verifies for [`WORKFLOW`].
 pub fn check(http: &reqwest::blocking::Client, sha256: &str) -> anyhow::Result<()> {
+    // Only build provenance (what `actions/attest` makes), one page.
     let reply = http
-        .get(format!("{ATTESTATIONS}{sha256}"))
+        .get(format!(
+            "{ATTESTATIONS}{sha256}?predicate_type=provenance&per_page={MAX_ATTESTATIONS}"
+        ))
         .header("Accept", "application/vnd.github+json")
         .timeout(Duration::from_secs(60))
         .send()
@@ -62,12 +70,19 @@ pub fn check(http: &reqwest::blocking::Client, sha256: &str) -> anyhow::Result<(
     if reply.status() == reqwest::StatusCode::NOT_FOUND {
         bail!("this release has no build attestation");
     }
-    let text = reply
+    let reply = reply
         .error_for_status()
-        .and_then(reqwest::blocking::Response::text)
+        .context("could not read the build attestations")?;
+    let text = crate::update::read_text(reply, MAX_LIST)
         .context("could not read the build attestations")?;
     let list: List = serde_json::from_str(&text).context("unexpected attestation reply")?;
-    let (bundles, missed) = collect(list, |url| fetch_bundle(http, url));
+    let deadline = Instant::now() + FETCH_BUDGET;
+    let (bundles, missed) = collect(list, |url| {
+        if Instant::now() >= deadline {
+            bail!("fetching the build attestations took too long");
+        }
+        fetch_bundle(http, url)
+    });
     attested(&bundles, sha256, WORKFLOW).map_err(|e| match missed {
         // Nothing verified, and one could not be fetched: say so too.
         Some(fetch) => e.context(format!("an attestation could not be fetched ({fetch:#})")),
@@ -104,7 +119,7 @@ fn collect(
 fn fetch_bundle(http: &reqwest::blocking::Client, url: &str) -> anyhow::Result<String> {
     let reply = http
         .get(url)
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(30))
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .context("could not download the build attestation")?;

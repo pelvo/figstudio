@@ -84,30 +84,35 @@ jobs:
       && inputs.tag != '') || needs.release-please.outputs.release_created == 'true')
     # Apple silicon runner: the build is arm64.
     runs-on: macos-latest
-    # id-token, attestations, artifact-metadata: the app zip's build provenance (actions/attest
-    # below). The app's updater installs a zip only if this workflow on main attested it.
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-      artifact-metadata: write
+    # Only the workflow's `contents: read`: this job runs the tag's build code (cargo build
+    # scripts and macros), so it gets no OIDC token and no attestation rights. The `attest`
+    # job below signs the zip after checking the tag is on main.
     env:
       TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
     steps:
       - name: Check the tag
+        id: tag
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null
+          # Whether the tag's commit is on main's history, from the API: nothing of the tag is
+          # checked out or run for this. Annotated tags are followed to their commit.
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" -q .object.sha)
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" -q .object.type)" = tag ]; then
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" -q .object.sha)
+          fi
+          case "$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$sha" -q .status)" in
+            behind | identical) echo "on_main=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "on_main=false" >> "$GITHUB_OUTPUT" ;;
+          esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Fully qualified: checkout resolves a bare name to a branch before a tag, so a
           # branch named like the tag would be built and its assets uploaded.
           ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
-          # Full history: the attest step below checks the tag's commit is on main.
-          fetch-depth: 0
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -118,6 +123,9 @@ jobs:
           # id, so another job using the same tag would share this target directory.
           prefix-key: v1-rust
           cache-workspace-crates: true
+          # A tag off main may build (and upload), but it never writes the cache a reviewed
+          # release build restores.
+          save-if: ${{ steps.tag.outputs.on_main == 'true' }}
       - name: Build figstudio.app
         run: scripts/macos-app.sh
       - name: Package
@@ -126,33 +134,59 @@ jobs:
           # ditto keeps the bundle's signature and symlinks intact (plain zip does not).
           ditto -c -k --keepParent target/release/figstudio.app "dist/figstudio-$TAG-macos-arm64.zip"
           tar -C target/release -czf "dist/figstudio-cli-mcp-$TAG-macos-arm64.tar.gz" figstudio-cli figstudio-mcp
-      # The attestation names the workflow, not the code: a manual run from main builds
-      # whatever the tag points at. Only a tag on main's history (reviewed code) is attested,
-      # so a tag pushed at an unreviewed commit still builds and uploads, but its zip does
-      # not self-install.
-      - name: Is the tag on main
-        id: reviewed
-        run: |
-          git fetch --no-tags --quiet origin "+refs/heads/main:refs/remotes/origin/main"
-          if git merge-base --is-ancestor "refs/tags/$TAG^{commit}" origin/main; then
-            echo "on_main=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::$TAG is not on main: its app zip is not attested and will not self-install"
-            echo "on_main=false" >> "$GITHUB_OUTPUT"
-          fi
-      # SLSA build provenance for the app zip, signed through Sigstore with this workflow's
-      # identity (release-please.yml@refs/heads/main for a release from main). The updater
-      # (apps/figstudio/src/update_attest.rs) refuses a zip without it; a run dispatched
-      # from another branch gets another identity, so its zip does not install.
-      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        if: steps.reviewed.outputs.on_main == 'true'
-        with:
-          subject-path: dist/figstudio-${{ env.TAG }}-macos-arm64.zip
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-macos-arm64
           path: dist/*
           if-no-files-found: error
+
+  # SLSA build provenance for the macOS app zip, signed through Sigstore with this workflow's
+  # identity (release-please.yml@refs/heads/main for a run from main). The updater
+  # (apps/figstudio/src/update_attest.rs) installs a zip only with it. The attestation names
+  # the workflow, not the code, and a manual run from main builds whatever the tag points
+  # at, so only a tag on main's history (reviewed code) is attested; another tag still
+  # builds and uploads, but its zip does not self-install. This job alone holds the signing
+  # rights and runs no code from the tag: it checks the tag through the API and signs the
+  # zip the macOS job uploaded.
+  attest:
+    needs: [release-please, macos]
+    if: ${{ !cancelled() && needs.macos.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag_name }}
+    steps:
+      - name: Is the tag on main
+        id: reviewed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }
+          # Whether the tag's commit is on main's history, from the API: nothing of the tag is
+          # checked out or run for this. Annotated tags are followed to their commit.
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" -q .object.sha)
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" -q .object.type)" = tag ]; then
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" -q .object.sha)
+          fi
+          case "$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$sha" -q .status)" in
+            behind | identical) echo "on_main=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "on_main=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+          grep -q '^on_main=true$' "$GITHUB_OUTPUT" \
+            || echo "::warning::$TAG is not on main: its app zip is not attested and will not self-install"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.reviewed.outputs.on_main == 'true'
+        with:
+          name: release-macos-arm64
+          path: dist
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        if: steps.reviewed.outputs.on_main == 'true'
+        with:
+          subject-path: dist/figstudio-${{ env.TAG }}-macos-arm64.zip
 
   linux:
     needs: release-please

@@ -292,12 +292,46 @@ pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
         .then(|| app.to_path_buf())
 }
 
-/// Puts the bundle at `new` where `target` is, moving the old one to `old`. If the second
-/// move fails, the old bundle goes back, so `target` is never left empty.
+/// Puts the bundle at `new` where `target` is, moving the old one to `old`. On macOS and
+/// Linux the two trade places in one step (`RENAME_SWAP`, `RENAME_EXCHANGE`), so there is
+/// no moment without an app at `target`; elsewhere, or on a volume without it,
+/// [`swap_by_renames`] does it in two moves.
 pub fn swap(new: &Path, target: &Path, old: &Path) -> std::io::Result<()> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        use rustix::io::Errno;
+        match renameat_with(CWD, new, CWD, target, RenameFlags::EXCHANGE) {
+            Ok(()) => {
+                // `target` is the new bundle now and `new` holds the replaced one.
+                if let Err(e) = std::fs::rename(new, old) {
+                    tracing::warn!("the replaced app stays at {}: {e}", new.display());
+                }
+                return Ok(());
+            }
+            // The volume or the kernel has no exchange.
+            Err(e)
+                if [Errno::INVAL, Errno::NOTSUP, Errno::OPNOTSUPP, Errno::NOSYS].contains(&e) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    swap_by_renames(new, target, old)
+}
+
+/// [`swap`] in two moves: `target` to `old`, then `new` to `target`. If the second move
+/// fails, the old bundle goes back; if that fails too, the error says where it is.
+fn swap_by_renames(new: &Path, target: &Path, old: &Path) -> std::io::Result<()> {
     std::fs::rename(target, old)?;
     if let Err(e) = std::fs::rename(new, target) {
-        let _ = std::fs::rename(old, target);
+        if let Err(back) = std::fs::rename(old, target) {
+            return Err(std::io::Error::new(
+                e.kind(),
+                format!(
+                    "{e}; the previous app could not be put back ({back}) and is at {}",
+                    old.display()
+                ),
+            ));
+        }
         return Err(e);
     }
     Ok(())
@@ -391,19 +425,20 @@ fn clean_staging(folder: &Path) -> usize {
         .count()
 }
 
-/// At launch, off the UI thread: removes what the last install left beside this bundle
-/// (the bundle it replaced). Nothing happens for other routes.
+/// At launch, off the UI thread: works out the [`route`] (so Settings and About do not scan
+/// the disk on the UI thread) and removes what the last install left beside this bundle
+/// (the bundle it replaced). Nothing is removed for other routes.
 pub fn clean_up_at_launch() {
-    let Route::Bundle(bundle) = route() else {
-        return;
-    };
-    let Some(folder) = bundle.parent().map(Path::to_path_buf) else {
-        return;
-    };
     let _ = std::thread::Builder::new()
         .name("figstudio-update-cleanup".into())
-        .spawn(move || {
-            let removed = clean_staging(&folder);
+        .spawn(|| {
+            let Route::Bundle(bundle) = route() else {
+                return;
+            };
+            let Some(folder) = bundle.parent() else {
+                return;
+            };
+            let removed = clean_staging(folder);
             if removed > 0 {
                 tracing::info!(removed, "removed what the last update left");
             }
@@ -430,9 +465,8 @@ fn check() -> anyhow::Result<Option<Release>> {
         .send()
         .context("could not reach GitHub")?
         .error_for_status()
-        .context("GitHub refused the update check")?
-        .text()
-        .context("could not read GitHub's reply")?;
+        .context("GitHub refused the update check")?;
+    let reply = read_text(reply, MAX_RELEASES).context("could not read GitHub's reply")?;
     newer_release(&reply, &current())
 }
 
@@ -457,8 +491,8 @@ fn install(release: &Release, bundle: &Path, got: &AtomicU64) -> anyhow::Result<
         .timeout(Duration::from_secs(60))
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::text)
         .context("could not download SHA256SUMS")?;
+    let sums = read_text(sums, MAX_SUMS).context("could not download SHA256SUMS")?;
     let want = listed_sum(&sums, &app.name).context("SHA256SUMS does not list the app")?;
 
     let zip = staging.path().join(&app.name);
@@ -472,11 +506,42 @@ fn install(release: &Release, bundle: &Path, got: &AtomicU64) -> anyhow::Result<
     let limit = if app.size > 0 { app.size } else { MAX_DOWNLOAD };
     let sum = save_capped(&mut reply, &mut file, limit, got)?;
     drop(file);
-    if sum != want {
+    let download = Fetched {
+        zip: &zip,
+        sum: &sum,
+        want: &want,
+        version: &release.version,
+    };
+    place(&download, staging, bundle, |sum| {
+        crate::update_attest::check(&http, sum)
+    })
+}
+
+/// A downloaded app zip: its SHA-256, the one `SHA256SUMS` lists, and the version the
+/// release names.
+struct Fetched<'a> {
+    zip: &'a Path,
+    sum: &'a str,
+    want: &'a str,
+    version: &'a Version,
+}
+
+/// Installs a downloaded zip (in `staging`, beside `bundle`) over `bundle`. Nothing of it is
+/// unpacked or run before its SHA-256 matches `SHA256SUMS` and `attest` (the build
+/// attestation check, [`crate::update_attest::check`]) accepts that digest. Then the app is
+/// unpacked, must be a real folder with a valid signature and the release's version, and
+/// takes the old bundle's place.
+fn place(
+    download: &Fetched<'_>,
+    staging: tempfile::TempDir,
+    bundle: &Path,
+    attest: impl FnOnce(&str) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if download.sum != download.want {
         bail!("the download does not match its SHA-256; nothing was changed");
     }
     // Built and signed by figstudio's release workflow, not only uploaded to the release.
-    crate::update_attest::check(&http, &sum).context(
+    attest(download.sum).context(
         "could not confirm figstudio's release workflow built this download; nothing was \
          changed (download it from the release page instead)",
     )?;
@@ -484,10 +549,15 @@ fn install(release: &Release, bundle: &Path, got: &AtomicU64) -> anyhow::Result<
     let unpacked = staging.path().join("unpacked");
     run(Command::new("ditto")
         .args(["-x", "-k"])
-        .arg(&zip)
+        .arg(download.zip)
         .arg(&unpacked))
     .context("could not unpack the app")?;
     let new = unpacked.join("figstudio.app");
+    // The bundle itself, not a link to one somewhere else.
+    let is_folder = std::fs::symlink_metadata(&new).is_ok_and(|meta| meta.file_type().is_dir());
+    if !is_folder {
+        bail!("the download has no figstudio.app folder; nothing was changed");
+    }
     run(Command::new("codesign")
         .args(["--verify", "--deep", "--strict"])
         .arg(&new))
@@ -496,23 +566,44 @@ fn install(release: &Release, bundle: &Path, got: &AtomicU64) -> anyhow::Result<
         .args(["-extract", "CFBundleShortVersionString", "raw", "-o", "-"])
         .arg(new.join("Contents/Info.plist")))
     .context("could not read the downloaded app's version")?;
-    if shown.trim() != release.version.to_string() {
+    if shown.trim() != download.version.to_string() {
         bail!(
             "the downloaded app is version {}, not {}",
             shown.trim(),
-            release.version
+            download.version
         );
     }
-    swap(&new, bundle, &staging.path().join("old.app")).with_context(|| {
-        format!(
-            "could not replace {} (download it from the release page instead)",
-            bundle.display()
-        )
-    })?;
+    if let Err(e) = swap(&new, bundle, &staging.path().join("old.app")) {
+        // The old bundle could not be put back: keep it in the staging folder.
+        if !bundle.exists() {
+            let _ = staging.keep();
+        }
+        return Err(e).with_context(|| {
+            format!(
+                "could not replace {} (download it from the release page instead)",
+                bundle.display()
+            )
+        });
+    }
     // The replaced bundle is the running one: it stays until the next launch removes it
     // (`clean_up_at_launch`), so this copy keeps its files and there is a way back.
     let _ = staging.keep();
     Ok(())
+}
+
+/// The most the release list may be (30 releases with their notes).
+const MAX_RELEASES: u64 = 8 * 1024 * 1024;
+/// The most `SHA256SUMS` may be (a line per release file).
+const MAX_SUMS: u64 = 64 * 1024;
+
+/// Reads `reader` to the end as UTF-8 text, failing once it is longer than `limit` bytes.
+pub fn read_text(reader: impl Read, limit: u64) -> anyhow::Result<String> {
+    let mut raw = Vec::new();
+    reader.take(limit.saturating_add(1)).read_to_end(&mut raw)?;
+    if raw.len() as u64 > limit {
+        bail!("the reply is larger than {limit} bytes");
+    }
+    String::from_utf8(raw).context("the reply is not text")
 }
 
 /// The most a download may be when the release does not list the asset's size.
@@ -938,24 +1029,183 @@ mod tests {
 
     #[test]
     fn a_swap_replaces_the_bundle_and_a_failed_one_keeps_it() -> std::io::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let target = dir.path().join("figstudio.app");
-        let new = dir.path().join("new.app");
-        let old = dir.path().join("old.app");
-        std::fs::create_dir(&target)?;
-        std::fs::write(target.join("v"), "1")?;
-        std::fs::create_dir(&new)?;
-        std::fs::write(new.join("v"), "2")?;
-        swap(&new, &target, &old)?;
-        assert_eq!(std::fs::read_to_string(target.join("v"))?, "2");
-        assert_eq!(std::fs::read_to_string(old.join("v"))?, "1");
+        // `swap` (one step where the system has it) and the two-move fallback.
+        type Swap = fn(&Path, &Path, &Path) -> std::io::Result<()>;
+        let swaps: [Swap; 2] = [swap, swap_by_renames];
+        for swap in swaps {
+            let dir = tempfile::tempdir()?;
+            let target = dir.path().join("figstudio.app");
+            let new = dir.path().join("new.app");
+            let old = dir.path().join("old.app");
+            std::fs::create_dir(&target)?;
+            std::fs::write(target.join("v"), "1")?;
+            std::fs::create_dir(&new)?;
+            std::fs::write(new.join("v"), "2")?;
+            swap(&new, &target, &old)?;
+            assert_eq!(std::fs::read_to_string(target.join("v"))?, "2");
+            assert_eq!(std::fs::read_to_string(old.join("v"))?, "1");
+            assert!(!new.exists());
 
-        // The new bundle is missing: the second move fails and the running one stays.
-        let gone = dir.path().join("gone.app");
-        let old2 = dir.path().join("old2.app");
-        assert!(swap(&gone, &target, &old2).is_err());
-        assert_eq!(std::fs::read_to_string(target.join("v"))?, "2");
-        assert!(!old2.exists());
+            // The new bundle is missing: the swap fails and the running one stays.
+            let gone = dir.path().join("gone.app");
+            let old2 = dir.path().join("old2.app");
+            assert!(swap(&gone, &target, &old2).is_err());
+            assert_eq!(std::fs::read_to_string(target.join("v"))?, "2");
+            assert!(!old2.exists());
+        }
+        Ok(())
+    }
+
+    /// Puts a garbage "zip" through [`place`] with the given sums and attestation answer;
+    /// returns the result and the digest the attestation check was asked about.
+    fn place_garbage(
+        bundle: &Path,
+        sum: &str,
+        attest: anyhow::Result<()>,
+    ) -> anyhow::Result<(anyhow::Result<()>, Option<String>)> {
+        let folder = bundle.parent().context("no folder")?;
+        let staging = tempfile::Builder::new()
+            .prefix(STAGING)
+            .tempdir_in(folder)?;
+        let zip = staging.path().join("figstudio.zip");
+        std::fs::write(&zip, "not a zip")?;
+        let version = Version::new(9, 0, 0);
+        let fetched = Fetched {
+            zip: &zip,
+            sum,
+            want: "aa",
+            version: &version,
+        };
+        let mut asked = None;
+        let placed = place(&fetched, staging, bundle, |sum| {
+            asked = Some(sum.to_owned());
+            attest
+        });
+        Ok((placed, asked))
+    }
+
+    #[test]
+    fn a_download_is_unpacked_only_after_its_sum_and_attestation_check() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bundle = dir.path().join("figstudio.app");
+        std::fs::create_dir(&bundle)?;
+        std::fs::write(bundle.join("v"), "1")?;
+
+        // The sum does not match: not even the attestation is looked up.
+        let (placed, asked) = place_garbage(&bundle, "bb", Ok(()))?;
+        assert!(format!("{:#}", placed.err().context("placed")?).contains("SHA-256"));
+        assert_eq!(asked, None);
+
+        // The sum matches but nothing attests it: refused before unpacking (a garbage zip
+        // reaching the unpack step would fail there instead, without asking).
+        let (placed, asked) = place_garbage(&bundle, "aa", Err(anyhow::anyhow!("none")))?;
+        let why = format!("{:#}", placed.err().context("placed")?);
+        assert!(
+            why.contains("release workflow built this download"),
+            "{why}"
+        );
+        assert_eq!(asked.as_deref(), Some("aa"));
+
+        // Attested: only now is it unpacked (and this one is not a zip).
+        let (placed, asked) = place_garbage(&bundle, "aa", Ok(()))?;
+        assert!(format!("{:#}", placed.err().context("placed")?).contains("unpack"));
+        assert_eq!(asked.as_deref(), Some("aa"));
+
+        // The running bundle was never touched, and no staging folder is left.
+        assert_eq!(std::fs::read_to_string(bundle.join("v"))?, "1");
+        assert_eq!(std::fs::read_dir(dir.path())?.count(), 1);
+        Ok(())
+    }
+
+    /// An ad-hoc signed `figstudio.app` at `at` showing `version`.
+    #[cfg(target_os = "macos")]
+    fn signed_app(at: &Path, version: &str) -> anyhow::Result<()> {
+        let contents = at.join("Contents");
+        std::fs::create_dir_all(contents.join("MacOS"))?;
+        std::fs::write(
+            contents.join("Info.plist"),
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+                 <key>CFBundleExecutable</key><string>figstudio</string>\
+                 <key>CFBundleIdentifier</key><string>dev.figstudio.test</string>\
+                 <key>CFBundleShortVersionString</key><string>{version}</string>\
+                 </dict></plist>\n"
+            ),
+        )?;
+        std::fs::copy("/usr/bin/true", contents.join("MacOS/figstudio"))?;
+        run(Command::new("codesign")
+            .args(["--sign", "-", "--force"])
+            .arg(at))?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_attested_zip_replaces_the_bundle_and_a_linked_app_does_not() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bundle = dir.path().join("figstudio.app");
+        signed_app(&bundle, "1.0.0")?;
+        let version = Version::new(2, 0, 0);
+        let shown = |at: &Path| {
+            run(Command::new("plutil")
+                .args(["-extract", "CFBundleShortVersionString", "raw", "-o", "-"])
+                .arg(at.join("Contents/Info.plist")))
+        };
+        let install = |make_zip: &dyn Fn(&Path) -> anyhow::Result<()>| -> anyhow::Result<()> {
+            let staging = tempfile::Builder::new()
+                .prefix(STAGING)
+                .tempdir_in(dir.path())?;
+            let zip = staging.path().join("figstudio.zip");
+            make_zip(&zip)?;
+            let fetched = Fetched {
+                zip: &zip,
+                sum: "aa",
+                want: "aa",
+                version: &version,
+            };
+            place(&fetched, staging, &bundle, |_| Ok(()))
+        };
+
+        // The zip's figstudio.app is a link to a valid app elsewhere: refused.
+        let elsewhere = tempfile::tempdir()?;
+        signed_app(&elsewhere.path().join("figstudio.app"), "2.0.0")?;
+        let linked = install(&|zip| {
+            let src = tempfile::tempdir()?;
+            std::os::unix::fs::symlink(
+                elsewhere.path().join("figstudio.app"),
+                src.path().join("figstudio.app"),
+            )?;
+            run(Command::new("zip")
+                .current_dir(src.path())
+                .args(["-q", "-y", "-r"])
+                .arg(zip)
+                .arg("figstudio.app"))?;
+            Ok(())
+        });
+        let why = format!("{:#}", linked.err().context("installed a link")?);
+        assert!(why.contains("no figstudio.app folder"), "{why}");
+        assert!(!std::fs::symlink_metadata(&bundle)?.is_symlink());
+        assert_eq!(shown(&bundle)?.trim(), "1.0.0");
+
+        // A real, signed 2.0.0 bundle: it takes the old one's place.
+        install(&|zip| {
+            let src = tempfile::tempdir()?;
+            let app = src.path().join("figstudio.app");
+            signed_app(&app, "2.0.0")?;
+            run(Command::new("ditto")
+                .args(["-c", "-k", "--keepParent"])
+                .arg(&app)
+                .arg(zip))?;
+            Ok(())
+        })?;
+        assert_eq!(shown(&bundle)?.trim(), "2.0.0");
+        Ok(())
+    }
+
+    #[test]
+    fn text_replies_are_size_capped() -> anyhow::Result<()> {
+        assert_eq!(read_text(&b"abcd"[..], 4)?, "abcd");
+        assert!(read_text(&b"abcde"[..], 4).is_err());
         Ok(())
     }
 
