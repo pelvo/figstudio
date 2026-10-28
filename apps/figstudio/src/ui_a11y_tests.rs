@@ -67,7 +67,9 @@ fn assert_all_named(h: &Harness<'_, App>, state: &str) {
         .root()
         .children_recursive()
         .map(|n| n.accesskit_node())
-        .filter(|a| matches!(a.role(), Role::Splitter | Role::Menu | Role::Canvas))
+        .filter(|a| {
+            matches!(a.role(), Role::Splitter | Role::Menu) || a.data().author_id().is_some()
+        })
         .filter(|a| a.bounding_box().is_none())
         .map(|a| format!("{:?} {:?}", a.role(), a.label()))
         .collect();
@@ -166,8 +168,12 @@ fn the_canvas_says_its_page_zoom_and_selection() {
     let mut h = harness();
     h.run_steps(2);
     let describe = |h: &Harness<'_, App>| {
-        let canvas = h.get_by_role(Role::Canvas);
-        let a = canvas.accesskit_node();
+        let a = h
+            .root()
+            .children_recursive()
+            .map(|n| n.accesskit_node())
+            .find(|a| a.data().author_id() == Some("canvas"))
+            .expect("the canvas node");
         (
             a.label().unwrap_or_default(),
             a.description().unwrap_or_default(),
@@ -528,4 +534,131 @@ fn the_text_size_survives_a_restart() {
     h.state_mut().apply(MenuAction::Settings, &ctx);
     h.run_steps(4);
     assert!(h.query_by_label_contains("Now 110%").is_some());
+}
+
+/// The layer nodes under the canvas.
+fn canvas_layers<'h>(h: &'h Harness<'_, App>) -> Vec<egui_kittest::kittest::AccessKitNode<'h>> {
+    h.root()
+        .children_recursive()
+        .map(|n| n.accesskit_node())
+        .filter(|a| {
+            a.data()
+                .author_id()
+                .is_some_and(|id| id.starts_with("canvas.layer."))
+        })
+        .collect()
+}
+
+#[test]
+fn the_canvas_lists_its_visible_layers_by_name_kind_and_place() {
+    let mut h = harness();
+    h.run_steps(2);
+    let canvas = h.state().tabs[0].canvas_rect.expect("laid out");
+    let layers = canvas_layers(&h);
+    assert!(layers.len() > 5, "{} layers", layers.len());
+    let frame = layers
+        .iter()
+        .find(|a| a.label().as_deref() == Some("Groups"))
+        .expect("the Groups frame");
+    assert_eq!(frame.role(), Role::Group);
+    assert_eq!(frame.role_description(), Some("frame"));
+    // Its layers are its children in the tree, not the canvas's.
+    assert!(frame.children().count() > 0, "Groups has no children");
+    let text = layers
+        .iter()
+        .find(|a| a.role() == Role::Label)
+        .expect("a text layer");
+    assert!(text.value().is_some_and(|v| !v.is_empty()));
+    for a in &layers {
+        let b = a.bounding_box().expect("a place on screen");
+        let r = egui::Rect::from_min_max(
+            egui::pos2(b.x0 as f32, b.y0 as f32),
+            egui::pos2(b.x1 as f32, b.y1 as f32),
+        );
+        assert!(
+            canvas.expand(0.5).contains_rect(r),
+            "{:?} at {r:?}",
+            a.label()
+        );
+        assert!(a.data().supports_action(egui::accesskit::Action::Click));
+    }
+}
+
+#[test]
+fn pressing_a_canvas_layer_selects_it() {
+    let mut h = harness();
+    h.run_steps(2);
+    let node = figstudio_fig::Guid(1, 34);
+    let id = crate::canvas_a11y::author_id(node);
+    let (target_node, target_tree) = canvas_layers(&h)
+        .into_iter()
+        .find(|a| a.data().author_id() == Some(id.as_str()))
+        .expect("the layer is listed")
+        .locate();
+    h.input_mut()
+        .events
+        .push(egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                target_node,
+                target_tree,
+                action: egui::accesskit::Action::Click,
+                data: None,
+            },
+        ));
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].selection, Some(node));
+    let selected: Vec<_> = canvas_layers(&h)
+        .into_iter()
+        .filter(|a| a.is_selected() == Some(true))
+        .map(|a| a.data().author_id().map(str::to_owned))
+        .collect();
+    assert_eq!(selected, [Some(id)]);
+}
+
+#[test]
+fn layers_off_the_screen_are_not_listed() {
+    let mut h = harness();
+    h.run_steps(2);
+    let all = canvas_layers(&h).len();
+    assert!(all > 0, "nothing listed to begin with");
+    // Far off to the side: nothing of the page is on screen.
+    h.state_mut().tabs[0].view.pan += egui::vec2(100_000.0, 0.0);
+    h.run_steps(2);
+    assert_eq!(canvas_layers(&h).len(), 0, "of {all}");
+}
+
+#[test]
+fn a_properties_row_reads_as_key_and_value_together() {
+    let mut h = harness();
+    h.run_steps(2);
+    let values: Vec<String> = h
+        .root()
+        .children_recursive()
+        .map(|n| n.accesskit_node())
+        .filter(|a| a.role() == Role::Label && !a.is_hidden())
+        .filter_map(|a| a.value())
+        .collect();
+    let layers = h.state().tabs[0].doc.nodes.len();
+    assert!(values.contains(&format!("Layers: {layers}")), "{values:?}");
+    assert!(
+        !values.iter().any(|v| v == "Layers"),
+        "a lone key: {values:?}"
+    );
+
+    h.state_mut().tabs[0].select(Some(figstudio_fig::Guid(1, 34)));
+    h.run_steps(3);
+    let values: Vec<String> = h
+        .root()
+        .children_recursive()
+        .map(|n| n.accesskit_node())
+        .filter(|a| a.role() == Role::Label && !a.is_hidden())
+        .filter_map(|a| a.value())
+        .collect();
+    for key in ["X", "Y", "W", "H"] {
+        assert!(
+            values.iter().any(|v| v.starts_with(&format!("{key}: "))),
+            "no {key}: {values:?}"
+        );
+        assert!(!values.iter().any(|v| v == key), "a lone {key}: {values:?}");
+    }
 }

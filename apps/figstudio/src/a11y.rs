@@ -178,8 +178,22 @@ pub fn describe_canvas(response: &Response, tab: &Tab) {
             .and_then(|id| tab.doc.node(id))
             .map_or_else(|| "nothing".to_owned(), crate::panels::display_name);
         let zoom = (tab.view.zoom * 100.0).round();
-        n.set_role(Role::Canvas);
+        // A group, not Role::Canvas: macOS reads a canvas as an image, and an image's
+        // children (the layers, `canvas_a11y.rs`) are not looked into.
+        n.set_role(Role::Group);
+        n.set_role_description("canvas");
+        n.set_author_id("canvas");
         n.set_label(format!("Canvas, page {page}"));
         n.set_description(format!("Zoom {zoom}%. Selected: {selected}."));
+    });
+}
+
+/// Reads a Properties row as one item, "Width: 120", instead of a key and a value that a screen
+/// reader or agent would have to pair up by position: the key's node is hidden and the
+/// value's says both.
+pub fn key_value(key: &Response, value: &Response, k: &str, v: &str) {
+    hide(key);
+    value.ctx.accesskit_node_builder(value.id, |n| {
+        n.set_value(format!("{k}: {v}"));
     });
 }

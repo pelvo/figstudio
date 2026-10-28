@@ -550,8 +550,9 @@ fn grid(ui: &mut Ui, id: &str, items: &[(&str, String)]) {
         .spacing(vec2(8.0, 6.0))
         .show(ui, |ui| {
             for (i, (k, v)) in items.iter().enumerate() {
-                ui.label(RichText::new(*k).color(p.text_faint));
-                ui.add_sized(vec2(64.0, 18.0), egui::Label::new(v.as_str()));
+                let key = ui.label(RichText::new(*k).color(p.text_faint));
+                let value = ui.add_sized(vec2(64.0, 18.0), egui::Label::new(v.as_str()));
+                crate::a11y::key_value(&key, &value, k, v);
                 if i % 2 == 1 {
                     ui.end_row();
                 }
@@ -562,11 +563,12 @@ fn grid(ui: &mut Ui, id: &str, items: &[(&str, String)]) {
 fn kv(ui: &mut Ui, k: &str, v: String) {
     let p = theme::of(ui);
     ui.horizontal(|ui| {
-        ui.label(RichText::new(k).color(p.text_faint));
+        let key = ui.label(RichText::new(k).color(p.text_faint));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Truncated (full text on hover): a long value, such as a component name with
             // all its variant properties, must not widen the panel past what the user set.
-            ui.add(egui::Label::new(v).truncate());
+            let value = ui.add(egui::Label::new(v.as_str()).truncate());
+            crate::a11y::key_value(&key, &value, k, &v);
         });
     });
 }
@@ -658,7 +660,7 @@ fn effects(ui: &mut Ui, list: Option<&Val>) {
 #[cfg(test)]
 mod tests {
     use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     #[test]
     fn a_long_value_is_shortened_beside_its_key() {
@@ -682,19 +684,35 @@ mod tests {
         h.run();
         let width = *h.state();
         assert!(width <= 200.5, "the row grew to {width}");
-        let key = h.get_by_label("Main").rect();
-        let shown = h.get_by_label(&long).rect();
+        // Screen readers get the row as one item ("Main: …"; the key's own node is hidden),
+        // so the two are found by what they show.
+        let rect_of = |h: &Harness<'_, f32>, text: &str| {
+            h.root()
+                .children_recursive()
+                .map(|n| n.accesskit_node())
+                .find(|a| a.data().value() == Some(text))
+                .and_then(|a| a.bounding_box())
+                .map(|b| {
+                    egui::Rect::from_min_max(
+                        egui::pos2(b.x0 as f32, b.y0 as f32),
+                        egui::pos2(b.x1 as f32, b.y1 as f32),
+                    )
+                })
+                .unwrap_or_else(|| panic!("no {text:?}"))
+        };
+        let key = rect_of(&h, "Main");
+        let shown = rect_of(&h, &format!("Main: {long}"));
         assert!(
             shown.left() >= key.right(),
             "the value {shown:?} overlaps its key {key:?}"
         );
         assert!(shown.right() <= key.left() + 200.5, "value {shown:?}");
         // Shortened, so hovering shows the full text in a tooltip.
-        h.get_by_label(&long).hover();
+        h.get_by_label(&format!("Main: {long}")).hover();
         h.run();
         assert_eq!(
             h.get_all_by_label(&long).count(),
-            2,
+            1,
             "no tooltip with the full value"
         );
     }

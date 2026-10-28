@@ -108,6 +108,7 @@ pub fn show(
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     crate::a11y::describe_canvas(&response, tab);
+    crate::canvas_a11y::take_presses(ui, tab);
     let origin = rect.min;
     tab.canvas_rect = Some(rect);
     if tab.fit_pending && rect.width() > 10.0 {
@@ -298,6 +299,7 @@ pub fn show(
     marquee::paint(&painter, tab, origin);
     crate::icons::focus_ring(ui, &response, rect, radius as u8);
     tab.view = target;
+    crate::canvas_a11y::layers(ui, &response, tab, origin);
 
     let cursor = match tool {
         _ if panning => egui::CursorIcon::Grab,
