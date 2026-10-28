@@ -365,18 +365,32 @@ fn run(args: Args) -> Result<()> {
                 };
                 PathBuf::from(format!("{stem}.{ext}"))
             });
+            // A node is cropped like Figma's export (its drawn pixels, at least a frame's box);
+            // a page keeps its padding.
+            let node = args.node.is_some();
+            let padding = 16.0 * args.scale.min(2.0);
             if svg {
-                let drawn = renderer
-                    .render_fit_svg_complete(
+                let drawn = if node {
+                    renderer.render_export_svg_complete(
                         &doc,
                         root,
                         args.scale,
-                        16.0 * args.scale.min(2.0),
                         background,
                         MAX_SVG_BYTES,
                         |_| None,
                     )
-                    .context("nothing visible to render")?;
+                } else {
+                    renderer.render_fit_svg_complete(
+                        &doc,
+                        root,
+                        args.scale,
+                        padding,
+                        background,
+                        MAX_SVG_BYTES,
+                        |_| None,
+                    )
+                }
+                .context("nothing visible to render")?;
                 if drawn.over_limit {
                     bail!("the SVG is over 256 MiB; render a smaller node");
                 }
@@ -389,15 +403,12 @@ fn run(args: Args) -> Result<()> {
                 }
                 return Ok(());
             }
-            let frame = renderer
-                .render_fit(
-                    &doc,
-                    root,
-                    args.scale,
-                    16.0 * args.scale.min(2.0),
-                    background,
-                )
-                .context("nothing visible to render")?;
+            let frame = if node {
+                renderer.render_export_complete(&doc, root, args.scale, background, |_| None)
+            } else {
+                renderer.render_fit(&doc, root, args.scale, padding, background)
+            }
+            .context("nothing visible to render")?;
             let (w, h) = (frame.pixmap.width(), frame.pixmap.height());
             let bytes = encode_pixmap(frame.pixmap, image_output::format(args.format, &out))?;
             std::fs::write(&out, bytes).map_err(|e| anyhow!("{}: {e}", out.display()))?;

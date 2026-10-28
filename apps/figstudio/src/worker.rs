@@ -664,8 +664,9 @@ mod export_tests {
         export_png(&doc, doc.pages[0], 1.0, &out).unwrap();
         let bytes = std::fs::read(&out).unwrap();
         let decoded = image::load_from_memory(&bytes).unwrap();
+        // A page is cropped to what is drawn on it.
         let expected = Renderer::new()
-            .render_fit(&doc, doc.pages[0], 1.0, 0.0, None)
+            .render_export_complete(&doc, doc.pages[0], 1.0, None, |_| None)
             .unwrap();
         assert_eq!(
             (decoded.width(), decoded.height()),
@@ -694,13 +695,23 @@ mod export_tests {
         )
         .unwrap();
         let svg = std::fs::read_to_string(&out).unwrap();
-        let png = Renderer::new()
-            .render_fit(&doc, layer, 1.0, 0.0, None)
-            .unwrap();
+        // The layer's own box (it draws nothing outside it), as Figma exports it, and the
+        // same box as its PNG export.
+        let b = figstudio_render::node_bounds(&doc, layer).unwrap();
         let size = format!(
             r#"width="{}" height="{}""#,
-            png.pixmap.width(),
-            png.pixmap.height()
+            b.width().round(),
+            b.height().round()
+        );
+        let png = Renderer::new()
+            .render_export_complete(&doc, layer, 1.0, None, |_| None)
+            .unwrap();
+        assert_eq!(
+            (
+                f64::from(png.pixmap.width()),
+                f64::from(png.pixmap.height())
+            ),
+            (b.width().round(), b.height().round())
         );
         assert!(
             svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""),

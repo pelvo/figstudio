@@ -103,7 +103,14 @@ impl SvgCanvas {
     }
 
     /// The finished document, the approximation count and whether the limit was passed.
-    pub(crate) fn finish(mut self) -> (String, usize, bool) {
+    pub(crate) fn finish(self) -> (String, usize, bool) {
+        let view = Rect::new(0.0, 0.0, self.width, self.height);
+        self.finish_view(view)
+    }
+
+    /// [`SvgCanvas::finish`] showing only `view` (output units): the `viewBox` crops, the
+    /// drawing is unchanged.
+    pub(crate) fn finish_view(mut self, view: Rect) -> (String, usize, bool) {
         if self.over {
             return (String::new(), self.approximated, true);
         }
@@ -113,9 +120,11 @@ impl SvgCanvas {
         let mut out = String::with_capacity(self.defs.len() + self.body.len() + 256);
         let _ = write!(
             out,
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" fill="none">"#,
-            w = num(self.width),
-            h = num(self.height)
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="{x} {y} {w} {h}" fill="none">"#,
+            x = num(view.x0),
+            y = num(view.y0),
+            w = num(view.width()),
+            h = num(view.height())
         );
         if !self.defs.is_empty() {
             out.push_str("<defs>");
@@ -398,7 +407,8 @@ impl SvgCanvas {
         } else {
             ""
         };
-        let d = path_data(&(self.transform * path.clone()));
+        let shape = self.transform * path.clone();
+        let d = path_data(&shape);
         let _ = write!(
             self.defs,
             r#"<clipPath id="{id}" clipPathUnits="userSpaceOnUse"><path d="{d}"{rule}/></clipPath>"#
@@ -700,5 +710,16 @@ mod tests {
         let (svg, approximated, _) = c.finish();
         assert_eq!(approximated, 1);
         assert!(svg.contains(r##"fill="#ff0000""##), "{svg}");
+    }
+
+    #[test]
+    fn the_view_crops_through_the_view_box() {
+        let mut c = SvgCanvas::new(100.0, 100.0, usize::MAX);
+        c.fill_path(&rect(10.0, 20.0, 15.0, 25.0));
+        let (svg, _, _) = c.finish_view(Rect::new(10.0, 20.0, 50.0, 50.0));
+        assert!(
+            svg.contains(r#"width="40" height="30" viewBox="10 20 40 30""#),
+            "{svg}"
+        );
     }
 }
