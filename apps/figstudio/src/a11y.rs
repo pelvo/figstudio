@@ -5,7 +5,7 @@
 //! (AccessKit off) egui keeps no tree and the calls do nothing. `ui_a11y_tests.rs` checks that
 //! every control has a name.
 
-use egui::accesskit::Role;
+use egui::accesskit::{Live, Role};
 use egui::{Context, Id, Response, Ui};
 
 use crate::tab::Tab;
@@ -195,5 +195,35 @@ pub fn key_value(key: &Response, value: &Response, k: &str, v: &str) {
     hide(key);
     value.ctx.accesskit_node_builder(value.id, |n| {
         n.set_value(format!("{k}: {v}"));
+    });
+}
+
+/// Makes a message that appears on its own (a toast, an error) a live region: screen readers
+/// and agents are told when it shows, without looking for it. An `error` interrupts.
+pub fn announce(label: &Response, error: bool) {
+    label.ctx.accesskit_node_builder(label.id, |n| {
+        n.set_live(if error { Live::Assertive } else { Live::Polite });
+        if error {
+            n.set_role(Role::Alert);
+            if let Some(text) = n.value().map(str::to_owned) {
+                n.set_label(text);
+            }
+        }
+    });
+}
+
+/// Names a spinner (`response` is its place) as work in progress, announced when it starts.
+pub fn progress(response: &Response, label: &str) {
+    let r = response.rect;
+    response.ctx.accesskit_node_builder(response.id, |n| {
+        n.set_role(Role::ProgressIndicator);
+        n.set_label(label);
+        n.set_live(Live::Polite);
+        n.set_bounds(egui::accesskit::Rect {
+            x0: r.min.x.into(),
+            y0: r.min.y.into(),
+            x1: r.max.x.into(),
+            y1: r.max.y.into(),
+        });
     });
 }

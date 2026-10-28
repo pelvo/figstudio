@@ -1418,6 +1418,7 @@ impl App {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
+            crate::a11y::progress(&response, &format!("Opening {name}…"));
             response.on_hover_text(format!("Opening {name}…"));
         }
     }
@@ -1446,10 +1447,11 @@ impl App {
                 Some(_) if self.render_worker_lost => {
                     self.crossfade = Crossfade::default();
                     ui.centered_and_justified(|ui| {
-                        ui.label(
+                        let label = ui.label(
                             RichText::new("Rendering is unavailable; restart the app.")
                                 .color(p.warning),
                         );
+                        crate::a11y::announce(&label, true);
                     });
                 }
                 Some(tab) => {
@@ -1863,7 +1865,8 @@ impl App {
         let mut y = card.bottom() - 62.0;
         let mut moving = false;
         for t in self.toasts.iter().rev() {
-            let id = Id::new(("toast", t.born.to_bits()));
+            // Two toasts can be born in the same frame: the text tells them apart.
+            let id = Id::new(("toast", t.born.to_bits(), &t.text));
             let age = (now - t.born) as f32;
             let enter = if reduce {
                 1.0
@@ -1901,7 +1904,8 @@ impl App {
                                 } else {
                                     p.text
                                 });
-                                ui.add(egui::Label::new(text).wrap());
+                                let label = ui.add(egui::Label::new(text).wrap());
+                                crate::a11y::announce(&label, t.error);
                             });
                         });
                 });

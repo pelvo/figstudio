@@ -662,3 +662,28 @@ fn a_properties_row_reads_as_key_and_value_together() {
         assert!(!values.iter().any(|v| v == key), "a lone {key}: {values:?}");
     }
 }
+
+#[test]
+fn toasts_are_announced_and_errors_interrupt() {
+    use egui::accesskit::Live;
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().toast(&ctx, "Copied the link", false);
+    h.state_mut().toast(&ctx, "Could not open the file", true);
+    h.run_steps(3);
+    let live = |h: &Harness<'_, App>, text: &str| {
+        h.root()
+            .children_recursive()
+            .map(|n| n.accesskit_node())
+            .find(|a| a.value().as_deref() == Some(text) || a.label().as_deref() == Some(text))
+            .map(|a| (a.role(), a.live()))
+    };
+    assert_eq!(
+        live(&h, "Copied the link"),
+        Some((Role::Label, Live::Polite))
+    );
+    assert_eq!(
+        live(&h, "Could not open the file"),
+        Some((Role::Alert, Live::Assertive))
+    );
+}
