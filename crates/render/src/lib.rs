@@ -31,6 +31,7 @@ mod gpu_bytes;
 #[cfg(feature = "gpu")]
 mod gpu_scan;
 pub mod images;
+mod ink;
 mod layout;
 mod network;
 pub mod paint;
@@ -488,6 +489,18 @@ impl Renderer {
         viewport: &Viewport,
         limit: usize,
     ) -> svg::Svg {
+        self.render_svg_view(doc, root, viewport, limit, None)
+    }
+
+    /// [`Renderer::render_svg`] showing only `crop` (output units) when given.
+    fn render_svg_view(
+        &mut self,
+        doc: &Document,
+        root: Target<'_>,
+        viewport: &Viewport,
+        limit: usize,
+        crop: Option<Rect>,
+    ) -> svg::Svg {
         let (w, h) = (
             f64::from(viewport.width.max(1)),
             f64::from(viewport.height.max(1)),
@@ -505,7 +518,10 @@ impl Renderer {
             MAX_RENDER_WORK,
             0,
         );
-        let (markup, approximated, over_limit) = canvas.finish();
+        let (markup, approximated, over_limit) = match crop {
+            None => canvas.finish(),
+            Some(view) => canvas.finish_view(view),
+        };
         svg::Svg {
             markup,
             stats,
@@ -820,6 +836,67 @@ impl Renderer {
         Some(self.render_complete(doc, root, &viewport, read))
     }
 
+    /// What an export of `root` draws, cropped like Figma's export (its render bounds): the
+    /// pixels actually drawn, and never less than the box of a frame, component or instance
+    /// (a page has no box). Text and shapes shrink to their ink, a shadow or an overflowing
+    /// child widens the crop. `background` is painted under the crop afterwards. `None` when
+    /// nothing is drawn.
+    pub fn render_export_complete(
+        &mut self,
+        doc: &Document,
+        root: Guid,
+        scale: f64,
+        background: Option<AlphaColor<Srgb>>,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> Option<Frame> {
+        let (viewport, _, _) = fit_viewport(doc, root, scale, 0.0, None)?;
+        let crop = self.export_crop(doc, root, &viewport)?;
+        let mut frame = self.render_complete(doc, root, &viewport, read);
+        frame.pixmap = crop_pixmap(&frame.pixmap, crop, background);
+        Some(frame)
+    }
+
+    /// [`Renderer::render_export_complete`] as SVG: the `viewBox` is the crop (the ink of the
+    /// drawn fills, at least a frame-like layer's box). `None` when nothing is drawn.
+    pub fn render_export_svg_complete(
+        &mut self,
+        doc: &Document,
+        root: Guid,
+        scale: f64,
+        background: Option<AlphaColor<Srgb>>,
+        limit: usize,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> Option<svg::Svg> {
+        let (viewport, _, _) = fit_viewport(doc, root, scale, 0.0, background)?;
+        let crop = self.export_crop(doc, root, &viewport)?;
+        Some(self.complete_with(read, |this| {
+            this.render_svg_view(doc, Target::Node(root), &viewport, limit, Some(crop))
+        }))
+    }
+
+    /// The export crop of `root` in `viewport` (output pixels): the area its drawing covers
+    /// ([`ink::InkCanvas`]), never less than a frame-like layer's box. `None` when it draws
+    /// nothing.
+    fn export_crop(&mut self, doc: &Document, root: Guid, viewport: &Viewport) -> Option<Rect> {
+        let full = Rect::new(
+            0.0,
+            0.0,
+            f64::from(viewport.width.max(1)),
+            f64::from(viewport.height.max(1)),
+        );
+        let mut canvas = ink::InkCanvas::new();
+        self.walk(
+            doc,
+            Target::Node(root),
+            viewport.transform,
+            full,
+            &mut canvas,
+            MAX_RENDER_WORK,
+            0,
+        );
+        crop_rect(canvas.ink(), export_keep(doc, root, viewport), viewport)
+    }
+
     /// [`Renderer::render_fit_complete`] written as SVG (see [`svg`]); `None` when nothing is
     /// visible. The markup is dropped (and [`svg::Svg::over_limit`] set) past about `limit`
     /// bytes.
@@ -840,6 +917,68 @@ impl Renderer {
         let (viewport, _, _) = fit_viewport(doc, root, scale, padding, background)?;
         Some(self.render_svg_complete(doc, root, &viewport, limit, read))
     }
+}
+
+/// The box an export of `root` keeps even where nothing is drawn: a frame-like layer's own
+/// box (output pixels), as Figma's export does. `None` for pages and other layers.
+fn export_keep(doc: &Document, root: Guid, viewport: &Viewport) -> Option<Rect> {
+    let node = doc.node(root)?;
+    if !is_container(&node.kind) {
+        return None;
+    }
+    Some(
+        viewport
+            .transform
+            .transform_rect_bbox(node_bounds(doc, root)?),
+    )
+}
+
+/// The export crop: `ink` and `keep` together, rounded out to whole pixels and kept inside
+/// the viewport. `None` when both are empty.
+fn crop_rect(ink: Option<Rect>, keep: Option<Rect>, viewport: &Viewport) -> Option<Rect> {
+    let area = match (ink, keep) {
+        (Some(a), Some(b)) => a.union(b),
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => return None,
+    };
+    let full = Rect::new(
+        0.0,
+        0.0,
+        f64::from(viewport.width.max(1)),
+        f64::from(viewport.height.max(1)),
+    );
+    // Float noise (an edge at 0.9999) must not add a whole pixel when rounding out.
+    let area = area.inflate(-1e-3, -1e-3).expand().intersect(full);
+    (area.width() >= 1.0 && area.height() >= 1.0).then_some(area)
+}
+
+/// The pixels of `pixmap` inside `area` (whole pixels), over `background` when one is given.
+fn crop_pixmap(pixmap: &Pixmap, area: Rect, background: Option<AlphaColor<Srgb>>) -> Pixmap {
+    let src_w = usize::from(pixmap.width());
+    let (x0, y0) = (area.x0 as usize, area.y0 as usize);
+    // At most the source size, which fits a u16.
+    let w = u16::try_from(area.width() as usize).unwrap_or(u16::MAX);
+    let h = u16::try_from(area.height() as usize).unwrap_or(u16::MAX);
+    let mut out = Pixmap::new(w, h);
+    let src = pixmap.data_as_u8_slice();
+    let bg = background.map(|c| c.premultiply().to_rgba8().to_u8_array());
+    let dst = out.data_as_u8_slice_mut();
+    let row = usize::from(w) * 4;
+    for y in 0..usize::from(h) {
+        let from = ((y0 + y) * src_w + x0) * 4;
+        let line = &mut dst[y * row..(y + 1) * row];
+        line.copy_from_slice(&src[from..from + row]);
+        if let Some(bg) = bg {
+            // Source over background, both premultiplied.
+            for px in line.as_chunks_mut::<4>().0 {
+                let keep = 255 - u16::from(px[3]);
+                for c in 0..4 {
+                    px[c] = px[c].saturating_add(((u16::from(bg[c]) * keep + 127) / 255) as u8);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The viewport showing `root`'s content at `scale` (shrunk to fit [`MAX_SIDE`]) with `padding`,

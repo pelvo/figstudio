@@ -225,7 +225,8 @@ fn renderer(images: figstudio_render::images::Images) -> figstudio_render::Rende
     }
 }
 
-/// Renders `root` for export, reading every image it needs at full sharpness.
+/// Renders `root` for export, reading every image it needs at full sharpness, cropped like
+/// Figma's export (`Renderer::render_export_complete`).
 fn export_frame(
     images: figstudio_render::images::Images,
     doc: &figstudio_fig::Document,
@@ -233,7 +234,7 @@ fn export_frame(
     root: figstudio_fig::Guid,
     scale: f64,
 ) -> Option<figstudio_render::Frame> {
-    renderer(images).render_fit_complete(doc, root, scale, 0.0, None, |want| {
+    renderer(images).render_export_complete(doc, root, scale, None, |want| {
         source.and_then(|s| s.read(&want.entry).ok())
     })
 }
@@ -258,7 +259,7 @@ fn export_bytes(
             .context("encode the PNG"),
         worker::ExportFormat::Svg => {
             let svg = renderer(images)
-                .render_fit_svg_complete(doc, root, 1.0, 0.0, None, MAX_SVG_EXPORT_BYTES, |want| {
+                .render_export_svg_complete(doc, root, 1.0, None, MAX_SVG_EXPORT_BYTES, |want| {
                     source.and_then(|s| s.read(&want.entry).ok())
                 })
                 .context("nothing to export")?;

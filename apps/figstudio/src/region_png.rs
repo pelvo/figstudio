@@ -178,7 +178,7 @@ fn render_svg(
 ) -> anyhow::Result<Done> {
     let b = node_bounds(doc, id).context("Nothing to copy as SVG")?;
     let svg = crate::renderer(images)
-        .render_fit_svg_complete(doc, id, 1.0, 0.0, None, MAX_SVG_COPY_BYTES, |want| {
+        .render_export_svg_complete(doc, id, 1.0, None, MAX_SVG_COPY_BYTES, |want| {
             source.and_then(|s| s.read(&want.entry).ok())
         })
         .context("Nothing to copy as SVG")?;
