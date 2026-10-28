@@ -878,12 +878,15 @@ impl App {
                         .desired_width(460.0),
                 );
                 crate::a11y::name_field(&edit, "Figma link or node ID");
+                crate::a11y::author(&edit, "open-link.query");
                 if std::mem::take(&mut self.link.focus) {
                     edit.request_focus();
                 }
                 let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let filled = !self.link.text.trim().is_empty();
-                go = ui.add_enabled(filled, egui::Button::new("Go")).clicked() || (enter && filled);
+                let go_button = ui.add_enabled(filled, egui::Button::new("Go"));
+                crate::a11y::author(&go_button, "open-link.go");
+                go = go_button.clicked() || (enter && filled);
                 if self.link.window_searching() {
                     ui.label(
                         egui::RichText::new("Searching the link folders\u{2026}")
@@ -969,7 +972,9 @@ impl App {
                     .color(crate::theme::palette(ui.ctx()).text_dim),
             );
         }
-        if ui.button("Choose folder\u{2026}").clicked()
+        let choose = ui.button("Choose folder\u{2026}");
+        crate::a11y::author(&choose, "open-link.choose-folder");
+        if choose.clicked()
             && let Some(dir) = rfd::FileDialog::new().pick_folder()
         {
             self.link.set_dirs(vec![dir]);

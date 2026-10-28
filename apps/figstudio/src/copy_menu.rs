@@ -17,16 +17,16 @@ pub fn node_menu(ui: &mut egui::Ui, tab: &Tab, id: Guid, picked: &mut Option<Ite
 
 fn menu_items(ui: &mut egui::Ui, items: Vec<Item>, id: Guid, picked: &mut Option<Item>) {
     for item in items {
-        if ui.button(item.label).clicked() {
+        if crate::a11y::menu_button(ui, item.label).clicked() {
             *picked = Some(item);
             ui.close();
         }
     }
-    if ui.button("Copy as PNG").clicked() {
+    if crate::a11y::menu_button(ui, "Copy as PNG").clicked() {
         *picked = Some(Item::png("Copy as PNG", "image", Job::Node(id)));
         ui.close();
     }
-    if ui.button("Copy as WebP").clicked() {
+    if crate::a11y::menu_button(ui, "Copy as WebP").clicked() {
         *picked = Some(Item::png("Copy as WebP", "WebP image", Job::WebpNode(id)));
         ui.close();
     }

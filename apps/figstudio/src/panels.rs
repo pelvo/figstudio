@@ -102,6 +102,7 @@ pub fn pages(ui: &mut Ui, tab: &mut Tab) {
             .show_unindented(ui, |ui| page_rows(ui, tab, &doc.internal_pages));
             let header = &shown.header_response;
             icons::focus_ring(ui, header, header.rect, 8);
+            crate::a11y::author(header, "pages.internal");
         });
     }
 }
@@ -120,6 +121,7 @@ fn page_rows(ui: &mut Ui, tab: &mut Tab, pages: &[Guid]) {
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
         });
+        crate::a11y::author(&response, format!("pages.{page}"));
         let hover = hover_fade(ui, Id::new("pages-hover"), response.id, response.hovered());
         if selected {
             lit = Some(rect);
@@ -257,6 +259,7 @@ fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize, tree:
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
     });
+    crate::a11y::author(&response, format!("layers.{id}"));
     if has_children {
         crate::a11y::set_expanded(&response, expanded);
     }
@@ -289,6 +292,7 @@ fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize, tree:
         hit.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{verb} {name}"))
         });
+        crate::a11y::author(&hit, format!("layers.{id}.toggle"));
         icons::focus_ring(ui, &hit, arrow, 6);
         let color = if hit.hovered() || hit.has_focus() {
             p.text

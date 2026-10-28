@@ -104,12 +104,14 @@ pub fn name_menu(popup: &Response, label: &str) {
     popup.ctx.accesskit_node_builder(popup.id, |n| {
         n.set_role(Role::Menu);
         n.set_label(label);
+        n.set_author_id(format!("menu.{}.popup", slug(label)));
     });
 }
 
 /// `Ui::menu_button` inside a menu, with the submenu it opens named `label`.
 pub fn submenu<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
-    let (_, popup) = egui::containers::menu::SubMenuButton::new(label).ui(ui, add);
+    let (button, popup) = egui::containers::menu::SubMenuButton::new(label).ui(ui, add);
+    author(&button, format!("menu.{}", slug(label)));
     popup.map(|popup| {
         name_menu(&popup.response, label);
         popup.inner
@@ -133,6 +135,7 @@ pub fn panel_handle(ctx: &Context, panel: &str, label: &str) {
     ctx.accesskit_node_builder(id, |n| {
         n.set_role(Role::Splitter);
         n.set_label(label);
+        n.set_author_id(format!("splitter.{}", slug(panel)));
     });
     if ctx.memory(|m| m.has_focus(id))
         && let Some(handle) = ctx.read_response(id)
@@ -226,4 +229,55 @@ pub fn progress(response: &Response, label: &str) {
             y1: r.max.y.into(),
         });
     });
+}
+
+/// Gives `response`'s node a stable automation id (`AXIdentifier` on macOS, `AutomationId` on
+/// Windows), so a script or an agent finds the control again however its label reads.
+/// Ids look like `button.zoom-in`, `layers.12:34` or `settings.reduce-motion`; every control
+/// has one and none is used twice (`ui_a11y_tests.rs`).
+pub fn author(response: &Response, id: impl Into<String>) {
+    let id = id.into();
+    response
+        .ctx
+        .accesskit_node_builder(response.id, |n| n.set_author_id(id));
+}
+
+/// A short stable hash of `text` (FNV-1a), for an id that must not show the text itself (a
+/// file's path).
+pub fn short_hash(text: &str) -> String {
+    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("{hash:016x}")
+}
+
+/// `text` as an id part: lower case, words joined by `-` ("Open file…" is `open-file`).
+pub fn slug(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_owned()
+}
+
+/// `ui.button(label)` in a menu, with the automation id `menu.<slug of label>`.
+pub fn menu_button(ui: &mut Ui, label: &str) -> Response {
+    let response = ui.button(label);
+    author(&response, format!("menu.{}", slug(label)));
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_slug_keeps_letters_and_digits_and_joins_the_rest() {
+        assert_eq!(super::slug("Open file…"), "open-file");
+        assert_eq!(super::slug("Copy as PNG"), "copy-as-png");
+        assert_eq!(super::slug("  Zoom in (+) "), "zoom-in");
+        assert_eq!(super::slug("Größe 2"), "größe-2");
+    }
 }

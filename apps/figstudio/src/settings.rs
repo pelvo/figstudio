@@ -360,6 +360,7 @@ fn read_aloud_setting(ui: &mut Ui) {
 fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(34.0, 20.0), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, *on, label));
+    crate::a11y::author(&response, format!("settings.{}", crate::a11y::slug(label)));
     icons::focus_ring(ui, &response, rect.expand(3.0), 13);
     if response.clicked() {
         *on = !*on;
@@ -453,6 +454,10 @@ fn segmented<T: Copy + PartialEq>(
         response.widget_info(|| {
             WidgetInfo::selected(WidgetType::RadioButton, true, *value == current, *label)
         });
+        crate::a11y::author(
+            &response,
+            format!("settings.{id}.{}", crate::a11y::slug(label)),
+        );
         icons::focus_ring(ui, &response, r, 6);
         ui.painter().text(
             r.center(),
@@ -481,6 +486,7 @@ fn pill(ui: &mut Ui, text: &str, enabled: bool) -> Response {
     };
     let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x + 28.0, 26.0), sense);
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
+    crate::a11y::author(&response, format!("settings.{}", crate::a11y::slug(text)));
     icons::focus_ring(ui, &response, rect, 6);
     let lift = if enabled && response.hovered() {
         0.08
@@ -937,6 +943,7 @@ impl App {
             Sense::click(),
         );
         close.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Close settings"));
+        crate::a11y::author(&close, "settings.close");
         icons::focus_ring(ui, &close, close.rect, 11);
         ui.painter()
             .circle_filled(close_at, 6.5, Color32::from_rgb(255, 95, 87));
@@ -1002,6 +1009,10 @@ impl App {
             let on = tab == t;
             response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, on, t.label()));
             crate::a11y::tab(&response, on);
+            crate::a11y::author(
+                &response,
+                format!("settings.tab.{}", crate::a11y::slug(t.label())),
+            );
             let (hover, _) = icons::feedback(ui, &response);
             let (icon, name) = tab_ink(&look, on, hover);
             icons::paint(
@@ -1203,11 +1214,13 @@ impl App {
                 if *access.remote {
                     setting(ui, "Address", "This computer's address and port", |ui| {
                         ui.add_enabled_ui(!on, |ui| {
-                            ui.add(
+                            let field = ui.add(
                                 egui::TextEdit::singleline(access.remote_addr)
                                     .hint_text("100.x.y.z:3845")
                                     .desired_width(130.0),
                             );
+                            crate::a11y::name_field(&field, "Address");
+                            crate::a11y::author(&field, "settings.agents.address");
                         });
                     });
                 }
@@ -1292,6 +1305,7 @@ impl App {
                 .desired_width(f32::INFINITY),
         );
         crate::a11y::name_field(&field, "Search shortcuts");
+        crate::a11y::author(&field, "settings.search");
         let mut rows = left.new_child(
             UiBuilder::new()
                 .max_rect(Rect::from_min_max(
@@ -1410,6 +1424,10 @@ impl App {
                 let hit = ui.interact(cap, Id::new(("shortcut", binding)), Sense::click());
                 let label = format!("{} shortcut", binding.label());
                 hit.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
+                crate::a11y::author(
+                    &hit,
+                    format!("settings.shortcut.{}", crate::a11y::slug(binding.label())),
+                );
                 if hit
                     .on_hover_text("Click, then press the new keys")
                     .clicked()

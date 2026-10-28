@@ -14,33 +14,39 @@ use super::{SIZE, centre_of, harness, right_click};
 use crate::App;
 use crate::menu::Action as MenuAction;
 
+/// A node a screen reader or agent can act on: it takes a click or focus, or has a control
+/// role. egui's scroll bars are left out.
+fn is_control(a: &egui_kittest::kittest::AccessKitNode<'_>) -> bool {
+    a.role() != Role::ScrollBar
+        && (a.data().supports_action(Action::Click)
+            || a.data().supports_action(Action::Focus)
+            || matches!(
+                a.role(),
+                Role::Button
+                    | Role::CheckBox
+                    | Role::Switch
+                    | Role::RadioButton
+                    | Role::Slider
+                    | Role::SpinButton
+                    | Role::TextInput
+                    | Role::MultilineTextInput
+                    | Role::SearchInput
+                    | Role::ComboBox
+                    | Role::Link
+                    | Role::Tab
+                    | Role::MenuItem
+                    | Role::TreeItem
+                    | Role::ListBoxOption
+            ))
+}
+
 /// Controls in `h`'s tree without a name: role, value and place, for the failure message.
 fn unnamed(h: &Harness<'_, App>) -> Vec<String> {
     h.root()
         .children_recursive()
         .filter_map(|n| {
             let a = n.accesskit_node();
-            let control = a.role() != Role::ScrollBar
-                && (a.data().supports_action(Action::Click)
-                    || a.data().supports_action(Action::Focus)
-                    || matches!(
-                        a.role(),
-                        Role::Button
-                            | Role::CheckBox
-                            | Role::Switch
-                            | Role::RadioButton
-                            | Role::Slider
-                            | Role::SpinButton
-                            | Role::TextInput
-                            | Role::MultilineTextInput
-                            | Role::SearchInput
-                            | Role::ComboBox
-                            | Role::Link
-                            | Role::Tab
-                            | Role::MenuItem
-                            | Role::TreeItem
-                            | Role::ListBoxOption
-                    ));
+            let control = is_control(&a);
             let text = if a.label_comes_from_value() {
                 a.value()
             } else {
@@ -59,8 +65,49 @@ fn unnamed(h: &Harness<'_, App>) -> Vec<String> {
         .collect()
 }
 
+/// Controls (text aside) without a stable automation id (`author_id`, `AXIdentifier` on macOS),
+/// and ids used twice.
+fn unidentified(h: &Harness<'_, App>) -> (Vec<String>, Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    let (mut missing, mut twice) = (Vec::new(), Vec::new());
+    for n in h.root().children_recursive() {
+        let a = n.accesskit_node();
+        if a.is_hidden() {
+            continue;
+        }
+        match a.data().author_id() {
+            Some(id) => {
+                if !seen.insert(id.to_owned()) {
+                    twice.push(id.to_owned());
+                }
+            }
+            // egui's own window close button has an id we cannot know (`auto_id_with`).
+            None if a.label().as_deref() == Some("Close window") => {}
+            None if is_control(&a) && a.role() != Role::Label => missing.push(format!(
+                "{:?} {:?} at {:?}",
+                a.role(),
+                a.label().or_else(|| a.value()),
+                a.bounding_box().map(|b| (b.x0 as i32, b.y0 as i32))
+            )),
+            None => {}
+        }
+    }
+    (missing, twice)
+}
+
 #[track_caller]
 fn assert_all_named(h: &Harness<'_, App>, state: &str) {
+    let (missing, twice) = unidentified(h);
+    assert!(
+        missing.is_empty(),
+        "{state}: {} control(s) without an automation id:\n{}",
+        missing.len(),
+        missing.join("\n")
+    );
+    assert!(
+        twice.is_empty(),
+        "{state}: automation ids used twice: {twice:?}"
+    );
     // Nodes the app names after egui made them (`a11y.rs`) must be ones egui did make: a
     // node added for a widget that is not there has no place on screen.
     let placeless: Vec<String> = h
@@ -685,5 +732,46 @@ fn toasts_are_announced_and_errors_interrupt() {
     assert_eq!(
         live(&h, "Could not open the file"),
         Some((Role::Alert, Live::Assertive))
+    );
+}
+
+#[test]
+fn automation_ids_stay_the_same_when_labels_change() {
+    let mut h = harness();
+    h.run_steps(2);
+    let label_of = |h: &Harness<'_, App>, id: &str| {
+        h.root()
+            .children_recursive()
+            .map(|n| n.accesskit_node())
+            .find(|a| a.data().author_id() == Some(id))
+            .map(|a| a.label().unwrap_or_default())
+    };
+    for id in [
+        "canvas",
+        "button.sidebar",
+        "button.command-bar",
+        "button.select-tool",
+        "button.zoom-in",
+        "button.zoom-to-fit",
+        "field.filter-layers",
+        "splitter.properties",
+    ] {
+        assert!(label_of(&h, id).is_some(), "no {id}");
+    }
+    let tab = &h.state().tabs[0];
+    let first = tab.doc.children(tab.page)[0];
+    assert!(label_of(&h, &format!("layers.{first}")).is_some());
+    assert!(label_of(&h, &format!("pages.{}", tab.page)).is_some());
+
+    // The sidebar button reads "Hide sidebar" here and "Show sidebar" in the title strip.
+    assert_eq!(
+        label_of(&h, "button.sidebar").as_deref(),
+        Some("Hide sidebar")
+    );
+    h.state_mut().show_left = false;
+    h.run_steps(6);
+    assert_eq!(
+        label_of(&h, "button.sidebar").as_deref(),
+        Some("Show sidebar")
     );
 }
