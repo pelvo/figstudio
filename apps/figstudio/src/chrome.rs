@@ -736,11 +736,16 @@ fn pill_button(
     rect: Rect,
     id: Id,
     (icon, label, tip): (Option<Icon>, &str, &str),
-    active: bool,
+    // `Some` for a tool (a toggle screen readers hear as on or off), `None` for an action.
+    active: Option<bool>,
     accent: Color32,
 ) -> Response {
     let response = ui.interact(rect, id, Sense::click());
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, active, label));
+    response.widget_info(|| match active {
+        Some(on) => WidgetInfo::selected(WidgetType::Button, true, on, label),
+        None => WidgetInfo::labeled(WidgetType::Button, true, label),
+    });
+    let active = active.unwrap_or(false);
     let p = theme::of(ui);
     let (hover, press) = icons::feedback(ui, &response);
     let r = rect.shrink(1.0 + press * 1.5);
@@ -1587,7 +1592,7 @@ impl App {
                 slot(i as f32),
                 id,
                 (Some(icon), label, tip),
-                active,
+                Some(active),
                 accent,
             )
             .clicked()
@@ -1615,7 +1620,7 @@ impl App {
                 out,
                 Id::new("zoom-out"),
                 (Some(Icon::Minus), "Zoom out", "Zoom out (-)"),
-                false,
+                None,
                 accent,
             )
             .clicked()
@@ -1647,7 +1652,7 @@ impl App {
                 into,
                 Id::new("zoom-in"),
                 (Some(Icon::Plus), "Zoom in", "Zoom in (+)"),
-                false,
+                None,
                 accent,
             )
             .clicked()

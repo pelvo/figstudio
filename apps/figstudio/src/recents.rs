@@ -623,10 +623,11 @@ impl App {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             toggle_ui.spacing_mut().item_spacing.x = 2.0;
-            if icons::button(&mut toggle_ui, Icon::Grid, "Grid view", !list).clicked() {
+            if icons::toggle_button(&mut toggle_ui, Icon::Grid, "Grid view", !list, 28.0).clicked()
+            {
                 self.prefs.recents_list = false;
             }
-            if icons::button(&mut toggle_ui, Icon::List, "List view", list).clicked() {
+            if icons::toggle_button(&mut toggle_ui, Icon::List, "List view", list, 28.0).clicked() {
                 self.prefs.recents_list = true;
             }
         }

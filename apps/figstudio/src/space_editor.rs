@@ -387,7 +387,7 @@ fn icon_picker(ui: &mut egui::Ui, editor: &mut SpaceEditor, tab: &mut Tab) -> Cl
         }
         for (name, icon) in spaces::ICONS {
             let on = tab.style.symbol == Some(Symbol::Icon(name.into()));
-            if icons::sized_button(ui, icon, name, on, 30.0).clicked() {
+            if icons::toggle_button(ui, icon, name, on, 30.0).clicked() {
                 tab.style.symbol = Some(Symbol::Icon(name.into()));
                 close = Close::Save;
             }

@@ -405,3 +405,20 @@ fn settings_sets_the_text_size() {
     h.run_steps(4);
     assert_eq!(ctx.zoom_factor(), 1.0);
 }
+
+#[test]
+fn action_buttons_are_plain_buttons_and_tools_are_toggles() {
+    let mut h = harness();
+    h.run_steps(2);
+    let toggled =
+        |h: &Harness<'_, App>, label: &str| h.get_by_label(label).accesskit_node().data().toggled();
+    for action in ["Zoom in", "Zoom out", "Open file…", "Hide sidebar"] {
+        assert_eq!(toggled(&h, action), None, "{action} is read as a toggle");
+    }
+    for tool in ["Select tool", "Hand tool", "Zoom tool"] {
+        assert!(
+            toggled(&h, tool).is_some(),
+            "{tool} is not read as a toggle"
+        );
+    }
+}
