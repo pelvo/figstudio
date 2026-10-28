@@ -19,9 +19,11 @@ Protocol (MCP) server, written in Rust.
   and MCP tool core (`figstudio-mcp-core`).
 - **Built-in AI agent access (MCP):** inspect node trees (`get_metadata`), React + Tailwind
   code hints (`get_design_context`), variables and tokens (`get_variable_defs`), rendered PNG/WebP
-  screenshots (`get_screenshot`), and embedded raster images (`download_assets`; offline SVG
-  and PDF export are not available), compare `.fig` versions, or highlight nodes in the live
-  canvas from Claude Code, Cursor, Codex, or any MCP client.
+  screenshots (`get_screenshot`), PNG/WebP/JPG/SVG renders and embedded images
+  (`download_assets`; no PDF), keyframe animation as CSS and motion.dev code
+  (`get_motion_context`), shader fills and effects (`list_file_shaders`, `get_shader`), local
+  Code Connect mappings and suggestions, compare `.fig` versions, or highlight nodes in the
+  live canvas from Claude Code, Cursor, Codex, or any MCP client.
 
 ## Try it
 
@@ -113,8 +115,14 @@ cargo run --release -p figstudio -- path/to/design.fig
 ```
 
 - Pan and zoom the canvas, switch pages, search layers, inspect properties, and export any
-  selection or page to PNG. The node Copy menu also offers **Copy as WebP**, with real
-  WebP clipboard bytes on desktop; browsers download a `.webp` file instead.
+  selection or page to PNG or SVG. The node Copy menu also offers **Copy as WebP**, with real
+  WebP clipboard bytes on desktop (browsers download a `.webp` file instead), **Copy as SVG**,
+  and on animated layers **Copy CSS animation**.
+- Properties shows an animated layer's keyframe tracks and timeline, the parameter values of
+  shader fills and effects, and a **Code Connect** section: connect a component to its code
+  file (stored in `FILE.fig.codeconnect.json` next to the file, the same store the MCP tools
+  use; desktop only). With nothing selected, the Overview lists the page's components that
+  are not connected yet.
 - Paste a `figma.com` or `figstudio://` URL into the command bar (⌘L, Ctrl+L elsewhere), then
   press Enter to open its matching local `.fig` copy and reveal the linked node. No download
   from Figma is needed. If several copies match, pick one in the link window.
@@ -160,7 +168,7 @@ cargo run --release -p figstudio-cli -- info path/to/design.fig
 # Print the layer tree of page 1
 cargo run --release -p figstudio-cli -- tree path/to/design.fig --page 1 --depth 3
 
-# Render a page or node: .webp selects WebP, otherwise PNG; --format png|webp overrides it
+# Render a page or node: .webp selects WebP, .svg SVG, otherwise PNG; --format png|webp|svg overrides it
 cargo run --release -p figstudio-cli -- render path/to/design.fig --node 12:34 --scale 2 -o out.webp
 # Thumbnail uses the same extension inference and --format option
 cargo run --release -p figstudio-cli -- thumbnail path/to/design.fig -o thumbnail.webp
