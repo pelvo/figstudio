@@ -49,6 +49,9 @@ pub mod region_tool;
 pub mod rendering;
 /// PNG renders of one node.
 pub mod screenshot;
+/// The file's shader folder of downloaded sources (needs the `fs` feature).
+#[cfg(feature = "fs")]
+pub mod shader_sources;
 /// Shader fills and effects a file uses, their parameters and the layers using them.
 pub mod shaders;
 /// Used style and variable definitions of a subtree.

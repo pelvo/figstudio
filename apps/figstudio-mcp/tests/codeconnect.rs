@@ -410,9 +410,18 @@ async fn design_context_writes_mapped_instances_as_the_code_component() {
     assert_ne!(added.is_error, Some(true));
     let after = text(&call(&client, "get_design_context", json!({"nodeId":"1:4"})).await);
     // Both instances of the mapped component (and the component itself) become <Button />.
-    assert!(after.contains("<Button data-node-id=\"1:38\" />"), "{after}");
-    assert!(after.contains("<Button data-node-id=\"1:45\" />"), "{after}");
-    assert!(after.contains("import { Button } from \"src/components/Button\""), "{after}");
+    assert!(
+        after.contains("<Button data-node-id=\"1:38\" />"),
+        "{after}"
+    );
+    assert!(
+        after.contains("<Button data-node-id=\"1:45\" />"),
+        "{after}"
+    );
+    assert!(
+        after.contains("import { Button } from \"src/components/Button\""),
+        "{after}"
+    );
     assert!(after.contains("## Code Connect"), "{after}");
     // A snippet replaces the generated tag.
     call(
@@ -424,7 +433,13 @@ async fn design_context_writes_mapped_instances_as_the_code_component() {
     )
     .await;
     let snippet = text(&call(&client, "get_design_context", json!({"nodeId":"1:38"})).await);
-    assert!(snippet.contains("<Button variant=\"primary\" />"), "{snippet}");
-    assert!(snippet.contains("import { Button } from \"@/ui\""), "{snippet}");
+    assert!(
+        snippet.contains("<Button variant=\"primary\" />"),
+        "{snippet}"
+    );
+    assert!(
+        snippet.contains("import { Button } from \"@/ui\""),
+        "{snippet}"
+    );
     server.cancel().await.unwrap();
 }

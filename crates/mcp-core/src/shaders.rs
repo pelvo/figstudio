@@ -18,6 +18,111 @@ pub const MAX_USAGES: usize = 200;
 pub const OFFLINE_NOTE: &str = "Offline: a .fig stores each shader's parameters and the \
 layers that use it, not its name, description or source files, which stay in Figma's cloud.";
 
+/// The note when a shader's source was found in the file's shader folder.
+const SOURCE_NOTE: &str = "Name and source files come from the file's shader folder \
+(FILE.fig.shaders/: the zip of Figma's \"View code\" → \"Download files\", or its folder).";
+
+/// How to add the source of a shader the folder does not hold.
+const MISSING_NOTE: &str = "To add a shader's name and source: in Figma, open the shader's \
+\"…\" menu → View code → Download files, and save the zip in FILE.fig.shaders/ next to the \
+.fig.";
+
+/// A shader's source as Figma's "View code" → "Download files" gives it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShaderSource {
+    /// Where it was read from (the zip's or folder's name, without extension), used to match
+    /// it by shader ID or key.
+    pub label: String,
+    /// `features.json` `name`.
+    pub name: Option<String>,
+    /// `features.json` `version`.
+    pub version: Option<u64>,
+    /// File name and text, `features.json` and `main.ts` among them.
+    pub files: Vec<(String, String)>,
+}
+
+impl ShaderSource {
+    /// Reads name and version from `features.json`.
+    pub fn new(label: String, files: Vec<(String, String)>) -> Self {
+        let features = files
+            .iter()
+            .find(|(f, _)| f.rsplit('/').next() == Some("features.json"))
+            .and_then(|(_, t)| serde_json::from_str::<Value>(t).ok());
+        ShaderSource {
+            label,
+            name: features
+                .as_ref()
+                .and_then(|f| f["name"].as_str().map(str::to_owned)),
+            version: features.as_ref().and_then(|f| f["version"].as_u64()),
+            files,
+        }
+    }
+
+    /// The property names `main.ts` declares with `defineProperties`.
+    pub fn parameters(&self) -> Vec<String> {
+        self.files
+            .iter()
+            .find(|(f, _)| f.rsplit('/').next() == Some("main.ts"))
+            .map_or_else(Vec::new, |(_, text)| define_properties(text))
+    }
+}
+
+/// The top-level keys of the object passed to `defineProperties(…, { … })`.
+fn define_properties(text: &str) -> Vec<String> {
+    let Some(at) = text.find("defineProperties(") else {
+        return Vec::new();
+    };
+    // Skip the import line: the call is the one followed by a comma and an object.
+    let start = text[at..]
+        .match_indices("defineProperties(")
+        .map(|(i, _)| at + i)
+        .find_map(|i| {
+            let rest = &text[i..];
+            let comma = rest.find(',')?;
+            let brace = rest.find('{')?;
+            (comma < brace).then_some(i + brace)
+        });
+    let Some(start) = start else {
+        return Vec::new();
+    };
+    let bytes = text.as_bytes();
+    let (mut depth, mut i, mut out) = (0usize, start, Vec::new());
+    let mut token = String::new();
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        match c {
+            '"' | '\'' | '`' => {
+                // Skip a string (a quoted key at depth 1 is still a key).
+                let quote = c;
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] as char != quote {
+                    j += if bytes[j] == b'\\' { 2 } else { 1 };
+                }
+                if depth == 1 {
+                    token = text.get(i + 1..j.min(text.len())).unwrap_or("").to_owned();
+                }
+                i = j + 1;
+                continue;
+            }
+            '{' | '[' | '(' => depth += 1,
+            '}' | ']' | ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    break;
+                }
+            }
+            ':' if depth == 1 && !token.is_empty() => {
+                out.push(std::mem::take(&mut token));
+            }
+            c if depth == 1 && (c.is_alphanumeric() || c == '_' || c == '$') => token.push(c),
+            ',' | '\n' | ' ' if depth == 1 => token.clear(),
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
 /// A shader fill or effect stored in the document.
 struct Shader<'a> {
     node: &'a Node,
@@ -101,6 +206,34 @@ impl<'a> Shader<'a> {
         query == self.node.id.to_string()
             || Some(query) == self.key
             || Some(query) == self.published_id()
+    }
+
+    /// Its source: one named after its ID, key or node ID, else the only one whose
+    /// `defineProperties` names are the shader's parameter names.
+    fn source<'s>(&self, sources: &'s [ShaderSource]) -> Option<&'s ShaderSource> {
+        let by_label = sources.iter().find(|s| {
+            let label = s.label.trim_end_matches("-source");
+            self.matches(label) || label == self.node.id.to_string().replace(':', "-")
+        });
+        if by_label.is_some() {
+            return by_label;
+        }
+        let mut mine: Vec<String> = self
+            .definitions()
+            .iter()
+            .filter_map(|d| d.text("name").map(str::to_owned))
+            .collect();
+        mine.sort();
+        if mine.is_empty() {
+            return None;
+        }
+        let mut found = sources.iter().filter(|s| {
+            let mut theirs = s.parameters();
+            theirs.sort();
+            theirs == mine
+        });
+        let first = found.next()?;
+        found.next().is_none().then_some(first)
     }
 
     fn summary(&self, usages: usize) -> Value {
@@ -259,6 +392,12 @@ pub fn on_node(doc: &Document, node: &Node) -> Vec<Value> {
 /// `list_file_shaders`: the shader fills and effects the file holds, with how many layers use
 /// each.
 pub fn list(doc: &Document) -> Output {
+    list_with(doc, &[])
+}
+
+/// [`list`] with the sources of the file's shader folder: matched shaders get their name and
+/// files.
+pub fn list_with(doc: &Document, sources: &[ShaderSource]) -> Output {
     let all = shaders(doc);
     let used = usages(doc, |r| all.iter().any(|s| s.is(r)));
     let total = all.len();
@@ -270,14 +409,15 @@ pub fn list(doc: &Document) -> Output {
                 .iter()
                 .filter(|u| u.paint.get("customEffectId").is_some_and(|r| s.is(r)))
                 .count();
-            s.summary(count)
+            with_source(s.summary(count), s.source(sources), false)
         })
         .collect();
+    let found = list.iter().filter(|s| !s["name"].is_null()).count();
     Output::structured(json!({
         "shaders": list,
         "total": total,
         "truncated": total > MAX_SHADERS,
-        "note": OFFLINE_NOTE,
+        "note": note(found, total.min(MAX_SHADERS)),
     }))
 }
 
@@ -285,6 +425,12 @@ pub fn list(doc: &Document) -> Output {
 /// the layers that use it with their values. `id` is the shader ID from `list_file_shaders`,
 /// its key, or its node ID.
 pub fn get(doc: &Document, id: &str) -> Output {
+    get_with(doc, id, &[])
+}
+
+/// [`get`] with the sources of the file's shader folder: a matched shader gets its name and
+/// its files with their text.
+pub fn get_with(doc: &Document, id: &str, sources: &[ShaderSource]) -> Output {
     let id = id.trim();
     let all = shaders(doc);
     let Some(shader) = all.iter().find(|s| s.matches(id)) else {
@@ -303,7 +449,8 @@ pub fn get(doc: &Document, id: &str) -> Output {
         .take(MAX_USAGES)
         .map(|u| usage(u, &names))
         .collect();
-    let mut out = shader.summary(used.len());
+    let source = shader.source(sources);
+    let mut out = with_source(shader.summary(used.len()), source, true);
     if let Value::Object(fields) = &mut out {
         fields.insert(
             "parameters".into(),
@@ -311,9 +458,45 @@ pub fn get(doc: &Document, id: &str) -> Output {
         );
         fields.insert("usages".into(), Value::Array(listed));
         fields.insert("usagesTruncated".into(), json!(used.len() > MAX_USAGES));
-        fields.insert("note".into(), json!(OFFLINE_NOTE));
+        fields.insert("note".into(), json!(note(usize::from(source.is_some()), 1)));
     }
     Output::structured(out)
+}
+
+/// Most bytes of source text `get_shader` returns (Figma's own limit).
+const MAX_SOURCE_BYTES: usize = 1_000_000;
+
+/// `summary` with the source's name and files (`content` too when `text`).
+fn with_source(mut summary: Value, source: Option<&ShaderSource>, text: bool) -> Value {
+    let Some(source) = source else {
+        return summary;
+    };
+    summary["name"] = json!(source.name);
+    summary["sourceVersion"] = json!(source.version);
+    let mut budget = MAX_SOURCE_BYTES;
+    summary["files"] = source
+        .files
+        .iter()
+        .map(|(name, content)| {
+            let mut file = json!({"filename": name, "bytes": content.len()});
+            if text && content.len() <= budget {
+                budget -= content.len();
+                file["content"] = json!(content);
+            }
+            file
+        })
+        .collect();
+    summary
+}
+
+/// The reply's note: what offline lacks, and how to add it when sources are missing.
+fn note(found: usize, shown: usize) -> String {
+    match (found, shown) {
+        (_, 0) => OFFLINE_NOTE.to_owned(),
+        (f, s) if f == s => SOURCE_NOTE.to_owned(),
+        (0, _) => format!("{OFFLINE_NOTE} {MISSING_NOTE}"),
+        _ => format!("{SOURCE_NOTE} {MISSING_NOTE}"),
+    }
 }
 
 /// A parameter definition: name, label, type, control, default and its range or options.
