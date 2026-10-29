@@ -142,10 +142,10 @@ fn a_stored_spring_becomes_a_sampled_css_curve() {
         scale["keyframes"][1]["easing"],
         json!({"type": "CUSTOM_SPRING", "easingFunctionSpring": {"bounce": 0.674044}})
     );
-    // A two-keyframe spring track stays a spring in motion.dev, never a curve.
+    // The spring as Figma's own get_motion_context writes it for this layer.
     let js = n["codeSnippets"]["motion"].as_str().unwrap();
     assert!(
-        js.contains("scaleX: { type: \"spring\", bounce: 0.674, duration: 1, delay: 0 },"),
+        js.contains("scaleX: { duration: 3.601, times: [0, 0.2777, 1], ease: [(t) => 1 - Math.exp(-t * 7.204) * (Math.cos(t * 20.8941) + 0.3448 * Math.sin(t * 20.8941)), \"linear\"] },"),
         "{js}"
     );
     let css = n["codeSnippets"]["css"].as_str().unwrap();
@@ -321,4 +321,22 @@ fn a_recursive_reply_names_the_first_node_for_repeated_motion() {
             .to_string()
             .contains("repeat an earlier node's")
     );
+}
+
+#[test]
+fn a_spring_preset_and_a_looping_timeline_match_figmas_output() {
+    let out = motion(&doc(), "1:819", true);
+    let n = node(&out, "1:820");
+    // Figma's get_motion_context for this layer (preset SPRING_PRESET_TWO, 0.6 s segment).
+    let js = n["codeSnippets"]["motion"].as_str().unwrap();
+    assert!(
+        js.contains("ease: [\"linear\", (t) => 1 - Math.exp(-t * 7.1866) * (Math.cos(t * 22.3441) + 0.3216 * Math.sin(t * 22.3441)), \"linear\"], repeat: Infinity"),
+        "{js}"
+    );
+    // Figma's CSS samples the same curve 50 times: 0, 0.0985, 0.342, 0.6483, …
+    let css = n["codeSnippets"]["css"].as_str().unwrap();
+    assert!(css.contains("linear(0, 0.0985, 0.342, 0.6483, "), "{css}");
+    // A root with only the older duration field loops, as Figma reports it.
+    assert_eq!(out["timelineCohorts"][0]["rootNodeId"], "1:800");
+    assert_eq!(out["timelineCohorts"][0]["loopMode"], "loop");
 }
