@@ -68,7 +68,15 @@ async fn downloaded_sources_give_shaders_their_name_and_code() {
         &shaders.join("Concentric-patterns-source.zip"),
         &source(
             "Concentric patterns",
-            &["shape", "ringCount", "falloff", "inverseFalloff", "color", "offset", "transform"],
+            &[
+                "shape",
+                "ringCount",
+                "falloff",
+                "inverseFalloff",
+                "color",
+                "offset",
+                "transform",
+            ],
         ),
     );
     // Matched by its folder's name: the shader's key.
@@ -95,10 +103,16 @@ async fn downloaded_sources_give_shaders_their_name_and_code() {
     assert_eq!(shader("1:5")["name"], "Concentric patterns");
     assert_eq!(shader("1:9")["name"], "Pixelate");
     assert!(shader("1:7")["name"].is_null());
-    assert!(list["note"].as_str().unwrap().contains("Download files"), "{list}");
+    assert!(
+        list["note"].as_str().unwrap().contains("Download files"),
+        "{list}"
+    );
     let files = shader("1:5")["files"].clone();
     assert_eq!(files.as_array().unwrap().len(), 2);
-    assert!(files[0].get("content").is_none(), "the list leaves contents out");
+    assert!(
+        files[0].get("content").is_none(),
+        "the list leaves contents out"
+    );
 
     let one = call(&client, "get_shader", json!({"id": "1:5"})).await;
     assert_eq!(one["name"], "Concentric patterns");
@@ -109,6 +123,11 @@ async fn downloaded_sources_give_shaders_their_name_and_code() {
         .iter()
         .find(|f| f["filename"] == "main.ts")
         .unwrap();
-    assert!(main["content"].as_str().unwrap().contains("defineProperties(Effect"));
+    assert!(
+        main["content"]
+            .as_str()
+            .unwrap()
+            .contains("defineProperties(Effect")
+    );
     server.cancel().await.unwrap();
 }
