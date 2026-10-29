@@ -488,3 +488,44 @@ fn a_choice_of_one_reads_as_radio_buttons_and_settings_sections_as_tabs() {
         Some(false)
     );
 }
+
+#[test]
+fn the_text_size_survives_a_restart() {
+    use eframe::App as _;
+    for (button, size) in [("125%", 1.25), ("150%", 1.5), ("200%", 2.0)] {
+        let mut h = harness();
+        let ctx = h.ctx.clone();
+        h.state_mut().apply(MenuAction::Settings, &ctx);
+        h.run_steps(4);
+        h.get_by_role_and_label(Role::RadioButton, button).click();
+        h.run_steps(4);
+        let mut storage = super::Memory::default();
+        h.state_mut().save(&mut storage);
+
+        let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+        cc.storage = Some(&storage);
+        let second = App::new(&cc, Vec::new());
+        assert_eq!(second.prefs.text_size, size, "{button}");
+        // egui applies a new zoom at the start of its next pass.
+        let _ = cc.egui_ctx.run_ui(egui::RawInput::default(), |_| {});
+        assert_eq!(cc.egui_ctx.zoom_factor(), size, "{button}");
+    }
+    // ⌘+ is kept too, and Settings says what it is.
+    let mut h = harness();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Plus);
+    h.run_steps(3);
+    let mut storage = super::Memory::default();
+    h.state_mut().save(&mut storage);
+    let cc = {
+        let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+        cc.storage = Some(&storage);
+        let _second = App::new(&cc, Vec::new());
+        let _ = cc.egui_ctx.run_ui(egui::RawInput::default(), |_| {});
+        cc.egui_ctx.zoom_factor()
+    };
+    assert!((cc - 1.1).abs() < 1e-3, "{cc}");
+    let ctx = h.ctx.clone();
+    h.state_mut().apply(MenuAction::Settings, &ctx);
+    h.run_steps(4);
+    assert!(h.query_by_label_contains("Now 110%").is_some());
+}

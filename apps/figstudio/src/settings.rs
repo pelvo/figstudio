@@ -1047,12 +1047,18 @@ impl App {
             // with the window. Percent, so the steps compare exactly.
             let steps =
                 |key| ctx.format_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, key));
+            let percent = (ctx.zoom_factor() * 100.0).round() as u16;
+            // A size set with the keys between the presets: say what it is.
+            let now = if [100, 125, 150, 200].contains(&percent) {
+                String::new()
+            } else {
+                format!("Now {percent}%. ")
+            };
             let note = format!(
-                "{} and {} for the steps between",
+                "{now}{} and {} for the steps between",
                 steps(egui::Key::Plus),
                 steps(egui::Key::Minus)
             );
-            let percent = (ctx.zoom_factor() * 100.0).round() as u16;
             let mut size = None;
             setting(ui, "Text size", &note, |ui| {
                 size = segmented(

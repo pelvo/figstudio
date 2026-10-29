@@ -322,6 +322,8 @@ struct Prefs {
     /// check at start ("" for none). A newer release, or Check now, shows its popup.
     #[cfg_attr(target_arch = "wasm32", serde(skip))]
     skip_update: String,
+    /// Settings → Text size, or ⌘+ / ⌘−: egui's zoom factor (1 is 100 %).
+    text_size: f32,
 }
 
 impl Default for Prefs {
@@ -336,6 +338,7 @@ impl Default for Prefs {
             agents: settings::AgentPrefs::default(),
             check_updates: false,
             skip_update: String::new(),
+            text_size: 1.0,
         }
     }
 }
@@ -597,6 +600,14 @@ impl App {
             *access.remote = app.prefs.agents.remote;
             access.remote_addr.clone_from(&app.prefs.agents.remote_addr);
         }
+        // egui's own bounds for its zoom (`gui_zoom`); a damaged value starts at 100 %.
+        let size = app.prefs.text_size;
+        let size = if size.is_finite() {
+            size.clamp(0.2, 5.0)
+        } else {
+            1.0
+        };
+        cc.egui_ctx.set_zoom_factor(size);
         app.restore_workspace(workspace, files);
         // What the last install left beside the app (the bundle it replaced). Tests never
         // touch the app's folder.
@@ -1305,6 +1316,8 @@ impl App {
         // Before anything this frame moves focus (the command field, the welcome sheet): a
         // modal that opened remembers what had focus; one that closed gives it back at the
         // end of the frame (`give_focus_back`).
+        // Settings → Text size and ⌘+ / ⌘− both change egui's zoom; Prefs keeps it.
+        self.prefs.text_size = ctx.zoom_factor();
         crate::a11y::restore_focus(&ctx, "welcome", self.onboarding.sheet_open());
         crate::a11y::restore_focus(&ctx, "command-bar", self.command.is_open());
         crate::a11y::restore_focus(&ctx, "settings", self.settings.is_open());
