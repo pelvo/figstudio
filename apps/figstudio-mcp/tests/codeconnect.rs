@@ -378,3 +378,53 @@ async fn suggestions_then_sent_mappings_fill_the_sidecar_in_one_write() {
     assert_eq!(empty.is_error, Some(true));
     server.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn design_context_writes_mapped_instances_as_the_code_component() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("local.fig");
+    std::fs::copy(fixture(), &path).unwrap();
+    let (a, b) = tokio::io::duplex(65536);
+    // Assets into the temp folder, not the crate's ./figma-assets.
+    let server = FigstudioServer::new(vec![path.clone()], true).with_assets(
+        figstudio_mcp::tools::design::Assets::dir(dir.path().join("assets")),
+    );
+    let server = tokio::spawn(server.serve(a));
+    let client = ().serve(b).await.unwrap();
+    let server = server.await.unwrap().unwrap();
+    let text = |r: &CallToolResult| {
+        r.content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let before = text(&call(&client, "get_design_context", json!({"nodeId":"1:4"})).await);
+    assert!(!before.contains("<Button"), "{before}");
+    let added = call(
+        &client,
+        "add_code_connect_map",
+        json!({"nodeId":"1:37", "componentName":"Button", "source":"src/components/Button.tsx", "label":"React"}),
+    )
+    .await;
+    assert_ne!(added.is_error, Some(true));
+    let after = text(&call(&client, "get_design_context", json!({"nodeId":"1:4"})).await);
+    // Both instances of the mapped component (and the component itself) become <Button />.
+    assert!(after.contains("<Button data-node-id=\"1:38\" />"), "{after}");
+    assert!(after.contains("<Button data-node-id=\"1:45\" />"), "{after}");
+    assert!(after.contains("import { Button } from \"src/components/Button\""), "{after}");
+    assert!(after.contains("## Code Connect"), "{after}");
+    // A snippet replaces the generated tag.
+    call(
+        &client,
+        "add_code_connect_map",
+        json!({"nodeId":"1:37", "componentName":"Button", "source":"src/components/Button.tsx",
+               "label":"React", "snippet":"<Button variant=\"primary\" />",
+               "snippetImports":["import { Button } from \"@/ui\""]}),
+    )
+    .await;
+    let snippet = text(&call(&client, "get_design_context", json!({"nodeId":"1:38"})).await);
+    assert!(snippet.contains("<Button variant=\"primary\" />"), "{snippet}");
+    assert!(snippet.contains("import { Button } from \"@/ui\""), "{snippet}");
+    server.cancel().await.unwrap();
+}
