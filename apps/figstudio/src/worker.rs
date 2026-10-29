@@ -129,6 +129,12 @@ fn spawn(f: impl FnOnce() + Send + 'static) {
     std::thread::spawn(f);
 }
 
+/// Runs `f` on a background thread (desktop) or a pool worker (browser), for long-lived
+/// helpers such as the motion preview's renderer.
+pub fn spawn_task(f: impl FnOnce() + Send + 'static) {
+    spawn(f);
+}
+
 #[cfg(target_arch = "wasm32")]
 fn spawn(f: impl FnOnce() + Send + 'static) {
     rayon::spawn(f);
