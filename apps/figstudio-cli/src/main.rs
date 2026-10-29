@@ -346,6 +346,8 @@ fn run(args: Args) -> Result<()> {
             let background = parse_background(&args.background, &doc, page)?;
             let mut renderer = Renderer::new();
             renderer.system_fonts = args.system_fonts;
+            renderer.shaders = figstudio_shader::Fills::for_file(&args.file)
+                .map(|f| f as std::sync::Arc<dyn figstudio_render::shader::ShaderFills>);
             let svg = args.svg
                 || args
                     .out

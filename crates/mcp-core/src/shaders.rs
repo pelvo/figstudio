@@ -463,6 +463,59 @@ pub fn get_with(doc: &Document, id: &str, sources: &[ShaderSource]) -> Output {
     Output::structured(out)
 }
 
+/// The shader source a `CUSTOM` paint or effect runs and the `frame.params` its code reads:
+/// every parameter by name, the layer's value or else the default.
+pub fn program<'s>(
+    doc: &Document,
+    paint: &Val,
+    sources: &'s [ShaderSource],
+) -> Option<(&'s ShaderSource, Value)> {
+    let reference = paint.get("customEffectId")?;
+    let all = shaders(doc);
+    let shader = all.iter().find(|s| s.is(reference))?;
+    let source = shader.source(sources)?;
+    let assignments = paint
+        .get("componentPropAssignments")
+        .map_or(&[][..], Val::items);
+    let mut params = Map::new();
+    for def in shader.definitions() {
+        let Some(name) = def.text("name") else {
+            continue;
+        };
+        let id = def.get("id").and_then(Val::as_guid);
+        let assigned = assignments
+            .iter()
+            .find(|a| id.is_some() && a.get("defID").and_then(Val::as_guid) == id);
+        let value = assigned
+            .and_then(|a| {
+                a.get("varValue")
+                    .map(variable_value)
+                    .or_else(|| a.get("value").map(plain_value))
+            })
+            .or_else(|| def.get("varValue").map(variable_value))
+            .or_else(|| def.get("initialValue").map(plain_value))
+            .unwrap_or(Value::Null);
+        params.insert(name.to_owned(), code_value(value));
+    }
+    Some((source, Value::Object(params)))
+}
+
+/// A stored value as shader code reads it: a circle's `center` becomes its `x` and `y`
+/// (`{x, y, radius, angle}`, as `pointAngleRadiusParam` reads it).
+// shortcut: only circle points are reshaped; check gradient and colour-point params when a
+// shader using them has its source.
+fn code_value(value: Value) -> Value {
+    let Value::Object(mut fields) = value else {
+        return value;
+    };
+    if let Some(Value::Object(center)) = fields.remove("center") {
+        for (k, v) in center {
+            fields.entry(k).or_insert(v);
+        }
+    }
+    Value::Object(fields)
+}
+
 /// Most bytes of source text `get_shader` returns (Figma's own limit).
 const MAX_SOURCE_BYTES: usize = 1_000_000;
 

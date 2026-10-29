@@ -485,9 +485,13 @@ impl Workers {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load(&self, path: PathBuf) {
+        let images = self.images();
         self.decode(path.clone(), true, move || {
             let doc_key = crate::source::doc_key_from_path(&path);
             let (doc, source) = crate::source::open_path(&path)?;
+            if let Some(fills) = figstudio_shader::Fills::for_file(&path) {
+                images.set_shaders(doc.instance, fills);
+            }
             Ok((doc, source, doc_key))
         });
     }
