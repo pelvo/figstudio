@@ -126,18 +126,20 @@ pub fn duration(ms: f64) -> String {
     }
 }
 
-/// An easing type as a person names it: `OUT_CUBIC` → `ease out`.
+/// An easing type (Figma's public motion names) as a person names it: `EASE_OUT` → `ease out`.
 pub fn easing_label(kind: &str) -> String {
     match kind {
         "LINEAR" => "linear".into(),
         "HOLD" => "hold".into(),
-        "IN_CUBIC" | "EASE_IN" => "ease in".into(),
-        "OUT_CUBIC" => "ease out".into(),
-        "INOUT_CUBIC" => "ease in-out".into(),
-        "IN_BACK_CUBIC" => "back in".into(),
-        "OUT_BACK_CUBIC" => "back out".into(),
-        "INOUT_BACK_CUBIC" => "back in-out".into(),
-        "CUSTOM_CUBIC" => "custom curve".into(),
+        "EASE_IN" => "ease in".into(),
+        "EASE_OUT" => "ease out".into(),
+        "EASE_IN_AND_OUT" => "ease in and out".into(),
+        "EASE_IN_BACK" => "ease in back".into(),
+        "EASE_OUT_BACK" => "ease out back".into(),
+        "EASE_IN_AND_OUT_BACK" => "ease in and out back".into(),
+        "CUSTOM_CUBIC_BEZIER" => "custom curve".into(),
+        "CUSTOM_SPRING" => "custom spring".into(),
+        "GENTLE" | "QUICK" | "BOUNCY" | "SLOW" => format!("{} spring", kind.to_lowercase()),
         k if k.contains("SPRING") => "spring".into(),
         other => other.to_lowercase().replace('_', " "),
     }
@@ -255,7 +257,8 @@ mod tests {
         );
         assert_eq!(duration(901.444), "901 ms");
         assert_eq!(duration(3601.0), "3.6 s");
-        assert_eq!(easing_label("OUT_CUBIC"), "ease out");
+        assert_eq!(easing_label("EASE_OUT"), "ease out");
+        assert_eq!(easing_label("QUICK"), "quick spring");
         // The playground's rotation preset: Figma's Motion panel says "Clockwise 360°".
         assert_eq!(
             rotation_turn(&json!(-std::f64::consts::TAU), &json!(0.0)).as_deref(),

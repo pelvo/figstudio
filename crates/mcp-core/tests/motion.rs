@@ -62,9 +62,11 @@ fn preset_tracks_scale_the_base_value_after_the_preset_delay() {
     assert_eq!(times(opacity), [100.0, 700.0]);
     assert_eq!(opacity["keyframes"][0]["value"], 0.0);
     assert_eq!(opacity["keyframes"][1]["value"], 100.0);
+    // Figma's public easing object, not the file's internal CUSTOM_CUBIC.
     assert_eq!(
-        opacity["keyframes"][1]["easing"]["cubicBezier"],
-        json!([0.0, 1.078555, 1.0, 1.0])
+        opacity["keyframes"][1]["easing"],
+        json!({"type": "CUSTOM_CUBIC_BEZIER",
+               "easingFunctionCubicBezier": {"x1": 0.0, "y1": 1.078555, "x2": 1.0, "y2": 1.0}})
     );
     let css = shape["codeSnippets"]["css"].as_str().unwrap();
     assert!(
@@ -80,12 +82,19 @@ fn preset_tracks_scale_the_base_value_after_the_preset_delay() {
         "{css}"
     );
     assert_eq!(css.matches('{').count(), css.matches('}').count(), "{css}");
+    // Figma's snippet shape: a motion element with initial, animate and transition.
     let js = shape["codeSnippets"]["motion"].as_str().unwrap();
-    assert!(js.contains("opacity: [0, 0, 1, 1],"), "{js}");
+    assert!(js.starts_with("<motion.svg\n"), "{js}");
     assert!(
-        js.contains("opacity: { times: [0, 0.0667, 0.4667, 1]"),
+        js.contains("initial={{ opacity: 0, scaleX: 0.3, scaleY: 0.3 }}"),
         "{js}"
     );
+    assert!(js.contains("animate={{ opacity: [0, 0, 1, 1], "), "{js}");
+    assert!(
+        js.contains("opacity: { duration: 1.5, times: [0, 0.0667, 0.4667, 1], ease: [\"linear\", [0, 1.0786, 1, 1], \"linear\"] },"),
+        "{js}"
+    );
+    assert!(js.ends_with("/>\n"), "{js}");
 }
 
 #[test]
@@ -128,9 +137,16 @@ fn a_stored_spring_becomes_a_sampled_css_curve() {
     let out = motion(&doc(), "1:1041", false);
     let n = node(&out, "1:1041");
     let scale = binding(n, "MOTION_SCALE_XY");
+    // Read back as Figma does: bounce only (one minus the damping ratio 0.326).
     assert_eq!(
-        scale["keyframes"][1]["easing"]["spring"],
-        json!({"stiffness": 100.0, "damping": 6.519115, "mass": 1.0})
+        scale["keyframes"][1]["easing"],
+        json!({"type": "CUSTOM_SPRING", "easingFunctionSpring": {"bounce": 0.674044}})
+    );
+    // A two-keyframe spring track stays a spring in motion.dev, never a curve.
+    let js = n["codeSnippets"]["motion"].as_str().unwrap();
+    assert!(
+        js.contains("scaleX: { type: \"spring\", bounce: 0.674, duration: 1, delay: 0 },"),
+        "{js}"
     );
     let css = n["codeSnippets"]["css"].as_str().unwrap();
     let curve = css.split("linear(").nth(1).expect("a linear() easing");
@@ -161,7 +177,13 @@ fn rotation_turns_clockwise_as_figma_shows_it() {
     assert!(css.contains("rotate: -360deg;"), "{css}");
     assert!(css.contains("rotate: 0deg;"), "{css}");
     let js = snippets["motion"].as_str().unwrap();
-    assert!(js.contains("rotate: [-360, -360, 0, 0],"), "{js}");
+    assert!(js.contains("rotate: [-360, -360, 0, 0] }}"), "{js}");
+    // Figma's named curve by motion.dev's name.
+    assert!(js.contains("ease: [\"easeOut\", \"linear\"]"), "{js}");
+    assert_eq!(
+        binding(node(&out, "1:1106"), "MOTION_TRANSLATION_X")["keyframes"][1]["easing"],
+        json!({"type": "EASE_OUT"})
+    );
     assert!(out["notes"].to_string().contains("clockwise positive"));
 }
 
@@ -196,4 +218,107 @@ fn the_copy_menu_helpers_see_only_the_node_itself() {
     assert!(css.starts_with("/* 1:749"), "{css}");
     assert!(css.contains("@keyframes n1-749-opacity"), "{css}");
     assert_eq!(node_css(&doc, "1:748"), None);
+}
+
+/// The motion fixture with `id`'s data changed by `patch`.
+fn patched(id: &str, patch: impl Fn(&mut figstudio_fig::Val)) -> Document {
+    let mut doc = doc();
+    let id: figstudio_fig::Guid = id.parse().unwrap();
+    let mut nodes = doc.nodes.clone();
+    for node in &mut nodes {
+        if node.id == id {
+            patch(&mut node.data);
+        }
+    }
+    doc.set_nodes(nodes).unwrap();
+    doc
+}
+
+fn val(v: Value) -> figstudio_fig::Val {
+    serde_json::from_value(v).unwrap()
+}
+
+#[test]
+fn pivot_text_stagger_and_static_rotation_reach_the_snippets() {
+    // The fixture has none of these; the field shapes come from the file's schema.
+    let doc = patched("1:1106", |data| {
+        data.set(
+            "transformOrigin",
+            val(
+                json!({"x": {"value": 1.0, "units": "RAW"}, "y": {"value": 3.098, "units": "RAW"}}),
+            ),
+        );
+        data.set(
+            "textElementDelayBehaviour",
+            val(json!({"enabled": true, "grouping": "WORD", "delayMs": 40.0, "order": "CENTER_OUT"})),
+        );
+        // A static 45° rotation (m10 = sin 45°): Figma's rotate is absolute.
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        data.set(
+            "transform",
+            val(json!({"m00": s, "m01": -s, "m02": 100.0, "m10": s, "m11": s, "m12": 150.0})),
+        );
+    });
+    let out = motion(&doc, "1:1106", false);
+    let n = node(&out, "1:1106");
+    assert_eq!(n["transformOrigin"], "100% 309.8%");
+    assert_eq!(n["textAnimation"]["grouping"], "WORD");
+    assert_eq!(n["textAnimation"]["order"], "CENTER_OUT");
+    let js = n["codeSnippets"]["motion"].as_str().unwrap();
+    assert!(
+        js.contains("style={{ transformOrigin: \"100% 309.8%\" }}"),
+        "{js}"
+    );
+    assert!(js.contains("rotate: [-315, -315, 45, 45]"), "{js}");
+    let css = n["codeSnippets"]["css"].as_str().unwrap();
+    assert!(css.contains("transform-origin: 100% 309.8%;"), "{css}");
+}
+
+#[test]
+fn a_path_trim_track_draws_the_stroke() {
+    // Re-point the rotation track at PATH_TRIM_END: 0 → 1 of the path (schema field).
+    let doc = patched("1:1106", |data| {
+        let mut text = serde_json::to_string(&*data).unwrap();
+        text = text.replace("\"MOTION_ROTATION\"", "\"PATH_TRIM_END\"");
+        *data = serde_json::from_str(&text).unwrap();
+    });
+    let js = node(&motion(&doc, "1:1106", false), "1:1106")["codeSnippets"]["motion"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(js.starts_with("<motion.path\n  pathLength={1}\n"), "{js}");
+    assert!(js.contains("strokeDasharray: "), "{js}");
+}
+
+#[test]
+fn a_recursive_reply_names_the_first_node_for_repeated_motion() {
+    let out = motion(&doc(), "1:754", true);
+    let snippets: Vec<_> = out["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["codeSnippets"]["motion"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        snippets.iter().all(|s| !s.starts_with("// Same motion as")),
+        "different delays"
+    );
+    let page = motion(&doc(), &doc().pages[0].to_string(), true);
+    let repeats = page["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| {
+            n["codeSnippets"]["motion"]
+                .as_str()
+                .unwrap()
+                .starts_with("// Same motion as ")
+        })
+        .count();
+    assert!(repeats > 0);
+    assert!(
+        page["notes"]
+            .to_string()
+            .contains("repeat an earlier node's")
+    );
 }
