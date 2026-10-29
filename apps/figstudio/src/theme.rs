@@ -1064,10 +1064,12 @@ mod tests {
         assert!(blue.bottom.b() > blue.bottom.r() + 10, "{:?}", blue.bottom);
     }
 
-    /// Every colour the UI draws text in, on every surface that text sits on, reads at WCAG
-    /// AA (4.5:1): the window gradient of each space (with a hovered row's fill), the cards,
-    /// the wells, dialogs and the pills over any canvas. A selected row shows names in
-    /// `text` or `component` only (its icon is `text_dim`, a graphic: 3:1).
+    /// Every colour the UI draws text in, on every opaque surface that text sits on, reads at
+    /// WCAG AA (4.5:1). The translucent macOS sidebar (on by default, Settings → General) is not
+    /// covered: what shows through depends on the desktop. The opaque surfaces are the window
+    /// gradient of each space (with a hovered row's fill), the cards, the wells, dialogs and
+    /// the pills over any canvas. A selected row shows names in `text` or `component` only
+    /// (its icon is `text_dim`, a graphic: 3:1).
     #[test]
     fn every_text_colour_reads_at_aa_on_every_surface_it_uses() {
         let customs = [

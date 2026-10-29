@@ -56,7 +56,9 @@ run_slice() {
       ;;
     # Screen readers: the shipped desktop app must build eframe with AccessKit. The UI tests
     # get it from egui_kittest (a dev-dependency), which a release build does not inherit,
-    # so the tests alone cannot catch it missing. `-e normal` leaves dev-dependencies out.
+    # so the tests alone cannot catch it missing. `-e normal` leaves dev-dependencies out;
+    # `cargo tree` resolves for the host unless given a --target. The browser build has no
+    # AccessKit; its "Read controls aloud" needs web_screen_reader, checked for wasm32.
     accesskit)
       features=$(cargo $TC tree -p figstudio -e normal -e features -i eframe)
       if ! grep -q 'eframe feature "accesskit"' <<<"$features"; then
@@ -64,6 +66,12 @@ run_slice() {
         exit 1
       fi
       echo "eframe is built with accesskit"
+      web=$(cargo $TC tree -p figstudio -e normal -e features -i eframe --target wasm32-unknown-unknown)
+      if ! grep -q 'eframe feature "web_screen_reader"' <<<"$web"; then
+        echo "the browser app builds eframe without web_screen_reader (apps/figstudio/Cargo.toml)" >&2
+        exit 1
+      fi
+      echo "the browser build has web_screen_reader"
       ;;
     tests-workspace)
       cargo $TC test --profile fast --workspace

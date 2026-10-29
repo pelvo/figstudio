@@ -337,6 +337,8 @@ fn keycap(ui: &Ui, text: &str, right: f32, y: f32, recording: bool) -> Rect {
 /// Settings → General in the browser: egui's own screen reader, which speaks what gets focus
 /// or a click with the browser's speech synthesis. eframe has no AccessKit on the web, so a
 /// system screen reader sees only the canvas element. The choice is kept with egui's memory.
+/// What it speaks includes names and text from the open file, and a browser may use an online
+/// voice for it: the note says so.
 #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), expect(dead_code))]
 fn read_aloud_setting(ui: &mut Ui) {
     let ctx = ui.ctx().clone();
@@ -344,7 +346,8 @@ fn read_aloud_setting(ui: &mut Ui) {
     setting(
         ui,
         "Read controls aloud",
-        "The browser says what has focus or was clicked",
+        "The browser says what has focus or was clicked, names and text from the open file \
+         included. Some browsers send what they speak to an online voice.",
         |ui| {
             if switch(ui, &mut on, "Read controls aloud").changed() {
                 ctx.options_mut(|o| o.screen_reader = on);
@@ -1083,7 +1086,8 @@ impl App {
             setting(
                 ui,
                 "Translucent sidebar",
-                "The desktop shows through, blurred",
+                "The desktop shows through, blurred. Text contrast then depends on the \
+                 desktop; turn it off for the most contrast.",
                 |ui| {
                     switch(ui, &mut self.prefs.translucent, "Translucent sidebar");
                 },
@@ -1671,5 +1675,16 @@ mod read_aloud_tests {
             .click();
         h.run();
         assert!(!h.ctx.options(|o| o.screen_reader));
+    }
+
+    #[test]
+    fn the_read_aloud_note_says_file_content_is_spoken_and_may_go_online() {
+        let mut h = Harness::new_ui(super::read_aloud_setting);
+        h.run();
+        assert!(
+            h.query_by_label_contains("names and text from the open file")
+                .is_some()
+        );
+        assert!(h.query_by_label_contains("online voice").is_some());
     }
 }
