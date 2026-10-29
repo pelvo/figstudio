@@ -370,7 +370,7 @@ pub fn focus_ring(ui: &Ui, response: &Response, rect: Rect, radius: u8) {
         ui.painter().rect_stroke(
             rect,
             CornerRadius::same(radius),
-            Stroke::new(2.0, theme::ACCENT),
+            Stroke::new(2.0, theme::of(ui).focus),
             StrokeKind::Inside,
         );
     }

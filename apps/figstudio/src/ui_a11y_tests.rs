@@ -220,13 +220,13 @@ fn a_layer_with_children_says_whether_it_is_open_and_its_arrow_toggles_it() {
     assert!(h.query_by_label(&format!("Collapse {name}")).is_some());
 }
 
-/// True when `shapes` hold an accent outline (the focus ring) around `rect`.
+/// True when `shapes` hold a focus-coloured outline (the focus ring) around `rect`.
 fn ring_around(shapes: &[egui::epaint::ClippedShape], rect: egui::Rect) -> bool {
     fn walk(shape: &egui::Shape, rect: egui::Rect) -> bool {
         match shape {
             egui::Shape::Vec(shapes) => shapes.iter().any(|s| walk(s, rect)),
             egui::Shape::Rect(r) => {
-                r.stroke.color == crate::theme::ACCENT
+                [crate::theme::LIGHT.focus, crate::theme::DARK.focus].contains(&r.stroke.color)
                     && r.stroke.width >= 1.5
                     && r.rect.expand(4.0).contains_rect(rect)
                     && rect.expand(4.0).contains_rect(r.rect)

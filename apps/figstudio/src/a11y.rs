@@ -75,7 +75,7 @@ pub fn panel_handle(ctx: &Context, panel: &str, label: &str) {
         ctx.layer_painter(layer).rect_stroke(
             handle.rect,
             egui::CornerRadius::same(3),
-            egui::Stroke::new(2.0, crate::theme::ACCENT),
+            egui::Stroke::new(2.0, crate::theme::palette(ctx).focus),
             egui::StrokeKind::Inside,
         );
     }

@@ -52,6 +52,9 @@ pub struct Palette {
     /// Components and instances in the layer tree.
     pub component: Color32,
     pub warning: Color32,
+    /// The keyboard focus ring: 3:1 on every surface it is drawn on (WCAG 1.4.11), which
+    /// `ACCENT` misses on the light tints.
+    pub focus: Color32,
 }
 
 pub const LIGHT: Palette = Palette {
@@ -70,6 +73,7 @@ pub const LIGHT: Palette = Palette {
     shadow: Color32::from_black_alpha(34),
     component: Color32::from_rgb(99, 62, 204),
     warning: Color32::from_rgb(132, 78, 0),
+    focus: Color32::from_rgb(10, 96, 210),
 };
 
 pub const DARK: Palette = Palette {
@@ -88,6 +92,7 @@ pub const DARK: Palette = Palette {
     shadow: Color32::from_black_alpha(120),
     component: Color32::from_rgb(206, 188, 255),
     warning: Color32::from_rgb(240, 180, 70),
+    focus: Color32::from_rgb(120, 180, 255),
 };
 
 /// How much of a space's colour the properties card and its wells take.
@@ -283,6 +288,9 @@ fn reads_on(p: &Palette, bg: Color32) -> bool {
         && aa(p.text, hovered)
         && aa(p.text, selected)
         && aa(p.component, selected)
+        && [bg, hovered, selected]
+            .into_iter()
+            .all(|bg| contrast(p.focus, bg) >= 3.0)
 }
 
 /// Black or white, whichever reads better on `fill` (text on an accent-coloured button).
@@ -1103,6 +1111,20 @@ mod tests {
                         );
                     }
                 }
+            }
+            // The focus ring is a graphic: 3:1 (WCAG 1.4.11), on rows of every state too.
+            let rows: Vec<(&str, Color32)> = surfaces
+                .iter()
+                .filter(|(s, _)| *s == "gradient")
+                .map(|(_, bg)| ("selected row", bg.blend(p.selected)))
+                .collect();
+            for (surface, bg) in surfaces.iter().chain(&rows) {
+                assert!(
+                    contrast(p.focus, *bg) >= 3.0,
+                    "focus ring on {surface} {bg:?} dark={}: {:.2}",
+                    p.dark,
+                    contrast(p.focus, *bg)
+                );
             }
             for (role, fg) in roles {
                 for (surface, bg) in &surfaces {
