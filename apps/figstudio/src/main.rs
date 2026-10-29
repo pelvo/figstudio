@@ -1302,6 +1302,12 @@ impl App {
         self.native_events(&ctx);
         // Ahead of the shortcuts: the dialog's Escape must be consumed first.
         self.mcp.confirm(&ctx);
+        // Before anything this frame moves focus (the command field, the welcome sheet): a
+        // modal that opened remembers what had focus; one that closed gives it back at the
+        // end of the frame (`give_focus_back`).
+        crate::a11y::restore_focus(&ctx, "welcome", self.onboarding.sheet_open());
+        crate::a11y::restore_focus(&ctx, "command-bar", self.command.is_open());
+        crate::a11y::restore_focus(&ctx, "settings", self.settings.is_open());
         self.shortcuts(&ctx);
         self.menu_windows(&ctx);
         let space_held = ctx.input(|i| i.key_down(Key::Space)) && !ctx.egui_wants_keyboard_input();
@@ -1420,6 +1426,10 @@ impl App {
         self.command_bar(&ctx);
         self.welcome_sheet(&ctx);
         self.toasts(&ctx);
+        // Last, when every widget of this frame is known (`a11y::restore_focus`).
+        for modal in ["welcome", "command-bar", "settings"] {
+            crate::a11y::give_focus_back(&ctx, modal);
+        }
         let answers = self.take_link_answers();
         self.mcp
             .sync_then_answer(&ctx, &self.tabs, self.active, answers);

@@ -26,6 +26,72 @@ pub fn modal(ui: &Ui) {
     ui.ctx().memory_mut(|m| m.set_modal_layer(layer));
 }
 
+/// What [`restore_focus`] remembers about one modal.
+#[derive(Clone, Copy, Debug, Default)]
+struct ModalFocus {
+    open: bool,
+    /// What had focus when it opened; after it closed, still to be given back.
+    saved: Option<Id>,
+    /// Frames left to give it back in (the opener may be gone for good).
+    left: u8,
+}
+
+fn modal_key(modal: &str) -> Id {
+    Id::new(("modal-focus", modal))
+}
+
+/// Remembers what has keyboard focus when the modal `modal` opens, so [`give_focus_back`]
+/// can return it there once it closes (WCAG 2.4.3): Escape out of Settings lands on the
+/// control that opened it, not nowhere. Call it every frame with whether the modal is open,
+/// before the modal moves focus.
+pub fn restore_focus(ctx: &Context, modal: &str, open: bool) {
+    let key = modal_key(modal);
+    let mut state = ctx
+        .data(|d| d.get_temp::<ModalFocus>(key))
+        .unwrap_or_default();
+    if open && !state.open {
+        state = ModalFocus {
+            open: true,
+            saved: ctx.memory(|m| m.focused()),
+            left: 0,
+        };
+    } else if !open && state.open {
+        state.open = false;
+        state.left = 60;
+    }
+    ctx.data_mut(|d| d.insert_temp(key, state));
+}
+
+/// After the frame is drawn: gives focus back to what `modal` saved, once it is drawn again
+/// and nothing outside a closing modal (a foreground layer) took focus meanwhile. Only a
+/// widget drawn this frame gets it: focus on a widget with no node would break the
+/// accessibility tree (AccessKit requires the focused node to exist).
+pub fn give_focus_back(ctx: &Context, modal: &str) {
+    let key = modal_key(modal);
+    let Some(mut state) = ctx.data(|d| d.get_temp::<ModalFocus>(key)) else {
+        return;
+    };
+    let Some(saved) = state.saved.filter(|_| !state.open && state.left > 0) else {
+        return;
+    };
+    let drawn = |id: Id| ctx.viewport(|v| v.this_pass.widgets.get(id).is_some());
+    let taken = ctx.memory(|m| m.focused()).is_some_and(|f| {
+        drawn(f)
+            && ctx
+                .read_response(f)
+                .is_some_and(|r| r.layer_id.order != egui::Order::Foreground)
+    });
+    if taken {
+        state.saved = None;
+    } else if drawn(saved) {
+        ctx.memory_mut(|m| m.request_focus(saved));
+        state.saved = None;
+    } else {
+        state.left -= 1;
+    }
+    ctx.data_mut(|d| d.insert_temp(key, state));
+}
+
 /// Leaves out the title bar of the `egui::Window` whose id is `window` (shown this frame):
 /// a drag strip without a name. The window itself is named after its title.
 pub fn hide_window_title_bar(ctx: &Context, window: Id) {

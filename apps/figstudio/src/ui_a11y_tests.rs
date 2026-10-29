@@ -422,3 +422,37 @@ fn action_buttons_are_plain_buttons_and_tools_are_toggles() {
         );
     }
 }
+
+#[test]
+fn closing_a_modal_gives_focus_back_to_what_had_it() {
+    for (action, state) in [
+        (MenuAction::Settings, "settings"),
+        (MenuAction::CommandBar, "command bar"),
+        (MenuAction::Welcome, "welcome sheet"),
+    ] {
+        let mut h = harness();
+        h.run_steps(2);
+        let ctx = h.ctx.clone();
+        // Focus the Zoom in button the way Tab does.
+        let zoom_in = ctx
+            .read_response(egui::Id::new("zoom-in"))
+            .expect("the Zoom in button")
+            .id;
+        ctx.memory_mut(|m| m.request_focus(zoom_in));
+        h.run_steps(2);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(zoom_in),
+            "{state}: focused"
+        );
+        h.state_mut().apply(action, &ctx);
+        h.run_steps(6);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(30);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(zoom_in),
+            "{state}: focus is not back on Zoom in"
+        );
+    }
+}

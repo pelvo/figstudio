@@ -115,7 +115,6 @@ pub struct Settings {
 }
 
 impl Settings {
-    #[cfg(test)]
     pub fn is_open(&self) -> bool {
         self.open
     }
