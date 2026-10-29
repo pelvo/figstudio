@@ -34,7 +34,7 @@ pub const MAX_NODES: usize = 500;
 /// Most nodes a recursive call looks at.
 const MAX_VISITED: usize = 100_000;
 /// Samples of a spring in a CSS `linear()` easing.
-const SPRING_SAMPLES: usize = 32;
+const SPRING_SAMPLES: usize = 50;
 /// Stand-in for spring presets whose parameters the file does not store.
 const DEFAULT_SPRING: Spring = Spring {
     stiffness: 100.0,
@@ -108,7 +108,6 @@ struct Animated {
 struct Notes {
     springs_sampled: usize,
     springs_assumed: usize,
-    springs_motion: usize,
     curved_paths: usize,
     unconverted: Vec<String>,
     /// Fields in the motion.dev snippet that the CSS snippet cannot express.
@@ -335,12 +334,6 @@ impl Notes {
             out.push(format!(
                 "approximated: {} spring preset segments; the file does not store their parameters, so stiffness 100, damping 15, mass 1 stand in",
                 self.springs_assumed
-            ));
-        }
-        if self.springs_motion > 0 {
-            out.push(format!(
-                "approximated: {} spring segments use a cubic-bezier in the motion.dev snippet",
-                self.springs_motion
             ));
         }
         if self.curved_paths > 0 {
@@ -714,34 +707,29 @@ fn named_cubic(kind: &str) -> Option<(&'static str, &'static str, [f64; 4])> {
     })
 }
 
-/// Spring presets: Figma's public easing type and its bounce. The file stores only the
-/// preset's name, not its parameters.
-fn spring_preset(kind: &str) -> Option<(&'static str, f64)> {
-    SPRING_PRESETS
-        .iter()
-        .find(|(k, _, _)| *k == kind)
-        .map(|(_, public, bounce)| (*public, *bounce))
+/// A spring preset over its segment ([`segment_spring`]'s unit spring). The file stores only
+/// the preset's name, not its parameters.
+fn spring_preset(kind: &str) -> Option<Spring> {
+    let &(_, decay, freq) = SPRING_PRESETS.iter().find(|(k, _, _)| *k == kind)?;
+    Some(Spring {
+        stiffness: decay * decay + freq * freq,
+        damping: 2.0 * decay,
+        mass: 1.0,
+    })
 }
 
-/// Stored preset name, Figma's public name, bounce (read from Figma's Motion panel).
-const SPRING_PRESETS: [(&str, &str, f64); 0] = [];
+/// Stored preset name, decay and angular frequency over a segment of length 1, from the
+/// spring function Figma's `get_motion_context` writes for it
+/// (`1 - exp(-t·decay)·(cos(t·freq) + decay/freq·sin(t·freq))`).
+// shortcut: only the preset the motion fixture uses; add the others when a file with them is
+// read through Figma's MCP.
+const SPRING_PRESETS: [(&str, f64, f64); 1] = [("SPRING_PRESET_TWO", 7.1866, 22.3441)];
 
 /// Figma's normalised spring `bounce` (0 to 1) of physical spring parameters: one minus the
 /// damping ratio, as motion.dev defines bounce.
 fn bounce(s: Spring) -> f64 {
     let zeta = s.damping / (2.0 * (s.stiffness.max(1e-9) * s.mass.max(1e-9)).sqrt());
     (1.0 - zeta).clamp(0.0, 1.0)
-}
-
-/// The physical spring for a bounce, at motion.dev's default stiffness and mass (for the CSS
-/// sample of a preset that stores no parameters).
-fn spring_of_bounce(bounce: f64) -> Spring {
-    let (stiffness, mass) = (100.0, 1.0);
-    Spring {
-        stiffness,
-        damping: 2.0 * (1.0 - bounce.clamp(0.0, 1.0)) * (stiffness * mass).sqrt(),
-        mass,
-    }
 }
 
 /// The layer's pivot (`transformOrigin`) as a CSS value, `None` when unset. Each axis is a
@@ -781,13 +769,12 @@ impl Easing {
                     "easingFunctionCubicBezier": bezier(b),
                 }),
             },
-            Easing::Spring(kind, spring, _) => match (spring_preset(kind), spring) {
-                (Some((public, _)), _) => json!({"type": public}),
-                (None, Some(s)) => json!({
+            Easing::Spring(kind, ..) => match self.bounce() {
+                Some(b) => json!({
                     "type": "CUSTOM_SPRING",
-                    "easingFunctionSpring": tidy(json!({"bounce": bounce(*s)})),
+                    "easingFunctionSpring": tidy(json!({"bounce": b})),
                 }),
-                (None, None) => json!({"type": kind}),
+                None => json!({"type": kind}),
             },
         }
     }
@@ -795,9 +782,7 @@ impl Easing {
     /// The spring's bounce, when this is a spring with a known one.
     fn bounce(&self) -> Option<f64> {
         match self {
-            Easing::Spring(kind, spring, _) => spring_preset(kind)
-                .map(|(_, b)| b)
-                .or_else(|| spring.map(bounce)),
+            Easing::Spring(kind, spring, _) => spring.or_else(|| spring_preset(kind)).map(bounce),
             _ => None,
         }
     }
@@ -813,29 +798,34 @@ impl Easing {
                 "INOUT_CUBIC" => "ease-in-out".into(),
                 _ => cubic_css(b),
             },
-            Easing::Spring(kind, spring, _) => {
-                let spring = match (spring, spring_preset(kind)) {
-                    (Some(s), _) => {
-                        notes.springs_sampled += 1;
-                        *s
-                    }
-                    (None, Some((_, b))) => {
-                        notes.springs_sampled += 1;
-                        spring_of_bounce(b)
-                    }
-                    (None, None) => {
-                        notes.springs_assumed += 1;
-                        DEFAULT_SPRING
-                    }
-                };
-                spring_css(spring)
+            Easing::Spring(..) => {
+                let (unit, known) = self.unit_spring();
+                if known {
+                    notes.springs_sampled += 1;
+                } else {
+                    notes.springs_assumed += 1;
+                }
+                spring_css(unit)
             }
         }
     }
 
-    /// The motion.dev `ease` of a segment in a keyframe list. A spring there keeps its stored
-    /// curve, as Figma's own snippets do; a two-keyframe spring track uses `type: "spring"`.
-    fn motion(&self, notes: &mut Notes) -> String {
+    /// The spring over its segment ([`segment_spring`]), and whether its parameters are known
+    /// (stored, or a preset Figma's output gave) rather than the stand-in.
+    fn unit_spring(&self) -> (Spring, bool) {
+        let Easing::Spring(kind, spring, _) = self else {
+            return (unit_spring(DEFAULT_SPRING), false);
+        };
+        match (spring, spring_preset(kind)) {
+            (Some(s), _) => (unit_spring(*s), true),
+            (None, Some(preset)) => (preset, true),
+            (None, None) => (unit_spring(DEFAULT_SPRING), false),
+        }
+    }
+
+    /// The motion.dev `ease` of a segment in a keyframe list; a spring is its function over
+    /// the segment, as Figma's own snippets write it.
+    fn motion(&self) -> String {
         match self {
             Easing::Linear => "\"linear\"".into(),
             Easing::Hold => "() => 0".into(),
@@ -843,10 +833,41 @@ impl Easing {
                 Some((_, name, _)) => format!("\"{name}\""),
                 None => bezier_js(b),
             },
-            Easing::Spring(_, _, b) => {
-                notes.springs_motion += 1;
-                bezier_js(&b.unwrap_or([0.34, 1.56, 0.64, 1.0]))
-            }
+            Easing::Spring(..) => spring_js(self.unit_spring().0),
+        }
+    }
+}
+
+/// A spring from 0 to 1 over `t` from 0 to 1 as a JavaScript function, in the form of Figma's
+/// snippets.
+fn spring_js(s: Spring) -> String {
+    let w = s.stiffness.max(0.0).sqrt();
+    let decay = s.damping / 2.0;
+    let r = |v: f64| n((v * 1e4).round() / 1e4);
+    if decay < w {
+        let freq = (w * w - decay * decay).sqrt();
+        format!(
+            "(t) => 1 - Math.exp(-t * {}) * (Math.cos(t * {}) + {} * Math.sin(t * {}))",
+            r(decay),
+            r(freq),
+            r(decay / freq),
+            r(freq)
+        )
+    } else {
+        // Critically damped or overdamped: the slower mode, as `spring_at` has it.
+        let slow = decay - (decay * decay - w * w).sqrt();
+        let fast = decay + (decay * decay - w * w).sqrt();
+        if (fast - slow).abs() < 1e-9 {
+            format!("(t) => 1 - Math.exp(-t * {}) * (1 + t * {})", r(w), r(w))
+        } else {
+            format!(
+                "(t) => 1 - ({} * Math.exp(-t * {}) - {} * Math.exp(-t * {})) / {}",
+                r(fast),
+                r(slow),
+                r(slow),
+                r(fast),
+                r(fast - slow)
+            )
         }
     }
 }
@@ -865,11 +886,11 @@ fn bezier_js(b: &[f64; 4]) -> String {
     format!("[{}, {}, {}, {}]", n(b[0]), n(b[1]), n(b[2]), n(b[3]))
 }
 
-/// A spring segment sampled as a CSS `linear()` function.
-fn spring_css(s: Spring) -> String {
+/// A spring over its segment ([`segment_spring`]) sampled as a CSS `linear()` function.
+fn spring_css(unit: Spring) -> String {
     let mut out = String::from("linear(");
     for i in 0..=SPRING_SAMPLES {
-        let v = segment_spring(s, i as f64 / SPRING_SAMPLES as f64);
+        let v = segment_spring(unit, i as f64 / SPRING_SAMPLES as f64);
         if i > 0 {
             out.push_str(", ");
         }
@@ -879,18 +900,16 @@ fn spring_css(s: Spring) -> String {
     out
 }
 
-/// Envelope left when Figma's spring segment ends. Figma keeps only a spring's bounce and
-/// stretches it so it settles at its keyframe; this fits Figma's Motion panel for stiffness 100,
-/// damping 6.52, mass 1 over 1 s (every 50 ms to 800 ms within 0.01 %).
-// shortcut: calibrated on one bounce, recheck with another custom spring in Figma's panel.
-const SPRING_SETTLE: f64 = 7.44e-4;
+/// How far Figma's spring decays over its segment: its envelope is e^-7.204 at the end.
+/// Figma keeps only a stored spring's damping ratio and stretches it to settle at its
+/// keyframe; its `get_motion_context` writes the custom spring of stiffness 100, damping 6.52,
+/// mass 1 over 1 s as `1 - exp(-t·7.204)·(cos(t·20.8941) + 0.3448·sin(t·20.8941))`.
+// shortcut: read off one custom spring; recheck with another (presets come out near 7.19).
+const SPRING_DECAY: f64 = 7.204;
 
-/// Progress at `u` (0 to 1) of a spring segment, the way Figma plays it: only the damping
-/// ratio of `s` counts, and the spring's envelope decays to [`SPRING_SETTLE`] at the end.
-fn segment_spring(s: Spring, u: f64) -> f64 {
-    if u >= 1.0 {
-        return 1.0;
-    }
+/// The stored spring `s` stretched over a segment of length 1, the way Figma plays it: only
+/// its damping ratio counts, and its slowest mode decays by [`SPRING_DECAY`].
+fn unit_spring(s: Spring) -> Spring {
     let zeta = (s.damping / (2.0 * (s.stiffness.max(1e-9) * s.mass.max(1e-9)).sqrt())).max(0.05);
     // Decay rate of the slowest mode per unit of natural frequency.
     let decay = if zeta < 1.0 {
@@ -898,12 +917,19 @@ fn segment_spring(s: Spring, u: f64) -> f64 {
     } else {
         zeta - (zeta * zeta - 1.0).sqrt()
     };
-    let w = (1.0 / SPRING_SETTLE).ln() / decay;
-    let unit = Spring {
+    let w = SPRING_DECAY / decay;
+    Spring {
         stiffness: w * w,
         damping: 2.0 * zeta * w,
         mass: 1.0,
-    };
+    }
+}
+
+/// Progress at `u` (0 to 1) of a segment eased by the unit spring `unit` ([`unit_spring`]).
+fn segment_spring(unit: Spring, u: f64) -> f64 {
+    if u >= 1.0 {
+        return 1.0;
+    }
     spring_at(unit, u.max(0.0))
 }
 
@@ -1079,12 +1105,10 @@ fn node_entry(a: &Animated, notes: &mut Notes) -> Value {
 /// Snippet keyframes: time (µs), value as written in code, easing of the segment ending there.
 type Frames = Vec<(f64, String, Easing)>;
 
-/// One motion.dev value: its name, keyframes, and for a two-keyframe spring track the spring
-/// (bounce, start µs, end µs) that replaces its keyframe timing.
+/// One motion.dev value: its name and keyframes.
 struct MotionValue {
     name: &'static str,
     frames: Frames,
-    spring: Option<(f64, f64, f64)>,
 }
 
 /// CSS `@keyframes` (one animation per property) and a motion.dev element in the shape of
@@ -1202,20 +1226,7 @@ fn motion_snippet(a: &Animated, duration: f64, notes: &mut Notes) -> String {
         let Some(first) = motion_values(&b.field, &b.keyframes[0].value, a.base_rotation) else {
             continue;
         };
-        // A two-keyframe spring track is a real spring (Figma's snippets never bake it into
-        // a curve); longer tracks keep the stored curve per segment.
-        let spring = (b.keyframes.len() == 2)
-            .then(|| b.keyframes[1].easing.bounce())
-            .flatten()
-            .map(|bounce| (bounce, b.keyframes[0].time_us, b.keyframes[1].time_us));
-        let frames: Vec<(f64, Value, Easing)> = if spring.is_some() {
-            b.keyframes
-                .iter()
-                .map(|k| (k.time_us, k.value.clone(), k.easing.clone()))
-                .collect()
-        } else {
-            padded(b, duration)
-        };
+        let frames = padded(b, duration);
         for (slot, (name, _)) in first.iter().enumerate() {
             let track: Option<Frames> = frames
                 .iter()
@@ -1225,11 +1236,7 @@ fn motion_snippet(a: &Animated, duration: f64, notes: &mut Notes) -> String {
                 })
                 .collect();
             if let Some(frames) = track {
-                values.push(MotionValue {
-                    name,
-                    frames,
-                    spring,
-                });
+                values.push(MotionValue { name, frames });
             }
         }
     }
@@ -1243,7 +1250,6 @@ fn motion_snippet(a: &Animated, duration: f64, notes: &mut Notes) -> String {
                 .iter()
                 .map(|(t, s, e, ease)| (*t, format!("'{} 1'", n((e - s).max(0.0))), ease.clone()))
                 .collect(),
-            spring: None,
         });
         if start.is_some() || a.trim.0 != 0.0 {
             values.push(MotionValue {
@@ -1252,7 +1258,6 @@ fn motion_snippet(a: &Animated, duration: f64, notes: &mut Notes) -> String {
                     .iter()
                     .map(|(t, s, _, ease)| (*t, n(-s), ease.clone()))
                     .collect(),
-                spring: None,
             });
         }
     }
@@ -1270,13 +1275,13 @@ fn motion_snippet(a: &Animated, duration: f64, notes: &mut Notes) -> String {
         _ => "",
     };
     let seconds = |us: f64| n(us / 1e6);
-    let keyframed = |v: &MotionValue, notes: &mut Notes| -> String {
+    let keyframed = |v: &MotionValue| -> String {
         let times: Vec<_> = v.frames.iter().map(|(t, _, _)| n(t / duration)).collect();
         let eases: Vec<_> = v
             .frames
             .iter()
             .skip(1)
-            .map(|(_, _, e)| e.motion(notes))
+            .map(|(_, _, e)| e.motion())
             .collect();
         format!(
             "duration: {}, times: [{}], ease: [{}]{repeat}",
@@ -1313,24 +1318,7 @@ fn motion_snippet(a: &Animated, duration: f64, notes: &mut Notes) -> String {
         let _ = writeln!(out, "  style={{{{ transformOrigin: \"{origin}\" }}}}");
     }
     // One shared transition when every value has the same keyframe timing, else one per value.
-    let timings: Vec<String> = values
-        .iter()
-        .map(|v| match v.spring {
-            Some((bounce, t0, t1)) => {
-                let mut s = format!(
-                    "type: \"spring\", bounce: {}, duration: {}, delay: {}{repeat}",
-                    n(bounce),
-                    seconds(t1 - t0),
-                    seconds(t0)
-                );
-                if !repeat.is_empty() && duration > t1 {
-                    let _ = write!(s, ", repeatDelay: {}", seconds(duration - t1 + t0));
-                }
-                s
-            }
-            None => keyframed(v, notes),
-        })
-        .collect();
+    let timings: Vec<String> = values.iter().map(keyframed).collect();
     if timings.windows(2).all(|w| w[0] == w[1]) && !timings.is_empty() {
         let _ = writeln!(out, "  transition={{{{ {} }}}}", timings[0]);
     } else {
@@ -1453,8 +1441,10 @@ impl Timelines {
             {
                 return (root.to_string(), *duration, mode);
             }
+            // Only the older duration field: Figma plays it as a loop (its get_motion_context
+            // gives such a root `loopMode: "loop"`).
             if let Some(duration) = n.data.get("timelineDuration").and_then(number) {
-                return (id.to_string(), duration, "once");
+                return (id.to_string(), duration, "loop");
             }
             top = id;
             current = n.parent;
@@ -1688,12 +1678,7 @@ fn progress(easing: &Easing, u: f64) -> f64 {
             }
         }
         Easing::Cubic(_, b) => cubic_at(b, u),
-        Easing::Spring(kind, spring, _) => {
-            let s = spring
-                .or_else(|| spring_preset(kind).map(|(_, b)| spring_of_bounce(b)))
-                .unwrap_or(DEFAULT_SPRING);
-            segment_spring(s, u)
-        }
+        Easing::Spring(..) => segment_spring(easing.unit_spring().0, u),
     }
 }
 

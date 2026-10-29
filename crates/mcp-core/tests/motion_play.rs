@@ -31,12 +31,13 @@ fn the_rotating_object_turns_and_moves_as_figma_shows() {
     assert!((at(50.0).rotation + 2.0 * PI).abs() < 1e-5);
     assert!((at(450.0).rotation + PI).abs() < 1e-5);
     assert!(at(800.0).rotation.abs() < 1e-5);
-    // Ease out: further than linear early on, at rest at the end and held after it.
+    // Ease out: further than linear early on, at rest at the end.
     let end = at(901.0).translate.x;
     assert!((end - 500.0).abs() < 1e-3, "{end}");
     assert!(at(100.0).translate.x > end * 100.0 / 901.0 * 1.4);
-    assert!((at(1200.0).translate.x - 500.0).abs() < 1e-9);
-    assert_eq!(p.timeline(&doc, Guid(1, 1105)), (1_000_000.0, "once"));
+    // The 1 s timeline loops (only its duration is stored, which Figma plays as a loop).
+    assert_eq!(p.timeline(&doc, Guid(1, 1105)), (1_000_000.0, "loop"));
+    assert!((at(1200.0).translate.x - at(200.0).translate.x).abs() < 1e-9);
 }
 
 #[test]
@@ -98,7 +99,7 @@ fn a_played_render_moves_the_object() {
             })
             .unwrap()
     };
-    let (start, end) = (ink_left(0.0), ink_left(1_000_000.0));
+    let (start, end) = (ink_left(0.0), ink_left(950_000.0));
     assert!(
         (end as f64 - start as f64 - 500.0).abs() <= 2.0,
         "{start} {end}"
