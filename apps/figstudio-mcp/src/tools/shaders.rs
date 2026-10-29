@@ -1,7 +1,7 @@
 //! Shader fills and effects a file uses; their source stays in Figma's cloud.
 use super::{to_call, tool_error};
 use crate::FigstudioServer;
-use figstudio_mcp_core::shaders;
+use figstudio_mcp_core::{shader_sources, shaders};
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -30,11 +30,15 @@ impl FigstudioServer {
         description = "List the shader fills and effects this file uses (at most 100): id, nodeId, key, type (fill or effect), version, published, parameter names and how many layers use each. Offline, name, description and source files are null or empty: the .fig does not hold them, they stay in Figma's cloud. Use get_shader for parameters and the layers using a shader."
     )]
     async fn list_file_shaders(&self, Parameters(input): Parameters<ListInput>) -> CallToolResult {
-        let doc = match self.files().open(input.file_key.as_deref()).await {
-            Ok(doc) => doc,
+        let (doc, _, path) = match self.files().open_picked(input.file_key.as_deref()).await {
+            Ok(picked) => picked,
             Err(error) => return tool_error(error),
         };
-        match tokio::task::spawn_blocking(move || to_call(shaders::list(&doc))).await {
+        match tokio::task::spawn_blocking(move || {
+            to_call(shaders::list_with(&doc, &shader_sources::load(&path)))
+        })
+        .await
+        {
             Ok(result) => result,
             Err(error) => tool_error(crate::error::McpError::token_task(error)),
         }
@@ -44,11 +48,19 @@ impl FigstudioServer {
         description = "Read one shader this file uses, by the id from list_file_shaders (or its key or node ID): its parameters (name, label, type, control, default, min/max/step or select options) and the layers that use it (at most 200) with the field holding it and the values they set. No source code offline: the .fig does not hold it."
     )]
     async fn get_shader(&self, Parameters(input): Parameters<GetInput>) -> CallToolResult {
-        let doc = match self.files().open(input.file_key.as_deref()).await {
-            Ok(doc) => doc,
+        let (doc, _, path) = match self.files().open_picked(input.file_key.as_deref()).await {
+            Ok(picked) => picked,
             Err(error) => return tool_error(error),
         };
-        match tokio::task::spawn_blocking(move || to_call(shaders::get(&doc, &input.id))).await {
+        match tokio::task::spawn_blocking(move || {
+            to_call(shaders::get_with(
+                &doc,
+                &input.id,
+                &shader_sources::load(&path),
+            ))
+        })
+        .await
+        {
             Ok(result) => result,
             Err(error) => tool_error(crate::error::McpError::token_task(error)),
         }
