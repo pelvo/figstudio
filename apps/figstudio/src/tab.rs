@@ -78,6 +78,10 @@ pub struct Tab {
     pub shown: View,
     /// A Copy menu item picked this frame; `main.rs` puts it on the clipboard.
     pub pending_copy: Option<crate::copy::Item>,
+    /// A timeline whose Play button was pressed this frame; `main.rs` opens its preview.
+    pub pending_motion: Option<Guid>,
+    /// The open motion preview (`motion_preview.rs`).
+    pub motion_preview: Option<crate::motion_preview::Preview>,
     /// The drag-drawn region (`marquee.rs`).
     pub marquee: crate::marquee::Marquee,
     /// The preset tint picked for this file (`theme::pick_tint`), unless `style` sets one.
@@ -148,6 +152,8 @@ impl Tab {
                 pan: egui::Vec2::ZERO,
             },
             pending_copy: None,
+            pending_motion: None,
+            motion_preview: None,
             marquee: Default::default(),
             tint: crate::theme::HOME_TINT,
             style: Default::default(),

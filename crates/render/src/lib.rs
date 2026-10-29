@@ -33,6 +33,7 @@ mod gpu_scan;
 pub mod images;
 mod ink;
 mod layout;
+pub mod motion;
 mod network;
 pub mod paint;
 mod record;
@@ -298,6 +299,8 @@ pub struct Renderer {
     emoji_source: emoji_source::Cache,
     /// Lay out text with installed fonts when the file has no stored glyph outlines.
     pub system_fonts: bool,
+    /// Draw layers as their motion has them at this moment; `None` draws them at rest.
+    pub playhead: Option<motion::Playhead>,
     /// Property and style indexes of the last document drawn, by [`Document::instance`]:
     /// built once per document, not per frame (they scan every node of every page).
     indexes: Option<(u64, Arc<resolve::Definitions>, Arc<variables::Variables>)>,
@@ -329,6 +332,7 @@ impl Default for Renderer {
             fonts: text::SystemFonts::default(),
             emoji_source: emoji_source::Cache::default(),
             system_fonts: true,
+            playhead: None,
             indexes: None,
             inspection_work: InspectionWork::default(),
         }
@@ -358,6 +362,9 @@ struct Ctx<'a> {
     inherited_reach: f64,
     /// Metadata walk: resolve visible stored emoji, but issue no drawing commands or culling.
     emoji_only: bool,
+    playhead: Option<motion::Playhead>,
+    /// The motion delay of each instance being drawn (µs).
+    delays: Vec<f64>,
 }
 
 impl Renderer {
@@ -801,6 +808,8 @@ impl Renderer {
             screen,
             inherited_reach: 0.0,
             emoji_only: false,
+            playhead: self.playhead.clone(),
+            delays: Vec::new(),
         }
     }
     /// Counts visible stored emoji on every page using the draw walk's overrides, truncation
@@ -1365,8 +1374,34 @@ impl Ctx<'_> {
         }
     }
 
-    /// Patched node data, plus whether glyphs are stale or inherited ink remains approximate.
+    /// Patched node data (overrides, then motion at the playhead), plus whether glyphs are
+    /// stale or inherited ink remains approximate.
     fn patched<'n>(
+        &self,
+        node: &'n Node,
+        path: Option<&[Guid]>,
+        parent: Option<(&Val, &Val)>,
+    ) -> (Cow<'n, Val>, bool, bool) {
+        let (data, stale, ink) = self.overridden(node, path, parent);
+        let Some(playhead) = &self.playhead else {
+            return (data, stale, ink);
+        };
+        let delay = self.delays.iter().sum();
+        match playhead
+            .motion
+            .pose(self.doc, node, &data, delay, playhead.time_us)
+        {
+            Some(pose) => {
+                let mut data = data.into_owned();
+                motion::apply(&node.kind, &mut data, &pose);
+                (Cow::Owned(data), stale, ink)
+            }
+            None => (data, stale, ink),
+        }
+    }
+
+    /// Node data with instance overrides applied (see [`Ctx::patched`]).
+    fn overridden<'n>(
         &self,
         node: &'n Node,
         path: Option<&[Guid]>,
@@ -1968,8 +2003,14 @@ impl Ctx<'_> {
             return;
         }
         let base: Vec<Guid> = path.map(<[Guid]>::to_vec).unwrap_or_default();
+        let delay = self
+            .playhead
+            .as_ref()
+            .map_or(0.0, |p| p.motion.instance_delay(data));
+        self.delays.push(delay);
         self.overrides.enter(symbol, data, &base);
         self.draw_children(symbol, &symbol.data, world, Some(&base));
         self.overrides.leave();
+        self.delays.pop();
     }
 }

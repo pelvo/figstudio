@@ -73,6 +73,7 @@ mod menu_egui;
 #[cfg(any(target_os = "macos", windows))]
 mod menu_native;
 mod menu_windows;
+mod motion_preview;
 mod onboarding;
 mod panels;
 mod pick;
@@ -1413,6 +1414,17 @@ impl App {
         let tab = self.tabs.get_mut(self.active);
         for (text, error) in region_png::drive(&ctx, &self.workers, &self.png, tab) {
             self.toast(&ctx, text, error);
+        }
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            if let Some(root) = tab.pending_motion.take() {
+                tab.motion_preview = Some(motion_preview::Preview::new(
+                    tab.doc.clone(),
+                    root,
+                    tab.source.clone(),
+                    self.workers.images(),
+                ));
+            }
+            motion_preview::show(&ctx, &mut tab.motion_preview);
         }
         self.peek_sidebar(&ctx);
         self.space_popover(&ctx);

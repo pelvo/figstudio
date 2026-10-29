@@ -316,3 +316,35 @@ fn code_connect_suggests_connects_and_removes_a_component() {
     assert_eq!(stored, serde_json::json!({}));
     assert!(h.query_by_label("Not connected").is_some());
 }
+
+#[test]
+fn play_opens_a_motion_preview_that_draws_frames_and_pauses() {
+    let mut h = harness_fixture("motion.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    h.state_mut().tabs[0].selection = Some(Guid(1, 1106));
+    step(&mut h, &mut c);
+    step(&mut h, &mut c);
+    click_label(&mut h, &mut c, "▶ Play");
+    let preview = |h: &Harness<'_, App>| {
+        h.state().tabs[0]
+            .motion_preview
+            .as_ref()
+            .map(|p| (p.root, p.playing, p.time_us, p.has_frame()))
+    };
+    assert_eq!(preview(&h).map(|p| p.0), Some(Guid(1, 1105)));
+    // The worker draws frames while the clock runs.
+    for _ in 0..400 {
+        step(&mut h, &mut c);
+        if preview(&h).is_some_and(|p| p.3 && p.2 > 0.0) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (_, playing, time, framed) = preview(&h).unwrap();
+    assert!(playing && time > 0.0 && framed, "{:?}", preview(&h));
+    click_label(&mut h, &mut c, "Pause");
+    let paused = preview(&h).unwrap();
+    assert!(!paused.1);
+    step(&mut h, &mut c);
+    assert_eq!(preview(&h).unwrap().2, paused.2, "paused time stays");
+}

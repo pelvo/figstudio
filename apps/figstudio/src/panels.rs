@@ -342,7 +342,10 @@ fn toggle(tab: &mut Tab, id: Guid) {
 
 /// Returns the Copy menu item picked this frame, if any.
 pub fn properties(ui: &mut Ui, tab: &mut Tab) -> Option<Item> {
-    let (picked, select) = properties_view(ui, tab);
+    let (picked, select, play) = properties_view(ui, tab);
+    if play.is_some() {
+        tab.pending_motion = play;
+    }
     if let Some(id) = select {
         tab.show_node(id);
     }
@@ -351,13 +354,14 @@ pub fn properties(ui: &mut Ui, tab: &mut Tab) -> Option<Item> {
 
 /// Draws the panel; returns the Copy item picked and a node to select (a Code Connect
 /// suggestion).
-fn properties_view(ui: &mut Ui, tab: &Tab) -> (Option<Item>, Option<Guid>) {
+fn properties_view(ui: &mut Ui, tab: &Tab) -> (Option<Item>, Option<Guid>, Option<Guid>) {
     let doc = &tab.doc;
     let Some(node) = tab.selection.and_then(|id| doc.node(id)) else {
-        return (None, document_info(ui, tab));
+        return (None, document_info(ui, tab), None);
     };
     let d = &node.data;
     let mut picked: Option<Item> = None;
+    let mut play: Option<Guid> = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -442,8 +446,12 @@ fn properties_view(ui: &mut Ui, tab: &Tab) -> (Option<Item>, Option<Guid>) {
             }
             effects(ui, d.get("effects"));
             let details = tab.inspect.get(doc, node);
-            if let Some(motion) = &details.motion {
-                motion_section(ui, motion, &mut picked);
+            if let Some(motion) = &details.motion
+                && motion_section(ui, motion, &mut picked)
+            {
+                play = motion["timelineRootId"]
+                    .as_str()
+                    .and_then(|id| id.parse().ok());
             }
             for shader in &details.shaders {
                 shader_section(ui, shader);
@@ -490,7 +498,7 @@ fn properties_view(ui: &mut Ui, tab: &Tab) -> (Option<Item>, Option<Guid>) {
                 );
             }
         });
-    (picked, None)
+    (picked, None, play)
 }
 
 fn document_info(ui: &mut Ui, tab: &Tab) -> Option<Guid> {
@@ -639,8 +647,10 @@ fn paints(ui: &mut Ui, title: &str, list: Option<&Val>) {
 }
 
 /// The layer's keyframe tracks: one row per animated field with its start and end value, a
-/// caption with the time span and easing, the timeline, and a copy button.
-fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<Item>) {
+/// caption with the time span and easing, the timeline, and copy and play buttons. True
+/// when Play was pressed.
+fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<Item>) -> bool {
+    let mut play = false;
     use crate::inspect::{duration, easing_label, field_label, loop_label, motion_value};
     section(ui, "Motion", |ui| {
         let p = theme::of(ui);
@@ -685,16 +695,23 @@ fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<I
                 .small(),
             );
         }
-        if let Some(css) = motion["codeSnippets"]["css"].as_str()
-            && ui.small_button("Copy CSS animation").clicked()
-        {
-            *picked = Some(Item::text(
-                "Copy CSS animation",
-                "CSS animation",
-                css.to_owned(),
-            ));
-        }
+        ui.horizontal(|ui| {
+            play = ui
+                .small_button("▶ Play")
+                .on_hover_text("Play this layer's timeline in a preview window")
+                .clicked();
+            if let Some(css) = motion["codeSnippets"]["css"].as_str()
+                && ui.small_button("Copy CSS animation").clicked()
+            {
+                *picked = Some(Item::text(
+                    "Copy CSS animation",
+                    "CSS animation",
+                    css.to_owned(),
+                ));
+            }
+        });
     });
+    play
 }
 
 /// One shader fill or effect: its version, then each parameter's value (colours with a swatch,

@@ -803,7 +803,7 @@ impl Easing {
     }
 
     /// The CSS timing function of a segment lasting `seconds`.
-    fn css(&self, seconds: f64, notes: &mut Notes) -> String {
+    fn css(&self, notes: &mut Notes) -> String {
         match self {
             Easing::Linear => "linear".into(),
             Easing::Hold => "steps(1, jump-end)".into(),
@@ -828,7 +828,7 @@ impl Easing {
                         DEFAULT_SPRING
                     }
                 };
-                spring_css(spring, seconds)
+                spring_css(spring)
             }
         }
     }
@@ -865,16 +865,11 @@ fn bezier_js(b: &[f64; 4]) -> String {
     format!("[{}, {}, {}, {}]", n(b[0]), n(b[1]), n(b[2]), n(b[3]))
 }
 
-/// A damped spring from 0 to 1 sampled over `seconds`, as a CSS `linear()` function.
-fn spring_css(s: Spring, seconds: f64) -> String {
+/// A spring segment sampled as a CSS `linear()` function.
+fn spring_css(s: Spring) -> String {
     let mut out = String::from("linear(");
     for i in 0..=SPRING_SAMPLES {
-        let t = seconds * i as f64 / SPRING_SAMPLES as f64;
-        let v = if i == SPRING_SAMPLES {
-            1.0
-        } else {
-            spring_at(s, t)
-        };
+        let v = segment_spring(s, i as f64 / SPRING_SAMPLES as f64);
         if i > 0 {
             out.push_str(", ");
         }
@@ -882,6 +877,34 @@ fn spring_css(s: Spring, seconds: f64) -> String {
     }
     out.push(')');
     out
+}
+
+/// Envelope left when Figma's spring segment ends. Figma keeps only a spring's bounce and
+/// stretches it so it settles at its keyframe; this fits Figma's Motion panel for stiffness 100,
+/// damping 6.52, mass 1 over 1 s (every 50 ms to 800 ms within 0.01 %).
+// shortcut: calibrated on one bounce, recheck with another custom spring in Figma's panel.
+const SPRING_SETTLE: f64 = 7.44e-4;
+
+/// Progress at `u` (0 to 1) of a spring segment, the way Figma plays it: only the damping
+/// ratio of `s` counts, and the spring's envelope decays to [`SPRING_SETTLE`] at the end.
+fn segment_spring(s: Spring, u: f64) -> f64 {
+    if u >= 1.0 {
+        return 1.0;
+    }
+    let zeta = (s.damping / (2.0 * (s.stiffness.max(1e-9) * s.mass.max(1e-9)).sqrt())).max(0.05);
+    // Decay rate of the slowest mode per unit of natural frequency.
+    let decay = if zeta < 1.0 {
+        zeta
+    } else {
+        zeta - (zeta * zeta - 1.0).sqrt()
+    };
+    let w = (1.0 / SPRING_SETTLE).ln() / decay;
+    let unit = Spring {
+        stiffness: w * w,
+        damping: 2.0 * zeta * w,
+        mass: 1.0,
+    };
+    spring_at(unit, u.max(0.0))
 }
 
 /// Position at `t` seconds of a spring released at 0 towards 1 with no initial velocity.
@@ -1137,7 +1160,7 @@ fn css_snippet(a: &Animated, class: &str, duration: f64, notes: &mut Notes) -> S
         let _ = writeln!(css, "@keyframes {name} {{");
         for (i, (t, value, _)) in frames.iter().enumerate() {
             let next = frames.get(i + 1);
-            let timing = next.map(|(t2, _, e)| e.css((t2 - t) / 1e6, notes));
+            let timing = next.map(|(_, _, e)| e.css(notes));
             let _ = write!(
                 css,
                 "  {}% {{ {property}: {value};",
@@ -1523,5 +1546,283 @@ mod tests {
         assert_eq!(n(0.30000001192092896), "0.3");
         assert_eq!(n(-0.0), "0");
         assert_eq!(n(1500.0), "1500");
+    }
+}
+
+/// Plays a file's motion in the renderer ([`figstudio_render::motion::Motion`]): each
+/// layer's keyframes sampled at the playhead with their easing, on its timeline's loop.
+pub struct Player {
+    timelines: Timelines,
+}
+
+impl std::fmt::Debug for Player {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Player")
+            .field("timelines", &self.timelines.by_id.len())
+            .finish()
+    }
+}
+
+impl Player {
+    /// A player for `doc` (scans its timelines once).
+    pub fn new(doc: &Document) -> Self {
+        Player {
+            timelines: Timelines::new(doc),
+        }
+    }
+
+    /// Duration (µs) and loop mode (`once`, `loop`, `boomerang`) of the timeline `node`
+    /// plays in: the length of the longest track when the file stores none.
+    pub fn timeline(&self, doc: &Document, node: Guid) -> (f64, &'static str) {
+        let mut duration = 0.0f64;
+        let mut named = None;
+        let mut stack = vec![node];
+        let mut seen = 0;
+        while let Some(id) = stack.pop() {
+            seen += 1;
+            if seen > MAX_VISITED {
+                break;
+            }
+            let Some(n) = doc.node(id) else { continue };
+            if has_motion(&n.data) {
+                for b in bindings(doc, &n.data, 0.0) {
+                    named = named.or(b.timeline);
+                    if let Some(last) = b.keyframes.last() {
+                        duration = duration.max(last.time_us);
+                    }
+                }
+            }
+            stack.extend(doc.children(id).iter().copied());
+        }
+        let (_, stored, mode) = self.timelines.of(doc, node, named);
+        (stored.max(duration), mode)
+    }
+}
+
+impl figstudio_render::motion::Motion for Player {
+    fn pose(
+        &self,
+        doc: &Document,
+        node: &figstudio_fig::Node,
+        data: &Val,
+        delay_us: f64,
+        time_us: f64,
+    ) -> Option<figstudio_render::motion::Pose> {
+        if !has_motion(data) {
+            return None;
+        }
+        let bindings = bindings(doc, data, 0.0);
+        if bindings.is_empty() {
+            return None;
+        }
+        let named = bindings.iter().find_map(|b| b.timeline);
+        let (_, stored, mode) = self.timelines.of(doc, node.id, named);
+        let last = bindings
+            .iter()
+            .filter_map(|b| b.keyframes.last())
+            .map(|k| k.time_us)
+            .fold(0.0, f64::max);
+        let t = local_time(time_us - delay_us, stored.max(last), mode);
+        let mut pose = figstudio_render::motion::Pose::default();
+        if let Some(o) = origin_fraction(data) {
+            pose.origin = o;
+        }
+        for b in &bindings {
+            if let Some(value) = sample(&b.keyframes, t) {
+                pose_field(&mut pose, &b.field, &value);
+            }
+        }
+        Some(pose)
+    }
+
+    fn instance_delay(&self, data: &Val) -> f64 {
+        instance_offset(data)
+    }
+}
+
+/// Time on a timeline `duration` µs long played `mode` (`once` holds the end).
+fn local_time(t: f64, duration: f64, mode: &str) -> f64 {
+    if duration <= 0.0 || !t.is_finite() {
+        return t.max(0.0);
+    }
+    match mode {
+        "loop" => t.rem_euclid(duration),
+        "boomerang" => {
+            let t = t.rem_euclid(2.0 * duration);
+            if t > duration { 2.0 * duration - t } else { t }
+        }
+        _ => t.clamp(0.0, duration),
+    }
+}
+
+/// A track's value at `t` µs: held before the first keyframe and after the last; between
+/// two, eased by the later keyframe's easing.
+fn sample(keyframes: &[Keyframe], t: f64) -> Option<Value> {
+    let first = keyframes.first()?;
+    if t <= first.time_us {
+        return Some(first.value.clone());
+    }
+    let Some(i) = keyframes.iter().position(|k| k.time_us > t) else {
+        return keyframes.last().map(|k| k.value.clone());
+    };
+    let (a, b) = (&keyframes[i - 1], &keyframes[i]);
+    let span = b.time_us - a.time_us;
+    let u = if span > 0.0 {
+        (t - a.time_us) / span
+    } else {
+        1.0
+    };
+    let p = progress(&b.easing, u);
+    Some(mix(&a.value, &b.value, p))
+}
+
+/// Eased progress of a segment at `u` (0 to 1) of its time.
+fn progress(easing: &Easing, u: f64) -> f64 {
+    match easing {
+        Easing::Linear => u,
+        Easing::Hold => {
+            if u >= 1.0 {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        Easing::Cubic(_, b) => cubic_at(b, u),
+        Easing::Spring(kind, spring, _) => {
+            let s = spring
+                .or_else(|| spring_preset(kind).map(|(_, b)| spring_of_bounce(b)))
+                .unwrap_or(DEFAULT_SPRING);
+            segment_spring(s, u)
+        }
+    }
+}
+
+/// A CSS cubic-bezier easing at `x`: solves the curve's x for its parameter, returns its y.
+fn cubic_at(b: &[f64; 4], x: f64) -> f64 {
+    let x = x.clamp(0.0, 1.0);
+    let curve = |p1: f64, p2: f64, s: f64| {
+        let r = 1.0 - s;
+        3.0 * r * r * s * p1 + 3.0 * r * s * s * p2 + s * s * s
+    };
+    // Bisection: x(s) rises monotonically for control x in [0, 1].
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..48 {
+        let mid = 0.5 * (lo + hi);
+        if curve(b[0], b[2], mid) < x {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    curve(b[1], b[3], 0.5 * (lo + hi))
+}
+
+/// `a` towards `b` by `p`: numbers and `{x, y}`; other values switch at the end.
+fn mix(a: &Value, b: &Value, p: f64) -> Value {
+    let lerp = |a: f64, b: f64| a + (b - a) * p;
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => {
+            json!(lerp(x.as_f64().unwrap_or(0.0), y.as_f64().unwrap_or(0.0)))
+        }
+        (Value::Object(x), Value::Object(y)) => {
+            let axis = |m: &Map<String, Value>, k: &str| m.get(k).and_then(Value::as_f64);
+            match (axis(x, "x"), axis(x, "y"), axis(y, "x"), axis(y, "y")) {
+                (Some(ax), Some(ay), Some(bx), Some(by)) => {
+                    json!({"x": lerp(ax, bx), "y": lerp(ay, by)})
+                }
+                _ => {
+                    if p < 1.0 {
+                        a.clone()
+                    } else {
+                        b.clone()
+                    }
+                }
+            }
+        }
+        _ => {
+            if p < 1.0 {
+                a.clone()
+            } else {
+                b.clone()
+            }
+        }
+    }
+}
+
+/// Writes an animated field's value into `pose`; fields the player cannot show are left.
+fn pose_field(pose: &mut figstudio_render::motion::Pose, field: &str, value: &Value) {
+    let num = value.as_f64();
+    let xy = || Some((value.get("x")?.as_f64()?, value.get("y")?.as_f64()?));
+    match field {
+        // Keyframed opacity is a percentage.
+        "OPACITY" => pose.opacity = num.map(|v| v / 100.0),
+        "WIDTH" => pose.width = num,
+        "HEIGHT" => pose.height = num,
+        "MOTION_ROTATION" => pose.rotation = num.unwrap_or(0.0),
+        "MOTION_SHEAR" => pose.shear = num.unwrap_or(0.0),
+        "MOTION_TRANSLATION_X" => pose.translate.x = num.unwrap_or(0.0),
+        "MOTION_TRANSLATION_Y" => pose.translate.y = num.unwrap_or(0.0),
+        "MOTION_SCALE_X" => pose.scale.x = num.unwrap_or(1.0),
+        "MOTION_SCALE_Y" => pose.scale.y = num.unwrap_or(1.0),
+        "MOTION_TRANSLATION_XY" => {
+            if let Some((x, y)) = xy() {
+                pose.translate = figstudio_render::kurbo::Vec2::new(x, y);
+            }
+        }
+        "MOTION_SCALE_XY" => {
+            if let Some((x, y)) = xy() {
+                pose.scale = figstudio_render::kurbo::Vec2::new(x, y);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The layer's pivot as fractions of its size (`transformOrigin`), `None` when unset.
+fn origin_fraction(data: &Val) -> Option<figstudio_render::kurbo::Point> {
+    let o = data.get("transformOrigin")?;
+    let (w, h) = data.get("size").map_or((0.0, 0.0), |s| {
+        (
+            s.num("x").map_or(0.0, f64::from),
+            s.num("y").map_or(0.0, f64::from),
+        )
+    });
+    let axis = |k: &str, len: f64| -> Option<f64> {
+        let v = o.get(k)?;
+        let value = f64::from(v.num("value")?);
+        Some(match v.text("units").unwrap_or("RAW") {
+            "PIXELS" if len > 0.0 => value / len,
+            "PIXELS" => 0.5,
+            "PERCENT" => value / 100.0,
+            _ => value,
+        })
+    };
+    Some(figstudio_render::kurbo::Point::new(
+        axis("x", w)?,
+        axis("y", h)?,
+    ))
+}
+
+#[cfg(test)]
+mod play_tests {
+    use super::*;
+
+    #[test]
+    fn loops_wrap_and_boomerangs_come_back() {
+        assert_eq!(local_time(1_500.0, 1_000.0, "once"), 1_000.0);
+        assert_eq!(local_time(-5.0, 1_000.0, "once"), 0.0);
+        assert_eq!(local_time(1_250.0, 1_000.0, "loop"), 250.0);
+        assert_eq!(local_time(1_250.0, 1_000.0, "boomerang"), 750.0);
+        assert_eq!(local_time(2_250.0, 1_000.0, "boomerang"), 250.0);
+    }
+
+    #[test]
+    fn a_cubic_easing_follows_its_curve() {
+        let ease_out = [0.0, 0.0, 0.58, 1.0];
+        assert!((cubic_at(&ease_out, 0.0)).abs() < 1e-9);
+        assert!((cubic_at(&ease_out, 1.0) - 1.0).abs() < 1e-9);
+        // CSS ease-out at half time is about 0.684.
+        assert!((cubic_at(&ease_out, 0.5) - 0.684).abs() < 2e-3);
+        assert!((cubic_at(&[0.0, 0.0, 1.0, 1.0], 0.3) - 0.3).abs() < 1e-6);
     }
 }
