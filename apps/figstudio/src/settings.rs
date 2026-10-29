@@ -448,7 +448,7 @@ fn segmented<T: Copy + PartialEq>(
         );
         let response = ui.interact(r, Id::new((id, i)), Sense::click());
         response.widget_info(|| {
-            WidgetInfo::selected(WidgetType::Button, true, *value == current, *label)
+            WidgetInfo::selected(WidgetType::RadioButton, true, *value == current, *label)
         });
         icons::focus_ring(ui, &response, r, 6);
         ui.painter().text(
@@ -998,6 +998,7 @@ impl App {
             let response = ui.interact(r, Id::new(("settings-tab", i)), Sense::click());
             let on = tab == t;
             response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, on, t.label()));
+            crate::a11y::tab(&response, on);
             let (hover, _) = icons::feedback(ui, &response);
             let (icon, name) = tab_ink(&look, on, hover);
             icons::paint(

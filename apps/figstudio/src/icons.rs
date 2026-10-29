@@ -400,8 +400,8 @@ pub fn feedback(ui: &Ui, response: &Response) -> (f32, f32) {
 }
 
 /// A square icon button with a tooltip and an accessible `label`. Hover fades a soft fill in,
-/// a press dips it, and `selected` keeps it lit. Screen readers hear a plain button; a button
-/// that toggles says so with [`toggle_button`].
+/// a press dips it, and `selected` keeps it lit. Screen readers hear a plain button; one of a
+/// set of choices says so with [`choice_button`].
 pub fn button(ui: &mut Ui, icon: Icon, label: &str, selected: bool) -> Response {
     sized_button(ui, icon, label, selected, 28.0)
 }
@@ -436,11 +436,12 @@ pub fn raw_button(ui: &mut Ui, icon: Icon, label: &str, selected: bool, side: f3
     response
 }
 
-/// [`button`] that stays on or off (the Recents view switch, an icon choice): screen readers
-/// hear a toggle button and its state.
-pub fn toggle_button(ui: &mut Ui, icon: Icon, label: &str, on: bool, side: f32) -> Response {
+/// [`button`] that is one of a set of choices (the Recents grid or list, a space's icon):
+/// screen readers hear a radio button and whether it is the chosen one.
+pub fn choice_button(ui: &mut Ui, icon: Icon, label: &str, on: bool, side: f32) -> Response {
     let response = sized_button(ui, icon, label, on, side);
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, ui.is_enabled(), on, label));
+    response
+        .widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, ui.is_enabled(), on, label));
     response
 }
 

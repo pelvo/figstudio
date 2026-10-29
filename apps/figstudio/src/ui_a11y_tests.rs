@@ -397,11 +397,11 @@ fn settings_sets_the_text_size() {
     let canvas = h.state().tabs[0].view.zoom;
     h.state_mut().apply(MenuAction::Settings, &ctx);
     h.run_steps(4);
-    h.get_by_role_and_label(Role::Button, "150%").click();
+    h.get_by_role_and_label(Role::RadioButton, "150%").click();
     h.run_steps(4);
     assert_eq!(ctx.zoom_factor(), 1.5);
     assert_eq!(h.state().tabs[0].view.zoom, canvas);
-    h.get_by_role_and_label(Role::Button, "100%").click();
+    h.get_by_role_and_label(Role::RadioButton, "100%").click();
     h.run_steps(4);
     assert_eq!(ctx.zoom_factor(), 1.0);
 }
@@ -418,7 +418,7 @@ fn action_buttons_are_plain_buttons_and_tools_are_toggles() {
     for tool in ["Select tool", "Hand tool", "Zoom tool"] {
         assert!(
             toggled(&h, tool).is_some(),
-            "{tool} is not read as a toggle"
+            "{tool} does not say whether it is on"
         );
     }
 }
@@ -455,4 +455,36 @@ fn closing_a_modal_gives_focus_back_to_what_had_it() {
             "{state}: focus is not back on Zoom in"
         );
     }
+}
+
+#[test]
+fn a_choice_of_one_reads_as_radio_buttons_and_settings_sections_as_tabs() {
+    let mut h = harness();
+    h.run_steps(2);
+    for tool in ["Select tool", "Hand tool", "Zoom tool"] {
+        assert_eq!(
+            h.get_by_label(tool).accesskit_node().role(),
+            Role::RadioButton,
+            "{tool}"
+        );
+    }
+    let ctx = h.ctx.clone();
+    h.state_mut().apply(MenuAction::Settings, &ctx);
+    h.run_steps(4);
+    for choice in ["System", "Light", "Dark", "100%", "150%"] {
+        assert_eq!(
+            h.get_by_label(choice).accesskit_node().role(),
+            Role::RadioButton,
+            "{choice}"
+        );
+    }
+    let general = h.get_by_role_and_label(Role::Tab, "General");
+    assert_eq!(general.accesskit_node().is_selected(), Some(true));
+    assert_eq!(general.accesskit_node().data().toggled(), None);
+    assert_eq!(
+        h.get_by_role_and_label(Role::Tab, "Canvas")
+            .accesskit_node()
+            .is_selected(),
+        Some(false)
+    );
 }

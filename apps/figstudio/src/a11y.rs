@@ -147,6 +147,16 @@ pub fn panel_handle(ctx: &Context, panel: &str, label: &str) {
     }
 }
 
+/// Makes `response` a tab (the Settings sections): screen readers hear "tab", and which is
+/// selected, instead of a toggle button.
+pub fn tab(response: &Response, selected: bool) {
+    response.ctx.accesskit_node_builder(response.id, |n| {
+        n.set_role(Role::Tab);
+        n.clear_toggled();
+        n.set_selected(selected);
+    });
+}
+
 /// Marks `response` (a layer row with children) expanded or collapsed.
 pub fn set_expanded(response: &Response, expanded: bool) {
     response

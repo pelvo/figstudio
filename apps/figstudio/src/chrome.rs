@@ -742,7 +742,8 @@ fn pill_button(
 ) -> Response {
     let response = ui.interact(rect, id, Sense::click());
     response.widget_info(|| match active {
-        Some(on) => WidgetInfo::selected(WidgetType::Button, true, on, label),
+        // The tools are one of a set: radio buttons.
+        Some(on) => WidgetInfo::selected(WidgetType::RadioButton, true, on, label),
         None => WidgetInfo::labeled(WidgetType::Button, true, label),
     });
     let active = active.unwrap_or(false);
