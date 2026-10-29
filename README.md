@@ -123,6 +123,13 @@ cargo run --release -p figstudio -- path/to/design.fig
   file (stored in `FILE.fig.codeconnect.json` next to the file, the same store the MCP tools
   use; desktop only). With nothing selected, the Overview lists the page's components that
   are not connected yet.
+- Shader fills are drawn from their code (desktop app, CLI and MCP renders): save the zip of
+  Figma's shader menu → **View code** → **Download files** in `FILE.fig.shaders/` next to the
+  file. The shader's TypeScript runs in Boa (a JavaScript engine in Rust) and its WebGPU calls
+  run on wgpu. Without the source, or without a GPU, the fill is skipped and counted. Shader
+  effects and the browser app do not run shaders yet.
+- Animated layers have a **▶ Play** button in Properties: a preview window that plays and
+  scrubs the motion, with springs timed like Figma's.
 - Paste a `figma.com` or `figstudio://` URL into the command bar (⌘L, Ctrl+L elsewhere), then
   press Enter to open its matching local `.fig` copy and reveal the linked node. No download
   from Figma is needed. If several copies match, pick one in the link window.

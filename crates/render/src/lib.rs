@@ -39,6 +39,7 @@ pub mod paint;
 mod record;
 #[cfg(feature = "parallel")]
 mod replay;
+pub mod shader;
 mod stroke;
 pub mod svg;
 mod text;
@@ -301,6 +302,8 @@ pub struct Renderer {
     pub system_fonts: bool,
     /// Draw layers as their motion has them at this moment; `None` draws them at rest.
     pub playhead: Option<motion::Playhead>,
+    /// Draws shader fills; `None` skips them (counted as skipped paints).
+    pub shaders: Option<Arc<dyn shader::ShaderFills>>,
     /// Property and style indexes of the last document drawn, by [`Document::instance`]:
     /// built once per document, not per frame (they scan every node of every page).
     indexes: Option<(u64, Arc<resolve::Definitions>, Arc<variables::Variables>)>,
@@ -333,6 +336,7 @@ impl Default for Renderer {
             emoji_source: emoji_source::Cache::default(),
             system_fonts: true,
             playhead: None,
+            shaders: None,
             indexes: None,
             inspection_work: InspectionWork::default(),
         }
@@ -363,6 +367,7 @@ struct Ctx<'a> {
     /// Metadata walk: resolve visible stored emoji, but issue no drawing commands or culling.
     emoji_only: bool,
     playhead: Option<motion::Playhead>,
+    shaders: Option<Arc<dyn shader::ShaderFills>>,
     /// The motion delay of each instance being drawn (µs).
     delays: Vec<f64>,
 }
@@ -809,6 +814,10 @@ impl Renderer {
             inherited_reach: 0.0,
             emoji_only: false,
             playhead: self.playhead.clone(),
+            shaders: self
+                .shaders
+                .clone()
+                .or_else(|| self.images.shaders(doc.instance)),
             delays: Vec::new(),
         }
     }
@@ -1884,6 +1893,7 @@ impl Ctx<'_> {
                     wanted: &mut self.wanted,
                     screen: paint::linear_scale(world),
                     full: self.rc.full_images(),
+                    shaders: self.shaders.as_deref(),
                 };
                 let Some(resolved) = paint::resolve(p, w, h, self.doc, &mut img, &mut self.stats)
                 else {

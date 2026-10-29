@@ -43,6 +43,7 @@ pub(crate) struct ImageCtx<'a> {
     /// Always the full image at full size, never a thumbnail or a smaller level (an SVG,
     /// which may be shown at any size).
     pub full: bool,
+    pub shaders: Option<&'a dyn crate::shader::ShaderFills>,
 }
 
 /// Resolves one Figma paint for a node of size `w × h`. Returns `None` for hidden or empty paints.
@@ -155,6 +156,31 @@ pub(crate) fn resolve(
                 transform: layout * fit,
                 clip,
                 source,
+            })
+        }
+        "CUSTOM" => {
+            let (pw, ph) = crate::shader::pixel_size(w, h, img.screen);
+            let Some(pixmap) = img.shaders.and_then(|s| s.fill(doc, p, pw, ph)) else {
+                stats.unsupported_paints += 1;
+                return None;
+            };
+            let fit = Affine::scale_non_uniform(
+                w / f64::from(pixmap.width()),
+                h / f64::from(pixmap.height()),
+            );
+            Some(ResolvedPaint {
+                paint: PaintType::Image(Image {
+                    image: ImageSource::Pixmap(pixmap),
+                    sampler: ImageSampler {
+                        x_extend: Extend::Pad,
+                        y_extend: Extend::Pad,
+                        quality: ImageQuality::Medium,
+                        alpha: opacity,
+                    },
+                }),
+                transform: fit,
+                clip: None,
+                source: None,
             })
         }
         _ => {

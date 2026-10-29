@@ -16,6 +16,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 figstudio-fig = { workspace = true }
 figstudio-render = { workspace = true }
+# Shader fills drawn from the shader folder next to the file.
+figstudio-shader = { workspace = true }
 figstudio-diff = { workspace = true }
 fontdb = { workspace = true }
 image = { workspace = true }

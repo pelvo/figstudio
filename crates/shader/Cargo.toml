@@ -1,0 +1,26 @@
+[package]
+name = "figstudio-shader"
+description = "Runs Figma code shaders (TypeScript + WGSL) on wgpu to draw shader fills"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+figstudio-fig = { workspace = true }
+figstudio-render = { workspace = true }
+figstudio-mcp-core = { workspace = true, features = ["fs"] }
+vello_cpu = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+wgpu = { workspace = true }
+pollster = { workspace = true }
+# A pure-Rust JavaScript engine for the shader's setup/render code.
+boa_engine = { version = "0.22", default-features = false }
+# TypeScript to JavaScript (type stripping); 0.146 is the last release on Rust 1.95.
+oxc = { version = "~0.146", default-features = false, features = ["semantic", "transformer", "codegen"] }
+
+[lints]
+workspace = true

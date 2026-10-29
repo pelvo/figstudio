@@ -11,4 +11,7 @@ Changes: the embedded images/ and videos/ entries were removed to keep the files
 (about 160 MB each down to 1 MB and 4 MB). The canvas, thumbnail and meta.json are unchanged.
 Image fills in these files therefore point at missing images.
 
+shader-sources/concentric/ is the source of the "Concentric patterns" shader used in
+shaders.fig, as Figma's "View code" → "Download files" saves it (unchanged).
+
 Licence terms: see https://help.figma.com/hc/en-us/articles/360042296374
