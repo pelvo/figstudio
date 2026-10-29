@@ -47,7 +47,7 @@ impl FigstudioServer {
             Err(error) => return tool_error(error),
         };
         let key = key.as_deref();
-        let (document, file_key, _) = match self.files().open_picked(key).await {
+        let (document, file_key, path) = match self.files().open_picked(key).await {
             Ok(picked) => picked,
             Err(error) => return tool_error(error),
         };
@@ -66,6 +66,22 @@ impl FigstudioServer {
             assets: self.assets().clone(),
             rendering,
             max_code_bytes: Some(self.max_output_bytes()),
+            // An unreadable sidecar maps nothing here; the Code Connect tools report its error.
+            code_connect: figstudio_mcp_core::codeconnect_store::mapped(&path)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(id, m)| {
+                    (
+                        id,
+                        figstudio_mcp_core::design::code_connect::CodeComponent {
+                            name: m.component_name,
+                            source: m.source,
+                            snippet: m.snippet,
+                            imports: m.snippet_imports,
+                        },
+                    )
+                })
+                .collect(),
         };
         match tokio::task::spawn_blocking(move || design_context(&document, &node_id, &options))
             .await
