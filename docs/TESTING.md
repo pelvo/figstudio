@@ -426,7 +426,9 @@ slice these tests would pass while users got no tree at all.
 - **Roles:** one-of-a-set choices (tools, Settings segments, the space editor's choices) are
   radio buttons; the Settings sections are tabs.
 - **Agents and automation:** the canvas lists its visible layers (name, kind, size, place,
-  selected), and pressing one through AccessKit selects it. Layers off screen are not listed.
+  selected), and pressing one through AccessKit selects it. Layers are listed where they show
+  (inside the screen and clipping frames); `canvas_a11y::tests` covers clipping, caching and
+  the timing bench (`timing`, ignored; needs `FIGSTUDIO_A11Y_BENCH`).
   Properties rows read as "W: 120". Toasts are live regions (errors assertive). Every control
   has a unique automation id (`author_id`), and the ids stay the same when labels change.
 - **Text size:** ⌘+ / ⌘− / ⌘0 change egui's zoom factor and leave the canvas zoom alone.
