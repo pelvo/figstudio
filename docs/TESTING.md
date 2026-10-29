@@ -419,13 +419,18 @@ slice these tests would pass while users got no tree at all.
 - **Canvas and layer rows:** the canvas says its page, zoom and selection. A layer row with
   children reports expanded or collapsed, and its arrow is a named button.
 - **Focus:** Tab goes once round the open file, Settings and Recents, and each focused
-  control must show a focus ring (an `ACCENT` rect stroke around it; text fields show their
-  caret instead). Tab must not leave Settings or the command bar for the app behind them.
+  control must show a focus ring (a `Palette::focus` rect stroke around it; text fields show
+  their caret instead). Tab must not leave Settings or the command bar for the app behind
+  them. Closing Settings, the command bar or the welcome sheet gives focus back to what had
+  it.
+- **Roles:** one-of-a-set choices (tools, Settings segments, the space editor's choices) are
+  radio buttons; the Settings sections are tabs.
 - **Text size:** ⌘+ / ⌘− / ⌘0 change egui's zoom factor and leave the canvas zoom alone.
-  Settings → General → Text size sets the same factor.
-- **Contrast:** `theme.rs` tests check every text colour on every surface it is drawn on
-  (gradient, hovered and selected rows, cards, wells, dialogs, the pills over any canvas) at
-  WCAG AA, for both appearances and for custom space colours.
+  Settings → General → Text size sets the same factor, and `Prefs` keeps it across a restart.
+- **Contrast:** `theme.rs` tests check every text colour on every opaque surface it is drawn
+  on (gradient, hovered and selected rows, cards, wells, dialogs, the pills over any canvas)
+  at WCAG AA, and the focus ring at 3:1. Both appearances and custom space colours are
+  covered. The translucent macOS sidebar is not: what shows through depends on the desktop.
 
 Not covered by a test: a real screen reader (VoiceOver, Narrator, Orca) reading the app. Run
 one by hand after a change to these paths and report it as unverified if you could not. The
