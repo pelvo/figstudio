@@ -29,6 +29,9 @@ pub struct ResolvedPaint {
     pub transform: Affine,
     /// Area the paint is limited to, in node space (image `FIT` leaves the rest empty).
     pub clip: Option<Rect>,
+    /// Hash of the image file an image paint draws, when the pixels are that whole file
+    /// (decoded at full size, or as large as allowed), so an SVG can embed the file itself.
+    pub source: Option<String>,
 }
 
 /// Where image paints come from, and where requests for unread images go.
@@ -37,6 +40,9 @@ pub(crate) struct ImageCtx<'a> {
     pub wanted: &'a mut Vec<ImageRequest>,
     /// Output pixels per node unit (the largest scale of the node's transform).
     pub screen: f64,
+    /// Always the full image at full size, never a thumbnail or a smaller level (an SVG,
+    /// which may be shown at any size).
+    pub full: bool,
 }
 
 /// Resolves one Figma paint for a node of size `w × h`. Returns `None` for hidden or empty paints.
@@ -64,6 +70,7 @@ pub(crate) fn resolve(
             paint: PaintType::Solid(color(p.get("color"), opacity)?),
             transform: Affine::IDENTITY,
             clip: None,
+            source: None,
         }),
         "GRADIENT_LINEAR" | "GRADIENT_RADIAL" | "GRADIENT_ANGULAR" | "GRADIENT_DIAMOND" => {
             let mut stops = ColorStops::default();
@@ -114,15 +121,17 @@ pub(crate) fn resolve(
                 paint: PaintType::Gradient(gradient),
                 transform: unit_to_node * paint_inverse,
                 clip: None,
+                source: None,
             })
         }
         "IMAGE" => {
-            let Some((decoded, natural)) = pick_image(p, w, h, doc, img, stats) else {
+            let Some((decoded, natural, source)) = pick_image(p, w, h, doc, img, stats) else {
                 // Neutral placeholder so the layer stays visible.
                 return Some(ResolvedPaint {
                     paint: PaintType::Solid(AlphaColor::new([0.82, 0.83, 0.86, opacity])),
                     transform: Affine::IDENTITY,
                     clip: None,
+                    source: None,
                 });
             };
             let (layout, extend, clip) = image_layout(p, w, h, natural);
@@ -145,6 +154,7 @@ pub(crate) fn resolve(
                 paint: PaintType::Image(image),
                 transform: layout * fit,
                 clip,
+                source,
             })
         }
         _ => {
@@ -205,7 +215,8 @@ const THUMBNAIL_UP_TO: f64 = 256.0;
 /// otherwise the image decoded at the level the view needs. The choice depends only on the
 /// paint and the view, so a frame looks the same whatever was decoded before. Anything not
 /// decoded yet is requested; meanwhile the nearest cached copy (or a placeholder) is drawn.
-/// Returns the image and the original's size, or `None` for a placeholder.
+/// Returns the image, the original's size and the hash of the file when the image is that
+/// file at the finest level, or `None` for a placeholder.
 fn pick_image(
     p: &Val,
     w: f64,
@@ -213,7 +224,7 @@ fn pick_image(
     doc: &Document,
     img: &mut ImageCtx<'_>,
     stats: &mut Stats,
-) -> Option<(Decoded, (f64, f64))> {
+) -> Option<(Decoded, (f64, f64), Option<String>)> {
     let hash_of = |key: &str| p.path(&[key, "hash"]).and_then(Val::as_bytes).map(hex);
     let key = |h: &str| cache_key(doc, h);
     let available = |h: Option<String>| {
@@ -239,36 +250,46 @@ fn pick_image(
 
     // What should be drawn: (hash, level).
     let target = match (&full, &thumb) {
-        (_, Some(t)) if full.is_none() || long_px.is_some_and(|px| px <= THUMBNAIL_UP_TO) => {
+        (_, Some(t))
+            if full.is_none() || (!img.full && long_px.is_some_and(|px| px <= THUMBNAIL_UP_TO)) =>
+        {
             Some((t.clone(), 0))
         }
         (Some(f), _) => {
-            let level = scale.map_or(0, level_for);
+            let level = if img.full {
+                0
+            } else {
+                scale.map_or(0, level_for)
+            };
             Some((f.clone(), original.map_or(level, |o| clamp_level(o, level))))
         }
         _ => None,
     };
     let mut loading = false;
     let chosen = target.and_then(|(hash, level)| {
-        if let Some(d) = img.images.get(&key(&hash), level) {
-            return Some(d);
-        }
-        if let Some(d) = fetch(&hash, level, doc, img, &mut loading) {
-            return Some(d);
+        let decoded = img
+            .images
+            .get(&key(&hash), level)
+            .or_else(|| fetch(&hash, level, doc, img, &mut loading));
+        if let Some(d) = decoded {
+            let source = d.finest.then_some(hash);
+            return Some((d, source));
         }
         // Not decoded yet: the nearest copy of the image, else of the thumbnail.
         let fallback =
             |h: &Option<String>, l| h.as_deref().and_then(|h| img.images.nearest(&key(h), l));
-        fallback(&full, level).or_else(|| fallback(&thumb, 0))
+        fallback(&full, level)
+            .or_else(|| fallback(&thumb, 0))
+            .map(|d| (d, None))
     });
     if loading {
         stats.images_loading += 1;
     } else if chosen.is_none() {
         stats.missing_images += 1;
     }
-    let chosen = chosen?;
+    let (chosen, source) = chosen?;
     let natural = natural.unwrap_or((f64::from(chosen.natural.0), f64::from(chosen.natural.1)));
-    Some((chosen, natural))
+    Some((chosen, natural, source))
 }
 
 /// Decodes an image whose bytes are in the document, or asks for an unread one.

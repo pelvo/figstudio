@@ -45,10 +45,37 @@ fn text_is_cropped_to_its_glyphs_not_its_layout_box() {
     let doc = open("shaders");
     // A 1580 x 40 centred label: Figma exports it as 330 x 33.
     let label = Guid(1, 14623);
-    let (w, h) = png_size(&doc, label);
-    assert!((328..=333).contains(&w), "{w}");
-    assert!((31..=35).contains(&h), "{h}");
-    assert_eq!(svg_size(&doc, label), format!("{w}x{h}"));
+    assert_eq!(png_size(&doc, label), (330, 33));
+    assert_eq!(svg_size(&doc, label), "330x33");
+}
+
+/// The `viewBox` of an export: `x y w h`.
+fn svg_view(doc: &Document, id: Guid) -> [f64; 4] {
+    let svg = Renderer::new()
+        .render_export_svg_complete(doc, id, 1.0, None, usize::MAX, |_| None)
+        .unwrap();
+    let view = svg.markup.split("viewBox=\"").nth(1).unwrap();
+    let nums: Vec<f64> = view
+        .split('"')
+        .next()
+        .unwrap()
+        .split(' ')
+        .map(|n| n.parse().unwrap())
+        .collect();
+    [nums[0], nums[1], nums[2], nums[3]]
+}
+
+#[test]
+fn the_crop_starts_where_the_drawing_does_and_rounds_only_its_size() {
+    let doc = open("corners");
+    // Stroked shapes whose ink starts between pixels. Figma's Copy as SVG gives 75 x 75 and
+    // 81 x 74 with the drawing flush against the top-left corner.
+    for (id, size) in [(Guid(2051, 15), (75, 75)), (Guid(2051, 16), (81, 74))] {
+        let [x, y, w, h] = svg_view(&doc, id);
+        assert!(x.fract().abs() > 1e-3 || y.fract().abs() > 1e-3, "{x} {y}");
+        assert_eq!((w, h), (f64::from(size.0), f64::from(size.1)));
+        assert_eq!(png_size(&doc, id), (size.0, size.1));
+    }
 }
 
 #[test]
@@ -72,4 +99,29 @@ fn a_shadow_widens_the_crop_past_the_box() {
         "{w}x{h} vs {b:?}"
     );
     assert_eq!(svg_size(&doc, layer), format!("{w}x{h}"));
+}
+
+/// The most-covered pixel of the first row and of the first column of a PNG export (alpha).
+fn edge_alpha(doc: &Document, id: Guid) -> (u8, u8) {
+    let f = Renderer::new()
+        .render_export_complete(doc, id, 1.0, None, |_| None)
+        .unwrap();
+    let w = usize::from(f.pixmap.width());
+    let px = f.pixmap.data_as_u8_slice();
+    let alpha = |x: usize, y: usize| px[(y * w + x) * 4 + 3];
+    let h = usize::from(f.pixmap.height());
+    let row = (0..w).map(|x| alpha(x, 0)).max().unwrap();
+    let col = (0..h).map(|y| alpha(0, y)).max().unwrap();
+    (row, col)
+}
+
+#[test]
+fn a_png_export_is_drawn_from_the_crop_corner_like_the_svg() {
+    let doc = open("corners");
+    // The stroke touches the crop's top and left sides, so the first row and column are
+    // nearly covered. Drawn from a whole pixel instead, they were at most 187 and 130.
+    for id in [Guid(2051, 15), Guid(2051, 16)] {
+        let (row, col) = edge_alpha(&doc, id);
+        assert!(row >= 215 && col >= 215, "{id:?}: {row} {col}");
+    }
 }

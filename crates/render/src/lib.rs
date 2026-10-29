@@ -53,9 +53,9 @@ use figstudio_fig::resolve::{self, InstancePath, Overrides};
 use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
-use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape};
+use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape, Size, Vec2};
 use vello_cpu::peniko::{BlendMode, Compose, Mix};
-use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
+use vello_cpu::{ImageSource, PaintType, Pixmap, RenderContext, RenderSettings, Resources};
 
 use crate::effects::casts_shadow;
 use crate::geom::{
@@ -462,8 +462,8 @@ impl Renderer {
         limit: usize,
         read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
     ) -> svg::Svg {
-        self.complete_with(read, |this| {
-            this.render_svg(doc, Target::Node(root), viewport, limit)
+        self.complete_svg(doc, read, |this, originals| {
+            this.render_svg_view(doc, Target::Node(root), viewport, limit, None, originals)
         })
     }
 
@@ -477,22 +477,45 @@ impl Renderer {
         limit: usize,
         read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
     ) -> svg::Svg {
-        self.complete_with(read, |this| {
-            this.render_svg(doc, Target::Path(path), viewport, limit)
+        self.complete_svg(doc, read, |this, originals| {
+            this.render_svg_view(doc, Target::Path(path), viewport, limit, None, originals)
         })
     }
 
-    fn render_svg(
+    /// [`Renderer::complete_with`] for an SVG: `draw` also gets the bytes of an image file by
+    /// hash (from the document, else read like any image), so the SVG can embed the file as
+    /// Figma's export does instead of re-encoding decoded pixels.
+    fn complete_svg(
         &mut self,
         doc: &Document,
-        root: Target<'_>,
-        viewport: &Viewport,
-        limit: usize,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+        draw: impl Fn(&mut Self, &mut dyn FnMut(&str) -> Option<Vec<u8>>) -> svg::Svg,
     ) -> svg::Svg {
-        self.render_svg_view(doc, root, viewport, limit, None)
+        // `read` is used between draws and, for the originals, during one: never both at once.
+        let read = std::cell::RefCell::new(read);
+        self.complete_with(
+            |want| (*read.borrow_mut())(want),
+            |this| {
+                let mut original = |hash: &str| {
+                    if let Some(bytes) = doc.images.get(hash) {
+                        return Some(bytes.clone());
+                    }
+                    let entry = doc.lazy_images.get(hash)?;
+                    let want = ImageRequest {
+                        hash: hash.to_owned(),
+                        key: images::cache_key(doc, hash),
+                        level: 0,
+                        entry: entry.clone(),
+                    };
+                    (*read.borrow_mut())(&want)
+                };
+                draw(this, &mut original)
+            },
+        )
     }
 
-    /// [`Renderer::render_svg`] showing only `crop` (output units) when given.
+    /// The SVG of `root` in `viewport`, showing only `crop` (output units) when given.
+    /// `originals` gives an image file's bytes by hash.
     fn render_svg_view(
         &mut self,
         doc: &Document,
@@ -500,12 +523,13 @@ impl Renderer {
         viewport: &Viewport,
         limit: usize,
         crop: Option<Rect>,
+        originals: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
     ) -> svg::Svg {
         let (w, h) = (
             f64::from(viewport.width.max(1)),
             f64::from(viewport.height.max(1)),
         );
-        let mut canvas = svg::SvgCanvas::new(w, h, limit);
+        let mut canvas = svg::SvgCanvas::new(w, h, limit).with_originals(originals);
         if let Some(bg) = viewport.background {
             canvas.background(bg);
         }
@@ -849,8 +873,15 @@ impl Renderer {
         background: Option<AlphaColor<Srgb>>,
         read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
     ) -> Option<Frame> {
-        let (viewport, _, _) = fit_viewport(doc, root, scale, 0.0, None)?;
+        let (mut viewport, _, _) = fit_viewport(doc, root, scale, 0.0, None)?;
         let crop = self.export_crop(doc, root, &viewport)?;
+        // The crop starts between pixels: move the drawing so its corner falls on one, and
+        // leave room for the rounded-up size.
+        let shift = Vec2::new(crop.x0 - crop.x0.floor(), crop.y0 - crop.y0.floor());
+        viewport.transform = Affine::translate(-shift) * viewport.transform;
+        viewport.width = viewport.width.saturating_add(1);
+        viewport.height = viewport.height.saturating_add(1);
+        let crop = crop - shift;
         let mut frame = self.render_complete(doc, root, &viewport, read);
         frame.pixmap = crop_pixmap(&frame.pixmap, crop, background);
         Some(frame)
@@ -869,8 +900,15 @@ impl Renderer {
     ) -> Option<svg::Svg> {
         let (viewport, _, _) = fit_viewport(doc, root, scale, 0.0, background)?;
         let crop = self.export_crop(doc, root, &viewport)?;
-        Some(self.complete_with(read, |this| {
-            this.render_svg_view(doc, Target::Node(root), &viewport, limit, Some(crop))
+        Some(self.complete_svg(doc, read, |this, originals| {
+            this.render_svg_view(
+                doc,
+                Target::Node(root),
+                &viewport,
+                limit,
+                Some(crop),
+                originals,
+            )
         }))
     }
 
@@ -885,7 +923,7 @@ impl Renderer {
             f64::from(viewport.height.max(1)),
         );
         let mut canvas = ink::InkCanvas::new();
-        self.walk(
+        let (_, wanted) = self.walk(
             doc,
             Target::Node(root),
             viewport.transform,
@@ -894,6 +932,11 @@ impl Renderer {
             MAX_RENDER_WORK,
             0,
         );
+        // Images this walk asked for are read by the render after it, which must be able
+        // to ask again.
+        for want in &wanted {
+            self.images.abandon(&want.key, want.level);
+        }
         crop_rect(canvas.ink(), export_keep(doc, root, viewport), viewport)
     }
 
@@ -933,8 +976,9 @@ fn export_keep(doc: &Document, root: Guid, viewport: &Viewport) -> Option<Rect> 
     )
 }
 
-/// The export crop: `ink` and `keep` together, rounded out to whole pixels and kept inside
-/// the viewport. `None` when both are empty.
+/// The export crop: `ink` and `keep` together, kept inside the viewport. Like Figma's
+/// export it starts exactly where the drawing does; only its size is rounded up to whole
+/// pixels. `None` when both are empty.
 fn crop_rect(ink: Option<Rect>, keep: Option<Rect>, viewport: &Viewport) -> Option<Rect> {
     let area = match (ink, keep) {
         (Some(a), Some(b)) => a.union(b),
@@ -947,18 +991,24 @@ fn crop_rect(ink: Option<Rect>, keep: Option<Rect>, viewport: &Viewport) -> Opti
         f64::from(viewport.width.max(1)),
         f64::from(viewport.height.max(1)),
     );
-    // Float noise (an edge at 0.9999) must not add a whole pixel when rounding out.
-    let area = area.inflate(-1e-3, -1e-3).expand().intersect(full);
-    (area.width() >= 1.0 && area.height() >= 1.0).then_some(area)
+    let area = area.intersect(full);
+    // Float noise (a side of 74.0001) must not add a whole pixel when rounding up.
+    let size = Size::new((area.width() - 2e-3).ceil(), (area.height() - 2e-3).ceil());
+    (size.width >= 1.0 && size.height >= 1.0).then(|| Rect::from_origin_size(area.origin(), size))
 }
 
 /// The pixels of `pixmap` inside `area` (whole pixels), over `background` when one is given.
 fn crop_pixmap(pixmap: &Pixmap, area: Rect, background: Option<AlphaColor<Srgb>>) -> Pixmap {
     let src_w = usize::from(pixmap.width());
-    let (x0, y0) = (area.x0 as usize, area.y0 as usize);
+    let src_h = usize::from(pixmap.height());
+    // Whole pixels (the shifted crop may be off by float noise), inside the source.
+    let (x0, y0) = (
+        (area.x0.round().max(0.0) as usize).min(src_w),
+        (area.y0.round().max(0.0) as usize).min(src_h),
+    );
     // At most the source size, which fits a u16.
-    let w = u16::try_from(area.width() as usize).unwrap_or(u16::MAX);
-    let h = u16::try_from(area.height() as usize).unwrap_or(u16::MAX);
+    let w = u16::try_from((area.width().round() as usize).min(src_w - x0)).unwrap_or(u16::MAX);
+    let h = u16::try_from((area.height().round() as usize).min(src_h - y0)).unwrap_or(u16::MAX);
     let mut out = Pixmap::new(w, h);
     let src = pixmap.data_as_u8_slice();
     let bg = background.map(|c| c.premultiply().to_rgba8().to_u8_array());
@@ -1798,11 +1848,18 @@ impl Ctx<'_> {
                     images: self.images,
                     wanted: &mut self.wanted,
                     screen: paint::linear_scale(world),
+                    full: self.rc.full_images(),
                 };
                 let Some(resolved) = paint::resolve(p, w, h, self.doc, &mut img, &mut self.stats)
                 else {
                     continue;
                 };
+                if let Some(hash) = &resolved.source
+                    && let PaintType::Image(image) = &resolved.paint
+                    && let ImageSource::Pixmap(pixmap) = &image.image
+                {
+                    self.rc.image_source(pixmap, hash);
+                }
                 self.rc.set_transform(world);
                 if let Some(clip) = resolved.clip {
                     self.rc.push_clip_layer(&clip.to_path(0.1));

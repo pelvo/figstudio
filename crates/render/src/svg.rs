@@ -44,8 +44,11 @@ struct Group {
     erase: String,
 }
 
+/// Bytes of an image file by hash (see [`SvgCanvas::with_originals`]).
+pub(crate) type Originals<'a> = &'a mut dyn FnMut(&str) -> Option<Vec<u8>>;
+
 /// Writes the renderer's drawing calls as SVG.
-pub(crate) struct SvgCanvas {
+pub(crate) struct SvgCanvas<'a> {
     width: f64,
     height: f64,
     body: String,
@@ -60,13 +63,17 @@ pub(crate) struct SvgCanvas {
     fill: Option<String>,
     /// Embedded images by pixmap address, so a repeated image is written once.
     images: HashMap<usize, (String, Arc<Pixmap>)>,
+    /// The image file (hash) each pixmap holds, by pixmap address; the pixmap is kept so
+    /// its address is not reused.
+    sources: HashMap<usize, (Arc<Pixmap>, String)>,
+    originals: Option<Originals<'a>>,
     open: Vec<Group>,
     approximated: usize,
     limit: usize,
     over: bool,
 }
 
-impl SvgCanvas {
+impl<'a> SvgCanvas<'a> {
     /// A canvas `width` x `height` output units that gives up past about `limit` bytes.
     pub(crate) fn new(width: f64, height: f64, limit: usize) -> Self {
         SvgCanvas {
@@ -82,11 +89,20 @@ impl SvgCanvas {
             blend: BlendMode::default(),
             fill: None,
             images: HashMap::new(),
+            sources: HashMap::new(),
+            originals: None,
             open: Vec::new(),
             approximated: 0,
             limit,
             over: false,
         }
+    }
+
+    /// Embeds an image's original file (PNG, JPEG, GIF or WebP), read through `originals`,
+    /// instead of its decoded pixels, as Figma's SVG export does.
+    pub(crate) fn with_originals(mut self, originals: Originals<'a>) -> Self {
+        self.originals = Some(originals);
+        self
     }
 
     /// Fills `rect` (output space) with `color`, for a page background.
@@ -244,17 +260,31 @@ impl SvgCanvas {
             Some((id, _)) => id.clone(),
             None => {
                 let id = self.id("i");
-                // An encoding failure leaves the area unfilled, counted.
-                let Ok(png) = Pixmap::clone(pixmap).into_png() else {
-                    self.approximated += 1;
-                    return r#" fill="none""#.to_owned();
+                // The original file, stretched over the decoded pixels' box, else the pixels.
+                let original = self
+                    .sources
+                    .get(&key)
+                    .map(|(_, hash)| hash)
+                    .zip(self.originals.as_mut())
+                    .and_then(|(hash, read)| read(hash))
+                    .and_then(|bytes| Some((image_mime(&bytes)?, bytes)));
+                let (mime, bytes) = match original {
+                    Some(found) => found,
+                    // An encoding failure leaves the area unfilled, counted.
+                    None => match Pixmap::clone(pixmap).into_png() {
+                        Ok(png) => ("image/png", png),
+                        Err(_) => {
+                            self.approximated += 1;
+                            return r#" fill="none""#.to_owned();
+                        }
+                    },
                 };
                 let _ = write!(
                     self.defs,
-                    r#"<image id="{id}" width="{}" height="{}" href="data:image/png;base64,{}"/>"#,
+                    r#"<image id="{id}" width="{}" height="{}" preserveAspectRatio="none" href="data:{mime};base64,{}"/>"#,
                     pixmap.width(),
                     pixmap.height(),
-                    STANDARD.encode(png)
+                    STANDARD.encode(bytes)
                 );
                 self.images.insert(key, (id.clone(), pixmap.clone()));
                 id
@@ -417,7 +447,41 @@ impl SvgCanvas {
     }
 }
 
-impl Canvas for SvgCanvas {
+/// The media type of an image file browsers show in SVG, from its first bytes.
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
+        [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
+        [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'E',
+            b'B',
+            b'P',
+            ..,
+        ] => Some("image/webp"),
+        _ => None,
+    }
+}
+
+impl Canvas for SvgCanvas<'_> {
+    fn full_images(&self) -> bool {
+        true
+    }
+    fn image_source(&mut self, pixmap: &Arc<Pixmap>, hash: &str) {
+        self.sources.insert(
+            Arc::as_ptr(pixmap) as usize,
+            (pixmap.clone(), hash.to_owned()),
+        );
+    }
     fn set_transform(&mut self, t: Affine) {
         if t != self.transform {
             self.transform = t;
