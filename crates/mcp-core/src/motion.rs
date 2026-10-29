@@ -91,6 +91,16 @@ struct Animated {
     root: String,
     duration_us: f64,
     loop_mode: &'static str,
+    /// The layer's static rotation in CSS degrees (clockwise); Figma's `rotate` is absolute.
+    base_rotation: f64,
+    /// The layer's pivot (`transformOrigin`) as a CSS value; `None` for the centre default.
+    origin: Option<String>,
+    /// The layer's static path trim (start, end), fractions of the path.
+    trim: (f64, f64),
+    /// The layer's per-character/word/line delay (`textElementDelayBehaviour`), when enabled.
+    text: Option<Value>,
+    /// Vector-like layers become `motion.svg`, others `motion.div`.
+    vector: bool,
 }
 
 /// Accumulates what the snippets could not express exactly.
@@ -101,7 +111,11 @@ struct Notes {
     springs_motion: usize,
     curved_paths: usize,
     unconverted: Vec<String>,
+    /// Fields in the motion.dev snippet that the CSS snippet cannot express.
+    css_missing: Vec<String>,
     merged_axes: usize,
+    /// Nodes whose snippets repeat an earlier node's.
+    duplicates: usize,
 }
 
 /// Whether a node's data binds any field to keyframes (cheap: no track lookups).
@@ -228,8 +242,25 @@ fn build(
     let mut nodes = Vec::new();
     let mut bytes = 512;
     let mut cut = false;
+    let mut seen: HashMap<String, String> = HashMap::new();
     for a in &found {
-        let entry = node_entry(a, &mut notes);
+        let mut entry = node_entry(a, &mut notes);
+        // Recursive replies replace a snippet identical to an earlier node's with a comment
+        // naming that node, as Figma's do.
+        if let Some(motion) = entry["codeSnippets"]["motion"].as_str().map(str::to_owned) {
+            match seen.get(&motion) {
+                Some(first) => {
+                    notes.duplicates += 1;
+                    entry["codeSnippets"] = json!({
+                        "css": format!("/* Same motion as {first} */"),
+                        "motion": format!("// Same motion as {first}"),
+                    });
+                }
+                None => {
+                    seen.insert(motion, a.id.clone());
+                }
+            }
+        }
         let size = entry.to_string().len();
         if bytes + size > max_bytes && !nodes.is_empty() {
             cut = true;
@@ -324,6 +355,18 @@ impl Notes {
                 self.merged_axes
             ));
         }
+        if !self.css_missing.is_empty() {
+            out.push(format!(
+                "not in the CSS snippet (motion.dev snippet and keyframeBindings only): {}",
+                self.css_missing.join(", ")
+            ));
+        }
+        if self.duplicates > 0 {
+            out.push(format!(
+                "{} snippets repeat an earlier node's and are replaced by a comment naming it",
+                self.duplicates
+            ));
+        }
         if !self.unconverted.is_empty() {
             out.push(format!(
                 "not in the snippets (keyframeBindings only): {}",
@@ -361,14 +404,53 @@ fn animated(
             duration = duration.max(last.time_us);
         }
     }
+    let transform = data.get("transform");
+    let m = |k: &str| transform.and_then(|t| t.num(k)).map_or(0.0, f64::from);
+    let base_rotation = if transform.is_some() {
+        m("m10")
+            .atan2(m("m00").max(f64::MIN_POSITIVE).copysign(m("m00")))
+            .to_degrees()
+    } else {
+        0.0
+    };
+    let trim = data.path(&["pathTrim", "value"]).map_or((0.0, 1.0), |v| {
+        (
+            v.num("x").map_or(0.0, f64::from),
+            v.num("y").map_or(1.0, f64::from),
+        )
+    });
+    let text = data
+        .get("textElementDelayBehaviour")
+        .filter(|t| t.flag("enabled") == Some(true))
+        .map(|t| {
+            tidy(json!({
+                "grouping": t.text("grouping").unwrap_or("CHARACTER"),
+                "delayMs": t.num("delayMs").map_or(0.0, f64::from),
+                "order": t.text("order").unwrap_or("LEFT_RIGHT"),
+                "clipContent": t.flag("clipContent").unwrap_or(false),
+                "transformOriginMode": t.text("transformOriginMode"),
+            }))
+        });
     Some(Animated {
         id: id.to_owned(),
         name: data.text("name").unwrap_or(&node.name).to_owned(),
         kind: node.kind.clone(),
+        vector: matches!(
+            node.kind.as_str(),
+            "VECTOR" | "BOOLEAN_OPERATION" | "STAR" | "LINE" | "REGULAR_POLYGON"
+        ),
         bindings,
         root,
         duration_us: duration,
         loop_mode,
+        base_rotation: if base_rotation.abs() < 1e-6 {
+            0.0
+        } else {
+            base_rotation
+        },
+        origin: origin(data),
+        trim,
+        text,
     })
 }
 
@@ -576,41 +658,147 @@ fn easing(data: Option<&Val>) -> Easing {
             mass: f64::from(s.num("mass").unwrap_or(1.0)),
         })
     });
-    // Named curves (easings.net cubic forms) unless the file stores the handles.
-    let cubic =
-        |name: &'static str, default: [f64; 4]| Easing::Cubic(name, stored.unwrap_or(default));
     match data.text("easingType").unwrap_or("LINEAR") {
         "LINEAR" => Easing::Linear,
         "HOLD" => Easing::Hold,
-        "IN_CUBIC" => cubic("IN_CUBIC", [0.32, 0.0, 0.67, 0.0]),
-        "OUT_CUBIC" => cubic("OUT_CUBIC", [0.33, 1.0, 0.68, 1.0]),
-        "INOUT_CUBIC" => cubic("INOUT_CUBIC", [0.65, 0.0, 0.35, 1.0]),
-        "IN_BACK_CUBIC" => cubic("IN_BACK_CUBIC", [0.36, 0.0, 0.66, -0.56]),
-        "OUT_BACK_CUBIC" => cubic("OUT_BACK_CUBIC", [0.34, 1.56, 0.64, 1.0]),
-        "INOUT_BACK_CUBIC" => cubic("INOUT_BACK_CUBIC", [0.68, -0.6, 0.32, 1.6]),
-        "EASE_IN" => cubic("EASE_IN", [0.42, 0.0, 1.0, 1.0]),
-        "CUSTOM_CUBIC" => cubic("CUSTOM_CUBIC", [0.25, 0.1, 0.25, 1.0]),
-        "SPRING" => Easing::Spring("SPRING", spring, stored),
-        "GENTLE_SPRING" => Easing::Spring("GENTLE_SPRING", spring, stored),
-        "CUSTOM_SPRING" => Easing::Spring("CUSTOM_SPRING", spring, stored),
-        "SPRING_PRESET_ONE" => Easing::Spring("SPRING_PRESET_ONE", spring, stored),
-        "SPRING_PRESET_TWO" => Easing::Spring("SPRING_PRESET_TWO", spring, stored),
-        "SPRING_PRESET_THREE" => Easing::Spring("SPRING_PRESET_THREE", spring, stored),
-        _ => cubic("CUSTOM_CUBIC", [0.25, 0.1, 0.25, 1.0]),
+        "CUSTOM_CUBIC" => Easing::Cubic("CUSTOM_CUBIC", stored.unwrap_or(STANDARD_EASE)),
+        kind if kind.contains("SPRING") => Easing::Spring(intern_kind(kind), spring, stored),
+        kind => match named_cubic(kind) {
+            Some((_, _, curve)) => Easing::Cubic(intern_kind(kind), stored.unwrap_or(curve)),
+            None => Easing::Cubic("CUSTOM_CUBIC", stored.unwrap_or(STANDARD_EASE)),
+        },
     }
 }
 
+/// CSS's `ease`, used when a custom curve stores no handles.
+const STANDARD_EASE: [f64; 4] = [0.25, 0.1, 0.25, 1.0];
+
+/// The stored name as a `'static` string (the easing types are a fixed set).
+fn intern_kind(kind: &str) -> &'static str {
+    const KINDS: [&str; 16] = [
+        "IN_CUBIC",
+        "OUT_CUBIC",
+        "INOUT_CUBIC",
+        "LINEAR",
+        "IN_BACK_CUBIC",
+        "OUT_BACK_CUBIC",
+        "INOUT_BACK_CUBIC",
+        "CUSTOM_CUBIC",
+        "SPRING",
+        "GENTLE_SPRING",
+        "CUSTOM_SPRING",
+        "SPRING_PRESET_ONE",
+        "SPRING_PRESET_TWO",
+        "SPRING_PRESET_THREE",
+        "HOLD",
+        "EASE_IN",
+    ];
+    KINDS
+        .iter()
+        .find(|k| **k == kind)
+        .copied()
+        .unwrap_or("CUSTOM_CUBIC")
+}
+
+/// A stored named curve: Figma's public easing type, motion.dev's name, and the cubic-bezier
+/// (CSS's `ease-in`/`ease-out`/`ease-in-out` and motion.dev's `back` curves).
+fn named_cubic(kind: &str) -> Option<(&'static str, &'static str, [f64; 4])> {
+    Some(match kind {
+        "IN_CUBIC" | "EASE_IN" => ("EASE_IN", "easeIn", [0.42, 0.0, 1.0, 1.0]),
+        "OUT_CUBIC" => ("EASE_OUT", "easeOut", [0.0, 0.0, 0.58, 1.0]),
+        "INOUT_CUBIC" => ("EASE_IN_AND_OUT", "easeInOut", [0.42, 0.0, 0.58, 1.0]),
+        "IN_BACK_CUBIC" => ("EASE_IN_BACK", "backIn", [0.31, 0.01, 0.66, -0.59]),
+        "OUT_BACK_CUBIC" => ("EASE_OUT_BACK", "backOut", [0.33, 1.53, 0.69, 0.99]),
+        "INOUT_BACK_CUBIC" => ("EASE_IN_AND_OUT_BACK", "backInOut", [0.68, -0.6, 0.32, 1.6]),
+        _ => return None,
+    })
+}
+
+/// Spring presets: Figma's public easing type and its bounce. The file stores only the
+/// preset's name, not its parameters.
+fn spring_preset(kind: &str) -> Option<(&'static str, f64)> {
+    SPRING_PRESETS
+        .iter()
+        .find(|(k, _, _)| *k == kind)
+        .map(|(_, public, bounce)| (*public, *bounce))
+}
+
+/// Stored preset name, Figma's public name, bounce (read from Figma's Motion panel).
+const SPRING_PRESETS: [(&str, &str, f64); 0] = [];
+
+/// Figma's normalised spring `bounce` (0 to 1) of physical spring parameters: one minus the
+/// damping ratio, as motion.dev defines bounce.
+fn bounce(s: Spring) -> f64 {
+    let zeta = s.damping / (2.0 * (s.stiffness.max(1e-9) * s.mass.max(1e-9)).sqrt());
+    (1.0 - zeta).clamp(0.0, 1.0)
+}
+
+/// The physical spring for a bounce, at motion.dev's default stiffness and mass (for the CSS
+/// sample of a preset that stores no parameters).
+fn spring_of_bounce(bounce: f64) -> Spring {
+    let (stiffness, mass) = (100.0, 1.0);
+    Spring {
+        stiffness,
+        damping: 2.0 * (1.0 - bounce.clamp(0.0, 1.0)) * (stiffness * mass).sqrt(),
+        mass,
+    }
+}
+
+/// The layer's pivot (`transformOrigin`) as a CSS value, `None` when unset. Each axis is a
+/// raw fraction of the size (Figma's docs: 3.098 is 309.8%), a percentage, or pixels.
+fn origin(data: &Val) -> Option<String> {
+    let o = data.get("transformOrigin")?;
+    let axis = |k: &str| -> Option<String> {
+        let v = o.get(k)?;
+        let value = f64::from(v.num("value")?);
+        Some(match v.text("units").unwrap_or("RAW") {
+            "PIXELS" => format!("{}px", n(value)),
+            "PERCENT" => format!("{}%", n(value)),
+            _ => format!("{}%", n(value * 100.0)),
+        })
+    };
+    let (x, y) = (axis("x")?, axis("y")?);
+    (x != "50%" || y != "50%").then(|| format!("{x} {y}"))
+}
+
+/// Path trim tracks, drawn as a stroke dash on `motion.path`.
+fn is_trim(field: &str) -> bool {
+    matches!(field, "PATH_TRIM_START" | "PATH_TRIM_END")
+}
+
 impl Easing {
+    /// The easing as Figma's public motion easing object (`type`, and
+    /// `easingFunctionCubicBezier` or `easingFunctionSpring` where they apply).
     fn json(&self) -> Value {
+        let bezier = |b: &[f64; 4]| tidy(json!({"x1": b[0], "y1": b[1], "x2": b[2], "y2": b[3]}));
         match self {
             Easing::Linear => json!({"type": "LINEAR"}),
             Easing::Hold => json!({"type": "HOLD"}),
-            Easing::Cubic(name, b) => json!({"type": name, "cubicBezier": tidy(json!(b))}),
-            Easing::Spring(name, spring, b) => json!({
-                "type": name,
-                "spring": spring.map(|s| tidy(json!({"stiffness": s.stiffness, "damping": s.damping, "mass": s.mass}))),
-                "cubicBezier": b.map(|b| tidy(json!(b))),
-            }),
+            Easing::Cubic(kind, b) => match named_cubic(kind) {
+                Some((public, _, _)) => json!({"type": public}),
+                None => json!({
+                    "type": "CUSTOM_CUBIC_BEZIER",
+                    "easingFunctionCubicBezier": bezier(b),
+                }),
+            },
+            Easing::Spring(kind, spring, _) => match (spring_preset(kind), spring) {
+                (Some((public, _)), _) => json!({"type": public}),
+                (None, Some(s)) => json!({
+                    "type": "CUSTOM_SPRING",
+                    "easingFunctionSpring": tidy(json!({"bounce": bounce(*s)})),
+                }),
+                (None, None) => json!({"type": kind}),
+            },
+        }
+    }
+
+    /// The spring's bounce, when this is a spring with a known one.
+    fn bounce(&self) -> Option<f64> {
+        match self {
+            Easing::Spring(kind, spring, _) => spring_preset(kind)
+                .map(|(_, b)| b)
+                .or_else(|| spring.map(bounce)),
+            _ => None,
         }
     }
 
@@ -619,14 +807,23 @@ impl Easing {
         match self {
             Easing::Linear => "linear".into(),
             Easing::Hold => "steps(1, jump-end)".into(),
-            Easing::Cubic(_, b) => cubic_css(b),
-            Easing::Spring(_, spring, _) => {
-                let spring = match spring {
-                    Some(s) => {
+            Easing::Cubic(kind, b) => match *kind {
+                "IN_CUBIC" | "EASE_IN" => "ease-in".into(),
+                "OUT_CUBIC" => "ease-out".into(),
+                "INOUT_CUBIC" => "ease-in-out".into(),
+                _ => cubic_css(b),
+            },
+            Easing::Spring(kind, spring, _) => {
+                let spring = match (spring, spring_preset(kind)) {
+                    (Some(s), _) => {
                         notes.springs_sampled += 1;
                         *s
                     }
-                    None => {
+                    (None, Some((_, b))) => {
+                        notes.springs_sampled += 1;
+                        spring_of_bounce(b)
+                    }
+                    (None, None) => {
                         notes.springs_assumed += 1;
                         DEFAULT_SPRING
                     }
@@ -636,12 +833,16 @@ impl Easing {
         }
     }
 
-    /// The motion.dev `ease` of a segment.
+    /// The motion.dev `ease` of a segment in a keyframe list. A spring there keeps its stored
+    /// curve, as Figma's own snippets do; a two-keyframe spring track uses `type: "spring"`.
     fn motion(&self, notes: &mut Notes) -> String {
         match self {
             Easing::Linear => "\"linear\"".into(),
             Easing::Hold => "() => 0".into(),
-            Easing::Cubic(_, b) => bezier_js(b),
+            Easing::Cubic(kind, b) => match named_cubic(kind) {
+                Some((_, name, _)) => format!("\"{name}\""),
+                None => bezier_js(b),
+            },
             Easing::Spring(_, _, b) => {
                 notes.springs_motion += 1;
                 bezier_js(&b.unwrap_or([0.34, 1.56, 0.64, 1.0]))
@@ -704,14 +905,17 @@ fn spring_at(s: Spring, t: f64) -> f64 {
 }
 
 /// CSS property and value of `field`, or `None` when CSS has no counterpart.
-fn css_value(field: &str, value: &Value) -> Option<(&'static str, String)> {
+fn css_value(field: &str, value: &Value, rotation: f64) -> Option<(&'static str, String)> {
     let num = |v: &Value| v.as_f64();
     let xy = |v: &Value| Some((v.get("x")?.as_f64()?, v.get("y")?.as_f64()?));
     Some(match field {
         "OPACITY" => ("opacity", n(num(value)? / 100.0)),
         "WIDTH" => ("width", format!("{}px", n(num(value)?))),
         "HEIGHT" => ("height", format!("{}px", n(num(value)?))),
-        "MOTION_ROTATION" => ("rotate", format!("{}deg", n(num(value)?.to_degrees()))),
+        "MOTION_ROTATION" => (
+            "rotate",
+            format!("{}deg", n(rotation + num(value)?.to_degrees())),
+        ),
         "MOTION_TRANSLATION_XY" => {
             let (x, y) = xy(value)?;
             ("translate", format!("{}px {}px", n(x), n(y)))
@@ -725,14 +929,16 @@ fn css_value(field: &str, value: &Value) -> Option<(&'static str, String)> {
 }
 
 /// The motion.dev values of `field` (one or two names).
-fn motion_values(field: &str, value: &Value) -> Option<Vec<(&'static str, String)>> {
+fn motion_values(field: &str, value: &Value, rotation: f64) -> Option<Vec<(&'static str, String)>> {
     let num = |v: &Value| v.as_f64();
     let xy = |v: &Value| Some((v.get("x")?.as_f64()?, v.get("y")?.as_f64()?));
     Some(match field {
         "OPACITY" => vec![("opacity", n(num(value)? / 100.0))],
         "WIDTH" => vec![("width", n(num(value)?))],
         "HEIGHT" => vec![("height", n(num(value)?))],
-        "MOTION_ROTATION" => vec![("rotate", n(num(value)?.to_degrees()))],
+        "MOTION_ROTATION" => vec![("rotate", n(rotation + num(value)?.to_degrees()))],
+        // Figma stores shear in radians; motion.dev's skewX is in degrees.
+        "MOTION_SHEAR" => vec![("skewX", n(num(value)?.to_degrees()))],
         "MOTION_TRANSLATION_X" => vec![("x", n(num(value)?))],
         "MOTION_TRANSLATION_Y" => vec![("y", n(num(value)?))],
         "MOTION_SCALE_X" => vec![("scaleX", n(num(value)?))],
@@ -818,10 +1024,18 @@ fn node_entry(a: &Animated, notes: &mut Notes) -> Value {
         "keyframeBindings": bindings,
         "codeSnippets": {"css": css, "motion": motion},
     });
+    if let Some(origin) = &a.origin {
+        entry["transformOrigin"] = json!(origin);
+    }
+    if let Some(text) = &a.text {
+        entry["textAnimation"] = text.clone();
+    }
     let summary: Vec<String> = a
         .bindings
         .iter()
-        .filter(|b| motion_values(&b.field, &b.keyframes[0].value).is_none())
+        .filter(|b| {
+            !is_trim(&b.field) && motion_values(&b.field, &b.keyframes[0].value, 0.0).is_none()
+        })
         .map(|b| {
             format!(
                 "{} from {} to {} between {} and {} ms",
@@ -842,14 +1056,30 @@ fn node_entry(a: &Animated, notes: &mut Notes) -> Value {
 /// Snippet keyframes: time (µs), value as written in code, easing of the segment ending there.
 type Frames = Vec<(f64, String, Easing)>;
 
-/// CSS `@keyframes` (one animation per property) and a motion.dev `animate` call.
+/// One motion.dev value: its name, keyframes, and for a two-keyframe spring track the spring
+/// (bounce, start µs, end µs) that replaces its keyframe timing.
+struct MotionValue {
+    name: &'static str,
+    frames: Frames,
+    spring: Option<(f64, f64, f64)>,
+}
+
+/// CSS `@keyframes` (one animation per property) and a motion.dev element in the shape of
+/// Figma's snippets (`initial`, `animate`, `transition`).
 fn snippets(a: &Animated, class: &str, duration: f64, notes: &mut Notes) -> (String, String) {
+    (
+        css_snippet(a, class, duration, notes),
+        motion_snippet(a, duration, notes),
+    )
+}
+
+fn css_snippet(a: &Animated, class: &str, duration: f64, notes: &mut Notes) -> String {
     let iteration = match a.loop_mode {
         "loop" => " infinite",
         "boomerang" => " infinite alternate",
         _ => " both",
     };
-    // CSS: x and y tracks become one translate/scale/transform-origin property.
+    // CSS: x and y tracks become one translate/scale property.
     let mut css_tracks: Vec<(&'static str, Frames)> = Vec::new();
     let mut axes: HashMap<&'static str, [Option<&Binding>; 2]> = HashMap::new();
     for b in &a.bindings {
@@ -866,13 +1096,23 @@ fn snippets(a: &Animated, class: &str, duration: f64, notes: &mut Notes) -> (Str
         }
         let frames: Option<Vec<_>> = padded(b, duration)
             .into_iter()
-            .map(|(t, v, e)| css_value(&b.field, &v).map(|(_, s)| (t, s, e)))
+            .map(|(t, v, e)| css_value(&b.field, &v, a.base_rotation).map(|(_, s)| (t, s, e)))
             .collect();
-        match (frames, css_value(&b.field, &b.keyframes[0].value)) {
+        match (
+            frames,
+            css_value(&b.field, &b.keyframes[0].value, a.base_rotation),
+        ) {
             (Some(frames), Some((property, _))) => css_tracks.push((property, frames)),
             _ => {
-                if !notes.unconverted.contains(&b.field) {
-                    notes.unconverted.push(b.field.clone());
+                let list = if motion_values(&b.field, &b.keyframes[0].value, 0.0).is_some()
+                    || is_trim(&b.field)
+                {
+                    &mut notes.css_missing
+                } else {
+                    &mut notes.unconverted
+                };
+                if !list.contains(&b.field) {
+                    list.push(b.field.clone());
                 }
             }
         }
@@ -882,7 +1122,7 @@ fn snippets(a: &Animated, class: &str, duration: f64, notes: &mut Notes) -> (Str
     for (property, [x, y]) in properties {
         let identity = if property == "scale" { 1.0 } else { 0.0 };
         let unit = if property == "translate" { "px" } else { "" };
-        let frames = merge_axes(x, y, duration, identity, notes);
+        let frames = merge_axes(x, y, duration, (identity, identity), notes);
         let frames = frames
             .into_iter()
             .map(|(t, vx, vy, e)| (t, format!("{}{unit} {}{unit}", n(vx), n(vy)), e))
@@ -912,64 +1152,173 @@ fn snippets(a: &Animated, class: &str, duration: f64, notes: &mut Notes) -> (Str
         animations.push(format!("{name} {}ms{iteration}", n(ms(duration))));
     }
     if !animations.is_empty() {
-        let _ = writeln!(
-            css,
-            ".{class} {{\n  animation: {};\n}}",
-            animations.join(",\n    ")
-        );
+        let _ = writeln!(css, ".{class} {{");
+        if let Some(origin) = &a.origin {
+            let _ = writeln!(css, "  transform-origin: {origin};");
+        }
+        let _ = writeln!(css, "  animation: {};\n}}", animations.join(",\n    "));
     }
+    css
+}
 
-    // motion.dev: every value has its own keyframes, times and eases.
-    let mut values: Vec<(&'static str, Frames)> = Vec::new();
+fn motion_snippet(a: &Animated, duration: f64, notes: &mut Notes) -> String {
+    let mut values: Vec<MotionValue> = Vec::new();
+    let (mut start, mut end) = (None, None);
     for b in &a.bindings {
-        let frames = padded(b, duration);
-        let Some(first) = motion_values(&b.field, &frames[0].1) else {
+        match b.field.as_str() {
+            "PATH_TRIM_START" => {
+                start = Some(b);
+                continue;
+            }
+            "PATH_TRIM_END" => {
+                end = Some(b);
+                continue;
+            }
+            _ => {}
+        }
+        let Some(first) = motion_values(&b.field, &b.keyframes[0].value, a.base_rotation) else {
             continue;
         };
+        // A two-keyframe spring track is a real spring (Figma's snippets never bake it into
+        // a curve); longer tracks keep the stored curve per segment.
+        let spring = (b.keyframes.len() == 2)
+            .then(|| b.keyframes[1].easing.bounce())
+            .flatten()
+            .map(|bounce| (bounce, b.keyframes[0].time_us, b.keyframes[1].time_us));
+        let frames: Vec<(f64, Value, Easing)> = if spring.is_some() {
+            b.keyframes
+                .iter()
+                .map(|k| (k.time_us, k.value.clone(), k.easing.clone()))
+                .collect()
+        } else {
+            padded(b, duration)
+        };
         for (slot, (name, _)) in first.iter().enumerate() {
-            let track: Option<Vec<_>> = frames
+            let track: Option<Frames> = frames
                 .iter()
                 .map(|(t, v, e)| {
-                    motion_values(&b.field, v).map(|vals| (*t, vals[slot].1.clone(), e.clone()))
+                    motion_values(&b.field, v, a.base_rotation)
+                        .map(|vals| (*t, vals[slot].1.clone(), e.clone()))
                 })
                 .collect();
-            if let Some(track) = track {
-                values.push((name, track));
+            if let Some(frames) = track {
+                values.push(MotionValue {
+                    name,
+                    frames,
+                    spring,
+                });
             }
         }
     }
-    let mut motion = String::from("import { animate } from \"motion\"\n\n");
-    let _ = writeln!(
-        motion,
-        "animate(\n  document.querySelector(\".{class}\"),\n  {{"
-    );
-    for (name, frames) in &values {
-        let list: Vec<_> = frames.iter().map(|(_, v, _)| v.as_str()).collect();
-        let _ = writeln!(motion, "    {name}: [{}],", list.join(", "));
+    // Path trim: a stroke dash over `pathLength={1}`, as Figma's path-draw snippets.
+    let trim = start.is_some() || end.is_some();
+    if trim {
+        let merged = merge_axes(start, end, duration, a.trim, notes);
+        values.push(MotionValue {
+            name: "strokeDasharray",
+            frames: merged
+                .iter()
+                .map(|(t, s, e, ease)| (*t, format!("'{} 1'", n((e - s).max(0.0))), ease.clone()))
+                .collect(),
+            spring: None,
+        });
+        if start.is_some() || a.trim.0 != 0.0 {
+            values.push(MotionValue {
+                name: "strokeDashoffset",
+                frames: merged
+                    .iter()
+                    .map(|(t, s, _, ease)| (*t, n(-s), ease.clone()))
+                    .collect(),
+                spring: None,
+            });
+        }
     }
-    motion.push_str("  },\n  {\n");
-    let _ = writeln!(motion, "    duration: {},", n(duration / 1e6));
-    match a.loop_mode {
-        "loop" => motion.push_str("    repeat: Infinity,\n    repeatType: \"loop\",\n"),
-        "boomerang" => motion.push_str("    repeat: Infinity,\n    repeatType: \"reverse\",\n"),
-        _ => {}
-    }
-    for (name, frames) in &values {
-        let times: Vec<_> = frames.iter().map(|(t, _, _)| n(t / duration)).collect();
-        let eases: Vec<_> = frames
+
+    let tag = if trim {
+        "motion.path"
+    } else if a.vector {
+        "motion.svg"
+    } else {
+        "motion.div"
+    };
+    let repeat = match a.loop_mode {
+        "loop" => ", repeat: Infinity",
+        "boomerang" => ", repeat: Infinity, repeatType: \"reverse\"",
+        _ => "",
+    };
+    let seconds = |us: f64| n(us / 1e6);
+    let keyframed = |v: &MotionValue, notes: &mut Notes| -> String {
+        let times: Vec<_> = v.frames.iter().map(|(t, _, _)| n(t / duration)).collect();
+        let eases: Vec<_> = v
+            .frames
             .iter()
             .skip(1)
             .map(|(_, _, e)| e.motion(notes))
             .collect();
-        let _ = writeln!(
-            motion,
-            "    {name}: {{ times: [{}], ease: [{}] }},",
+        format!(
+            "duration: {}, times: [{}], ease: [{}]{repeat}",
+            seconds(duration),
             times.join(", "),
             eases.join(", ")
-        );
+        )
+    };
+    let mut out = format!("<{tag}\n");
+    if trim {
+        out.push_str("  pathLength={1}\n");
     }
-    motion.push_str("  }\n)\n");
-    (css, motion)
+    let list =
+        |f: &dyn Fn(&MotionValue) -> String| values.iter().map(f).collect::<Vec<_>>().join(", ");
+    let _ = writeln!(
+        out,
+        "  initial={{{{ {} }}}}",
+        list(&|v| format!("{}: {}", v.name, v.frames[0].1))
+    );
+    let _ = writeln!(
+        out,
+        "  animate={{{{ {} }}}}",
+        list(&|v| format!(
+            "{}: [{}]",
+            v.name,
+            v.frames
+                .iter()
+                .map(|(_, s, _)| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    );
+    if let Some(origin) = &a.origin {
+        let _ = writeln!(out, "  style={{{{ transformOrigin: \"{origin}\" }}}}");
+    }
+    // One shared transition when every value has the same keyframe timing, else one per value.
+    let timings: Vec<String> = values
+        .iter()
+        .map(|v| match v.spring {
+            Some((bounce, t0, t1)) => {
+                let mut s = format!(
+                    "type: \"spring\", bounce: {}, duration: {}, delay: {}{repeat}",
+                    n(bounce),
+                    seconds(t1 - t0),
+                    seconds(t0)
+                );
+                if !repeat.is_empty() && duration > t1 {
+                    let _ = write!(s, ", repeatDelay: {}", seconds(duration - t1 + t0));
+                }
+                s
+            }
+            None => keyframed(v, notes),
+        })
+        .collect();
+    if timings.windows(2).all(|w| w[0] == w[1]) && !timings.is_empty() {
+        let _ = writeln!(out, "  transition={{{{ {} }}}}", timings[0]);
+    } else {
+        out.push_str("  transition={{\n");
+        for (v, t) in values.iter().zip(&timings) {
+            let _ = writeln!(out, "    {}: {{ {t} }},", v.name);
+        }
+        out.push_str("  }}\n");
+    }
+    out.push_str("/>\n");
+    out
 }
 
 /// One CSS track from an x and a y binding: the union of their keyframe times, each axis
@@ -978,19 +1327,19 @@ fn merge_axes(
     x: Option<&Binding>,
     y: Option<&Binding>,
     duration: f64,
-    identity: f64,
+    identity: (f64, f64),
     notes: &mut Notes,
 ) -> Vec<(f64, f64, f64, Easing)> {
-    let frames = |b: Option<&Binding>| -> Vec<(f64, f64, Easing)> {
+    let frames = |b: Option<&Binding>, id: f64| -> Vec<(f64, f64, Easing)> {
         b.map(|b| {
             padded(b, duration)
                 .into_iter()
-                .map(|(t, v, e)| (t, v.as_f64().unwrap_or(identity), e))
+                .map(|(t, v, e)| (t, v.as_f64().unwrap_or(id), e))
                 .collect()
         })
         .unwrap_or_default()
     };
-    let (fx, fy) = (frames(x), frames(y));
+    let (fx, fy) = (frames(x, identity.0), frames(y, identity.1));
     let times = |f: &[(f64, f64, Easing)]| f.iter().map(|k| k.0).collect::<Vec<_>>();
     if !fx.is_empty() && !fy.is_empty() && times(&fx) != times(&fy) {
         notes.merged_axes += 1;
@@ -998,7 +1347,7 @@ fn merge_axes(
     let mut all: Vec<f64> = fx.iter().chain(&fy).map(|k| k.0).collect();
     all.sort_by(f64::total_cmp);
     all.dedup();
-    let at = |f: &[(f64, f64, Easing)], t: f64| -> f64 {
+    let at = |f: &[(f64, f64, Easing)], t: f64, identity: f64| -> f64 {
         if f.is_empty() {
             return identity;
         }
@@ -1018,7 +1367,7 @@ fn merge_axes(
             let e = ease(&fx, t)
                 .or_else(|| ease(&fy, t))
                 .unwrap_or(Easing::Linear);
-            (t, at(&fx, t), at(&fy, t), e)
+            (t, at(&fx, t, identity.0), at(&fy, t, identity.1), e)
         })
         .collect()
 }
