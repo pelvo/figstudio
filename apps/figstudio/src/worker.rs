@@ -256,7 +256,8 @@ impl ImageQueue {
 #[cfg(not(target_arch = "wasm32"))]
 pub struct ExportDone {
     pub path: PathBuf,
-    pub result: anyhow::Result<()>,
+    /// What in the file is not drawn exactly (empty when everything is).
+    pub result: anyhow::Result<String>,
 }
 
 pub struct Workers {
@@ -629,7 +630,7 @@ fn export_png(
     root: Guid,
     scale: f64,
     path: &std::path::Path,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     export_with(
         Images::default(),
         doc,
@@ -665,6 +666,7 @@ impl ExportFormat {
 }
 
 /// [`export_png`] in `format`, drawing from `images` and reading unread images from `source`.
+/// Returns what in the file is not drawn exactly (empty when everything is).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn export_with(
     images: Images,
@@ -673,11 +675,12 @@ pub fn export_with(
     root: Guid,
     format: ExportFormat,
     path: &std::path::Path,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     use anyhow::Context;
-    let bytes = crate::export_bytes(images, doc, source, root, format)?;
+    let (bytes, gaps) = crate::export_bytes(images, doc, source, root, format)?;
     std::fs::write(path, bytes)
-        .with_context(|| format!("write the {}", format.extension().to_uppercase()))
+        .with_context(|| format!("write the {}", format.extension().to_uppercase()))?;
+    Ok(gaps)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -713,6 +716,49 @@ mod export_tests {
                 u32::from(expected.pixmap.height())
             )
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_export_says_what_it_does_not_draw_exactly() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/broken_images.fig"
+        );
+        let doc = Document::open(path).unwrap();
+        let dir = std::env::temp_dir().join(format!("figstudio-gaps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (format, file) in [
+            (ExportFormat::Svg, "page.svg"),
+            (ExportFormat::Png(1.0), "page.png"),
+        ] {
+            let gaps = export_with(
+                Images::default(),
+                &doc,
+                None,
+                doc.pages[0],
+                format,
+                &dir.join(file),
+            )
+            .unwrap();
+            assert!(gaps.contains("images missing"), "{file}: {gaps}");
+        }
+        // A page drawn exactly says nothing.
+        let corners = Document::open(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/corners.fig"
+        ))
+        .unwrap();
+        let clean = export_with(
+            Images::default(),
+            &corners,
+            None,
+            corners.pages[0],
+            ExportFormat::Svg,
+            &dir.join("clean.svg"),
+        )
+        .unwrap();
+        assert_eq!(clean, "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -69,11 +69,16 @@ pub(crate) enum Op {
     DrawIndexed([u32; 3], i32, u32),
 }
 
+/// Most GPU memory (buffers and textures) one shader run may ask for.
+pub(crate) const MAX_GPU_BYTES: u64 = 512 * 1024 * 1024;
+
 /// One shader run: the device and the objects by index.
 pub(crate) struct Session {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub objects: Vec<Object>,
+    /// GPU memory asked for so far (see [`MAX_GPU_BYTES`]).
+    pub gpu_bytes: u64,
 }
 
 fn bad(message: impl Into<String>) -> ShaderError {
@@ -81,6 +86,15 @@ fn bad(message: impl Into<String>) -> ShaderError {
 }
 
 impl Session {
+    /// Counts `bytes` of GPU memory against the run's cap; the script's sizes are its own.
+    pub fn reserve(&mut self, bytes: u64) -> Result<(), ShaderError> {
+        self.gpu_bytes = self.gpu_bytes.saturating_add(bytes);
+        if self.gpu_bytes > MAX_GPU_BYTES {
+            return Err(bad("the shader asks for more than 512 MiB of GPU memory"));
+        }
+        Ok(())
+    }
+
     pub fn add(&mut self, object: Object) -> usize {
         self.objects.push(object);
         self.objects.len() - 1
@@ -131,6 +145,11 @@ impl Session {
             return Err(bad("texture larger than the device allows"));
         }
         let mips = (num(desc.get("mipLevelCount")) as u32).max(1);
+        let format = texture_format(desc["format"].as_str())?;
+        let samples = (num(desc.get("sampleCount")) as u32).max(1);
+        // Mip levels add at most a third more.
+        let texel = u64::from(format.block_copy_size(None).unwrap_or(16));
+        self.reserve((w.max(1.0) * h.max(1.0)) as u64 * texel * u64::from(samples) * 4 / 3)?;
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -139,9 +158,9 @@ impl Session {
                 depth_or_array_layers: 1,
             },
             mip_level_count: mips.min(16),
-            sample_count: (num(desc.get("sampleCount")) as u32).max(1),
+            sample_count: samples,
             dimension: wgpu::TextureDimension::D2,
-            format: texture_format(desc["format"].as_str())?,
+            format,
             usage: wgpu::TextureUsages::from_bits_truncate(num(desc.get("usage")) as u32),
             view_formats: &[],
         });

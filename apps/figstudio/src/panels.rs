@@ -701,7 +701,7 @@ fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<I
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             play = quiet_button(ui, Some(Icon::Play), "Play")
-                .on_hover_text("Play this layer's timeline in a preview window")
+                .on_hover_text("Play this layer's timeline on the canvas")
                 .clicked();
             if let Some(css) = motion["codeSnippets"]["css"].as_str()
                 && quiet_button(ui, None, "Copy CSS animation").clicked()

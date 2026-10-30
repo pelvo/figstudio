@@ -4,7 +4,7 @@ use figstudio_mcp_core::{
     assets::{AssetFormat, download},
     output::{Block, Output},
     rendering::Rendering,
-    screenshot::{render_node, svg_node},
+    screenshot::svg_node,
 };
 use std::path::PathBuf;
 
@@ -19,13 +19,16 @@ fn texts(out: &Output) -> Vec<&str> {
     out.content.iter().filter_map(Block::as_text).collect()
 }
 
-/// Root-mean-square difference (0 to 1) between the PNG render of `id` and its SVG export
-/// rasterized by resvg, both premultiplied RGBA at scale 1.
+/// Root-mean-square difference (0 to 1) between the PNG export of `id` and its SVG export
+/// rasterized by resvg, both premultiplied RGBA at scale 1 and cropped alike (as an export).
 fn difference(doc: &Document, id: &str) -> f64 {
     let rendering = Rendering::default();
-    let png = render_node(doc, id, Some(1.0), &rendering)
+    let (a, b) = id.split_once(':').unwrap();
+    let guid = figstudio_fig::Guid(a.parse().unwrap(), b.parse().unwrap());
+    assert!(doc.node(guid).is_some(), "{id} is in the file");
+    let png = figstudio_render::Renderer::new()
+        .render_export_complete(doc, guid, 1.0, None, |_| None)
         .unwrap()
-        .frame
         .pixmap;
     let svg = svg_node(doc, id, Some(1.0), &rendering, usize::MAX).unwrap();
     let tree = resvg::usvg::Tree::from_str(&svg.svg.markup, &resvg::usvg::Options::default())
@@ -72,13 +75,14 @@ fn svg_comes_back_as_a_line_then_the_markup() {
 #[test]
 fn svg_draws_what_the_png_render_draws() {
     // Vector paths and strokes, text as outlines, and frames with clips.
-    for (file, id) in [("vector", "0:3"), ("structure", "1:34"), ("corners", "0:3")] {
+    for (file, id) in [
+        ("vector", "0:3"),
+        ("structure", "1:2"),
+        ("structure", "1:34"),
+        ("corners", "2051:16"),
+    ] {
         let doc = open(file);
-        let id = doc
-            .children(doc.pages[0])
-            .first()
-            .map_or(id.to_owned(), |g| format!("{}:{}", g.0, g.1));
-        let diff = difference(&doc, &id);
+        let diff = difference(&doc, id);
         assert!(diff < 0.03, "{file} {id}: {diff}");
     }
 }

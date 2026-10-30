@@ -22,8 +22,9 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
-# A pure-Rust JavaScript engine for the shader's setup/render code.
-boa_engine = { version = "0.22", default-features = false, optional = true }
+# A pure-Rust JavaScript engine for the shader's setup/render code. `fuzz` only turns on
+# Boa's instruction budget (`ContextBuilder::instructions_remaining`), the CPU cap on a run.
+boa_engine = { version = "0.22", default-features = false, features = ["fuzz"], optional = true }
 # TypeScript to JavaScript (type stripping); 0.146 is the last release on Rust 1.95.
 oxc = { version = "~0.146", default-features = false, features = ["semantic", "transformer", "codegen"] }
 

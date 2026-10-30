@@ -4,7 +4,8 @@
 //! Every writer holds an exclusive lock on the sibling `FILE.fig.codeconnect.json.lock` (an
 //! advisory `File::lock`, kept between runs) from before it reads the sidecar until it has
 //! written it, so writers in several processes do not lose each other's mappings. A symlink
-//! at either path is refused, and the sidecar is replaced atomically.
+//! at either path is refused, and the sidecar is replaced atomically, so a reader ([`mapped`])
+//! takes no lock: it never waits for a writer and creates no `.lock` file.
 use crate::codeconnect_context::{component_id, component_set};
 use figstudio_fig::Document;
 use serde::{Deserialize, Serialize};
@@ -84,9 +85,11 @@ impl Store {
     }
 }
 
-/// Every mapping in the sidecar of `fig` (empty when there is none).
+/// Every mapping in the sidecar of `fig` (empty when there is none). Lock-free: writers
+/// replace the sidecar by rename, so this reads either the old file or the new one whole.
 pub fn mapped(fig: &Path) -> Result<Mappings, &'static str> {
-    Ok(Store::open(fig)?.mappings)
+    let (path, _) = sidecar_path(fig)?;
+    Ok(load(&path)?.1)
 }
 
 /// When the sidecar of `fig` last changed; `None` when it does not exist.
@@ -188,8 +191,8 @@ pub fn validate(mapping: &Mapping) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The sidecar's metadata (`None` when it does not exist yet) and mappings. Call with the lock
-/// held.
+/// The sidecar's metadata (`None` when it does not exist yet) and mappings. A writer calls it
+/// with the lock held; a reader without.
 fn load(path: &Path) -> Result<(Option<std::fs::Metadata>, Mappings), &'static str> {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) if !meta.file_type().is_file() => {

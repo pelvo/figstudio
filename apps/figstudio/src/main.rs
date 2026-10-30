@@ -253,20 +253,23 @@ fn export_frame(
 const MAX_SVG_EXPORT_BYTES: usize = 256 * 1024 * 1024;
 
 /// Encodes `root` in `format` for export, reading every image it needs at full sharpness.
+/// Returns the bytes and what is not drawn exactly, listed as the status bar lists it (empty
+/// when everything is), so the export says so instead of hiding it.
 fn export_bytes(
     images: figstudio_render::images::Images,
     doc: &figstudio_fig::Document,
     source: Option<&source::Source>,
     root: figstudio_fig::Guid,
     format: worker::ExportFormat,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<(Vec<u8>, String)> {
     use anyhow::Context;
     match format {
-        worker::ExportFormat::Png(scale) => export_frame(images, doc, source, root, scale)
-            .context("nothing to export")?
-            .pixmap
-            .into_png()
-            .context("encode the PNG"),
+        worker::ExportFormat::Png(scale) => {
+            let frame =
+                export_frame(images, doc, source, root, scale).context("nothing to export")?;
+            let gaps = region_png::gaps(&frame.stats);
+            Ok((frame.pixmap.into_png().context("encode the PNG")?, gaps))
+        }
         worker::ExportFormat::Svg => {
             let svg = renderer(images)
                 .render_export_svg_complete(doc, root, 1.0, None, MAX_SVG_EXPORT_BYTES, |want| {
@@ -277,8 +280,24 @@ fn export_bytes(
                 !svg.over_limit,
                 "the SVG is over 256 MiB; export a smaller layer"
             );
-            Ok(svg.markup.into_bytes())
+            let mut gaps = region_png::gaps(&svg.stats);
+            if svg.approximated > 0 {
+                if !gaps.is_empty() {
+                    gaps.push_str(", ");
+                }
+                gaps.push_str(&format!("{} steps SVG cannot express", svg.approximated));
+            }
+            Ok((svg.markup.into_bytes(), gaps))
         }
+    }
+}
+
+/// The toast after an export: the file, and what in it is not drawn exactly.
+fn exported_text(file: &str, gaps: &str) -> String {
+    if gaps.is_empty() {
+        format!("Exported {file}")
+    } else {
+        format!("Exported {file}. Not exact: {gaps}")
     }
 }
 
@@ -937,7 +956,10 @@ impl App {
         #[cfg(not(target_arch = "wasm32"))]
         while let Ok(done) = self.workers.export_rx.try_recv() {
             match done.result {
-                Ok(()) => self.toast(ctx, format!("Exported {}", done.path.display()), false),
+                Ok(gaps) => {
+                    let text = exported_text(&done.path.display().to_string(), &gaps);
+                    self.toast(ctx, text, false);
+                }
                 Err(e) => self.toast(ctx, figstudio_fig::one_line(e.as_ref()), true),
             }
         }
@@ -1091,8 +1113,11 @@ impl App {
             } else {
                 "image/png"
             };
-            match bytes.and_then(|bytes| web::download(&name, mime, &bytes)) {
-                Ok(()) => self.toast(ctx, format!("Exported {name}"), false),
+            match bytes.and_then(|(bytes, gaps)| {
+                web::download(&name, mime, &bytes)?;
+                Ok(gaps)
+            }) {
+                Ok(gaps) => self.toast(ctx, exported_text(&name, &gaps), false),
                 Err(e) => self.toast(ctx, figstudio_fig::one_line(e.as_ref()), true),
             }
         }

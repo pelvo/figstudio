@@ -66,8 +66,13 @@ impl FigstudioServer {
             assets: self.assets().clone(),
             rendering,
             max_code_bytes: Some(self.max_output_bytes()),
+            // Read with the file below, off the async runtime.
+            code_connect: Default::default(),
+        };
+        match tokio::task::spawn_blocking(move || {
+            let mut options = options;
             // An unreadable sidecar maps nothing here; the Code Connect tools report its error.
-            code_connect: figstudio_mcp_core::codeconnect_store::mapped(&path)
+            options.code_connect = figstudio_mcp_core::codeconnect_store::mapped(&path)
                 .unwrap_or_default()
                 .into_iter()
                 .map(|(id, m)| {
@@ -81,10 +86,10 @@ impl FigstudioServer {
                         },
                     )
                 })
-                .collect(),
-        };
-        match tokio::task::spawn_blocking(move || design_context(&document, &node_id, &options))
-            .await
+                .collect();
+            design_context(&document, &node_id, &options)
+        })
+        .await
         {
             Ok(result) => result,
             Err(error) => tool_error(crate::error::McpError::load_task(error)),

@@ -120,7 +120,7 @@ pub fn missing(doc: &Document, sources: &[ShaderSource]) -> Vec<Missing> {
         return Vec::new();
     }
     // One walk over the document for every shader.
-    let used = usages(doc, |r| lacking.iter().any(|s| s.is(r)));
+    let (used, _) = usages(doc, |r| lacking.iter().any(|s| s.is(r)), usize::MAX);
     let mut out = Vec::new();
     for shader in lacking {
         let mut layers: Vec<Guid> = used
@@ -357,29 +357,57 @@ struct Usage<'a> {
     paint: &'a Val,
 }
 
-/// Every `CUSTOM` paint or effect in the document whose reference `points` accepts.
-fn usages<'a>(doc: &'a Document, points: impl Fn(&Val) -> bool) -> Vec<Usage<'a>> {
+/// The first `limit` `CUSTOM` paints or effects in the document whose reference `points`
+/// accepts, and how many there are.
+fn usages<'a>(
+    doc: &'a Document,
+    points: impl Fn(&Val) -> bool,
+    limit: usize,
+) -> (Vec<Usage<'a>>, usize) {
     let mut out = Vec::new();
-    for node in &doc.nodes {
-        if node.kind == "CODE_COMPONENT" {
-            continue;
-        }
-        let mut path = String::new();
-        walk(&node.data, &mut path, &mut |field, paint| {
-            if paint.get("customEffectId").is_some_and(&points) {
+    let mut total = 0;
+    each_paint(doc, |node, field, paint| {
+        if paint.get("customEffectId").is_some_and(&points) {
+            total += 1;
+            if out.len() < limit {
                 out.push(Usage {
                     node,
                     field: field.to_owned(),
                     paint,
                 });
             }
-        });
-    }
-    out
+        }
+    });
+    (out, total)
 }
 
+/// Calls `found` with the node, field path and value of every `CUSTOM` paint or effect.
+fn each_paint<'a>(doc: &'a Document, mut found: impl FnMut(&'a Node, &str, &'a Val)) {
+    for node in &doc.nodes {
+        if node.kind == "CODE_COMPONENT" {
+            continue;
+        }
+        let mut path = String::new();
+        walk(&node.data, &mut path, 0, &mut |field, paint| {
+            found(node, field, paint);
+        });
+    }
+}
+
+/// Deepest nesting [`walk`] looks into; the paints sit a few levels down (for example
+/// `symbolData.symbolOverrides[2].effects[0]`), so this only stops a malformed file.
+const MAX_WALK_DEPTH: usize = 64;
+
 /// Calls `found` with the path of every object holding a `customEffectId`.
-fn walk<'v>(value: &'v Val, path: &mut String, found: &mut impl FnMut(&str, &'v Val)) {
+fn walk<'v>(
+    value: &'v Val,
+    path: &mut String,
+    depth: usize,
+    found: &mut impl FnMut(&str, &'v Val),
+) {
+    if depth > MAX_WALK_DEPTH {
+        return;
+    }
     match value {
         Val::Obj(fields) => {
             if fields.contains_key("customEffectId") {
@@ -393,7 +421,7 @@ fn walk<'v>(value: &'v Val, path: &mut String, found: &mut impl FnMut(&str, &'v 
                         path.push('.');
                     }
                     path.push_str(key);
-                    walk(child, path, found);
+                    walk(child, path, depth + 1, found);
                     path.truncate(len);
                 }
             }
@@ -403,7 +431,7 @@ fn walk<'v>(value: &'v Val, path: &mut String, found: &mut impl FnMut(&str, &'v 
                 if matches!(child, Val::Obj(_) | Val::Arr(_)) {
                     let len = path.len();
                     path.push_str(&format!("[{i}]"));
-                    walk(child, path, found);
+                    walk(child, path, depth + 1, found);
                     path.truncate(len);
                 }
             }
@@ -417,7 +445,7 @@ fn walk<'v>(value: &'v Val, path: &mut String, found: &mut impl FnMut(&str, &'v 
 pub fn on_node(doc: &Document, node: &Node) -> Vec<Value> {
     let mut found = Vec::new();
     let mut path = String::new();
-    walk(&node.data, &mut path, &mut |field, paint| {
+    walk(&node.data, &mut path, 0, &mut |field, paint| {
         found.push((field.to_owned(), paint));
     });
     if found.is_empty() {
@@ -485,18 +513,21 @@ pub fn list(doc: &Document) -> Output {
 /// files.
 pub fn list_with(doc: &Document, sources: &[ShaderSource]) -> Output {
     let all = shaders(doc);
-    let used = usages(doc, |r| all.iter().any(|s| s.is(r)));
     let total = all.len();
-    let list: Vec<_> = all
+    let listed = &all[..total.min(MAX_SHADERS)];
+    // Counts only: the usages themselves are not kept.
+    let mut counts = vec![0; listed.len()];
+    each_paint(doc, |_, _, paint| {
+        if let Some(r) = paint.get("customEffectId")
+            && let Some(i) = listed.iter().position(|s| s.is(r))
+        {
+            counts[i] += 1;
+        }
+    });
+    let list: Vec<_> = listed
         .iter()
-        .take(MAX_SHADERS)
-        .map(|s| {
-            let count = used
-                .iter()
-                .filter(|u| u.paint.get("customEffectId").is_some_and(|r| s.is(r)))
-                .count();
-            with_source(s.summary(count), s.source(sources), false)
-        })
+        .zip(counts)
+        .map(|(s, count)| with_source(s.summary(count), s.source(sources), false))
         .collect();
     let found = list.iter().filter(|s| !s["name"].is_null()).count();
     Output::structured(json!({
@@ -529,21 +560,17 @@ pub fn get_with(doc: &Document, id: &str, sources: &[ShaderSource]) -> Output {
         .iter()
         .filter_map(|d| Some((d.get("id").and_then(Val::as_guid), d.text("name")?)))
         .collect();
-    let used = usages(doc, |r| shader.is(r));
-    let listed: Vec<_> = used
-        .iter()
-        .take(MAX_USAGES)
-        .map(|u| usage(u, &names))
-        .collect();
+    let (used, total) = usages(doc, |r| shader.is(r), MAX_USAGES);
+    let listed: Vec<_> = used.iter().map(|u| usage(u, &names)).collect();
     let source = shader.source(sources);
-    let mut out = with_source(shader.summary(used.len()), source, true);
+    let mut out = with_source(shader.summary(total), source, true);
     if let Value::Object(fields) = &mut out {
         fields.insert(
             "parameters".into(),
             definitions.iter().map(|d| parameter(d)).collect(),
         );
         fields.insert("usages".into(), Value::Array(listed));
-        fields.insert("usagesTruncated".into(), json!(used.len() > MAX_USAGES));
+        fields.insert("usagesTruncated".into(), json!(total > MAX_USAGES));
         fields.insert("note".into(), json!(note(usize::from(source.is_some()), 1)));
     }
     Output::structured(out)
@@ -782,5 +809,38 @@ pub(crate) fn tidy(value: Value) -> Value {
             Value::Object(fields.into_iter().map(|(k, v)| (k, tidy(v))).collect())
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use figstudio_fig::Obj;
+
+    /// A paint holding a `customEffectId`, `depth` objects down.
+    fn nested(depth: usize) -> Val {
+        let mut paint = Obj::new();
+        paint.insert("customEffectId", Val::Str("x".into()));
+        let mut value = Val::Obj(paint);
+        for _ in 0..depth {
+            let mut outer = Obj::new();
+            outer.insert("child", value);
+            value = Val::Obj(outer);
+        }
+        value
+    }
+
+    fn found(value: &Val) -> Vec<String> {
+        let mut out = Vec::new();
+        walk(value, &mut String::new(), 0, &mut |field, _| {
+            out.push(field.to_owned());
+        });
+        out
+    }
+
+    #[test]
+    fn the_walk_finds_paints_a_few_levels_down_and_stops_past_its_depth() {
+        assert_eq!(found(&nested(3)), ["child.child.child"]);
+        assert!(found(&nested(MAX_WALK_DEPTH + 10)).is_empty());
     }
 }

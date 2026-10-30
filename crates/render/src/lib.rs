@@ -554,6 +554,7 @@ impl Renderer {
             MAX_RENDER_WORK,
             0,
         );
+        let view = crop.unwrap_or(Rect::new(0.0, 0.0, w, h));
         let (markup, approximated, over_limit) = match crop {
             None => canvas.finish(),
             Some(view) => canvas.finish_view(view),
@@ -564,6 +565,8 @@ impl Renderer {
             wanted,
             approximated,
             over_limit,
+            width: view.width(),
+            height: view.height(),
         }
     }
 

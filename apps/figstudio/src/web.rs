@@ -124,7 +124,8 @@ pub enum Picked {
     },
 }
 
-type Exported = (String, anyhow::Result<Vec<u8>>);
+/// A file name and its bytes with what is not drawn exactly (see `export_bytes`).
+type Exported = (String, anyhow::Result<(Vec<u8>, String)>);
 
 use crate::cjk::Variant;
 
