@@ -27,11 +27,16 @@ impl Host {
         };
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
         let mut reply = None;
-        egui::Window::new("Join another browser's room?")
+        let window = egui::Id::new("join-room");
+        let shown = egui::Window::new("Join another browser's room?")
+            .id(window)
             .fixed_pos((40.0, 96.0))
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| reply = join_dialog(ui, &proposal));
+        if shown.is_some() {
+            crate::a11y::hide_window_title_bar(ctx, window);
+        }
         match reply {
             Some(JoinReply::Join) => {
                 // The same contract as `Apply` in the menu: a room is only adopted once

@@ -390,8 +390,12 @@ impl App {
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
             .show(ctx, |ui| {
-                let sense = if open { Sense::click() } else { Sense::hover() };
+                let sense = if open { Sense::CLICK } else { Sense::hover() };
                 let response = ui.allocate_rect(screen, sense);
+                crate::a11y::hide(&response);
+                if open {
+                    crate::a11y::modal(ui);
+                }
                 let dim = if p.dark { 110.0 } else { 40.0 };
                 let alpha = (dim * pop.clamp(0.0, 1.0)) as u8;
                 ui.painter()
@@ -438,6 +442,7 @@ impl App {
                                     .frame(egui::Frame::NONE)
                                     .margin(Margin::symmetric(6, 0)),
                             );
+                            crate::a11y::name_field(&edit, "Search or paste a Figma link");
                             if std::mem::take(&mut bar.focus) {
                                 edit.request_focus();
                             }
