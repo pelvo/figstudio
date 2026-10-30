@@ -332,6 +332,9 @@ fn play_opens_a_motion_preview_that_draws_frames_and_pauses() {
             .map(|p| (p.root, p.playing, p.time_us, p.has_frame()))
     };
     assert_eq!(preview(&h).map(|p| p.0), Some(Guid(1, 1105)));
+    // Its values read with words: the browser's UI font has no arrow glyph.
+    assert!(h.query_all_by_label_contains(" to ").next().is_some());
+    assert!(h.query_all_by_label_contains("→").next().is_none());
     // The worker draws frames while the clock runs.
     for _ in 0..400 {
         step(&mut h, &mut c);

@@ -701,7 +701,8 @@ fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<I
                 .flatten()
                 .unwrap_or_else(|| {
                     format!(
-                        "{} → {}",
+                        // Words, not an arrow: the browser's UI font has no "→".
+                        "{} to {}",
                         motion_value(field, &first["value"]),
                         motion_value(field, &last["value"])
                     )
@@ -765,7 +766,7 @@ fn shader_section(ui: &mut Ui, shader: &serde_json::Value, code: &crate::shader_
                 ui.label(RichText::new("Not drawn: its code is missing").color(p.warning));
             });
             if quiet_button(ui, None, "Choose its zip…")
-                .on_hover_text("The zip of Figma's View code → Download files for this shader")
+                .on_hover_text("The zip of Figma's View code, then Download files, for this shader")
                 .clicked()
             {
                 code.choose.set(Some(Some(id.to_owned())));

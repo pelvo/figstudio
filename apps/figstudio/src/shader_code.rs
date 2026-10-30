@@ -605,7 +605,8 @@ pub fn notice(
 fn steps(file: &str) -> Vec<String> {
     let mut steps = vec![
         "In Figma, select a marked layer.".to_owned(),
-        "In its Fill or Effects, open the shader, then … → View code → Download files.".to_owned(),
+        "In its Fill or Effects, open the shader's … menu, then View code, then Download files."
+            .to_owned(),
         "Drop the downloaded zip here, or click the layer's marker to choose it.".to_owned(),
     ];
     #[cfg(not(target_arch = "wasm32"))]
@@ -679,7 +680,7 @@ pub fn markers(
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
             let response = response
                 .on_hover_text(format!(
-                    "{text}. Click to choose it: the zip of Figma's View code → Download files"
+                    "{text}. Click to choose it: the zip of Figma's View code, then Download files"
                 ))
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
             let (hover, press) = crate::icons::feedback(ui, &response);
