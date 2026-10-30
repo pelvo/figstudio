@@ -45,9 +45,18 @@ pub(crate) enum Object {
 
 /// A recorded render pass.
 pub(crate) struct Pass {
-    /// Colour attachments: view, clear colour (`None` loads), store.
-    pub targets: Vec<(usize, Option<wgpu::Color>, bool)>,
+    pub targets: Vec<Target>,
+    /// Depth attachment: view, clear depth (`None` loads), store.
+    pub depth: Option<(usize, Option<f32>, bool)>,
     pub ops: Vec<Op>,
+}
+
+/// A colour attachment: view, clear colour (`None` loads), store, resolve view.
+pub(crate) struct Target {
+    pub view: usize,
+    pub clear: Option<wgpu::Color>,
+    pub store: bool,
+    pub resolve: Option<usize>,
 }
 
 /// A recorded render-pass command.
@@ -117,15 +126,20 @@ impl Session {
             Value::Array(v) => (num(v.first()), num(v.get(1)).max(1.0)),
             _ => (num(size.get("width")), num(size.get("height")).max(1.0)),
         };
+        let limit = self.device.limits().max_texture_dimension_2d;
+        if w > f64::from(limit) || h > f64::from(limit) {
+            return Err(bad("texture larger than the device allows"));
+        }
+        let mips = (num(desc.get("mipLevelCount")) as u32).max(1);
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
-                width: w as u32,
-                height: h as u32,
+                width: (w as u32).max(1),
+                height: (h as u32).max(1),
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
-            sample_count: 1,
+            mip_level_count: mips.min(16),
+            sample_count: (num(desc.get("sampleCount")) as u32).max(1),
             dimension: wgpu::TextureDimension::D2,
             format: texture_format(desc["format"].as_str())?,
             usage: wgpu::TextureUsages::from_bits_truncate(num(desc.get("usage")) as u32),
@@ -207,6 +221,22 @@ impl Session {
                 write_mask: wgpu::ColorWrites::ALL,
             }));
         }
+        let depth_stencil = if desc["depthStencil"].is_object() {
+            let d = &desc["depthStencil"];
+            Some(wgpu::DepthStencilState {
+                format: texture_format(d["format"].as_str())?,
+                depth_write_enabled: Some(d["depthWriteEnabled"].as_bool() == Some(true)),
+                depth_compare: Some(compare(d["depthCompare"].as_str())),
+                stencil: Default::default(),
+                bias: Default::default(),
+            })
+        } else {
+            None
+        };
+        let multisample = wgpu::MultisampleState {
+            count: (num(desc["multisample"].get("count")) as u32).max(1),
+            ..Default::default()
+        };
         let topology = match desc["primitive"]["topology"].as_str() {
             Some("triangle-strip") => wgpu::PrimitiveTopology::TriangleStrip,
             Some("line-list") => wgpu::PrimitiveTopology::LineList,
@@ -235,8 +265,8 @@ impl Session {
                     topology,
                     ..Default::default()
                 },
-                depth_stencil: None,
-                multisample: Default::default(),
+                depth_stencil,
+                multisample,
                 fragment: fragment_module.map(|module| wgpu::FragmentState {
                     module,
                     entry_point: fragment["entryPoint"].as_str(),
@@ -301,29 +331,40 @@ impl Session {
     }
 
     fn replay(&self, encoder: &mut wgpu::CommandEncoder, pass: &Pass) -> Result<(), ShaderError> {
+        let store = |s: bool| {
+            if s {
+                wgpu::StoreOp::Store
+            } else {
+                wgpu::StoreOp::Discard
+            }
+        };
         let mut attachments = Vec::new();
-        for &(view, clear, store) in &pass.targets {
-            let Object::View(view) = self.get(view)? else {
-                return Err(bad("colour attachment is not a GPUTextureView"));
-            };
+        for t in &pass.targets {
             attachments.push(Some(wgpu::RenderPassColorAttachment {
-                view,
+                view: self.view(t.view)?,
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target: t.resolve.map(|r| self.view(r)).transpose()?,
                 ops: wgpu::Operations {
-                    load: clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
-                    store: if store {
-                        wgpu::StoreOp::Store
-                    } else {
-                        wgpu::StoreOp::Discard
-                    },
+                    load: t.clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+                    store: store(t.store),
                 },
             }));
         }
+        let depth = match pass.depth {
+            Some((view, clear, keep)) => Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.view(view)?,
+                depth_ops: Some(wgpu::Operations {
+                    load: clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+                    store: store(keep),
+                }),
+                stencil_ops: None,
+            }),
+            None => None,
+        };
         let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &attachments,
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: depth,
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
@@ -355,6 +396,70 @@ impl Session {
                     ),
             }
         }
+        Ok(())
+    }
+
+    fn view(&self, id: usize) -> Result<&wgpu::TextureView, ShaderError> {
+        match self.get(id)? {
+            Object::View(v) => Ok(v),
+            _ => Err(bad("not a GPUTextureView")),
+        }
+    }
+
+    /// `queue.writeTexture`: `data` laid out with `bytes_per_row` into `size` texels of
+    /// texture `id` at mip `level` and `origin`.
+    pub fn write_texture(
+        &self,
+        id: usize,
+        level: u32,
+        origin: (u32, u32),
+        data: &[u8],
+        layout: (u64, Option<u32>, Option<u32>),
+        size: (u32, u32),
+    ) -> Result<(), ShaderError> {
+        let texture = self.texture(id)?;
+        if level >= texture.mip_level_count() {
+            return Err(bad("writeTexture mip level past the texture's"));
+        }
+        let (tw, th) = (
+            (texture.width() >> level).max(1),
+            (texture.height() >> level).max(1),
+        );
+        if origin.0 + size.0 > tw || origin.1 + size.1 > th {
+            return Err(bad("writeTexture past the texture's edge"));
+        }
+        let block = texture.format().block_copy_size(None).unwrap_or(4);
+        let row = layout.1.unwrap_or(size.0 * block);
+        let rows = layout.2.unwrap_or(size.1);
+        let needed = layout.0
+            + u64::from(row) * u64::from(rows.saturating_sub(1))
+            + u64::from(size.0 * block);
+        if size.0 * block > row || (data.len() as u64) < needed {
+            return Err(bad("writeTexture data smaller than its layout"));
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: level,
+                origin: wgpu::Origin3d {
+                    x: origin.0,
+                    y: origin.1,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: layout.0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(rows),
+            },
+            wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+        );
         Ok(())
     }
 
@@ -436,6 +541,11 @@ pub(crate) fn texture_format(name: Option<&str>) -> Result<wgpu::TextureFormat, 
         Some("r32float") => F::R32Float,
         Some("rg16float") => F::Rg16Float,
         Some("rg32float") => F::Rg32Float,
+        Some("depth24plus") => F::Depth24Plus,
+        Some("depth32float") => F::Depth32Float,
+        Some("depth24plus-stencil8") => F::Depth24PlusStencil8,
+        Some("r8uint") => F::R8Uint,
+        Some("rgba8snorm") => F::Rgba8Snorm,
         other => return Err(bad(format!("texture format {other:?} not supported"))),
     })
 }
@@ -456,6 +566,20 @@ fn vertex_format(name: Option<&str>) -> Result<wgpu::VertexFormat, ShaderError> 
         Some("unorm8x4") => F::Unorm8x4,
         other => return Err(bad(format!("vertex format {other:?} not supported"))),
     })
+}
+
+fn compare(name: Option<&str>) -> wgpu::CompareFunction {
+    use wgpu::CompareFunction as C;
+    match name {
+        Some("never") => C::Never,
+        Some("less") => C::Less,
+        Some("equal") => C::Equal,
+        Some("less-equal") => C::LessEqual,
+        Some("greater") => C::Greater,
+        Some("not-equal") => C::NotEqual,
+        Some("greater-equal") => C::GreaterEqual,
+        _ => C::Always,
+    }
 }
 
 fn blend(value: &Value) -> Result<Option<wgpu::BlendState>, ShaderError> {

@@ -44,6 +44,8 @@ pub(crate) struct ImageCtx<'a> {
     /// which may be shown at any size).
     pub full: bool,
     pub shaders: Option<&'a dyn crate::shader::ShaderFills>,
+    /// Shader clock (ms): the playhead's time, 0 at rest.
+    pub time_ms: f64,
 }
 
 /// Resolves one Figma paint for a node of size `w × h`. Returns `None` for hidden or empty paints.
@@ -159,8 +161,11 @@ pub(crate) fn resolve(
             })
         }
         "CUSTOM" => {
-            let (pw, ph) = crate::shader::pixel_size(w, h, img.screen);
-            let Some(pixmap) = img.shaders.and_then(|s| s.fill(doc, p, pw, ph)) else {
+            let (pw, ph) = crate::shader::pixel_size(w, h);
+            let Some(pixmap) = img
+                .shaders
+                .and_then(|s| s.fill(doc, p, pw, ph, img.time_ms))
+            else {
                 stats.unsupported_paints += 1;
                 return None;
             };

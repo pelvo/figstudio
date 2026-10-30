@@ -17,7 +17,7 @@ use boa_engine::{
 use serde_json::{Value, json};
 
 use crate::ShaderError;
-use crate::gpu::{self, Object, Op, Pass, Session};
+use crate::gpu::{self, Object, Op, Pass, Session, Target};
 
 thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
@@ -48,15 +48,17 @@ impl Drop for Clear {
     }
 }
 
-/// Runs `js` (the shader module) on the GPU into a `width × height` output and returns its
-/// straight-alpha RGBA8 pixels.
-pub(crate) fn run(
-    js: &str,
-    params: &Value,
-    width: u16,
-    height: u16,
-    time_ms: f64,
-) -> Result<Vec<u8>, ShaderError> {
+/// What a run draws on: the output size, the clock, and an effect's input (premultiplied
+/// RGBA8 of the output's size).
+pub(crate) struct Frame<'a> {
+    pub width: u16,
+    pub height: u16,
+    pub time_ms: f64,
+    pub input: Option<&'a [u8]>,
+}
+
+/// Runs `js` (the shader module) on the GPU and returns the output's RGBA8 pixels.
+pub(crate) fn run(js: &str, params: &Value, frame: &Frame<'_>) -> Result<Vec<u8>, ShaderError> {
     let (device, queue) = gpu::device().ok_or_else(ShaderError::no_gpu)?;
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     SESSION.with(|s| {
@@ -67,7 +69,7 @@ pub(crate) fn run(
         });
     });
     let clear = Clear;
-    let pixels = script(js, params, width, height, time_ms);
+    let pixels = script(js, params, frame);
     drop(clear);
     if let Some(error) = pollster::block_on(scope.pop()) {
         return Err(ShaderError::gpu(error.to_string()));
@@ -75,13 +77,8 @@ pub(crate) fn run(
     pixels
 }
 
-fn script(
-    js: &str,
-    params: &Value,
-    width: u16,
-    height: u16,
-    time_ms: f64,
-) -> Result<Vec<u8>, ShaderError> {
+fn script(js: &str, params: &Value, f: &Frame<'_>) -> Result<Vec<u8>, ShaderError> {
+    let (width, height) = (f.width, f.height);
     let loader = Rc::new(MapModuleLoader::new());
     let mut ctx = Context::builder()
         .module_loader(loader.clone())
@@ -129,25 +126,62 @@ fn script(
             "usage": 16 | 4 | 1,
         }))
     })?;
+    let input = match f.input {
+        Some(pixels) => {
+            let id = with_session(|s| {
+                let id = s.create_texture(&json!({
+                    "size": [width, height],
+                    "format": "rgba8unorm",
+                    // TEXTURE_BINDING | COPY_DST | COPY_SRC
+                    "usage": 4 | 2 | 1,
+                }))?;
+                s.write_texture(
+                    id,
+                    0,
+                    (0, 0),
+                    pixels,
+                    (0, Some(u32::from(width) * 4), None),
+                    (u32::from(width), u32::from(height)),
+                )?;
+                Ok(id)
+            })?;
+            Some(texture_object(
+                &mut ctx,
+                id,
+                (width, height),
+                "rgba8unorm",
+                1,
+                1,
+            ))
+        }
+        None => None,
+    };
     let device = device_object(&mut ctx);
     let frame = JsValue::from_json(
         &json!({
             "params": params,
             "state": {},
             "input": null,
-            "time": time_ms,
+            "time": f.time_ms,
             "deltaTime": 0,
             "frame": 0,
+            "inputPadding": 0,
+            "outputPadding": 0,
             "mousePosition": { "x": 0, "y": 0 },
         }),
         &mut ctx,
     )
     .map_err(script_error)?;
-    let output_object = texture_object(&mut ctx, output, width, height);
+    let output_object = texture_object(&mut ctx, output, (width, height), "rgba8unorm", 1, 1);
     if let Some(frame) = frame.as_object() {
         frame
             .set(js_string!("output"), output_object, true, &mut ctx)
             .map_err(script_error)?;
+        if let Some(input) = input {
+            frame
+                .set(js_string!("input"), input, true, &mut ctx)
+                .map_err(script_error)?;
+        }
     }
     let args = [device.into(), frame];
     if let Some(setup) = setup {
@@ -227,6 +261,11 @@ fn device_object(ctx: &mut Context) -> JsObject {
             3,
         )
         .function(NativeFunction::from_fn_ptr(submit), js_string!("submit"), 1)
+        .function(
+            NativeFunction::from_fn_ptr(write_texture),
+            js_string!("writeTexture"),
+            4,
+        )
         .build();
     let mut init = ObjectInitializer::new(ctx);
     init.property(js_string!("queue"), queue, Attribute::all());
@@ -333,14 +372,24 @@ fn nothing(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::undefined())
 }
 
-fn texture_object(ctx: &mut Context, id: usize, width: u16, height: u16) -> JsObject {
+fn texture_object(
+    ctx: &mut Context,
+    id: usize,
+    (width, height): (u16, u16),
+    format: &str,
+    samples: u32,
+    mips: u32,
+) -> JsObject {
     let mut init = ObjectInitializer::new(ctx);
     init.property(js_string!("__id"), id as u32, Attribute::all())
         .property(js_string!("width"), width, Attribute::all())
         .property(js_string!("height"), height, Attribute::all())
+        .property(js_string!("depthOrArrayLayers"), 1, Attribute::all())
+        .property(js_string!("sampleCount"), samples, Attribute::all())
+        .property(js_string!("mipLevelCount"), mips, Attribute::all())
         .property(
             js_string!("format"),
-            js_string!("rgba8unorm"),
+            JsString::from(format),
             Attribute::all(),
         )
         .function(
@@ -359,25 +408,38 @@ fn texture_object(ctx: &mut Context, id: usize, width: u16, height: u16) -> JsOb
 fn create_texture(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let desc = arg(args, 0, ctx)?;
     let id = with(|s| s.create_texture(&desc))?;
-    let (w, h) = with(|s| {
+    let (w, h, samples, mips) = with(|s| {
         let t = s.texture(id)?;
-        Ok((t.width(), t.height()))
+        Ok((t.width(), t.height(), t.sample_count(), t.mip_level_count()))
     })?;
-    let object = texture_object(
-        ctx,
-        id,
+    let size = (
         u16::try_from(w).unwrap_or(u16::MAX),
         u16::try_from(h).unwrap_or(u16::MAX),
     );
     let format = desc["format"].as_str().unwrap_or("rgba8unorm");
-    object.set(js_string!("format"), JsString::from(format), true, ctx)?;
-    Ok(object.into())
+    Ok(texture_object(ctx, id, size, format, samples, mips).into())
 }
 
-fn create_view(this: &JsValue, _: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+fn create_view(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let texture = id_of(this, ctx)?;
+    let desc = arg(args, 0, ctx)?;
     let id = with(|s| {
-        let view = s.texture(texture)?.create_view(&Default::default());
+        let t = s.texture(texture)?;
+        let base = gpu::num(desc.get("baseMipLevel")) as u32;
+        if base >= t.mip_level_count() {
+            return Err(ShaderError::script(
+                "createView mip level past the texture's",
+            ));
+        }
+        let count = desc
+            .get("mipLevelCount")
+            .and_then(Value::as_f64)
+            .map(|c| (c as u32).clamp(1, t.mip_level_count() - base));
+        let view = t.create_view(&wgpu::TextureViewDescriptor {
+            base_mip_level: base,
+            mip_level_count: count,
+            ..Default::default()
+        });
         Ok(s.add(Object::View(view)))
     })?;
     Ok(handle(ctx, id, &[]).into())
@@ -437,8 +499,13 @@ fn begin_render_pass(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsR
         .as_array()
         .map_or(&[][..], Vec::as_slice)
     {
-        let view = gpu::handle(&a["view"])
-            .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
+        let to_js = |e: ShaderError| JsNativeError::typ().with_message(e.to_string());
+        let view = gpu::handle(&a["view"]).map_err(to_js)?;
+        let resolve = if a["resolveTarget"].is_object() {
+            Some(gpu::handle(&a["resolveTarget"]).map_err(to_js)?)
+        } else {
+            None
+        };
         let clear = (a["loadOp"].as_str() == Some("clear")).then(|| {
             let c = &a["clearValue"];
             let channel = |k: &str, i: usize| c.get(k).or_else(|| c.get(i)).and_then(Value::as_f64);
@@ -449,12 +516,28 @@ fn begin_render_pass(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsR
                 a: channel("a", 3).unwrap_or(0.0),
             }
         });
-        targets.push((view, clear, a["storeOp"].as_str() != Some("discard")));
+        targets.push(Target {
+            view,
+            clear,
+            store: a["storeOp"].as_str() != Some("discard"),
+            resolve,
+        });
     }
+    let d = &desc["depthStencilAttachment"];
+    let depth = if d.is_object() {
+        let view = gpu::handle(&d["view"])
+            .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
+        let clear = (d["depthLoadOp"].as_str() == Some("clear"))
+            .then(|| d["depthClearValue"].as_f64().unwrap_or(0.0) as f32);
+        Some((view, clear, d["depthStoreOp"].as_str() != Some("discard")))
+    } else {
+        None
+    };
     let index = with(|s| match s.objects.get_mut(encoder) {
         Some(Object::Encoder(passes)) => {
             passes.push(Pass {
                 targets,
+                depth,
                 ops: Vec::new(),
             });
             Ok(passes.len() - 1)
@@ -572,30 +655,15 @@ fn draw_indexed(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult
 fn write_buffer(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let id = id_of(args.get_or_undefined(0), ctx)?;
     let offset = number(args, 1, ctx)? as u64;
-    let data = args
-        .get_or_undefined(2)
+    let data = args.get_or_undefined(2);
+    let bytes = bytes_of(data, ctx)?;
+    // Offsets count elements of a typed array, bytes of an ArrayBuffer.
+    let element = match data
         .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("writeBuffer needs data"))?;
-    let (bytes, element) = if let Ok(array) = JsTypedArray::from_object(data.clone()) {
-        let start = array.byte_offset(ctx)?;
-        let length = array.byte_length(ctx)?;
-        let elements = array.length(ctx)?.max(1);
-        let buffer = array.buffer(ctx)?;
-        let buffer = buffer
-            .as_object()
-            .ok_or_else(|| JsNativeError::typ().with_message("typed array without a buffer"))?;
-        let all = JsArrayBuffer::from_object(buffer.clone())?
-            .data()
-            .map(|d| d.to_vec())
-            .unwrap_or_default();
-        let bytes = all.get(start..start + length).unwrap_or_default().to_vec();
-        (bytes, length / elements)
-    } else {
-        let bytes = JsArrayBuffer::from_object(data.clone())?
-            .data()
-            .map(|d| d.to_vec())
-            .unwrap_or_default();
-        (bytes, 1)
+        .map(|o| JsTypedArray::from_object(o.clone()))
+    {
+        Some(Ok(array)) => bytes.len() / (array.length(ctx)?.max(1)),
+        _ => 1,
     };
     let from = number(args, 3, ctx)? as usize * element;
     let size = if args.get_or_undefined(4).is_undefined() {
@@ -609,6 +677,76 @@ fn write_buffer(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<Js
     with(|s| {
         s.queue.write_buffer(s.buffer(id)?, offset, slice);
         Ok(())
+    })?;
+    Ok(JsValue::undefined())
+}
+
+/// Bytes of a typed array or `ArrayBuffer`.
+fn bytes_of(value: &JsValue, ctx: &mut Context) -> JsResult<Vec<u8>> {
+    let data = value
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("expected typed array data"))?;
+    if let Ok(array) = JsTypedArray::from_object(data.clone()) {
+        let start = array.byte_offset(ctx)?;
+        let length = array.byte_length(ctx)?;
+        let buffer = array.buffer(ctx)?;
+        let buffer = buffer
+            .as_object()
+            .ok_or_else(|| JsNativeError::typ().with_message("typed array without a buffer"))?;
+        let all = JsArrayBuffer::from_object(buffer.clone())?
+            .data()
+            .map(|d| d.to_vec())
+            .unwrap_or_default();
+        return Ok(all.get(start..start + length).unwrap_or_default().to_vec());
+    }
+    Ok(JsArrayBuffer::from_object(data.clone())?
+        .data()
+        .map(|d| d.to_vec())
+        .unwrap_or_default())
+}
+
+/// `queue.writeTexture(destination, data, layout, size)`.
+fn write_texture(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let dest = args
+        .get_or_undefined(0)
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("writeTexture needs a destination"))?;
+    let texture = id_of(&dest.get(js_string!("texture"), ctx)?, ctx)?;
+    let dest_json = arg(args, 0, ctx)?;
+    let data = bytes_of(args.get_or_undefined(1), ctx)?;
+    let layout = arg(args, 2, ctx)?;
+    let size = arg(args, 3, ctx)?;
+    let (w, h) = match &size {
+        Value::Array(v) => (gpu::num(v.first()), gpu::num(v.get(1)).max(1.0)),
+        _ => (
+            gpu::num(size.get("width")),
+            gpu::num(size.get("height")).max(1.0),
+        ),
+    };
+    let origin = &dest_json["origin"];
+    let (ox, oy) = match origin {
+        Value::Array(v) => (gpu::num(v.first()), gpu::num(v.get(1))),
+        _ => (gpu::num(origin.get("x")), gpu::num(origin.get("y"))),
+    };
+    let opt = |k: &str| {
+        layout
+            .get(k)
+            .and_then(Value::as_f64)
+            .map(|v| v.max(0.0) as u32)
+    };
+    with(|s| {
+        s.write_texture(
+            texture,
+            gpu::num(dest_json.get("mipLevel")) as u32,
+            (ox as u32, oy as u32),
+            &data,
+            (
+                gpu::num(layout.get("offset")) as u64,
+                opt("bytesPerRow"),
+                opt("rowsPerImage"),
+            ),
+            (w as u32, h as u32),
+        )
     })?;
     Ok(JsValue::undefined())
 }

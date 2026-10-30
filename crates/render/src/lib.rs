@@ -1528,6 +1528,10 @@ impl Ctx<'_> {
             self.depth -= 1;
             return;
         }
+        if self.draw_shader_effects(node, data, world, path, (stale_glyphs, approximate_ink)) {
+            self.depth -= 1;
+            return;
+        }
         self.stats.nodes += 1;
         self.stats.approximated_instance_ink += usize::from(approximate_ink);
         if data.text("blendMode").is_some_and(|mode| mode != "NORMAL") {
@@ -1894,6 +1898,7 @@ impl Ctx<'_> {
                     screen: paint::linear_scale(world),
                     full: self.rc.full_images(),
                     shaders: self.shaders.as_deref(),
+                    time_ms: self.playhead.as_ref().map_or(0.0, |p| p.time_us / 1e3),
                 };
                 let Some(resolved) = paint::resolve(p, w, h, self.doc, &mut img, &mut self.stats)
                 else {
@@ -1922,6 +1927,115 @@ impl Ctx<'_> {
             }
             start = end;
         }
+    }
+
+    /// A layer with shader effects (`CUSTOM` effects a host can run): drawn without them into
+    /// a pixmap over its box, run through them in order, and drawn in its place. `false`
+    /// leaves the layer to the normal path (which counts the effects as skipped).
+    // shortcut: the input is the layer's own box, so content outside it (children past an
+    // unclipped frame, shadows) is cut; widen to the render bounds when a file needs it.
+    fn draw_shader_effects(
+        &mut self,
+        node: &Node,
+        data: &Val,
+        world: Affine,
+        path: Option<&[Guid]>,
+        (stale, ink): (bool, bool),
+    ) -> bool {
+        let Some(host) = self.shaders.clone() else {
+            return false;
+        };
+        let effects = data.get("effects").map(Val::items).unwrap_or_default();
+        let custom: Vec<&Val> = effects
+            .iter()
+            .filter(|e| e.text("type") == Some("CUSTOM") && e.flag("visible") != Some(false))
+            .collect();
+        if custom.is_empty() || !custom.iter().all(|e| host.has_effect(self.doc, e)) {
+            return false;
+        }
+        let (w, h) = size(data);
+        let (pw, ph) = shader::pixel_size(w, h);
+        let to_pixels =
+            Affine::scale_non_uniform(f64::from(pw) / w.max(1e-6), f64::from(ph) / h.max(1e-6));
+        // The layer without its shader effects, drawn with its box on the pixmap.
+        let mut without = data.clone();
+        if let Val::Obj(fields) = &mut without {
+            let rest: Vec<Val> = effects
+                .iter()
+                .filter(|e| e.text("type") != Some("CUSTOM"))
+                .cloned()
+                .collect();
+            fields.insert("effects", Val::Arr(rest));
+        }
+        let parent = to_pixels * affine(data.get("transform")).inverse();
+        let mut canvas = RenderContext::new_with(pw, ph, RenderSettings::default());
+        let screen = Rect::new(0.0, 0.0, f64::from(pw), f64::from(ph));
+        self.offscreen(&mut canvas, screen, |ctx| {
+            ctx.draw_with_data(node, parent, path, Some((Cow::Owned(without), stale, ink)));
+        });
+        canvas.flush();
+        let mut input = Pixmap::new(pw, ph);
+        canvas.render(&mut input, &mut Resources::new());
+        let time_ms = self.playhead.as_ref().map_or(0.0, |p| p.time_us / 1e3);
+        let mut out = Arc::new(input);
+        for effect in custom {
+            match host.effect(self.doc, effect, &out, time_ms) {
+                Some(next) => out = next,
+                None => self.stats.skipped_effects += 1,
+            }
+        }
+        self.rc.set_transform(world);
+        self.rc.set_paint(PaintType::Image(vello_cpu::Image {
+            image: ImageSource::Pixmap(out),
+            sampler: vello_cpu::peniko::ImageSampler {
+                x_extend: vello_cpu::peniko::Extend::Pad,
+                y_extend: vello_cpu::peniko::Extend::Pad,
+                quality: vello_cpu::peniko::ImageQuality::Medium,
+                alpha: 1.0,
+            },
+        }));
+        self.rc.set_paint_transform(to_pixels.inverse());
+        self.rc.fill_path(&Rect::new(0.0, 0.0, w, h).to_path(0.1));
+        self.rc.set_paint_transform(Affine::IDENTITY);
+        true
+    }
+
+    /// Runs `draw` as this walk on another canvas (output area `screen`): overrides, stats,
+    /// image requests and the work budget carry over and come back.
+    fn offscreen(&mut self, rc: &mut dyn Canvas, screen: Rect, draw: impl FnOnce(&mut Ctx<'_>)) {
+        let overrides = std::mem::replace(
+            &mut self.overrides,
+            Overrides::new(self.definitions.clone()),
+        );
+        let mut sub = Ctx {
+            doc: self.doc,
+            rc,
+            stats: std::mem::take(&mut self.stats),
+            images: self.images,
+            wanted: std::mem::take(&mut self.wanted),
+            fonts: self.fonts.as_deref_mut(),
+            emoji_source: &mut *self.emoji_source,
+            overrides,
+            variables: self.variables.clone(),
+            definitions: self.definitions.clone(),
+            inspection_work: &mut *self.inspection_work,
+            work_left: self.work_left,
+            depth: self.depth,
+            exhausted: self.exhausted,
+            screen,
+            inherited_reach: 0.0,
+            emoji_only: false,
+            playhead: self.playhead.clone(),
+            shaders: self.shaders.clone(),
+            delays: std::mem::take(&mut self.delays),
+        };
+        draw(&mut sub);
+        self.overrides = sub.overrides;
+        self.stats = sub.stats;
+        self.wanted = sub.wanted;
+        self.work_left = sub.work_left;
+        self.exhausted = sub.exhausted;
+        self.delays = sub.delays;
     }
 
     /// Draws children, turning mask layers into clips for the siblings above them.
