@@ -54,26 +54,17 @@ impl TabShaders {
     }
 }
 
-/// What draws a file's shaders from `sources`: on desktop the shader runtime on wgpu. `None`
-/// where shaders cannot run (the browser build has no runtime yet).
-pub fn host(sources: Vec<ShaderSource>) -> Option<Arc<dyn ShaderFills>> {
+/// What draws a file's shaders from `sources`: on desktop the shader runtime on wgpu, in the
+/// browser the page's WebGPU (`web_shaders.rs`).
+fn host(state: &State, sources: Vec<ShaderSource>) -> Arc<dyn ShaderFills> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        Some(Arc::new(figstudio_shader::Fills::new(sources)))
+        let _ = state;
+        Arc::new(figstudio_shader::Fills::new(sources))
     }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = sources;
-        None
-    }
-}
-
-/// Recomputes which shaders of `tab` lack code and gives its document a host for `sources`.
-/// The caller redraws the document.
-pub fn apply(tab: &mut Tab, sources: Vec<ShaderSource>, images: &figstudio_render::images::Images) {
-    tab.shaders.missing = shaders::missing(&tab.doc, &sources);
-    if let Some(host) = host(sources) {
-        images.set_shaders(tab.doc.instance, host);
+        state.web.host(sources)
     }
 }
 
@@ -121,6 +112,9 @@ pub struct State {
     pub folder: Vec<ShaderSource>,
     #[cfg(not(target_arch = "wasm32"))]
     watch: watch::Watch,
+    /// The browser's shader runs.
+    #[cfg(target_arch = "wasm32")]
+    web: crate::web_shaders::Runner,
     #[cfg_attr(
         all(not(target_arch = "wasm32"), not(test)),
         expect(dead_code, reason = "only the browser reads zips in the background")
@@ -136,6 +130,8 @@ impl Default for State {
             folder: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             watch: watch::Watch::default(),
+            #[cfg(target_arch = "wasm32")]
+            web: crate::web_shaders::Runner::default(),
             tx,
             rx,
         }
@@ -150,9 +146,14 @@ impl crate::App {
             return;
         };
         let sources = tab.shaders.sources(&self.shader_code.folder);
-        apply(tab, sources, &self.workers.images());
+        tab.shaders.missing = shaders::missing(&tab.doc, &sources);
         let instance = tab.doc.instance;
-        self.workers.redraw_document(instance);
+        // Through the render worker: the browser's UI thread must not wait on a lock.
+        self.workers
+            .set_shaders(instance, host(&self.shader_code, sources));
+        // Tiles already being drawn come back with the old code: dropped, asked for again.
+        self.workers.fonts_changed();
+        self.tiles.fonts_changed(self.workers.images_arrived());
         self.tiles.forget(instance);
         for tab in self.tabs.iter_mut().filter(|t| t.doc.instance == instance) {
             tab.tile_requests.clear();
@@ -177,6 +178,8 @@ impl crate::App {
                 let before = self.tabs[i].shaders.missing.len();
                 self.tabs[i].shaders.add(source);
                 self.apply_shaders(i);
+                // The browser draws a frame only when asked: one to plan the tiles again.
+                ctx.request_repaint();
                 let after = self.tabs[i].shaders.missing.len();
                 if after < before {
                     self.toast(ctx, format!("Added the code of {label}"), false);
@@ -244,6 +247,11 @@ impl crate::App {
     /// Runs what the notice, the markers and the properties asked for, and takes zips read
     /// in the background. Call every frame.
     pub(crate) fn poll_shader_code(&mut self, ctx: &egui::Context) {
+        // Browser shader results: tiles drawn while they ran are drawn again.
+        #[cfg(target_arch = "wasm32")]
+        if self.shader_code.web.pump(ctx) {
+            self.workers.fonts_changed();
+        }
         while let Ok(zip) = self.shader_code.rx.try_recv() {
             self.add_zip(ctx, zip.tab, &zip.name, zip.shader.as_deref(), &zip.bytes);
         }
@@ -469,7 +477,8 @@ pub fn notice(ui: &egui::Ui, rect: egui::Rect, tab: &mut Tab) -> Option<NoticeAc
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(420.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("◆").color(theme::ACCENT));
+                    let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
+                    diamond(ui.painter(), r.center(), 10.0, theme::ACCENT);
                     ui.label(
                         RichText::new(format!(
                             "{n} shader{} without {} code: {layers} layer{} not drawn",
@@ -538,8 +547,26 @@ fn steps() -> Vec<String> {
             .to_owned(),
     );
     #[cfg(target_arch = "wasm32")]
-    steps.push("Zips you add are used until the tab is closed.".to_owned());
+    steps.push(
+        "Zips you add are used until the tab is closed. Shaders need a browser with WebGPU."
+            .to_owned(),
+    );
     steps
+}
+
+/// The shader mark: a filled diamond `side` across, painted (no font needs to have it).
+fn diamond(painter: &egui::Painter, centre: Pos2, side: f32, colour: egui::Color32) {
+    let h = side / 2.0;
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            centre + vec2(0.0, -h),
+            centre + vec2(h, 0.0),
+            centre + vec2(0.0, h),
+            centre + vec2(-h, 0.0),
+        ],
+        colour,
+        Stroke::NONE,
+    ));
 }
 
 /// Most markers drawn at once.
@@ -570,29 +597,27 @@ pub fn markers(
             }
             drawn += 1;
             let text = if missing.kind == "effect" {
-                "◆ Shader effect: code missing"
+                "Shader effect: code missing"
             } else {
-                "◆ Shader: code missing"
+                "Shader: code missing"
             };
-            let full = painter.layout_no_wrap(
+            let label = painter.layout_no_wrap(
                 text.to_owned(),
                 egui::FontId::proportional(11.0),
                 egui::Color32::WHITE,
             );
             // A layer narrower than the label gets the diamond alone (its label on hover).
-            let galley = if bounds.width() < full.size().x + 24.0 {
-                painter.layout_no_wrap(
-                    "◆".to_owned(),
-                    egui::FontId::proportional(11.0),
-                    egui::Color32::WHITE,
+            const DIAMOND: f32 = 10.0;
+            let wide = bounds.width() >= label.size().x + DIAMOND + 30.0;
+            let size = if wide {
+                vec2(
+                    label.size().x + DIAMOND + 16.0,
+                    label.size().y.max(DIAMOND) + 6.0,
                 )
             } else {
-                full
+                vec2(DIAMOND + 10.0, DIAMOND + 10.0)
             };
-            let pill = egui::Rect::from_min_size(
-                bounds.min.max(clip.min) + vec2(6.0, 6.0),
-                galley.size() + vec2(12.0, 6.0),
-            );
+            let pill = egui::Rect::from_min_size(bounds.min.max(clip.min) + vec2(6.0, 6.0), size);
             let response = ui.interact(
                 pill,
                 egui::Id::new(("shader-marker", tab.id, layer)),
@@ -602,8 +627,7 @@ pub fn markers(
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
             let response = response
                 .on_hover_text(format!(
-                    "{}. Click to choose its code: the zip of Figma's View code → Download files",
-                    text.trim_start_matches("◆ ")
+                    "{text}. Click to choose its code: the zip of Figma's View code → Download files"
                 ))
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
             let fill = if response.hovered() {
@@ -612,7 +636,18 @@ pub fn markers(
                 theme::ACCENT.gamma_multiply(0.85)
             };
             painter.rect(pill, 6.0, fill, Stroke::NONE, egui::StrokeKind::Inside);
-            painter.galley(pill.min + vec2(6.0, 3.0), galley, egui::Color32::WHITE);
+            let centre = egui::pos2(pill.min.x + 5.0 + DIAMOND / 2.0, pill.center().y);
+            diamond(painter, centre, DIAMOND, egui::Color32::WHITE);
+            if wide {
+                painter.galley(
+                    egui::pos2(
+                        pill.min.x + DIAMOND + 10.0,
+                        pill.center().y - label.size().y / 2.0,
+                    ),
+                    label,
+                    egui::Color32::WHITE,
+                );
+            }
             if response.clicked() {
                 tab.shaders.choose.set(Some(Some(missing.id.clone())));
             }

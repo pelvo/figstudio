@@ -576,6 +576,14 @@ visual inspection. It also seeds a symbol-bearing Recents title without opening 
 file and checks that one bundle is fetched. Wait for egui's textbox and initial frames
 before dropping the public input; the HTML loading message clears before handlers exist.
 
+Browser shaders: `web/e2e/shaders.spec.mjs` (same build and server) drops the public
+shaders fixture and the Concentric shader's code (zipped in the test with `zip`), waits for
+`figstudioStatus.shaders_missing` to go from 12 to 11, and checks the sandbox ran the shader
+(`__figstudioShaders.runs`: some ok, none failed) in one opaque-origin frame. It needs a
+browser with WebGPU and a working GPU canvas: full Chromium in new-headless mode
+(`CHROMIUM_PATH=…/Google Chrome for Testing`; the headless shell has no GPU canvas). It is
+skipped when the page has no `navigator.gpu`.
+
 Canvas emoji checks: `cargo test --profile fast -p figstudio-render --features gpu emoji`
 runs synthetic sbix colour/strike/limit tests, empty-database and monochrome fallback,
 opacity, parent clipping and recording/GPU-refusal assertions. Add `--test emoji

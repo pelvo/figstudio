@@ -162,12 +162,19 @@ pub(crate) fn resolve(
         }
         "CUSTOM" => {
             let (pw, ph) = crate::shader::pixel_size(w, h);
-            let Some(pixmap) = img
-                .shaders
-                .and_then(|s| s.fill(doc, p, pw, ph, img.time_ms))
-            else {
-                stats.unsupported_paints += 1;
-                return None;
+            let shaded = img.shaders.map_or(crate::shader::Shaded::Unavailable, |s| {
+                s.fill(doc, p, pw, ph, img.time_ms)
+            });
+            let pixmap = match shaded {
+                crate::shader::Shaded::Drawn(pixmap) => pixmap,
+                crate::shader::Shaded::Pending => {
+                    stats.images_loading += 1;
+                    return None;
+                }
+                crate::shader::Shaded::Unavailable => {
+                    stats.unsupported_paints += 1;
+                    return None;
+                }
             };
             let fit = Affine::scale_non_uniform(
                 w / f64::from(pixmap.width()),

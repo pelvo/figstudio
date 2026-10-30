@@ -115,6 +115,8 @@ mod vibrancy;
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(target_arch = "wasm32")]
+mod web_shaders;
+#[cfg(target_arch = "wasm32")]
 mod web_wake;
 mod worker;
 
@@ -1175,7 +1177,8 @@ impl App {
                 r#"{{"tabs":{},"loading":{},"page":{},"pages":{},"zoom":{},"drawn":{},"#,
                 r#""culled":{},"images_loading":{},"images_missing":{},"render_ms":{:.1},"#,
                 r#""image_cache_bytes":{},"images_arrived":{},"busy":{},"errors":{},"#,
-                r#""cjk_font":"{:?}","cjk_variant":"{}","renderer":"{}","gpu_fallback_tiles":{}}}"#
+                r#""cjk_font":"{:?}","cjk_variant":"{}","renderer":"{}","gpu_fallback_tiles":{},"#,
+                r#""shaders_missing":{}}}"#
             ),
             self.tabs.len(),
             self.loading.len(),
@@ -1196,6 +1199,7 @@ impl App {
             // A fixed name ("GPU (WebGPU)", "CPU"): no device or driver names.
             self.renderer,
             s.map_or(0, |s| s.gpu_fallback_tiles),
+            tab.map_or(0, |t| t.shaders.missing.len()),
         )
     }
 }

@@ -320,11 +320,18 @@ impl Workers {
                     .into_iter()
                     .chain(std::iter::from_fn(|| jobs.try_recv().ok()));
                 for msg in arrived {
-                    if let Msg::Forget { doc } = msg {
-                        recordings.forget(doc);
-                        continue;
-                    }
-                    count.fetch_sub(queue.take(msg), Ordering::Relaxed);
+                    match msg {
+                        Msg::Forget { doc } => {
+                            recordings.forget(doc);
+                            continue;
+                        }
+                        Msg::Shaders { doc, host } => {
+                            images.images.set_shaders(doc, host);
+                            recordings.forget(doc);
+                            continue;
+                        }
+                        msg => count.fetch_sub(queue.take(msg), Ordering::Relaxed),
+                    };
                 }
                 if queue.is_empty() {
                     continue;
@@ -460,11 +467,18 @@ impl Workers {
         }
     }
 
-    /// Draws document `instance` again from scratch (its shader code changed): its page
-    /// recordings are dropped.
-    pub fn redraw_document(&self, instance: u64) {
+    /// Draws document `instance`'s shaders with `host` from now on, from scratch: the render
+    /// worker installs it and drops the document's page recordings.
+    pub fn set_shaders(
+        &self,
+        instance: u64,
+        host: std::sync::Arc<dyn figstudio_render::shader::ShaderFills>,
+    ) {
         if let Some(tx) = &self.render_tx {
-            let _ = tx.send(Msg::Forget { doc: instance });
+            let _ = tx.send(Msg::Shaders {
+                doc: instance,
+                host,
+            });
         }
     }
 
@@ -482,8 +496,7 @@ impl Workers {
         self.queue.arrived.load(Ordering::Relaxed)
     }
 
-    /// Font changes use the same freshness stamp as arriving images.
-    #[cfg(target_arch = "wasm32")]
+    /// Font and shader code changes use the same freshness stamp as arriving images.
     pub fn fonts_changed(&self) {
         self.queue.arrived.fetch_add(1, Ordering::Relaxed);
     }

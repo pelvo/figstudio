@@ -7,18 +7,29 @@ use std::sync::Arc;
 use figstudio_fig::{Document, Val};
 use vello_cpu::Pixmap;
 
+/// What a shader host gives for a paint or effect.
+#[derive(Clone, Debug)]
+pub enum Shaded {
+    /// The pixels the shader drew.
+    Drawn(Arc<Pixmap>),
+    /// Being drawn (asynchronously, in the browser): drawn later, counted as loading.
+    Pending,
+    /// The shader cannot run here (no code, no GPU, it failed).
+    Unavailable,
+}
+
+impl Shaded {
+    /// `Drawn` when `Some`.
+    pub fn from_option(pixmap: Option<Arc<Pixmap>>) -> Self {
+        pixmap.map_or(Shaded::Unavailable, Shaded::Drawn)
+    }
+}
+
 /// Draws shader paints and effects.
 pub trait ShaderFills: Send + Sync {
     /// The pixels the `CUSTOM` paint `paint` draws over `width × height` pixels at `time_ms`
     /// on the playback clock, or `None` when its shader cannot run here.
-    fn fill(
-        &self,
-        doc: &Document,
-        paint: &Val,
-        width: u16,
-        height: u16,
-        time_ms: f64,
-    ) -> Option<Arc<Pixmap>>;
+    fn fill(&self, doc: &Document, paint: &Val, width: u16, height: u16, time_ms: f64) -> Shaded;
 
     /// Whether the `CUSTOM` effect `effect` has a shader to run (checked before the layer is
     /// drawn for it).
@@ -26,13 +37,7 @@ pub trait ShaderFills: Send + Sync {
 
     /// The `CUSTOM` effect `effect` applied to `input` (the layer drawn without it,
     /// premultiplied), or `None` when its shader cannot run.
-    fn effect(
-        &self,
-        doc: &Document,
-        effect: &Val,
-        input: &Pixmap,
-        time_ms: f64,
-    ) -> Option<Arc<Pixmap>>;
+    fn effect(&self, doc: &Document, effect: &Val, input: &Pixmap, time_ms: f64) -> Shaded;
 }
 
 /// Most pixels a side of a shader fill is drawn at.

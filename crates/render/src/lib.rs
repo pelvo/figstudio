@@ -1980,8 +1980,10 @@ impl Ctx<'_> {
         let mut out = Arc::new(input);
         for effect in custom {
             match host.effect(self.doc, effect, &out, time_ms) {
-                Some(next) => out = next,
-                None => self.stats.skipped_effects += 1,
+                shader::Shaded::Drawn(next) => out = next,
+                // Drawn without it until it arrives.
+                shader::Shaded::Pending => self.stats.images_loading += 1,
+                shader::Shaded::Unavailable => self.stats.skipped_effects += 1,
             }
         }
         self.rc.set_transform(world);
