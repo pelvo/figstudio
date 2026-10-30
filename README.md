@@ -123,12 +123,15 @@ cargo run --release -p figstudio -- path/to/design.fig
   file (stored in `FILE.fig.codeconnect.json` next to the file, the same store the MCP tools
   use; desktop only). With nothing selected, the Overview lists the page's components that
   are not connected yet.
-- Shader fills and effects are drawn from their code (desktop app, CLI and MCP renders): save
-  the zip of Figma's shader menu → **View code** → **Download files** in `FILE.fig.shaders/`
-  next to the file. The shader's TypeScript runs in Boa (a JavaScript engine in Rust) and its
-  WebGPU calls run on wgpu, at one pixel per layer unit as Figma runs them; animated shaders
-  follow the motion preview's playhead. Without the source, or without a GPU, the shader is
-  skipped and counted. The browser app does not run shaders yet.
+- Shader fills and effects are drawn from their code (desktop app, CLI and MCP renders). Figma
+  keeps that code online, not in the `.fig`: a file using shaders without it gets a notice with
+  the steps and a marker on each such layer. Add the zip of Figma's shader menu → **View code**
+  → **Download files** by clicking a marker, dropping it on the window, putting it in
+  `FILE.fig.shaders/` next to the file, or in the shader folder set in Settings → Canvas (both
+  watched). The shader's TypeScript runs in Boa (a JavaScript engine in Rust) and its WebGPU
+  calls run on wgpu, at one pixel per layer unit as Figma runs them; animated shaders follow
+  the motion preview's playhead. Without a GPU the shader is skipped and counted. The browser
+  app does not run shaders yet.
 - Animated layers have a **▶ Play** button in Properties: a preview window that plays and
   scrubs the motion, with springs timed like Figma's.
 - Paste a `figma.com` or `figstudio://` URL into the command bar (⌘L, Ctrl+L elsewhere), then

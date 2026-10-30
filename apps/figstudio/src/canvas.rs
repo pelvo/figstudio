@@ -295,6 +295,7 @@ pub fn show(
     }
     crate::canvas_text::overlay(&painter, tab, origin);
     marquee::paint(&painter, tab, origin);
+    crate::shader_code::markers(ui, &painter, tab, |id| corners(tab, origin, id));
     tab.view = target;
 
     let cursor = match tool {

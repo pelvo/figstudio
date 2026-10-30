@@ -1408,6 +1408,15 @@ impl App {
                     ui.multiply_opacity(shown);
                     cursor = canvas::show(ui, tab, &mut self.workers, &mut self.tiles, options);
                     ui.set_opacity(before);
+                    match crate::shader_code::notice(ui, card, tab) {
+                        Some(crate::shader_code::NoticeAction::Choose) => {
+                            tab.shaders.choose.set(Some(None));
+                        }
+                        Some(crate::shader_code::NoticeAction::Close) => {
+                            tab.shaders.notice_closed = true;
+                        }
+                        None => {}
+                    }
                     // Now that the new page has planned its tiles, so the underlay's count as
                     // on screen and are not the first to go.
                     self.tiles.keep_drawn(&underlay);

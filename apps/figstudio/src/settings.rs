@@ -1075,6 +1075,34 @@ impl App {
                     self.prefs.renderer = r;
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                section(ui, "Shader code");
+                let note = self.prefs.shader_folder.as_ref().map_or_else(
+                    || "Zips of Figma's View code, for every file; watched".to_owned(),
+                    |dir| dir.display().to_string(),
+                );
+                let mut choose = false;
+                let mut clear = false;
+                setting(ui, "Shader folder", &note, |ui| {
+                    if self.prefs.shader_folder.is_some() && ui.button("Clear").clicked() {
+                        clear = true;
+                    }
+                    if ui.button("Choose…").clicked() {
+                        choose = true;
+                    }
+                });
+                if clear {
+                    self.prefs.shader_folder = None;
+                }
+                if choose
+                    && let Some(dir) = rfd::FileDialog::new()
+                        .set_title("Folder of shader code zips")
+                        .pick_folder()
+                {
+                    self.prefs.shader_folder = Some(dir);
+                }
+            }
             section(ui, "On the canvas");
             setting(ui, "Frame names", "Above top-level frames", |ui| {
                 switch(ui, &mut self.prefs.frame_labels, "Frame names");

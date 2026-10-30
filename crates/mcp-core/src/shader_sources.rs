@@ -5,10 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// Most sources read from one folder.
 const MAX_SOURCES: usize = 200;
-/// Most files read from one source.
-const MAX_FILES: usize = 100;
-/// Largest file read (Figma's own cap for a shader's source is 1 MB in all).
-const MAX_FILE_BYTES: u64 = 1_000_000;
+use crate::shaders::{MAX_SOURCE_FILE_BYTES as MAX_FILE_BYTES, MAX_SOURCE_FILES as MAX_FILES};
 
 /// The shader folder of the `.fig` at `fig`.
 pub fn folder(fig: &Path) -> PathBuf {
@@ -20,7 +17,15 @@ pub fn folder(fig: &Path) -> PathBuf {
 /// Every source in the shader folder of `fig`; none when there is no folder. Unreadable,
 /// oversized and non-text entries are left out.
 pub fn load(fig: &Path) -> Vec<ShaderSource> {
-    let Ok(entries) = std::fs::read_dir(folder(fig)) else {
+    load_dir(&folder(fig))
+}
+
+/// Largest zip read.
+const MAX_ZIP_BYTES: u64 = 20_000_000;
+
+/// Every source in the folder `dir` (zips and unpacked folders); none when it cannot be read.
+pub fn load_dir(dir: &Path) -> Vec<ShaderSource> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut paths: Vec<PathBuf> = entries.filter_map(|e| Some(e.ok()?.path())).collect();
@@ -32,18 +37,19 @@ pub fn load(fig: &Path) -> Vec<ShaderSource> {
             let label = path.file_stem()?.to_string_lossy().into_owned();
             // Links could point anywhere: only plain files and folders are read.
             let meta = std::fs::symlink_metadata(&path).ok()?;
-            let files = if meta.is_dir() {
-                from_folder(&path)
+            if meta.is_dir() {
+                let files = from_folder(&path);
+                (!files.is_empty()).then(|| ShaderSource::new(label, files))
             } else if path
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
                 && meta.is_file()
+                && meta.len() <= MAX_ZIP_BYTES
             {
-                from_zip(&path)
+                ShaderSource::from_zip(label, &std::fs::read(&path).ok()?)
             } else {
-                return None;
-            };
-            (!files.is_empty()).then(|| ShaderSource::new(label, files))
+                None
+            }
         })
         .collect()
 }
@@ -67,29 +73,6 @@ fn from_folder(dir: &Path) -> Vec<(String, String)> {
             Some((name, text(std::fs::read(&path).ok()?)?))
         })
         .take(MAX_FILES)
-        .collect();
-    files.sort();
-    files
-}
-
-fn from_zip(path: &Path) -> Vec<(String, String)> {
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return Vec::new();
-    };
-    let Ok(len) = file.metadata().map(|m| m.len()) else {
-        return Vec::new();
-    };
-    let Ok(entries) = figstudio_fig::archive::read_entries(&mut file, len) else {
-        return Vec::new();
-    };
-    let mut files: Vec<(String, String)> = entries
-        .iter()
-        .filter(|e| !e.name.ends_with('/') && e.size <= MAX_FILE_BYTES)
-        .take(MAX_FILES)
-        .filter_map(|e| {
-            let bytes = figstudio_fig::archive::read_entry(&mut file, e).ok()?;
-            Some((e.name.clone(), text(bytes)?))
-        })
         .collect();
     files.sort();
     files

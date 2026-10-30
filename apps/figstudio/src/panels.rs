@@ -454,7 +454,7 @@ fn properties_view(ui: &mut Ui, tab: &Tab) -> (Option<Item>, Option<Guid>, Optio
                     .and_then(|id| id.parse().ok());
             }
             for shader in &details.shaders {
-                shader_section(ui, shader);
+                shader_section(ui, shader, &tab.shaders);
             }
             if let Some(component) = crate::code_connect::component_of(doc, node) {
                 crate::code_connect::component_section(ui, tab, node, component);
@@ -716,7 +716,7 @@ fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<I
 
 /// One shader fill or effect: its version, then each parameter's value (colours with a swatch,
 /// as Fill shows them).
-fn shader_section(ui: &mut Ui, shader: &serde_json::Value) {
+fn shader_section(ui: &mut Ui, shader: &serde_json::Value, code: &crate::shader_code::TabShaders) {
     let title = match shader["type"].as_str() {
         Some("fill") => "Shader fill",
         Some("effect") => "Shader effect",
@@ -733,6 +733,18 @@ fn shader_section(ui: &mut Ui, shader: &serde_json::Value) {
             caption.push_str(" · hidden");
         }
         ui.label(RichText::new(caption).color(p.text_faint).small());
+        if let Some(id) = shader["id"].as_str().filter(|id| code.is_missing(id)) {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Code missing: not drawn").color(theme::ACCENT));
+                if ui
+                    .small_button("Choose zip…")
+                    .on_hover_text("The zip of Figma's View code → Download files for this shader")
+                    .clicked()
+                {
+                    code.choose.set(Some(Some(id.to_owned())));
+                }
+            });
+        }
         for value in shader["values"].as_array().into_iter().flatten() {
             let label = value["label"].as_str().unwrap_or("?");
             match crate::inspect::colour_of(&value["value"]) {
