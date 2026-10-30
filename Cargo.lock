@@ -1702,7 +1702,7 @@ checksum = "f4beca3cb2444e3304ac30843cc091f44ed58932353cd492ce740067bfce6b12"
 
 [[package]]
 name = "figstudio"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clipboard-rs",
@@ -1758,7 +1758,7 @@ dependencies = [
 
 [[package]]
 name = "figstudio-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "figstudio-diff",
@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "figstudio-diff"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "figstudio-fig",
  "figstudio-render",
@@ -1788,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "figstudio-fig"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "kiwi-schema",
@@ -1803,7 +1803,7 @@ dependencies = [
 
 [[package]]
 name = "figstudio-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1838,7 +1838,7 @@ dependencies = [
 
 [[package]]
 name = "figstudio-mcp-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "epaint_default_fonts",
@@ -1858,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "figstudio-render"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "epaint_default_fonts",
  "figstudio-fig",
