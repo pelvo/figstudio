@@ -553,6 +553,50 @@ pub(crate) fn paint_mark(
     );
 }
 
+/// The app's own icon (`assets/icon.png`, as the Dock shows it) filling `rect`. Desktop
+/// only: the browser build does not carry the 200 KB PNG. Returns false if it could not be
+/// decoded (nothing is drawn then).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn paint_app_icon(ui: &Ui, rect: Rect) -> bool {
+    let id = Id::new("app-icon-texture");
+    let cached = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<Option<egui::TextureHandle>>(id));
+    let texture = cached.unwrap_or_else(|| {
+        let loaded = app_icon_image().map(|image| {
+            ui.ctx()
+                .load_texture("app-icon", image, egui::TextureOptions::LINEAR)
+        });
+        ui.ctx().data_mut(|d| d.insert_temp(id, loaded.clone()));
+        loaded
+    });
+    let Some(texture) = texture else {
+        return false;
+    };
+    ui.painter().image(
+        texture.id(),
+        rect,
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+    true
+}
+
+/// The icon decoded and scaled down once on the CPU (wgpu has no mipmaps here), sharp up to
+/// about 96 points on a Retina screen.
+#[cfg(not(target_arch = "wasm32"))]
+fn app_icon_image() -> Option<egui::ColorImage> {
+    let decoded = image::load_from_memory(crate::ICON_PNG)
+        .inspect_err(|error| tracing::warn!("app icon not decoded: {error}"))
+        .ok()?
+        .to_rgba8();
+    let small = image::imageops::resize(&decoded, 192, 192, image::imageops::FilterType::Lanczos3);
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        [small.width() as usize, small.height() as usize],
+        small.as_raw(),
+    ))
+}
+
 /// A button filled with `tint`'s accent at `rect` that lifts on hover. `label` is its
 /// accessible name (with its keys, if any); `text` is what it shows.
 pub(crate) fn accent_button(
