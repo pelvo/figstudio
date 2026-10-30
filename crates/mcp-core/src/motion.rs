@@ -693,37 +693,51 @@ fn intern_kind(kind: &str) -> &'static str {
         .unwrap_or("CUSTOM_CUBIC")
 }
 
-/// A stored named curve: Figma's public easing type, motion.dev's name, and the cubic-bezier
-/// (CSS's `ease-in`/`ease-out`/`ease-in-out` and motion.dev's `back` curves).
+/// A stored named curve: Figma's public easing type, motion.dev's name (empty: written as a
+/// bezier, as Figma's snippets do) and the cubic-bezier.
 fn named_cubic(kind: &str) -> Option<(&'static str, &'static str, [f64; 4])> {
     Some(match kind {
         "IN_CUBIC" | "EASE_IN" => ("EASE_IN", "easeIn", [0.42, 0.0, 1.0, 1.0]),
         "OUT_CUBIC" => ("EASE_OUT", "easeOut", [0.0, 0.0, 0.58, 1.0]),
         "INOUT_CUBIC" => ("EASE_IN_AND_OUT", "easeInOut", [0.42, 0.0, 0.58, 1.0]),
-        "IN_BACK_CUBIC" => ("EASE_IN_BACK", "backIn", [0.31, 0.01, 0.66, -0.59]),
-        "OUT_BACK_CUBIC" => ("EASE_OUT_BACK", "backOut", [0.33, 1.53, 0.69, 0.99]),
-        "INOUT_BACK_CUBIC" => ("EASE_IN_AND_OUT_BACK", "backInOut", [0.68, -0.6, 0.32, 1.6]),
+        // Figma's own back curves (stored in its files; its snippets write them as beziers).
+        "IN_BACK_CUBIC" => ("EASE_IN_BACK", "", [0.3, -0.05, 0.7, -0.5]),
+        "OUT_BACK_CUBIC" => ("EASE_OUT_BACK", "", [0.45, 1.45, 0.8, 1.0]),
+        "INOUT_BACK_CUBIC" => ("EASE_IN_AND_OUT_BACK", "", [0.7, -0.4, 0.4, 1.4]),
         _ => return None,
     })
 }
 
-/// A spring preset over its segment ([`segment_spring`]'s unit spring). The file stores only
-/// the preset's name, not its parameters.
+/// The physical spring of a preset easing (stored with the keyframe in newer files, not in
+/// older ones). Values as Figma stores them.
 fn spring_preset(kind: &str) -> Option<Spring> {
-    let &(_, decay, freq) = SPRING_PRESETS.iter().find(|(k, _, _)| *k == kind)?;
+    let &(_, stiffness, damping) = SPRING_PRESETS.iter().find(|(k, _, _)| *k == kind)?;
     Some(Spring {
-        stiffness: decay * decay + freq * freq,
-        damping: 2.0 * decay,
+        stiffness,
+        damping,
         mass: 1.0,
     })
 }
 
-/// Stored preset name, decay and angular frequency over a segment of length 1, from the
-/// spring function Figma's `get_motion_context` writes for it
-/// (`1 - exp(-t·decay)·(cos(t·freq) + decay/freq·sin(t·freq))`).
-// shortcut: only the preset the motion fixture uses; add the others when a file with them is
-// read through Figma's MCP.
-const SPRING_PRESETS: [(&str, f64, f64); 1] = [("SPRING_PRESET_TWO", 7.1866, 22.3441)];
+/// Stored preset name, stiffness and damping (mass 1): GENTLE, QUICK, BOUNCY and SLOW in
+/// Figma's panel, in that order.
+const SPRING_PRESETS: [(&str, f64, f64); 4] = [
+    ("GENTLE_SPRING", 100.0, 15.0),
+    ("SPRING_PRESET_ONE", 300.0, 20.0),
+    ("SPRING_PRESET_TWO", 600.0, 15.0),
+    ("SPRING_PRESET_THREE", 80.0, 20.0),
+];
+
+/// Figma's public easing type of a stored spring preset.
+fn preset_public(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "GENTLE_SPRING" => "GENTLE",
+        "SPRING_PRESET_ONE" => "QUICK",
+        "SPRING_PRESET_TWO" => "BOUNCY",
+        "SPRING_PRESET_THREE" => "SLOW",
+        _ => return None,
+    })
+}
 
 /// Figma's normalised spring `bounce` (0 to 1) of physical spring parameters: one minus the
 /// damping ratio, as motion.dev defines bounce.
@@ -769,12 +783,13 @@ impl Easing {
                     "easingFunctionCubicBezier": bezier(b),
                 }),
             },
-            Easing::Spring(kind, ..) => match self.bounce() {
-                Some(b) => json!({
+            Easing::Spring(kind, ..) => match (preset_public(kind), self.bounce()) {
+                (Some(public), _) => json!({"type": public}),
+                (None, Some(b)) => json!({
                     "type": "CUSTOM_SPRING",
                     "easingFunctionSpring": tidy(json!({"bounce": b})),
                 }),
-                None => json!({"type": kind}),
+                (None, None) => json!({"type": kind}),
             },
         }
     }
@@ -816,10 +831,9 @@ impl Easing {
         let Easing::Spring(kind, spring, _) = self else {
             return (unit_spring(DEFAULT_SPRING), false);
         };
-        match (spring, spring_preset(kind)) {
-            (Some(s), _) => (unit_spring(*s), true),
-            (None, Some(preset)) => (preset, true),
-            (None, None) => (unit_spring(DEFAULT_SPRING), false),
+        match spring.or_else(|| spring_preset(kind)) {
+            Some(s) => (unit_spring(s), true),
+            None => (unit_spring(DEFAULT_SPRING), false),
         }
     }
 
@@ -830,8 +844,8 @@ impl Easing {
             Easing::Linear => "\"linear\"".into(),
             Easing::Hold => "() => 0".into(),
             Easing::Cubic(kind, b) => match named_cubic(kind) {
-                Some((_, name, _)) => format!("\"{name}\""),
-                None => bezier_js(b),
+                Some((_, name, _)) if !name.is_empty() => format!("\"{name}\""),
+                _ => bezier_js(b),
             },
             Easing::Spring(..) => spring_js(self.unit_spring().0),
         }
@@ -900,24 +914,30 @@ fn spring_css(unit: Spring) -> String {
     out
 }
 
-/// How far Figma's spring decays over its segment: its envelope is e^-7.204 at the end.
-/// Figma keeps only a stored spring's damping ratio and stretches it to settle at its
-/// keyframe; its `get_motion_context` writes the custom spring of stiffness 100, damping 6.52,
-/// mass 1 over 1 s as `1 - exp(-t·7.204)·(cos(t·20.8941) + 0.3448·sin(t·20.8941))`.
-// shortcut: read off one custom spring; recheck with another (presets come out near 7.19).
-const SPRING_DECAY: f64 = 7.204;
+/// How long a spring segment is, in units of the spring's natural period over 2π: Figma
+/// stretches a spring (keeping only its damping ratio ζ) so that its segment covers
+/// `SETTLE_A / ζ + SETTLE_B` of them, close to the time its envelope falls to 1/1000 plus
+/// one. Fitted on the 50-sample curves Figma's `get_motion_context` writes for ζ from 0.2 to
+/// 0.75 (GENTLE, QUICK, BOUNCY, two custom springs and the fixture's): every sample within
+/// 0.003 of Figma's.
+const SETTLE_A: f64 = 6.8898;
+const SETTLE_B: f64 = 0.9907;
+/// The same for a critically damped or overdamped spring, which Figma (like WebKit's
+/// SpringSolver) plays as critically damped.
+// shortcut: measured on one spring (SLOW); recheck when another heavily damped spring is
+// read through Figma's MCP.
+const SETTLE_CRITICAL: f64 = 11.182;
 
 /// The stored spring `s` stretched over a segment of length 1, the way Figma plays it: only
-/// its damping ratio counts, and its slowest mode decays by [`SPRING_DECAY`].
+/// its damping ratio counts (capped at 1, critically damped), stretched to [`SETTLE_A`].
 fn unit_spring(s: Spring) -> Spring {
-    let zeta = (s.damping / (2.0 * (s.stiffness.max(1e-9) * s.mass.max(1e-9)).sqrt())).max(0.05);
-    // Decay rate of the slowest mode per unit of natural frequency.
-    let decay = if zeta < 1.0 {
-        zeta
+    let zeta =
+        (s.damping / (2.0 * (s.stiffness.max(1e-9) * s.mass.max(1e-9)).sqrt())).clamp(0.05, 1.0);
+    let w = if zeta < 1.0 {
+        SETTLE_A / zeta + SETTLE_B
     } else {
-        zeta - (zeta * zeta - 1.0).sqrt()
+        SETTLE_CRITICAL
     };
-    let w = SPRING_DECAY / decay;
     Spring {
         stiffness: w * w,
         damping: 2.0 * zeta * w,
@@ -1276,6 +1296,16 @@ fn motion_snippet(a: &Animated, duration: f64, notes: &mut Notes) -> String {
     };
     let seconds = |us: f64| n(us / 1e6);
     let keyframed = |v: &MotionValue| -> String {
+        // One spring over the whole timeline is a motion.dev spring, as Figma writes it.
+        if let [_, (_, _, last)] = v.frames.as_slice()
+            && let Some(bounce) = last.bounce()
+        {
+            return format!(
+                "duration: {}, type: 'spring', bounce: {}{repeat}",
+                seconds(duration),
+                n((bounce * 1e4).round() / 1e4)
+            );
+        }
         let times: Vec<_> = v.frames.iter().map(|(t, _, _)| n(t / duration)).collect();
         let eases: Vec<_> = v
             .frames
@@ -1283,11 +1313,15 @@ fn motion_snippet(a: &Animated, duration: f64, notes: &mut Notes) -> String {
             .skip(1)
             .map(|(_, _, e)| e.motion())
             .collect();
+        // One segment's ease is written alone, a list of them as an array (Figma's form).
+        let ease = match eases.as_slice() {
+            [one] => one.clone(),
+            many => format!("[{}]", many.join(", ")),
+        };
         format!(
-            "duration: {}, times: [{}], ease: [{}]{repeat}",
+            "duration: {}, times: [{}], ease: {ease}{repeat}",
             seconds(duration),
             times.join(", "),
-            eases.join(", ")
         )
     };
     let mut out = format!("<{tag}\n");

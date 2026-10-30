@@ -91,8 +91,8 @@ fn child_layout_matches_path_inspection_on_every_public_fixture() {
         .filter(|p| p.extension().is_some_and(|e| e == "fig"))
         .collect();
     files.sort();
-    // 7 fig2sketch files and 2 Figma Community files (motion, shaders).
-    assert_eq!(files.len(), 9);
+    // 7 fig2sketch files, 2 Figma Community files (motion, shaders) and motion-probe.
+    assert_eq!(files.len(), 10);
     let mut compared = 0;
     for file in files {
         let doc = Document::open(&file).unwrap();

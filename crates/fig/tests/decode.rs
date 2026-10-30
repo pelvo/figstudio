@@ -9,11 +9,13 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 /// Node counts and format versions, cross-checked against the TypeScript decoder in figma-read-mcp
-/// (the two Figma Community fixtures, `motion` and `shaders`, against `figstudio-cli doctor`).
-const FIXTURES: [(&str, u32, usize); 9] = [
+/// (the two Figma Community fixtures, `motion` and `shaders`, and `motion-probe`, made for
+/// figstudio in Figma, against `figstudio-cli doctor`).
+const FIXTURES: [(&str, u32, usize); 10] = [
     ("broken_images", 20, 6),
     ("corners", 106, 13),
     ("motion", 101, 1_182),
+    ("motion-probe", 101, 56),
     ("noise_and_grain", 87, 6),
     ("sections", 106, 21),
     ("shaders", 106, 28_202),
