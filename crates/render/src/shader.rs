@@ -7,21 +7,43 @@ use std::sync::Arc;
 use figstudio_fig::{Document, Val};
 use vello_cpu::Pixmap;
 
-/// Draws shader paints.
+/// Draws shader paints and effects.
 pub trait ShaderFills: Send + Sync {
-    /// The premultiplied pixels the `CUSTOM` paint `paint` draws over `width × height`
-    /// pixels, or `None` when its shader cannot run here.
-    fn fill(&self, doc: &Document, paint: &Val, width: u16, height: u16) -> Option<Arc<Pixmap>>;
+    /// The pixels the `CUSTOM` paint `paint` draws over `width × height` pixels at `time_ms`
+    /// on the playback clock, or `None` when its shader cannot run here.
+    fn fill(
+        &self,
+        doc: &Document,
+        paint: &Val,
+        width: u16,
+        height: u16,
+        time_ms: f64,
+    ) -> Option<Arc<Pixmap>>;
+
+    /// Whether the `CUSTOM` effect `effect` has a shader to run (checked before the layer is
+    /// drawn for it).
+    fn has_effect(&self, doc: &Document, effect: &Val) -> bool;
+
+    /// The `CUSTOM` effect `effect` applied to `input` (the layer drawn without it,
+    /// premultiplied), or `None` when its shader cannot run.
+    fn effect(
+        &self,
+        doc: &Document,
+        effect: &Val,
+        input: &Pixmap,
+        time_ms: f64,
+    ) -> Option<Arc<Pixmap>>;
 }
 
 /// Most pixels a side of a shader fill is drawn at.
 pub const MAX_SIDE: f64 = 2048.0;
 
-/// Pixel size to draw a `w × h` node-unit fill at `screen` pixels per unit: the scale is
-/// rounded up to a power of two, so zooming re-runs a shader only every doubling. Both
-/// sides shrink together past [`MAX_SIDE`]: shaders read the output's aspect ratio.
-pub(crate) fn pixel_size(w: f64, h: f64, screen: f64) -> (u16, u16) {
-    let mut scale = screen.max(1.0 / 64.0).log2().ceil().exp2();
+/// Pixel size a shader draws a `w × h` node-unit layer at: one pixel per unit, whatever the
+/// zoom or export scale, as Figma runs them (pixel-sized patterns such as halftone dots keep
+/// their size: Figma's 2× export of a halftone layer has dots twice as big as a 2× run).
+/// Both sides shrink together past [`MAX_SIDE`]: shaders read the output's aspect ratio.
+pub(crate) fn pixel_size(w: f64, h: f64) -> (u16, u16) {
+    let mut scale = 1.0;
     let longest = w.max(h) * scale;
     if longest > MAX_SIDE {
         scale *= MAX_SIDE / longest;
@@ -36,13 +58,14 @@ mod tests {
 
     #[test]
     fn a_big_fill_keeps_its_aspect_ratio() {
-        let (w, h) = pixel_size(1580.0, 935.0, 2.0);
+        let (w, h) = pixel_size(3160.0, 1870.0);
         assert_eq!(w, 2048);
         assert!(
-            (f64::from(w) / f64::from(h) - 1580.0 / 935.0).abs() < 2e-3,
+            (f64::from(w) / f64::from(h) - 3160.0 / 1870.0).abs() < 2e-3,
             "{w}x{h}"
         );
-        assert_eq!(pixel_size(100.0, 50.0, 1.0), (100, 50));
-        assert_eq!(pixel_size(100.0, 50.0, 0.7), (100, 50));
+        // One pixel per layer unit, at any zoom.
+        assert_eq!(pixel_size(100.0, 50.0), (100, 50));
+        assert_eq!(pixel_size(100.4, 49.6), (100, 50));
     }
 }

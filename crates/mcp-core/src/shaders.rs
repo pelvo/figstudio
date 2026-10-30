@@ -501,19 +501,34 @@ pub fn program<'s>(
 }
 
 /// A stored value as shader code reads it: a circle's `center` becomes its `x` and `y`
-/// (`{x, y, radius, angle}`, as `pointAngleRadiusParam` reads it).
-// shortcut: only circle points are reshaped; check gradient and colour-point params when a
-// shader using them has its source.
+/// (`{x, y, radius, angle}`, as `pointAngleRadiusParam` reads it), and values nested as
+/// variable data (`{dataType, value: {colorValue: …}}`, a gradient stop's colour) become the
+/// plain value.
 fn code_value(value: Value) -> Value {
-    let Value::Object(mut fields) = value else {
-        return value;
-    };
-    if let Some(Value::Object(center)) = fields.remove("center") {
-        for (k, v) in center {
-            fields.entry(k).or_insert(v);
+    match value {
+        Value::Object(mut fields) => {
+            if fields.contains_key("dataType")
+                && let Some(Value::Object(inner)) = fields.remove("value")
+                && inner.len() == 1
+                && let Some((_, v)) = inner.into_iter().next()
+            {
+                return code_value(v);
+            }
+            if let Some(Value::Object(center)) = fields.remove("center") {
+                for (k, v) in center {
+                    fields.entry(k).or_insert(v);
+                }
+            }
+            Value::Object(
+                fields
+                    .into_iter()
+                    .map(|(k, v)| (k, code_value(v)))
+                    .collect(),
+            )
         }
+        Value::Array(items) => Value::Array(items.into_iter().map(code_value).collect()),
+        other => other,
     }
-    Value::Object(fields)
 }
 
 /// Most bytes of source text `get_shader` returns (Figma's own limit).

@@ -95,15 +95,14 @@ geometry whose networks use per-vertex and per-segment styles (10–18 of each).
 **Exact fix:** carry vertex/segment style ids into the rebuilt paths and resolve them through
 `styleOverrideTable`.
 
-### Shader fills (`CUSTOM` paints)
+### Shader fills and effects (`CUSTOM` paints and effects)
 
-Code: `paint::resolve` (`crates/render/src/paint.rs`), drawn by `figstudio-shader` when the
-shader's source is in `FILE.fig.shaders/` and a GPU adapter exists; otherwise one skipped
-paint each. Shader effects (`CUSTOM` effects) are still skipped. Animated shaders are drawn
-at time 0.
+Code: `paint::resolve` (`crates/render/src/paint.rs`) and `Ctx::draw_shader_effects`
+(`crates/render/src/lib.rs`), drawn by `figstudio-shader` when the shader's source is in
+`FILE.fig.shaders/` and a GPU adapter exists; otherwise one skipped paint or effect each. An
+effect's input is the layer's own box, so content outside it is cut (the `shortcut:` there).
 
-**Exact fix:** effects need the layer's pixels as `frame.input`; the browser app needs the
-same runtime on its own WebGPU device.
+**Exact fix:** the browser app needs the same runtime on its own WebGPU device.
 
 ### Boolean operations approximated (not measured in the historical sample)
 

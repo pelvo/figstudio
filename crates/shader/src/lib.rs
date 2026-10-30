@@ -77,8 +77,8 @@ impl fmt::Display for ShaderError {
 
 impl std::error::Error for ShaderError {}
 
-/// Runs a shader's `main.ts` with `params` (its `frame.params`) into a `width × height`
-/// output at `time_ms`; the pixels as a fill's straight alpha, premultiplied in the pixmap.
+/// Runs a shader fill's `main.ts` with `params` (its `frame.params`) into a `width × height`
+/// output at `time_ms` (ms on the playback clock). Fills draw straight alpha.
 pub fn render(
     main_ts: &str,
     params: &Value,
@@ -86,12 +86,50 @@ pub fn render(
     height: u16,
     time_ms: f64,
 ) -> Result<Pixmap, ShaderError> {
+    run(main_ts, params, width.max(1), height.max(1), time_ms, None)
+}
+
+/// Runs a shader effect's `main.ts` on `input` (the layer drawn without the effect,
+/// premultiplied) and returns its output, the same size. Effects draw premultiplied alpha.
+pub fn render_effect(
+    main_ts: &str,
+    params: &Value,
+    input: &Pixmap,
+    time_ms: f64,
+) -> Result<Pixmap, ShaderError> {
+    run(
+        main_ts,
+        params,
+        input.width().max(1),
+        input.height().max(1),
+        time_ms,
+        Some(input.data_as_u8_slice()),
+    )
+}
+
+fn run(
+    main_ts: &str,
+    params: &Value,
+    width: u16,
+    height: u16,
+    time_ms: f64,
+    input: Option<&[u8]>,
+) -> Result<Pixmap, ShaderError> {
     let js = ts::to_js(main_ts)?;
-    let (width, height) = (width.max(1), height.max(1));
-    let rgba = js::run(&js, params, width, height, time_ms)?;
+    let frame = js::Frame {
+        width,
+        height,
+        time_ms,
+        input,
+    };
+    let rgba = js::run(&js, params, &frame)?;
     let meta = PixelMetadata {
         may_have_transparency: true,
-        alpha_type: ImageAlphaType::Alpha,
+        alpha_type: if input.is_some() {
+            ImageAlphaType::AlphaPremultiplied
+        } else {
+            ImageAlphaType::Alpha
+        },
     };
     Ok(Pixmap::from_parts(rgba, width, height, meta))
 }
@@ -130,24 +168,21 @@ impl Fills {
     }
 }
 
-impl ShaderFills for Fills {
-    fn fill(&self, doc: &Document, paint: &Val, width: u16, height: u16) -> Option<Arc<Pixmap>> {
-        let (source, params) = shaders::program(doc, paint, &self.sources)?;
-        let (_, main) = source
-            .files
-            .iter()
-            .find(|(f, _)| f.rsplit('/').next() == Some("main.ts"))?;
-        let mut hasher = DefaultHasher::new();
-        (&source.label, params.to_string(), width, height).hash(&mut hasher);
-        let key = hasher.finish();
+impl Fills {
+    /// The cached result of `key`, or `run`'s, kept.
+    fn cached(
+        &self,
+        key: u64,
+        run: impl FnOnce() -> Result<Pixmap, ShaderError>,
+    ) -> Option<Arc<Pixmap>> {
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(done) = cache.get(&key) {
             return done.clone();
         }
-        let out = match render(main, &params, width, height, 0.0) {
+        let out = match run() {
             Ok(pixmap) => Some(Arc::new(pixmap)),
             Err(e) => {
-                tracing::warn!("shader fill not drawn: {e}");
+                tracing::warn!("shader not drawn: {e}");
                 None
             }
         };
@@ -156,5 +191,75 @@ impl ShaderFills for Fills {
         }
         cache.insert(key, out.clone());
         out
+    }
+
+    /// `main.ts` of the shader `paint` (a fill or effect) uses, with its `frame.params`.
+    fn program(&self, doc: &Document, paint: &Val) -> Option<(&ShaderSource, &str, Value)> {
+        let (source, params) = shaders::program(doc, paint, &self.sources)?;
+        let (_, main) = source
+            .files
+            .iter()
+            .find(|(f, _)| f.rsplit('/').next() == Some("main.ts"))?;
+        Some((source, main.as_str(), params))
+    }
+}
+
+/// The shader clock a run sees: `time_ms` for an animated shader, 0 for a still one (so its
+/// output is cached across frames).
+fn clock(source: &ShaderSource, time_ms: f64) -> f64 {
+    let animated = source
+        .files
+        .iter()
+        .find(|(f, _)| f.rsplit('/').next() == Some("features.json"))
+        .and_then(|(_, t)| serde_json::from_str::<Value>(t).ok())
+        .and_then(|f| f["isAnimated"].as_bool())
+        .unwrap_or(false);
+    if animated { time_ms } else { 0.0 }
+}
+
+impl ShaderFills for Fills {
+    fn fill(
+        &self,
+        doc: &Document,
+        paint: &Val,
+        width: u16,
+        height: u16,
+        time_ms: f64,
+    ) -> Option<Arc<Pixmap>> {
+        let (source, main, params) = self.program(doc, paint)?;
+        let time = clock(source, time_ms);
+        let mut hasher = DefaultHasher::new();
+        (
+            &source.label,
+            params.to_string(),
+            width,
+            height,
+            time.to_bits(),
+        )
+            .hash(&mut hasher);
+        self.cached(hasher.finish(), || {
+            render(main, &params, width, height, time)
+        })
+    }
+
+    fn has_effect(&self, doc: &Document, effect: &Val) -> bool {
+        self.program(doc, effect).is_some()
+    }
+
+    fn effect(
+        &self,
+        doc: &Document,
+        effect: &Val,
+        input: &Pixmap,
+        time_ms: f64,
+    ) -> Option<Arc<Pixmap>> {
+        let (source, main, params) = self.program(doc, effect)?;
+        let time = clock(source, time_ms);
+        let mut hasher = DefaultHasher::new();
+        (&source.label, params.to_string(), time.to_bits()).hash(&mut hasher);
+        (input.width(), input.height(), input.data_as_u8_slice()).hash(&mut hasher);
+        self.cached(hasher.finish(), || {
+            render_effect(main, &params, input, time)
+        })
     }
 }
