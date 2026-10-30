@@ -1080,13 +1080,7 @@ impl App {
                 section(ui, "Shader code");
                 let note = self.prefs.shader_folder.as_ref().map_or_else(
                     || "Zips of Figma's View code, for every file".to_owned(),
-                    |dir| {
-                        let name = dir.file_name().map_or_else(
-                            || dir.display().to_string(),
-                            |n| n.to_string_lossy().into_owned(),
-                        );
-                        format!("“{name}”, watched for new zips")
-                    },
+                    |dir| format!("Watched for new zips: {}", dir.display()),
                 );
                 let mut choose = false;
                 let mut clear = false;

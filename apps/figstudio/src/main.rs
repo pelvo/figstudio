@@ -1434,14 +1434,14 @@ impl App {
         }
         if let Some(tab) = self.tabs.get_mut(self.active) {
             if let Some(root) = tab.pending_motion.take() {
-                tab.motion_preview = Some(motion_preview::Preview::new(
+                tab.motion_preview = motion_preview::Preview::new(
                     tab.doc.clone(),
                     root,
                     tab.source.clone(),
                     self.workers.images(),
-                ));
+                );
             }
-            motion_preview::show(&ctx, &mut tab.motion_preview);
+            motion_preview::tick(&ctx, &mut tab.motion_preview);
         }
         self.peek_sidebar(&ctx);
         self.space_popover(&ctx);

@@ -1214,6 +1214,14 @@ fn general_and_canvas_settings_change_the_app() {
     h.get_by_role_and_label(Role::Button, "Zooms").click();
     h.run_steps(2);
     assert!(h.state().prefs.scroll_zooms);
+    // The shader folder shows its whole path.
+    h.state_mut().prefs.shader_folder = Some("/srv/design/shader zips".into());
+    h.run_steps(3);
+    assert!(
+        h.query_by_label_contains("Watched for new zips: /srv/design/shader zips")
+            .is_some(),
+        "the folder's full path"
+    );
     h.key_press(Key::Escape);
     // Motion is on again (toggled above): Settings takes the pointer until it has faded.
     h.run_steps(40);

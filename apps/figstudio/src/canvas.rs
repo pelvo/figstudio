@@ -244,6 +244,10 @@ pub fn show(
         workers,
         ui.pixels_per_point(),
     );
+    // A playing timeline over its layer, under the overlays.
+    if let Some(preview) = tab.motion_preview.as_mut() {
+        preview.paint(&painter, tab.page, tab.view, origin, ui.pixels_per_point());
+    }
 
     // Overlays.
     let labels = if frame_labels {

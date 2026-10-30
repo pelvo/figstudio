@@ -1431,6 +1431,7 @@ impl App {
             );
             if !self.render_worker_lost && self.tabs.get(self.active).is_some() {
                 let tools = self.tool_pill(ui, card, &mut actions);
+                self.motion_bar(ui, card, tools);
                 self.status_pill(ui, card, tools);
                 let below = self.find_bar(ui, card);
                 let chip = self.gaps_chip(ui, card, below);
@@ -1461,6 +1462,118 @@ impl App {
             self.open_dialog(&ctx);
         }
         cursor
+    }
+
+    /// The bar of a timeline playing on the canvas, in the tool pill's look: play or pause, a
+    /// scrub track, the time and close. It sits under the layer, kept inside the card and
+    /// above the tool pill.
+    fn motion_bar(&mut self, ui: &mut Ui, card: Rect, tools: Rect) {
+        let ctx = ui.ctx().clone();
+        let accent = self.tint_now(&ctx).accent;
+        let p = theme::of(ui);
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let Some(origin) = tab.canvas_rect.map(|r| r.min) else {
+            return;
+        };
+        let (page, view) = (tab.page, tab.view);
+        let Some(preview) = tab.motion_preview.as_mut() else {
+            return;
+        };
+        let Some(layer) = preview.on_screen(page, view, origin) else {
+            return;
+        };
+        let (b, pad, time_w) = (30.0, 4.0, 96.0);
+        let size = vec2(330.0_f32.min(card.width() - 16.0), 38.0);
+        let x = layer.center().x.clamp(
+            card.left() + 8.0 + size.x / 2.0,
+            card.right() - 8.0 - size.x / 2.0,
+        );
+        let y = (layer.bottom() + 10.0).clamp(card.top() + 8.0, tools.top() - 8.0 - size.y);
+        let rect = Rect::from_min_size(pos2(x - size.x / 2.0, y), size);
+        let radius = CornerRadius::same(19);
+        // Catches clicks between the controls so they do not reach the canvas.
+        ui.interact(rect, Id::new("motion-bar"), Sense::click());
+        let painter = ui.painter();
+        painter.add(card_shadow(&p, 14).as_shape(rect, radius));
+        painter.rect_filled(rect, radius, p.glass);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, p.card_stroke),
+            StrokeKind::Inside,
+        );
+        let play = Rect::from_min_size(pos2(rect.left() + pad, rect.top() + 4.0), vec2(b, b));
+        let close = Rect::from_min_size(pos2(rect.right() - pad - b, rect.top() + 4.0), vec2(b, b));
+        let (icon, label) = if preview.playing {
+            (Icon::Pause, "Pause")
+        } else {
+            (Icon::Play, "Play")
+        };
+        if pill_button(
+            ui,
+            play,
+            Id::new("motion-play"),
+            (Some(icon), label, label),
+            false,
+            accent,
+        )
+        .clicked()
+        {
+            preview.toggle();
+        }
+        let period = preview.period_us();
+        let time = Rect::from_min_max(
+            pos2(close.left() - 4.0 - time_w, rect.top()),
+            pos2(close.left() - 4.0, rect.bottom()),
+        );
+        ui.painter().text(
+            time.right_center(),
+            Align2::RIGHT_CENTER,
+            format!("{:.0} / {:.0} ms", preview.time_us / 1e3, period / 1e3),
+            egui::FontId::proportional(12.0),
+            p.text_dim,
+        );
+        // The scrub track: the played part in the accent, a knob at the playhead.
+        let track = Rect::from_min_max(
+            pos2(play.right() + 10.0, rect.top()),
+            pos2(time.left() - 10.0, rect.bottom()),
+        );
+        let response = ui
+            .interact(track, Id::new("motion-scrub"), Sense::click_and_drag())
+            .on_hover_text("Scrub");
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Slider, true, "Scrub"));
+        if (response.dragged() || response.clicked())
+            && let Some(at) = response.interact_pointer_pos()
+        {
+            let f = ((at.x - track.left()) / track.width().max(1.0)).clamp(0.0, 1.0);
+            preview.scrub(f64::from(f) * period);
+        }
+        let f = (preview.time_us / period.max(1.0)).clamp(0.0, 1.0) as f32;
+        let line = Rect::from_center_size(track.center(), vec2(track.width(), 4.0));
+        let knob = pos2(line.left() + f * line.width(), line.center().y);
+        ui.painter()
+            .rect_filled(line, CornerRadius::same(2), p.separator);
+        ui.painter().rect_filled(
+            Rect::from_min_max(line.min, pos2(knob.x, line.max.y)),
+            CornerRadius::same(2),
+            accent,
+        );
+        let (hover, _) = icons::feedback(ui, &response);
+        ui.painter().circle_filled(knob, 5.5 + hover * 1.0, accent);
+        if pill_button(
+            ui,
+            close,
+            Id::new("motion-close"),
+            (Some(Icon::Close), "Close the player", "Close the player"),
+            false,
+            accent,
+        )
+        .clicked()
+        {
+            tab.motion_preview = None;
+        }
     }
 
     /// Select / Hand / Zoom with a highlight that slides between them, and the zoom controls.

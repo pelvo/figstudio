@@ -133,8 +133,8 @@ cargo run --release -p figstudio -- path/to/design.fig
   the motion preview's playhead. In the browser the shader runs on the page's WebGPU in a
   sandboxed frame (no access to the page, its storage or the network; a run past 10 s is
   stopped). Without a GPU or WebGPU the shader is skipped and counted.
-- Animated layers have a **▶ Play** button in Properties: a preview window that plays and
-  scrubs the motion, with springs timed like Figma's.
+- Animated layers have a **Play** button in Properties: the motion plays in place on the
+  canvas, with a bar under the layer to pause, scrub and close, and springs timed like Figma's.
 - Paste a `figma.com` or `figstudio://` URL into the command bar (⌘L, Ctrl+L elsewhere), then
   press Enter to open its matching local `.fig` copy and reveal the linked node. No download
   from Figma is needed. If several copies match, pick one in the link window.
