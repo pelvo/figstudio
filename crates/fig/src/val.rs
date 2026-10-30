@@ -30,8 +30,24 @@ fn table() -> &'static Mutex<HashSet<&'static str>> {
     TABLE.get_or_init(Default::default)
 }
 
+/// The table, locked. In the browser this spins instead of waiting: its UI thread may not
+/// wait on a lock (`Atomics.wait` traps there and the app freezes), and render or decode
+/// workers hold this one only for a lookup or an insert.
+fn locked() -> std::sync::MutexGuard<'static, HashSet<&'static str>> {
+    #[cfg(target_arch = "wasm32")]
+    loop {
+        match table().try_lock() {
+            Ok(guard) => return guard,
+            Err(std::sync::TryLockError::Poisoned(e)) => return e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    table().lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub fn intern(s: &str) -> &'static str {
-    let mut table = table().lock().unwrap_or_else(|e| e.into_inner());
+    let mut table = locked();
     if let Some(&found) = table.get(s) {
         return found;
     }
@@ -42,7 +58,7 @@ pub fn intern(s: &str) -> &'static str {
 
 /// Preflights and interns a schema's identifiers atomically within a fixed process-wide budget.
 pub(crate) fn intern_schema<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<(), String> {
-    let mut table = table().lock().unwrap_or_else(|e| e.into_inner());
+    let mut table = locked();
     let unique = names.into_iter().collect::<HashSet<_>>();
     let additions = unique
         .iter()

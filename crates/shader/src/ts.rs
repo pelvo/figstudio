@@ -12,7 +12,24 @@ use oxc::transformer::{TransformOptions, Transformer};
 use crate::ShaderError;
 
 /// The JavaScript of a TypeScript module (an ES module still: imports and exports stay).
+#[cfg_attr(
+    not(feature = "native"),
+    expect(dead_code, reason = "Boa runs it natively")
+)]
 pub(crate) fn to_js(ts: &str) -> Result<String, ShaderError> {
+    compile(ts, false)
+}
+
+/// [`to_js`] without the `figma:shaders` import: a local `defineProperties` stands in, so the
+/// module imports nothing (a browser runs it from a blob URL).
+pub(crate) fn to_browser_js(ts: &str) -> Result<String, ShaderError> {
+    Ok(format!(
+        "function defineProperties() {{}}\n{}",
+        compile(ts, true)?
+    ))
+}
+
+fn compile(ts: &str, drop_figma_import: bool) -> Result<String, ShaderError> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, ts, SourceType::ts()).parse();
     if let Some(error) = parsed.diagnostics.errors().next() {
@@ -39,6 +56,12 @@ pub(crate) fn to_js(ts: &str) -> Result<String, ShaderError> {
             "main.ts does not compile: {error}"
         )));
     }
+    if drop_figma_import {
+        program.body.retain(|statement| {
+            !matches!(statement, oxc::ast::ast::Statement::ImportDeclaration(import)
+                if import.source.value == "figma:shaders")
+        });
+    }
     Ok(Codegen::new().build(&program).code)
 }
 
@@ -52,5 +75,16 @@ mod tests {
             .expect("compiles");
         assert!(js.contains("export function f(a, b)"), "{js}");
         assert!(to_js("export function (").is_err());
+    }
+
+    #[test]
+    fn the_browser_module_imports_nothing() {
+        let js = to_browser_js(
+            "import { defineProperties } from \"figma:shaders\";\nexport default function Effect() {}\ndefineProperties(Effect, {});",
+        )
+        .unwrap();
+        assert!(!js.contains("import"), "{js}");
+        assert!(js.starts_with("function defineProperties() {}"), "{js}");
+        assert!(js.contains("defineProperties(Effect, {})"), "{js}");
     }
 }

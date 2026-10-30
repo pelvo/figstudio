@@ -15,6 +15,13 @@ pub enum Msg {
     Forget {
         doc: u64,
     },
+    /// A document's shader code changed: draw its shaders with `host` from now on and drop
+    /// its page recordings (handled by the render loop, so the browser's UI thread never
+    /// waits on the image cache's lock).
+    Shaders {
+        doc: u64,
+        host: std::sync::Arc<dyn figstudio_render::shader::ShaderFills>,
+    },
 }
 
 #[derive(Default)]
@@ -51,7 +58,7 @@ impl Queue {
                 self.unacked.retain(|u| u.0 != tab);
                 self.drop_tab(tab)
             }
-            Msg::Forget { .. } => 0,
+            Msg::Forget { .. } | Msg::Shaders { .. } => 0,
         }
     }
 

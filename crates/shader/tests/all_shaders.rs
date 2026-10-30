@@ -167,7 +167,10 @@ fn animated_shaders_follow_the_playback_clock_and_still_ones_do_not() {
         let mut src = clock_shader(animated);
         src.label = key.into();
         let fills = Fills::new(vec![src]);
-        fills.fill(&doc, paint, 4, 4, ms).unwrap().sample(1, 1).r
+        match fills.fill(&doc, paint, 4, 4, ms) {
+            figstudio_render::shader::Shaded::Drawn(p) => p.sample(1, 1).r,
+            other => panic!("{other:?}"),
+        }
     };
     assert_eq!(red(true, 0.0), 0);
     assert!(
