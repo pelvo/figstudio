@@ -33,6 +33,9 @@ pub struct Svg {
     pub approximated: usize,
     /// The markup passed the byte limit given to the export, so it was dropped.
     pub over_limit: bool,
+    /// Size of the `viewBox` (output units): the crop, or the whole viewport.
+    pub width: f64,
+    pub height: f64,
 }
 
 /// An open `<g>` (every push opens exactly one).

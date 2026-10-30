@@ -16,23 +16,39 @@ pub struct Details {
     pub shaders: Vec<Value>,
 }
 
-/// The details of the last layer asked for, keyed by document and node.
+/// Layers whose details are kept, so going back and forth between a few does not scan again.
+const KEPT: usize = 8;
+
+/// The details of the last [`KEPT`] layers asked for (most recent last), keyed by document
+/// and node.
 #[derive(Debug, Default)]
-pub struct Cache(RefCell<Option<(u64, Guid, Details)>>);
+pub struct Cache(RefCell<Vec<(u64, Guid, Details)>>);
 
 impl Cache {
     /// The details of `node`, computed on the first call for it.
     pub fn get(&self, doc: &Document, node: &Node) -> Details {
-        let mut slot = self.0.borrow_mut();
-        if let Some((instance, id, details)) = slot.as_ref()
-            && *instance == doc.instance
-            && *id == node.id
+        let mut kept = self.0.borrow_mut();
+        if let Some(at) = kept
+            .iter()
+            .position(|(instance, id, _)| *instance == doc.instance && *id == node.id)
         {
-            return details.clone();
+            let entry = kept.remove(at);
+            let details = entry.2.clone();
+            kept.push(entry);
+            return details;
         }
         let details = compute(doc, node);
-        *slot = Some((doc.instance, node.id, details.clone()));
+        if kept.len() >= KEPT {
+            kept.remove(0);
+        }
+        kept.push((doc.instance, node.id, details.clone()));
         details
+    }
+
+    /// Layers kept (tests).
+    #[cfg(test)]
+    pub fn kept(&self) -> Vec<Guid> {
+        self.0.borrow().iter().map(|e| e.1).collect()
     }
 }
 
@@ -192,6 +208,23 @@ mod tests {
             env!("CARGO_MANIFEST_DIR")
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn going_back_to_a_recent_layer_uses_the_kept_details() {
+        let doc = open("motion");
+        let cache = Cache::default();
+        let layers: Vec<&Node> = doc.nodes.iter().take(KEPT + 1).collect();
+        let (a, b) = (layers[0], layers[1]);
+        cache.get(&doc, a);
+        cache.get(&doc, b);
+        cache.get(&doc, a);
+        assert_eq!(cache.kept(), [b.id, a.id], "both kept, the latest last");
+        for layer in &layers {
+            cache.get(&doc, layer);
+        }
+        let latest: Vec<Guid> = layers[1..].iter().map(|n| n.id).collect();
+        assert_eq!(cache.kept(), latest, "past {KEPT}, the least recent goes");
     }
 
     #[test]

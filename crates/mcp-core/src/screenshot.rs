@@ -141,8 +141,10 @@ impl SvgShot {
     }
 }
 
-/// [`render_node`] as SVG (vector paths, text as outlines, images embedded as PNG). The
-/// markup is limited to `limit` bytes; a larger export is an error.
+/// [`render_node`] as SVG (vector paths, text as outlines, images embedded as PNG). A layer or
+/// page is cropped like an export (its drawn ink, at least a frame's box), as the app and the
+/// CLI export it; a node inside an instance keeps its own box. The markup is limited to `limit`
+/// bytes; a larger export is an error.
 pub fn svg_node(
     doc: &Document,
     node_id: &str,
@@ -155,8 +157,21 @@ pub fn svg_node(
         node_id,
         scale,
         |root, bounds, scale, background, max_side| {
-            let (width, height, viewport) = viewport(bounds, scale, background, max_side)?;
-            let svg = rendering.draw_svg(doc, root, &viewport, limit);
+            let (mut width, mut height, viewport) = viewport(bounds, scale, background, max_side)?;
+            let scale = viewport.transform.as_coeffs()[0];
+            let svg = match root {
+                Root::Node(id) => {
+                    let svg = rendering
+                        .draw_export_svg(doc, id, scale, background, limit)
+                        .ok_or_else(|| {
+                            CoreError::render(format!("node {id} has nothing visible"))
+                        })?;
+                    let side = |v: f64| (v - 1e-6).ceil().clamp(1.0, f64::from(u16::MAX)) as u16;
+                    (width, height) = (side(svg.width), side(svg.height));
+                    svg
+                }
+                Root::Path(_) => rendering.draw_svg(doc, root, &viewport, limit),
+            };
             if svg.over_limit {
                 return Err(CoreError::limit(format!(
                     "the SVG is over {limit} bytes; export a smaller node"
@@ -166,7 +181,7 @@ pub fn svg_node(
                 svg,
                 width,
                 height,
-                scale: viewport.transform.as_coeffs()[0],
+                scale,
             })
         },
     )

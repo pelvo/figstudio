@@ -217,6 +217,9 @@ mod native {
         )
     }
 
+    /// Longest one run may take, its script and its GPU work (the browser's limit too).
+    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
     fn run(
         main_ts: &str,
         params: &Value,
@@ -226,14 +229,67 @@ mod native {
         input: Option<&[u8]>,
     ) -> Result<Pixmap, ShaderError> {
         let js = ts::to_js(main_ts)?;
-        let frame = js::Frame {
-            width,
-            height,
-            time_ms,
-            input,
-        };
-        let rgba = js::run(&js, params, &frame)?;
+        let rgba = run_within(js, params, (width, height, time_ms), input, DEADLINE)?;
         Ok(pixmap(rgba, width, height, input.is_some()))
+    }
+
+    /// Runs `js` on its own thread and waits at most `deadline`. A run past it is left to end
+    /// on its own (Boa's instruction budget bounds it) and that code is not run again in this
+    /// process, so a shader that hangs costs one wait, not one per frame or tile.
+    pub(crate) fn run_within(
+        js: String,
+        params: &Value,
+        (width, height, time_ms): (u16, u16, f64),
+        input: Option<&[u8]>,
+        deadline: std::time::Duration,
+    ) -> Result<Vec<u8>, ShaderError> {
+        use std::collections::HashSet;
+        use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+        use std::sync::mpsc::{RecvTimeoutError, channel};
+
+        static TIMED_OUT: Mutex<Option<HashSet<u64>>> = Mutex::new(None);
+        let code = BuildHasherDefault::<DefaultHasher>::default().hash_one(&js);
+        let timed_out = |insert: bool| {
+            let mut set = TIMED_OUT.lock().unwrap_or_else(|e| e.into_inner());
+            let set = set.get_or_insert_with(HashSet::new);
+            if insert {
+                !set.insert(code)
+            } else {
+                set.contains(&code)
+            }
+        };
+        if timed_out(false) {
+            return Err(ShaderError::script(
+                "main.ts ran past the time limit before; not run again",
+            ));
+        }
+        let (params, input) = (params.clone(), input.map(<[u8]>::to_vec));
+        let (send, result) = channel();
+        std::thread::Builder::new()
+            .name("shader".into())
+            .spawn(move || {
+                let frame = js::Frame {
+                    width,
+                    height,
+                    time_ms,
+                    input: input.as_deref(),
+                };
+                let _ = send.send(js::run(&js, &params, &frame));
+            })
+            .map_err(|e| ShaderError::script(format!("cannot start the shader thread: {e}")))?;
+        match result.recv_timeout(deadline) {
+            Ok(rgba) => rgba,
+            Err(RecvTimeoutError::Timeout) => {
+                timed_out(true);
+                Err(ShaderError::script(format!(
+                    "main.ts ran past {} s; stopped",
+                    deadline.as_secs_f64()
+                )))
+            }
+            Err(RecvTimeoutError::Disconnected) => Err(ShaderError::script(
+                "the shader thread ended without a result",
+            )),
+        }
     }
 
     /// Most shader outputs [`Fills`] keeps.
@@ -321,5 +377,42 @@ mod native {
                 render_effect(p.main, &p.params, input, p.time_ms)
             })
         }
+    }
+}
+
+#[cfg(all(test, feature = "native"))]
+mod deadline_tests {
+    use std::time::{Duration, Instant};
+
+    use serde_json::json;
+
+    use crate::native::run_within;
+
+    #[test]
+    fn a_run_past_its_deadline_stops_and_is_not_run_again() {
+        // About a second of work, against a 50 ms deadline.
+        let js = "export function render() { let s = 0; \
+                  for (let i = 0; i < 5000000; i++) { s += i; } }"
+            .to_owned();
+        let size = (8, 8, 0.0);
+        let first = run_within(
+            js.clone(),
+            &json!({}),
+            size,
+            None,
+            Duration::from_millis(50),
+        );
+        let Err(error) = first else {
+            panic!("a second of work finished within 50 ms");
+        };
+        if error.is_no_gpu() {
+            return;
+        }
+        assert!(error.to_string().contains("ran past"), "{error}");
+        let started = Instant::now();
+        let again = run_within(js, &json!({}), size, None, Duration::from_secs(10));
+        assert!(started.elapsed() < Duration::from_millis(50));
+        let error = again.unwrap_err().to_string();
+        assert!(error.contains("not run again"), "{error}");
     }
 }

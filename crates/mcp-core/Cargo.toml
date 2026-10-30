@@ -36,8 +36,9 @@ vello_cpu = { workspace = true }
 # local_copy tests: folders of .fig files with set modification times.
 tempfile = { workspace = true }
 # tests/svg.rs: rasterize exported SVG to compare it with the PNG render (linebender's
-# maintained SVG renderer; no text or system fonts needed, text is exported as outlines).
-resvg = { version = "0.49", default-features = false }
+# maintained SVG renderer; no text or system fonts needed, text is exported as outlines;
+# raster-images so image fills, embedded as data URLs, are drawn and compared too).
+resvg = { version = "0.49", default-features = false, features = ["raster-images"] }
 # tests/shaders_missing.rs: shader zips built in the test.
 zip = { workspace = true, features = ["deflate-flate2"] }
 

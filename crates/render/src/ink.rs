@@ -3,7 +3,8 @@
 //! Exports are cropped to it, as Figma crops to a layer's render bounds: a fill covers its
 //! path's box, cut by the clips around it; a blur widens what it holds by its radius (Figma's
 //! radius, twice the Gaussian's standard deviation); a drop shadow adds a copy moved by its
-//! offset and widened by its radius. Erasing fills (destination-out) cover nothing.
+//! offset and widened by its radius. Erasing fills (destination-out, clear) cover nothing;
+//! every other composite counts as covering its box, so the crop never cuts what it draws.
 
 use vello_cpu::PaintType;
 use vello_cpu::filter_effects::{Filter, FilterPrimitive};
@@ -60,7 +61,7 @@ impl InkCanvas {
     }
 
     fn add(&mut self, local: Rect) {
-        if self.blend.compose != Compose::SrcOver {
+        if matches!(self.blend.compose, Compose::DestOut | Compose::Clear) {
             return;
         }
         let mut area = self.transform.transform_rect_bbox(local);
@@ -173,6 +174,18 @@ mod tests {
         c.set_blend_mode(BlendMode::new(Mix::Normal, Compose::DestOut));
         c.fill_path(&rect(0.0, 0.0, 200.0, 200.0));
         assert_eq!(c.ink(), Some(Rect::new(10.0, 20.0, 50.0, 50.0)));
+    }
+
+    #[test]
+    fn other_composites_count_as_drawn() {
+        let mut c = InkCanvas::new();
+        c.fill_path(&rect(0.0, 0.0, 10.0, 10.0));
+        // Drawn under (destination-over) and added (plus) outside what is there: both show.
+        c.set_blend_mode(BlendMode::new(Mix::Normal, Compose::DestOver));
+        c.fill_path(&rect(20.0, 0.0, 30.0, 10.0));
+        c.set_blend_mode(BlendMode::new(Mix::Normal, Compose::Plus));
+        c.fill_path(&rect(0.0, 20.0, 10.0, 40.0));
+        assert_eq!(c.ink(), Some(Rect::new(0.0, 0.0, 30.0, 40.0)));
     }
 
     #[test]

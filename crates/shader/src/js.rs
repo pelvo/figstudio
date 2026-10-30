@@ -27,6 +27,22 @@ thread_local! {
 const LOOP_LIMIT: u64 = 10_000_000;
 /// Deepest call recursion a script may use.
 const RECURSION_LIMIT: usize = 512;
+/// Most bytecode instructions one run may execute, the module's top level included (Boa's
+/// instruction budget; running out is an error the script cannot catch). The 12 playground
+/// shaders use at most about 13 million (one builds its data in JavaScript); Boa runs about
+/// 25 million a second, so this stops a run in about 4 s, before the 10 s deadline.
+pub(crate) const INSTRUCTION_BUDGET: usize = 100_000_000;
+/// Largest `ArrayBuffer` (and so typed array) a script may make.
+const MAX_ARRAY_BUFFER: u64 = 256 * 1024 * 1024;
+
+/// Boa's host hooks with a smaller `ArrayBuffer` cap than its 1.5 GiB default.
+struct Hooks;
+
+impl boa_engine::context::HostHooks for Hooks {
+    fn max_buffer_size(&self, _: &mut Context) -> u64 {
+        MAX_ARRAY_BUFFER
+    }
+}
 
 /// WebGPU's flag enums, with the values of the WebGPU spec (the same bits wgpu uses).
 const GLOBALS: &str = "
@@ -66,6 +82,7 @@ pub(crate) fn run(js: &str, params: &Value, frame: &Frame<'_>) -> Result<Vec<u8>
             device: device.clone(),
             queue: queue.clone(),
             objects: Vec::new(),
+            gpu_bytes: 0,
         });
     });
     let clear = Clear;
@@ -82,6 +99,8 @@ fn script(js: &str, params: &Value, f: &Frame<'_>) -> Result<Vec<u8>, ShaderErro
     let loader = Rc::new(MapModuleLoader::new());
     let mut ctx = Context::builder()
         .module_loader(loader.clone())
+        .host_hooks(Rc::new(Hooks))
+        .instructions_remaining(INSTRUCTION_BUDGET)
         .build()
         .map_err(script_error)?;
     ctx.runtime_limits_mut()
@@ -302,6 +321,7 @@ fn create_buffer(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<J
     let size = (gpu::num(desc.get("size")) as u64).next_multiple_of(4);
     let usage = gpu::num(desc.get("usage")) as u32;
     let id = with(|s| {
+        s.reserve(size)?;
         let buffer = s.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size,

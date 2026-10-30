@@ -34,15 +34,24 @@ fn menu_items(ui: &mut egui::Ui, tab: &Tab, items: Vec<Item>, id: Guid, picked: 
         *picked = Some(Item::png("Copy as SVG", "SVG", Job::SvgNode(id)));
         ui.close();
     }
-    // Checked every frame the menu is open, so only the node's own bindings are looked at.
-    if tab
+    // Checked every frame the menu is open, so only the node's own bindings are looked at;
+    // the CSS comes from the Properties cache (one document scan per layer, kept).
+    if let Some(node) = tab
         .doc
         .node(id)
-        .is_some_and(|n| figstudio_mcp_core::motion::has_motion(&n.data))
+        .filter(|n| figstudio_mcp_core::motion::has_motion(&n.data))
         && ui.button("Copy CSS animation").clicked()
     {
-        if let Some(css) = figstudio_mcp_core::motion::node_css(&tab.doc, &id.to_string()) {
-            *picked = Some(Item::text("Copy CSS animation", "CSS animation", css));
+        let motion = tab.inspect.get(&tab.doc, node).motion;
+        if let Some(css) = motion
+            .as_ref()
+            .and_then(|m| m["codeSnippets"]["css"].as_str())
+        {
+            *picked = Some(Item::text(
+                "Copy CSS animation",
+                "CSS animation",
+                css.to_owned(),
+            ));
         }
         ui.close();
     }
