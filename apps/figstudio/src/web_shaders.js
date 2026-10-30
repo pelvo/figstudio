@@ -37,6 +37,8 @@ onmessage = async (e) => {
     const frame = { params, state: {}, input: inputTex, output, time, deltaTime: 0, frame: 0,
       inputPadding: 0, outputPadding: 0, mousePosition: { x: 0, y: 0 } };
     d.pushErrorScope('validation');
+    // A fresh step budget per run (the module counts its loops and calls; see ts.rs).
+    for (const k of Object.keys(mod)) if (k.startsWith('__fsr_')) mod[k]();
     if (mod.setup) await mod.setup(d, frame);
     await mod.render(d, frame);
     const row = Math.ceil(width * 4 / 256) * 256;
