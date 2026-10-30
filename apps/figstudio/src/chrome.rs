@@ -613,6 +613,8 @@ pub(crate) fn accent_button(
     let p = theme::of(ui);
     let response = ui.interact(rect, Id::new(id), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
+    // `text` without the shortcut, which differs per platform.
+    crate::a11y::author(&response, format!("button.{}", crate::a11y::slug(text)));
     let (hover, press) = icons::feedback(ui, &response);
     let r = rect.translate(vec2(0.0, -hover * 1.5)).shrink(press * 2.0);
     let painter = ui.painter();
@@ -679,6 +681,7 @@ pub(crate) fn split_handle(ui: &mut Ui, share: &mut f32) {
     response.widget_info(|| {
         WidgetInfo::labeled(WidgetType::ResizeHandle, true, "Resize Pages and Layers")
     });
+    crate::a11y::author(&response, "splitter.pages-layers");
     let response = response.on_hover_cursor(egui::CursorIcon::ResizeVertical);
     if response.dragged() {
         *share = (*share + response.drag_delta().y / total).clamp(0.05, 0.95);
@@ -721,6 +724,7 @@ pub(crate) fn filter_field(ui: &mut Ui, text: &mut String, hint: &str, fill: Col
                         .margin(Margin::symmetric(2, 0)),
                 );
                 crate::a11y::name_field(&field, hint);
+                crate::a11y::author(&field, format!("field.{}", crate::a11y::slug(hint)));
                 if clear
                     && icons::sized_button(ui, Icon::Close, "Clear filter", false, 20.0).clicked()
                 {
@@ -746,6 +750,7 @@ fn pill_button(
         Some(on) => WidgetInfo::selected(WidgetType::RadioButton, true, on, label),
         None => WidgetInfo::labeled(WidgetType::Button, true, label),
     });
+    crate::a11y::author(&response, format!("button.{}", crate::a11y::slug(label)));
     let active = active.unwrap_or(false);
     let p = theme::of(ui);
     let (hover, press) = icons::feedback(ui, &response);
@@ -904,6 +909,8 @@ impl App {
                 (false, _) => ("Show sidebar", true),
             };
             let button = icons::button(ui, Icon::Sidebar, label, false);
+            // One id however the label reads (hide, keep open, show).
+            crate::a11y::author(&button, "button.sidebar");
             if !peek {
                 self.onboarding.targets.sidebar = Some(button.rect);
             }
@@ -1070,6 +1077,7 @@ impl App {
             .unwrap_or_default();
         let label = with_keys("Command bar", &shortcut);
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
+        crate::a11y::author(&response, "button.command-bar");
         let (hover, press) = icons::feedback(ui, &response);
         let r = rect.shrink(press);
         let painter = ui.painter();
@@ -1262,7 +1270,10 @@ impl App {
         let home = self.tabs.get(self.active).is_none();
         let plus_clicked = ui
             .put(plus_at, |ui: &mut Ui| {
-                icons::button(ui, Icon::Plus, "Open file…", false)
+                let plus = icons::button(ui, Icon::Plus, "Open file…", false);
+                // The Recents page has an "Open file…" of its own.
+                crate::a11y::author(&plus, "button.new-space");
+                plus
             })
             .clicked();
         if let Some(i) = clicked.pick {
@@ -1333,6 +1344,7 @@ impl App {
             let response = ui.interact(rect, Id::new(("space-dot", tab.id)), Sense::click());
             let title = tab.space_name();
             response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, active, &title));
+            crate::a11y::author(&response, format!("space.{i}"));
             let (hover, press) = icons::feedback(ui, &response);
             // Every badge the same size, as Arc's; only the colour tells the active one. A new
             // file's dot pops in, and dots slide over when one before them closes.
@@ -1389,16 +1401,16 @@ impl App {
                     ("Rename space…", Action::RenameSpace),
                     ("Edit theme colour…", Action::SpaceColour),
                 ] {
-                    if ui.button(label).clicked() {
+                    if crate::a11y::menu_button(ui, label).clicked() {
                         clicked.action = Some((i, then));
                     }
                 }
                 ui.separator();
-                if ui.button("Reset space look").clicked() {
+                if crate::a11y::menu_button(ui, "Reset space look").clicked() {
                     clicked.action = Some((i, Action::ResetSpace));
                 }
                 ui.separator();
-                if ui.button("Close space").clicked() {
+                if crate::a11y::menu_button(ui, "Close space").clicked() {
                     clicked.close = Some(i);
                 }
             });
@@ -1418,6 +1430,7 @@ impl App {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
+            crate::a11y::progress(&response, &format!("Opening {name}…"));
             response.on_hover_text(format!("Opening {name}…"));
         }
     }
@@ -1446,10 +1459,11 @@ impl App {
                 Some(_) if self.render_worker_lost => {
                     self.crossfade = Crossfade::default();
                     ui.centered_and_justified(|ui| {
-                        ui.label(
+                        let label = ui.label(
                             RichText::new("Rendering is unavailable; restart the app.")
                                 .color(p.warning),
                         );
+                        crate::a11y::announce(&label, true);
                     });
                 }
                 Some(tab) => {
@@ -1631,6 +1645,7 @@ impl App {
         let percent = zoom_percent(self.tabs.get(self.active));
         let response = ui.interact(zoom, Id::new("zoom-fit"), Sense::click());
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Zoom to fit"));
+        crate::a11y::author(&response, "button.zoom-to-fit");
         let (hover, press) = icons::feedback(ui, &response);
         ui.painter().rect_filled(
             zoom.shrink(1.0 + press),
@@ -1863,7 +1878,8 @@ impl App {
         let mut y = card.bottom() - 62.0;
         let mut moving = false;
         for t in self.toasts.iter().rev() {
-            let id = Id::new(("toast", t.born.to_bits()));
+            // Two toasts can be born in the same frame: the text tells them apart.
+            let id = Id::new(("toast", t.born.to_bits(), &t.text));
             let age = (now - t.born) as f32;
             let enter = if reduce {
                 1.0
@@ -1901,7 +1917,8 @@ impl App {
                                 } else {
                                     p.text
                                 });
-                                ui.add(egui::Label::new(text).wrap());
+                                let label = ui.add(egui::Label::new(text).wrap());
+                                crate::a11y::announce(&label, t.error);
                             });
                         });
                 });

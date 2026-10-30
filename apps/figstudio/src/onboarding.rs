@@ -336,6 +336,7 @@ pub(crate) fn text_button(
 ) -> bool {
     let response = ui.interact(rect, Id::new(id), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), text));
+    crate::a11y::author(&response, format!("welcome.{}", crate::a11y::slug(text)));
     let (hover, _) = icons::feedback(ui, &response);
     ui.painter()
         .rect_filled(rect, CornerRadius::same(8), p.hover.gamma_multiply(hover));

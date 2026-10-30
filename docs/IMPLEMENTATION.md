@@ -1050,6 +1050,12 @@ The desktop app builds eframe with `accesskit`. Screen readers read the tree egu
 - A menu goes through `chrome::context_menu` or `a11y::submenu` so it gets a Menu role and a
   name.
 - New text colours pass the `theme.rs` contrast tests (4.5:1).
+- Every control gets an automation id with `a11y::author` (`button.<slug>`, `menu.<slug>`,
+  `settings.<slug>`; ids built from node ids for layers). Pick one that does not change with
+  the label. Menu items use `a11y::menu_button`.
+- A message that appears on its own (toast, error) calls `a11y::announce`.
+- Canvas layers come from `canvas_a11y.rs`, capped by `MAX_NODES` and `MAX_VISITS`. It walks
+  nothing while AccessKit is off.
 
 `ui_a11y_tests.rs` catches a missing name or focus ring in the states it visits. Add your
 new state there.

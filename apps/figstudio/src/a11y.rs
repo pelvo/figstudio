@@ -5,7 +5,7 @@
 //! (AccessKit off) egui keeps no tree and the calls do nothing. `ui_a11y_tests.rs` checks that
 //! every control has a name.
 
-use egui::accesskit::Role;
+use egui::accesskit::{Live, Role};
 use egui::{Context, Id, Response, Ui};
 
 use crate::tab::Tab;
@@ -104,12 +104,14 @@ pub fn name_menu(popup: &Response, label: &str) {
     popup.ctx.accesskit_node_builder(popup.id, |n| {
         n.set_role(Role::Menu);
         n.set_label(label);
+        n.set_author_id(format!("menu.{}.popup", slug(label)));
     });
 }
 
 /// `Ui::menu_button` inside a menu, with the submenu it opens named `label`.
 pub fn submenu<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
-    let (_, popup) = egui::containers::menu::SubMenuButton::new(label).ui(ui, add);
+    let (button, popup) = egui::containers::menu::SubMenuButton::new(label).ui(ui, add);
+    author(&button, format!("menu.{}", slug(label)));
     popup.map(|popup| {
         name_menu(&popup.response, label);
         popup.inner
@@ -133,6 +135,7 @@ pub fn panel_handle(ctx: &Context, panel: &str, label: &str) {
     ctx.accesskit_node_builder(id, |n| {
         n.set_role(Role::Splitter);
         n.set_label(label);
+        n.set_author_id(format!("splitter.{}", slug(panel)));
     });
     if ctx.memory(|m| m.has_focus(id))
         && let Some(handle) = ctx.read_response(id)
@@ -178,8 +181,103 @@ pub fn describe_canvas(response: &Response, tab: &Tab) {
             .and_then(|id| tab.doc.node(id))
             .map_or_else(|| "nothing".to_owned(), crate::panels::display_name);
         let zoom = (tab.view.zoom * 100.0).round();
-        n.set_role(Role::Canvas);
+        // A group, not Role::Canvas: macOS reads a canvas as an image, and an image's
+        // children (the layers, `canvas_a11y.rs`) are not looked into.
+        n.set_role(Role::Group);
+        n.set_role_description("canvas");
+        n.set_author_id("canvas");
         n.set_label(format!("Canvas, page {page}"));
         n.set_description(format!("Zoom {zoom}%. Selected: {selected}."));
     });
+}
+
+/// Reads a Properties row as one item, "Width: 120", instead of a key and a value that a screen
+/// reader or agent would have to pair up by position: the key's node is hidden and the
+/// value's says both.
+pub fn key_value(key: &Response, value: &Response, k: &str, v: &str) {
+    hide(key);
+    value.ctx.accesskit_node_builder(value.id, |n| {
+        n.set_value(format!("{k}: {v}"));
+    });
+}
+
+/// Makes a message that appears on its own (a toast, an error) a live region: screen readers
+/// and agents are told when it shows, without looking for it. An `error` interrupts.
+pub fn announce(label: &Response, error: bool) {
+    label.ctx.accesskit_node_builder(label.id, |n| {
+        n.set_live(if error { Live::Assertive } else { Live::Polite });
+        if error {
+            n.set_role(Role::Alert);
+            if let Some(text) = n.value().map(str::to_owned) {
+                n.set_label(text);
+            }
+        }
+    });
+}
+
+/// Names a spinner (`response` is its place) as work in progress, announced when it starts.
+pub fn progress(response: &Response, label: &str) {
+    let r = response.rect;
+    response.ctx.accesskit_node_builder(response.id, |n| {
+        n.set_role(Role::ProgressIndicator);
+        n.set_label(label);
+        n.set_live(Live::Polite);
+        n.set_bounds(egui::accesskit::Rect {
+            x0: r.min.x.into(),
+            y0: r.min.y.into(),
+            x1: r.max.x.into(),
+            y1: r.max.y.into(),
+        });
+    });
+}
+
+/// Gives `response`'s node a stable automation id (`AXIdentifier` on macOS, `AutomationId` on
+/// Windows), so a script or an agent finds the control again however its label reads.
+/// Ids look like `button.zoom-in`, `layers.12:34` or `settings.reduce-motion`; every control
+/// has one and none is used twice (`ui_a11y_tests.rs`).
+pub fn author(response: &Response, id: impl Into<String>) {
+    let id = id.into();
+    response
+        .ctx
+        .accesskit_node_builder(response.id, |n| n.set_author_id(id));
+}
+
+/// A short stable hash of `text` (FNV-1a), for an id that must not show the text itself (a
+/// file's path).
+pub fn short_hash(text: &str) -> String {
+    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("{hash:016x}")
+}
+
+/// `text` as an id part: lower case, words joined by `-` ("Open file…" is `open-file`).
+pub fn slug(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_owned()
+}
+
+/// `ui.button(label)` in a menu, with the automation id `menu.<slug of label>`.
+pub fn menu_button(ui: &mut Ui, label: &str) -> Response {
+    let response = ui.button(label);
+    author(&response, format!("menu.{}", slug(label)));
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_slug_keeps_letters_and_digits_and_joins_the_rest() {
+        assert_eq!(super::slug("Open file…"), "open-file");
+        assert_eq!(super::slug("Copy as PNG"), "copy-as-png");
+        assert_eq!(super::slug("  Zoom in (+) "), "zoom-in");
+        assert_eq!(super::slug("Größe 2"), "größe-2");
+    }
 }
