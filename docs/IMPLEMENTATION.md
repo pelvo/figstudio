@@ -138,7 +138,12 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
   find.rs                ⌘F find bar: text on the page, inside instances too, and frame
                          names; highlights
   settings.rs            Settings (⌘,), Arc's layout: General, Canvas, Shortcuts, Agents
-                         (agent access, the MCP server), About
+                         (agent access, the MCP server), About (with the update rows)
+  update.rs              desktop: update check against GitHub's latest release (opt-in at
+                         start, or a button); on macOS a bundle not from Homebrew downloads,
+                         checks (SHA256SUMS, codesign, version) and swaps in the new app
+  update_view.rs         desktop: the release notes popup (drawn as the welcome sheet; notes
+                         parsed by pulldown-cmark into update::Block) and the update buttons
   keymap.rs              shortcuts the user can change: Binding (label, group, default,
                          action) and the Keymap of changes, saved in Prefs
   canvas.rs              canvas input, render requests, frame re-projection, outlines

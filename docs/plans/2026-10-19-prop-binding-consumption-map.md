@@ -1,0 +1,10 @@
+---
+pr: 24
+branch: fix/prop-binding-consumption-map
+title: fix(fig): follow parameterConsumptionMap property bindings
+---
+
+## Progress
+
+### 2026-10-19T014014Z b126-component-property-bindings-parameterconsumptionmap-prop
+- 2026-10-19 — Component property bindings: `parameterConsumptionMap` PROP_REF entries now win per field over a stale legacy `componentPropRefs` binding (a copied layer rebound to another property was hidden with the old one). Regression red then green; a real user file re-rendered and matched Figma. Other pages of that file not re-rendered.

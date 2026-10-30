@@ -110,6 +110,12 @@ mod tiles;
 mod tiles_view;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod ui_tests;
+#[cfg(not(target_arch = "wasm32"))]
+mod update;
+#[cfg(not(target_arch = "wasm32"))]
+mod update_attest;
+#[cfg(not(target_arch = "wasm32"))]
+mod update_view;
 #[cfg(target_os = "macos")]
 mod vibrancy;
 #[cfg(target_arch = "wasm32")]
@@ -351,6 +357,13 @@ struct Prefs {
     /// A folder of shader code (Figma's "View code" zips) for every file, watched.
     #[cfg_attr(target_arch = "wasm32", serde(skip))]
     shader_folder: Option<PathBuf>,
+    /// Settings → About: ask GitHub for a newer release once per launch (off until turned on).
+    #[cfg_attr(target_arch = "wasm32", serde(skip))]
+    check_updates: bool,
+    /// The release whose popup "Don't remind me of this version again" turned off for the
+    /// check at start ("" for none). A newer release, or Check now, shows its popup.
+    #[cfg_attr(target_arch = "wasm32", serde(skip))]
+    skip_update: String,
 }
 
 impl Default for Prefs {
@@ -364,6 +377,8 @@ impl Default for Prefs {
             recents_list: false,
             agents: settings::AgentPrefs::default(),
             shader_folder: None,
+            check_updates: false,
+            skip_update: String::new(),
         }
     }
 }
@@ -461,6 +476,9 @@ struct App {
     renderer: String,
     /// Agent access: the MCP server (`mcp_host.rs`).
     mcp: mcp_host::McpHost,
+    /// Settings → About's update check and install (`update.rs`).
+    #[cfg(not(target_arch = "wasm32"))]
+    updater: update::Updater,
     /// The welcome sheet and the one-time tips (`onboarding.rs`).
     onboarding: onboarding::Onboarding,
     /// Files opened before: the Recents page when none is open (`recents.rs`).
@@ -590,6 +608,9 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             window_cap: None,
             mcp: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            // Tests never reach the network.
+            updater: update::Updater::new(!cfg!(test)),
             // Tests turn it on themselves; it would cover every other test's window.
             onboarding: onboarding::Onboarding::new(
                 saved
@@ -623,6 +644,12 @@ impl App {
             access.remote_addr.clone_from(&app.prefs.agents.remote_addr);
         }
         app.restore_workspace(workspace, files);
+        // What the last install left beside the app (the bundle it replaced). Tests never
+        // touch the app's folder.
+        #[cfg(not(target_arch = "wasm32"))]
+        if !cfg!(test) {
+            update::clean_up_at_launch();
+        }
         app
     }
 
@@ -1096,8 +1123,10 @@ impl App {
             return;
         }
         // Keys without ⌘ / Ctrl / Alt wait while text is typed or a panel is up (or fading).
-        let quiet =
-            ctx.egui_wants_keyboard_input() || self.settings.is_up(ctx) || self.space_popover_up();
+        let quiet = ctx.egui_wants_keyboard_input()
+            || self.settings.is_up(ctx)
+            || self.space_popover_up()
+            || self.update_notes_up();
         // Most modifiers first: a Ctrl+Tab pattern also matches Ctrl+Shift+Tab.
         let mut bindings: Vec<(keymap::Binding, KeyboardShortcut)> = keymap::Binding::ALL
             .into_iter()
@@ -1227,7 +1256,10 @@ impl eframe::App for App {
     /// skips `ui` then), so files a later launch hands over are taken either way.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(not(target_arch = "wasm32"))]
-        self.open_handed_over(ctx);
+        {
+            self.open_handed_over(ctx);
+            self.poll_update(ctx);
+        }
         // A hidden browser tab runs only this, on a throttled timer: keep agent access
         // alive there (keepalive, reconnect, reveals, image reads). `ui` does it otherwise.
         #[cfg(target_arch = "wasm32")]

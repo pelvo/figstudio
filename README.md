@@ -37,7 +37,8 @@ Protocol (MCP) server, written in Rust.
   ```
 
   This installs `figstudio.app` in `/Applications` and puts `figstudio-cli` and
-  `figstudio-mcp` on your `PATH`. Update with `brew upgrade --cask figstudio`; remove with
+  `figstudio-mcp` on your `PATH`. Update with `brew upgrade --cask figstudio` (Settings →
+  About → Check now tells you when there is a new one); remove with
   `brew uninstall --cask figstudio` (add `--zap` to delete its settings as well). The app
   is ad-hoc signed, not notarized; the cask clears the download quarantine so it opens
   normally. The tap is [pelvo/homebrew-tap](https://github.com/pelvo/homebrew-tap).
