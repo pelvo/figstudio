@@ -91,6 +91,20 @@ fn a_file_with_shaders_but_no_code_says_so_and_takes_their_zips() {
     }
     assert!(h.state().tabs[0].shaders.notice_closed);
     assert!(h.query_by_label("Choose shader zips…").is_none());
+    // The warning chip (shown once tiles report what they skipped) brings it back.
+    for _ in 0..400 {
+        if h.query_by_label("Page warnings").is_some() {
+            break;
+        }
+        step(&mut h, &mut c);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    h.get_by_label("Page warnings").click();
+    for _ in 0..3 {
+        step(&mut h, &mut c);
+    }
+    assert!(!h.state().tabs[0].shaders.notice_closed);
+    assert!(h.query_by_label("Choose shader zips…").is_some());
     let _ = CONCENTRIC;
 }
 
@@ -102,7 +116,7 @@ fn a_shader_marker_asks_for_that_shaders_code() {
     for _ in 0..4 {
         step(&mut h, &mut c);
     }
-    h.get_by_label_contains("Shader: code missing").click();
+    h.get_by_label_contains("Shader needs its code").click();
     for _ in 0..2 {
         step(&mut h, &mut c);
     }

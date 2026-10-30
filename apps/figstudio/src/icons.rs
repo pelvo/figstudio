@@ -44,6 +44,8 @@ pub enum Icon {
     Info,
     Grid,
     List,
+    Play,
+    Pause,
 }
 
 /// The icon for a node type in the layer tree.
@@ -337,6 +339,11 @@ pub fn paint(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
                 painter.circle_filled(g.p(2.6, y), 0.95 * g.scale, color);
                 capsule((5.5, y), (14.0, y));
             }
+        }
+        Icon::Play => path(&[(5.0, 3.0), (13.0, 8.0), (5.0, 13.0)], true),
+        Icon::Pause => {
+            capsule((5.5, 3.5), (5.5, 12.5));
+            capsule((10.5, 3.5), (10.5, 12.5));
         }
         Icon::Warning => {
             path(&[(8.0, 2.0), (14.5, 13.5), (1.5, 13.5)], true);

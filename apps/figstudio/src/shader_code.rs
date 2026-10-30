@@ -7,7 +7,7 @@
 use std::cell::Cell;
 use std::sync::Arc;
 
-use egui::{Pos2, RichText, Sense, Stroke, vec2};
+use egui::{Pos2, RichText, Sense, Stroke, pos2, vec2};
 use figstudio_fig::Guid;
 use figstudio_mcp_core::shaders::{self, Missing, ShaderSource};
 use figstudio_render::shader::ShaderFills;
@@ -460,8 +460,17 @@ pub enum NoticeAction {
     Close,
 }
 
-/// The notice over the canvas (`rect`) for a file using shaders without code.
-pub fn notice(ui: &egui::Ui, rect: egui::Rect, tab: &mut Tab) -> Option<NoticeAction> {
+/// Width of the notice card.
+const NOTICE_WIDTH: f32 = 340.0;
+
+/// The notice for a file using shaders without code: a card like the toasts, its top right
+/// at `anchor` (under the warning chip). `tint` is the space's colour, for its button.
+pub fn notice(
+    ui: &egui::Ui,
+    anchor: Pos2,
+    tab: &mut Tab,
+    tint: theme::Tint,
+) -> Option<NoticeAction> {
     if tab.shaders.missing.is_empty() || tab.shaders.notice_closed {
         return None;
     }
@@ -471,109 +480,153 @@ pub fn notice(ui: &egui::Ui, rect: egui::Rect, tab: &mut Tab) -> Option<NoticeAc
     let p = theme::of(ui);
     egui::Area::new(egui::Id::new(("shader-notice", tab.id)))
         .order(egui::Order::Foreground)
-        // Under the status pills at the top of the canvas.
-        .fixed_pos(rect.center_top() + vec2(-210.0, 56.0))
+        .pivot(egui::Align2::RIGHT_TOP)
+        .fixed_pos(anchor)
         .show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_width(420.0);
-                ui.horizontal(|ui| {
-                    let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
-                    diamond(ui.painter(), r.center(), 10.0, theme::ACCENT);
-                    ui.label(
-                        RichText::new(format!(
-                            "{n} shader{} without {} code: {layers} layer{} not drawn",
-                            if n == 1 { "" } else { "s" },
-                            if n == 1 { "its" } else { "their" },
-                            if layers == 1 { " is" } else { "s are" },
-                        ))
-                        .strong(),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if crate::icons::sized_button(
-                            ui,
-                            crate::icons::Icon::Close,
-                            "Hide",
-                            false,
-                            20.0,
-                        )
-                        .clicked()
-                        {
-                            action = Some(NoticeAction::Close);
-                        }
+            egui::Frame::new()
+                .fill(p.glass)
+                .corner_radius(egui::CornerRadius::same(12))
+                .stroke(Stroke::new(1.0, p.card_stroke))
+                .shadow(crate::chrome::card_shadow(&p, 16))
+                .inner_margin(egui::Margin::symmetric(14, 12))
+                .show(ui, |ui| {
+                    let width = NOTICE_WIDTH - 28.0;
+                    ui.set_width(width);
+                    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                        crate::icons::paint(
+                            ui.painter(),
+                            crate::icons::Icon::Warning,
+                            r,
+                            p.warning,
+                        );
+                        ui.label(
+                            RichText::new(if n == 1 {
+                                "1 shader needs its code".to_owned()
+                            } else {
+                                format!("{n} shaders need their code")
+                            })
+                            .font(theme::semibold(14.0))
+                            .color(p.text),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if crate::icons::sized_button(
+                                ui,
+                                crate::icons::Icon::Close,
+                                "Hide",
+                                false,
+                                20.0,
+                            )
+                            .clicked()
+                            {
+                                action = Some(NoticeAction::Close);
+                            }
+                        });
                     });
-                });
-                ui.label(
-                    RichText::new(
-                        "Figma keeps a shader's code online, not in the .fig. Add it to draw \
-                         these layers; they are marked on the canvas.",
+                    ui.add_space(6.0);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!(
+                                "{layers} {} shaders whose code is not in the .fig (Figma keeps \
+                                 it online), so {} not drawn. {} marked on the canvas.",
+                                if layers == 1 {
+                                    "layer uses"
+                                } else {
+                                    "layers use"
+                                },
+                                if layers == 1 { "it is" } else { "they are" },
+                                if layers == 1 { "It is" } else { "They are" },
+                            ))
+                            .size(12.5)
+                            .color(p.text_dim),
+                        )
+                        .wrap(),
+                    );
+                    if tab.shaders.steps_open {
+                        ui.add_space(8.0);
+                        let file = tab.path.file_name().map_or_else(
+                            || "FILE.fig".to_owned(),
+                            |n| n.to_string_lossy().into_owned(),
+                        );
+                        for (i, step) in steps(&file).iter().enumerate() {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("{}. {step}", i + 1))
+                                        .size(12.0)
+                                        .color(p.text_dim),
+                                )
+                                .wrap(),
+                            );
+                            ui.add_space(3.0);
+                        }
+                    }
+                    ui.add_space(12.0);
+                    let (row, _) = ui.allocate_exact_size(vec2(width, 30.0), Sense::hover());
+                    let choose = egui::Rect::from_min_size(
+                        pos2(row.right() - 132.0, row.top()),
+                        vec2(132.0, 30.0),
+                    );
+                    if crate::chrome::accent_button(
+                        ui,
+                        choose,
+                        ("shader-choose", tab.id),
+                        "Choose zips…",
+                        "Choose shader zips…",
+                        tint,
                     )
-                    .color(p.text_faint)
-                    .small(),
-                );
-                ui.horizontal(|ui| {
-                    if ui.button("Choose shader zips…").clicked() {
+                    .clicked()
+                    {
                         action = Some(NoticeAction::Choose);
                     }
                     let label = if tab.shaders.steps_open {
-                        "Hide steps"
+                        "Hide the steps"
                     } else {
                         "How to get them"
                     };
-                    if ui.button(label).clicked() {
+                    let steps =
+                        egui::Rect::from_min_size(row.min - vec2(6.0, 0.0), vec2(124.0, 30.0));
+                    if crate::onboarding::text_button(
+                        ui,
+                        steps,
+                        ("shader-steps", tab.id),
+                        label,
+                        &p,
+                    ) {
                         tab.shaders.steps_open = !tab.shaders.steps_open;
                     }
                 });
-                if tab.shaders.steps_open {
-                    for (i, step) in steps().iter().enumerate() {
-                        ui.label(RichText::new(format!("{}. {step}", i + 1)).small());
-                    }
-                }
-            });
         });
     action
 }
 
-/// How to get a shader's code, as a list of steps.
-fn steps() -> Vec<String> {
+/// How to get a shader's code, as a list of steps; `file` is the open file's name.
+fn steps(file: &str) -> Vec<String> {
     let mut steps = vec![
         "In Figma, select a marked layer.".to_owned(),
         "In its Fill or Effects, open the shader, then … → View code → Download files.".to_owned(),
         "Drop the downloaded zip here, or click the layer's marker to choose it.".to_owned(),
     ];
     #[cfg(not(target_arch = "wasm32"))]
-    steps.push(
-        "To keep it: put the zips in the folder FILE.fig.shaders next to the file, or in the \
-         shader folder set in Settings."
-            .to_owned(),
-    );
-    #[cfg(target_arch = "wasm32")]
-    steps.push(
-        "Zips you add are used until the tab is closed. Shaders need a browser with WebGPU."
-            .to_owned(),
-    );
-    steps
-}
-
-/// The shader mark: a filled diamond `side` across, painted (no font needs to have it).
-fn diamond(painter: &egui::Painter, centre: Pos2, side: f32, colour: egui::Color32) {
-    let h = side / 2.0;
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            centre + vec2(0.0, -h),
-            centre + vec2(h, 0.0),
-            centre + vec2(0.0, h),
-            centre + vec2(-h, 0.0),
-        ],
-        colour,
-        Stroke::NONE,
+    steps.push(format!(
+        "To keep it: put the zips in a folder named “{file}.shaders” next to the file, or in \
+         the shader folder set in Settings."
     ));
+    #[cfg(target_arch = "wasm32")]
+    steps.push(format!(
+        "Zips you add for {file} are used until the tab is closed. Shaders need a browser \
+         with WebGPU."
+    ));
+    steps
 }
 
 /// Most markers drawn at once.
 const MAX_MARKERS: usize = 200;
 
-/// A marker at the top-left of each layer on screen whose shader has no code; clicking one
-/// asks to choose that shader's zip. `corners` gives a layer's screen corners on the page.
+/// A marker at the top-left of each layer on screen whose shader has no code, in the warning
+/// chip's look (glass, a warning edge, the warning icon); clicking one asks to choose that
+/// shader's zip. `corners` gives a layer's screen corners on the page.
 pub fn markers(
     ui: &egui::Ui,
     painter: &egui::Painter,
@@ -583,6 +636,7 @@ pub fn markers(
     if tab.shaders.missing.is_empty() {
         return;
     }
+    let p = theme::of(ui);
     let clip = painter.clip_rect();
     let mut drawn = 0;
     for missing in &tab.shaders.missing {
@@ -597,25 +651,23 @@ pub fn markers(
             }
             drawn += 1;
             let text = if missing.kind == "effect" {
-                "Shader effect: code missing"
+                "Shader effect needs its code"
             } else {
-                "Shader: code missing"
+                "Shader needs its code"
             };
             let label = painter.layout_no_wrap(
                 text.to_owned(),
-                egui::FontId::proportional(11.0),
-                egui::Color32::WHITE,
+                egui::FontId::proportional(11.5),
+                p.warning,
             );
-            // A layer narrower than the label gets the diamond alone (its label on hover).
-            const DIAMOND: f32 = 10.0;
-            let wide = bounds.width() >= label.size().x + DIAMOND + 30.0;
+            const ICON: f32 = 13.0;
+            const HEIGHT: f32 = 24.0;
+            // A layer narrower than the label gets the icon alone (its label on hover).
+            let wide = bounds.width() >= label.size().x + ICON + 40.0;
             let size = if wide {
-                vec2(
-                    label.size().x + DIAMOND + 16.0,
-                    label.size().y.max(DIAMOND) + 6.0,
-                )
+                vec2(label.size().x + ICON + 26.0, HEIGHT)
             } else {
-                vec2(DIAMOND + 10.0, DIAMOND + 10.0)
+                vec2(HEIGHT, HEIGHT)
             };
             let pill = egui::Rect::from_min_size(bounds.min.max(clip.min) + vec2(6.0, 6.0), size);
             let response = ui.interact(
@@ -627,25 +679,30 @@ pub fn markers(
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
             let response = response
                 .on_hover_text(format!(
-                    "{text}. Click to choose its code: the zip of Figma's View code → Download files"
+                    "{text}. Click to choose it: the zip of Figma's View code → Download files"
                 ))
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
-            let fill = if response.hovered() {
-                theme::ACCENT
-            } else {
-                theme::ACCENT.gamma_multiply(0.85)
-            };
-            painter.rect(pill, 6.0, fill, Stroke::NONE, egui::StrokeKind::Inside);
-            let centre = egui::pos2(pill.min.x + 5.0 + DIAMOND / 2.0, pill.center().y);
-            diamond(painter, centre, DIAMOND, egui::Color32::WHITE);
+            let (hover, press) = crate::icons::feedback(ui, &response);
+            let r = pill.shrink(press);
+            let radius = egui::CornerRadius::same((HEIGHT / 2.0) as u8);
+            painter.add(crate::chrome::card_shadow(&p, 8).as_shape(r, radius));
+            painter.rect(
+                r,
+                radius,
+                p.glass,
+                Stroke::new(1.0, p.warning.gamma_multiply(0.45 + 0.45 * hover)),
+                egui::StrokeKind::Inside,
+            );
+            let icon = egui::Rect::from_center_size(
+                pos2(r.left() + HEIGHT / 2.0, r.center().y),
+                vec2(ICON, ICON),
+            );
+            crate::icons::paint(painter, crate::icons::Icon::Warning, icon, p.warning);
             if wide {
                 painter.galley(
-                    egui::pos2(
-                        pill.min.x + DIAMOND + 10.0,
-                        pill.center().y - label.size().y / 2.0,
-                    ),
+                    pos2(icon.right() + 6.0, r.center().y - label.size().y / 2.0),
                     label,
-                    egui::Color32::WHITE,
+                    p.warning,
                 );
             }
             if response.clicked() {

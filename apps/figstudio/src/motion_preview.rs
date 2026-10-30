@@ -14,6 +14,7 @@ use figstudio_mcp_core::motion::Player;
 use figstudio_render::images::Images;
 use figstudio_render::motion::Playhead;
 
+use crate::icons::Icon;
 use crate::source::Source;
 
 /// Longest side of a preview frame, in pixels.
@@ -168,6 +169,7 @@ pub fn show(ctx: &Context, preview: &mut Option<Preview>) {
         return;
     };
     let now = ctx.input(|i| i.time);
+    let was_playing = p.playing;
     if p.playing {
         if let Some(last) = p.last_tick {
             p.advance(now - last);
@@ -199,10 +201,12 @@ pub fn show(ctx: &Context, preview: &mut Option<Preview>) {
     egui::Window::new(format!("Motion · {}", p.title))
         .id(egui::Id::new("motion-preview"))
         .open(&mut open)
-        .resizable(true)
-        .default_width(480.0)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(WIDTH)
         .show(ctx, |ui| window(ui, p));
-    if p.playing || p.waiting.is_some() {
+    // One more frame after the clock stops, so the button shows Play again.
+    if p.playing || was_playing || p.waiting.is_some() {
         ctx.request_repaint();
     }
     if !open {
@@ -210,30 +214,69 @@ pub fn show(ctx: &Context, preview: &mut Option<Preview>) {
     }
 }
 
+/// Width of the window's content.
+const WIDTH: f32 = 420.0;
+
+/// The frame on a rounded well (as Properties sections are), then the controls: play or
+/// pause, the scrub bar and the time.
 fn window(ui: &mut Ui, p: &mut Preview) {
-    if let Some(texture) = &p.texture {
-        let size = texture.size_vec2();
-        let width = ui.available_width().max(64.0);
-        let scale = (width / size.x).min(1.0);
-        ui.image((texture.id(), size * scale));
-    } else {
-        ui.spinner();
-    }
+    let pal = crate::theme::of(ui);
+    // The window's width (egui keeps a size the person or an older version left).
+    let side = ui.available_width().max(WIDTH);
+    ui.set_width(side);
+    let well = egui::Frame::new()
+        .fill(ui.visuals().faint_bg_color)
+        .stroke(egui::Stroke::new(1.0, pal.card_stroke))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::same(8));
+    well.show(ui, |ui| {
+        let area = egui::vec2(side - 18.0, (side - 18.0) * 0.75);
+        let (rect, _) = ui.allocate_exact_size(area, egui::Sense::hover());
+        match &p.texture {
+            Some(texture) => {
+                let size = texture.size_vec2();
+                let scale = (rect.width() / size.x).min(rect.height() / size.y).min(1.0);
+                let shown = egui::Rect::from_center_size(rect.center(), size * scale);
+                egui::Image::new((texture.id(), size * scale))
+                    .corner_radius(6)
+                    .paint_at(ui, shown);
+            }
+            None => {
+                egui::Spinner::new().paint_at(
+                    ui,
+                    egui::Rect::from_center_size(rect.center(), egui::vec2(20.0, 20.0)),
+                );
+            }
+        }
+    });
+    ui.add_space(8.0);
     ui.horizontal(|ui| {
-        let label = if p.playing { "Pause" } else { "Play" };
-        if ui.button(label).clicked() {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let (icon, label) = if p.playing {
+            (Icon::Pause, "Pause")
+        } else {
+            (Icon::Play, "Play")
+        };
+        if crate::icons::sized_button(ui, icon, label, false, 28.0).clicked() {
             p.toggle();
         }
         let period = p.period_us();
+        let time = format!("{:.0} / {:.0} ms", p.time_us / 1e3, period / 1e3);
+        let time_w = ui
+            .painter()
+            .layout_no_wrap(time.clone(), egui::FontId::proportional(12.0), pal.text_dim)
+            .size()
+            .x;
+        ui.spacing_mut().slider_width = (ui.available_width() - time_w - 12.0).max(60.0);
         let mut ms = p.time_us / 1e3;
         let slider = egui::Slider::new(&mut ms, 0.0..=period / 1e3)
             .show_value(false)
             .clamping(egui::SliderClamping::Always);
-        if ui.add(slider).changed() {
+        if ui.add(slider).on_hover_text("Scrub").changed() {
             p.time_us = ms * 1e3;
             p.playing = false;
         }
-        ui.label(format!("{:.0} / {:.0} ms", p.time_us / 1e3, period / 1e3));
+        ui.label(egui::RichText::new(time).size(12.0).color(pal.text_dim));
     });
 }
 

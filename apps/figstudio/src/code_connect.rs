@@ -197,7 +197,7 @@ fn desktop_section(ui: &mut Ui, tab: &Tab, node: &Node, component: Guid, faint: 
                     .small(),
             );
         }
-        if ui.small_button("Remove mapping").clicked() {
+        if crate::panels::quiet_button(ui, None, "Remove mapping").clicked() {
             match codeconnect_store::set(&tab.doc, &tab.path, &key, None) {
                 Ok(_) => tab.code_connect.clear(),
                 Err(e) => show_error(ui, component, e),
