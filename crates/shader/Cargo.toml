@@ -26,7 +26,8 @@ pollster = { workspace = true, optional = true }
 # Boa's instruction budget (`ContextBuilder::instructions_remaining`), the CPU cap on a run.
 boa_engine = { version = "0.22", default-features = false, features = ["fuzz"], optional = true }
 # TypeScript to JavaScript (type stripping); 0.146 is the last release on Rust 1.95.
-oxc = { version = "~0.146", default-features = false, features = ["semantic", "transformer", "codegen"] }
+# `ast_visit` finds the loops and functions the browser module guards (see ts.rs).
+oxc = { version = "~0.146", default-features = false, features = ["semantic", "transformer", "codegen", "ast_visit"] }
 
 [lints]
 workspace = true
