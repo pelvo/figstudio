@@ -347,4 +347,8 @@ fn play_opens_a_motion_preview_that_draws_frames_and_pauses() {
     assert!(!paused.1);
     step(&mut h, &mut c);
     assert_eq!(preview(&h).unwrap().2, paused.2, "paused time stays");
+    // It plays on the canvas, not in a window, and its bar closes it.
+    assert!(h.query_by_label_contains("Motion ·").is_none());
+    click_label(&mut h, &mut c, "Close the player");
+    assert!(preview(&h).is_none());
 }
