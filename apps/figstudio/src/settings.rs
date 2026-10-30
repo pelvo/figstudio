@@ -1138,7 +1138,7 @@ impl App {
             "Canvas",
             "How pages are drawn and moved around. The GPU draws faster; the CPU draws \
              everything figstudio supports and is used when the GPU cannot. Shader layers \
-             need their code from Figma (View code → Download files): a folder set here is \
+             need their code from Figma (View code, then Download files): a folder set here is \
              used for every file.",
         );
     }
