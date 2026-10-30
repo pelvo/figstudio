@@ -324,7 +324,7 @@ fn play_opens_a_motion_preview_that_draws_frames_and_pauses() {
     h.state_mut().tabs[0].selection = Some(Guid(1, 1106));
     step(&mut h, &mut c);
     step(&mut h, &mut c);
-    click_label(&mut h, &mut c, "▶ Play");
+    click_label(&mut h, &mut c, "Play");
     let preview = |h: &Harness<'_, App>| {
         h.state().tabs[0]
             .motion_preview

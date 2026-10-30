@@ -1408,15 +1408,6 @@ impl App {
                     ui.multiply_opacity(shown);
                     cursor = canvas::show(ui, tab, &mut self.workers, &mut self.tiles, options);
                     ui.set_opacity(before);
-                    match crate::shader_code::notice(ui, card, tab) {
-                        Some(crate::shader_code::NoticeAction::Choose) => {
-                            tab.shaders.choose.set(Some(None));
-                        }
-                        Some(crate::shader_code::NoticeAction::Close) => {
-                            tab.shaders.notice_closed = true;
-                        }
-                        None => {}
-                    }
                     // Now that the new page has planned its tiles, so the underlay's count as
                     // on screen and are not the first to go.
                     self.tiles.keep_drawn(&underlay);
@@ -1442,7 +1433,8 @@ impl App {
                 let tools = self.tool_pill(ui, card, &mut actions);
                 self.status_pill(ui, card, tools);
                 let below = self.find_bar(ui, card);
-                self.gaps_chip(ui, card, below);
+                let chip = self.gaps_chip(ui, card, below);
+                self.shader_notice(ui, card, below, chip);
             }
         });
         // A closed file's tiles go once no fade paints them.
@@ -1671,21 +1663,48 @@ impl App {
         );
     }
 
-    /// What this page uses that figstudio does not draw exactly, at the top right.
-    fn gaps_chip(&self, ui: &mut Ui, card: Rect, top: f32) {
-        let Some(tab) = self.tabs.get(self.active) else {
+    /// The shader notice under the warning chip (`chip`); clicking the chip shows it again.
+    fn shader_notice(&mut self, ui: &mut Ui, card: Rect, top: f32, chip: Option<Response>) {
+        let dark = theme::of(ui).dark;
+        let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
+        if chip.as_ref().is_some_and(Response::clicked) {
+            tab.shaders.notice_closed = false;
+        }
+        let anchor = chip.map_or(pos2(card.right() - 12.0, top + 12.0), |c| {
+            c.rect.right_bottom() + vec2(0.0, 8.0)
+        });
+        let tint = theme::space_tint(tab.colour(), dark);
+        match crate::shader_code::notice(ui, anchor, tab, tint) {
+            Some(crate::shader_code::NoticeAction::Choose) => tab.shaders.choose.set(Some(None)),
+            Some(crate::shader_code::NoticeAction::Close) => tab.shaders.notice_closed = true,
+            None => {}
+        }
+    }
+
+    /// What this page uses that figstudio does not draw exactly, at the top right. Clickable
+    /// while the file has shaders without code (it shows their notice again).
+    fn gaps_chip(&self, ui: &mut Ui, card: Rect, top: f32) -> Option<Response> {
+        let tab = self.tabs.get(self.active)?;
         let gaps = crate::region_png::gaps(&tab.stats);
         if gaps.is_empty() {
-            return;
+            return None;
         }
+        let shaders = tab.shaders.missing.len();
         let p = theme::of(ui);
         let max = Rect::from_min_max(
             pos2(card.center().x, top + 12.0),
             pos2(card.right() - 12.0, top + 42.0),
         );
-        ui.scope_builder(
+        let hint = if shaders > 0 {
+            "Parts of this page use features figstudio does not draw yet, so it may differ from \
+             Figma. Click to see the shaders that need their code."
+        } else {
+            "Parts of this page use features figstudio does not draw yet, so it may differ from \
+             Figma."
+        };
+        let chip = ui.scope_builder(
             UiBuilder::new()
                 .max_rect(max)
                 .layout(Layout::right_to_left(Align::Center)),
@@ -1701,14 +1720,27 @@ impl App {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         ui.add(
                             egui::Label::new(RichText::new(gaps).size(11.5).color(p.warning))
-                                .truncate(),
-                        )
-                        .on_hover_text("Parts of this page use features figstudio does not draw yet, so it may differ from Figma.");
+                                .truncate()
+                                .sense(Sense::hover()),
+                        );
                         let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
                         icons::paint(ui.painter(), Icon::Warning, r, p.warning);
-                    });
+                    })
+                    .response
             },
         );
+        let sense = if shaders > 0 {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let response = ui.interact(chip.inner.rect, Id::new("gaps-chip"), sense);
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Page warnings"));
+        let response = response.on_hover_text(hint);
+        if shaders > 0 && response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        Some(response)
     }
 
     /// Shown in the canvas card when no file is open. Returns true when "Open file…" was

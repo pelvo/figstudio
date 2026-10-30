@@ -1,6 +1,8 @@
 //! Sidebar lists (Pages, the Layers tree) and the Properties card.
 
-use egui::{Color32, CornerRadius, FontId, Id, Margin, RichText, Sense, Shape, Ui, vec2};
+use egui::{
+    Color32, CornerRadius, FontId, Id, Margin, Rect, RichText, Sense, Shape, Stroke, Ui, pos2, vec2,
+};
 use figstudio_fig::{Document, Guid, Node, Val};
 use figstudio_render::geom;
 
@@ -695,13 +697,14 @@ fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<I
                 .small(),
             );
         }
+        ui.add_space(2.0);
         ui.horizontal(|ui| {
-            play = ui
-                .small_button("▶ Play")
+            ui.spacing_mut().item_spacing.x = 6.0;
+            play = quiet_button(ui, Some(Icon::Play), "Play")
                 .on_hover_text("Play this layer's timeline in a preview window")
                 .clicked();
             if let Some(css) = motion["codeSnippets"]["css"].as_str()
-                && ui.small_button("Copy CSS animation").clicked()
+                && quiet_button(ui, None, "Copy CSS animation").clicked()
             {
                 *picked = Some(Item::text(
                     "Copy CSS animation",
@@ -735,15 +738,16 @@ fn shader_section(ui: &mut Ui, shader: &serde_json::Value, code: &crate::shader_
         ui.label(RichText::new(caption).color(p.text_faint).small());
         if let Some(id) = shader["id"].as_str().filter(|id| code.is_missing(id)) {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Code missing: not drawn").color(theme::ACCENT));
-                if ui
-                    .small_button("Choose zip…")
-                    .on_hover_text("The zip of Figma's View code → Download files for this shader")
-                    .clicked()
-                {
-                    code.choose.set(Some(Some(id.to_owned())));
-                }
+                let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                crate::icons::paint(ui.painter(), Icon::Warning, r, p.warning);
+                ui.label(RichText::new("Not drawn: its code is missing").color(p.warning));
             });
+            if quiet_button(ui, None, "Choose its zip…")
+                .on_hover_text("The zip of Figma's View code → Download files for this shader")
+                .clicked()
+            {
+                code.choose.set(Some(Some(id.to_owned())));
+            }
         }
         for value in shader["values"].as_array().into_iter().flatten() {
             let label = value["label"].as_str().unwrap_or("?");
@@ -753,6 +757,46 @@ fn shader_section(ui: &mut Ui, shader: &serde_json::Value, code: &crate::shader_
             }
         }
     });
+}
+
+/// A secondary action inside a Properties section: an outlined, rounded button (an icon, if
+/// given, before its text) that fills softly on hover. The section's main action uses
+/// `chrome::accent_button`.
+pub(crate) fn quiet_button(ui: &mut Ui, icon: Option<Icon>, text: &str) -> egui::Response {
+    let p = theme::of(ui);
+    let galley =
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.5), p.text);
+    let icon_w = if icon.is_some() { 18.0 } else { 0.0 };
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(galley.size().x + icon_w + 20.0, 26.0), Sense::click());
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
+    if ui.is_rect_visible(rect) {
+        let (hover, press) = crate::icons::feedback(ui, &response);
+        let r = rect.shrink(press);
+        let radius = CornerRadius::same(8);
+        ui.painter().rect(
+            r,
+            radius,
+            p.hover.gamma_multiply(0.6 + hover),
+            Stroke::new(1.0, p.card_stroke),
+            egui::StrokeKind::Inside,
+        );
+        let ink = p.text_dim.lerp_to_gamma(p.text, hover);
+        let mut x = r.left() + 10.0;
+        if let Some(icon) = icon {
+            let icon_rect = Rect::from_center_size(pos2(x + 6.0, r.center().y), vec2(13.0, 13.0));
+            crate::icons::paint(ui.painter(), icon, icon_rect, ink);
+            x += icon_w;
+        }
+        ui.painter()
+            .galley(pos2(x, r.center().y - galley.size().y / 2.0), galley, ink);
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
 }
 
 /// A label with a colour swatch and its hex value, like a Fill row.

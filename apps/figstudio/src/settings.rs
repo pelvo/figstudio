@@ -1079,17 +1079,25 @@ impl App {
             {
                 section(ui, "Shader code");
                 let note = self.prefs.shader_folder.as_ref().map_or_else(
-                    || "Zips of Figma's View code, for every file; watched".to_owned(),
-                    |dir| dir.display().to_string(),
+                    || "Zips of Figma's View code, for every file".to_owned(),
+                    |dir| {
+                        let name = dir.file_name().map_or_else(
+                            || dir.display().to_string(),
+                            |n| n.to_string_lossy().into_owned(),
+                        );
+                        format!("“{name}”, watched for new zips")
+                    },
                 );
                 let mut choose = false;
                 let mut clear = false;
                 setting(ui, "Shader folder", &note, |ui| {
-                    if self.prefs.shader_folder.is_some() && ui.button("Clear").clicked() {
-                        clear = true;
-                    }
-                    if ui.button("Choose…").clicked() {
+                    // Right to left: the main action outermost, as other rows have it.
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    if pill(ui, "Choose…", true).clicked() {
                         choose = true;
+                    }
+                    if self.prefs.shader_folder.is_some() && pill(ui, "Clear", true).clicked() {
+                        clear = true;
                     }
                 });
                 if clear {
@@ -1130,7 +1138,9 @@ impl App {
             &[Glyph::Icon(Icon::Frame)],
             "Canvas",
             "How pages are drawn and moved around. The GPU draws faster; the CPU draws \
-             everything figstudio supports and is used when the GPU cannot.",
+             everything figstudio supports and is used when the GPU cannot. Shader layers \
+             need their code from Figma (View code → Download files): a folder set here is \
+             used for every file.",
         );
     }
 
