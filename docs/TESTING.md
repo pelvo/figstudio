@@ -81,7 +81,7 @@ epaint panics when the context drops ("Dropped TexturesDelta with 1 unapplied de
 
 | File | Test | Guards |
 |---|---|---|
-| `crates/fig/tests/decode.rs` | `decodes_every_fixture_with_its_own_schema` | all 9 fixtures decode; node counts |
+| `crates/fig/tests/decode.rs` | `decodes_every_fixture_with_its_own_schema` | all 10 fixtures decode; node counts |
 | | `builds_the_tree_in_sibling_order` | parent/child links, fractional-index order |
 | | `reads_metadata_images_and_blobs` | `meta.json` name, images, blobs, thumbnail |
 | | `refuses_files_that_are_not_fig` | bad input is an error, not a panic |
