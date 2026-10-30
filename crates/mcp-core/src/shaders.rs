@@ -58,6 +58,32 @@ impl ShaderSource {
         }
     }
 
+    /// The source in a zip of Figma's "View code" → "Download files" (`bytes`), labelled
+    /// `label`; `None` when it is not a zip or holds no text file. Oversized and non-text
+    /// entries are left out.
+    pub fn from_zip(label: String, bytes: &[u8]) -> Option<Self> {
+        let mut cursor = std::io::Cursor::new(bytes);
+        let entries = figstudio_fig::archive::read_entries(&mut cursor, bytes.len() as u64).ok()?;
+        let mut files: Vec<(String, String)> = entries
+            .iter()
+            .filter(|e| !e.name.ends_with('/') && e.size <= MAX_SOURCE_FILE_BYTES)
+            .take(MAX_SOURCE_FILES)
+            .filter_map(|e| {
+                let bytes = figstudio_fig::archive::read_entry(&mut cursor, e).ok()?;
+                Some((e.name.clone(), String::from_utf8(bytes).ok()?))
+            })
+            .collect();
+        files.sort();
+        (!files.is_empty()).then(|| ShaderSource::new(label, files))
+    }
+
+    /// Whether this source has the code a shader runs (`main.ts`).
+    pub fn has_code(&self) -> bool {
+        self.files
+            .iter()
+            .any(|(f, _)| f.rsplit('/').next() == Some("main.ts"))
+    }
+
     /// The property names `main.ts` declares with `defineProperties`.
     pub fn parameters(&self) -> Vec<String> {
         self.files
@@ -65,6 +91,66 @@ impl ShaderSource {
             .find(|(f, _)| f.rsplit('/').next() == Some("main.ts"))
             .map_or_else(Vec::new, |(_, text)| define_properties(text))
     }
+}
+
+/// Most files read from one source.
+pub(crate) const MAX_SOURCE_FILES: usize = 100;
+/// Largest file read from a source (Figma's own cap for a shader's source is 1 MB in all).
+pub(crate) const MAX_SOURCE_FILE_BYTES: u64 = 1_000_000;
+
+/// A shader the file uses that no source matches: it cannot be drawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Missing {
+    /// The shader's ID (published tool ID, else key): label a source with it to match it.
+    pub id: String,
+    /// `fill` or `effect`.
+    pub kind: &'static str,
+    /// Visible layers using it.
+    pub layers: Vec<Guid>,
+}
+
+/// The shaders visible layers use that `sources` have no code for, in file order.
+pub fn missing(doc: &Document, sources: &[ShaderSource]) -> Vec<Missing> {
+    let all = shaders(doc);
+    let lacking: Vec<&Shader<'_>> = all
+        .iter()
+        .filter(|s| !s.source(sources).is_some_and(ShaderSource::has_code))
+        .collect();
+    if lacking.is_empty() {
+        return Vec::new();
+    }
+    // One walk over the document for every shader.
+    let used = usages(doc, |r| lacking.iter().any(|s| s.is(r)));
+    let mut out = Vec::new();
+    for shader in lacking {
+        let mut layers: Vec<Guid> = used
+            .iter()
+            .filter(|u| {
+                u.paint.get("customEffectId").is_some_and(|r| shader.is(r))
+                    && u.paint.flag("visible") != Some(false)
+                    && u.node.data.flag("visible") != Some(false)
+            })
+            .map(|u| u.node.id)
+            .collect();
+        layers.dedup();
+        if !layers.is_empty() {
+            out.push(Missing {
+                id: shader.id(),
+                kind: shader.kind,
+                layers,
+            });
+        }
+    }
+    out
+}
+
+/// The ID of the shader the `CUSTOM` paint or effect `paint` uses (see [`Missing::id`]).
+pub fn id_of(doc: &Document, paint: &Val) -> Option<String> {
+    let reference = paint.get("customEffectId")?;
+    shaders(doc)
+        .iter()
+        .find(|s| s.is(reference))
+        .map(Shader::id)
 }
 
 /// The top-level keys of the object passed to `defineProperties(…, { … })`.

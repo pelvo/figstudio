@@ -75,6 +75,8 @@ pub enum Loaded {
         elapsed: Duration,
         /// What CJK the names or text need (the browser fetches a font for it).
         cjk: crate::theme::CjkNeed,
+        /// Shader code in the folder next to the file (`FILE.fig.shaders/`).
+        shaders: Vec<figstudio_mcp_core::shaders::ShaderSource>,
     },
     Err {
         path: PathBuf,
@@ -458,6 +460,14 @@ impl Workers {
         }
     }
 
+    /// Draws document `instance` again from scratch (its shader code changed): its page
+    /// recordings are dropped.
+    pub fn redraw_document(&self, instance: u64) {
+        if let Some(tx) = &self.render_tx {
+            let _ = tx.send(Msg::Forget { doc: instance });
+        }
+    }
+
     /// The last tab of document `instance` closed: drops its images, its queued image reads,
     /// and anything a render or read still running would store for it.
     pub fn close_document(&self, instance: u64) {
@@ -485,13 +495,9 @@ impl Workers {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load(&self, path: PathBuf) {
-        let images = self.images();
         self.decode(path.clone(), true, move || {
             let doc_key = crate::source::doc_key_from_path(&path);
             let (doc, source) = crate::source::open_path(&path)?;
-            if let Some(fills) = figstudio_shader::Fills::for_file(&path) {
-                images.set_shaders(doc.instance, fills);
-            }
             Ok((doc, source, doc_key))
         });
     }
@@ -528,7 +534,16 @@ impl Workers {
                 Ok((doc, source, doc_key)) => {
                     let name = path.file_name().map(|n| n.to_string_lossy());
                     let real_path = on_disk.then(|| std::fs::canonicalize(&path).ok()).flatten();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let shaders = if on_disk {
+                        figstudio_mcp_core::shader_sources::load(&path)
+                    } else {
+                        Vec::new()
+                    };
+                    #[cfg(target_arch = "wasm32")]
+                    let shaders = Vec::new();
                     Loaded::Ok {
+                        shaders,
                         real_path,
                         cjk: crate::theme::cjk_need(&doc, name.as_deref().unwrap_or("")),
                         path,

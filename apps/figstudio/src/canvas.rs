@@ -299,6 +299,7 @@ pub fn show(
     marquee::paint(&painter, tab, origin);
     crate::icons::focus_ring(ui, &response, rect, radius as u8);
     crate::canvas_a11y::layers(ui, &response, tab, origin);
+    crate::shader_code::markers(ui, &painter, tab, |id| corners(tab, origin, id));
     tab.view = target;
 
     let cursor = match tool {

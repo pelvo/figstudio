@@ -49,6 +49,8 @@ pub struct Tab {
     pub inspect: crate::inspect::Cache,
     /// Code Connect mappings and page suggestions (`code_connect.rs`).
     pub code_connect: crate::code_connect::Cache,
+    /// Shader code: sources, missing shaders and the notice (`shader_code.rs`).
+    pub shaders: crate::shader_code::TabShaders,
     /// First 16 hex of SHA-256 over the file size and first 4 MiB (`docs[].key`).
     #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     pub doc_key: Option<String>,
@@ -125,6 +127,7 @@ impl Tab {
             a11y_reach: Default::default(),
             inspect: Default::default(),
             code_connect: Default::default(),
+            shaders: Default::default(),
             real_path: path.clone(),
             path,
             doc,

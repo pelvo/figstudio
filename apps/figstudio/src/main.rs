@@ -94,6 +94,7 @@ mod region_png;
 mod session;
 mod session_store;
 mod settings;
+mod shader_code;
 mod source;
 mod space_editor;
 mod spaces;
@@ -362,6 +363,9 @@ struct Prefs {
     skip_update: String,
     /// Settings → Text size, or ⌘+ / ⌘−: egui's zoom factor (1 is 100 %).
     text_size: f32,
+    /// A folder of shader code (Figma's "View code" zips) for every file, watched.
+    #[cfg_attr(target_arch = "wasm32", serde(skip))]
+    shader_folder: Option<PathBuf>,
 }
 
 impl Default for Prefs {
@@ -377,6 +381,7 @@ impl Default for Prefs {
             check_updates: false,
             skip_update: String::new(),
             text_size: 1.0,
+            shader_folder: None,
         }
     }
 }
@@ -492,6 +497,8 @@ struct App {
     /// Startup files still arriving from the decode workers.
     restoring: Option<session::Restore>,
     workspace_store: session_store::Store,
+    /// Shader code for open files (`shader_code.rs`).
+    shader_code: shader_code::State,
 }
 
 impl App {
@@ -596,6 +603,7 @@ impl App {
             dots_clip: egui::Rect::NOTHING,
             dot_in_view: (0, 0.0),
             find: Default::default(),
+            shader_code: Default::default(),
             #[cfg(target_os = "macos")]
             vibrancy: None,
             #[cfg(target_arch = "wasm32")]
@@ -848,6 +856,7 @@ impl App {
                     source,
                     elapsed,
                     cjk,
+                    shaders,
                 } => {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
@@ -873,6 +882,7 @@ impl App {
                     let mut tab = Tab::new(id, path.clone(), doc, source, elapsed)
                         .with_doc_key(doc_key)
                         .with_real_path(real_path);
+                    tab.shaders.beside = shaders;
                     tab.tint = theme::pick_tint(&tab.title(), self.tabs.iter().map(|t| t.tint));
                     let title = tab.title();
                     tab.style = self
@@ -882,6 +892,7 @@ impl App {
                     let previous = self.tabs.get(self.active).map(|t| t.id);
                     self.tabs.push(tab);
                     self.active = self.tabs.len() - 1;
+                    self.apply_shaders(self.active);
                     self.workspace_finished(&path, previous, None);
                     if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
                         self.link_loaded(ctx, &path, i);
@@ -952,6 +963,7 @@ impl App {
             tab.set_page(page);
         }
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        let dropped = self.take_shader_zips(ctx, dropped);
         for f in dropped {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1341,6 +1353,7 @@ impl App {
     fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
+        self.poll_shader_code(&ctx);
         if let Some(error) = self.mcp.frame(&mut self.tabs, &mut self.active) {
             self.toast(&ctx, error, true);
         }

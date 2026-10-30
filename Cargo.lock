@@ -2061,6 +2061,7 @@ dependencies = [
  "web-sys",
  "web-time",
  "windows 0.62.2",
+ "zip",
 ]
 
 [[package]]
@@ -2164,6 +2165,7 @@ dependencies = [
  "tracing",
  "url",
  "vello_cpu 0.3.0",
+ "zip",
 ]
 
 [[package]]
