@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/pelvo/figstudio/compare/v0.2.0...v0.3.0) (2026-10-30)
+
+
+### Features
+
+* **app:** check for updates, show release notes and self-install ([#62](https://github.com/pelvo/figstudio/issues/62)) ([0809074](https://github.com/pelvo/figstudio/commit/0809074273aaf1bee50a62ef3c7e3f4415b06459))
+
+
+### Bug Fixes
+
+* **app,web:** keep cloud relay calls answered in a background tab ([#54](https://github.com/pelvo/figstudio/issues/54)) ([b9c7531](https://github.com/pelvo/figstudio/commit/b9c75315e74cf7f3fb1b330eb03462db267214a3))
+
 ## [0.2.0](https://github.com/pelvo/figstudio/compare/v0.1.0...v0.2.0) (2026-10-24)
 
 
