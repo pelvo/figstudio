@@ -289,3 +289,157 @@ async fn protocol_round_trip_filters_instance_mapping_and_corrupt_sidecar() {
     server.cancel().await.unwrap();
     second.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn suggestions_then_sent_mappings_fill_the_sidecar_in_one_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("local.fig");
+    std::fs::copy(fixture(), &path).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let (a, b) = tokio::io::duplex(65536);
+    let server = tokio::spawn(FigstudioServer::new(vec![path.clone()], true).serve(a));
+    let client = ().serve(b).await.unwrap();
+    let server = server.await.unwrap().unwrap();
+
+    let suggested = call(
+        &client,
+        "get_code_connect_suggestions",
+        json!({"nodeId":"0:1", "excludeMappingPrompt": true}),
+    )
+    .await;
+    assert_ne!(suggested.is_error, Some(true));
+    let suggested = suggested.structured_content.unwrap();
+    assert_eq!(suggested["components"][0]["mainComponentNodeId"], "1:37");
+
+    // One good mapping; a node that is not a component and an empty label are refused.
+    let sent = call(
+        &client,
+        "send_code_connect_mappings",
+        json!({"nodeId":"0:1", "mappings":[
+            {"nodeId":"1:37", "componentName":"Button", "source":"src/button.tsx", "label":"React"},
+            {"nodeId":"1:24", "componentName":"Logo", "source":"src/logo.tsx", "label":"React"},
+            {"nodeId":"1:45", "componentName":"Button", "source":"src/button.tsx", "label":" "},
+        ]}),
+    )
+    .await;
+    assert_ne!(sent.is_error, Some(true));
+    let sent = sent.structured_content.unwrap();
+    assert_eq!(sent["created"].as_array().unwrap().len(), 1, "{sent}");
+    assert_eq!(sent["created"][0]["componentId"], "1:37");
+    let failed: Vec<_> = sent["failed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["nodeId"].clone())
+        .collect();
+    assert_eq!(failed, [json!("1:24"), json!("1:45")]);
+
+    // Sending it again changes nothing and says why.
+    let again = call(
+        &client,
+        "send_code_connect_mappings",
+        json!({"mappings":[{"nodeId":"1:38", "componentName":"Other", "source":"x.tsx", "label":"React"}]}),
+    )
+    .await;
+    assert_eq!(again.is_error, Some(true));
+    assert_eq!(
+        again.structured_content.unwrap()["failed"][0]["error"],
+        "Component is already mapped to code"
+    );
+
+    let after = call(
+        &client,
+        "get_code_connect_suggestions",
+        json!({"nodeId":"0:1"}),
+    )
+    .await
+    .structured_content
+    .unwrap();
+    assert_eq!(
+        after["message"],
+        "All component instances in this selection are already connected to code via Code Connect."
+    );
+    let map = call(&client, "get_code_connect_map", json!({"nodeId":"1:38"}))
+        .await
+        .structured_content
+        .unwrap();
+    assert_eq!(map["1:38"]["componentName"], "Button");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        original,
+        "the .fig is never written"
+    );
+    let empty = call(
+        &client,
+        "send_code_connect_mappings",
+        json!({"mappings":[]}),
+    )
+    .await;
+    assert_eq!(empty.is_error, Some(true));
+    server.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn design_context_writes_mapped_instances_as_the_code_component() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("local.fig");
+    std::fs::copy(fixture(), &path).unwrap();
+    let (a, b) = tokio::io::duplex(65536);
+    // Assets into the temp folder, not the crate's ./figma-assets.
+    let server = FigstudioServer::new(vec![path.clone()], true).with_assets(
+        figstudio_mcp::tools::design::Assets::dir(dir.path().join("assets")),
+    );
+    let server = tokio::spawn(server.serve(a));
+    let client = ().serve(b).await.unwrap();
+    let server = server.await.unwrap().unwrap();
+    let text = |r: &CallToolResult| {
+        r.content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let before = text(&call(&client, "get_design_context", json!({"nodeId":"1:4"})).await);
+    assert!(!before.contains("<Button"), "{before}");
+    let added = call(
+        &client,
+        "add_code_connect_map",
+        json!({"nodeId":"1:37", "componentName":"Button", "source":"src/components/Button.tsx", "label":"React"}),
+    )
+    .await;
+    assert_ne!(added.is_error, Some(true));
+    let after = text(&call(&client, "get_design_context", json!({"nodeId":"1:4"})).await);
+    // Both instances of the mapped component (and the component itself) become <Button />.
+    assert!(
+        after.contains("<Button data-node-id=\"1:38\" />"),
+        "{after}"
+    );
+    assert!(
+        after.contains("<Button data-node-id=\"1:45\" />"),
+        "{after}"
+    );
+    assert!(
+        after.contains("import { Button } from \"src/components/Button\""),
+        "{after}"
+    );
+    assert!(after.contains("## Code Connect"), "{after}");
+    // A snippet replaces the generated tag.
+    call(
+        &client,
+        "add_code_connect_map",
+        json!({"nodeId":"1:37", "componentName":"Button", "source":"src/components/Button.tsx",
+               "label":"React", "snippet":"<Button variant=\"primary\" />",
+               "snippetImports":["import { Button } from \"@/ui\""]}),
+    )
+    .await;
+    let snippet = text(&call(&client, "get_design_context", json!({"nodeId":"1:38"})).await);
+    assert!(
+        snippet.contains("<Button variant=\"primary\" />"),
+        "{snippet}"
+    );
+    assert!(
+        snippet.contains("import { Button } from \"@/ui\""),
+        "{snippet}"
+    );
+    server.cancel().await.unwrap();
+}

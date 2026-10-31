@@ -93,6 +93,8 @@ struct Inner {
     /// Closed documents (`Document::instance`, see [`cache_key`]): nothing is stored, marked
     /// failed or requested for them, checked under the lock so a late reader cannot race.
     closed: HashSet<u64>,
+    /// What draws each open document's shader fills ([`Images::set_shaders`]).
+    shaders: HashMap<u64, Arc<dyn crate::shader::ShaderFills>>,
     bytes: usize,
     budget: usize,
     frame: u64,
@@ -143,6 +145,7 @@ impl Images {
                 failed: HashSet::new(),
                 in_flight: HashSet::new(),
                 closed: HashSet::new(),
+                shaders: HashMap::new(),
                 bytes: 0,
                 budget,
                 frame: 0,
@@ -253,8 +256,20 @@ impl Images {
             keep
         });
         inner.failed.retain(|key| !key.starts_with(&prefix));
+        inner.shaders.remove(&instance);
         inner.bytes -= freed;
         self.0.bytes.store(inner.bytes, Ordering::Relaxed);
+    }
+
+    /// Draws document `instance`'s shader fills with `host` in every renderer sharing this
+    /// cache (a renderer's own [`Renderer::shaders`](crate::Renderer::shaders) comes first),
+    /// until the document is forgotten.
+    pub fn set_shaders(&self, instance: u64, host: Arc<dyn crate::shader::ShaderFills>) {
+        self.lock().shaders.insert(instance, host);
+    }
+
+    pub(crate) fn shaders(&self, instance: u64) -> Option<Arc<dyn crate::shader::ShaderFills>> {
+        self.lock().shaders.get(&instance).cloned()
     }
 
     /// Closes document `instance` for good: drops its images like

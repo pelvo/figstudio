@@ -18,6 +18,8 @@ fn menu_items(h: &Harness<'_, App>) -> Vec<&'static str> {
         "Copy for agent",
         "Copy as PNG",
         "Copy as WebP",
+        "Copy as SVG",
+        "Copy CSS animation",
         "Copy region",
         "Copy region as PNG",
     ]
@@ -45,7 +47,8 @@ fn right_click_on_a_node_offers_the_copy_items_and_copies_the_link() {
             "Copy link",
             "Copy for agent",
             "Copy as PNG",
-            "Copy as WebP"
+            "Copy as WebP",
+            "Copy as SVG"
         ]
     );
     click_label(&mut h, &mut c, "Copy link");
@@ -206,4 +209,149 @@ fn a_hand_tool_drag_pans_without_a_marquee() {
     );
     assert!(h.state().tabs[0].marquee.rect().is_none());
     assert_eq!(h.state().tabs[0].selection, None);
+}
+
+#[test]
+fn copy_as_svg_puts_the_markup_on_the_clipboard() {
+    let (mut h, mut c) = (harness(), Vec::new());
+    let at = centre_of(&h, NODE);
+    right_click(&mut h, &mut c, at);
+    h.step();
+    click_label(&mut h, &mut c, "Copy as SVG");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !c.iter().any(|t| t.starts_with("<svg xmlns=")) {
+        assert!(Instant::now() < deadline, "no SVG copied: {c:?}");
+        step(&mut h, &mut c);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn an_animated_layer_offers_and_copies_its_css_animation() {
+    let mut h = harness_fixture("motion.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    // Properties has the same button for the selection; this test is about the menu.
+    h.state_mut().show_right = false;
+    step(&mut h, &mut c);
+    // The rotating "Object" on the playground page.
+    let object = Guid(1, 1106);
+    let at = centre_of(&h, object);
+    right_click(&mut h, &mut c, at);
+    h.step();
+    assert_eq!(h.state().tabs[0].selection, Some(object));
+    click_label(&mut h, &mut c, "Copy CSS animation");
+    let css = c.last().expect("CSS copied");
+    assert!(css.contains("@keyframes n1-1106-rotate"), "{css}");
+    assert!(css.contains("animation: n1-1106-"), "{css}");
+}
+
+#[test]
+fn the_properties_panel_shows_motion_tracks_and_copies_their_css() {
+    let mut h = harness_fixture("motion.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    h.state_mut().tabs[0].selection = Some(Guid(1, 1106));
+    step(&mut h, &mut c);
+    step(&mut h, &mut c);
+    assert!(h.query_by_label("Motion").is_some(), "no Motion section");
+    assert!(h.query_by_label("Timeline").is_some());
+    assert!(h.query_by_label("Rotation").is_some());
+    click_label(&mut h, &mut c, "Copy CSS animation");
+    assert!(
+        c.last()
+            .is_some_and(|css| css.contains("@keyframes n1-1106-rotate")),
+        "{c:?}"
+    );
+}
+
+#[test]
+fn the_properties_panel_shows_a_shader_fill_and_its_values() {
+    let mut h = harness_fixture("shaders.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    h.state_mut().tabs[0].selection = Some(Guid(1, 14622));
+    step(&mut h, &mut c);
+    step(&mut h, &mut c);
+    assert!(
+        h.query_by_label("Shader fill").is_some(),
+        "no shader section"
+    );
+    assert!(h.query_by_label("Ring count").is_some());
+    assert!(h.query_by_label("Triangle").is_some());
+}
+
+#[test]
+fn code_connect_suggests_connects_and_removes_a_component() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("local.fig");
+    std::fs::copy(fixture(FIXTURE), &path).unwrap();
+    let sidecar = dir.path().join("local.fig.codeconnect.json");
+    let mut h = harness_fixture(path.to_str().unwrap(), 1.0 / 60.0);
+    let mut c = Vec::new();
+    step(&mut h, &mut c);
+    assert!(
+        h.query_by_label("1 component on this page is not connected")
+            .is_some()
+    );
+    click_label(&mut h, &mut c, "Component 1  ·  2×");
+    step(&mut h, &mut c);
+    assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 37)));
+    assert!(h.query_by_label("Not connected").is_some());
+
+    h.get_by_label("Source").click();
+    step(&mut h, &mut c);
+    h.get_by_label("Source").type_text("src/Button.tsx");
+    step(&mut h, &mut c);
+    click_label(&mut h, &mut c, "Connect");
+    step(&mut h, &mut c);
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+    assert_eq!(stored["1:37"]["componentName"], "Component1");
+    assert_eq!(stored["1:37"]["source"], "src/Button.tsx");
+    assert_eq!(stored["1:37"]["label"], "React");
+    assert!(h.query_by_label("Remove mapping").is_some());
+
+    click_label(&mut h, &mut c, "Remove mapping");
+    step(&mut h, &mut c);
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+    assert_eq!(stored, serde_json::json!({}));
+    assert!(h.query_by_label("Not connected").is_some());
+}
+
+#[test]
+fn play_opens_a_motion_preview_that_draws_frames_and_pauses() {
+    let mut h = harness_fixture("motion.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    h.state_mut().tabs[0].selection = Some(Guid(1, 1106));
+    step(&mut h, &mut c);
+    step(&mut h, &mut c);
+    click_label(&mut h, &mut c, "Play");
+    let preview = |h: &Harness<'_, App>| {
+        h.state().tabs[0]
+            .motion_preview
+            .as_ref()
+            .map(|p| (p.root, p.playing, p.time_us, p.has_frame()))
+    };
+    assert_eq!(preview(&h).map(|p| p.0), Some(Guid(1, 1105)));
+    // Its values read with words: the browser's UI font has no arrow glyph.
+    assert!(h.query_all_by_label_contains(" to ").next().is_some());
+    assert!(h.query_all_by_label_contains("→").next().is_none());
+    // The worker draws frames while the clock runs.
+    for _ in 0..400 {
+        step(&mut h, &mut c);
+        if preview(&h).is_some_and(|p| p.3 && p.2 > 0.0) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (_, playing, time, framed) = preview(&h).unwrap();
+    assert!(playing && time > 0.0 && framed, "{:?}", preview(&h));
+    click_label(&mut h, &mut c, "Pause");
+    let paused = preview(&h).unwrap();
+    assert!(!paused.1);
+    step(&mut h, &mut c);
+    assert_eq!(preview(&h).unwrap().2, paused.2, "paused time stays");
+    // It plays on the canvas, not in a window, and its bar closes it.
+    assert!(h.query_by_label_contains("Motion ·").is_none());
+    click_label(&mut h, &mut c, "Close the player");
+    assert!(preview(&h).is_none());
 }

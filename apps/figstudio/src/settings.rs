@@ -1080,6 +1080,36 @@ impl App {
                     self.prefs.renderer = r;
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                section(ui, "Shader code");
+                let note = self.prefs.shader_folder.as_ref().map_or_else(
+                    || "Zips of Figma's View code, for every file".to_owned(),
+                    |dir| format!("Watched for new zips: {}", dir.display()),
+                );
+                let mut choose = false;
+                let mut clear = false;
+                setting(ui, "Shader folder", &note, |ui| {
+                    // Right to left: the main action outermost, as other rows have it.
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    if pill(ui, "Choose…", true).clicked() {
+                        choose = true;
+                    }
+                    if self.prefs.shader_folder.is_some() && pill(ui, "Clear", true).clicked() {
+                        clear = true;
+                    }
+                });
+                if clear {
+                    self.prefs.shader_folder = None;
+                }
+                if choose
+                    && let Some(dir) = rfd::FileDialog::new()
+                        .set_title("Folder of shader code zips")
+                        .pick_folder()
+                {
+                    self.prefs.shader_folder = Some(dir);
+                }
+            }
             section(ui, "On the canvas");
             setting(ui, "Frame names", "Above top-level frames", |ui| {
                 switch(ui, &mut self.prefs.frame_labels, "Frame names");
@@ -1107,7 +1137,9 @@ impl App {
             &[Glyph::Icon(Icon::Frame)],
             "Canvas",
             "How pages are drawn and moved around. The GPU draws faster; the CPU draws \
-             everything figstudio supports and is used when the GPU cannot.",
+             everything figstudio supports and is used when the GPU cannot. Shader layers \
+             need their code from Figma (View code, then Download files): a folder set here is \
+             used for every file.",
         );
     }
 

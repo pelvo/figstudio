@@ -81,7 +81,7 @@ epaint panics when the context drops ("Dropped TexturesDelta with 1 unapplied de
 
 | File | Test | Guards |
 |---|---|---|
-| `crates/fig/tests/decode.rs` | `decodes_every_fixture_with_its_own_schema` | all 7 fixtures decode; node counts |
+| `crates/fig/tests/decode.rs` | `decodes_every_fixture_with_its_own_schema` | all 10 fixtures decode; node counts |
 | | `builds_the_tree_in_sibling_order` | parent/child links, fractional-index order |
 | | `reads_metadata_images_and_blobs` | `meta.json` name, images, blobs, thumbnail |
 | | `refuses_files_that_are_not_fig` | bad input is an error, not a panic |
@@ -136,7 +136,11 @@ every accepted tile.
 
 ## 3. Fixtures
 
-`tests/fixtures/*.fig` come from fig2sketch (MIT, `tests/fixtures/LICENSE-fig2sketch`).
+Seven of `tests/fixtures/*.fig` come from fig2sketch (MIT, `tests/fixtures/LICENSE-fig2sketch`).
+`motion.fig` (keyframes, timelines, animation presets) and `shaders.fig` (shader fills and
+effects) are Figma Community files under CC BY 4.0 with their images and videos removed
+(`tests/fixtures/LICENSE-figma-community`); they are the only public files with motion and
+shader data. The full downloads, if kept, go in the git-ignored `tests/local/`.
 
 | File | Exercises (from `figstudio-cli doctor`) |
 |---|---|
@@ -571,6 +575,14 @@ requests, then the four successful lazy fetches and no app panic, and writes a J
 visual inspection. It also seeds a symbol-bearing Recents title without opening a
 file and checks that one bundle is fetched. Wait for egui's textbox and initial frames
 before dropping the public input; the HTML loading message clears before handlers exist.
+
+Browser shaders: `web/e2e/shaders.spec.mjs` (same build and server) drops the public
+shaders fixture and the Concentric shader's code (zipped in the test with `zip`), waits for
+`figstudioStatus.shaders_missing` to go from 12 to 11, and checks the sandbox ran the shader
+(`__figstudioShaders.runs`: some ok, none failed) in one opaque-origin frame. It needs a
+browser with WebGPU and a working GPU canvas: full Chromium in new-headless mode
+(`CHROMIUM_PATH=…/Google Chrome for Testing`; the headless shell has no GPU canvas). It is
+skipped when the page has no `navigator.gpu`.
 
 Canvas emoji checks: `cargo test --profile fast -p figstudio-render --features gpu emoji`
 runs synthetic sbix colour/strike/limit tests, empty-database and monochrome fallback,

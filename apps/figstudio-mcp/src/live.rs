@@ -236,7 +236,13 @@ impl LiveFiles {
         let mut rendering = match tab {
             Some(tab) => cache
                 .entry(doc.instance)
-                .or_insert_with(|| Rendering::new(tab.path.clone(), Images::new(IMAGE_CACHE_BYTES)))
+                .or_insert_with(|| {
+                    let images = Images::new(IMAGE_CACHE_BYTES);
+                    if let Some(fills) = figstudio_shader::Fills::for_file(&tab.path) {
+                        images.set_shaders(doc.instance, fills);
+                    }
+                    Rendering::new(tab.path.clone(), images)
+                })
                 .clone(),
             // The tab closed during the call: no lazy image reads, nothing cached.
             None => Rendering::default(),

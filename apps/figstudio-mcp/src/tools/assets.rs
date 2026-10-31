@@ -1,4 +1,4 @@
-//! `download_assets`: PNG or JPEG renders of nodes, or the original bytes of their images.
+//! `download_assets`: PNG, WebP, JPEG or SVG renders of nodes, or the original bytes of their images.
 use crate::{
     FigstudioServer,
     tools::{rendering::Rendering, to_call, tool_error},
@@ -25,6 +25,8 @@ pub enum AssetFormat {
     Webp,
     /// Lossy; transparent areas are flattened onto white.
     Jpg,
+    /// Vector paths (text as outlines, images embedded as PNG), returned as text.
+    Svg,
 }
 
 impl From<AssetFormat> for core::AssetFormat {
@@ -33,6 +35,7 @@ impl From<AssetFormat> for core::AssetFormat {
             AssetFormat::Png => Self::Png,
             AssetFormat::Jpg => Self::Jpg,
             AssetFormat::Webp => Self::Webp,
+            AssetFormat::Svg => Self::Svg,
         }
     }
 }
@@ -47,7 +50,8 @@ pub(crate) struct AssetsInput {
     node_ids: Vec<String>,
     /// Registered file stem or full path; optional for a single file.
     file_key: Option<String>,
-    /// `png` (default), `webp` (both lossless) or `jpg` (flattened onto white).
+    /// `png` (default), `webp` (both lossless), `jpg` (flattened onto white) or `svg` (vector
+    /// markup returned as text).
     format: Option<AssetFormat>,
     /// Pixels per design unit, 0.01 to 4 (default 1). Without it the longest side is capped at
     /// 2048 px; with it, at 4096 px.
@@ -59,7 +63,7 @@ pub(crate) struct AssetsInput {
 #[tool_router(router = assets_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
-        description = "Download up to 20 nodes as lossless PNG (default), lossless WebP or JPG images (format: png, webp or jpg, scale 0.01 to 4; longest side capped at 2048 px without scale, 4096 px with it). PNG and WebP keep transparency; JPG has no transparency: nodes are flattened onto white, pages keep their page background. With original=true the call returns the source files of the image fills inside each node (up to 12 per call, each once) with their detected MIME type instead of a render. Each node gets a text line; a node that fails is reported there and does not fail the call. Instance paths (I1:2;3:4) are accepted. SVG and PDF export are not available offline."
+        description = "Download up to 20 nodes as lossless PNG (default), lossless WebP or JPG images, or as SVG (format: png, webp, jpg or svg, scale 0.01 to 4; longest side capped at 2048 px without scale, 4096 px with it). PNG and WebP keep transparency; JPG has no transparency: nodes are flattened onto white, pages keep their page background. SVG comes back as a text block of markup after the node's line: vector paths in output units, text as outlines, images embedded as PNG; what SVG cannot express is listed on the approximations line. With original=true the call returns the source files of the image fills inside each node (up to 12 per call, each once) with their detected MIME type instead of a render. Each node gets a text line; a node that fails is reported there and does not fail the call. Instance paths (I1:2;3:4) are accepted. PDF export is not available offline."
     )]
     async fn download_assets(
         &self,

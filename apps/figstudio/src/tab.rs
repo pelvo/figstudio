@@ -44,6 +44,12 @@ pub struct Tab {
     pub real_path: PathBuf,
     pub doc: Arc<Document>,
     pub pick_cache: crate::pick_cache::PickCache,
+    /// Motion and shader details of the selected layer (`inspect.rs`).
+    pub inspect: crate::inspect::Cache,
+    /// Code Connect mappings and page suggestions (`code_connect.rs`).
+    pub code_connect: crate::code_connect::Cache,
+    /// Shader code: sources, missing shaders and the notice (`shader_code.rs`).
+    pub shaders: crate::shader_code::TabShaders,
     /// First 16 hex of SHA-256 over the file size and first 4 MiB (`docs[].key`).
     #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     pub doc_key: Option<String>,
@@ -74,6 +80,10 @@ pub struct Tab {
     pub shown: View,
     /// A Copy menu item picked this frame; `main.rs` puts it on the clipboard.
     pub pending_copy: Option<crate::copy::Item>,
+    /// A timeline whose Play button was pressed this frame; `main.rs` opens its preview.
+    pub pending_motion: Option<Guid>,
+    /// The open motion preview (`motion_preview.rs`).
+    pub motion_preview: Option<crate::motion_preview::Preview>,
     /// The drag-drawn region (`marquee.rs`).
     pub marquee: crate::marquee::Marquee,
     /// The preset tint picked for this file (`theme::pick_tint`), unless `style` sets one.
@@ -113,6 +123,9 @@ impl Tab {
         Tab {
             id,
             pick_cache: crate::pick_cache::PickCache::new(&doc),
+            inspect: Default::default(),
+            code_connect: Default::default(),
+            shaders: Default::default(),
             real_path: path.clone(),
             path,
             doc,
@@ -142,6 +155,8 @@ impl Tab {
                 pan: egui::Vec2::ZERO,
             },
             pending_copy: None,
+            pending_motion: None,
+            motion_preview: None,
             marquee: Default::default(),
             tint: crate::theme::HOME_TINT,
             style: Default::default(),

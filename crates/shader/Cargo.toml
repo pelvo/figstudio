@@ -1,0 +1,33 @@
+[package]
+name = "figstudio-shader"
+description = "Runs Figma code shaders (TypeScript + WGSL) on wgpu to draw shader fills"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = ["native"]
+# Runs shaders here: Boa for the code, wgpu for its GPU calls (desktop, CLI, MCP). The
+# browser build leaves it out and runs the module on the page's WebGPU.
+native = ["dep:boa_engine", "dep:wgpu", "dep:pollster", "figstudio-mcp-core/fs"]
+
+[dependencies]
+figstudio-fig = { workspace = true }
+figstudio-render = { workspace = true }
+figstudio-mcp-core = { workspace = true }
+vello_cpu = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+wgpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+# A pure-Rust JavaScript engine for the shader's setup/render code. `fuzz` only turns on
+# Boa's instruction budget (`ContextBuilder::instructions_remaining`), the CPU cap on a run.
+boa_engine = { version = "0.22", default-features = false, features = ["fuzz"], optional = true }
+# TypeScript to JavaScript (type stripping); 0.146 is the last release on Rust 1.95.
+# `ast_visit` finds the loops and functions the browser module guards (see ts.rs).
+oxc = { version = "~0.146", default-features = false, features = ["semantic", "transformer", "codegen", "ast_visit"] }
+
+[lints]
+workspace = true

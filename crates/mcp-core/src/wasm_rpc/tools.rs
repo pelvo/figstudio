@@ -18,12 +18,14 @@ struct Input {
     format: Option<String>,
     original: Option<bool>,
     include_images: Option<bool>,
+    recursive: Option<bool>,
     image_scale: Option<f64>,
     client_frameworks: Option<String>,
     client_languages: Option<String>,
     max_nodes: Option<usize>,
     query: Option<String>,
     kinds: Option<Vec<String>>,
+    id: Option<String>,
 }
 
 pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String> {
@@ -44,6 +46,7 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
     let input: Input = serde_json::from_value(args).map_err(|e| e.to_string())?;
     if (name == "reveal_node" && input.node_id.is_none())
         || (name == "search_design_system" && input.query.is_none())
+        || (name == "get_shader" && input.id.is_none())
     {
         return Err("Missing required tool argument".into());
     }
@@ -74,9 +77,10 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
         .as_deref()
         .filter(|_| wants_format)
         .unwrap_or("png");
-    // download_assets alone also takes jpg; renders stay png-encoded underneath.
+    // download_assets alone also takes jpg and svg; renders stay png-encoded underneath.
     let jpg = name == "download_assets" && requested == "jpg";
-    let format = match if jpg { "png" } else { requested }.parse() {
+    let svg = name == "download_assets" && requested == "svg";
+    let format = match if jpg || svg { "png" } else { requested }.parse() {
         Ok(format) => format,
         Err(error) => return Ok(Output::fault(format!("{error}"))),
     };
@@ -100,6 +104,12 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
                 input.limit,
             ),
             "get_variable_defs" => crate::variables::variable_defs(doc, &target()?),
+            "get_motion_context" => crate::motion::motion_context(
+                doc,
+                &target()?,
+                input.recursive.unwrap_or(false),
+                crate::metadata::DEFAULT_OUTPUT_BYTES,
+            ),
             "get_design_context" => crate::design::design_context(
                 doc,
                 &target()?,
@@ -123,6 +133,7 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
                     &ids,
                     match format {
                         _ if jpg => assets::AssetFormat::Jpg,
+                        _ if svg => assets::AssetFormat::Svg,
                         figstudio_render::encoding::ImageFormat::Webp => assets::AssetFormat::Webp,
                         figstudio_render::encoding::ImageFormat::Png => assets::AssetFormat::Png,
                     },
@@ -145,6 +156,8 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
                 input.kinds.as_deref(),
             ),
             "get_libraries" => Output::structured(crate::design_system::summary(doc)),
+            "list_file_shaders" => crate::shaders::list(doc),
+            "get_shader" => crate::shaders::get(doc, input.id.as_deref().unwrap_or_default()),
             "get_context_for_code_connect" => {
                 crate::codeconnect_context::component_context(doc, &target()?)
             }

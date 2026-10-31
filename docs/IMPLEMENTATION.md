@@ -161,7 +161,7 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
                          + semibold), CJK font fallback (desktop) / detection (web)
 web/                     index.html (boot: init, thread pool, start), _headers (COOP/COEP)
 scripts/                 check.sh, thumb-sheet.py, gui-smoke.sh, web-build.sh, web-serve.py
-tests/fixtures/          7 sample .fig files (MIT, fig2sketch)
+tests/fixtures/          9 sample .fig files (7 MIT from fig2sketch, 2 CC BY Figma Community)
 ```
 
 Dependencies are declared once in the root `Cargo.toml` (`[workspace.dependencies]`).
@@ -1141,8 +1141,8 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T15 | Doctor on a file with a parent cycle or oversized input (report U1 from the audit) | `apps/figstudio-cli/src/doctor.rs` | Doctor reports the cycle as an error and exits 1, with a test |
 | T16 | Derive a shared render-work budget from real-file measurements and bound all traversal work | `crates/render/src/lib.rs` | Shared `MAX_RENDER_WORK` test bounds ordinary, mask, and instance work; page 4 completed without reported truncation. Attempt-count telemetry for the final real-file render remains pending. |
 | T17 | Make the synth command's `set_nodes` error path a test (`apps/figstudio-cli/src/synth.rs`) | `apps/figstudio-cli/` | A test covers a synth that would create a cycle |
-| M1 | MCP: `get_motion_context` (deferred: no public file with motion data to validate the schema) | `apps/figstudio-mcp/src/tools` | A real motion file decoded; the tool tested on that file's shape and on documents built in the test, proven by mutation |
-| M2 | MCP: SVG export in `download_assets` | `apps/figstudio-mcp/src/tools/assets.rs`, `crates/render` | A vector writer (or a trustworthy crate) with tests; the tool description updated |
+| M1 | ~~MCP: `get_motion_context`~~ done 2026-10-27 on `tests/fixtures/motion.fig` | `apps/figstudio-mcp/src/tools` | A real motion file decoded; the tool tested on that file's shape and on documents built in the test, proven by mutation |
+| M2 | ~~MCP: SVG export in `download_assets`~~ done 2026-10-27 (`crates/render/src/svg.rs`) | `apps/figstudio-mcp/src/tools/assets.rs`, `crates/render` | A vector writer (or a trustworthy crate) with tests; the tool description updated |
 | M3 | MCP: ancestor masks and clips for instance-child screenshots (`I…;…`) | `crates/render/src/focus.rs` | A built document with a masked ancestor renders the same as the node inside the full instance |
 | M4 | MCP: nested-instance override visibility in `download_assets original=true` (frames between nested instances use stored visibility, the `shortcut:` in `tools/assets/originals.rs`) | `apps/figstudio-mcp/src/tools/assets/originals.rs` | A hidden override on a nested instance hides its image fills; test proven by mutation |
 | M5 | MCP: live-client check (Claude Code, Cursor, VS Code, Codex) over stdio and HTTP | — | A person runs each client; result recorded in `docs/PLAN.md` |

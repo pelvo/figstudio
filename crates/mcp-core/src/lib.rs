@@ -9,6 +9,11 @@ pub mod assets;
 pub mod bridge;
 /// Local Code Connect component context.
 pub mod codeconnect_context;
+/// The local Code Connect sidecar store (needs the `fs` feature).
+#[cfg(feature = "fs")]
+pub mod codeconnect_store;
+/// Components in a selection without a local Code Connect mapping.
+pub mod codeconnect_suggest;
 /// React + Tailwind design context with rendered assets.
 pub mod design;
 /// Local component, style and variable search.
@@ -26,6 +31,8 @@ pub mod link;
 pub mod local_copy;
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
+/// Keyframe animation with CSS and motion.dev code.
+pub mod motion;
 /// Accepted Figma node ID formats.
 pub mod node_id;
 /// Tool replies without an SDK type.
@@ -42,6 +49,11 @@ pub mod region_tool;
 pub mod rendering;
 /// PNG renders of one node.
 pub mod screenshot;
+/// The file's shader folder of downloaded sources (needs the `fs` feature).
+#[cfg(feature = "fs")]
+pub mod shader_sources;
+/// Shader fills and effects a file uses, their parameters and the layers using them.
+pub mod shaders;
 /// Used style and variable definitions of a subtree.
 pub mod variables;
 /// Browser tab snapshot and SDK-free MCP JSON-RPC dispatch.

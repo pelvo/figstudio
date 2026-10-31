@@ -1,5 +1,7 @@
 //! `get_design_context`: React + Tailwind reference code for a local node, with assets.
 mod assets;
+/// Code Connect mappings written as the project's components.
+pub mod code_connect;
 mod jsx;
 mod layout;
 mod paint;
@@ -46,6 +48,9 @@ pub struct Options {
     pub rendering: Rendering,
     /// Code byte cap; `None` is [`MAX_CODE_BYTES`].
     pub max_code_bytes: Option<usize>,
+    /// Code Connect mappings by component (or component set) node ID: mapped layers are
+    /// written as their code component.
+    pub code_connect: code_connect::CodeComponents,
 }
 
 /// Code, instructions and assets for `node_id`; an unknown or unresolvable id is a tool error.
@@ -88,6 +93,13 @@ pub fn design_context(doc: &Document, node_id: &str, options: &Options) -> Outpu
     }
     let mut text = String::from("## Instructions for the agent\n");
     text.push_str(&instructions(options));
+    if !out.imports.is_empty() {
+        text.push_str("\n## Code Connect\nThese layers are mapped to the project's own components and written as them. Use the connected component at each mapped node; change it only when it cannot be configured to match the design.\n");
+        for line in &out.imports {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
     if layers.truncated || out.truncated {
         text.push_str("\nThe code above is TRUNCATED (layer or size cap). Call get_metadata on this node for the outline, then get_design_context on the children you need.\n");
     }

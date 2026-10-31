@@ -50,13 +50,19 @@ getrandom = "0.3.4"
 egui_kittest = { version = "0.36", default-features = false, features = ["eframe"] }
 # theme tests: egui's bundled fonts, whose symbol coverage is known.
 epaint_default_fonts = "0.36"
+# ui_shader_tests: a shader's code zipped in the test.
+zip = { workspace = true, features = ["deflate-flate2"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Code Connect mappings next to the .fig (code_connect.rs) use the shared sidecar store.
+figstudio-mcp-core = { workspace = true, features = ["fs"] }
+# Shader fills drawn from the shader folder next to the file (Boa + wgpu).
+figstudio-shader = { workspace = true }
 clipboard-rs = { workspace = true }
 tracing-subscriber.workspace = true
 # parallel: page recordings replayed per tile (recordings.rs), as in the browser build.
 # gpu: recorded tiles replayed into vello_gpu scenes (gpu_tiles.rs).
-figstudio-render = { workspace = true, features = ["gpu"] }
+figstudio-render = { workspace = true, features = ["gpu", "system-fonts"] }
 # The GPU canvas: vello_gpu renders tiles on eframe's wgpu device (same wgpu 30).
 vello_gpu = { workspace = true }
 # Resolves wgpu error-scope futures (immediate on native) for the GPU tile path.
@@ -114,6 +120,9 @@ wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-rayon = { version = "1.3", features = ["no-bundler"] }
 js-sys = "0.3"
+# Shader modules for the page's WebGPU (types stripped); the runtime itself is desktop only.
+figstudio-shader = { path = "../../crates/shader", default-features = false }
+vello_cpu = { workspace = true }
 web-sys = { version = "0.3", features = ["AbortController", "AbortSignal", "Blob", "BroadcastChannel", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "File", "Headers", "History", "HtmlAnchorElement", "HtmlCanvasElement", "OffscreenCanvas", "OffscreenCanvasRenderingContext2d", "ImageData", "TextMetrics", "HtmlElement", "Location", "MediaQueryList", "EventTarget", "Navigator", "RequestInit", "Response", "Storage", "Url", "Window", "WebSocket", "MessageEvent", "CloseEvent", "Event"] }
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]

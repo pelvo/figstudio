@@ -2,11 +2,13 @@
 //! `Recorder` whose commands are replayed into several contexts, one per strip of a parallel
 //! render, so the document is walked once however many strips there are.
 
-use vello_cpu::PaintType;
+use std::sync::Arc;
+
 use vello_cpu::RenderContext;
 use vello_cpu::filter_effects::Filter;
 use vello_cpu::kurbo::{Affine, BezPath, Rect};
 use vello_cpu::peniko::{BlendMode, Fill};
+use vello_cpu::{PaintType, Pixmap};
 
 /// The drawing calls the renderer makes (a subset of `RenderContext`).
 pub(crate) trait Canvas {
@@ -34,6 +36,13 @@ pub(crate) trait Canvas {
     fn full(&self) -> bool {
         false
     }
+    /// True when images should be drawn from the full file at full size whatever the zoom
+    /// (an SVG, which keeps them for any size).
+    fn full_images(&self) -> bool {
+        false
+    }
+    /// The image file (by hash) whose pixels `pixmap` holds, told before it is painted.
+    fn image_source(&mut self, _pixmap: &Arc<Pixmap>, _hash: &str) {}
 }
 
 impl Canvas for RenderContext {

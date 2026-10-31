@@ -244,6 +244,10 @@ pub fn show(
         workers,
         ui.pixels_per_point(),
     );
+    // A playing timeline over its layer, under the overlays.
+    if let Some(preview) = tab.motion_preview.as_mut() {
+        preview.paint(&painter, tab.page, tab.view, origin, ui.pixels_per_point());
+    }
 
     // Overlays.
     let labels = if frame_labels {
@@ -295,6 +299,7 @@ pub fn show(
     }
     crate::canvas_text::overlay(&painter, tab, origin);
     marquee::paint(&painter, tab, origin);
+    crate::shader_code::markers(ui, &painter, tab, |id| corners(tab, origin, id));
     tab.view = target;
 
     let cursor = match tool {

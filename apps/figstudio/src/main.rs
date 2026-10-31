@@ -7,6 +7,7 @@ mod canvas_text;
 mod chrome;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod cjk;
+mod code_connect;
 mod command;
 mod copy;
 mod copy_menu;
@@ -33,6 +34,7 @@ mod gpu_tiles_web;
 #[cfg(not(target_arch = "wasm32"))]
 mod handoff;
 mod icons;
+mod inspect;
 mod instance_pick;
 #[cfg(any(windows, test))]
 mod jump_list;
@@ -71,6 +73,7 @@ mod menu_egui;
 #[cfg(any(target_os = "macos", windows))]
 mod menu_native;
 mod menu_windows;
+mod motion_preview;
 mod onboarding;
 mod panels;
 mod pick;
@@ -89,6 +92,7 @@ mod region_png;
 mod session;
 mod session_store;
 mod settings;
+mod shader_code;
 mod source;
 mod space_editor;
 mod spaces;
@@ -117,6 +121,8 @@ mod vibrancy;
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(target_arch = "wasm32")]
+mod web_shaders;
+#[cfg(target_arch = "wasm32")]
 mod web_wake;
 mod worker;
 
@@ -144,6 +150,10 @@ fn app_icon() -> Option<egui::IconData> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> std::process::ExitCode {
+    // Started to run shader code for a figstudio process (`figstudio_shader::child`).
+    if figstudio_shader::serve_if_worker() {
+        return std::process::ExitCode::SUCCESS;
+    }
     init_tracing();
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     // Before any window: the first figstudio of this person keeps a lock; a later launch
@@ -229,7 +239,8 @@ fn renderer(images: figstudio_render::images::Images) -> figstudio_render::Rende
     }
 }
 
-/// Renders `root` for export, reading every image it needs at full sharpness.
+/// Renders `root` for export, reading every image it needs at full sharpness, cropped like
+/// Figma's export (`Renderer::render_export_complete`).
 fn export_frame(
     images: figstudio_render::images::Images,
     doc: &figstudio_fig::Document,
@@ -237,9 +248,61 @@ fn export_frame(
     root: figstudio_fig::Guid,
     scale: f64,
 ) -> Option<figstudio_render::Frame> {
-    renderer(images).render_fit_complete(doc, root, scale, 0.0, None, |want| {
+    renderer(images).render_export_complete(doc, root, scale, None, |want| {
         source.and_then(|s| s.read(&want.entry).ok())
     })
+}
+
+/// Largest SVG export: the markup of a huge page is dropped past this (an error, not a cut file).
+const MAX_SVG_EXPORT_BYTES: usize = 256 * 1024 * 1024;
+
+/// Encodes `root` in `format` for export, reading every image it needs at full sharpness.
+/// Returns the bytes and what is not drawn exactly, listed as the status bar lists it (empty
+/// when everything is), so the export says so instead of hiding it.
+fn export_bytes(
+    images: figstudio_render::images::Images,
+    doc: &figstudio_fig::Document,
+    source: Option<&source::Source>,
+    root: figstudio_fig::Guid,
+    format: worker::ExportFormat,
+) -> anyhow::Result<(Vec<u8>, String)> {
+    use anyhow::Context;
+    match format {
+        worker::ExportFormat::Png(scale) => {
+            let frame =
+                export_frame(images, doc, source, root, scale).context("nothing to export")?;
+            let gaps = region_png::gaps(&frame.stats);
+            Ok((frame.pixmap.into_png().context("encode the PNG")?, gaps))
+        }
+        worker::ExportFormat::Svg => {
+            let svg = renderer(images)
+                .render_export_svg_complete(doc, root, 1.0, None, MAX_SVG_EXPORT_BYTES, |want| {
+                    source.and_then(|s| s.read(&want.entry).ok())
+                })
+                .context("nothing to export")?;
+            anyhow::ensure!(
+                !svg.over_limit,
+                "the SVG is over 256 MiB; export a smaller layer"
+            );
+            let mut gaps = region_png::gaps(&svg.stats);
+            if svg.approximated > 0 {
+                if !gaps.is_empty() {
+                    gaps.push_str(", ");
+                }
+                gaps.push_str(&format!("{} steps SVG cannot express", svg.approximated));
+            }
+            Ok((svg.markup.into_bytes(), gaps))
+        }
+    }
+}
+
+/// The toast after an export: the file, and what in it is not drawn exactly.
+fn exported_text(file: &str, gaps: &str) -> String {
+    if gaps.is_empty() {
+        format!("Exported {file}")
+    } else {
+        format!("Exported {file}. Not exact: {gaps}")
+    }
 }
 
 /// Logs go to stderr; stdout stays free for data. The default level is `warn`, `RUST_LOG`
@@ -314,6 +377,9 @@ struct Prefs {
     /// Desktop access only; browser bridge/relay connection rules are separate.
     #[cfg_attr(target_arch = "wasm32", serde(skip))]
     agents: settings::AgentPrefs,
+    /// A folder of shader code (Figma's "View code" zips) for every file, watched.
+    #[cfg_attr(target_arch = "wasm32", serde(skip))]
+    shader_folder: Option<PathBuf>,
     /// Settings → About: ask GitHub for a newer release once per launch (off until turned on).
     #[cfg_attr(target_arch = "wasm32", serde(skip))]
     check_updates: bool,
@@ -333,6 +399,7 @@ impl Default for Prefs {
             keymap: keymap::Keymap::default(),
             recents_list: false,
             agents: settings::AgentPrefs::default(),
+            shader_folder: None,
             check_updates: false,
             skip_update: String::new(),
         }
@@ -450,6 +517,8 @@ struct App {
     /// Startup files still arriving from the decode workers.
     restoring: Option<session::Restore>,
     workspace_store: session_store::Store,
+    /// Shader code for open files (`shader_code.rs`).
+    shader_code: shader_code::State,
 }
 
 impl App {
@@ -554,6 +623,7 @@ impl App {
             dots_clip: egui::Rect::NOTHING,
             dot_in_view: (0, 0.0),
             find: Default::default(),
+            shader_code: Default::default(),
             #[cfg(target_os = "macos")]
             vibrancy: None,
             #[cfg(target_arch = "wasm32")]
@@ -715,7 +785,7 @@ impl App {
         }
     }
 
-    fn export_png(&mut self, ctx: &egui::Context, selection_only: bool, scale: f64) {
+    fn export(&mut self, ctx: &egui::Context, selection_only: bool, format: worker::ExportFormat) {
         let Some(tab) = self.tabs.get(self.active) else {
             return;
         };
@@ -734,15 +804,13 @@ impl App {
         let (doc, source) = (tab.doc.clone(), tab.source.clone());
         #[cfg(target_arch = "wasm32")]
         {
-            let file = format!("{name}.png");
+            let file = format!("{name}.{}", format.extension());
             let images = self.workers.images();
             let started = self
                 .workers
                 .run_export(self.web.exports_tx.clone(), move || {
-                    let png = export_frame(images, &doc, source.as_ref(), root, scale)
-                        .ok_or_else(|| anyhow::anyhow!("nothing to export"))
-                        .and_then(|frame| frame.pixmap.into_png().map_err(anyhow::Error::from));
-                    (file, png)
+                    let bytes = export_bytes(images, &doc, source.as_ref(), root, format);
+                    (file, bytes)
                 });
             match started {
                 Ok(()) => self.toast(ctx, "Exporting…", false),
@@ -750,29 +818,30 @@ impl App {
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        self.save_png(ctx, doc, source, root, &name, scale);
+        self.save_export(ctx, doc, source, root, &name, format);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn save_png(
+    fn save_export(
         &mut self,
         ctx: &egui::Context,
         doc: std::sync::Arc<figstudio_fig::Document>,
         source: Option<source::Source>,
         root: figstudio_fig::Guid,
         name: &str,
-        scale: f64,
+        format: worker::ExportFormat,
     ) {
+        let ext = format.extension();
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("PNG image", &["png"])
-            .set_file_name(format!("{name}.png"))
+            .add_filter(format.label(), &[ext])
+            .set_file_name(format!("{name}.{ext}"))
             .save_file()
         else {
             return;
         };
-        // The render and PNG encode run off the UI thread on an immutable snapshot of the
+        // The render and encode run off the UI thread on an immutable snapshot of the
         // document. The result comes back through `poll`, which reports it once.
-        if let Err(e) = self.workers.export(doc, root, scale, path, source) {
+        if let Err(e) = self.workers.export(doc, root, format, path, source) {
             self.toast(ctx, e, true);
         }
     }
@@ -799,6 +868,7 @@ impl App {
                     source,
                     elapsed,
                     cjk,
+                    shaders,
                 } => {
                     self.loading.finish(&path);
                     #[cfg(target_arch = "wasm32")]
@@ -824,6 +894,7 @@ impl App {
                     let mut tab = Tab::new(id, path.clone(), doc, source, elapsed)
                         .with_doc_key(doc_key)
                         .with_real_path(real_path);
+                    tab.shaders.beside = shaders;
                     tab.tint = theme::pick_tint(&tab.title(), self.tabs.iter().map(|t| t.tint));
                     let title = tab.title();
                     tab.style = self
@@ -833,6 +904,7 @@ impl App {
                     let previous = self.tabs.get(self.active).map(|t| t.id);
                     self.tabs.push(tab);
                     self.active = self.tabs.len() - 1;
+                    self.apply_shaders(self.active);
                     self.workspace_finished(&path, previous, None);
                     if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
                         self.link_loaded(ctx, &path, i);
@@ -888,7 +960,10 @@ impl App {
         #[cfg(not(target_arch = "wasm32"))]
         while let Ok(done) = self.workers.export_rx.try_recv() {
             match done.result {
-                Ok(()) => self.toast(ctx, format!("Exported {}", done.path.display()), false),
+                Ok(gaps) => {
+                    let text = exported_text(&done.path.display().to_string(), &gaps);
+                    self.toast(ctx, text, false);
+                }
                 Err(e) => self.toast(ctx, figstudio_fig::one_line(e.as_ref()), true),
             }
         }
@@ -903,6 +978,7 @@ impl App {
             tab.set_page(page);
         }
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        let dropped = self.take_shader_zips(ctx, dropped);
         for f in dropped {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1035,9 +1111,17 @@ impl App {
                 }
             }
         }
-        while let Ok((name, png)) = self.web.exports.try_recv() {
-            match png.and_then(|png| web::download(&name, "image/png", &png)) {
-                Ok(()) => self.toast(ctx, format!("Exported {name}"), false),
+        while let Ok((name, bytes)) = self.web.exports.try_recv() {
+            let mime = if name.ends_with(".svg") {
+                "image/svg+xml"
+            } else {
+                "image/png"
+            };
+            match bytes.and_then(|(bytes, gaps)| {
+                web::download(&name, mime, &bytes)?;
+                Ok(gaps)
+            }) {
+                Ok(gaps) => self.toast(ctx, exported_text(&name, &gaps), false),
                 Err(e) => self.toast(ctx, figstudio_fig::one_line(e.as_ref()), true),
             }
         }
@@ -1151,7 +1235,8 @@ impl App {
                 r#"{{"tabs":{},"loading":{},"page":{},"pages":{},"zoom":{},"drawn":{},"#,
                 r#""culled":{},"images_loading":{},"images_missing":{},"render_ms":{:.1},"#,
                 r#""image_cache_bytes":{},"images_arrived":{},"busy":{},"errors":{},"#,
-                r#""cjk_font":"{:?}","cjk_variant":"{}","renderer":"{}","gpu_fallback_tiles":{}}}"#
+                r#""cjk_font":"{:?}","cjk_variant":"{}","renderer":"{}","gpu_fallback_tiles":{},"#,
+                r#""shaders_missing":{}}}"#
             ),
             self.tabs.len(),
             self.loading.len(),
@@ -1172,6 +1257,7 @@ impl App {
             // A fixed name ("GPU (WebGPU)", "CPU"): no device or driver names.
             self.renderer,
             s.map_or(0, |s| s.gpu_fallback_tiles),
+            tab.map_or(0, |t| t.shaders.missing.len()),
         )
     }
 }
@@ -1286,6 +1372,7 @@ impl App {
     fn frame_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
+        self.poll_shader_code(&ctx);
         if let Some(error) = self.mcp.frame(&mut self.tabs, &mut self.active) {
             self.toast(&ctx, error, true);
         }
@@ -1405,6 +1492,17 @@ impl App {
         let tab = self.tabs.get_mut(self.active);
         for (text, error) in region_png::drive(&ctx, &self.workers, &self.png, tab) {
             self.toast(&ctx, text, error);
+        }
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            if let Some(root) = tab.pending_motion.take() {
+                tab.motion_preview = motion_preview::Preview::new(
+                    tab.doc.clone(),
+                    root,
+                    tab.source.clone(),
+                    self.workers.images(),
+                );
+            }
+            motion_preview::tick(&ctx, &mut tab.motion_preview);
         }
         self.peek_sidebar(&ctx);
         self.space_popover(&ctx);

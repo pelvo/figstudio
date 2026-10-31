@@ -1,6 +1,8 @@
 //! Sidebar lists (Pages, the Layers tree) and the Properties card.
 
-use egui::{Color32, CornerRadius, FontId, Id, Margin, RichText, Sense, Shape, Ui, vec2};
+use egui::{
+    Color32, CornerRadius, FontId, Id, Margin, Rect, RichText, Sense, Shape, Stroke, Ui, pos2, vec2,
+};
 use figstudio_fig::{Document, Guid, Node, Val};
 use figstudio_render::geom;
 
@@ -12,7 +14,7 @@ use crate::tab::Tab;
 use crate::theme::{self, Palette};
 
 /// Height of a layer row.
-const ROW: f32 = 26.0;
+pub(crate) const ROW: f32 = 26.0;
 
 fn display_name(node: &Node) -> String {
     let name = node.data.text("name").unwrap_or("");
@@ -41,7 +43,7 @@ fn selected_pill(p: &Palette, rect: egui::Rect) -> Shape {
 
 /// Fade-in of the hovered row of a list: one state per list, not per row, so long trees do
 /// not keep an animation per row.
-fn hover_fade(ui: &Ui, list: Id, row: Id, hovered: bool) -> f32 {
+pub(crate) fn hover_fade(ui: &Ui, list: Id, row: Id, hovered: bool) -> f32 {
     if !hovered {
         return 0.0;
     }
@@ -341,14 +343,27 @@ fn toggle(tab: &mut Tab, id: Guid) {
 }
 
 /// Returns the Copy menu item picked this frame, if any.
-pub fn properties(ui: &mut Ui, tab: &Tab) -> Option<Item> {
+pub fn properties(ui: &mut Ui, tab: &mut Tab) -> Option<Item> {
+    let (picked, select, play) = properties_view(ui, tab);
+    if play.is_some() {
+        tab.pending_motion = play;
+    }
+    if let Some(id) = select {
+        tab.show_node(id);
+    }
+    picked
+}
+
+/// Draws the panel; returns the Copy item picked and a node to select (a Code Connect
+/// suggestion).
+fn properties_view(ui: &mut Ui, tab: &Tab) -> (Option<Item>, Option<Guid>, Option<Guid>) {
     let doc = &tab.doc;
     let Some(node) = tab.selection.and_then(|id| doc.node(id)) else {
-        document_info(ui, tab);
-        return None;
+        return (None, document_info(ui, tab), None);
     };
     let d = &node.data;
     let mut picked: Option<Item> = None;
+    let mut play: Option<Guid> = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -432,6 +447,20 @@ pub fn properties(ui: &mut Ui, tab: &Tab) -> Option<Item> {
                 );
             }
             effects(ui, d.get("effects"));
+            let details = tab.inspect.get(doc, node);
+            if let Some(motion) = &details.motion
+                && motion_section(ui, motion, &mut picked)
+            {
+                play = motion["timelineRootId"]
+                    .as_str()
+                    .and_then(|id| id.parse().ok());
+            }
+            for shader in &details.shaders {
+                shader_section(ui, shader, &tab.shaders);
+            }
+            if let Some(component) = crate::code_connect::component_of(doc, node) {
+                crate::code_connect::component_section(ui, tab, node, component);
+            }
 
             if node.kind == "TEXT" {
                 section(ui, "Text", |ui| {
@@ -471,10 +500,10 @@ pub fn properties(ui: &mut Ui, tab: &Tab) -> Option<Item> {
                 );
             }
         });
-    picked
+    (picked, None, play)
 }
 
-fn document_info(ui: &mut Ui, tab: &Tab) {
+fn document_info(ui: &mut Ui, tab: &Tab) -> Option<Guid> {
     let p = theme::of(ui);
     let doc = &tab.doc;
     ui.add(egui::Label::new(RichText::new(tab.title()).font(theme::semibold(15.0))).wrap());
@@ -495,16 +524,18 @@ fn document_info(ui: &mut Ui, tab: &Tab) {
             format!("{:.0} ms", tab.load_time.as_secs_f64() * 1000.0),
         );
     });
+    let select = crate::code_connect::overview_section(ui, tab);
     ui.add_space(4.0);
     ui.label(
         RichText::new("Click a layer on the canvas or in the Layers panel.")
             .color(p.text_faint)
             .small(),
     );
+    select
 }
 
 /// A titled group of rows on a rounded well, like a settings pane.
-fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
+pub(crate) fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
     let p = theme::of(ui);
     ui.add_space(2.0);
     ui.label(
@@ -543,7 +574,7 @@ fn grid(ui: &mut Ui, id: &str, items: &[(&str, String)]) {
         });
 }
 
-fn kv(ui: &mut Ui, k: &str, v: String) {
+pub(crate) fn kv(ui: &mut Ui, k: &str, v: String) {
     let p = theme::of(ui);
     ui.horizontal(|ui| {
         ui.label(RichText::new(k).color(p.text_faint));
@@ -599,6 +630,8 @@ fn paints(ui: &mut Ui, title: &str, list: Option<&Val>) {
                 );
                 let label = match (kind, swatch) {
                     ("SOLID", Some(c)) => format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b()),
+                    // A shader fill: its section below has the details.
+                    ("CUSTOM", _) => "shader".to_owned(),
                     _ => kind.to_lowercase().replace('_', " "),
                 };
                 let text = RichText::new(label);
@@ -615,6 +648,183 @@ fn paints(ui: &mut Ui, title: &str, list: Option<&Val>) {
     });
 }
 
+/// The layer's keyframe tracks: one row per animated field with its start and end value, a
+/// caption with the time span and easing, the timeline, and copy and play buttons. True
+/// when Play was pressed.
+fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<Item>) -> bool {
+    let mut play = false;
+    use crate::inspect::{duration, easing_label, field_label, loop_label, motion_value};
+    section(ui, "Motion", |ui| {
+        let p = theme::of(ui);
+        kv(
+            ui,
+            "Timeline",
+            format!(
+                "{} · {}",
+                duration(motion["durationMs"].as_f64().unwrap_or(0.0)),
+                loop_label(motion["loopMode"].as_str().unwrap_or("once"))
+            ),
+        );
+        for binding in motion["keyframeBindings"].as_array().into_iter().flatten() {
+            let keys = binding["keyframes"]
+                .as_array()
+                .map_or(&[][..], Vec::as_slice);
+            let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
+                continue;
+            };
+            let field = binding["field"].as_str().unwrap_or("?");
+            // Rotation reads as Figma's Motion panel shows it: "360° clockwise".
+            let value = (field == "MOTION_ROTATION")
+                .then(|| crate::inspect::rotation_turn(&first["value"], &last["value"]))
+                .flatten()
+                .unwrap_or_else(|| {
+                    format!(
+                        // Words, not an arrow: the browser's UI font has no "→".
+                        "{} to {}",
+                        motion_value(field, &first["value"]),
+                        motion_value(field, &last["value"])
+                    )
+                });
+            kv(ui, &field_label(field), value);
+            let ms = |k: &serde_json::Value| k["timeMs"].as_f64().unwrap_or(0.0).round();
+            ui.label(
+                RichText::new(format!(
+                    "{}–{} ms · {}",
+                    ms(first),
+                    ms(last),
+                    easing_label(last["easing"]["type"].as_str().unwrap_or(""))
+                ))
+                .color(p.text_faint)
+                .small(),
+            );
+        }
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            play = quiet_button(ui, Some(Icon::Play), "Play")
+                .on_hover_text("Play this layer's timeline on the canvas")
+                .clicked();
+            if let Some(css) = motion["codeSnippets"]["css"].as_str()
+                && quiet_button(ui, None, "Copy CSS animation").clicked()
+            {
+                *picked = Some(Item::text(
+                    "Copy CSS animation",
+                    "CSS animation",
+                    css.to_owned(),
+                ));
+            }
+        });
+    });
+    play
+}
+
+/// One shader fill or effect: its version, then each parameter's value (colours with a swatch,
+/// as Fill shows them).
+fn shader_section(ui: &mut Ui, shader: &serde_json::Value, code: &crate::shader_code::TabShaders) {
+    let title = match shader["type"].as_str() {
+        Some("fill") => "Shader fill",
+        Some("effect") => "Shader effect",
+        _ => "Shader",
+    };
+    section(ui, title, |ui| {
+        let p = theme::of(ui);
+        let mut caption = shader["version"]
+            .as_str()
+            .map_or("Shader not in this file".to_owned(), |v| {
+                format!("Version {v}")
+            });
+        if shader["visible"] == false {
+            caption.push_str(" · hidden");
+        }
+        ui.label(RichText::new(caption).color(p.text_faint).small());
+        if let Some(id) = shader["id"].as_str().filter(|id| code.is_missing(id)) {
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                crate::icons::paint(ui.painter(), Icon::Warning, r, p.warning);
+                ui.label(RichText::new("Not drawn: its code is missing").color(p.warning));
+            });
+            if quiet_button(ui, None, "Choose its zip…")
+                .on_hover_text("The zip of Figma's View code, then Download files, for this shader")
+                .clicked()
+            {
+                code.choose.set(Some(Some(id.to_owned())));
+            }
+        }
+        for value in shader["values"].as_array().into_iter().flatten() {
+            let label = value["label"].as_str().unwrap_or("?");
+            match crate::inspect::colour_of(&value["value"]) {
+                Some(colour) => swatch_row(ui, label, colour),
+                None => kv(ui, label, crate::inspect::value_text(&value["value"])),
+            }
+        }
+    });
+}
+
+/// A secondary action inside a Properties section: an outlined, rounded button (an icon, if
+/// given, before its text) that fills softly on hover. The section's main action uses
+/// `chrome::accent_button`.
+pub(crate) fn quiet_button(ui: &mut Ui, icon: Option<Icon>, text: &str) -> egui::Response {
+    let p = theme::of(ui);
+    let galley =
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.5), p.text);
+    let icon_w = if icon.is_some() { 18.0 } else { 0.0 };
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(galley.size().x + icon_w + 20.0, 26.0), Sense::click());
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
+    if ui.is_rect_visible(rect) {
+        let (hover, press) = crate::icons::feedback(ui, &response);
+        let r = rect.shrink(press);
+        let radius = CornerRadius::same(8);
+        ui.painter().rect(
+            r,
+            radius,
+            p.hover.gamma_multiply(0.6 + hover),
+            Stroke::new(1.0, p.card_stroke),
+            egui::StrokeKind::Inside,
+        );
+        let ink = p.text_dim.lerp_to_gamma(p.text, hover);
+        let mut x = r.left() + 10.0;
+        if let Some(icon) = icon {
+            let icon_rect = Rect::from_center_size(pos2(x + 6.0, r.center().y), vec2(13.0, 13.0));
+            crate::icons::paint(ui.painter(), icon, icon_rect, ink);
+            x += icon_w;
+        }
+        ui.painter()
+            .galley(pos2(x, r.center().y - galley.size().y / 2.0), galley, ink);
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+/// A label with a colour swatch and its hex value, like a Fill row.
+fn swatch_row(ui: &mut Ui, label: &str, colour: Color32) {
+    let p = theme::of(ui);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).color(p.text_faint));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(format!(
+                "#{:02X}{:02X}{:02X}",
+                colour.r(),
+                colour.g(),
+                colour.b()
+            ));
+            let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+            let radius = CornerRadius::same(4);
+            ui.painter().rect_filled(r, radius, colour);
+            ui.painter().rect_stroke(
+                r,
+                radius,
+                egui::Stroke::new(1.0, p.card_stroke),
+                egui::StrokeKind::Inside,
+            );
+        });
+    });
+}
+
 fn effects(ui: &mut Ui, list: Option<&Val>) {
     let items = list.map(Val::items).unwrap_or_default();
     if items.is_empty() {
@@ -622,11 +832,11 @@ fn effects(ui: &mut Ui, list: Option<&Val>) {
     }
     section(ui, "Effects", |ui| {
         for e in items {
-            let kind = e
-                .text("type")
-                .unwrap_or("?")
-                .to_lowercase()
-                .replace('_', " ");
+            let kind = match e.text("type").unwrap_or("?") {
+                // A shader effect: its section below has the details.
+                "CUSTOM" => "shader".to_owned(),
+                other => other.to_lowercase().replace('_', " "),
+            };
             let radius = e.num("radius").unwrap_or(0.0);
             let visible = e.flag("visible") != Some(false);
             let text = RichText::new(format!("{kind} · {}", fmt(f64::from(radius))));

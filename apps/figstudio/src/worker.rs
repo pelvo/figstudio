@@ -75,6 +75,8 @@ pub enum Loaded {
         elapsed: Duration,
         /// What CJK the names or text need (the browser fetches a font for it).
         cjk: crate::theme::CjkNeed,
+        /// Shader code in the folder next to the file (`FILE.fig.shaders/`).
+        shaders: Vec<figstudio_mcp_core::shaders::ShaderSource>,
     },
     Err {
         path: PathBuf,
@@ -127,6 +129,12 @@ pub fn panicked() -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn spawn(f: impl FnOnce() + Send + 'static) {
     std::thread::spawn(f);
+}
+
+/// Runs `f` on a background thread (desktop) or a pool worker (browser), for long-lived
+/// helpers such as the motion preview's renderer.
+pub fn spawn_task(f: impl FnOnce() + Send + 'static) {
+    spawn(f);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -248,7 +256,8 @@ impl ImageQueue {
 #[cfg(not(target_arch = "wasm32"))]
 pub struct ExportDone {
     pub path: PathBuf,
-    pub result: anyhow::Result<()>,
+    /// What in the file is not drawn exactly (empty when everything is).
+    pub result: anyhow::Result<String>,
 }
 
 pub struct Workers {
@@ -312,11 +321,18 @@ impl Workers {
                     .into_iter()
                     .chain(std::iter::from_fn(|| jobs.try_recv().ok()));
                 for msg in arrived {
-                    if let Msg::Forget { doc } = msg {
-                        recordings.forget(doc);
-                        continue;
-                    }
-                    count.fetch_sub(queue.take(msg), Ordering::Relaxed);
+                    match msg {
+                        Msg::Forget { doc } => {
+                            recordings.forget(doc);
+                            continue;
+                        }
+                        Msg::Shaders { doc, host } => {
+                            images.images.set_shaders(doc, host);
+                            recordings.forget(doc);
+                            continue;
+                        }
+                        msg => count.fetch_sub(queue.take(msg), Ordering::Relaxed),
+                    };
                 }
                 if queue.is_empty() {
                     continue;
@@ -404,7 +420,7 @@ impl Workers {
         &self,
         doc: Arc<Document>,
         root: Guid,
-        scale: f64,
+        format: ExportFormat,
         path: PathBuf,
         source: Option<Source>,
     ) -> Result<(), &'static str> {
@@ -420,7 +436,7 @@ impl Workers {
             // image cache recovers from a poisoned lock, so no half-changed state leaks out. The
             // browser build aborts on panic instead (see `install_panic_flag`).
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                export_png_with(images, &doc, source.as_ref(), root, scale, &path)
+                export_with(images, &doc, source.as_ref(), root, format, &path)
             }))
             .unwrap_or_else(|_| Err(anyhow::anyhow!("export worker panicked")));
             drop(_release);
@@ -452,6 +468,21 @@ impl Workers {
         }
     }
 
+    /// Draws document `instance`'s shaders with `host` from now on, from scratch: the render
+    /// worker installs it and drops the document's page recordings.
+    pub fn set_shaders(
+        &self,
+        instance: u64,
+        host: std::sync::Arc<dyn figstudio_render::shader::ShaderFills>,
+    ) {
+        if let Some(tx) = &self.render_tx {
+            let _ = tx.send(Msg::Shaders {
+                doc: instance,
+                host,
+            });
+        }
+    }
+
     /// The last tab of document `instance` closed: drops its images, its queued image reads,
     /// and anything a render or read still running would store for it.
     pub fn close_document(&self, instance: u64) {
@@ -466,8 +497,7 @@ impl Workers {
         self.queue.arrived.load(Ordering::Relaxed)
     }
 
-    /// Font changes use the same freshness stamp as arriving images.
-    #[cfg(target_arch = "wasm32")]
+    /// Font and shader code changes use the same freshness stamp as arriving images.
     pub fn fonts_changed(&self) {
         self.queue.arrived.fetch_add(1, Ordering::Relaxed);
     }
@@ -518,7 +548,16 @@ impl Workers {
                 Ok((doc, source, doc_key)) => {
                     let name = path.file_name().map(|n| n.to_string_lossy());
                     let real_path = on_disk.then(|| std::fs::canonicalize(&path).ok()).flatten();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let shaders = if on_disk {
+                        figstudio_mcp_core::shader_sources::load(&path)
+                    } else {
+                        Vec::new()
+                    };
+                    #[cfg(target_arch = "wasm32")]
+                    let shaders = Vec::new();
                     Loaded::Ok {
+                        shaders,
                         real_path,
                         cjk: crate::theme::cjk_need(&doc, name.as_deref().unwrap_or("")),
                         path,
@@ -591,25 +630,57 @@ fn export_png(
     root: Guid,
     scale: f64,
     path: &std::path::Path,
-) -> anyhow::Result<()> {
-    export_png_with(Images::default(), doc, None, root, scale, path)
+) -> anyhow::Result<String> {
+    export_with(
+        Images::default(),
+        doc,
+        None,
+        root,
+        ExportFormat::Png(scale),
+        path,
+    )
 }
 
-/// [`export_png`] drawing from `images` and reading unread images from `source`.
+/// What File → Export writes: a PNG at a scale, or an SVG in design units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ExportFormat {
+    Png(f64),
+    Svg,
+}
+
+impl ExportFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png(_) => "png",
+            Self::Svg => "svg",
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Png(_) => "PNG image",
+            Self::Svg => "SVG image",
+        }
+    }
+}
+
+/// [`export_png`] in `format`, drawing from `images` and reading unread images from `source`.
+/// Returns what in the file is not drawn exactly (empty when everything is).
 #[cfg(not(target_arch = "wasm32"))]
-pub fn export_png_with(
+pub fn export_with(
     images: Images,
     doc: &Document,
     source: Option<&Source>,
     root: Guid,
-    scale: f64,
+    format: ExportFormat,
     path: &std::path::Path,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     use anyhow::Context;
-    let frame =
-        crate::export_frame(images, doc, source, root, scale).context("nothing to export")?;
-    let png = frame.pixmap.into_png().context("encode the PNG")?;
-    std::fs::write(path, png).context("write the PNG")
+    let (bytes, gaps) = crate::export_bytes(images, doc, source, root, format)?;
+    std::fs::write(path, bytes)
+        .with_context(|| format!("write the {}", format.extension().to_uppercase()))?;
+    Ok(gaps)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -634,8 +705,9 @@ mod export_tests {
         export_png(&doc, doc.pages[0], 1.0, &out).unwrap();
         let bytes = std::fs::read(&out).unwrap();
         let decoded = image::load_from_memory(&bytes).unwrap();
+        // A page is cropped to what is drawn on it.
         let expected = Renderer::new()
-            .render_fit(&doc, doc.pages[0], 1.0, 0.0, None)
+            .render_export_complete(&doc, doc.pages[0], 1.0, None, |_| None)
             .unwrap();
         assert_eq!(
             (decoded.width(), decoded.height()),
@@ -644,6 +716,93 @@ mod export_tests {
                 u32::from(expected.pixmap.height())
             )
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_export_says_what_it_does_not_draw_exactly() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/broken_images.fig"
+        );
+        let doc = Document::open(path).unwrap();
+        let dir = std::env::temp_dir().join(format!("figstudio-gaps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (format, file) in [
+            (ExportFormat::Svg, "page.svg"),
+            (ExportFormat::Png(1.0), "page.png"),
+        ] {
+            let gaps = export_with(
+                Images::default(),
+                &doc,
+                None,
+                doc.pages[0],
+                format,
+                &dir.join(file),
+            )
+            .unwrap();
+            assert!(gaps.contains("images missing"), "{file}: {gaps}");
+        }
+        // A page drawn exactly says nothing.
+        let corners = Document::open(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/corners.fig"
+        ))
+        .unwrap();
+        let clean = export_with(
+            Images::default(),
+            &corners,
+            None,
+            corners.pages[0],
+            ExportFormat::Svg,
+            &dir.join("clean.svg"),
+        )
+        .unwrap();
+        assert_eq!(clean, "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_writes_an_svg_of_the_selection_in_design_units() {
+        let doc = structure();
+        let dir = std::env::temp_dir().join(format!("figstudio-svg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("layer.svg");
+        let layer = Guid(1, 34);
+        export_with(
+            Images::default(),
+            &doc,
+            None,
+            layer,
+            ExportFormat::Svg,
+            &out,
+        )
+        .unwrap();
+        let svg = std::fs::read_to_string(&out).unwrap();
+        // The layer's own box (it draws nothing outside it), as Figma exports it, and the
+        // same box as its PNG export.
+        let b = figstudio_render::node_bounds(&doc, layer).unwrap();
+        let size = format!(
+            r#"width="{}" height="{}""#,
+            b.width().round(),
+            b.height().round()
+        );
+        let png = Renderer::new()
+            .render_export_complete(&doc, layer, 1.0, None, |_| None)
+            .unwrap();
+        assert_eq!(
+            (
+                f64::from(png.pixmap.width()),
+                f64::from(png.pixmap.height())
+            ),
+            (b.width().round(), b.height().round())
+        );
+        assert!(
+            svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""),
+            "{svg}"
+        );
+        assert!(svg.contains(&size), "{size} in {svg}");
+        assert!(svg.contains("<path"), "{svg}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -678,10 +837,22 @@ mod export_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("page.png");
         workers
-            .export(doc.clone(), doc.pages[0], 0.1, path.clone(), None)
+            .export(
+                doc.clone(),
+                doc.pages[0],
+                ExportFormat::Png(0.1),
+                path.clone(),
+                None,
+            )
             .unwrap();
         assert_eq!(
-            workers.export(doc.clone(), doc.pages[0], 0.1, path.clone(), None),
+            workers.export(
+                doc.clone(),
+                doc.pages[0],
+                ExportFormat::Png(0.1),
+                path.clone(),
+                None
+            ),
             Err("an export is already running")
         );
         let done = workers
@@ -691,7 +862,13 @@ mod export_tests {
         assert!(done.result.is_ok());
         assert!(
             workers
-                .export(doc.clone(), doc.pages[0], 0.1, path.clone(), None)
+                .export(
+                    doc.clone(),
+                    doc.pages[0],
+                    ExportFormat::Png(0.1),
+                    path.clone(),
+                    None
+                )
                 .is_ok()
         );
         let _ = workers

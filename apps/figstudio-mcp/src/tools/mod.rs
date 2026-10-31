@@ -16,12 +16,16 @@ mod image_format;
 pub mod live;
 /// Sparse XML page lists and node subtrees.
 pub mod metadata;
+/// Keyframe animation with CSS and motion.dev code.
+pub mod motion;
 /// The nodes a page rectangle touches.
 pub mod region;
 /// Render settings and lazy image reads shared by the rendering tools.
 pub mod rendering;
 /// PNG renders of nodes.
 pub mod screenshot;
+/// Shader fills and effects a file uses.
+pub mod shaders;
 /// Used variable and style definitions.
 pub mod variables;
 use crate::FigstudioServer;
@@ -52,8 +56,6 @@ impl FigstudioServer {
         CallToolResult::structured(json!({"files": self.files.list().await}))
     }
 }
-
-pub(crate) use figstudio_mcp_core::fs::persist_file;
 
 /// Map a local document/input error to a tool result, not a protocol failure.
 pub fn tool_error(error: crate::error::McpError) -> CallToolResult {

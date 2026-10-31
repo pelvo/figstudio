@@ -19,9 +19,11 @@ Protocol (MCP) server, written in Rust.
   and MCP tool core (`figstudio-mcp-core`).
 - **Built-in AI agent access (MCP):** inspect node trees (`get_metadata`), React + Tailwind
   code hints (`get_design_context`), variables and tokens (`get_variable_defs`), rendered PNG/WebP
-  screenshots (`get_screenshot`), and embedded raster images (`download_assets`; offline SVG
-  and PDF export are not available), compare `.fig` versions, or highlight nodes in the live
-  canvas from Claude Code, Cursor, Codex, or any MCP client.
+  screenshots (`get_screenshot`), PNG/WebP/JPG/SVG renders and embedded images
+  (`download_assets`; no PDF), keyframe animation as CSS and motion.dev code
+  (`get_motion_context`), shader fills and effects (`list_file_shaders`, `get_shader`), local
+  Code Connect mappings and suggestions, compare `.fig` versions, or highlight nodes in the
+  live canvas from Claude Code, Cursor, Codex, or any MCP client.
 
 ## Try it
 
@@ -114,8 +116,31 @@ cargo run --release -p figstudio -- path/to/design.fig
 ```
 
 - Pan and zoom the canvas, switch pages, search layers, inspect properties, and export any
-  selection or page to PNG. The node Copy menu also offers **Copy as WebP**, with real
-  WebP clipboard bytes on desktop; browsers download a `.webp` file instead.
+  selection or page to PNG or SVG. The node Copy menu also offers **Copy as WebP**, with real
+  WebP clipboard bytes on desktop (browsers download a `.webp` file instead), **Copy as SVG**,
+  and on animated layers **Copy CSS animation**.
+- Properties shows an animated layer's keyframe tracks and timeline, the parameter values of
+  shader fills and effects, and a **Code Connect** section: connect a component to its code
+  file (stored in `FILE.fig.codeconnect.json` next to the file, the same store the MCP tools
+  use; desktop only). With nothing selected, the Overview lists the page's components that
+  are not connected yet.
+- Shader fills and effects are drawn from their code (desktop app, CLI and MCP renders). Figma
+  keeps that code online, not in the `.fig`: a file using shaders without it gets a notice with
+  the steps and a marker on each such layer. Add the zip of Figma's shader menu → **View code**
+  → **Download files** by clicking a marker, dropping it on the window, putting it in
+  `FILE.fig.shaders/` next to the file, or in the shader folder set in Settings → Canvas (both
+  watched). The shader's TypeScript runs in Boa (a JavaScript engine in Rust) and its WebGPU
+  calls run on wgpu, at one pixel per layer unit as Figma runs them; animated shaders follow
+  the motion preview's playhead. The code has no file or network access and runs in a child
+  process (the same program, started for it), capped at 10 million loop iterations, 100
+  million instructions, 256 MiB per array buffer and 512 MiB of GPU memory; a run past 10 s
+  kills that process and the shader is not run again, and running out of memory takes down
+  only that process. In the browser it runs on the page's WebGPU in a worker of a sandboxed
+  frame (no access to the page, its storage or the network): its loops and calls stop past
+  20 million, and a run past 10 s ends the worker. Without a GPU or WebGPU the shader is
+  skipped and counted.
+- Animated layers have a **Play** button in Properties: the motion plays in place on the
+  canvas, with a bar under the layer to pause, scrub and close, and springs timed like Figma's.
 - Paste a `figma.com` or `figstudio://` URL into the command bar (⌘L, Ctrl+L elsewhere), then
   press Enter to open its matching local `.fig` copy and reveal the linked node. No download
   from Figma is needed. If several copies match, pick one in the link window.
@@ -161,7 +186,7 @@ cargo run --release -p figstudio-cli -- info path/to/design.fig
 # Print the layer tree of page 1
 cargo run --release -p figstudio-cli -- tree path/to/design.fig --page 1 --depth 3
 
-# Render a page or node: .webp selects WebP, otherwise PNG; --format png|webp overrides it
+# Render a page or node: .webp selects WebP, .svg SVG, otherwise PNG; --format png|webp|svg overrides it
 cargo run --release -p figstudio-cli -- render path/to/design.fig --node 12:34 --scale 2 -o out.webp
 # Thumbnail uses the same extension inference and --format option
 cargo run --release -p figstudio-cli -- thumbnail path/to/design.fig -o thumbnail.webp
@@ -230,7 +255,9 @@ node --test web/worker/*.test.mjs
 ## Third-party notices
 
 - Sample `.fig` fixtures under `tests/fixtures/` from `fig2sketch` are MIT-licensed; see
-  [`tests/fixtures/LICENSE-fig2sketch`](tests/fixtures/LICENSE-fig2sketch).
+  [`tests/fixtures/LICENSE-fig2sketch`](tests/fixtures/LICENSE-fig2sketch). `motion.fig` and
+  `shaders.fig` are Figma Community files (CC BY 4.0, images removed); see
+  [`tests/fixtures/LICENSE-figma-community`](tests/fixtures/LICENSE-figma-community).
 - Desktop text rendering uses installed system fonts via `fontdb` (`system-fonts`). For the
   browser build, `scripts/web-font.sh` subsets Noto Sans CJK Regular (SIL Open Font License
   1.1) at build time into `web/dist/fonts/` (`cjk-{jp,sc,tc,hk,kr}.otf` and

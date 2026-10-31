@@ -36,10 +36,12 @@ in `docs/MCP-APP.md`; L0–L9 are done there.
 The browser app reaches the same tools through a local bridge (`figstudio-mcp --bridge`);
 plan and status in `docs/WEB-MCP-PLAN.md`.
 
-Open follow-ups (task board M1–M6 in `docs/IMPLEMENTATION.md`): `get_motion_context`
-(needs a real motion file), SVG export, ancestor masks and clips on instance-child
-screenshots, nested-instance override visibility in `download_assets original=true`,
-a check with live clients, and real FigJam and motion files.
+Open follow-ups (task board M3–M6 in `docs/IMPLEMENTATION.md`): ancestor masks and clips on
+instance-child screenshots, nested-instance override visibility in `download_assets
+original=true`, a check with live clients, and a real FigJam file. Done since (2026-10-27):
+`get_motion_context`, SVG export, `list_file_shaders`/`get_shader` and local
+`get_code_connect_suggestions`/`send_code_connect_mappings`, checked against two public
+Figma Community files (`tests/fixtures/motion.fig`, `shaders.fig`).
 
 ## 1. Official tools and what we can do offline
 
@@ -52,15 +54,17 @@ Figma URL with `node-id=`) and an optional `fileKey` (the loaded file's stem or 
 | `get_screenshot` | full | `Renderer::render_fit` + `into_png` | L3 |
 | `get_variable_defs` | full (all modes) | `VARIABLE` / `styleType` nodes, `render/variables.rs` | L4 |
 | `get_design_context` | partial: React + Tailwind from stored data, no shader runtime | node fields, instance resolver | L6 |
-| `download_assets` | partial: PNG/JPG renders and original image bytes, no SVG/PDF | renderer, `Document.images` | L7 |
+| `download_assets` | partial: PNG/WebP/JPG renders, SVG through the renderer's SVG canvas, original image bytes; no PDF | renderer, `Document.images` | L7 |
 | `get_figjam` | partial: decode only, FigJam kinds are not drawn yet | generic `Node.data` | L8 |
 | `get_context_for_code_connect` | full: component property definitions | `componentPropDefs` | L9 |
 | `get_code_connect_map` / `add_code_connect_map` | partial: local sidecar JSON instead of Figma's cloud | new | L9 |
 | `search_design_system` / `get_libraries` | partial: components and styles in this file only | `SYMBOL` / style nodes | L9 |
 | `create_design_system_rules` (prompt) | full: prompt text plus a summary of the file's tokens | L4 output | L10 |
-| `get_motion_context` | unknown: needs keyframe fields in the schema | L0 checks | later |
+| `get_motion_context` | partial: keyframe tracks, presets, timelines, CSS and motion.dev snippets; spring presets approximated | `KEYFRAME_TRACK`/`KEYFRAME` nodes, `parameterConsumptionMap` | 2026-10-27 |
+| `list_file_shaders` / `get_shader` | partial: parameters and usages; name, description and source stay in Figma's cloud | `CODE_COMPONENT` nodes, `CUSTOM` paints and effects | 2026-10-27 |
+| `get_code_connect_suggestions` / `send_code_connect_mappings` | partial: local sidecar instead of Figma's cloud, unpublished components count | instance walk, sidecar | 2026-10-27 |
 | `whoami` | stub only (`{"mode":"offline"}`) | none | L1 |
-| `use_figma`, `create_new_file`, `generate_figma_design`, `generate_image`, shader tools, generative-plugin tools, `weave_*`, `get_code_connect_suggestions` | no: they write to Figma's canvas or need Figma's cloud | none | not registered |
+| `use_figma`, `create_new_file`, `generate_figma_design`, `generate_image`, `upload_assets`, `html_to_figma`, `generate_diagram`, `send_code_to_figma`, `list_shaders`/`create_shader`/`update_shader`, generative-plugin tools, `weave_*` | no: they write to Figma's canvas or need Figma's cloud | none | not registered |
 
 Tools that cannot work offline are **not registered**, and the README lists them. Registering
 them only to fail would waste the client's tool budget.
@@ -126,9 +130,9 @@ seen failing first (docs/TESTING.md "Prove the test").
   `characterStyleIDs`. They merge the same way as instance overrides.
 - Styles are bound by `styleIdFor{Fill,StrokeFill,Text,Effect,Grid}` (StyleId {guid,assetRef})
   and by the legacy `inherit*StyleID` fields.
-- **No fixture has `VARIABLE`/`VARIABLE_SET` nodes, FigJam kinds, or motion data.** The
-  L4, L8 and motion tests must build their documents inside the test. `get_motion_context`
-  stays deferred until we have a real motion file to validate against.
+- **The fig2sketch fixtures have no `VARIABLE`/`VARIABLE_SET` nodes, FigJam kinds, or motion
+  data.** The L4 and L8 tests build their documents inside the test. Motion and shader data
+  come from two Figma Community fixtures added on 2026-10-27 (`motion.fig`, `shaders.fig`).
 - `ComponentPropType` has 18 values in v106 (VARIANT, NUMBER, IMAGE, SLOT, …). L9 must
   handle unknown values as plain strings.
 

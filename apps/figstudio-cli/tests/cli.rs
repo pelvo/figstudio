@@ -214,6 +214,46 @@ fn render_and_thumbnail_write_readable_pngs() {
     assert_png(&thumb, None);
 }
 
+#[test]
+fn render_writes_svg_from_the_extension_or_the_format_flag() {
+    let dir = TempDir::new();
+    let png = dir.file("page.png");
+    let png_out = assert_success(cli(&["render", FIXTURE, "-o", png.to_str().unwrap()]));
+    let size = png_out
+        .lines()
+        .next()
+        .and_then(|l| l.rsplit_once(' '))
+        .unwrap()
+        .1
+        .to_owned();
+    let (w, h) = size.split_once('x').unwrap();
+    let by_extension = dir.file("page.svg");
+    let stdout = assert_success(cli(&[
+        "render",
+        FIXTURE,
+        "-o",
+        by_extension.to_str().unwrap(),
+    ]));
+    assert!(stdout.contains("bytes of SVG"), "{stdout}");
+    let svg = fs::read_to_string(&by_extension).unwrap();
+    assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+    // Same box as the PNG render at the same scale and padding.
+    assert!(
+        svg.contains(&format!(r#"width="{w}" height="{h}""#)),
+        "{w}x{h}"
+    );
+    let by_flag = dir.file("page.out");
+    assert_success(cli(&[
+        "render",
+        FIXTURE,
+        "--format",
+        "svg",
+        "-o",
+        by_flag.to_str().unwrap(),
+    ]));
+    assert_eq!(fs::read_to_string(&by_flag).unwrap(), svg);
+}
+
 fn assert_png(path: &PathBuf, expected_dimensions: Option<(u32, u32)>) {
     let image = image::open(path).unwrap_or_else(|error| panic!("invalid PNG: {error}"));
     let dimensions = image.into_rgba8().dimensions();
