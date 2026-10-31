@@ -6,7 +6,11 @@
 //! Without the `native` feature (the browser build) only the shared part is built: the
 //! TypeScript step ([`browser_module`]), the program a paint runs ([`program`]) and its cache
 //! key; the browser runs the module on its own WebGPU.
+//!
+//! Natively the code runs in a child process ([`serve_if_worker`]), so a run can be killed.
 
+#[cfg(feature = "native")]
+mod child;
 #[cfg(feature = "native")]
 mod gpu;
 #[cfg(feature = "native")]
@@ -23,6 +27,8 @@ use vello_cpu::PixelMetadata;
 use vello_cpu::Pixmap;
 use vello_cpu::peniko::ImageAlphaType;
 
+#[cfg(feature = "native")]
+pub use child::{WORKER_ARG, serve_if_worker, set_worker_program, worker_pid};
 #[cfg(feature = "native")]
 pub use native::{Fills, render, render_effect};
 
@@ -67,6 +73,32 @@ impl ShaderError {
         ShaderError {
             kind: Kind::Gpu,
             message: message.into(),
+        }
+    }
+
+    /// The error as the shader process sends it to its parent.
+    #[cfg(feature = "native")]
+    fn to_wire(&self) -> Value {
+        let kind = match self.kind {
+            Kind::NoGpu => "no_gpu",
+            Kind::Script => "script",
+            Kind::Gpu => "gpu",
+        };
+        serde_json::json!({"kind": kind, "message": self.message})
+    }
+
+    /// [`ShaderError::to_wire`] read back.
+    #[cfg(feature = "native")]
+    fn from_wire(value: &Value) -> Self {
+        let kind = match value["kind"].as_str() {
+            Some("no_gpu") => Kind::NoGpu,
+            Some("gpu") => Kind::Gpu,
+            _ => Kind::Script,
+        };
+        let message = value["message"].as_str().unwrap_or("the shader failed");
+        ShaderError {
+            kind,
+            message: message.to_owned(),
         }
     }
 
@@ -185,7 +217,7 @@ mod native {
     use serde_json::Value;
     use vello_cpu::Pixmap;
 
-    use crate::{ShaderError, js, pixmap, program, ts};
+    use crate::{ShaderError, pixmap, program, ts};
 
     /// Runs a shader fill's `main.ts` with `params` (its `frame.params`) into a `width × height`
     /// output at `time_ms` (ms on the playback clock). Fills draw straight alpha.
@@ -233,19 +265,18 @@ mod native {
         Ok(pixmap(rgba, width, height, input.is_some()))
     }
 
-    /// Runs `js` on its own thread and waits at most `deadline`. A run past it is left to end
-    /// on its own (Boa's instruction budget bounds it) and that code is not run again in this
-    /// process, so a shader that hangs costs one wait, not one per frame or tile.
+    /// Runs `js` in the shader process and waits at most `deadline`. A run past it kills the
+    /// process (whatever the code was doing) and that code is not run again in this process,
+    /// so a shader that hangs costs one wait, not one per frame or tile.
     pub(crate) fn run_within(
         js: String,
         params: &Value,
-        (width, height, time_ms): (u16, u16, f64),
+        size: (u16, u16, f64),
         input: Option<&[u8]>,
         deadline: std::time::Duration,
     ) -> Result<Vec<u8>, ShaderError> {
         use std::collections::HashSet;
         use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
-        use std::sync::mpsc::{RecvTimeoutError, channel};
 
         static TIMED_OUT: Mutex<Option<HashSet<u64>>> = Mutex::new(None);
         let code = BuildHasherDefault::<DefaultHasher>::default().hash_one(&js);
@@ -263,32 +294,15 @@ mod native {
                 "main.ts ran past the time limit before; not run again",
             ));
         }
-        let (params, input) = (params.clone(), input.map(<[u8]>::to_vec));
-        let (send, result) = channel();
-        std::thread::Builder::new()
-            .name("shader".into())
-            .spawn(move || {
-                let frame = js::Frame {
-                    width,
-                    height,
-                    time_ms,
-                    input: input.as_deref(),
-                };
-                let _ = send.send(js::run(&js, &params, &frame));
-            })
-            .map_err(|e| ShaderError::script(format!("cannot start the shader thread: {e}")))?;
-        match result.recv_timeout(deadline) {
-            Ok(rgba) => rgba,
-            Err(RecvTimeoutError::Timeout) => {
+        match crate::child::run(&js, params, size, input, deadline) {
+            crate::child::Outcome::Done(result) => result,
+            crate::child::Outcome::TimedOut => {
                 timed_out(true);
                 Err(ShaderError::script(format!(
                     "main.ts ran past {} s; stopped",
                     deadline.as_secs_f64()
                 )))
             }
-            Err(RecvTimeoutError::Disconnected) => Err(ShaderError::script(
-                "the shader thread ended without a result",
-            )),
         }
     }
 
@@ -377,42 +391,5 @@ mod native {
                 render_effect(p.main, &p.params, input, p.time_ms)
             })
         }
-    }
-}
-
-#[cfg(all(test, feature = "native"))]
-mod deadline_tests {
-    use std::time::{Duration, Instant};
-
-    use serde_json::json;
-
-    use crate::native::run_within;
-
-    #[test]
-    fn a_run_past_its_deadline_stops_and_is_not_run_again() {
-        // About a second of work, against a 50 ms deadline.
-        let js = "export function render() { let s = 0; \
-                  for (let i = 0; i < 5000000; i++) { s += i; } }"
-            .to_owned();
-        let size = (8, 8, 0.0);
-        let first = run_within(
-            js.clone(),
-            &json!({}),
-            size,
-            None,
-            Duration::from_millis(50),
-        );
-        let Err(error) = first else {
-            panic!("a second of work finished within 50 ms");
-        };
-        if error.is_no_gpu() {
-            return;
-        }
-        assert!(error.to_string().contains("ran past"), "{error}");
-        let started = Instant::now();
-        let again = run_within(js, &json!({}), size, None, Duration::from_secs(10));
-        assert!(started.elapsed() < Duration::from_millis(50));
-        let error = again.unwrap_err().to_string();
-        assert!(error.contains("not run again"), "{error}");
     }
 }

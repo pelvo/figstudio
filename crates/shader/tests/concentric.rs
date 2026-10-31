@@ -34,6 +34,7 @@ const LAYER: Guid = Guid(1, 14622);
 
 #[test]
 fn the_layer_params_reach_the_shader_as_its_code_reads_them() {
+    worker();
     let doc = doc();
     let sources = [source()];
     let paint = &doc
@@ -54,6 +55,7 @@ fn the_layer_params_reach_the_shader_as_its_code_reads_them() {
 
 #[test]
 fn concentric_rings_are_drawn() {
+    worker();
     let doc = doc();
     let sources = [source()];
     let paint = &doc
@@ -84,6 +86,7 @@ fn concentric_rings_are_drawn() {
 
 #[test]
 fn the_renderer_draws_the_shader_fill_instead_of_skipping_it() {
+    worker();
     let doc = doc();
     let draw = |shaders: Option<Arc<Fills>>| {
         let mut r = Renderer::new();
@@ -113,6 +116,7 @@ fn the_renderer_draws_the_shader_fill_instead_of_skipping_it() {
 
 #[test]
 fn bad_shader_code_is_an_error_not_a_panic() {
+    worker();
     let params = serde_json::json!({});
     let cases = [
         // Throws.
@@ -138,4 +142,9 @@ fn bad_shader_code_is_an_error_not_a_panic() {
             Err(_) => {}
         }
     }
+}
+
+/// The shader process for these tests: this crate's worker binary (a test binary cannot be one).
+fn worker() {
+    figstudio_shader::set_worker_program(env!("CARGO_BIN_EXE_figstudio-shader-worker").into());
 }

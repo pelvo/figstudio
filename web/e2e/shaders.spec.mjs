@@ -63,10 +63,9 @@ test("a dropped shader zip draws its fill on the page's WebGPU, sandboxed", asyn
   await page.screenshot({ path: testInfo.outputPath("shaders.jpg"), type: "jpeg", quality: 85 });
 });
 
-test("a shader that never returns is stopped and the page keeps answering", async ({ page }) => {
-  test.setTimeout(180_000);
-  const errors = [];
-  page.on("pageerror", error => errors.push(error.message));
+// Opens shaders.fig and drops the Concentric shader's real source with `body` put at the start
+// of its render function; returns the status reader.
+async function dropStuck(page, body) {
   await page.goto(`${baseURL}/?renderer=cpu&threads=2`);
   await expect(page.locator("#status")).toHaveText("", { timeout: 60_000 });
   await expect(page.getByRole("textbox")).toBeAttached({ timeout: 60_000 });
@@ -83,25 +82,51 @@ test("a shader that never returns is stopped and the page keeps answering", asyn
   }
   await expect.poll(async () => (await status()).shaders_missing, { timeout: 30_000 }).toBe(12);
 
-  // The real source (its parameters match the shader) with an endless loop in render.
-  const dir = await mkdtemp(join(tmpdir(), "figstudio-endless-"));
+  const dir = await mkdtemp(join(tmpdir(), "figstudio-stuck-"));
   const source = new URL("../../tests/fixtures/shader-sources/concentric", import.meta.url).pathname;
   const head = "export function render(device: any, frame: any) {";
-  const main = (await readFile(join(source, "main.ts"), "utf8")).replace(head, `${head} for (;;) {}`);
+  const main = (await readFile(join(source, "main.ts"), "utf8")).replace(head, `${head} ${body}`);
   const { writeFile } = await import("node:fs/promises");
   await writeFile(join(dir, "main.ts"), main);
   const zip = join(dir, "Concentric-patterns-source.zip");
   execFileSync("zip", ["-q", "-j", zip, join(dir, "main.ts"), join(source, "features.json")]);
   await drop(page, "Concentric-patterns-source.zip", await readFile(zip));
   await expect.poll(async () => (await status()).shaders_missing, { timeout: 30_000 }).toBe(11);
+  return status;
+}
 
-  // Its loops count steps and it stops (where its frame shares the page's thread too).
+/// While the shader is stuck the page answers; the run then fails with `reason`.
+async function expectStopped(page, status, reason, errors) {
   const runs = () => page.evaluate(() => globalThis.__figstudioShaders?.runs ?? { failed: 0 });
-  await expect.poll(async () => (await runs()).failed, { timeout: 30_000 }).toBeGreaterThan(0);
-  expect((await runs()).lastError).toContain("step limit");
-  const asked = Date.now();
-  await status();
-  expect(Date.now() - asked).toBeLessThan(1_000);
+  let worst = 0;
+  for (let i = 0; i < 60 && (await runs()).failed === 0; i++) {
+    const asked = Date.now();
+    await status();
+    worst = Math.max(worst, Date.now() - asked);
+    await page.waitForTimeout(250);
+  }
+  expect((await runs()).failed).toBeGreaterThan(0);
+  expect((await runs()).lastError).toContain(reason);
+  expect(worst).toBeLessThan(1_000);
   expect(await page.evaluate(() => window.figstudioFatal())).toBe(false);
   expect(errors).toEqual([]);
+}
+
+test("a shader that never returns is stopped and the page keeps answering", async ({ page }) => {
+  test.setTimeout(180_000);
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  // Its loops count steps, so it stops itself (where its frame shares the page's thread too).
+  const status = await dropStuck(page, "for (;;) {}");
+  await expectStopped(page, status, "step limit", errors);
+});
+
+test("a built-in that never returns is stopped with its worker", async ({ page }) => {
+  test.setTimeout(180_000);
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  // No JavaScript runs while it walks a trillion empty indexes, so no step is counted: the
+  // worker (its own thread) is ended with its frame after the timeout.
+  const status = await dropStuck(page, "Array.prototype.forEach.call({ length: 1e12 }, () => {});");
+  await expectStopped(page, status, "took too long", errors);
 });
