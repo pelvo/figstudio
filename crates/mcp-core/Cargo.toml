@@ -19,7 +19,7 @@ system-fonts = ["figstudio-render/system-fonts"]
 tracing.workspace = true
 figstudio-fig = { workspace = true }
 # node_bounds for the region walk; no default features, so it stays wasm-safe (no system fonts).
-figstudio-render = { workspace = true, default-features = false }
+figstudio-render = { workspace = true }
 url = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }

@@ -15,7 +15,7 @@ native = ["dep:boa_engine", "dep:wgpu", "dep:pollster", "figstudio-mcp-core/fs"]
 
 [dependencies]
 figstudio-fig = { workspace = true }
-figstudio-render = { workspace = true, default-features = false }
+figstudio-render = { workspace = true }
 figstudio-mcp-core = { workspace = true }
 vello_cpu = { workspace = true }
 serde_json = { workspace = true }

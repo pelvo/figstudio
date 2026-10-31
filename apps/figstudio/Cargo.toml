@@ -62,7 +62,7 @@ clipboard-rs = { workspace = true }
 tracing-subscriber.workspace = true
 # parallel: page recordings replayed per tile (recordings.rs), as in the browser build.
 # gpu: recorded tiles replayed into vello_gpu scenes (gpu_tiles.rs).
-figstudio-render = { workspace = true, features = ["gpu"] }
+figstudio-render = { workspace = true, features = ["gpu", "system-fonts"] }
 # The GPU canvas: vello_gpu renders tiles on eframe's wgpu device (same wgpu 30).
 vello_gpu = { workspace = true }
 # Resolves wgpu error-scope futures (immediate on native) for the GPU tile path.
