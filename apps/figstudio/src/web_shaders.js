@@ -1,10 +1,12 @@
-// figstudio: runs a shader's module on WebGPU in a sandboxed frame: an opaque origin (no
-// access to this page or its storage) with a policy that allows no network. A run that takes
-// too long (an endless loop) is stopped by replacing the frame, which browsers that isolate
-// sandboxed frames run in their own process. Defines globalThis.__figstudioShaders.run.
+// figstudio: runs a shader's module on WebGPU in a worker started by a sandboxed frame: an
+// opaque origin (no access to this page or its storage) under the frame's policy, which
+// allows no network. The worker has its own thread, so a run that takes too long (an endless
+// loop, or a built-in that never returns) cannot block the page, and replacing the frame ends
+// the worker with it, in every browser (WebKit runs the frame itself on the page's thread).
+// Defines globalThis.__figstudioShaders.run.
 (() => {
-  // Runs inside the sandbox: one WebGPU device, modules kept by their text.
-  const RUNNER = `let dev = null;
+  // Runs in the worker: one WebGPU device, modules kept by their text.
+  const WORKER = `let dev = null;
 async function device() {
   if (!dev) dev = (async () => {
     if (!navigator.gpu) throw new Error('no WebGPU');
@@ -17,13 +19,12 @@ async function device() {
 const modules = new Map();
 onmessage = async (e) => {
   const { id, js, params, width, height, time, input } = e.data;
-  if (e.source !== parent) return;
   try {
     const d = await device();
     let mod = modules.get(js);
     if (!mod) {
-      const url = URL.createObjectURL(new Blob([js], { type: 'text/javascript' }));
-      try { mod = await import(url); } finally { URL.revokeObjectURL(url); }
+      // A data: URL: WebKit refuses a blob: module made in an opaque-origin worker.
+      mod = await import('data:text/javascript,' + encodeURIComponent(js));
       modules.set(js, mod);
     }
     const output = d.createTexture({ size: [width, height], format: 'rgba8unorm',
@@ -53,39 +54,50 @@ onmessage = async (e) => {
     const out = new Uint8Array(width * height * 4);
     for (let y = 0; y < height; y++) out.set(src.subarray(y * row, y * row + width * 4), y * width * 4);
     buf.unmap(); buf.destroy(); output.destroy(); if (inputTex) inputTex.destroy();
-    parent.postMessage({ id, ok: true, pixels: out.buffer }, '*', [out.buffer]);
+    postMessage({ id, ok: true, pixels: out.buffer }, [out.buffer]);
   } catch (err) {
-    parent.postMessage({ id, ok: false, error: String((err && err.message) || err) }, '*');
+    postMessage({ id, ok: false, error: String((err && err.message) || err) });
   }
 };
-parent.postMessage({ ready: true }, '*');`;
-  // No network, no frames, no storage: only its own inline script and blob modules.
-  const CSP = "default-src 'none'; script-src 'unsafe-inline' blob:";
-  let frame = null, ready = null, onReady = null, next = 1;
+postMessage({ ready: true });`;
+  // Runs in the frame: starts the worker (which inherits the frame's policy) and passes
+  // messages between it and this page.
+  const FRAME = `const w = new Worker('data:text/javascript,' + encodeURIComponent(${JSON.stringify(WORKER)}));
+w.onmessage = (e) => { const d = e.data; parent.postMessage(d, '*', d && d.pixels ? [d.pixels] : []); };
+w.onerror = (e) => parent.postMessage({ fatal: String(e.message || 'the shader worker failed') }, '*');
+onmessage = (e) => { if (e.source !== parent) return; const d = e.data; w.postMessage(d, d && d.input ? [d.input] : []); };`;
+  // No network, no frames, no storage: its own inline script, the data: worker and modules.
+  const CSP = "default-src 'none'; script-src 'unsafe-inline' data:; worker-src data:";
+  let frame = null, ready = null, onReady = null, onFail = null, next = 1;
   const waiting = new Map();
   addEventListener('message', (e) => {
     if (!frame || e.source !== frame.contentWindow || !e.data) return;
     if (e.data.ready) { if (onReady) onReady(); return; }
+    // The worker did not start (no workers or no WebGPU there): every run fails.
+    if (e.data.fatal) { replace(e.data.fatal); return; }
     const w = waiting.get(e.data.id); if (!w) return;
     waiting.delete(e.data.id);
     e.data.ok ? w.resolve(new Uint8Array(e.data.pixels)) : w.reject(new Error(e.data.error));
   });
   function sandbox() {
     if (ready) return ready;
-    ready = new Promise((resolve) => {
+    ready = new Promise((resolve, reject) => {
       onReady = resolve;
+      onFail = reject;
       frame = document.createElement('iframe');
       frame.setAttribute('sandbox', 'allow-scripts');
       frame.style.display = 'none';
-      frame.srcdoc = `<!doctype html><meta http-equiv="Content-Security-Policy" content="${CSP}"><script>${RUNNER}<\/script>`;
+      frame.srcdoc = `<!doctype html><meta http-equiv="Content-Security-Policy" content="${CSP}"><script>${FRAME}<\/script>`;
       document.body.appendChild(frame);
     });
     return ready;
   }
-  function replace() {
+  // Removes the frame (ending its worker); waiting runs fail with `why`.
+  function replace(why) {
     if (frame) frame.remove();
-    frame = null; ready = null; onReady = null;
-    for (const [, w] of waiting) w.reject(new Error('the shader took too long'));
+    if (onFail) onFail(new Error(why || 'the shader took too long'));
+    frame = null; ready = null; onReady = null; onFail = null;
+    for (const [, w] of waiting) w.reject(new Error(why || 'the shader took too long'));
     waiting.clear();
   }
   const runs = { ok: 0, failed: 0, lastError: null };
@@ -110,7 +122,7 @@ parent.postMessage({ ready: true }, '*');`;
       return new Promise((resolve, reject) => {
         const buf = input ? input.slice().buffer : null;
         // Too long (an endless loop?): the sandbox is replaced; waiting runs fail.
-        const timer = setTimeout(replace, timeout);
+        const timer = setTimeout(() => replace(), timeout);
         waiting.set(id, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
         frame.contentWindow.postMessage({ id, js, params, width, height, time, input: buf }, '*', buf ? [buf] : []);
       });

@@ -131,13 +131,14 @@ cargo run --release -p figstudio -- path/to/design.fig
   `FILE.fig.shaders/` next to the file, or in the shader folder set in Settings → Canvas (both
   watched). The shader's TypeScript runs in Boa (a JavaScript engine in Rust) and its WebGPU
   calls run on wgpu, at one pixel per layer unit as Figma runs them; animated shaders follow
-  the motion preview's playhead. The code has no file or network access and is capped: 10
-  million loop iterations, 100 million instructions, 256 MiB per array buffer, 512 MiB of GPU
-  memory and 10 s per run (a shader that runs past it is not run again). In the browser it
-  runs on the page's WebGPU in a sandboxed frame (no access to the page, its storage or the
-  network), its loops and calls are counted and stop past 20 million, and a run past 10 s is
-  stopped. Without a GPU or WebGPU the shader is skipped and
-  counted.
+  the motion preview's playhead. The code has no file or network access and runs in a child
+  process (the same program, started for it), capped at 10 million loop iterations, 100
+  million instructions, 256 MiB per array buffer and 512 MiB of GPU memory; a run past 10 s
+  kills that process and the shader is not run again, and running out of memory takes down
+  only that process. In the browser it runs on the page's WebGPU in a worker of a sandboxed
+  frame (no access to the page, its storage or the network): its loops and calls stop past
+  20 million, and a run past 10 s ends the worker. Without a GPU or WebGPU the shader is
+  skipped and counted.
 - Animated layers have a **Play** button in Properties: the motion plays in place on the
   canvas, with a bar under the layer to pause, scrub and close, and springs timed like Figma's.
 - Paste a `figma.com` or `figstudio://` URL into the command bar (⌘L, Ctrl+L elsewhere), then

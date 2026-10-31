@@ -68,6 +68,7 @@ const LAYERS: [(&str, &str); 11] = [
 
 #[test]
 fn every_shader_in_the_file_is_drawn_instead_of_skipped() {
+    worker();
     if !gpu() {
         return;
     }
@@ -112,6 +113,7 @@ fn every_shader_in_the_file_is_drawn_instead_of_skipped() {
 
 #[test]
 fn gradient_stops_reach_the_shader_as_plain_colours() {
+    worker();
     let doc = Document::open(root().join("shaders.fig")).unwrap();
     let paint = &doc
         .node("1:14627".parse().unwrap())
@@ -150,6 +152,7 @@ export function render(device, frame) {
 
 #[test]
 fn animated_shaders_follow_the_playback_clock_and_still_ones_do_not() {
+    worker();
     if !gpu() {
         return;
     }
@@ -179,4 +182,9 @@ fn animated_shaders_follow_the_playback_clock_and_still_ones_do_not() {
         red(true, 500.0)
     );
     assert_eq!(red(false, 500.0), 0, "a still shader runs at time 0");
+}
+
+/// The shader process for these tests: this crate's worker binary (a test binary cannot be one).
+fn worker() {
+    figstudio_shader::set_worker_program(env!("CARGO_BIN_EXE_figstudio-shader-worker").into());
 }

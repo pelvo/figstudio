@@ -150,6 +150,10 @@ fn app_icon() -> Option<egui::IconData> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> std::process::ExitCode {
+    // Started to run shader code for a figstudio process (`figstudio_shader::child`).
+    if figstudio_shader::serve_if_worker() {
+        return std::process::ExitCode::SUCCESS;
+    }
     init_tracing();
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     // Before any window: the first figstudio of this person keeps a lock; a later launch

@@ -493,6 +493,10 @@ fn init_tracing() {
 }
 
 fn main() -> ExitCode {
+    // Started to run shader code for a figstudio process (`figstudio_shader::child`).
+    if figstudio_shader::serve_if_worker() {
+        return ExitCode::SUCCESS;
+    }
     init_tracing();
     // Usage problems (exit 2) print the help text; failures on a valid command (exit 1) do not.
     let args = match parse(std::env::args().skip(1)) {
