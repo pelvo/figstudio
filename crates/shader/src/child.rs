@@ -9,6 +9,7 @@
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -19,6 +20,9 @@ use crate::{ShaderError, js};
 
 /// The argument that makes a figstudio program a shader worker (see [`serve_if_worker`]).
 pub const WORKER_ARG: &str = "--figstudio-shader-worker";
+
+/// Longest a new worker may take to say it is ready (it starts before its GPU does).
+const READY_WITHIN: Duration = Duration::from_secs(10);
 
 /// Largest JSON header of a frame.
 const MAX_HEADER: u32 = 4 * 1024 * 1024;
@@ -46,8 +50,11 @@ pub fn serve_if_worker() -> bool {
     true
 }
 
-/// The worker's loop: one job in, one reply out.
+/// The worker's loop: says it is ready, then one job in, one reply out.
 fn serve(input: &mut impl Read, output: &mut impl Write) {
+    if write_frame(output, &json!({"ready": true}), &[]).is_err() {
+        return;
+    }
     while let Ok((job, pixels)) = read_frame(input) {
         let reply = run_job(&job, (!pixels.is_empty()).then_some(pixels.as_slice()));
         let written = match reply {
@@ -116,11 +123,21 @@ impl Worker {
                 }
             })
             .map_err(|e| ShaderError::script(format!("cannot start the shader reader: {e}")))?;
-        Ok(Worker {
+        let worker = Worker {
             process,
             stdin: BufWriter::new(stdin),
             replies,
-        })
+        };
+        match worker.replies.recv_timeout(READY_WITHIN) {
+            Ok(Ok((hello, _))) if hello["ready"].as_bool() == Some(true) => Ok(worker),
+            _ => {
+                worker.stop();
+                NO_WORKER.store(true, Ordering::Relaxed);
+                Err(ShaderError::script(
+                    "this program cannot run shader code (its shader process did not start)",
+                ))
+            }
+        }
     }
 
     fn stop(mut self) {
@@ -145,6 +162,9 @@ pub(crate) enum Outcome {
 
 /// One worker for the whole process: runs take turns.
 static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
+/// A started program did not say it was ready: it cannot serve as a worker (a test binary,
+/// for example), so no more are started.
+static NO_WORKER: AtomicBool = AtomicBool::new(false);
 
 /// Runs `js` in the worker (started on first use) and waits at most `deadline`.
 pub(crate) fn run(
@@ -155,6 +175,12 @@ pub(crate) fn run(
     deadline: Duration,
 ) -> Outcome {
     let mut slot = WORKER.lock().unwrap_or_else(|e| e.into_inner());
+    if NO_WORKER.load(Ordering::Relaxed) {
+        return Outcome::Done(Err(ShaderError::script(
+            "this program cannot run shader code (its shader process did not start before; \
+             not started again)",
+        )));
+    }
     let worker = match slot.take() {
         Some(w) => w,
         None => match Worker::start() {
@@ -225,6 +251,26 @@ fn read_frame(input: &mut impl Read) -> io::Result<(Value, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_program_that_is_not_a_worker_is_not_started_again() {
+        // This test binary cannot serve: it rejects the worker flag and exits.
+        set_worker_program(std::env::current_exe().unwrap());
+        let size = (8, 8, 0.0);
+        let first = run("", &json!({}), size, None, Duration::from_secs(10));
+        assert!(matches!(first, Outcome::Done(Err(_))));
+        assert!(worker_pid().is_none());
+        let started = std::time::Instant::now();
+        let Outcome::Done(Err(again)) = run("", &json!({}), size, None, Duration::from_secs(10))
+        else {
+            panic!("a second run got further");
+        };
+        assert!(again.to_string().contains("not started again"), "{again}");
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "no new process"
+        );
+    }
 
     #[test]
     fn frames_round_trip_and_oversized_ones_are_refused() {
