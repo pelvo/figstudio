@@ -93,8 +93,11 @@ driver for wgpu, GTK/portal for the file dialog). macOS needs only Xcode command
   app (`figstudio-vX.Y.Z-macos-arm64.zip`) and the CLI/MCP binaries to the GitHub release.
   Do not bump versions or edit `CHANGELOG.md` by hand.
 - Do not commit `target/`, generated PNGs, stress files (`synth` output) or private `.fig`
-  files. Only the fixtures in `tests/fixtures` belong in the repo: 7 from fig2sketch (MIT) and
-  2 Figma Community files with their images removed (CC BY 4.0, `LICENSE-figma-community`).
+  files. Only the fixtures in `tests/fixtures` belong in the repo: 7 from fig2sketch (MIT),
+  2 Figma Community files with their images removed (CC BY 4.0, `LICENSE-figma-community`),
+  and `motion-probe.fig`, a file of plain rectangles made for the motion tests. A file made
+  or saved in someone's Figma account carries that account: before adding one, remove every
+  node's `editInfo` (its user id) and the message's `originFileKey`, as these three were.
 - Do not put people's names, chat names, phone numbers or local paths in commits, issues or
   docs. Say "the requester" or "a user".
 - **PII check before every commit and push** (ground rule 9). Run

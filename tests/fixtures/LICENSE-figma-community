@@ -8,8 +8,9 @@ International (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/).
   https://www.figma.com/community/file/1676067142735700190/generative-plugins-and-shaders-playground
 
 Changes: the embedded images/ and videos/ entries were removed to keep the files small
-(about 160 MB each down to 1 MB and 4 MB). The canvas, thumbnail and meta.json are unchanged.
-Image fills in these files therefore point at missing images.
+(about 160 MB each down to 1 MB and 4 MB), and the canvas was written back without the
+copy's origin key (originFileKey) and the layers' edit info (editors' user ids); the thumbnail
+and meta.json are unchanged. Image fills in these files therefore point at missing images.
 
 shader-sources/ holds the source of the 12 shaders used in shaders.fig (Concentric
 patterns, Mesh gradient, Clouds, Moving gradient, Pixelate, Bloom, Halftone, Pattern
