@@ -11,7 +11,7 @@ fn run(body: &str) -> Option<Result<(), String>> {
     let main = format!("export function render(device: any, frame: any) {{ {body} }}");
     match render(&main, &json!({}), 8, 8, 0.0) {
         Ok(_) => Some(Ok(())),
-        Err(e) if e.is_no_gpu() => None,
+        Err(e) if e.skips_test() => None,
         Err(e) => {
             assert!(e.is_script(), "{e}");
             Some(Err(e.to_string()))

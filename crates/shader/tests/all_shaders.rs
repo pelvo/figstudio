@@ -44,8 +44,7 @@ fn gpu() -> bool {
         1,
         0.0,
     );
-    if probe.as_ref().is_err_and(|e| e.is_no_gpu()) {
-        eprintln!("SKIPPED: no GPU adapter");
+    if probe.as_ref().is_err_and(|e| e.skips_test()) {
         return false;
     }
     true

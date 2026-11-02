@@ -133,9 +133,9 @@ cargo run --release -p figstudio -- path/to/design.fig
   calls run on wgpu, at one pixel per layer unit as Figma runs them; animated shaders follow
   the motion preview's playhead. The code has no file or network access and runs in a child
   process (the same program, started for it), capped at 10 million loop iterations, 100
-  million instructions, 256 MiB per array buffer and 512 MiB of GPU memory; a run past 10 s
-  kills that process and the shader is not run again, and running out of memory takes down
-  only that process. In the browser it runs on the page's WebGPU in a worker of a sandboxed
+  million instructions, 256 MiB per array buffer, 512 MiB of GPU memory and 2 GiB of memory
+  for the process; a run past 10 s kills that process and the shader is not run again, and
+  the process also ends itself if its program quits or crashes during a run. In the browser it runs on the page's WebGPU in a worker of a sandboxed
   frame (no access to the page, its storage or the network): its loops and calls stop past
   20 million, and a run past 10 s ends the worker. Without a GPU or WebGPU the shader is
   skipped and counted.

@@ -154,7 +154,8 @@ fn draw_frames(
 ) {
     let mut renderer = crate::renderer(images);
     let background = Some(figstudio_render::page_background(doc, page));
-    while let Ok(mut job) = jobs.recv() {
+    // Not `recv`: in the browser this runs on a pool thread, which must keep doing pool work.
+    while let Some(mut job) = crate::worker::next_job(jobs) {
         // Only the newest request matters.
         while let Ok(newer) = jobs.try_recv() {
             job = newer;
@@ -188,11 +189,17 @@ fn draw_frames(
 }
 
 /// Runs the tab's preview, if one is open: advances the clock, takes finished frames and asks
-/// for the next one.
-pub fn tick(ctx: &Context, preview: &mut Option<Preview>) {
+/// for the next one. Off its page (`shown` is the page on screen) it pauses: nothing shows it
+/// there, and its bar is hidden too.
+pub fn tick(ctx: &Context, preview: &mut Option<Preview>, shown: Guid) {
     let Some(p) = preview.as_mut() else {
         return;
     };
+    if shown != p.page {
+        p.playing = false;
+        p.last_tick = None;
+        return;
+    }
     let now = ctx.input(|i| i.time);
     let was_playing = p.playing;
     if p.playing {

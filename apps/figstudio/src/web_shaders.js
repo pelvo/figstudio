@@ -17,8 +17,12 @@ async function device() {
   return dev;
 }
 const modules = new Map();
-onmessage = async (e) => {
-  const { id, js, params, width, height, time, input } = e.data;
+// One job at a time, each saying when it starts, so the page times the job that runs.
+let chain = Promise.resolve();
+onmessage = (e) => { chain = chain.then(() => job(e.data)); };
+async function job(data) {
+  const { id, js, params, width, height, time, input } = data;
+  postMessage({ started: id });
   try {
     const d = await device();
     let mod = modules.get(js);
@@ -58,7 +62,7 @@ onmessage = async (e) => {
   } catch (err) {
     postMessage({ id, ok: false, error: String((err && err.message) || err) });
   }
-};
+}
 postMessage({ ready: true });`;
   // Runs in the frame: starts the worker (which inherits the frame's policy) and passes
   // messages between it and this page.
@@ -70,11 +74,17 @@ onmessage = (e) => { if (e.source !== parent) return; const d = e.data; w.postMe
   const CSP = "default-src 'none'; script-src 'unsafe-inline' data:; worker-src data:";
   let frame = null, ready = null, onReady = null, onFail = null, next = 1;
   const waiting = new Map();
+  // Code that ran past its time: not run again in this page.
+  const timedOut = new Set();
+  // Runs that were waiting behind a stuck one fail with this, and the caller runs them again.
+  const INTERRUPTED = 'interrupted: another shader took too long';
   addEventListener('message', (e) => {
     if (!frame || e.source !== frame.contentWindow || !e.data) return;
     if (e.data.ready) { if (onReady) onReady(); return; }
     // The worker did not start (no workers or no WebGPU there): every run fails.
     if (e.data.fatal) { replace(e.data.fatal); return; }
+    // A run started: its time counts from now, not while it waited behind others.
+    if (e.data.started) { const w = waiting.get(e.data.started); if (w) w.start(); return; }
     const w = waiting.get(e.data.id); if (!w) return;
     waiting.delete(e.data.id);
     e.data.ok ? w.resolve(new Uint8Array(e.data.pixels)) : w.reject(new Error(e.data.error));
@@ -117,13 +127,27 @@ onmessage = (e) => { if (e.source !== parent) return; const d = e.data; w.postMe
     },
   };
   async function start(js, params, width, height, time, input, timeout) {
+      if (timedOut.has(js)) throw new Error('the shader took too long before; not run again');
       await sandbox();
       const id = next++;
       return new Promise((resolve, reject) => {
         const buf = input ? input.slice().buffer : null;
-        // Too long (an endless loop?): the sandbox is replaced; waiting runs fail.
-        const timer = setTimeout(() => replace(), timeout);
-        waiting.set(id, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
+        let timer = null;
+        const stop = () => { if (timer !== null) clearTimeout(timer); };
+        waiting.set(id, {
+          // Too long (an endless loop?): this run fails and its code is not run again; the
+          // frame is replaced, and the runs waiting behind it fail as interrupted.
+          start: () => {
+            timer = setTimeout(() => {
+              waiting.delete(id);
+              timedOut.add(js);
+              reject(new Error('the shader took too long'));
+              replace(INTERRUPTED);
+            }, timeout);
+          },
+          resolve: (v) => { stop(); resolve(v); },
+          reject: (e) => { stop(); reject(e); },
+        });
         frame.contentWindow.postMessage({ id, js, params, width, height, time, input: buf }, '*', buf ? [buf] : []);
       });
   }

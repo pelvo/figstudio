@@ -1529,7 +1529,7 @@ impl App {
                     self.workers.images(),
                 );
             }
-            motion_preview::tick(&ctx, &mut tab.motion_preview);
+            motion_preview::tick(&ctx, &mut tab.motion_preview, tab.page);
         }
         self.peek_sidebar(&ctx);
         self.space_popover(&ctx);

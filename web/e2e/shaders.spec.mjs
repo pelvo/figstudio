@@ -130,3 +130,24 @@ test("a built-in that never returns is stopped with its worker", async ({ page }
   const status = await dropStuck(page, "Array.prototype.forEach.call({ length: 1e12 }, () => {});");
   await expectStopped(page, status, "took too long", errors);
 });
+
+test("a shader waiting behind a stuck one still draws once that one is stopped", async ({ page }) => {
+  test.setTimeout(180_000);
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  // The Concentric shader runs a built-in that never returns...
+  const status = await dropStuck(page, "Array.prototype.forEach.call({ length: 1e12 }, () => {});");
+  await page.waitForTimeout(1_000);
+  // ...while the Mesh gradient's real code arrives and waits behind it.
+  const dir = await mkdtemp(join(tmpdir(), "figstudio-mesh-"));
+  const mesh = new URL("../../tests/fixtures/shader-sources/mesh-gradient", import.meta.url).pathname;
+  const zip = join(dir, "Mesh-gradient-source.zip");
+  execFileSync("zip", ["-q", "-j", zip, join(mesh, "main.ts"), join(mesh, "features.json")]);
+  await drop(page, "Mesh-gradient-source.zip", await readFile(zip));
+  await expect.poll(async () => (await status()).shaders_missing, { timeout: 30_000 }).toBe(10);
+  // Only the stuck one fails; the waiting one runs again in a new frame and draws.
+  const runs = () => page.evaluate(() => globalThis.__figstudioShaders?.runs ?? { ok: 0 });
+  await expect.poll(async () => (await runs()).ok, { timeout: 60_000 }).toBeGreaterThan(0);
+  expect(await page.evaluate(() => window.figstudioFatal())).toBe(false);
+  expect(errors).toEqual([]);
+});

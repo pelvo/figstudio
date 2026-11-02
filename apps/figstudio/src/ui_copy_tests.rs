@@ -350,6 +350,22 @@ fn play_opens_a_motion_preview_that_draws_frames_and_pauses() {
     assert!(!paused.1);
     step(&mut h, &mut c);
     assert_eq!(preview(&h).unwrap().2, paused.2, "paused time stays");
+    // On another page it pauses (nothing shows it there) and draws no more frames.
+    if let Some(p) = h.state_mut().tabs[0].motion_preview.as_mut() {
+        p.toggle();
+    }
+    step(&mut h, &mut c);
+    assert!(preview(&h).unwrap().1);
+    let page = h.state().tabs[0].page;
+    let other = h.state().tabs[0].doc.internal_pages[0];
+    h.state_mut().tabs[0].page = other;
+    step(&mut h, &mut c);
+    let off = preview(&h).unwrap();
+    assert!(!off.1, "paused off its page");
+    step(&mut h, &mut c);
+    assert_eq!(preview(&h).unwrap().2, off.2, "its clock stands still");
+    h.state_mut().tabs[0].page = page;
+    step(&mut h, &mut c);
     // It plays on the canvas, not in a window, and its bar closes it.
     assert!(h.query_by_label_contains("Motion ·").is_none());
     click_label(&mut h, &mut c, "Close the player");

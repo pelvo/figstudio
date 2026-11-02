@@ -30,8 +30,13 @@ enum Entry {
     Done(Option<Arc<Pixmap>>),
 }
 
-/// A finished run for a host's cache.
-type Finished = (u64, Option<Arc<Pixmap>>);
+/// A finished run for a host's cache: its output (`None` when it failed), or `Err` when it
+/// was interrupted by another shader's timeout and should be run again.
+type Finished = (u64, Result<Option<Arc<Pixmap>>, Interrupted>);
+
+/// A run that never started its own work: it waited behind a shader that was stopped.
+#[derive(Debug)]
+struct Interrupted;
 
 /// A run waiting for the main thread.
 struct Job {
@@ -94,10 +99,15 @@ impl Runner {
             let (arrived, ctx) = (self.arrived.clone(), ctx.clone());
             wasm_bindgen_futures::spawn_local(async move {
                 let (done, key) = (job.done.clone(), job.key);
-                let out = run(job)
-                    .await
-                    .map_err(|e| tracing::warn!("shader not drawn: {e}"))
-                    .ok();
+                let out = match run(job).await {
+                    Ok(pixmap) => Ok(Some(pixmap)),
+                    // The bridge's wording for a run that waited behind a stopped one.
+                    Err(e) if e.starts_with("interrupted") => Err(Interrupted),
+                    Err(e) => {
+                        tracing::warn!("shader not drawn: {e}");
+                        Ok(None)
+                    }
+                };
                 // A host replaced meanwhile no longer listens.
                 let _ = done.send((key, out));
                 arrived.store(true, Ordering::Release);
@@ -150,19 +160,9 @@ async fn run(job: Job) -> Result<Arc<Pixmap>, String> {
                 .unwrap_or_else(|| format!("{e:?}"))
         })?;
     let bytes = js_sys::Uint8Array::new(&pixels).to_vec();
-    let expected = usize::from(job.width) * usize::from(job.height) * 4;
-    if bytes.len() != expected {
-        return Err(format!(
-            "the shader gave {} bytes, not {expected}",
-            bytes.len()
-        ));
-    }
-    Ok(Arc::new(figstudio_shader::pixmap(
-        bytes,
-        job.width,
-        job.height,
-        job.input.is_some(),
-    )))
+    figstudio_shader::pixmap(bytes, job.width, job.height, job.input.is_some())
+        .map(Arc::new)
+        .map_err(|e| e.to_string())
 }
 
 /// One file's shader host in the browser.
@@ -185,7 +185,15 @@ impl WebFills {
             .unwrap_or_else(PoisonError::into_inner)
             .try_iter()
         {
-            cache.insert(key, Entry::Done(out));
+            match out {
+                Ok(out) => {
+                    cache.insert(key, Entry::Done(out));
+                }
+                // Asked for again below (or by the next lookup of that key).
+                Err(Interrupted) => {
+                    cache.remove(&key);
+                }
+            }
         }
         match cache.get(&key) {
             Some(Entry::Pending) => return Shaded::Pending,

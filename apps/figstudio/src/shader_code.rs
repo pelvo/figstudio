@@ -24,11 +24,21 @@ pub struct TabShaders {
     pub beside: Vec<ShaderSource>,
     /// Shaders its visible layers use without code.
     pub missing: Vec<Missing>,
+    /// `missing` being worked out in the background (a walk over every layer, too long for a
+    /// frame on a large file), with the toast to show once it is known.
+    pub counting: Option<Counting>,
     /// The notice was closed.
     pub notice_closed: bool,
     pub steps_open: bool,
     /// The user asked to choose a zip: for this shader's ID (`Some(None)`: any shader).
     pub choose: Cell<Option<Option<String>>>,
+}
+
+/// A count of the shaders missing code, under way.
+pub struct Counting {
+    result: std::sync::mpsc::Receiver<Vec<Missing>>,
+    /// After adding a zip: its label and how many shaders were missing before.
+    added: Option<(String, usize)>,
 }
 
 impl TabShaders {
@@ -146,7 +156,14 @@ impl crate::App {
             return;
         };
         let sources = tab.shaders.sources(&self.shader_code.folder);
-        tab.shaders.missing = shaders::missing(&tab.doc, &sources);
+        let (send, result) = std::sync::mpsc::channel();
+        let (doc, counted) = (tab.doc.clone(), sources.clone());
+        crate::worker::spawn_task(move || {
+            let _ = send.send(shaders::missing(&doc, &counted));
+        });
+        // A count already under way is replaced; a toast it was waiting for is kept.
+        let added = tab.shaders.counting.take().and_then(|c| c.added);
+        tab.shaders.counting = Some(Counting { result, added });
         let instance = tab.doc.instance;
         // Through the render worker: the browser's UI thread must not wait on a lock.
         self.workers
@@ -178,18 +195,12 @@ impl crate::App {
                 let before = self.tabs[i].shaders.missing.len();
                 self.tabs[i].shaders.add(source);
                 self.apply_shaders(i);
+                // Said once the new count is known (`poll_shader_code`).
+                if let Some(counting) = self.tabs[i].shaders.counting.as_mut() {
+                    counting.added = Some((label, before));
+                }
                 // The browser draws a frame only when asked: one to plan the tiles again.
                 ctx.request_repaint();
-                let after = self.tabs[i].shaders.missing.len();
-                if after < before {
-                    self.toast(ctx, format!("Added the code of {label}"), false);
-                } else {
-                    self.toast(
-                        ctx,
-                        format!("{label} is not the code of a shader this file is missing"),
-                        true,
-                    );
-                }
             }
             Err(e) => self.toast(ctx, e, true),
         }
@@ -254,6 +265,32 @@ impl crate::App {
         }
         while let Ok(zip) = self.shader_code.rx.try_recv() {
             self.add_zip(ctx, zip.tab, &zip.name, zip.shader.as_deref(), &zip.bytes);
+        }
+        let mut toasts = Vec::new();
+        for tab in &mut self.tabs {
+            let Some(counting) = &tab.shaders.counting else {
+                continue;
+            };
+            let Ok(missing) = counting.result.try_recv() else {
+                // Still counting: look again next frame.
+                ctx.request_repaint_after(std::time::Duration::from_millis(30));
+                continue;
+            };
+            if let Some((label, before)) = tab.shaders.counting.take().and_then(|c| c.added) {
+                toasts.push(if missing.len() < before {
+                    (format!("Added the code of {label}"), false)
+                } else {
+                    (
+                        format!("{label} is not the code of a shader this file is missing"),
+                        true,
+                    )
+                });
+            }
+            tab.shaders.counting = None;
+            tab.shaders.missing = missing;
+        }
+        for (text, error) in toasts {
+            self.toast(ctx, text, error);
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.watch_shader_folders(ctx);

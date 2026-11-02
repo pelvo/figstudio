@@ -107,6 +107,22 @@ impl ShaderError {
         self.kind == Kind::NoGpu
     }
 
+    /// For tests: whether to skip because there is no GPU adapter. With
+    /// `FIGSTUDIO_REQUIRE_GPU` set (CI on a software GPU) a missing adapter fails instead, so
+    /// the tests cannot pass by skipping everything.
+    #[doc(hidden)]
+    pub fn skips_test(&self) -> bool {
+        if !self.is_no_gpu() {
+            return false;
+        }
+        assert!(
+            std::env::var_os("FIGSTUDIO_REQUIRE_GPU").is_none(),
+            "FIGSTUDIO_REQUIRE_GPU is set but there is no GPU adapter: {self}"
+        );
+        eprintln!("SKIPPED: {self}");
+        true
+    }
+
     /// The shader's code failed: it does not compile, throws, or uses a WebGPU call this
     /// runtime does not have.
     pub fn is_script(&self) -> bool {
@@ -180,7 +196,14 @@ impl Program<'_> {
 
 /// RGBA8 output of a shader as a pixmap: a fill's is straight alpha, an effect's (it has an
 /// input) premultiplied.
-pub fn pixmap(rgba: Vec<u8>, width: u16, height: u16, effect: bool) -> Pixmap {
+pub fn pixmap(rgba: Vec<u8>, width: u16, height: u16, effect: bool) -> Result<Pixmap, ShaderError> {
+    let expected = usize::from(width) * usize::from(height) * 4;
+    if rgba.len() != expected {
+        return Err(ShaderError::script(format!(
+            "the shader gave {} bytes, not {expected}",
+            rgba.len()
+        )));
+    }
     let meta = PixelMetadata {
         may_have_transparency: true,
         alpha_type: if effect {
@@ -189,7 +212,7 @@ pub fn pixmap(rgba: Vec<u8>, width: u16, height: u16, effect: bool) -> Pixmap {
             ImageAlphaType::Alpha
         },
     };
-    Pixmap::from_parts(rgba, width, height, meta)
+    Ok(Pixmap::from_parts(rgba, width, height, meta))
 }
 
 /// The shader clock a run sees: `time_ms` for an animated shader, 0 for a still one.
@@ -262,7 +285,7 @@ mod native {
     ) -> Result<Pixmap, ShaderError> {
         let js = ts::to_js(main_ts)?;
         let rgba = run_within(js, params, (width, height, time_ms), input, DEADLINE)?;
-        Ok(pixmap(rgba, width, height, input.is_some()))
+        pixmap(rgba, width, height, input.is_some())
     }
 
     /// Runs `js` in the shader process and waits at most `deadline`. A run past it kills the

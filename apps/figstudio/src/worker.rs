@@ -142,8 +142,9 @@ fn spawn(f: impl FnOnce() + Send + 'static) {
     rayon::spawn(f);
 }
 
-/// Waits for the next job. Desktop blocks on the channel; the browser polls (module docs).
-fn next_job(jobs: &Receiver<Msg>) -> Option<Msg> {
+/// Waits for the next job. Desktop blocks on the channel; the browser polls (module docs),
+/// running other pool work meanwhile, so a long-lived helper never holds a pool thread idle.
+pub fn next_job<T>(jobs: &Receiver<T>) -> Option<T> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         jobs.recv().ok()

@@ -69,7 +69,7 @@ fn concentric_rings_are_drawn() {
     let main = &found.files.iter().find(|(f, _)| f == "main.ts").unwrap().1;
     let pixmap = match render(main, &params, 200, 200, 0.0) {
         Ok(p) => p,
-        Err(e) if e.is_no_gpu() => return eprintln!("SKIPPED: {e}"),
+        Err(e) if e.skips_test() => return,
         Err(e) => panic!("{e}"),
     };
     assert_eq!((pixmap.width(), pixmap.height()), (200, 200));
@@ -101,9 +101,9 @@ fn the_renderer_draws_the_shader_fill_instead_of_skipping_it() {
         1,
         0.0,
     )
-    .is_err_and(|e| e.is_no_gpu())
+    .is_err_and(|e| e.skips_test())
     {
-        return eprintln!("SKIPPED: no GPU adapter");
+        return;
     }
     let without = draw(None);
     let with = draw(Some(Arc::new(Fills::new(vec![source()]))));
@@ -138,7 +138,7 @@ fn bad_shader_code_is_an_error_not_a_panic() {
     for code in cases {
         match render(code, &params, 8, 8, 0.0) {
             Ok(_) => panic!("drew: {code}"),
-            Err(e) if e.is_no_gpu() => return eprintln!("SKIPPED: {e}"),
+            Err(e) if e.skips_test() => return,
             Err(_) => {}
         }
     }

@@ -9,10 +9,10 @@
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -50,13 +50,66 @@ pub fn serve_if_worker() -> bool {
     true
 }
 
-/// The worker's loop: says it is ready, then one job in, one reply out.
+/// How long past a job's deadline the worker's own watchdog waits before it ends the process,
+/// for when its parent cannot (it quit or crashed during the job).
+const WATCHDOG_MARGIN: Duration = Duration::from_secs(5);
+
+/// Most memory the worker may use (its resident size) before its watchdog ends it: memory
+/// outside the script's array buffers (a string doubled again and again) has no other cap.
+const MAX_MEMORY: u64 = 2 * 1024 * 1024 * 1024;
+
+/// [`MAX_MEMORY`], or a lower cap from `FIGSTUDIO_SHADER_MAX_MEMORY` (bytes; tests).
+fn max_memory() -> u64 {
+    std::env::var("FIGSTUDIO_SHADER_MAX_MEMORY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(MAX_MEMORY, |v: u64| v.min(MAX_MEMORY))
+}
+
+/// The worker's loop: says it is ready, then one job in, one reply out. A watchdog thread
+/// ends the process when a job runs past its deadline plus [`WATCHDOG_MARGIN`], when it uses
+/// more than [`max_memory`], or (on Unix) when its parent is gone, so a stuck or runaway run
+/// never outlives the program it ran for or takes the machine's memory.
 fn serve(input: &mut impl Read, output: &mut impl Write) {
-    if write_frame(output, &json!({"ready": true}), &[]).is_err() {
+    // When the running job must be done, in ms since `start` (0: no job running).
+    static BUSY_UNTIL: AtomicU64 = AtomicU64::new(0);
+    let start = Instant::now();
+    let memory_cap = max_memory();
+    let now_ms = move || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    #[cfg(unix)]
+    let parent = std::os::unix::process::parent_id();
+    let watchdog = std::thread::Builder::new()
+        .name("shader-watchdog".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(250));
+                let until = BUSY_UNTIL.load(Ordering::Relaxed);
+                // An orphan is adopted by another process (init, launchd).
+                #[cfg(unix)]
+                let orphaned = std::os::unix::process::parent_id() != parent;
+                #[cfg(not(unix))]
+                let orphaned = false;
+                if orphaned || (until != 0 && now_ms() > until) {
+                    std::process::exit(3);
+                }
+                if memory_stats::memory_stats().is_some_and(|m| m.physical_mem as u64 > memory_cap)
+                {
+                    std::process::exit(4);
+                }
+            }
+        });
+    if watchdog.is_err() || write_frame(output, &json!({"ready": true}), &[]).is_err() {
         return;
     }
     while let Ok((job, pixels)) = read_frame(input) {
+        let deadline = job["deadline_ms"].as_u64().unwrap_or(10_000);
+        let margin = u64::try_from(WATCHDOG_MARGIN.as_millis()).unwrap_or(5_000);
+        BUSY_UNTIL.store(
+            now_ms().saturating_add(deadline).saturating_add(margin),
+            Ordering::Relaxed,
+        );
         let reply = run_job(&job, (!pixels.is_empty()).then_some(pixels.as_slice()));
+        BUSY_UNTIL.store(0, Ordering::Relaxed);
         let written = match reply {
             Ok(rgba) => write_frame(output, &json!({"ok": true}), &rgba),
             Err(e) => write_frame(output, &json!({"ok": false, "error": e.to_wire()}), &[]),
@@ -130,6 +183,13 @@ impl Worker {
         };
         match worker.replies.recv_timeout(READY_WITHIN) {
             Ok(Ok((hello, _))) if hello["ready"].as_bool() == Some(true) => Ok(worker),
+            // Slow to start (a first launch scanned by antivirus, a busy machine): this run
+            // fails, the next one tries again.
+            Err(RecvTimeoutError::Timeout) => {
+                worker.stop();
+                Err(ShaderError::script("the shader process was slow to start"))
+            }
+            // It ended, or answered something else: this program cannot be a worker.
             _ => {
                 worker.stop();
                 NO_WORKER.store(true, Ordering::Relaxed);
@@ -162,8 +222,8 @@ pub(crate) enum Outcome {
 
 /// One worker for the whole process: runs take turns.
 static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
-/// A started program did not say it was ready: it cannot serve as a worker (a test binary,
-/// for example), so no more are started.
+/// A started program ended without saying it was ready: it cannot serve as a worker (a test
+/// binary, for example), so no more are started. One that is only slow is tried again.
 static NO_WORKER: AtomicBool = AtomicBool::new(false);
 
 /// Runs `js` in the worker (started on first use) and waits at most `deadline`.
@@ -189,8 +249,9 @@ pub(crate) fn run(
         },
     };
     let mut worker = worker;
+    let deadline_ms = u64::try_from(deadline.as_millis()).unwrap_or(u64::MAX);
     let job = json!({"js": js, "params": params, "width": width, "height": height,
-        "time_ms": time_ms});
+        "time_ms": time_ms, "deadline_ms": deadline_ms});
     if write_frame(&mut worker.stdin, &job, input.unwrap_or_default()).is_err() {
         worker.stop();
         return Outcome::Done(Err(ShaderError::script("the shader process ended")));

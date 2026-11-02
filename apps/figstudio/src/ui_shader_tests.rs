@@ -23,11 +23,25 @@ fn concentric_zip() -> Vec<u8> {
     z.finish().unwrap().into_inner()
 }
 
+/// Steps until the shaders missing code are counted (in the background).
+fn counted(h: &mut Harness<'_, App>, c: &mut Vec<String>) {
+    wait(h, c, "the shader count", |a| {
+        a.tabs.iter().all(|t| t.shaders.counting.is_none())
+    });
+    // The notice or markers it brings show from the next frames (egui lays a new area out
+    // before it takes clicks).
+    step(h, c);
+    step(h, c);
+}
+
 #[test]
 fn a_file_with_shaders_but_no_code_says_so_and_takes_their_zips() {
     let mut h = harness_fixture("shaders.fig", 1.0 / 60.0);
     let mut c = Vec::new();
+    // Counted in the background (a walk over 28,000 layers): the open did not wait for it.
+    assert!(h.state().tabs[0].shaders.counting.is_some());
     step(&mut h, &mut c);
+    counted(&mut h, &mut c);
     let missing = |h: &Harness<'_, App>| h.state().tabs[0].shaders.missing.len();
     assert_eq!(missing(&h), 12);
     // The notice offers the zips and the steps to get them.
@@ -49,6 +63,7 @@ fn a_file_with_shaders_but_no_code_says_so_and_takes_their_zips() {
         })
         .unwrap();
     step(&mut h, &mut c);
+    counted(&mut h, &mut c);
     assert_eq!(missing(&h), 11);
     assert!(
         h.state().tabs[0]
@@ -76,6 +91,7 @@ fn a_file_with_shaders_but_no_code_says_so_and_takes_their_zips() {
         })
         .unwrap();
     step(&mut h, &mut c);
+    counted(&mut h, &mut c);
     assert_eq!(missing(&h), 11);
     assert!(
         h.state()
@@ -113,6 +129,7 @@ fn a_shader_marker_asks_for_that_shaders_code() {
     let mut h = harness_fixture("shaders.fig", 1.0 / 60.0);
     let mut c = Vec::new();
     h.state_mut().tabs[0].fit_node = Some(CONCENTRIC);
+    counted(&mut h, &mut c);
     for _ in 0..4 {
         step(&mut h, &mut c);
     }

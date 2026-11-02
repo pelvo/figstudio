@@ -141,7 +141,8 @@ Seven of `tests/fixtures/*.fig` come from fig2sketch (MIT, `tests/fixtures/LICEN
 `motion.fig` (keyframes, timelines, animation presets) and `shaders.fig` (shader fills and
 effects) are Figma Community files under CC BY 4.0 with their images and videos removed
 (`tests/fixtures/LICENSE-figma-community`); they are the only public files with motion and
-shader data. The full downloads, if kept, go in the git-ignored `tests/local/`.
+shader data. `motion-probe.fig` is a file of plain rectangles made for the motion easing tests.
+None of the three keeps the account that saved it (no `editInfo`, no `originFileKey`). The full downloads, if kept, go in the git-ignored `tests/local/`.
 
 | File | Exercises (from `figstudio-cli doctor`) |
 |---|---|
@@ -626,7 +627,13 @@ shaders fixture and the Concentric shader's code (zipped in the test with `zip`)
 (`__figstudioShaders.runs`: some ok, none failed) in one opaque-origin frame. It needs a
 browser with WebGPU and a working GPU canvas: full Chromium in new-headless mode
 (`CHROMIUM_PATH=…/Google Chrome for Testing`; the headless shell has no GPU canvas). It is
-skipped when the page has no `navigator.gpu`.
+skipped when the page has no `navigator.gpu`. Its other cases: an endless loop stops on the
+step limit, a built-in that never returns ends with its worker, and a shader queued behind a
+stuck one still draws; the page answers throughout.
+
+Shader tests on the GPU: the `figstudio-shader` tests skip without a GPU adapter. CI also runs
+them on Mesa's software Vulkan (lavapipe, `mesa-vulkan-drivers`) with `FIGSTUDIO_REQUIRE_GPU=1`,
+which turns a missing adapter into a failure. Set it locally too to be sure they ran.
 
 Canvas emoji checks: `cargo test --profile fast -p figstudio-render --features gpu emoji`
 runs synthetic sbix colour/strike/limit tests, empty-database and monochrome fallback,
