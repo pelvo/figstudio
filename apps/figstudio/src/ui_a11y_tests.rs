@@ -632,6 +632,172 @@ fn the_canvas_lists_its_visible_layers_by_name_kind_and_place() {
 }
 
 #[test]
+fn canvas_layer_bounds_follow_the_drawn_zoom_not_its_target() {
+    let mut h = super::harness_fixture(super::FIXTURE, 1.0 / 60.0);
+    let ctx = h.ctx.clone();
+    crate::anim::set_reduced(&ctx, false);
+    h.run_steps(2);
+    h.state_mut().apply(MenuAction::ZoomBy(2.0), &ctx);
+    h.run_steps(5);
+    let tab = &h.state().tabs[0];
+    assert_ne!(tab.shown, tab.view, "mid-animation");
+    let guid = figstudio_fig::Guid(1, 34);
+    let bounds = figstudio_render::node_bounds(&tab.doc, guid).expect("layer bounds");
+    let canvas = tab.canvas_rect.expect("canvas");
+    let expected = egui::Rect::from_two_pos(
+        tab.shown
+            .to_screen(canvas.min, egui::pos2(bounds.x0 as f32, bounds.y0 as f32)),
+        tab.shown
+            .to_screen(canvas.min, egui::pos2(bounds.x1 as f32, bounds.y1 as f32)),
+    )
+    .intersect(canvas);
+    let id = crate::canvas_a11y::author_id(guid);
+    let layer = canvas_layers(&h)
+        .into_iter()
+        .find(|a| a.data().author_id() == Some(id.as_str()))
+        .expect("drawn layer");
+    let actual = layer.bounding_box().expect("accessibility bounds");
+    assert!(
+        (actual.x0 - f64::from(expected.min.x)).abs() < 0.5,
+        "{actual:?} != {expected:?}"
+    );
+    assert!(
+        (actual.x1 - f64::from(expected.max.x)).abs() < 0.5,
+        "{actual:?} != {expected:?}"
+    );
+}
+
+#[test]
+fn canvas_accessibility_presses_do_not_escape_modals() {
+    for action in [
+        MenuAction::Settings,
+        MenuAction::CommandBar,
+        MenuAction::Welcome,
+    ] {
+        let mut h = harness();
+        h.run_steps(2);
+        let layer = figstudio_fig::Guid(1, 34);
+        let id = crate::canvas_a11y::author_id(layer);
+        let (target_node, target_tree) = canvas_layers(&h)
+            .into_iter()
+            .find(|a| a.data().author_id() == Some(id.as_str()))
+            .expect("listed layer")
+            .locate();
+        let ctx = h.ctx.clone();
+        h.state_mut().apply(action, &ctx);
+        h.run_steps(6);
+        h.input_mut()
+            .events
+            .push(egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    target_node,
+                    target_tree,
+                    action: Action::Click,
+                    data: None,
+                },
+            ));
+        let before = h.state().tabs[0].selection;
+        h.run_steps(2);
+        assert_eq!(
+            h.state().tabs[0].selection,
+            before,
+            "selection behind modal"
+        );
+    }
+}
+
+#[test]
+fn the_opening_file_indicator_is_named_and_polite() {
+    let mut h = harness();
+    h.state_mut()
+        .loading
+        .begin(&std::path::PathBuf::from("synthetic.fig"));
+    h.run_steps(3);
+    let node = h.get_by_role_and_label(Role::ProgressIndicator, "Opening synthetic.fig…");
+    assert_eq!(
+        node.accesskit_node().data().live(),
+        Some(egui::accesskit::Live::Polite)
+    );
+}
+
+#[test]
+fn an_accent_buttons_id_does_not_depend_on_its_label() {
+    let changed = std::cell::Cell::new(false);
+    let installed = std::cell::Cell::new(false);
+    let mut h = Harness::new_ui(|ui| {
+        if !installed.replace(true) {
+            crate::theme::install_fonts(ui.ctx());
+            return;
+        }
+        let label = if changed.get() {
+            "Open file…"
+        } else {
+            "Open…"
+        };
+        let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(160.0, 36.0));
+        let _ = crate::chrome::accent_button(
+            ui,
+            rect,
+            "recents-open",
+            label,
+            label,
+            crate::theme::tint(crate::theme::HOME_TINT, false),
+        );
+    });
+    h.run_steps(2);
+    let before = h
+        .get_by_label("Open…")
+        .accesskit_node()
+        .data()
+        .author_id()
+        .map(str::to_owned);
+    changed.set(true);
+    h.run_steps(2);
+    let after = h
+        .get_by_label("Open file…")
+        .accesskit_node()
+        .data()
+        .author_id()
+        .map(str::to_owned);
+    assert!(before.is_some());
+    assert_eq!(before, after);
+}
+
+#[test]
+fn a_spaces_id_survives_closing_an_earlier_space() {
+    let mut h = harness();
+    let doc = std::sync::Arc::clone(&h.state().tabs[0].doc);
+    let second = crate::tab::Tab::new(
+        100,
+        std::path::PathBuf::from("synthetic.fig"),
+        doc,
+        None,
+        std::time::Duration::ZERO,
+    );
+    let title = second.space_name();
+    h.state_mut().tabs.push(second);
+    h.state_mut().active = 1;
+    h.run_steps(6);
+    let before = h
+        .get_by_role_and_label(Role::Button, &title)
+        .accesskit_node()
+        .data()
+        .author_id()
+        .map(str::to_owned);
+    h.state_mut().tabs.remove(0);
+    h.state_mut().active = 0;
+    h.run_steps(30);
+    let after = h
+        .get_by_role_and_label(Role::Button, &title)
+        .accesskit_node()
+        .data()
+        .author_id()
+        .map(str::to_owned);
+    assert!(before.is_some());
+    assert_eq!(before, after);
+}
+
+#[test]
 fn pressing_a_canvas_layer_selects_it() {
     let mut h = harness();
     h.run_steps(2);

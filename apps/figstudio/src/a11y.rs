@@ -242,12 +242,14 @@ pub fn author(response: &Response, id: impl Into<String>) {
         .accesskit_node_builder(response.id, |n| n.set_author_id(id));
 }
 
-/// A short stable hash of `text` (FNV-1a), for an id that must not show the text itself (a
-/// file's path).
+/// A randomized path hash, stable within this app run but not across launches.
 pub fn short_hash(text: &str) -> String {
-    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-    });
+    use std::hash::BuildHasher;
+    static HASHER: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+        std::sync::OnceLock::new();
+    let hash = HASHER
+        .get_or_init(std::collections::hash_map::RandomState::new)
+        .hash_one(text);
     format!("{hash:016x}")
 }
 
@@ -273,6 +275,17 @@ pub fn menu_button(ui: &mut Ui, label: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recent_file_hashes_are_stable_within_a_run_but_not_unsalted_fnv() {
+        let hash = super::short_hash("synthetic.fig");
+        assert_eq!(hash, super::short_hash("synthetic.fig"));
+        assert_ne!(hash, super::short_hash("another.fig"));
+        assert_ne!(
+            hash, "9854849283168ee8",
+            "do not expose the deterministic path hash"
+        );
+    }
+
     #[test]
     fn a_slug_keeps_letters_and_digits_and_joins_the_rest() {
         assert_eq!(super::slug("Open file…"), "open-file");

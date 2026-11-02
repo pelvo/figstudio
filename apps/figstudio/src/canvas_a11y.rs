@@ -3,12 +3,12 @@
 //! selects it. Screen readers and agents (computer use) find a layer by name instead of by
 //! pixels.
 //!
-//! Only what is on screen is listed, at most [`MAX_NODES`], walking at most [`MAX_VISITS`]
-//! layers: a big page must not cost a frame. With AccessKit off (no screen reader or agent
-//! attached) nothing is walked at all.
+//! Geometrically visible layers are listed, at most [`MAX_NODES`], walking at most
+//! [`MAX_VISITS`] layers; counting omissions is bounded too. With AccessKit off (no screen
+//! reader or agent attached) nothing is walked at all.
 
 use egui::accesskit::{Action, Role};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use egui::{Event, Id, Rect, Response, Ui, UiBuilder};
@@ -23,7 +23,7 @@ use crate::tab::Tab;
 pub const MAX_NODES: usize = 400;
 /// Most layers looked at in one frame (hidden and off-screen ones included).
 pub const MAX_VISITS: usize = 20_000;
-/// The longest text content a text layer reports.
+/// The longest layer name or text value reported.
 const MAX_TEXT: usize = 300;
 /// A layer smaller than this on screen (points, either side) is not listed.
 const MIN_SIDE: f32 = 2.0;
@@ -53,6 +53,8 @@ struct Item {
 struct Listing {
     key: u64,
     items: Arc<Vec<Item>>,
+    omitted: usize,
+    limited: bool,
 }
 
 fn listing_id() -> Id {
@@ -84,6 +86,9 @@ fn listing_key(tab: &Tab, origin: egui::Pos2, screen: Rect) -> u64 {
 /// Selects the layer a screen reader or agent pressed (an AccessKit Click on its node) since
 /// the last frame: one of the layers listed last. Returns true when it did.
 pub fn take_presses(ui: &Ui, tab: &mut Tab) -> bool {
+    if !ui.is_enabled() || !ui.memory(|m| m.allows_interaction(ui.layer_id())) {
+        return false;
+    }
     let pressed: Vec<egui::accesskit::NodeId> = ui.input(|i| {
         i.events
             .iter()
@@ -113,81 +118,139 @@ pub fn take_presses(ui: &Ui, tab: &mut Tab) -> bool {
     picked.is_some()
 }
 
-/// Most layers looked at to work out the reach of a page's layers ([`reach`]); a page past it
-/// keeps the rest unknown, and the walk looks into those.
+/// Work per UI frame, including both entering a node and finishing its subtree.
+const REACH_STEPS: usize = 2048;
 const MAX_REACH: usize = 1_000_000;
 
-/// How far each visible layer of `page` and everything inside it reaches, in page space: its
-/// own bounds, joined with its children's unless it clips them. It does not depend on the view,
-/// so it is worked out once per file and page ([`reach_of`]) and lets the walk skip a subtree
-/// that does not reach the screen.
-fn reach(doc: &Document, page: Guid) -> HashMap<Guid, kurbo::Rect> {
-    let mut out = HashMap::new();
-    // (layer, its page transform once known, whether its children are done).
-    let mut stack: Vec<(Guid, Affine, bool)> = doc
-        .children(page)
-        .iter()
-        .map(|&g| (g, Affine::IDENTITY, false))
-        .collect();
-    let mut visits = 0;
-    while let Some((guid, transform, done)) = stack.pop() {
-        let Some(node) = doc.node(guid) else { continue };
-        if done {
-            let (w, h) = geom::size(&node.data);
-            let mut r = geom::transformed_bounds(transform, kurbo::Rect::new(0.0, 0.0, w, h));
-            if !geom::clips_content(&node.kind, &node.data) {
-                for c in doc.children(guid) {
-                    if let Some(c) = out.get(c) {
-                        r = r.union(*c);
-                    }
+fn rect_of(transform: Affine, data: &figstudio_fig::Val) -> Option<kurbo::Rect> {
+    let (w, h) = geom::size(data);
+    let r = geom::transformed_bounds(transform, kurbo::Rect::new(0.0, 0.0, w, h));
+    r.is_finite().then_some(r)
+}
+
+/// Owned by the tab, so closed documents cannot leave reach data for a new tab.
+#[derive(Debug, Default)]
+pub(crate) struct ReachCache {
+    doc: std::sync::Weak<Document>,
+    pages: HashMap<Guid, Reach>,
+}
+
+#[derive(Debug)]
+struct ReachFrame {
+    guid: Guid,
+    transform: kurbo::Affine,
+    next_child: usize,
+    bounds: Option<kurbo::Rect>,
+    clips: bool,
+}
+
+#[derive(Debug)]
+struct Reach {
+    bounds: Arc<HashMap<Guid, kurbo::Rect>>,
+    seen: HashSet<Guid>,
+    stack: Vec<ReachFrame>,
+    limited: bool,
+}
+
+impl Reach {
+    fn new(page: Guid) -> Self {
+        Self {
+            bounds: Arc::default(),
+            seen: HashSet::from([page]),
+            stack: vec![ReachFrame {
+                guid: page,
+                transform: kurbo::Affine::IDENTITY,
+                next_child: 0,
+                bounds: None,
+                clips: false,
+            }],
+            limited: false,
+        }
+    }
+
+    fn advance(&mut self, doc: &Document, steps: usize) {
+        for _ in 0..steps {
+            let Some(frame) = self.stack.last_mut() else {
+                break;
+            };
+            if let Some(&guid) = doc.children(frame.guid).get(frame.next_child) {
+                frame.next_child += 1;
+                if self.seen.len() >= MAX_REACH {
+                    self.limited = true;
+                    self.stack.clear();
+                    break;
+                }
+                if !self.seen.insert(guid) {
+                    continue;
+                }
+                let Some(node) = doc
+                    .node(guid)
+                    .filter(|n| n.data.flag("visible") != Some(false))
+                else {
+                    continue;
+                };
+                let transform = frame.transform * geom::affine(node.data.get("transform"));
+                self.stack.push(ReachFrame {
+                    guid,
+                    transform,
+                    next_child: 0,
+                    bounds: rect_of(transform, &node.data),
+                    clips: geom::clips_content(&node.kind, &node.data),
+                });
+            } else if let Some(done) = self.stack.pop()
+                && let Some(bounds) = done.bounds
+            {
+                Arc::make_mut(&mut self.bounds).insert(done.guid, bounds);
+                if let Some(parent) = self.stack.last_mut().filter(|f| !f.clips) {
+                    parent.bounds = Some(parent.bounds.map_or(bounds, |r| r.union(bounds)));
                 }
             }
-            out.insert(guid, r);
-            continue;
         }
-        visits += 1;
-        if visits > MAX_REACH {
-            break;
+        if self.stack.is_empty() {
+            self.seen = HashSet::new();
+            self.stack = Vec::new();
         }
-        if node.data.flag("visible") == Some(false) {
-            continue;
-        }
-        let transform = transform * geom::affine(node.data.get("transform"));
-        stack.push((guid, transform, true));
-        stack.extend(doc.children(guid).iter().map(|&g| (g, transform, false)));
     }
-    out
 }
 
-/// [`reach`] for the tab's file and page, kept in `ctx` while they stay.
-fn reach_of(ctx: &egui::Context, tab: &Tab) -> Arc<HashMap<Guid, kurbo::Rect>> {
-    type Kept = (usize, Guid, Arc<HashMap<Guid, kurbo::Rect>>);
-    let id = Id::new("canvas-a11y-reach");
-    let file = Arc::as_ptr(&tab.doc) as usize;
-    if let Some((f, p, r)) = ctx.data(|d| d.get_temp::<Kept>(id))
-        && (f, p) == (file, tab.page)
-    {
-        return r;
+/// Incremental reach, retained for each page until its tab or document is replaced.
+fn reach_of(tab: &mut Tab) -> Option<(Arc<HashMap<Guid, kurbo::Rect>>, bool)> {
+    let cache = &mut tab.a11y_reach;
+    let doc = Arc::downgrade(&tab.doc);
+    if !cache.doc.ptr_eq(&doc) {
+        cache.pages.clear();
+        cache.doc = doc;
     }
-    let r = Arc::new(reach(&tab.doc, tab.page));
-    ctx.data_mut(|d| d.insert_temp::<Kept>(id, (file, tab.page, Arc::clone(&r))));
-    r
+    let reach = cache
+        .pages
+        .entry(tab.page)
+        .or_insert_with(|| Reach::new(tab.page));
+    reach.advance(&tab.doc, REACH_STEPS);
+    reach
+        .stack
+        .is_empty()
+        .then(|| (Arc::clone(&reach.bounds), reach.limited))
 }
 
-/// The visible layers of the page shown in `screen`, depth first. A layer is listed where it
-/// shows: inside the screen and every clipping frame above it. A layer that does not clip its
-/// content is looked into even when it is off screen (its children may lie outside it); a
-/// clipping one that is off screen is not. At most [`MAX_NODES`] listed, [`MAX_VISITS`] visited.
-fn walk(
-    tab: &Tab,
-    reach: &HashMap<Guid, kurbo::Rect>,
-    origin: egui::Pos2,
-    screen: Rect,
-) -> Vec<Item> {
+#[cfg(test)]
+fn reach(doc: &Document, page: Guid) -> HashMap<Guid, kurbo::Rect> {
+    let mut reach = Reach::new(page);
+    while !reach.stack.is_empty() {
+        reach.advance(doc, REACH_STEPS);
+    }
+    Arc::unwrap_or_clone(reach.bounds)
+}
+
+#[derive(Debug, Default)]
+struct Walk {
+    items: Vec<Item>,
+    omitted: usize,
+    limited: bool,
+}
+
+/// Breadth-first: show the page's screens before filling the cap with their contents.
+fn walk(tab: &Tab, reach: &HashMap<Guid, kurbo::Rect>, origin: egui::Pos2, screen: Rect) -> Walk {
     let doc = &tab.doc;
-    // A layer's page bounds as `figstudio_render::node_bounds` gives them, from the transform
-    // carried down the walk (its own transform after its parent's) instead of climbing to the
-    // page again for every layer.
     let on_screen = |b: kurbo::Rect| {
         let a = tab
             .view
@@ -197,57 +260,57 @@ fn walk(
             .to_screen(origin, egui::pos2(b.x1 as f32, b.y1 as f32));
         Rect::from_two_pos(a, z)
     };
-    let rect_of = |transform: Affine, data: &figstudio_fig::Val| {
-        let (w, h) = geom::size(data);
-        let b = geom::transformed_bounds(transform, kurbo::Rect::new(0.0, 0.0, w, h));
-        let a = tab
-            .view
-            .to_screen(origin, egui::pos2(b.x0 as f32, b.y0 as f32));
-        let z = tab
-            .view
-            .to_screen(origin, egui::pos2(b.x1 as f32, b.y1 as f32));
-        let r = Rect::from_two_pos(a, z);
-        r.is_finite().then_some(r)
-    };
-    // (layer, the listed layer above it, the clip from the screen and clipping frames, its
-    // parent's page transform).
-    let mut stack: Vec<(Guid, Option<usize>, Rect, Affine)> = doc
-        .children(tab.page)
+    let mut out = Walk::default();
+    let roots = doc.children(tab.page);
+    let mut queue: std::collections::VecDeque<_> = roots
         .iter()
-        .rev()
+        .take(MAX_VISITS)
         .map(|&g| (g, None, screen, Affine::IDENTITY))
         .collect();
-    let mut items = Vec::new();
+    out.limited = roots.len() > MAX_VISITS;
+    let mut seen = HashSet::from([tab.page]);
     let mut visits = 0;
-    while let Some((guid, parent, clip, above)) = stack.pop() {
+    while let Some((guid, parent, clip, above)) = queue.pop_front() {
         visits += 1;
-        if visits > MAX_VISITS || items.len() >= MAX_NODES {
-            break;
-        }
-        let Some(node) = doc.node(guid) else { continue };
-        if node.data.flag("visible") == Some(false) {
+        if !seen.insert(guid) {
             continue;
         }
-        // Nothing of it or inside it reaches what shows: skip it all.
+        let Some(node) = doc
+            .node(guid)
+            .filter(|n| n.data.flag("visible") != Some(false))
+        else {
+            continue;
+        };
         if let Some(r) = reach.get(&guid)
             && !on_screen(*r).intersects(clip)
         {
             continue;
         }
         let transform = above * geom::affine(node.data.get("transform"));
-        let rect = rect_of(transform, &node.data);
+        let rect = rect_of(transform, &node.data)
+            .map(on_screen)
+            .filter(|r| r.is_finite());
         let shown = rect.map(|r| r.intersect(clip));
         let mut child_parent = parent;
         if let Some(shown) = shown
             && shown.width() >= MIN_SIDE
             && shown.height() >= MIN_SIDE
         {
-            child_parent = Some(items.len());
-            items.push(Item {
-                guid,
-                parent,
-                shown,
-            });
+            if out.items.len() < MAX_NODES {
+                child_parent = Some(out.items.len());
+                out.items.push(Item {
+                    guid,
+                    parent,
+                    shown,
+                });
+            } else {
+                out.omitted += 1;
+                // Count only one more batch, rather than walk a whole page for an exact total.
+                if out.omitted >= MAX_NODES {
+                    out.limited = true;
+                    break;
+                }
+            }
         }
         let child_clip = match rect {
             Some(r) if geom::clips_content(&node.kind, &node.data) => r.intersect(clip),
@@ -256,19 +319,42 @@ fn walk(
         if !child_clip.is_positive() {
             continue;
         }
-        stack.extend(
-            doc.children(guid)
-                .iter()
-                .rev()
-                .map(|&g| (g, child_parent, child_clip, transform)),
-        );
+        for &child in doc.children(guid) {
+            if visits + queue.len() >= MAX_VISITS {
+                out.limited = true;
+                break;
+            }
+            queue.push_back((child, child_parent, child_clip, transform));
+        }
     }
-    items
+    out
 }
 
-/// Adds the page's visible layers under the canvas node (`canvas` is its response).
-pub fn layers(ui: &mut Ui, canvas: &Response, tab: &Tab, origin: egui::Pos2) {
-    // Without a screen reader or agent egui keeps no tree: walk nothing.
+fn status(ui: &mut Ui, canvas: &Response, label: &str, loading: bool) {
+    let id = canvas.id.with("layer-list-status");
+    let _ = ui.new_child(
+        UiBuilder::new()
+            .id(id)
+            .max_rect(canvas.rect)
+            .accessibility_parent(canvas.id),
+    );
+    ui.ctx().accesskit_node_builder(id, |n| {
+        n.set_role(if loading {
+            Role::ProgressIndicator
+        } else {
+            Role::Label
+        });
+        n.set_label(label);
+        if !loading {
+            n.set_value(label);
+        }
+        n.set_live(egui::accesskit::Live::Polite);
+        n.set_author_id("canvas.layers.status");
+    });
+}
+
+/// Adds geometrically visible layers under the canvas node; does not test occlusion/alpha.
+pub fn layers(ui: &mut Ui, canvas: &Response, tab: &mut Tab, origin: egui::Pos2) {
     if ui.ctx().accesskit_node_builder(canvas.id, |_| ()).is_none() {
         return;
     }
@@ -278,19 +364,46 @@ pub fn layers(ui: &mut Ui, canvas: &Response, tab: &Tab, origin: egui::Pos2) {
         .ctx()
         .data(|d| d.get_temp::<Listing>(listing_id()))
         .filter(|l| l.key == key);
-    let items = match cached {
-        Some(l) => l.items,
+    let listing = match cached {
+        Some(l) => l,
         None => {
-            let reach = reach_of(ui.ctx(), tab);
-            let items = Arc::new(walk(tab, &reach, origin, screen));
+            let Some((reach, reach_limited)) = reach_of(tab) else {
+                ui.ctx().data_mut(|d| d.remove::<Listing>(listing_id()));
+                status(ui, canvas, "Preparing canvas layers…", true);
+                ui.ctx().request_repaint();
+                return;
+            };
+            let walked = walk(tab, &reach, origin, screen);
             let listing = Listing {
                 key,
-                items: Arc::clone(&items),
+                items: Arc::new(walked.items),
+                omitted: walked.omitted,
+                limited: walked.limited || reach_limited,
             };
-            ui.ctx().data_mut(|d| d.insert_temp(listing_id(), listing));
-            items
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(listing_id(), listing.clone()));
+            listing
         }
     };
+    if listing.omitted > 0 || listing.limited {
+        let qualifier = if listing.limited { "at least " } else { "" };
+        let limit = if listing.limited {
+            " Listing limit reached."
+        } else {
+            ""
+        };
+        status(
+            ui,
+            canvas,
+            &format!(
+                "{} layers listed; {qualifier}{} more visible layers not listed.{limit} Zoom in to list more detail.",
+                listing.items.len(),
+                listing.omitted
+            ),
+            false,
+        );
+    }
+    let items = &listing.items;
     let doc = &tab.doc;
     for item in items.iter() {
         let Some(node) = doc.node(item.guid) else {
@@ -300,8 +413,6 @@ pub fn layers(ui: &mut Ui, canvas: &Response, tab: &Tab, origin: egui::Pos2) {
         let parent = item
             .parent
             .map_or(canvas.id, |i| node_id(tab.id, items[i].guid));
-        // A child Ui gives the node its place in the tree (under `parent`); it allocates
-        // nothing, so it takes no pointer input from the canvas.
         let _ = ui.new_child(
             UiBuilder::new()
                 .id(id)
@@ -330,7 +441,13 @@ fn describe(
     data: &figstudio_fig::Val,
     selection: Option<Guid>,
 ) {
-    let name = doc.node(guid).map(display_name).unwrap_or_default();
+    let name: String = doc
+        .node(guid)
+        .map(display_name)
+        .unwrap_or_default()
+        .chars()
+        .take(MAX_TEXT)
+        .collect();
     let kind_name = kind.to_lowercase().replace('_', " ");
     let role = match kind {
         "TEXT" => Role::Label,
@@ -405,7 +522,7 @@ mod tests {
             no_clip(node(2, 1, "FRAME", "Off", -500.0, 100.0)),
             node(3, 2, "RECTANGLE", "Back on screen", 700.0, 100.0),
         ]);
-        let items = super::walk(&t, &super::reach(&t.doc, t.page), Pos2::ZERO, SCREEN);
+        let items = super::walk(&t, &super::reach(&t.doc, t.page), Pos2::ZERO, SCREEN).items;
         let listed: Vec<Guid> = items.iter().map(|i| i.guid).collect();
         assert_eq!(listed, [Guid(9, 3)], "only the child shows");
         assert_eq!(
@@ -424,7 +541,7 @@ mod tests {
             // All outside it: clipped away.
             node(4, 2, "RECTANGLE", "Gone", 400.0, 100.0),
         ]);
-        let items = super::walk(&t, &super::reach(&t.doc, t.page), Pos2::ZERO, SCREEN);
+        let items = super::walk(&t, &super::reach(&t.doc, t.page), Pos2::ZERO, SCREEN).items;
         let listed: Vec<Guid> = items.iter().map(|i| i.guid).collect();
         assert_eq!(listed, [Guid(9, 2), Guid(9, 3)]);
         let half = items[1].shown;
@@ -433,15 +550,29 @@ mod tests {
     }
 
     /// The listing `super::layers` keeps in `ctx` after one frame of the canvas.
-    fn listed_after_frame(ctx: &egui::Context, t: &Tab) -> std::sync::Arc<Vec<super::Item>> {
-        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let canvas = ui.allocate_rect(SCREEN, egui::Sense::click());
-            super::layers(ui, &canvas, t, Pos2::ZERO);
-        });
-        out.textures_delta.clear();
-        ctx.data(|d| d.get_temp::<super::Listing>(super::listing_id()))
-            .expect("a listing")
-            .items
+    fn listed_after_frame(ctx: &egui::Context, t: &mut Tab) -> std::sync::Arc<Vec<super::Item>> {
+        for _ in 0..(super::MAX_REACH * 2 / super::REACH_STEPS + 2) {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let canvas = ui.allocate_rect(SCREEN, egui::Sense::click());
+                super::layers(ui, &canvas, t, Pos2::ZERO);
+            });
+            out.textures_delta.clear();
+            if let Some(listing) = ctx.data(|d| d.get_temp::<super::Listing>(super::listing_id())) {
+                return listing.items;
+            }
+        }
+        panic!("reach did not finish");
+    }
+
+    fn ready_reach(
+        t: &mut Tab,
+    ) -> std::sync::Arc<std::collections::HashMap<Guid, figstudio_render::kurbo::Rect>> {
+        for _ in 0..(super::MAX_REACH * 2 / super::REACH_STEPS + 2) {
+            if let Some((bounds, _)) = super::reach_of(t) {
+                return bounds;
+            }
+        }
+        panic!("reach did not finish");
     }
 
     #[test]
@@ -452,15 +583,15 @@ mod tests {
         ]);
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
-        let first = listed_after_frame(&ctx, &t);
+        let first = listed_after_frame(&ctx, &mut t);
         assert_eq!(first.len(), 1);
-        let again = listed_after_frame(&ctx, &t);
+        let again = listed_after_frame(&ctx, &mut t);
         assert!(
             std::sync::Arc::ptr_eq(&first, &again),
             "walked again for the same view"
         );
         t.view.pan.x += 10.0;
-        let moved = listed_after_frame(&ctx, &t);
+        let moved = listed_after_frame(&ctx, &mut t);
         assert!(
             !std::sync::Arc::ptr_eq(&first, &moved),
             "kept a stale listing"
@@ -469,15 +600,217 @@ mod tests {
     }
 
     #[test]
-    fn without_accesskit_nothing_is_walked() {
+    fn the_cap_does_not_hide_top_level_frames_behind_the_first_frames_children() {
+        let mut nodes = vec![node(1, 0, "CANVAS", "page", 0.0, 0.0)];
+        let mut frames = Vec::new();
+        for i in 0..50 {
+            let frame = 2 + i * 101;
+            frames.push(Guid(9, frame));
+            nodes.push(node(frame, 1, "FRAME", "Screen", 0.0, 200.0));
+            for j in 1..=100 {
+                nodes.push(node(frame + j, frame, "RECTANGLE", "Layer", 0.0, 200.0));
+            }
+        }
+        let mut t = tab(nodes);
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let items = listed_after_frame(&ctx, &mut t);
+        assert_eq!(items.len(), super::MAX_NODES);
+        let listing = ctx
+            .data(|d| d.get_temp::<super::Listing>(super::listing_id()))
+            .expect("listing");
+        assert_eq!(listing.omitted, super::MAX_NODES);
+        assert!(listing.limited);
+        for frame in frames {
+            assert!(items.iter().any(|i| i.guid == frame), "missing {frame:?}");
+        }
+    }
+
+    #[test]
+    fn reach_cache_is_not_shared_by_tabs_even_when_they_share_a_document() {
+        let mut a = tab(vec![
+            node(1, 0, "CANVAS", "page", 0.0, 0.0),
+            node(2, 1, "FRAME", "Frame", 0.0, 200.0),
+        ]);
+        let mut b = tab(Vec::new());
+        b.id = a.id + 1;
+        b.doc = std::sync::Arc::clone(&a.doc);
+        let first = ready_reach(&mut a);
+        let second = ready_reach(&mut b);
+        assert!(
+            !std::sync::Arc::ptr_eq(&first, &second),
+            "reach belongs to a tab, not an address"
+        );
+    }
+
+    #[test]
+    fn layer_names_are_bounded_like_text_values() {
+        let name = "界".repeat(super::MAX_TEXT + 1);
         let t = tab(vec![
+            node(1, 0, "CANVAS", "page", 0.0, 0.0),
+            node(2, 1, "TEXT", &name, 0.0, 0.0),
+        ]);
+        let node = t.doc.node(Guid(9, 2)).expect("layer");
+        let mut described = egui::accesskit::Node::new(egui::accesskit::Role::Label);
+        super::describe(
+            &mut described,
+            &t.doc,
+            node.id,
+            &node.kind,
+            &node.data,
+            None,
+        );
+        assert_eq!(
+            described.label().expect("name").chars().count(),
+            super::MAX_TEXT
+        );
+    }
+
+    #[test]
+    fn reach_is_bounded_per_frame_and_resumes_until_ready() {
+        let mut nodes = vec![node(1, 0, "CANVAS", "page", 0.0, 0.0)];
+        for n in 2..(super::REACH_STEPS as u32 + 3) {
+            nodes.push(node(n, 1, "RECTANGLE", "Layer", 100.0, 200.0));
+        }
+        let mut t = tab(nodes);
+        assert!(
+            super::reach_of(&mut t).is_none(),
+            "a large page must not finish in one frame"
+        );
+        let pending = &t.a11y_reach.pages[&t.page];
+        assert!(pending.seen.len() <= super::REACH_STEPS + 1);
+        let ready = ready_reach(&mut t);
+        let again = ready_reach(&mut t);
+        assert!(std::sync::Arc::ptr_eq(&ready, &again));
+    }
+
+    #[test]
+    fn listings_change_with_the_page_and_document_but_page_reach_is_retained() {
+        let mut t = tab(vec![
+            node(1, 0, "CANVAS", "First page", 0.0, 0.0),
+            node(2, 1, "RECTANGLE", "First layer", 100.0, 200.0),
+            node(3, 0, "CANVAS", "Second page", 0.0, 0.0),
+            node(4, 3, "RECTANGLE", "Second layer", 300.0, 200.0),
+        ]);
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let first = listed_after_frame(&ctx, &mut t);
+        let first_reach = ready_reach(&mut t);
+        assert_eq!(first[0].guid, Guid(9, 2));
+        t.page = Guid(9, 3);
+        let second = listed_after_frame(&ctx, &mut t);
+        assert_eq!(second[0].guid, Guid(9, 4));
+        assert!(!std::sync::Arc::ptr_eq(&first, &second));
+        t.page = Guid(9, 1);
+        assert!(std::sync::Arc::ptr_eq(&first_reach, &ready_reach(&mut t)));
+        let old_doc = std::sync::Arc::downgrade(&t.doc);
+        t.doc = std::sync::Arc::new(document(vec![
+            node(1, 0, "CANVAS", "Replacement page", 0.0, 0.0),
+            node(2, 1, "RECTANGLE", "Replacement layer", 1200.0, 200.0),
+        ]));
+        t.view.pan.x = -800.0;
+        let replacement = listed_after_frame(&ctx, &mut t);
+        assert_eq!(replacement.len(), 1, "replacement uses its own reach");
+        assert_eq!(replacement[0].guid, Guid(9, 2));
+        assert_eq!(replacement[0].shown.min.x, 400.0);
+        assert!(
+            old_doc.upgrade().is_none(),
+            "cache must not keep a closed document alive"
+        );
+        assert_eq!(t.a11y_reach.pages.len(), 1);
+    }
+
+    #[test]
+    fn omission_counting_stops_after_one_additional_batch() {
+        let mut nodes = vec![node(1, 0, "CANVAS", "page", 0.0, 0.0)];
+        for n in 2..(super::MAX_VISITS as u32 + 3) {
+            nodes.push(node(n, 1, "RECTANGLE", "Layer", 0.0, 200.0));
+        }
+        let t = tab(nodes);
+        let listed = super::walk(&t, &std::collections::HashMap::new(), Pos2::ZERO, SCREEN);
+        assert_eq!(listed.items.len(), super::MAX_NODES);
+        assert_eq!(listed.omitted, super::MAX_NODES);
+        assert!(listed.limited);
+    }
+
+    #[test]
+    fn the_visit_limit_marks_unexamined_layers_even_if_none_were_listed() {
+        let mut nodes = vec![node(1, 0, "CANVAS", "page", 0.0, 0.0)];
+        for n in 2..(super::MAX_VISITS as u32 + 2) {
+            nodes.push(node(n, 1, "RECTANGLE", "Off screen", -1000.0, 200.0));
+        }
+        let mut beyond = node(
+            super::MAX_VISITS as u32 + 2,
+            1,
+            "RECTANGLE",
+            "Beyond limit",
+            0.0,
+            200.0,
+        );
+        beyond.position = "zzzz".to_owned();
+        nodes.push(beyond);
+        let t = tab(nodes);
+        let listed = super::walk(&t, &std::collections::HashMap::new(), Pos2::ZERO, SCREEN);
+        assert!(listed.items.is_empty());
+        assert_eq!(listed.omitted, 0);
+        assert!(listed.limited);
+    }
+
+    #[test]
+    fn the_tree_reports_omissions_and_pending_indexing() {
+        fn frame_status(ctx: &egui::Context, t: &mut Tab) -> egui::accesskit::Node {
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let canvas = ui.allocate_rect(SCREEN, egui::Sense::click());
+                super::layers(ui, &canvas, t, Pos2::ZERO);
+            });
+            output
+                .platform_output
+                .accesskit_update
+                .expect("tree")
+                .nodes
+                .into_iter()
+                .map(|(_, n)| n)
+                .find(|n| n.author_id() == Some("canvas.layers.status"))
+                .expect("listing status")
+        }
+        let nodes = |count: usize| {
+            let mut nodes = vec![node(1, 0, "CANVAS", "page", 0.0, 0.0)];
+            for n in 2..(count as u32 + 2) {
+                nodes.push(node(n, 1, "RECTANGLE", "Layer", 0.0, 200.0));
+            }
+            nodes
+        };
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut t = tab(nodes(super::MAX_NODES + 101));
+        let omitted = frame_status(&ctx, &mut t);
+        assert!(
+            omitted
+                .value()
+                .expect("count")
+                .contains("101 more visible layers not listed")
+        );
+        t.doc = std::sync::Arc::new(document(nodes(super::REACH_STEPS + 1)));
+        let pending = frame_status(&ctx, &mut t);
+        assert_eq!(pending.role(), egui::accesskit::Role::ProgressIndicator);
+        assert_eq!(pending.label(), Some("Preparing canvas layers…"));
+        assert!(
+            ctx.data(|d| d.get_temp::<super::Listing>(super::listing_id()))
+                .is_none(),
+            "no stale listing while a replacement is indexing"
+        );
+    }
+
+    #[test]
+    fn without_accesskit_nothing_is_walked() {
+        let mut t = tab(vec![
             node(1, 0, "CANVAS", "page", 0.0, 0.0),
             node(2, 1, "FRAME", "Frame", 100.0, 200.0),
         ]);
         let ctx = egui::Context::default();
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             let canvas = ui.allocate_rect(SCREEN, egui::Sense::click());
-            super::layers(ui, &canvas, &t, Pos2::ZERO);
+            super::layers(ui, &canvas, &mut t, Pos2::ZERO);
         });
         out.textures_delta.clear();
         assert!(
@@ -509,11 +842,23 @@ mod tests {
         crate::canvas::fit(&mut t, screen);
         let fit = t.view;
         let started = std::time::Instant::now();
-        let reach = super::reach(&t.doc, t.page);
+        let mut indexing = super::Reach::new(t.page);
+        let mut chunks = Vec::new();
+        while !indexing.stack.is_empty() {
+            let chunk = std::time::Instant::now();
+            indexing.advance(&t.doc, super::REACH_STEPS);
+            chunks.push(chunk.elapsed());
+        }
+        let elapsed = started.elapsed();
+        chunks.sort();
+        let reach = indexing.bounds;
         println!(
-            "reach of {} layers: {:?} (once per file and page)",
+            "reach of {} layers: {elapsed:?}, {} UI frames, {} steps/frame; median {:?}, max {:?}",
             reach.len(),
-            started.elapsed()
+            chunks.len(),
+            super::REACH_STEPS,
+            chunks[chunks.len() / 2],
+            chunks[chunks.len() - 1]
         );
         for (what, zoom) in [("fit", 1.0), ("4x fit", 4.0), ("40x fit", 40.0)] {
             t.view = fit;
@@ -522,7 +867,7 @@ mod tests {
             let mut listed = 0;
             for _ in 0..20 {
                 let started = std::time::Instant::now();
-                listed = super::walk(&t, &reach, Pos2::ZERO, screen).len();
+                listed = super::walk(&t, &reach, Pos2::ZERO, screen).items.len();
                 times.push(started.elapsed());
             }
             times.sort();
@@ -541,6 +886,10 @@ mod tests {
             node(2, 1, "FRAME", "Off", -500.0, 100.0),
             node(3, 2, "RECTANGLE", "Would be on screen", 700.0, 100.0),
         ]);
-        assert!(super::walk(&t, &super::reach(&t.doc, t.page), Pos2::ZERO, SCREEN).is_empty());
+        assert!(
+            super::walk(&t, &super::reach(&t.doc, t.page), Pos2::ZERO, SCREEN)
+                .items
+                .is_empty()
+        );
     }
 }

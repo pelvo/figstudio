@@ -776,10 +776,6 @@ impl App {
                 ok
             }
             Target::Open(path) => {
-                if done.is_none() {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy();
-                    self.toast(ctx, format!("Opening {name}\u{2026}"), false);
-                }
                 self.link.waiting.push(Waiting {
                     path: path.clone(),
                     node,

@@ -1050,12 +1050,24 @@ The desktop app builds eframe with `accesskit`. Screen readers read the tree egu
 - A menu goes through `chrome::context_menu` or `a11y::submenu` so it gets a Menu role and a
   name.
 - New text colours pass the `theme.rs` contrast tests (4.5:1).
-- Every control gets an automation id with `a11y::author` (`button.<slug>`, `menu.<slug>`,
+- Every control gets an automation id with `a11y::author` (`button.<fixed id>`, `menu.<slug>`,
   `settings.<slug>`; ids built from node ids for layers). Pick one that does not change with
   the label. Menu items use `a11y::menu_button`.
 - A message that appears on its own (toast, error) calls `a11y::announce`.
-- Canvas layers come from `canvas_a11y.rs`, capped by `MAX_NODES` and `MAX_VISITS`. It walks
-  nothing while AccessKit is off.
+- Canvas layers come from `canvas_a11y.rs`, capped by `MAX_NODES` and `MAX_VISITS`. List
+  breadth-first so screens precede their contents, and announce the omitted count (a lower
+  bound when counting or visiting is capped; count at most 400 extra visible layers). Reach
+  indexing advances in bounded steps per UI frame and is kept per tab/page, with a weak
+  document identity; no work runs with AccessKit off. Layer presses respect the same modal
+  interaction gate as pointer input.
+- The local accessibility tree contains document layer names/text, file names and fields
+  such as the export path. Apps permitted to use macOS Accessibility, Windows UI Automation
+  or Linux AT-SPI can read it. Layer names and text values are limited to 300 Unicode
+  characters each. This is local OS accessibility, not the MCP relay, logging or browser
+  speech. Recent-file automation ids use a per-process randomized path hash, not raw paths.
+- Canvas visibility means viewport and ancestor clipping bounds, not composited occlusion
+  or opacity; a covered or transparent layer may still be listed. Bounds follow the drawn
+  view during zoom animation, not the target view.
 
 `ui_a11y_tests.rs` catches a missing name or focus ring in the states it visits. Add your
 new state there.

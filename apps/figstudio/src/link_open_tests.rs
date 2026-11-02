@@ -15,6 +15,25 @@ use crate::ui_tests::{fixture, harness, wait};
 
 const SLUG_LINK: &str = "https://www.figma.com/design/KEY/My-Design?node-id=1-5&t=abc-4";
 
+#[test]
+fn a_link_open_uses_the_file_progress_without_a_second_toast() {
+    let mut h = empty_app();
+    let ctx = h.ctx.clone();
+    let path = fixture("structure.fig");
+    h.state_mut().go_to(
+        &ctx,
+        Target::Open(path.clone()),
+        Some(Guid(1, 5)),
+        None,
+        web_time::Instant::now(),
+    );
+    assert!(h.state().loading.iter().any(|p| p == &path));
+    assert!(
+        h.state().toasts.is_empty(),
+        "the loading indicator already announces this open"
+    );
+}
+
 fn figma(name: &str, node: &str) -> String {
     format!("https://www.figma.com/design/KEY/{name}?node-id={node}")
 }

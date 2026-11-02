@@ -298,8 +298,8 @@ pub fn show(
     crate::canvas_text::overlay(&painter, tab, origin);
     marquee::paint(&painter, tab, origin);
     crate::icons::focus_ring(ui, &response, rect, radius as u8);
-    tab.view = target;
     crate::canvas_a11y::layers(ui, &response, tab, origin);
+    tab.view = target;
 
     let cursor = match tool {
         _ if panning => egui::CursorIcon::Grab,
