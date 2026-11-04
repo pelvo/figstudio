@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use figstudio_fig::{Document, Guid};
 use figstudio_render::Stats;
+use figstudio_render::color::{AlphaColor, Srgb};
+use figstudio_render::prototype::{self, Player, Screen, Step};
 
 /// Page-to-screen mapping: `screen = canvas.min + pan + page * zoom` (in points).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -90,6 +92,18 @@ pub struct Tab {
     /// matches fade in).
     pub find_fade: f32,
     pub find_search: u64,
+    /// Prototype Preview, while it runs: the canvas shows its screen alone.
+    pub preview: Option<Preview>,
+}
+
+/// Prototype Preview: the screens visited and the links of the one shown.
+pub struct Preview {
+    pub player: Player,
+    pub screen: Screen,
+    /// The page and view before Preview started: the view comes back when it stops there.
+    pub canvas: (Guid, View),
+    /// When a click hit no link (`egui` input time): the links flash, as in Figma.
+    pub missed: Option<f64>,
 }
 
 impl Tab {
@@ -152,6 +166,7 @@ impl Tab {
             find_current: None,
             find_fade: 0.0,
             find_search: 0,
+            preview: None,
         }
     }
 
@@ -233,6 +248,88 @@ impl Tab {
             self.hover = None;
             self.fit_pending = true;
         }
+    }
+
+    /// What the canvas draws: the Preview screen, else the page.
+    pub fn root(&self) -> Guid {
+        self.preview
+            .as_ref()
+            .map_or(self.page, |p| p.player.screen())
+    }
+
+    /// The colour behind [`Tab::root`].
+    pub fn background(&self) -> AlphaColor<Srgb> {
+        if self.preview.is_some() {
+            prototype::background(&self.doc, self.page)
+        } else {
+            figstudio_render::page_background(&self.doc, self.page)
+        }
+    }
+
+    /// Starts Preview at the selection's screen, else the page's first flow (see
+    /// [`prototype::start`]); `false` when there is no frame to show.
+    pub fn start_preview(&mut self) -> bool {
+        let Some(start) = prototype::start(&self.doc, self.page, self.selection) else {
+            return false;
+        };
+        let canvas = (self.page, self.view);
+        self.show_screen(start);
+        self.select(None);
+        self.preview = Some(Preview {
+            player: Player::new(start),
+            screen: self.read_screen(start),
+            canvas,
+            missed: None,
+        });
+        true
+    }
+
+    pub fn stop_preview(&mut self) {
+        if let Some(preview) = self.preview.take() {
+            self.fit_node = None;
+            match preview.canvas {
+                (page, view) if page == self.page => self.view = view,
+                _ => self.fit_pending = true,
+            }
+        }
+    }
+
+    /// Follows a link (or Back) in Preview, or restarts with `None`; returns whether the
+    /// screen changed.
+    pub fn preview_go(&mut self, step: Option<Step>) -> bool {
+        let Some(preview) = self.preview.as_mut() else {
+            return false;
+        };
+        let moved = match step {
+            Some(step) => preview.player.go(step),
+            None => preview.player.restart(),
+        };
+        if moved {
+            let screen = preview.player.screen();
+            self.show_screen(screen);
+            let links = self.read_screen(screen);
+            if let Some(preview) = self.preview.as_mut() {
+                preview.screen = links;
+                preview.missed = None;
+            }
+        }
+        moved
+    }
+
+    /// Goes to the screen's page and fits it into view on the next draw.
+    fn show_screen(&mut self, screen: Guid) {
+        if let Some(page) = self.doc.page_of(screen) {
+            self.set_page(page);
+        }
+        self.fit_node = Some(screen);
+    }
+
+    // shortcut: read on the UI thread with the pick renderer (about 0.1 s for a screen with
+    // hundreds of instance links in a 100k-node file); move to the worker if that shows.
+    fn read_screen(&self, frame: Guid) -> Screen {
+        self.pick_cache.with(&self.doc, |renderer, _| {
+            Screen::read(renderer, &self.doc, frame)
+        })
     }
 
     /// Reveal `node` (MCP `reveal_node`, Open Figma link): switch to it when it is a page, else

@@ -166,7 +166,7 @@ impl Tiles {
     ) {
         // Drawn: what `tab.view` shows (an ease in progress, maybe). Planned and requested:
         // the `target` view it is heading for.
-        let (doc, page, view) = (tab.doc.instance, tab.page, tab.view);
+        let (doc, page, view) = (tab.doc.instance, tab.root(), tab.view);
         let visible = tiles::visible_page(view.zoom, view.pan.into(), rect.size().into());
         let planned = tiles::visible_page(target.zoom, target.pan.into(), rect.size().into());
         let range = tiles::plan(
@@ -219,7 +219,7 @@ impl Tiles {
             doc: tab.doc.clone(),
             source: tab.source.clone(),
             root: page,
-            background: Some(figstudio_render::page_background(&tab.doc, page)),
+            background: Some(tab.background()),
             images,
             // An empty batch still goes out: it cancels the tiles of the previous one.
             tiles: batch.iter().copied().collect(),

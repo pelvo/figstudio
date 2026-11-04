@@ -1,4 +1,7 @@
 //! figstudio — desktop and browser app for Figma `.fig` local copies.
+// Proving `wgpu::Texture: Send` (the render worker sends GPU tiles to the UI thread) walks
+// wgpu's internal types past the default depth of 128; newer compilers reject that.
+#![recursion_limit = "256"]
 
 mod a11y;
 mod anim;
@@ -77,6 +80,7 @@ mod onboarding;
 mod panels;
 mod pick;
 mod pick_cache;
+mod preview;
 mod recents;
 #[cfg(not(target_arch = "wasm32"))]
 mod recents_disk;
@@ -1145,7 +1149,13 @@ impl App {
         // Escape closes the find bar first, also when its field no longer has focus (a
         // click on the canvas took it); the next one clears the selection.
         if !quiet && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
-            if self.find.is_open() {
+            if let Some(tab) = self
+                .tabs
+                .get_mut(self.active)
+                .filter(|t| t.preview.is_some())
+            {
+                tab.stop_preview();
+            } else if self.find.is_open() {
                 self.find.hide();
             } else {
                 self.apply(menu::Action::ClearSelection, ctx);
@@ -1165,7 +1175,8 @@ impl App {
                 r#"{{"tabs":{},"loading":{},"page":{},"pages":{},"zoom":{},"drawn":{},"#,
                 r#""culled":{},"images_loading":{},"images_missing":{},"render_ms":{:.1},"#,
                 r#""image_cache_bytes":{},"images_arrived":{},"busy":{},"errors":{},"#,
-                r#""cjk_font":"{:?}","cjk_variant":"{}","renderer":"{}","gpu_fallback_tiles":{}}}"#
+                r#""cjk_font":"{:?}","cjk_variant":"{}","renderer":"{}","gpu_fallback_tiles":{},"#,
+                r#""preview":{}}}"#
             ),
             self.tabs.len(),
             self.loading.len(),
@@ -1186,6 +1197,7 @@ impl App {
             // A fixed name ("GPU (WebGPU)", "CPU"): no device or driver names.
             self.renderer,
             s.map_or(0, |s| s.gpu_fallback_tiles),
+            tab.is_some_and(|t| t.preview.is_some()),
         )
     }
 }

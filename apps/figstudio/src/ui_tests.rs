@@ -53,7 +53,7 @@ mod inner_nested;
 #[path = "ui_onboarding_tests.rs"]
 mod onboarding;
 #[path = "ui_pick_tests.rs"]
-mod pick;
+pub(crate) mod pick;
 #[path = "ui_pick_bench.rs"]
 mod pick_bench;
 #[path = "ui_pick_cache_tests.rs"]
@@ -62,6 +62,8 @@ mod pick_cache;
 mod pick_drag;
 #[path = "ui_pick_order_tests.rs"]
 mod pick_order;
+#[path = "ui_preview_tests.rs"]
+mod preview;
 #[path = "ui_recents_tests.rs"]
 mod recents;
 #[path = "ui_text_drag_tests.rs"]

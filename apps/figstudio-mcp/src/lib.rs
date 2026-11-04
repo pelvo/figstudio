@@ -72,6 +72,7 @@ impl FigstudioServer {
                 + Self::metadata_router()
                 + Self::screenshot_router()
                 + Self::region_router()
+                + Self::prototype_router()
                 + Self::variables_router()
                 + Self::design_router()
                 + Self::assets_router()

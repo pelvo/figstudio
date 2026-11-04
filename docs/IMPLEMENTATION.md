@@ -890,6 +890,36 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   while loading; answered searches and loads staying quiet),
   `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
+### Prototype Preview (`crates/render/src/prototype.rs`, `apps/figstudio/src/preview.rs`)
+
+One model serves every surface. `prototype::flows` lists the flow starting points
+(`prototypeStartingPoint` on top-level frames, in page then flow order). `Screen::read`
+lists a frame's links: the renderer walks the frame once in draw order without drawing
+(`Ctx::inspect = Some(Inspect::Links)`, the same no-draw walk `emoji_counts` uses with
+`Inspect::Emoji`) and records every visible layer with `prototypeInteractions`, so links
+inside instances get their `I…;…` path, overrides, constraints and visibility exactly as
+drawn. An instance without its own interactions uses its component's. Each `Link` keeps
+Figma's trigger, action and transition names; `Link::step` is the only place that decides
+what plays (`ON_CLICK` + `NAVIGATE` to a frame in the file, `ON_CLICK` + `BACK`). Every other
+link stays in the list with `step: None` and is counted (`Screen::skipped`). `Player` is the
+history stack; `reachable` walks played links breadth first.
+
+- App and browser: `Tab::preview` holds the player and the shown screen's links. `Tab::root()`
+  is the screen while previewing, so the tile pipeline (keys, recordings, GPU, crossfade)
+  draws the screen alone with no other change; `Tab::background()` is the page's prototype
+  background. `canvas::show` hands the frame to `preview::show` (fit, scroll, hit test,
+  link flash) and `chrome.rs` swaps the tool and status pills for the preview bar. Keys:
+  ⇧Space (`Binding::Preview`) and Esc toggle, ← / Backspace back, R restart.
+  `figstudioStatus` reports `preview`.
+- CLI: `figstudio-cli prototype` prints flows, the reachable screens and their links, and
+  renders them with `-o`.
+- MCP: `get_prototype` (`mcp-core/src/prototype_tool.rs`) returns the same as JSON, natively
+  and through the browser bridge.
+
+Screens are read on the UI thread with the pick renderer: about 0.1 s for a screen with
+hundreds of instance links in a 100k-node file. Content of a non-clipping frame that
+overflows it still shows in Preview.
+
 ### The browser app (`apps/figstudio` on wasm32)
 
 Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared memory) into

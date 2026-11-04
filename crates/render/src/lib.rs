@@ -34,6 +34,7 @@ pub mod images;
 mod layout;
 mod network;
 pub mod paint;
+pub mod prototype;
 mod record;
 #[cfg(feature = "parallel")]
 mod replay;
@@ -337,8 +338,21 @@ struct Ctx<'a> {
     /// How far (output pixels) the open filter layers of enclosing nodes spread what is drawn
     /// now: culling grows each node by it, so a blur still reaching the output keeps it.
     inherited_reach: f64,
-    /// Metadata walk: resolve visible stored emoji, but issue no drawing commands or culling.
-    emoji_only: bool,
+    /// Metadata walk: issue no drawing commands or culling, only collect what it names.
+    inspect: Option<Inspect>,
+    /// The document instance enclosing the node being walked (inspect walks only).
+    outer: Option<Guid>,
+    /// Layers with prototype interactions an [`Inspect::Links`] walk found, back to front.
+    found: Vec<prototype::Found>,
+}
+
+/// What a metadata walk collects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Inspect {
+    /// Visible stored emoji, into `Stats`.
+    Emoji,
+    /// Layers with prototype interactions, into `Ctx::found`.
+    Links,
 }
 
 impl Renderer {
@@ -678,7 +692,9 @@ impl Renderer {
             exhausted: false,
             screen,
             inherited_reach: 0.0,
-            emoji_only: false,
+            inspect: None,
+            outer: None,
+            found: Vec::new(),
         }
     }
     /// Counts visible stored emoji on every page using the draw walk's overrides, truncation
@@ -690,7 +706,7 @@ impl Renderer {
         // No Vello drawing in metadata mode; the platform source can still rasterize.
         let mut canvas = RenderContext::new(1, 1);
         let mut ctx = self.context(doc, &mut canvas, Rect::ZERO, MAX_RENDER_WORK, 0);
-        ctx.emoji_only = true;
+        ctx.inspect = Some(Inspect::Emoji);
         for page in &doc.pages {
             if let Some(node) = doc.node(*page) {
                 ctx.draw_children(node, &node.data, Affine::IDENTITY, None);
@@ -1170,13 +1186,21 @@ impl Ctx<'_> {
         }
         let kind = node.kind.as_str();
         let world = parent * affine(data.get("transform"));
-        if self.emoji_only {
+        if let Some(inspect) = self.inspect {
+            if inspect == Inspect::Links {
+                self.found_link(node, path, world, data);
+            }
             if kind == "TEXT" {
-                if !stale_glyphs {
+                if inspect == Inspect::Emoji && !stale_glyphs {
                     self.emojis(data, world);
                 }
             } else if kind == "INSTANCE" {
+                let outer = self.outer;
+                if path.is_none() {
+                    self.outer = Some(node.id);
+                }
                 self.draw_instance(data, world, path);
+                self.outer = outer;
             } else if kind == "CONNECTOR" {
                 self.draw_connector(node, world);
             } else {
@@ -1593,7 +1617,7 @@ impl Ctx<'_> {
             let (child_path, (child_data, stale_glyphs, approximate_ink)) =
                 self.child_patch(node, data, child, path);
             if child_data.flag("mask") == Some(true) && visible(&child_data) {
-                if self.emoji_only {
+                if self.inspect.is_some() {
                     continue;
                 }
                 if !self.charge_work() {

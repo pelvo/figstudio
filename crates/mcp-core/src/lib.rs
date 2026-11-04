@@ -32,6 +32,8 @@ pub mod node_id;
 pub mod output;
 /// Offline design-system prompt guidance shared by transports.
 pub mod prompts;
+/// `get_prototype`: flows, screens and links, as JSON.
+pub mod prototype_tool;
 /// The nodes a page rectangle touches.
 pub mod region;
 /// PNG renders of a page rectangle.

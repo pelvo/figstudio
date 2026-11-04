@@ -161,7 +161,7 @@ async fn stdio_discovers_and_calls_tools() {
             "standalone names live mode"
         );
         let tools = client.list_all_tools().await.unwrap();
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 17);
         for name in [
             "compare_files",
             "compare_page",
@@ -178,6 +178,7 @@ async fn stdio_discovers_and_calls_tools() {
             "add_code_connect_map",
             "search_design_system",
             "get_libraries",
+            "get_prototype",
         ] {
             assert!(tools.iter().any(|tool| tool.name == name));
         }
