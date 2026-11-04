@@ -109,17 +109,22 @@ test("the test hold is capped", { skip: process.platform === "win32", timeout: 1
   const fake = join(dir, "fake-mcp");
   writeFileSync(fake, "#!/bin/sh\nexit 0\n");
   chmodSync(fake, 0o755);
-  const start = Date.now();
-  const res = spawnSync(process.execPath, [launcher], {
-    env: { ...process.env, FIGSTUDIO_MCP_BINARY: fake, FIGSTUDIO_MCP_TEST_HOLD_AFTER_SPAWN_MS: "5000" },
-    timeout: 8_000,
-  });
-  const ms = Date.now() - start;
-  assert.equal(res.status, 0);
+  const run = (hold) => {
+    const start = Date.now();
+    const res = spawnSync(process.execPath, [launcher], {
+      env: { ...process.env, FIGSTUDIO_MCP_BINARY: fake, FIGSTUDIO_MCP_TEST_HOLD_AFTER_SPAWN_MS: hold },
+      timeout: 8_000,
+    });
+    assert.equal(res.status, 0);
+    return Date.now() - start;
+  };
+  // Node's start-up (25 ms on one machine, 600 ms on a loaded one) is measured, not guessed.
+  const startup = run("0");
+  const ms = run("5000");
   assert.equal(TEST_HOLD_MAX_MS, 300, "the signal tests' hold");
-  // The hold runs (5000 asked), and ends under a fixed 700 ms ceiling: the 300 ms cap plus
-  // slack for process start-up (about 25 ms). The ceiling does not follow the export.
-  assert.ok(ms >= 300 && ms < 300 + 400, `held for the cap (${ms} ms)`);
+  // The hold runs (5000 asked), and adds less than a fixed 700 ms ceiling to start-up: the
+  // 300 ms cap plus slack. The ceiling does not follow the export.
+  assert.ok(ms >= 300 && ms - startup < 300 + 400, `held for the cap (${ms} ms, start-up ${startup} ms)`);
 });
 
 const DIES = "#!/bin/sh\necho ready $$\nexec sleep 30\n";
