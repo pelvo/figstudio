@@ -55,3 +55,14 @@ title: Cut decoded document memory
   (`crates/render/src/variables_tests.rs`, seen failing with the single pass).
 - Not verified: the desktop app by hand; a full compare of two large files timed end to end.
 
+### 2026-11-05T020000Z memory-footprint
+- What changed and how it was checked: compare timed end to end (each large file compared
+  with itself, `--no-render`; CPU time, as the machine's load swung wall time by ±40%). The
+  lazy fields first cost compare +19% CPU on one file (every field decoded in both
+  documents). Now documents with an equal schema share one decoder and equal bytes compare
+  equal undecoded: compare goes from 5.4 s / 4.4 GB to 4.0 s / 2.6 GB and from 8.1 s / 6.5 GB
+  to 5.4 s / 3.8 GB (main -> branch, CPU time / peak). Test
+  `equal_documents_compare_equal_without_decoding_their_lazy_fields`, seen failing without
+  either half. check.sh passed.
+- Not verified: the desktop app by hand (next).
+
