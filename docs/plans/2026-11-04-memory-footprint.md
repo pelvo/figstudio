@@ -64,5 +64,16 @@ title: Cut decoded document memory
   to 5.4 s / 3.8 GB (main -> branch, CPU time / peak). Test
   `equal_documents_compare_equal_without_decoding_their_lazy_fields`, seen failing without
   either half. check.sh passed.
-- Not verified: the desktop app by hand (next).
+- Not verified: (the desktop app, see the next entry).
+
+### 2026-11-05T083000Z memory-footprint
+- What changed and how it was checked: the desktop app from this branch, run by hand as a
+  separate instance (own HOME, own bundle id) with the same two large files the installed
+  0.2.0 app had open. Both opened (the larger in 3.5 s); seven pages switched and drew,
+  instances included; a canvas click and a layers-panel click selected a component and an
+  instance, the instance showing its main component and overrides; ⌘L search found and
+  opened a text layer inside an instance; the layers filter worked. No errors in its log.
+  Footprint with both files: 3.0 GB after opening, 3.5 GB after the pages, search and
+  selections, against 5.8 GB for the installed 0.2.0 app with the same two files.
+- Not verified: the MCP server and the browser build by hand.
 
