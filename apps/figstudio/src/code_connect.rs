@@ -239,14 +239,8 @@ fn desktop_section(ui: &mut Ui, tab: &Tab, node: &Node, component: Guid, faint: 
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::hover());
     let tint = theme::space_tint(tab.colour(), theme::of(ui).dark);
-    let connect = crate::chrome::accent_button(
-        ui,
-        rect,
-        ("code-connect", tab.id, component),
-        "Connect",
-        "Connect",
-        tint,
-    );
+    let connect =
+        crate::chrome::accent_button(ui, rect, "code-connect", "Connect", "Connect", tint);
     if connect.clicked() {
         let mapping = Mapping {
             component_name: form.name.trim().to_owned(),
@@ -456,6 +450,9 @@ fn suggestion_row(ui: &mut Ui, c: &Value) -> bool {
     );
     let label = format!("{name}  ·  {uses}×");
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    let id = c["mainComponentNodeId"].as_str().unwrap_or("?");
+    crate::a11y::author(&response, format!("code-connect.{id}"));
+    crate::icons::focus_ring(ui, &response, rect, 8);
     let hover = crate::panels::hover_fade(
         ui,
         egui::Id::new("code-connect-hover"),

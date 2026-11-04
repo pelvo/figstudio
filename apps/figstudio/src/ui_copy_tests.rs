@@ -275,7 +275,14 @@ fn the_properties_panel_shows_a_shader_fill_and_its_values() {
         "no shader section"
     );
     assert!(h.query_by_label("Ring count").is_some());
-    assert!(h.query_by_label("Triangle").is_some());
+    // A Properties row reads as one value, "key: value" (`a11y::key_value`).
+    use egui_kittest::kittest::NodeT;
+    assert!(
+        h.root()
+            .children_recursive()
+            .any(|n| n.accesskit_node().value().as_deref() == Some("Shape: Triangle")),
+        "no Shape: Triangle"
+    );
 }
 
 #[test]

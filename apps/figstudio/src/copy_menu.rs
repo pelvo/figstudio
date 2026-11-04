@@ -30,7 +30,7 @@ fn menu_items(ui: &mut egui::Ui, tab: &Tab, items: Vec<Item>, id: Guid, picked: 
         *picked = Some(Item::png("Copy as WebP", "WebP image", Job::WebpNode(id)));
         ui.close();
     }
-    if ui.button("Copy as SVG").clicked() {
+    if crate::a11y::menu_button(ui, "Copy as SVG").clicked() {
         *picked = Some(Item::png("Copy as SVG", "SVG", Job::SvgNode(id)));
         ui.close();
     }
@@ -40,7 +40,7 @@ fn menu_items(ui: &mut egui::Ui, tab: &Tab, items: Vec<Item>, id: Guid, picked: 
         .doc
         .node(id)
         .filter(|n| figstudio_mcp_core::motion::has_motion(&n.data))
-        && ui.button("Copy CSS animation").clicked()
+        && crate::a11y::menu_button(ui, "Copy CSS animation").clicked()
     {
         let motion = tab.inspect.get(&tab.doc, node).motion;
         if let Some(css) = motion

@@ -608,7 +608,7 @@ pub fn notice(
                     if crate::chrome::accent_button(
                         ui,
                         choose,
-                        ("shader-choose", tab.id),
+                        "shader-choose",
                         "Choose zips…",
                         "Choose shader zips…",
                         tint,

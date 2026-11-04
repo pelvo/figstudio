@@ -1592,7 +1592,7 @@ impl App {
             play,
             Id::new("motion-play"),
             (Some(icon), label, label),
-            false,
+            None,
             accent,
         )
         .clicked()
@@ -1643,7 +1643,7 @@ impl App {
             close,
             Id::new("motion-close"),
             (Some(Icon::Close), "Close the player", "Close the player"),
-            false,
+            None,
             accent,
         )
         .clicked()
@@ -1926,6 +1926,8 @@ impl App {
         };
         let response = ui.interact(chip.inner.rect, Id::new("gaps-chip"), sense);
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Page warnings"));
+        crate::a11y::author(&response, "button.page-warnings");
+        icons::focus_ring(ui, &response, chip.inner.rect, 8);
         let response = response.on_hover_text(hint);
         if shaders > 0 && response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
