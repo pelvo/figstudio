@@ -145,9 +145,12 @@ pub(crate) fn rounded_gradient(rect: Rect, radius: f32, colours: [Color32; 4]) -
 
 /// Opens `add` as a right-click menu on `response`, in the macOS style (`theme::menu_style`).
 pub(crate) fn context_menu(response: &Response, add: impl FnOnce(&mut Ui)) {
-    egui::Popup::context_menu(response)
+    let menu = egui::Popup::context_menu(response)
         .style(theme::menu_style)
         .show(add);
+    if let Some(menu) = menu {
+        crate::a11y::name_menu(&menu.response, "Context menu");
+    }
 }
 
 /// What was clicked among the file dots this frame.
@@ -663,11 +666,19 @@ fn section_label(ui: &mut Ui, title: &str, count: Option<usize>) {
     }
 }
 
+/// Clicks and drags without taking keyboard focus: window drag strips and the click catchers
+/// behind floating cards, which are not controls.
+const WINDOW_DRAG: Sense = Sense::CLICK.union(Sense::DRAG);
+
 /// The draggable line between Pages and Layers. Dragging moves the split.
 pub(crate) fn split_handle(ui: &mut Ui, share: &mut f32) {
     let p = theme::of(ui);
     let total = ui.max_rect().height().max(1.0);
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 12.0), Sense::drag());
+    // Pointer only (Tab skips it): the keyboard has no way to move a split.
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 12.0), Sense::DRAG);
+    response.widget_info(|| {
+        WidgetInfo::labeled(WidgetType::ResizeHandle, true, "Resize Pages and Layers")
+    });
     let response = response.on_hover_cursor(egui::CursorIcon::ResizeVertical);
     if response.dragged() {
         *share = (*share + response.drag_delta().y / total).clamp(0.05, 0.95);
@@ -701,7 +712,7 @@ pub(crate) fn filter_field(ui: &mut Ui, text: &mut String, hint: &str, fill: Col
                 icons::paint(ui.painter(), Icon::Search, icon, p.text_faint);
                 let clear = !text.is_empty();
                 let width = ui.available_width() - if clear { 22.0 } else { 0.0 };
-                ui.add_sized(
+                let field = ui.add_sized(
                     vec2(width, 24.0),
                     egui::TextEdit::singleline(text)
                         .hint_text(hint)
@@ -709,6 +720,7 @@ pub(crate) fn filter_field(ui: &mut Ui, text: &mut String, hint: &str, fill: Col
                         .frame(egui::Frame::NONE)
                         .margin(Margin::symmetric(2, 0)),
                 );
+                crate::a11y::name_field(&field, hint);
                 if clear
                     && icons::sized_button(ui, Icon::Close, "Clear filter", false, 20.0).clicked()
                 {
@@ -724,11 +736,17 @@ fn pill_button(
     rect: Rect,
     id: Id,
     (icon, label, tip): (Option<Icon>, &str, &str),
-    active: bool,
+    // `Some` for a tool (a toggle screen readers hear as on or off), `None` for an action.
+    active: Option<bool>,
     accent: Color32,
 ) -> Response {
     let response = ui.interact(rect, id, Sense::click());
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, active, label));
+    response.widget_info(|| match active {
+        // The tools are one of a set: radio buttons.
+        Some(on) => WidgetInfo::selected(WidgetType::RadioButton, true, on, label),
+        None => WidgetInfo::labeled(WidgetType::Button, true, label),
+    });
+    let active = active.unwrap_or(false);
     let p = theme::of(ui);
     let (hover, press) = icons::feedback(ui, &response);
     let r = rect.shrink(1.0 + press * 1.5);
@@ -774,6 +792,7 @@ impl App {
     }
 
     /// In the frameless window, empty chrome moves the window; a double click zooms it.
+    /// Drags (and double-click maximises) the window; not a control, so Tab skips it.
     fn drag_window(&self, ui: &Ui, response: &Response) {
         if !self.frameless {
             return;
@@ -875,8 +894,8 @@ impl App {
             ui.set_height(30.0);
             ui.spacing_mut().item_spacing.x = 2.0;
             if self.traffic_lights(ui.ctx()) && !peek {
-                let (_, r) =
-                    ui.allocate_exact_size(vec2(TRAFFIC_LIGHTS, 28.0), Sense::click_and_drag());
+                let (_, r) = ui.allocate_exact_size(vec2(TRAFFIC_LIGHTS, 28.0), WINDOW_DRAG);
+                crate::a11y::hide(&r);
                 self.drag_window(ui, &r);
             }
             let (label, show) = match (sidebar, peek) {
@@ -893,8 +912,8 @@ impl App {
             }
             let menu = self.show_drawn_menu();
             let rest = ui.available_width() - if menu { 30.0 } else { 0.0 };
-            let (rect, r) =
-                ui.allocate_exact_size(vec2(rest.max(0.0), 28.0), Sense::click_and_drag());
+            let (rect, r) = ui.allocate_exact_size(vec2(rest.max(0.0), 28.0), WINDOW_DRAG);
+            crate::a11y::hide(&r);
             self.drag_window(ui, &r);
             if !sidebar && let Some(tab) = self.tabs.get(self.active) {
                 let p = theme::of(ui);
@@ -959,7 +978,7 @@ impl App {
             .show(ctx, |ui| {
                 // The card takes the pointer everywhere, gaps and padding included, so no
                 // click or drag on it reaches the canvas underneath.
-                ui.interact(card, Id::new("peek-card"), Sense::click_and_drag());
+                crate::a11y::hide(&ui.interact(card, Id::new("peek-card"), WINDOW_DRAG));
                 let radius = CornerRadius::same(CARD_RADIUS);
                 let painter = ui.painter();
                 painter.add(card_shadow(&p, 28).as_shape(card, radius));
@@ -1542,7 +1561,7 @@ impl App {
         );
         let radius = CornerRadius::same(19);
         // Catches clicks between the buttons so they do not reach the canvas.
-        ui.interact(rect, Id::new("tool-pill"), Sense::click());
+        crate::a11y::hide(&ui.interact(rect, Id::new("tool-pill"), Sense::CLICK));
         let painter = ui.painter();
         painter.add(card_shadow(&p, 14).as_shape(rect, radius));
         painter.rect_filled(rect, radius, p.glass);
@@ -1574,7 +1593,7 @@ impl App {
                 slot(i as f32),
                 id,
                 (Some(icon), label, tip),
-                active,
+                Some(active),
                 accent,
             )
             .clicked()
@@ -1602,7 +1621,7 @@ impl App {
                 out,
                 Id::new("zoom-out"),
                 (Some(Icon::Minus), "Zoom out", "Zoom out (-)"),
-                false,
+                None,
                 accent,
             )
             .clicked()
@@ -1634,7 +1653,7 @@ impl App {
                 into,
                 Id::new("zoom-in"),
                 (Some(Icon::Plus), "Zoom in", "Zoom in (+)"),
-                false,
+                None,
                 accent,
             )
             .clicked()

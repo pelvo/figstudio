@@ -70,7 +70,7 @@ enum Close {
 /// A round colour swatch; `selected` gets a ring.
 fn swatch(ui: &mut egui::Ui, fill: Color32, label: &str, selected: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, label));
+    response.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, selected, label));
     let p = theme::of(ui);
     let (hover, press) = feedback(ui, &response);
     let c = rect.center();
@@ -86,7 +86,7 @@ fn swatch(ui: &mut egui::Ui, fill: Color32, label: &str, selected: bool) -> egui
 /// A square button showing an emoji; `selected` gets a filled background.
 fn emoji_button(ui: &mut egui::Ui, emoji: &str, label: &str, selected: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, label));
+    response.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, selected, label));
     let p = theme::of(ui);
     let (hover, press) = feedback(ui, &response);
     let r = rect.shrink(press * 1.5);
@@ -114,7 +114,7 @@ fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
             .layout_no_wrap(label.to_owned(), egui::FontId::proportional(12.0), p.text);
     let size = vec2(galley.size().x + 20.0, 24.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, label));
+    response.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, selected, label));
     let (hover, press) = feedback(ui, &response);
     let r = rect.shrink(press);
     let fill = if selected {
@@ -387,7 +387,7 @@ fn icon_picker(ui: &mut egui::Ui, editor: &mut SpaceEditor, tab: &mut Tab) -> Cl
         }
         for (name, icon) in spaces::ICONS {
             let on = tab.style.symbol == Some(Symbol::Icon(name.into()));
-            if icons::sized_button(ui, icon, name, on, 30.0).clicked() {
+            if icons::choice_button(ui, icon, name, on, 30.0).clicked() {
                 tab.style.symbol = Some(Symbol::Icon(name.into()));
                 close = Close::Save;
             }
@@ -400,6 +400,7 @@ fn icon_picker(ui: &mut egui::Ui, editor: &mut SpaceEditor, tab: &mut Tab) -> Cl
                 .hint_text(format!("Type an emoji {}", spaces::EMOJI_HINT))
                 .desired_width(150.0),
         );
+        crate::a11y::name_field(&typed, "Emoji");
         if typed.changed() {
             let e = editor.emoji.trim();
             tab.style.symbol = (!e.is_empty()).then(|| Symbol::Emoji(e.into()));
@@ -443,6 +444,7 @@ fn rename(ui: &mut egui::Ui, editor: &mut SpaceEditor, tab: &mut Tab) -> Close {
                 .font(egui::FontId::proportional(15.0))
                 .desired_width(f32::INFINITY),
         );
+        crate::a11y::name_field(&field, "New name");
         if std::mem::take(&mut editor.focus) {
             field.request_focus();
         }

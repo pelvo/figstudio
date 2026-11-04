@@ -32,6 +32,8 @@ impl eframe::Storage for Memory {
     fn flush(&mut self) {}
 }
 
+#[path = "ui_a11y_tests.rs"]
+mod a11y;
 #[path = "ui_chrome_tests.rs"]
 mod chrome;
 #[path = "ui_copy_tests.rs"]

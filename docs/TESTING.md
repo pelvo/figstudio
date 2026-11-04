@@ -50,6 +50,7 @@ FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh   # if the default Rust is older tha
 scripts/check.sh --lint     # only fmt + clippy; CI runs --lint and --test as its two jobs
 scripts/check.sh --test     # tests, npm launcher tests, release build, wasm32; CI job "build + test"
 scripts/check.sh --lint-one fmt   # one slice, for a local run
+scripts/check.sh --lint-one accesskit   # the shipped desktop app builds eframe with AccessKit
 # CI is the two required jobs. The cache prefix is `v1-rust` so the next miss saves
 # this repo's crates. A later exact hit does not update that snapshot.
 ```
@@ -402,6 +403,39 @@ public-fixture copies and isolated stores; no user workspace or Recents data is 
 
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
+
+### Accessibility (`ui_a11y_tests.rs`)
+
+The tests read the same AccessKit tree a screen reader gets. kittest turns AccessKit on
+through egui_kittest, a dev-dependency, and a release build does not inherit that. So the
+`accesskit` lint slice checks the shipped build with `cargo tree -e normal`. Without that
+slice these tests would pass while users got no tree at all.
+
+- **Names:** every control (a node that takes a click or focus, or has a control role) has a
+  name. This is checked on Recents, an open file, the command bar, find, the link window, the
+  space popovers, the welcome sheet, every Settings tab, the drawn menu with a submenu, and a
+  right-click menu. egui's scroll bars are left out. Nodes the app adds a role to (splitters,
+  menus, the canvas) must have bounds: a node for a widget that was not drawn has none.
+- **Canvas and layer rows:** the canvas says its page, zoom and selection. A layer row with
+  children reports expanded or collapsed, and its arrow is a named button.
+- **Focus:** Tab goes once round the open file, Settings and Recents, and each focused
+  control must show a focus ring (a `Palette::focus` rect stroke around it; text fields show
+  their caret instead). Tab must not leave Settings or the command bar for the app behind
+  them. Closing Settings, the command bar or the welcome sheet gives focus back to what had
+  it.
+- **Roles:** one-of-a-set choices (tools, Settings segments, the space editor's choices) are
+  radio buttons; the Settings sections are tabs.
+- **Text size:** ⌘+ / ⌘− / ⌘0 change egui's zoom factor and leave the canvas zoom alone.
+  Settings → General → Text size sets the same factor, and `Prefs` keeps it across a restart.
+- **Contrast:** `theme.rs` tests check every text colour on every opaque surface it is drawn
+  on (gradient, hovered and selected rows, cards, wells, dialogs, the pills over any canvas)
+  at WCAG AA, and the focus ring at 3:1. Both appearances and custom space colours are
+  covered. The translucent macOS sidebar is not: what shows through depends on the desktop.
+
+Not covered by a test: a real screen reader (VoiceOver, Narrator, Orca) reading the app. Run
+one by hand after a change to these paths and report it as unverified if you could not. The
+browser build has no AccessKit (eframe 0.36 does not support it on the web). Its "Read controls
+aloud" setting uses egui's speech output, and only the switch itself is tested.
 
 ### Internal-page navigation
 

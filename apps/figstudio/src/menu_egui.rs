@@ -8,14 +8,19 @@ impl App {
         // No tooltip: egui's tooltip on the same response would keep the menu from opening.
         let response = crate::icons::raw_button(ui, crate::icons::Icon::More, "Menu", false, 28.0);
         let tree = crate::menu::tree(self);
-        egui::Popup::menu(&response)
+        let menu = egui::Popup::menu(&response)
             .style(crate::theme::menu_style)
             .show(|ui| {
                 ui.set_min_width(170.0);
                 for group in tree {
-                    ui.menu_button(group.label, |ui| self.menu_items(ui, &group.children));
+                    crate::a11y::submenu(ui, group.label, |ui| {
+                        self.menu_items(ui, &group.children);
+                    });
                 }
             });
+        if let Some(menu) = menu {
+            crate::a11y::name_menu(&menu.response, "Menu");
+        }
     }
 
     fn menu_items(&mut self, ui: &mut egui::Ui, items: &[Item]) {
@@ -26,7 +31,9 @@ impl App {
             }
             let Some(action) = item.action else {
                 ui.add_enabled_ui(item.enabled, |ui| {
-                    ui.menu_button(item.label, |ui| self.menu_items(ui, &item.children));
+                    crate::a11y::submenu(ui, item.label, |ui| {
+                        self.menu_items(ui, &item.children);
+                    });
                 });
                 continue;
             };

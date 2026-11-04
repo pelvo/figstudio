@@ -1038,6 +1038,22 @@ Keep work off the UI thread. Check it with `scripts/gui-smoke.sh` and look at th
 screenshots. Things only a real desktop can check (file dialogs, Wayland, HiDPI, drag and
 drop from a file manager) must be listed as unverified in your report.
 
+### Keep the app accessible
+The desktop app builds eframe with `accesskit`. Screen readers read the tree egui builds, so:
+
+- A painted widget calls `response.widget_info(..)` with a name, and draws
+  `icons::focus_ring` (or uses `icons::feedback`, which draws it for you).
+- A text field gets `a11y::name_field`, because its placeholder is not a label.
+- A pointer-only area (a drag strip, a backdrop, a click catcher) uses `Sense::CLICK`
+  without `FOCUSABLE` and calls `a11y::hide`.
+- A modal's backdrop calls `a11y::modal` each frame so Tab stays inside the dialog.
+- A menu goes through `chrome::context_menu` or `a11y::submenu` so it gets a Menu role and a
+  name.
+- New text colours pass the `theme.rs` contrast tests (4.5:1).
+
+`ui_a11y_tests.rs` catches a missing name or focus ring in the states it visits. Add your
+new state there.
+
 ### Logs and errors
 Logs use `tracing`. Libraries only call the macros; each binary installs a `tracing-subscriber`
 fmt layer on **stderr** (browser: `tracing-web`, the console) with default level `warn`.
