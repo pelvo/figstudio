@@ -36,6 +36,7 @@ impl Serialize for Val {
             Self::Arr(v) => v.serialize(serializer),
             Self::Obj(v) => v.serialize(serializer),
             // The same JSON as the two-field object it replaces (keys sorted, as `Obj` does).
+            Self::Lazy(l) => l.get().serialize(serializer),
             Self::Guid(g) => {
                 let mut map = serializer.serialize_map(Some(2))?;
                 map.serialize_entry("localID", &g.1)?;

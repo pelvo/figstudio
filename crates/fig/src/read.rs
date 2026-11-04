@@ -5,13 +5,14 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use kiwi_schema::{
     ByteBuffer, DefKind, Field, Schema, TYPE_BOOL, TYPE_BYTE, TYPE_FLOAT, TYPE_INT, TYPE_INT64,
     TYPE_STRING, TYPE_UINT, TYPE_UINT64,
 };
 
-use crate::val::{Guid, Obj, Val, intern, intern_schema};
+use crate::val::{Guid, Lazy, Obj, Val, intern, intern_schema};
 
 /// Deepest nesting accepted; real documents stay far below this.
 const MAX_DEPTH: u32 = 256;
@@ -25,15 +26,45 @@ fn bad<T>(r: Result<T, ()>) -> R<T> {
     r.map_err(|()| "the document data is truncated or invalid".to_string())
 }
 
-pub(crate) struct Reader<'s> {
-    pub schema: &'s Schema,
+/// Node fields kept encoded until first read ([`Lazy`]). Together about half of a large
+/// document's decoded tree, and each is read only when an instance is resolved.
+const LAZY_FIELDS: [&str; 3] = [
+    "derivedSymbolData",
+    "parameterConsumptionMap",
+    "variableConsumptionMap",
+];
+
+/// What decoding needs from a file's schema. Shared (`Arc`) by the document's lazy fields so
+/// they can decode themselves later, and by the writer to tell their schema is its own.
+pub(crate) struct Decoder {
+    pub schema: Schema,
     /// Interned field names per definition, in `def.fields` order.
     names: Vec<Vec<&'static str>>,
     /// Enum value -> interned name, per definition.
     enums: Vec<HashMap<u32, &'static str>>,
     /// Per definition: a `{sessionID, localID}` struct, decoded as `Val::Guid` (no heap).
     guids: Vec<bool>,
+}
+
+impl std::fmt::Debug for Decoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Decoder({} definitions)", self.schema.defs.len())
+    }
+}
+
+pub(crate) struct Reader {
+    pub dec: Arc<Decoder>,
     decoded_items: Cell<usize>,
+    /// Set while node records are read: their [`LAZY_FIELDS`] are skipped and kept encoded.
+    pub lazy: Cell<bool>,
+}
+
+/// Decodes a field kept by [`Lazy`]: field `field` of definition `def`, at node-field depth.
+pub(crate) fn decode_field(dec: &Arc<Decoder>, def: usize, field: usize, bytes: &[u8]) -> R<Val> {
+    let Some(f) = dec.schema.defs.get(def).and_then(|d| d.fields.get(field)) else {
+        return Err("the schema has no such field".into());
+    };
+    Reader::with(dec.clone()).field(&mut ByteBuffer::new(bytes), f, 2)
 }
 
 /// A struct of exactly `sessionID: uint, localID: uint`, in that order.
@@ -43,8 +74,20 @@ fn is_guid(def: &kiwi_schema::Def) -> bool {
         && matches!(&def.fields[..], [a, b] if uint(a, "sessionID") && uint(b, "localID"))
 }
 
-impl<'s> Reader<'s> {
-    pub fn new(schema: &'s Schema) -> R<Self> {
+impl Reader {
+    fn with(dec: Arc<Decoder>) -> Reader {
+        Reader {
+            dec,
+            decoded_items: Cell::new(0),
+            lazy: Cell::new(false),
+        }
+    }
+
+    pub fn schema(&self) -> &Schema {
+        &self.dec.schema
+    }
+
+    pub fn new(schema: Schema) -> R<Self> {
         let identifier_count = schema.defs.iter().map(|d| d.fields.len()).sum::<usize>();
         if identifier_count > MAX_SCHEMA_IDENTIFIERS
             || schema.defs.iter().any(|d| {
@@ -76,13 +119,97 @@ impl<'s> Reader<'s> {
                 _ => HashMap::new(),
             })
             .collect();
-        Ok(Reader {
+        let guids = schema.defs.iter().map(is_guid).collect();
+        Ok(Reader::with(Arc::new(Decoder {
             schema,
             names,
             enums,
-            guids: schema.defs.iter().map(is_guid).collect(),
-            decoded_items: Cell::new(0),
-        })
+            guids,
+        })))
+    }
+
+    /// Spends `n` of the decoded-items budget.
+    fn count(&self, n: usize) -> R<()> {
+        let total = self.decoded_items.get().saturating_add(n);
+        if total > MAX_DECODED_ITEMS {
+            return Err("the document contains too many decoded items".into());
+        }
+        self.decoded_items.set(total);
+        Ok(())
+    }
+
+    /// Reads past a field without building it, with every check [`Reader::field`] makes (and
+    /// the same budget), so decoding the skipped bytes later cannot fail.
+    fn skip_field(&self, bb: &mut ByteBuffer, field: &Field, depth: u32) -> R<()> {
+        if !field.is_array {
+            return self.skip(bb, field.type_id, depth);
+        }
+        let len = self.len(bb)?;
+        self.count(len)?;
+        if field.type_id == TYPE_BYTE {
+            bad(bb.read_bytes(len))?;
+            return Ok(());
+        }
+        self.count(len)?;
+        for _ in 0..len {
+            self.skip(bb, field.type_id, depth)?;
+        }
+        Ok(())
+    }
+
+    fn skip(&self, bb: &mut ByteBuffer, type_id: i32, depth: u32) -> R<()> {
+        match type_id {
+            TYPE_BOOL => drop(bad(bb.read_bool())?),
+            TYPE_BYTE => drop(bad(bb.read_byte())?),
+            TYPE_INT => drop(bad(bb.read_var_int())?),
+            TYPE_UINT => drop(bad(bb.read_var_uint())?),
+            TYPE_FLOAT => drop(bad(bb.read_var_float())?),
+            TYPE_STRING => drop(bad(bb.read_string())?),
+            TYPE_INT64 => drop(bad(bb.read_var_int64())?),
+            TYPE_UINT64 => drop(bad(bb.read_var_uint64())?),
+            _ => {
+                let (idx, def) = self.def(type_id, depth)?;
+                match def.kind {
+                    DefKind::Enum => {
+                        let v = bad(bb.read_var_uint())?;
+                        if !self.dec.enums[idx].contains_key(&v) {
+                            return Err(format!("{} has no value {v}", def.name));
+                        }
+                    }
+                    DefKind::Struct => {
+                        for f in &def.fields {
+                            self.skip_field(bb, f, depth + 1)?;
+                        }
+                    }
+                    DefKind::Message => loop {
+                        let tag = bad(bb.read_var_uint())?;
+                        if tag == 0 {
+                            break;
+                        }
+                        let Some(&i) = def.field_value_to_index.get(&tag) else {
+                            return Err(format!("{} has no field {tag}", def.name));
+                        };
+                        self.skip_field(bb, &def.fields[i], depth + 1)?;
+                    },
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The definition `type_id` names, checked, with its index.
+    fn def(&self, type_id: i32, depth: u32) -> R<(usize, &kiwi_schema::Def)> {
+        if depth > MAX_DEPTH {
+            return Err("the document nests too deeply".into());
+        }
+        let schema = &self.dec.schema;
+        match usize::try_from(type_id)
+            .ok()
+            .filter(|i| *i < schema.defs.len())
+        {
+            Some(idx) => Ok((idx, &schema.defs[idx])),
+            None => Err(format!("the schema has no type {type_id}")),
+        }
     }
 
     /// Array length, checked against the bytes left so a corrupt length cannot allocate wildly.
@@ -138,31 +265,22 @@ impl<'s> Reader<'s> {
             // Stored as the same 64 bits; the writer turns them back into the unsigned value.
             TYPE_UINT64 => Val::Int(bad(bb.read_var_uint64())? as i64),
             _ => {
-                if depth > MAX_DEPTH {
-                    return Err("the document nests too deeply".into());
-                }
-                let Some(idx) = usize::try_from(type_id)
-                    .ok()
-                    .filter(|i| *i < self.schema.defs.len())
-                else {
-                    return Err(format!("the schema has no type {type_id}"));
-                };
-                let def = &self.schema.defs[idx];
+                let (idx, def) = self.def(type_id, depth)?;
                 match def.kind {
                     DefKind::Enum => {
                         let v = bad(bb.read_var_uint())?;
-                        let name = self.enums[idx]
+                        let name = self.dec.enums[idx]
                             .get(&v)
                             .ok_or_else(|| format!("{} has no value {v}", def.name))?;
                         Val::Enum(name)
                     }
-                    DefKind::Struct if self.guids[idx] => {
+                    DefKind::Struct if self.dec.guids[idx] => {
                         Val::Guid(Guid(bad(bb.read_var_uint())?, bad(bb.read_var_uint())?))
                     }
                     DefKind::Struct => {
                         let mut o = Obj::with_capacity(def.fields.len());
                         for (i, f) in def.fields.iter().enumerate() {
-                            o.push(self.names[idx][i], self.field(bb, f, depth + 1)?);
+                            o.push(self.dec.names[idx][i], self.field(bb, f, depth + 1)?);
                         }
                         Val::Obj(o)
                     }
@@ -176,8 +294,15 @@ impl<'s> Reader<'s> {
                             let Some(&i) = def.field_value_to_index.get(&tag) else {
                                 return Err(format!("{} has no field {tag}", def.name));
                             };
-                            let v = self.field(bb, &def.fields[i], depth + 1)?;
-                            let key = self.names[idx][i];
+                            let key = self.dec.names[idx][i];
+                            let v = if depth == 1 && self.lazy.get() && LAZY_FIELDS.contains(&key) {
+                                let start = bb.index();
+                                self.skip_field(bb, &def.fields[i], depth + 1)?;
+                                let bytes = bb.data()[start..bb.index()].into();
+                                Val::Lazy(Arc::new(Lazy::new(self.dec.clone(), idx, i, bytes)))
+                            } else {
+                                self.field(bb, &def.fields[i], depth + 1)?
+                            };
                             // A repeated field keeps the last value, like the reference decoder.
                             match o.get_mut(key) {
                                 Some(slot) => *slot = v,

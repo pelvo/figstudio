@@ -122,6 +122,33 @@ fn guids_decode_inline_and_write_back_in_either_form() {
     assert_eq!(again.node(Guid(1, 42)).unwrap().parent, parent.as_guid());
 }
 
+/// A field still encoded when opened (`derivedSymbolData`) is written as edited, not as its
+/// original bytes, once changed through `get_mut`.
+#[test]
+fn an_edited_lazy_field_is_written_as_edited() {
+    let mut doc = Document::open(fixture("structure")).unwrap();
+    let mut nodes = doc.nodes.clone();
+    let node = nodes
+        .iter_mut()
+        .find(|n| n.data.get("derivedSymbolData").is_some())
+        .unwrap();
+    let id = node.id;
+    let Some(Val::Arr(items)) = node.data.get_mut("derivedSymbolData") else {
+        panic!()
+    };
+    assert!(items.len() > 1);
+    items.truncate(1);
+    doc.set_nodes(nodes).unwrap();
+    let again = Document::from_bytes(&doc.to_bytes().unwrap()).unwrap();
+    let list = again
+        .node(id)
+        .unwrap()
+        .data
+        .get("derivedSymbolData")
+        .unwrap();
+    assert_eq!(list.items().len(), 1);
+}
+
 #[test]
 fn edits_are_written() {
     let mut doc = Document::open(fixture("structure")).unwrap();

@@ -6,7 +6,9 @@
 
 use std::collections::HashSet;
 use std::fmt;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::read::{Decoder, decode_field};
 
 #[derive(Clone, Debug)]
 pub enum Val {
@@ -22,6 +24,61 @@ pub enum Val {
     /// `Obj` costs a heap allocation each. It has no fields to borrow, so `get("localID")` is
     /// `None`; read it with [`Val::as_guid`]. It equals the matching two-field `Obj`.
     Guid(Guid),
+    /// A node field still in its encoded form, decoded on first read. Only an [`Obj`] holds
+    /// one, and its accessors hand out the decoded value, so readers never see this variant.
+    /// Shared: a copy of the node (an instance resolved from its component) reads the same
+    /// decoded value instead of decoding again.
+    Lazy(Arc<Lazy>),
+}
+
+/// A node field kept as its encoded bytes until first read, then decoded once (thread-safe)
+/// and kept. Written back as the original bytes unless it was edited.
+pub struct Lazy {
+    dec: Arc<Decoder>,
+    def: usize,
+    field: usize,
+    bytes: Box<[u8]>,
+    val: OnceLock<Val>,
+}
+
+impl Lazy {
+    pub(crate) fn new(dec: Arc<Decoder>, def: usize, field: usize, bytes: Box<[u8]>) -> Lazy {
+        Lazy {
+            dec,
+            def,
+            field,
+            bytes,
+            val: OnceLock::new(),
+        }
+    }
+
+    /// The decoded value, decoding it on first use.
+    pub fn get(&self) -> &Val {
+        self.val.get_or_init(|| self.decode())
+    }
+
+    // shortcut: the bytes passed every check of the decoder when the file was opened, so this
+    // cannot fail; if it ever did, the field reads as empty and is still written back as its
+    // original bytes (an unedited lazy field is never re-encoded).
+    fn decode(&self) -> Val {
+        decode_field(&self.dec, self.def, self.field, &self.bytes)
+            .unwrap_or_else(|_| Val::Arr(Vec::new()))
+    }
+
+    /// The original bytes when `dec` is the decoder they were read with.
+    pub(crate) fn bytes_for(&self, dec: Option<&Arc<Decoder>>) -> Option<&[u8]> {
+        dec.filter(|d| Arc::ptr_eq(d, &self.dec))
+            .map(|_| &*self.bytes)
+    }
+}
+
+impl fmt::Debug for Lazy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.val.get() {
+            Some(v) => v.fmt(f),
+            None => write!(f, "Lazy({} bytes)", self.bytes.len()),
+        }
+    }
 }
 
 /// Returns a `'static` copy of `s`, shared by every caller. Meant for schema identifiers
@@ -83,11 +140,19 @@ impl Obj {
     }
 
     pub fn get(&self, key: &str) -> Option<&Val> {
+        self.get_raw(key).map(Val::view)
+    }
+
+    /// The stored value, a [`Val::Lazy`] still encoded included (for the writer).
+    pub(crate) fn get_raw(&self, key: &str) -> Option<&Val> {
         self.0.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
     }
 
+    /// The value to change; a lazy field is decoded and stored decoded first.
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Val> {
-        self.0.iter_mut().find(|(k, _)| *k == key).map(|(_, v)| v)
+        let (_, v) = self.0.iter_mut().find(|(k, _)| *k == key)?;
+        v.settle();
+        Some(v)
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
@@ -99,6 +164,7 @@ impl Obj {
         if let Some(slot) = self.get_mut(key) {
             return Some(std::mem::replace(slot, value));
         }
+        // (get_mut settled a lazy slot, so the old value handed back is decoded.)
         self.0.push((intern(key), value));
         None
     }
@@ -110,11 +176,13 @@ impl Obj {
 
     pub fn remove(&mut self, key: &str) -> Option<Val> {
         let i = self.0.iter().position(|(k, _)| *k == key)?;
-        Some(self.0.remove(i).1)
+        let mut old = self.0.remove(i).1;
+        old.settle();
+        Some(old)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&'static str, &Val)> {
-        self.0.iter().map(|(k, v)| (*k, v))
+        self.0.iter().map(|(k, v)| (*k, v.view()))
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &'static str> + '_ {
@@ -122,7 +190,7 @@ impl Obj {
     }
 
     pub fn values(&self) -> impl Iterator<Item = &Val> {
-        self.0.iter().map(|(_, v)| v)
+        self.0.iter().map(|(_, v)| v.view())
     }
 
     pub fn len(&self) -> usize {
@@ -159,7 +227,7 @@ impl<const N: usize> From<[(&str, Val); N]> for Obj {
 /// document always equals an unchanged copy of itself (Figma stores NaN in some fields).
 impl PartialEq for Val {
     fn eq(&self, other: &Val) -> bool {
-        match (self, other) {
+        match (self.view(), other.view()) {
             (Val::Bool(a), Val::Bool(b)) => a == b,
             (Val::Int(a), Val::Int(b)) => a == b,
             (Val::Float(a), Val::Float(b)) => a == b || a.to_bits() == b.to_bits(),
@@ -208,14 +276,35 @@ impl Guid {
 }
 
 impl Val {
-    pub fn get(&self, key: &str) -> Option<&Val> {
+    /// The value itself, or the decoded value of a [`Val::Lazy`].
+    pub fn view(&self) -> &Val {
         match self {
+            Val::Lazy(l) => l.get(),
+            v => v,
+        }
+    }
+
+    /// Replaces a [`Val::Lazy`] with its decoded value, so it can be changed (copied when
+    /// another copy of the node still shares it).
+    fn settle(&mut self) {
+        if let Val::Lazy(l) = self {
+            let v = match Arc::get_mut(l).and_then(|l| l.val.take()) {
+                Some(v) => v,
+                None => l.get().clone(),
+            };
+            *self = v;
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&Val> {
+        match self.view() {
             Val::Obj(o) => o.get(key),
             _ => None,
         }
     }
 
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Val> {
+        self.settle();
         match self {
             Val::Obj(o) => o.get_mut(key),
             _ => None,
@@ -224,6 +313,7 @@ impl Val {
 
     /// Sets a field on an object; does nothing for other values.
     pub fn set(&mut self, key: &str, value: Val) {
+        self.settle();
         if let Val::Obj(o) = self {
             o.insert(key, value);
         }
@@ -234,7 +324,7 @@ impl Val {
     }
 
     pub fn as_f32(&self) -> Option<f32> {
-        match self {
+        match self.view() {
             Val::Int(i) => Some(*i as f32),
             Val::Float(f) => Some(*f as f32),
             _ => None,
@@ -242,14 +332,14 @@ impl Val {
     }
 
     pub fn as_u32(&self) -> Option<u32> {
-        match self {
+        match self.view() {
             Val::Int(i) => u32::try_from(*i).ok(),
             _ => None,
         }
     }
 
     pub fn as_bool(&self) -> Option<bool> {
-        match self {
+        match self.view() {
             Val::Bool(b) => Some(*b),
             _ => None,
         }
@@ -257,7 +347,7 @@ impl Val {
 
     /// Strings and enum names.
     pub fn as_str(&self) -> Option<&str> {
-        match self {
+        match self.view() {
             Val::Str(s) => Some(s),
             Val::Enum(s) => Some(s),
             _ => None,
@@ -265,7 +355,7 @@ impl Val {
     }
 
     pub fn as_bytes(&self) -> Option<&[u8]> {
-        match self {
+        match self.view() {
             Val::Bytes(b) => Some(b),
             Val::Arr(a) if a.is_empty() => Some(&[]),
             _ => None,
@@ -274,7 +364,7 @@ impl Val {
 
     /// Array items; empty for anything that is not an array.
     pub fn items(&self) -> &[Val] {
-        match self {
+        match self.view() {
             Val::Arr(a) => a,
             _ => &[],
         }
@@ -293,7 +383,7 @@ impl Val {
     }
 
     pub fn as_guid(&self) -> Option<Guid> {
-        if let Val::Guid(g) = self {
+        if let Val::Guid(g) = self.view() {
             return Some(*g);
         }
         Some(Guid(
@@ -307,7 +397,7 @@ impl Val {
     /// `componentPropAssignments` merge by `defID`, so an override that sets one property
     /// keeps the instance's other assignments.
     pub fn merged(&self, patch: &Val) -> Val {
-        let (Val::Obj(base), Val::Obj(over)) = (self, patch) else {
+        let (Val::Obj(base), Val::Obj(over)) = (self.view(), patch.view()) else {
             return self.clone();
         };
         let mut out = base.clone();
@@ -356,5 +446,65 @@ mod tests {
     fn hex_is_lowercase_two_digits_per_byte() {
         assert_eq!(super::hex(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
         assert_eq!(super::hex(&[]), "");
+    }
+
+    fn structure() -> crate::Document {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/structure.fig"
+        );
+        crate::Document::open(path).unwrap()
+    }
+
+    /// `derivedSymbolData` stays encoded after open and after a read; readers see it decoded.
+    #[test]
+    fn heavy_node_fields_stay_encoded_until_read_and_read_decoded() {
+        use super::Val;
+        let doc = structure();
+        let node = doc
+            .nodes
+            .iter()
+            .find(|n| n.data.get("derivedSymbolData").is_some())
+            .unwrap();
+        let Val::Obj(fields) = &node.data else {
+            panic!()
+        };
+        assert!(matches!(
+            fields.get_raw("derivedSymbolData"),
+            Some(Val::Lazy(_))
+        ));
+        let read = node.data.get("derivedSymbolData").unwrap();
+        assert!(matches!(read, Val::Arr(items) if !items.is_empty()));
+        assert!(fields.iter().all(|(_, v)| !matches!(v, Val::Lazy(_))));
+        assert!(matches!(
+            fields.get_raw("derivedSymbolData"),
+            Some(Val::Lazy(_))
+        ));
+        // Many renderer threads reading at once all see the one decoded value.
+        let seen: Vec<&Val> = std::thread::scope(|s| {
+            let reads: Vec<_> = (0..8)
+                .map(|_| s.spawn(|| node.data.get("derivedSymbolData").unwrap()))
+                .collect();
+            reads.into_iter().map(|r| r.join().unwrap()).collect()
+        });
+        assert!(seen.iter().all(|v| std::ptr::eq(*v, read)));
+    }
+
+    /// A copy of a node made before the read (as instance resolution makes) shares the
+    /// decoded value instead of decoding the bytes again.
+    #[test]
+    fn a_copied_node_shares_the_decoded_lazy_field() {
+        let doc = structure();
+        let node = doc
+            .nodes
+            .iter()
+            .find(|n| n.data.get("derivedSymbolData").is_some())
+            .unwrap();
+        let copy = node.data.clone();
+        let from_copy = copy.get("derivedSymbolData").unwrap();
+        assert!(std::ptr::eq(
+            from_copy,
+            node.data.get("derivedSymbolData").unwrap()
+        ));
     }
 }
