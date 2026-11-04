@@ -1,4 +1,7 @@
 //! figstudio — desktop and browser app for Figma `.fig` local copies.
+// Proving `wgpu::Texture: Send` (the render worker sends GPU tiles to the UI thread) walks
+// wgpu's internal types past the default depth of 128; newer compilers reject that.
+#![recursion_limit = "256"]
 
 mod anim;
 mod canvas;
