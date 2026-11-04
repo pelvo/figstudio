@@ -70,6 +70,19 @@ impl Encoder<'_> {
                         };
                         bb.write_var_uint(field.value);
                     }
+                    DefKind::Struct if let Val::Guid(g) = v => {
+                        if def.fields.len() != 2 {
+                            return fail(format!("{at}: {} is not a GUID", def.name));
+                        }
+                        for field in &def.fields {
+                            let part = match field.name.as_str() {
+                                "sessionID" => g.0,
+                                "localID" => g.1,
+                                _ => return fail(format!("{at}: {} is not a GUID", def.name)),
+                            };
+                            self.field(field, &Val::Int(i64::from(part)), at)?;
+                        }
+                    }
                     DefKind::Struct => {
                         for field in &def.fields {
                             let Some(fv) = v.get(&field.name) else {
@@ -144,7 +157,7 @@ fn kind(v: &Val) -> &'static str {
         Val::Enum(_) => "enum",
         Val::Bytes(_) => "bytes",
         Val::Arr(_) => "list",
-        Val::Obj(_) => "object",
+        Val::Obj(_) | Val::Guid(_) => "object",
     }
 }
 

@@ -11,7 +11,7 @@ use kiwi_schema::{
     TYPE_STRING, TYPE_UINT, TYPE_UINT64,
 };
 
-use crate::val::{Obj, Val, intern, intern_schema};
+use crate::val::{Guid, Obj, Val, intern, intern_schema};
 
 /// Deepest nesting accepted; real documents stay far below this.
 const MAX_DEPTH: u32 = 256;
@@ -31,7 +31,16 @@ pub(crate) struct Reader<'s> {
     names: Vec<Vec<&'static str>>,
     /// Enum value -> interned name, per definition.
     enums: Vec<HashMap<u32, &'static str>>,
+    /// Per definition: a `{sessionID, localID}` struct, decoded as `Val::Guid` (no heap).
+    guids: Vec<bool>,
     decoded_items: Cell<usize>,
+}
+
+/// A struct of exactly `sessionID: uint, localID: uint`, in that order.
+fn is_guid(def: &kiwi_schema::Def) -> bool {
+    let uint = |f: &Field, name: &str| f.name == name && f.type_id == TYPE_UINT && !f.is_array;
+    def.kind == DefKind::Struct
+        && matches!(&def.fields[..], [a, b] if uint(a, "sessionID") && uint(b, "localID"))
 }
 
 impl<'s> Reader<'s> {
@@ -71,6 +80,7 @@ impl<'s> Reader<'s> {
             schema,
             names,
             enums,
+            guids: schema.defs.iter().map(is_guid).collect(),
             decoded_items: Cell::new(0),
         })
     }
@@ -145,6 +155,9 @@ impl<'s> Reader<'s> {
                             .get(&v)
                             .ok_or_else(|| format!("{} has no value {v}", def.name))?;
                         Val::Enum(name)
+                    }
+                    DefKind::Struct if self.guids[idx] => {
+                        Val::Guid(Guid(bad(bb.read_var_uint())?, bad(bb.read_var_uint())?))
                     }
                     DefKind::Struct => {
                         let mut o = Obj::with_capacity(def.fields.len());

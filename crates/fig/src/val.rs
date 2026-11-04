@@ -18,6 +18,10 @@ pub enum Val {
     Bytes(Vec<u8>),
     Arr(Vec<Val>),
     Obj(Obj),
+    /// A `{sessionID, localID}` struct, kept inline: documents hold millions of them and an
+    /// `Obj` costs a heap allocation each. It has no fields to borrow, so `get("localID")` is
+    /// `None`; read it with [`Val::as_guid`]. It equals the matching two-field `Obj`.
+    Guid(Guid),
 }
 
 /// Returns a `'static` copy of `s`, shared by every caller. Meant for schema identifiers
@@ -164,6 +168,10 @@ impl PartialEq for Val {
             (Val::Bytes(a), Val::Bytes(b)) => a == b,
             (Val::Arr(a), Val::Arr(b)) => a == b,
             (Val::Obj(a), Val::Obj(b)) => a == b,
+            (Val::Guid(a), Val::Guid(b)) => a == b,
+            (Val::Guid(g), o @ Val::Obj(fields)) | (o @ Val::Obj(fields), Val::Guid(g)) => {
+                fields.len() == 2 && o.as_guid() == Some(*g)
+            }
             _ => false,
         }
     }
@@ -195,10 +203,7 @@ impl std::str::FromStr for Guid {
 
 impl Guid {
     pub fn to_val(self) -> Val {
-        Val::Obj(Obj::from([
-            ("sessionID", Val::Int(i64::from(self.0))),
-            ("localID", Val::Int(i64::from(self.1))),
-        ]))
+        Val::Guid(self)
     }
 }
 
@@ -288,6 +293,9 @@ impl Val {
     }
 
     pub fn as_guid(&self) -> Option<Guid> {
+        if let Val::Guid(g) = self {
+            return Some(*g);
+        }
         Some(Guid(
             self.get("sessionID")?.as_u32()?,
             self.get("localID")?.as_u32()?,

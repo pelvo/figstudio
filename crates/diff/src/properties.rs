@@ -270,7 +270,7 @@ pub(crate) fn text_change(old: &Val, new: &Val, changes: &[PropertyChange]) -> O
 #[cfg(test)]
 mod tests {
     use super::{changes, count_changes};
-    use figstudio_fig::{Obj, Val};
+    use figstudio_fig::{Guid, Obj, Val};
 
     fn obj(fields: Vec<(&str, Val)>) -> Val {
         let mut out = Obj::new();
@@ -320,5 +320,23 @@ mod tests {
             count_changes(Some(&old), Some(&new), &["guid"], &mut budget),
             None
         );
+    }
+
+    /// A reference that points elsewhere is one change, shown as `session:local`.
+    #[test]
+    fn a_changed_guid_reference_is_one_change() {
+        let old = obj(vec![(
+            "symbolData",
+            obj(vec![("symbolID", Guid(1, 2).to_val())]),
+        )]);
+        let new = obj(vec![(
+            "symbolData",
+            obj(vec![("symbolID", Guid(1, 3).to_val())]),
+        )]);
+        let listed = changes(Some(&old), Some(&new));
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].field, "symbolData.symbolID");
+        let shown = crate::html_changes::plain(listed[0].new.as_ref());
+        assert_eq!(shown, "1:3");
     }
 }

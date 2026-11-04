@@ -20,7 +20,7 @@ pub(crate) fn parts(connector: &Node) -> Vec<(Node, Affine)> {
             let list = connector.data.path(&[field, "overrides"]);
             let part = list.map(Val::items).unwrap_or_default().iter().find(|o| {
                 matches!(o.path(&["guidPath", "guids"]).map(Val::items),
-                    Some([g]) if g.get("localID").and_then(Val::as_u32) == Some(local))
+                    Some([g]) if g.as_guid().map(|g| g.1) == Some(local))
             });
             if let Some(Val::Obj(o)) = part {
                 for (k, v) in o.iter().filter(|(k, _)| *k != "guidPath") {

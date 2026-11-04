@@ -94,6 +94,34 @@ fn encoded_message_matches_the_original_bytes() {
     }
 }
 
+/// GUIDs decode inline (no heap object each) and still write back, also when an edit
+/// supplies one as the two-field object a JSON round trip produces.
+#[test]
+fn guids_decode_inline_and_write_back_in_either_form() {
+    let mut doc = Document::open(fixture("structure")).unwrap();
+    let node = doc.node(Guid(1, 42)).unwrap();
+    assert!(matches!(
+        node.data.get("guid"),
+        Some(Val::Guid(Guid(1, 42)))
+    ));
+    let parent = node.data.path(&["parentIndex", "guid"]).unwrap().clone();
+    assert!(matches!(parent, Val::Guid(_)));
+    assert_eq!(parent.as_guid(), node.parent);
+
+    let as_obj: Val = serde_json::from_value(serde_json::to_value(&parent).unwrap()).unwrap();
+    assert!(matches!(as_obj, Val::Obj(_)));
+    assert_eq!(as_obj, parent);
+    let mut nodes = doc.nodes.clone();
+    let edited = nodes.iter_mut().find(|n| n.id == Guid(1, 42)).unwrap();
+    let Some(Val::Obj(index)) = edited.data.get_mut("parentIndex") else {
+        panic!()
+    };
+    index.insert("guid", as_obj);
+    doc.set_nodes(nodes).unwrap();
+    let again = Document::from_bytes(&doc.to_bytes().unwrap()).unwrap();
+    assert_eq!(again.node(Guid(1, 42)).unwrap().parent, parent.as_guid());
+}
+
 #[test]
 fn edits_are_written() {
     let mut doc = Document::open(fixture("structure")).unwrap();
