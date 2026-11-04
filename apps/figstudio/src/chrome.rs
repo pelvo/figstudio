@@ -1745,8 +1745,8 @@ impl App {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let back = ui
-                                .add_enabled(preview.player.can_go_back(), egui::Button::new("← Back"))
-                                .on_hover_text("Previous screen (← or Backspace)");
+                                .add_enabled(preview.player.can_go_back(), egui::Button::new("Back"))
+                                .on_hover_text("Previous screen (Left arrow or Backspace)");
                             if back.clicked() {
                                 actions.push(Action::PreviewBack);
                             }

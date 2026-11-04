@@ -155,3 +155,11 @@ fn links_to_missing_frames_are_listed_but_not_played() {
     let link = &read(&doc, id(4)).links[0];
     assert_eq!((link.destination, link.step), (Some(id(777)), None));
 }
+
+/// Writes the prototype to `$FIGSTUDIO_PROTOTYPE_FIXTURE` for `web/e2e/prototype.spec.mjs`.
+#[test]
+#[ignore = "writes a file for the browser spec"]
+fn write_fixture() {
+    let path = std::env::var("FIGSTUDIO_PROTOTYPE_FIXTURE").expect("FIGSTUDIO_PROTOTYPE_FIXTURE");
+    prototype_doc().save(path).unwrap();
+}
