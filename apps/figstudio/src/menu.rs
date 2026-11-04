@@ -39,6 +39,12 @@ pub(crate) enum Action {
     SelectTool(Tool),
     ClearSelection,
     ZoomBy(f32),
+    /// Start or stop prototype Preview (`preview.rs`).
+    Preview,
+    /// Preview: back to the previous screen.
+    PreviewBack,
+    /// Preview: back to the flow's first screen.
+    PreviewRestart,
     #[cfg(target_arch = "wasm32")]
     CjkFont(crate::cjk::Variant),
 }
@@ -157,6 +163,14 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
         Item::action("Actual size", Action::ActualSize, has_tab),
         Item::action("Zoom in", Action::ZoomBy(1.25), has_tab),
         Item::action("Zoom out", Action::ZoomBy(0.8), has_tab),
+        Item::separator(),
+        Item::checked(
+            "Preview prototype",
+            Action::Preview,
+            app.tabs
+                .get(app.active)
+                .is_some_and(|t| t.preview.is_some()),
+        ),
         Item::separator(),
         Item::checked("Sidebar", Action::ToggleLayers, app.show_left),
         Item::checked("Properties panel", Action::ToggleProperties, app.show_right),
@@ -328,7 +342,32 @@ impl App {
             Action::SelectTool(tool) => self.tool = tool,
             Action::ZoomFit => {
                 if let Some(t) = self.tab() {
-                    t.fit_pending = true;
+                    match t.preview.as_ref() {
+                        Some(p) => t.fit_node = Some(p.player.screen()),
+                        None => t.fit_pending = true,
+                    }
+                }
+            }
+            Action::Preview => {
+                let started = self.tab().map(|t| match t.preview {
+                    Some(_) => {
+                        t.stop_preview();
+                        true
+                    }
+                    None => t.start_preview(),
+                });
+                if started == Some(false) {
+                    self.toast(ctx, "Nothing to preview: this page has no frames.", false);
+                }
+            }
+            Action::PreviewBack => {
+                if let Some(t) = self.tab() {
+                    t.preview_go(Some(figstudio_render::prototype::Step::Back));
+                }
+            }
+            Action::PreviewRestart => {
+                if let Some(t) = self.tab() {
+                    t.preview_go(None);
                 }
             }
             Action::ActualSize => {

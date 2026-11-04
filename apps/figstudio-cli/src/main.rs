@@ -3,6 +3,7 @@
 mod compare;
 mod doctor;
 mod image_output;
+mod prototype;
 mod synth;
 
 use std::fmt;
@@ -37,6 +38,10 @@ USAGE:
                         [--json-only] [--no-system-fonts] [--format png|webp]
       Version report: report.json, report.html and lossless WebP images under <dir>/render.
       Compare defaults to WebP; render/thumbnail infer .webp from -o, otherwise PNG.
+  figstudio-cli prototype <file.fig> [--flow <n|name>] [--page <n|name>] [-o <dir>]
+                          [--scale <x>] [--format png|webp] [--no-system-fonts]
+      Prototype flows, the screens they reach and every link on them; -o renders the
+      screens in flow order. Without flows, starts at the page's first frame.
 
 Pages are numbered from 1. Node ids look like 12:34 (see `tree`).";
 
@@ -68,6 +73,7 @@ struct Args {
     no_render: bool,
     json_only: bool,
     format: Option<ImageFormat>,
+    flow: Option<String>,
 }
 
 fn command_error(command: &str, has_output: bool) -> Option<String> {
@@ -80,6 +86,7 @@ fn command_error(command: &str, has_output: bool) -> Option<String> {
         "resave",
         "synth",
         "compare",
+        "prototype",
     ]
     .contains(&command)
     {
@@ -128,6 +135,7 @@ fn parse_args(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         no_render: false,
         json_only: false,
         format: None,
+        flow: None,
     };
     let mut file = None;
     while let Some(a) = raw.next() {
@@ -135,6 +143,7 @@ fn parse_args(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         match a.as_str() {
             "-o" | "--out" => args.out = Some(value("-o")?.into()),
             "--page" => args.page = Some(value("--page")?),
+            "--flow" => args.flow = Some(value("--flow")?),
             "--node" => args.node = Some(value("--node")?.parse()?),
             "--scale" => {
                 args.scale = value("--scale")?
@@ -311,6 +320,20 @@ fn run(args: Args) -> Result<()> {
             println!("components: {components}");
             let counts = emoji_counts(&doc, args.system_fonts);
             println!("emoji:    {}", emoji_report::summary(&counts));
+        }
+        "prototype" => {
+            let out = args.out.as_deref();
+            prototype::run(
+                &doc,
+                &prototype::Options {
+                    flow: args.flow.as_deref(),
+                    page: pick_page(&doc, args.page.as_deref())?,
+                    format: args.format.unwrap_or_default(),
+                    out,
+                    scale: args.scale,
+                    system_fonts: args.system_fonts,
+                },
+            )?;
         }
         "tree" => {
             let page = pick_page(&doc, args.page.as_deref())?;

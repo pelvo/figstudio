@@ -125,6 +125,7 @@ fn tools_dispatch_core_outputs_and_inline_png_assets() {
         ("get_variable_defs", json!({}), "No resolved tokens"),
         ("get_figjam", json!({}), "<"),
         ("get_libraries", json!({}), "components"),
+        ("get_prototype", json!({}), "screens"),
         ("search_design_system", json!({"query":""}), "results"),
         (
             "get_context_for_code_connect",

@@ -430,10 +430,10 @@ pub(crate) struct CanvasShot {
 impl CanvasShot {
     fn of(tab: &crate::tab::Tab) -> Self {
         CanvasShot {
-            key: (tab.id, tab.page),
+            key: (tab.id, tab.root()),
             doc: tab.doc.instance,
             view: tab.shown,
-            background: canvas::to_color32(figstudio_render::page_background(&tab.doc, tab.page)),
+            background: canvas::to_color32(tab.background()),
         }
     }
 }
@@ -470,7 +470,7 @@ impl Crossfade {
         shown: f32,
         ppp: f32,
     ) -> Vec<crate::tiles::Key> {
-        if self.last.is_some_and(|s| s.key != (tab.id, tab.page)) {
+        if self.last.is_some_and(|s| s.key != (tab.id, tab.root())) {
             self.from = self.last.take();
         }
         if shown >= 1.0 {
@@ -484,8 +484,7 @@ impl Crossfade {
                 tiles.paint_cached(painter, (rect, radius), page, from.view, ppp)
             }
             None => {
-                let background = figstudio_render::page_background(&tab.doc, tab.page);
-                painter.rect_filled(rect, radius, canvas::to_color32(background));
+                painter.rect_filled(rect, radius, canvas::to_color32(tab.background()));
                 Vec::new()
             }
         }
@@ -1443,7 +1442,8 @@ impl App {
                     };
                     // Another file or page fades in over the last one, painted again from the
                     // tile cache: a crossfade, never the bare card for a frame.
-                    let shown = anim::arrive(&ctx, Id::new("canvas-in"), (tab.id, tab.page), 0.16);
+                    let shown =
+                        anim::arrive(&ctx, Id::new("canvas-in"), (tab.id, tab.root()), 0.16);
                     let ppp = ui.pixels_per_point();
                     let under = (card, f32::from(CARD_RADIUS));
                     let underlay =
@@ -1473,7 +1473,14 @@ impl App {
                 Stroke::new(1.0, p.card_stroke),
                 StrokeKind::Inside,
             );
-            if !self.render_worker_lost && self.tabs.get(self.active).is_some() {
+            let previewing = self
+                .tabs
+                .get(self.active)
+                .is_some_and(|t| t.preview.is_some());
+            if !self.render_worker_lost && previewing {
+                self.preview_bar(ui, card, &mut actions);
+                self.gaps_chip(ui, card, card.top());
+            } else if !self.render_worker_lost && self.tabs.get(self.active).is_some() {
                 let tools = self.tool_pill(ui, card, &mut actions);
                 self.status_pill(ui, card, tools);
                 let below = self.find_bar(ui, card);
@@ -1701,6 +1708,77 @@ impl App {
                                 .truncate(),
                         )
                         .on_hover_text("What draws the canvas (FIGSTUDIO_RENDERER=cpu|gpu). Tiles on the CPU use something the GPU path cannot draw yet.");
+                    });
+            },
+        );
+    }
+
+    /// Preview's bar at the bottom: back, the screen's name, what is not played, restart, exit.
+    fn preview_bar(&self, ui: &mut Ui, card: Rect, actions: &mut Vec<Action>) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let Some(preview) = &tab.preview else {
+            return;
+        };
+        let p = theme::of(ui);
+        let name = tab
+            .doc
+            .node(preview.player.screen())
+            .map_or("", |n| n.name.as_str());
+        let skipped = preview.screen.skipped();
+        let max = Rect::from_min_max(
+            pos2(card.left() + 12.0, card.bottom() - 52.0),
+            pos2(card.right() - 12.0, card.bottom() - 12.0),
+        );
+        ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(max)
+                .layout(Layout::top_down(Align::Center)),
+            |ui| {
+                egui::Frame::new()
+                    .fill(p.glass)
+                    .corner_radius(CornerRadius::same(17))
+                    .stroke(Stroke::new(1.0, p.card_stroke))
+                    .shadow(card_shadow(&p, 14))
+                    .inner_margin(Margin::symmetric(8, 5))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let back = ui
+                                .add_enabled(preview.player.can_go_back(), egui::Button::new("← Back"))
+                                .on_hover_text("Previous screen (← or Backspace)");
+                            if back.clicked() {
+                                actions.push(Action::PreviewBack);
+                            }
+                            ui.add(
+                                egui::Label::new(RichText::new(name).size(12.0).color(p.text))
+                                    .truncate(),
+                            );
+                            if skipped > 0 {
+                                ui.label(
+                                    RichText::new(format!("{skipped} not played"))
+                                        .size(11.5)
+                                        .color(p.text_dim),
+                                )
+                                .on_hover_text(
+                                    "Links on this screen that Preview does not follow yet. It plays \"On click\" links that navigate or go back; hover, overlays, swaps, scroll, delays and URLs are skipped.",
+                                );
+                            }
+                            if ui
+                                .add_enabled(preview.player.can_go_back(), egui::Button::new("Restart"))
+                                .on_hover_text("Back to the first screen (R)")
+                                .clicked()
+                            {
+                                actions.push(Action::PreviewRestart);
+                            }
+                            if ui
+                                .button("Exit")
+                                .on_hover_text("Stop the preview (Esc or ⇧Space)")
+                                .clicked()
+                            {
+                                actions.push(Action::Preview);
+                            }
+                        });
                     });
             },
         );
