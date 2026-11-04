@@ -8,7 +8,7 @@ title: Cut decoded document memory
 - [x] Decode `{sessionID, localID}` structs inline as `Val::Guid` (no heap object per GUID)
 - [x] Keep `derivedSymbolData` and the two consumption maps encoded until first read
   (`Val::Lazy`); written back as the original bytes unless edited
-- [ ] Benchmark open / read / encode before and after on two large real files (before the PR)
+- [x] Benchmark open / read / encode before and after on two large real files (before the PR)
 
 ## Progress
 
@@ -42,4 +42,16 @@ title: Cut decoded document memory
   shares the decode, an edited lazy field is written as edited (`crates/fig`).
 - Not verified: timing (runs of one command varied 2x on this machine; benchmark before the
   PR); the desktop app by hand (search, layers, MCP may read more of these fields).
+
+### 2026-11-04T130000Z memory-footprint
+- What changed and how it was checked: benchmark of main against this branch, release
+  builds, two large real files (~150k nodes each), 5 interleaved runs, medians (spread about
+  ±5% for times, ±0.1% for memory). Open -21%, save -36/-38%, page render -24/-25%, `info`
+  -20/-27%; memory after open -43/-47%, render peak -24/-33%, `info` peak -18/-33%. Worst
+  case, reading every field of every node: +0.4/+0.8 s once per file (memory then still
+  5-8% below main). Only compare reads every field. Render setup's search for a paint
+  reference now looks at decoded fields first, so it decodes the heavy ones only in a
+  document that mentions no style or colour variable anywhere
+  (`crates/render/src/variables_tests.rs`, seen failing with the single pass).
+- Not verified: the desktop app by hand; a full compare of two large files timed end to end.
 
