@@ -149,6 +149,39 @@ fn an_edited_lazy_field_is_written_as_edited() {
     assert_eq!(list.items().len(), 1);
 }
 
+/// Two copies of a document compare equal without decoding their still-encoded fields
+/// (as compare does for every unchanged node), and a real difference is still seen.
+#[test]
+fn equal_documents_compare_equal_without_decoding_their_lazy_fields() {
+    let encoded = |doc: &Document| -> usize {
+        doc.nodes
+            .iter()
+            .map(|n| match &n.data {
+                Val::Obj(o) => o.len() - o.values_decoded().count(),
+                _ => 0,
+            })
+            .sum()
+    };
+    let a = Document::open(fixture("structure")).unwrap();
+    let mut b = Document::open(fixture("structure")).unwrap();
+    let before = encoded(&a);
+    assert!(before > 0);
+    assert!(a.nodes.iter().zip(&b.nodes).all(|(x, y)| x.data == y.data));
+    assert_eq!((encoded(&a), encoded(&b)), (before, before));
+
+    let mut nodes = b.nodes.clone();
+    let node = nodes
+        .iter_mut()
+        .find(|n| n.data.get("derivedSymbolData").is_some())
+        .unwrap();
+    let Some(Val::Arr(items)) = node.data.get_mut("derivedSymbolData") else {
+        panic!()
+    };
+    items.truncate(1);
+    b.set_nodes(nodes).unwrap();
+    assert!(!a.nodes.iter().zip(&b.nodes).all(|(x, y)| x.data == y.data));
+}
+
 #[test]
 fn edits_are_written() {
     let mut doc = Document::open(fixture("structure")).unwrap();

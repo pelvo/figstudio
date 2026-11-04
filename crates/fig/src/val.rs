@@ -217,7 +217,8 @@ impl Obj {
 /// Field order does not matter for equality.
 impl PartialEq for Obj {
     fn eq(&self, other: &Obj) -> bool {
-        self.len() == other.len() && self.iter().all(|(k, v)| other.get(k) == Some(v))
+        // Stored values, so two still-encoded fields reach `Val`'s byte comparison undecoded.
+        self.len() == other.len() && self.0.iter().all(|(k, v)| other.get_raw(k) == Some(v))
     }
 }
 
@@ -235,6 +236,14 @@ impl<const N: usize> From<[(&str, Val); N]> for Obj {
 /// document always equals an unchanged copy of itself (Figma stores NaN in some fields).
 impl PartialEq for Val {
     fn eq(&self, other: &Val) -> bool {
+        // The same bytes of the same field under one schema decode alike: no need to decode.
+        if let (Val::Lazy(a), Val::Lazy(b)) = (self, other)
+            && Arc::ptr_eq(&a.dec, &b.dec)
+            && (a.def, a.field) == (b.def, b.field)
+            && a.bytes == b.bytes
+        {
+            return true;
+        }
         match (self.view(), other.view()) {
             (Val::Bool(a), Val::Bool(b)) => a == b,
             (Val::Int(a), Val::Int(b)) => a == b,

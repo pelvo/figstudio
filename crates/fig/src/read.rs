@@ -5,7 +5,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use kiwi_schema::{
     ByteBuffer, DefKind, Field, Schema, TYPE_BOOL, TYPE_BYTE, TYPE_FLOAT, TYPE_INT, TYPE_INT64,
@@ -99,6 +99,21 @@ impl Reader {
         {
             return Err("schema has too many or oversized identifiers".into());
         }
+        // Documents with the same schema share one decoder, so their still-encoded fields can
+        // be told equal (and written) by comparing bytes; see `Val`'s `PartialEq`.
+        static LIVE: OnceLock<Mutex<Vec<Weak<Decoder>>>> = OnceLock::new();
+        let mut live = LIVE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        live.retain(|d| d.strong_count() > 0);
+        if let Some(dec) = live
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|d| d.schema == schema)
+        {
+            return Ok(Reader::with(dec));
+        }
         intern_schema(schema.defs.iter().flat_map(|d| {
             std::iter::once(d.name.as_str()).chain(d.fields.iter().map(|f| f.name.as_str()))
         }))?;
@@ -120,12 +135,14 @@ impl Reader {
             })
             .collect();
         let guids = schema.defs.iter().map(is_guid).collect();
-        Ok(Reader::with(Arc::new(Decoder {
+        let dec = Arc::new(Decoder {
             schema,
             names,
             enums,
             guids,
-        })))
+        });
+        live.push(Arc::downgrade(&dec));
+        Ok(Reader::with(dec))
     }
 
     /// Spends `n` of the decoded-items budget.
