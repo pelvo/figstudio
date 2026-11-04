@@ -4,8 +4,8 @@ use figstudio_fig::{Document, Val, hex};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::kurbo::{Affine, Point, Rect};
 use vello_cpu::peniko::{
-    ColorStop, ColorStops, Extend, Gradient, ImageQuality, ImageSampler, LinearGradientPosition,
-    RadialGradientPosition, SweepGradientPosition,
+    BlendMode, ColorStop, ColorStops, Compose, Extend, Gradient, ImageQuality, ImageSampler,
+    LinearGradientPosition, Mix, RadialGradientPosition, SweepGradientPosition,
 };
 use vello_cpu::{Image, ImageSource, PaintType};
 
@@ -188,6 +188,32 @@ fn image_layout(p: &Val, w: f64, h: f64, natural: (f64, f64)) -> (Affine, Extend
             )
         }
     }
+}
+
+/// Vello's blend mode for a Figma layer or paint `blendMode` (missing is normal);
+/// `None` when Vello has none (`LINEAR_BURN`, unknown names).
+pub(crate) fn blend_mode(mode: Option<&str>) -> Option<BlendMode> {
+    let mix = match mode.unwrap_or("NORMAL") {
+        "NORMAL" | "PASS_THROUGH" => Mix::Normal,
+        "LINEAR_DODGE" => return Some(BlendMode::new(Mix::Normal, Compose::Plus)),
+        "DARKEN" => Mix::Darken,
+        "MULTIPLY" => Mix::Multiply,
+        "COLOR_BURN" => Mix::ColorBurn,
+        "LIGHTEN" => Mix::Lighten,
+        "SCREEN" => Mix::Screen,
+        "COLOR_DODGE" => Mix::ColorDodge,
+        "OVERLAY" => Mix::Overlay,
+        "SOFT_LIGHT" => Mix::SoftLight,
+        "HARD_LIGHT" => Mix::HardLight,
+        "DIFFERENCE" => Mix::Difference,
+        "EXCLUSION" => Mix::Exclusion,
+        "HUE" => Mix::Hue,
+        "SATURATION" => Mix::Saturation,
+        "COLOR" => Mix::Color,
+        "LUMINOSITY" => Mix::Luminosity,
+        _ => return None,
+    };
+    Some(BlendMode::new(mix, Compose::SrcOver))
 }
 
 /// The largest length scale of a transform's linear part.

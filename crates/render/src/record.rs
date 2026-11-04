@@ -27,6 +27,8 @@ pub(crate) trait Canvas {
     fn push_clip_path(&mut self, path: &BezPath);
     fn pop_clip(&mut self);
     fn push_opacity_layer(&mut self, opacity: f32);
+    /// Draws into a layer that is blended with what is below when popped.
+    fn push_blend_layer(&mut self, mode: BlendMode);
     /// `reach`: how far (in local units) the filter can move or spread what is drawn in it.
     fn push_filter_layer(&mut self, filter: Filter, reach: f64);
     fn pop_layer(&mut self);
@@ -70,6 +72,9 @@ impl Canvas for RenderContext {
     fn push_opacity_layer(&mut self, opacity: f32) {
         RenderContext::push_opacity_layer(self, opacity);
     }
+    fn push_blend_layer(&mut self, mode: BlendMode) {
+        RenderContext::push_blend_layer(self, mode);
+    }
     fn push_filter_layer(&mut self, filter: Filter, _reach: f64) {
         RenderContext::push_filter_layer(self, filter);
     }
@@ -87,6 +92,7 @@ enum Layer {
     /// `push_clip_path`: popped with `pop_clip`, not `pop_layer`.
     ClipPath(BezPath),
     Opacity(f32),
+    Blend(BlendMode),
     Filter(Filter),
 }
 
@@ -274,6 +280,7 @@ impl Recorder {
                         Layer::Clip(p) => rc.push_clip_layer(p),
                         Layer::ClipPath(p) => rc.push_clip_path(p),
                         Layer::Opacity(o) => rc.push_opacity_layer(*o),
+                        Layer::Blend(m) => rc.push_blend_layer(*m),
                         Layer::Filter(f) => rc.push_filter_layer(f.clone(), 0.0),
                     }
                 }
@@ -326,6 +333,10 @@ impl Canvas for Recorder {
     fn push_opacity_layer(&mut self, opacity: f32) {
         let r = self.reach();
         self.push(Layer::Opacity(opacity), r);
+    }
+    fn push_blend_layer(&mut self, mode: BlendMode) {
+        let r = self.reach();
+        self.push(Layer::Blend(mode), r);
     }
     fn push_filter_layer(&mut self, filter: Filter, reach: f64) {
         let r = self.reach() + reach.abs() * linear_scale(self.transform);

@@ -119,13 +119,17 @@ fn a_text_box_is_not_padded_by_its_overhang() {
 
 #[test]
 fn page_and_url_ids_render_and_approximations_are_listed() {
-    let doc = doc();
+    let mut doc = doc();
+    let mut nodes = doc.nodes.clone();
+    let node = nodes.iter_mut().find(|n| n.id == Guid(1, 2)).unwrap();
+    // Vello has no linear burn, so node 1:2 is drawn with an approximated blend mode.
+    node.data.set("blendMode", Val::Enum("LINEAR_BURN"));
+    doc.set_nodes(nodes).unwrap();
     let page = shot(&doc, "0:1", Some(0.1));
     assert!(png_size(&page).0 > 1);
     let url = "https://www.figma.com/design/key/name?node-id=1-2";
     let result = shot(&doc, url, Some(0.25));
     assert!(png_size(&result).0 > 100);
-    // Node 1:2 is drawn with approximated blend modes today.
     let reply = text(&result);
     let line = reply
         .lines()
