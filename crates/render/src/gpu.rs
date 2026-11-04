@@ -169,6 +169,9 @@ impl Canvas for Scene {
     fn push_opacity_layer(&mut self, opacity: f32) {
         Scene::push_opacity_layer(self, opacity);
     }
+    fn push_blend_layer(&mut self, mode: BlendMode) {
+        Scene::push_blend_layer(self, mode);
+    }
     fn push_filter_layer(&mut self, filter: Filter, _reach: f64) {
         Scene::push_filter_layer(self, filter);
     }

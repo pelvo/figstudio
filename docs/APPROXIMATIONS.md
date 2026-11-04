@@ -175,6 +175,26 @@ validated before installation and kept after CJK fallbacks; their combined size 
 bytes for the checked source fonts. Cross-platform colour faces and real COLR fonts remain
 to be checked.
 
+### Blend modes approximated
+
+Code: `paint::blend_mode` (`crates/render/src/paint.rs`), used by `Ctx::draw_with_data` for
+the layer mode and by `Ctx::paint_paths` for each fill and stroke paint.
+
+A layer blend mode pushes a blend layer around the whole node (effects and opacity
+included). A paint blend mode blends that paint with what is already drawn. `NORMAL` and
+`PASS_THROUGH` are exact and not counted. A frame that clips its content clips with a
+non-isolating clip path, so its children still blend with what is below the frame. Vello's
+clip paths do not clip what a filter spreads, so a shadow or blur inside such a frame is
+drawn in a clip layer of the frame's shape (`Ctx::push_filter_layer`). Each layer
+or drawn paint with `LINEAR_BURN` or an unknown mode counts once and is drawn as normal.
+Shadow `blendMode` is counted in C1.
+
+**Exact fix:** `LINEAR_BURN` is `max(0, backdrop + source - 1)`; vello_cpu 0.3 has no such
+mix, so it needs a custom compositing step.
+
+Background blur (`BACKGROUND_BLUR`) stays in C2 ("effects skipped"): it blurs what is drawn
+below the node, and vello_cpu 0.3 has no backdrop filter.
+
 ## Plan
 
 One fix at a time (they all touch `crates/render/src/lib.rs`), each with a synthetic test
@@ -194,3 +214,5 @@ sigma), and anything whose exact form costs too much time on large pages.
 ## Log
 
 - 2026-10-11 — First measurement and breakdown recorded (this file).
+- 2026-11-04 — Blend modes drawn (all but `LINEAR_BURN`); `PASS_THROUGH` and `NORMAL` no
+  longer counted. Not re-measured on the large file.

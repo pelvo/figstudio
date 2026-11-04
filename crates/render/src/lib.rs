@@ -337,6 +337,8 @@ struct Ctx<'a> {
     /// How far (output pixels) the open filter layers of enclosing nodes spread what is drawn
     /// now: culling grows each node by it, so a blur still reaching the output keeps it.
     inherited_reach: f64,
+    /// The innermost clipping frame's shape and transform (see [`Ctx::push_filter_layer`]).
+    frame_clip: Option<(BezPath, Affine)>,
     /// Metadata walk: resolve visible stored emoji, but issue no drawing commands or culling.
     emoji_only: bool,
 }
@@ -678,6 +680,7 @@ impl Renderer {
             exhausted: false,
             screen,
             inherited_reach: 0.0,
+            frame_clip: None,
             emoji_only: false,
         }
     }
@@ -1194,9 +1197,8 @@ impl Ctx<'_> {
         }
         self.stats.nodes += 1;
         self.stats.approximated_instance_ink += usize::from(approximate_ink);
-        if data.text("blendMode").is_some_and(|mode| mode != "NORMAL") {
-            self.stats.approximated_blends += 1;
-        }
+        let blend = paint::blend_mode(data.text("blendMode"));
+        self.stats.approximated_blends += usize::from(blend.is_none());
         // The shape the node's fills and its shadows follow.
         let mut fill_paths = geometry(
             data,
@@ -1264,6 +1266,12 @@ impl Ctx<'_> {
         let casts = casts_shadow(data, &shadow_paths);
         let mut shadows = Vec::new();
         let mut layers = 0;
+        // Outermost, so the node's effects and opacity are blended with what is below too.
+        if let Some(mode) = blend.filter(|m| *m != BlendMode::default()) {
+            self.rc.set_transform(world);
+            self.rc.push_blend_layer(mode);
+            layers += 1;
+        }
         let mut shadow_layers = 0;
         let outer_reach = self.inherited_reach;
         let silhouette = casts
@@ -1320,11 +1328,12 @@ impl Ctx<'_> {
                     continue;
                 }
             };
-            self.rc.set_transform(world);
-            self.rc
-                .push_filter_layer(Filter::from_primitive(primitive), effect_reach(effect));
+            layers += self.push_filter_layer(
+                Filter::from_primitive(primitive),
+                effect_reach(effect),
+                world,
+            );
             self.inherited_reach += effect_reach(effect) * paint::linear_scale(world);
-            layers += 1;
         }
         let opacity = data.num("opacity").unwrap_or(1.0).clamp(0.0, 1.0);
         if opacity < 1.0 {
@@ -1358,9 +1367,15 @@ impl Ctx<'_> {
         // Children.
         if kind != "TEXT" {
             let clip = clips.then(|| base_shape(kind, data)).flatten();
+            let outer_clip = self.frame_clip.take();
             if let Some(clip) = &clip {
                 self.rc.set_transform(world);
-                self.rc.push_clip_layer(clip);
+                // Not a layer: clipping does not isolate, so children still blend with
+                // what is below the frame.
+                self.rc.push_clip_path(clip);
+                self.frame_clip = Some((clip.clone(), world));
+            } else {
+                self.frame_clip.clone_from(&outer_clip);
             }
             if kind == "INSTANCE" {
                 self.draw_instance(data, world, path);
@@ -1373,8 +1388,9 @@ impl Ctx<'_> {
                 self.draw_children(node, data, world, child_path);
             }
             if clip.is_some() {
-                self.rc.pop_layer();
+                self.rc.pop_clip();
             }
+            self.frame_clip = outer_clip;
             if stroke_last {
                 self.draw_strokes(kind, data, (fill_paths, &stroke_paths), world, (w, h));
             }
@@ -1384,6 +1400,22 @@ impl Ctx<'_> {
         }
         self.inherited_reach = outer_reach;
         self.depth -= 1;
+    }
+
+    /// Pushes a filter layer and returns how many layers to pop. Vello's clip paths do not
+    /// clip what a filter spreads, so inside a clipping frame the filter layer goes into a
+    /// clip layer of the frame's shape, whose result the outer clip paths do clip.
+    pub(crate) fn push_filter_layer(&mut self, filter: Filter, reach: f64, world: Affine) -> usize {
+        let mut layers = 1;
+        if let Some((clip, at)) = &self.frame_clip {
+            self.rc.set_transform(*at);
+            self.rc.set_fill_rule(vello_cpu::peniko::Fill::NonZero);
+            self.rc.push_clip_layer(clip);
+            layers += 1;
+        }
+        self.rc.set_transform(world);
+        self.rc.push_filter_layer(filter, reach);
+        layers
     }
 
     /// Strokes: precomputed outline geometry, or stroke the base shape.
@@ -1561,9 +1593,15 @@ impl Ctx<'_> {
                 else {
                     continue;
                 };
+                let mode = paint::blend_mode(p.text("blendMode"));
+                self.stats.approximated_blends += usize::from(mode.is_none());
+                let blend = mode.filter(|m| *m != BlendMode::default());
                 self.rc.set_transform(world);
+                if let Some(mode) = blend {
+                    self.rc.set_blend_mode(mode);
+                }
                 if let Some(clip) = resolved.clip {
-                    self.rc.push_clip_layer(&clip.to_path(0.1));
+                    self.rc.push_clip_path(&clip.to_path(0.1));
                 }
                 self.rc.set_paint(resolved.paint);
                 self.rc.set_paint_transform(resolved.transform);
@@ -1571,9 +1609,12 @@ impl Ctx<'_> {
                     self.rc.set_fill_rule(g.rule);
                     self.rc.fill_path(&g.path);
                 }
+                if blend.is_some() {
+                    self.rc.set_blend_mode(BlendMode::default());
+                }
                 self.rc.set_paint_transform(Affine::IDENTITY);
                 if resolved.clip.is_some() {
-                    self.rc.pop_layer();
+                    self.rc.pop_clip();
                 }
             }
             start = end;

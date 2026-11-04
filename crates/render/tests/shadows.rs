@@ -378,3 +378,31 @@ fn unapplied_blend_mode_is_counted() {
     let (_, stats) = render(&with_effects(vec![multiply]));
     assert_eq!(stats.approximated_effects, 1);
 }
+
+#[test]
+fn a_clipping_frame_clips_its_childs_shadow_and_blur() {
+    let mut frame = node(3, 1, "FRAME");
+    frame.data.set("frameMaskDisabled", Val::Bool(false));
+    frame.data.set("size", size(50.0, 50.0));
+    let mut rect = node(2, 3, "RECTANGLE");
+    rect.data.set("size", size(30.0, 30.0));
+    rect.data.set("fillPaints", paint(0.0, 0.0, 0.0));
+    let mut blur = shadow("LAYER_BLUR", 0.0, 0.0, 16.0);
+    blur.set("type", Val::Str("LAYER_BLUR".into()));
+    let cases = [
+        (shadow("DROP_SHADOW", 30.0, 30.0, 8.0), (45, 45)),
+        (blur, (35, 10)),
+    ];
+    for (effect, inside) in cases {
+        rect.data.set("effects", Val::Arr(vec![effect]));
+        let doc = document(vec![node(1, 0, "CANVAS"), frame.clone(), rect.clone()]);
+        let (px, _) = render(&doc);
+        assert!(
+            pixel(&px, inside.0, inside.1)[3] > 0,
+            "drawn inside the frame"
+        );
+        for (x, y) in [(55, 55), (52, 20), (20, 52)] {
+            assert_eq!(pixel(&px, x, y)[3], 0, "outside the frame at ({x},{y})");
+        }
+    }
+}
