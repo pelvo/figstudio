@@ -14,33 +14,39 @@ use super::{SIZE, centre_of, harness, right_click};
 use crate::App;
 use crate::menu::Action as MenuAction;
 
+/// A node a screen reader or agent can act on: it takes a click or focus, or has a control
+/// role. egui's scroll bars are left out.
+fn is_control(a: &egui_kittest::kittest::AccessKitNode<'_>) -> bool {
+    a.role() != Role::ScrollBar
+        && (a.data().supports_action(Action::Click)
+            || a.data().supports_action(Action::Focus)
+            || matches!(
+                a.role(),
+                Role::Button
+                    | Role::CheckBox
+                    | Role::Switch
+                    | Role::RadioButton
+                    | Role::Slider
+                    | Role::SpinButton
+                    | Role::TextInput
+                    | Role::MultilineTextInput
+                    | Role::SearchInput
+                    | Role::ComboBox
+                    | Role::Link
+                    | Role::Tab
+                    | Role::MenuItem
+                    | Role::TreeItem
+                    | Role::ListBoxOption
+            ))
+}
+
 /// Controls in `h`'s tree without a name: role, value and place, for the failure message.
 fn unnamed(h: &Harness<'_, App>) -> Vec<String> {
     h.root()
         .children_recursive()
         .filter_map(|n| {
             let a = n.accesskit_node();
-            let control = a.role() != Role::ScrollBar
-                && (a.data().supports_action(Action::Click)
-                    || a.data().supports_action(Action::Focus)
-                    || matches!(
-                        a.role(),
-                        Role::Button
-                            | Role::CheckBox
-                            | Role::Switch
-                            | Role::RadioButton
-                            | Role::Slider
-                            | Role::SpinButton
-                            | Role::TextInput
-                            | Role::MultilineTextInput
-                            | Role::SearchInput
-                            | Role::ComboBox
-                            | Role::Link
-                            | Role::Tab
-                            | Role::MenuItem
-                            | Role::TreeItem
-                            | Role::ListBoxOption
-                    ));
+            let control = is_control(&a);
             let text = if a.label_comes_from_value() {
                 a.value()
             } else {
@@ -59,15 +65,58 @@ fn unnamed(h: &Harness<'_, App>) -> Vec<String> {
         .collect()
 }
 
+/// Controls (text aside) without a stable automation id (`author_id`, `AXIdentifier` on macOS),
+/// and ids used twice.
+fn unidentified(h: &Harness<'_, App>) -> (Vec<String>, Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    let (mut missing, mut twice) = (Vec::new(), Vec::new());
+    for n in h.root().children_recursive() {
+        let a = n.accesskit_node();
+        if a.is_hidden() {
+            continue;
+        }
+        match a.data().author_id() {
+            Some(id) => {
+                if !seen.insert(id.to_owned()) {
+                    twice.push(id.to_owned());
+                }
+            }
+            // egui's own window close button has an id we cannot know (`auto_id_with`).
+            None if a.label().as_deref() == Some("Close window") => {}
+            None if is_control(&a) && a.role() != Role::Label => missing.push(format!(
+                "{:?} {:?} at {:?}",
+                a.role(),
+                a.label().or_else(|| a.value()),
+                a.bounding_box().map(|b| (b.x0 as i32, b.y0 as i32))
+            )),
+            None => {}
+        }
+    }
+    (missing, twice)
+}
+
 #[track_caller]
 fn assert_all_named(h: &Harness<'_, App>, state: &str) {
+    let (missing, twice) = unidentified(h);
+    assert!(
+        missing.is_empty(),
+        "{state}: {} control(s) without an automation id:\n{}",
+        missing.len(),
+        missing.join("\n")
+    );
+    assert!(
+        twice.is_empty(),
+        "{state}: automation ids used twice: {twice:?}"
+    );
     // Nodes the app names after egui made them (`a11y.rs`) must be ones egui did make: a
     // node added for a widget that is not there has no place on screen.
     let placeless: Vec<String> = h
         .root()
         .children_recursive()
         .map(|n| n.accesskit_node())
-        .filter(|a| matches!(a.role(), Role::Splitter | Role::Menu | Role::Canvas))
+        .filter(|a| {
+            matches!(a.role(), Role::Splitter | Role::Menu) || a.data().author_id().is_some()
+        })
         .filter(|a| a.bounding_box().is_none())
         .map(|a| format!("{:?} {:?}", a.role(), a.label()))
         .collect();
@@ -166,8 +215,12 @@ fn the_canvas_says_its_page_zoom_and_selection() {
     let mut h = harness();
     h.run_steps(2);
     let describe = |h: &Harness<'_, App>| {
-        let canvas = h.get_by_role(Role::Canvas);
-        let a = canvas.accesskit_node();
+        let a = h
+            .root()
+            .children_recursive()
+            .map(|n| n.accesskit_node())
+            .find(|a| a.data().author_id() == Some("canvas"))
+            .expect("the canvas node");
         (
             a.label().unwrap_or_default(),
             a.description().unwrap_or_default(),
@@ -528,4 +581,363 @@ fn the_text_size_survives_a_restart() {
     h.state_mut().apply(MenuAction::Settings, &ctx);
     h.run_steps(4);
     assert!(h.query_by_label_contains("Now 110%").is_some());
+}
+
+/// The layer nodes under the canvas.
+fn canvas_layers<'h>(h: &'h Harness<'_, App>) -> Vec<egui_kittest::kittest::AccessKitNode<'h>> {
+    h.root()
+        .children_recursive()
+        .map(|n| n.accesskit_node())
+        .filter(|a| {
+            a.data()
+                .author_id()
+                .is_some_and(|id| id.starts_with("canvas.layer."))
+        })
+        .collect()
+}
+
+#[test]
+fn the_canvas_lists_its_visible_layers_by_name_kind_and_place() {
+    let mut h = harness();
+    h.run_steps(2);
+    let canvas = h.state().tabs[0].canvas_rect.expect("laid out");
+    let layers = canvas_layers(&h);
+    assert!(layers.len() > 5, "{} layers", layers.len());
+    let frame = layers
+        .iter()
+        .find(|a| a.label().as_deref() == Some("Groups"))
+        .expect("the Groups frame");
+    assert_eq!(frame.role(), Role::Group);
+    assert_eq!(frame.role_description(), Some("frame"));
+    // Its layers are its children in the tree, not the canvas's.
+    assert!(frame.children().count() > 0, "Groups has no children");
+    let text = layers
+        .iter()
+        .find(|a| a.role() == Role::Label)
+        .expect("a text layer");
+    assert!(text.value().is_some_and(|v| !v.is_empty()));
+    for a in &layers {
+        let b = a.bounding_box().expect("a place on screen");
+        let r = egui::Rect::from_min_max(
+            egui::pos2(b.x0 as f32, b.y0 as f32),
+            egui::pos2(b.x1 as f32, b.y1 as f32),
+        );
+        assert!(
+            canvas.expand(0.5).contains_rect(r),
+            "{:?} at {r:?}",
+            a.label()
+        );
+        assert!(a.data().supports_action(egui::accesskit::Action::Click));
+    }
+}
+
+#[test]
+fn canvas_layer_bounds_follow_the_drawn_zoom_not_its_target() {
+    let mut h = super::harness_fixture(super::FIXTURE, 1.0 / 60.0);
+    let ctx = h.ctx.clone();
+    crate::anim::set_reduced(&ctx, false);
+    h.run_steps(2);
+    h.state_mut().apply(MenuAction::ZoomBy(2.0), &ctx);
+    h.run_steps(5);
+    let tab = &h.state().tabs[0];
+    assert_ne!(tab.shown, tab.view, "mid-animation");
+    let guid = figstudio_fig::Guid(1, 34);
+    let bounds = figstudio_render::node_bounds(&tab.doc, guid).expect("layer bounds");
+    let canvas = tab.canvas_rect.expect("canvas");
+    let expected = egui::Rect::from_two_pos(
+        tab.shown
+            .to_screen(canvas.min, egui::pos2(bounds.x0 as f32, bounds.y0 as f32)),
+        tab.shown
+            .to_screen(canvas.min, egui::pos2(bounds.x1 as f32, bounds.y1 as f32)),
+    )
+    .intersect(canvas);
+    let id = crate::canvas_a11y::author_id(guid);
+    let layer = canvas_layers(&h)
+        .into_iter()
+        .find(|a| a.data().author_id() == Some(id.as_str()))
+        .expect("drawn layer");
+    let actual = layer.bounding_box().expect("accessibility bounds");
+    assert!(
+        (actual.x0 - f64::from(expected.min.x)).abs() < 0.5,
+        "{actual:?} != {expected:?}"
+    );
+    assert!(
+        (actual.x1 - f64::from(expected.max.x)).abs() < 0.5,
+        "{actual:?} != {expected:?}"
+    );
+}
+
+#[test]
+fn canvas_accessibility_presses_do_not_escape_modals() {
+    for action in [
+        MenuAction::Settings,
+        MenuAction::CommandBar,
+        MenuAction::Welcome,
+    ] {
+        let mut h = harness();
+        h.run_steps(2);
+        let layer = figstudio_fig::Guid(1, 34);
+        let id = crate::canvas_a11y::author_id(layer);
+        let (target_node, target_tree) = canvas_layers(&h)
+            .into_iter()
+            .find(|a| a.data().author_id() == Some(id.as_str()))
+            .expect("listed layer")
+            .locate();
+        let ctx = h.ctx.clone();
+        h.state_mut().apply(action, &ctx);
+        h.run_steps(6);
+        h.input_mut()
+            .events
+            .push(egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    target_node,
+                    target_tree,
+                    action: Action::Click,
+                    data: None,
+                },
+            ));
+        let before = h.state().tabs[0].selection;
+        h.run_steps(2);
+        assert_eq!(
+            h.state().tabs[0].selection,
+            before,
+            "selection behind modal"
+        );
+    }
+}
+
+#[test]
+fn the_opening_file_indicator_is_named_and_polite() {
+    let mut h = harness();
+    h.state_mut()
+        .loading
+        .begin(&std::path::PathBuf::from("synthetic.fig"));
+    h.run_steps(3);
+    let node = h.get_by_role_and_label(Role::ProgressIndicator, "Opening synthetic.fig…");
+    assert_eq!(
+        node.accesskit_node().data().live(),
+        Some(egui::accesskit::Live::Polite)
+    );
+}
+
+#[test]
+fn an_accent_buttons_id_does_not_depend_on_its_label() {
+    let changed = std::cell::Cell::new(false);
+    let installed = std::cell::Cell::new(false);
+    let mut h = Harness::new_ui(|ui| {
+        if !installed.replace(true) {
+            crate::theme::install_fonts(ui.ctx());
+            return;
+        }
+        let label = if changed.get() {
+            "Open file…"
+        } else {
+            "Open…"
+        };
+        let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(160.0, 36.0));
+        let _ = crate::chrome::accent_button(
+            ui,
+            rect,
+            "recents-open",
+            label,
+            label,
+            crate::theme::tint(crate::theme::HOME_TINT, false),
+        );
+    });
+    h.run_steps(2);
+    let before = h
+        .get_by_label("Open…")
+        .accesskit_node()
+        .data()
+        .author_id()
+        .map(str::to_owned);
+    changed.set(true);
+    h.run_steps(2);
+    let after = h
+        .get_by_label("Open file…")
+        .accesskit_node()
+        .data()
+        .author_id()
+        .map(str::to_owned);
+    assert!(before.is_some());
+    assert_eq!(before, after);
+}
+
+#[test]
+fn a_spaces_id_survives_closing_an_earlier_space() {
+    let mut h = harness();
+    let doc = std::sync::Arc::clone(&h.state().tabs[0].doc);
+    let second = crate::tab::Tab::new(
+        100,
+        std::path::PathBuf::from("synthetic.fig"),
+        doc,
+        None,
+        std::time::Duration::ZERO,
+    );
+    let title = second.space_name();
+    h.state_mut().tabs.push(second);
+    h.state_mut().active = 1;
+    h.run_steps(6);
+    let before = h
+        .get_by_role_and_label(Role::Button, &title)
+        .accesskit_node()
+        .data()
+        .author_id()
+        .map(str::to_owned);
+    h.state_mut().tabs.remove(0);
+    h.state_mut().active = 0;
+    h.run_steps(30);
+    let after = h
+        .get_by_role_and_label(Role::Button, &title)
+        .accesskit_node()
+        .data()
+        .author_id()
+        .map(str::to_owned);
+    assert!(before.is_some());
+    assert_eq!(before, after);
+}
+
+#[test]
+fn pressing_a_canvas_layer_selects_it() {
+    let mut h = harness();
+    h.run_steps(2);
+    let node = figstudio_fig::Guid(1, 34);
+    let id = crate::canvas_a11y::author_id(node);
+    let (target_node, target_tree) = canvas_layers(&h)
+        .into_iter()
+        .find(|a| a.data().author_id() == Some(id.as_str()))
+        .expect("the layer is listed")
+        .locate();
+    h.input_mut()
+        .events
+        .push(egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                target_node,
+                target_tree,
+                action: egui::accesskit::Action::Click,
+                data: None,
+            },
+        ));
+    h.run_steps(3);
+    assert_eq!(h.state().tabs[0].selection, Some(node));
+    let selected: Vec<_> = canvas_layers(&h)
+        .into_iter()
+        .filter(|a| a.is_selected() == Some(true))
+        .map(|a| a.data().author_id().map(str::to_owned))
+        .collect();
+    assert_eq!(selected, [Some(id)]);
+}
+
+#[test]
+fn layers_off_the_screen_are_not_listed() {
+    let mut h = harness();
+    h.run_steps(2);
+    let all = canvas_layers(&h).len();
+    assert!(all > 0, "nothing listed to begin with");
+    // Far off to the side: nothing of the page is on screen.
+    h.state_mut().tabs[0].view.pan += egui::vec2(100_000.0, 0.0);
+    h.run_steps(2);
+    assert_eq!(canvas_layers(&h).len(), 0, "of {all}");
+}
+
+#[test]
+fn a_properties_row_reads_as_key_and_value_together() {
+    let mut h = harness();
+    h.run_steps(2);
+    let values: Vec<String> = h
+        .root()
+        .children_recursive()
+        .map(|n| n.accesskit_node())
+        .filter(|a| a.role() == Role::Label && !a.is_hidden())
+        .filter_map(|a| a.value())
+        .collect();
+    let layers = h.state().tabs[0].doc.nodes.len();
+    assert!(values.contains(&format!("Layers: {layers}")), "{values:?}");
+    assert!(
+        !values.iter().any(|v| v == "Layers"),
+        "a lone key: {values:?}"
+    );
+
+    h.state_mut().tabs[0].select(Some(figstudio_fig::Guid(1, 34)));
+    h.run_steps(3);
+    let values: Vec<String> = h
+        .root()
+        .children_recursive()
+        .map(|n| n.accesskit_node())
+        .filter(|a| a.role() == Role::Label && !a.is_hidden())
+        .filter_map(|a| a.value())
+        .collect();
+    for key in ["X", "Y", "W", "H"] {
+        assert!(
+            values.iter().any(|v| v.starts_with(&format!("{key}: "))),
+            "no {key}: {values:?}"
+        );
+        assert!(!values.iter().any(|v| v == key), "a lone {key}: {values:?}");
+    }
+}
+
+#[test]
+fn toasts_are_announced_and_errors_interrupt() {
+    use egui::accesskit::Live;
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut().toast(&ctx, "Copied the link", false);
+    h.state_mut().toast(&ctx, "Could not open the file", true);
+    h.run_steps(3);
+    let live = |h: &Harness<'_, App>, text: &str| {
+        h.root()
+            .children_recursive()
+            .map(|n| n.accesskit_node())
+            .find(|a| a.value().as_deref() == Some(text) || a.label().as_deref() == Some(text))
+            .map(|a| (a.role(), a.live()))
+    };
+    assert_eq!(
+        live(&h, "Copied the link"),
+        Some((Role::Label, Live::Polite))
+    );
+    assert_eq!(
+        live(&h, "Could not open the file"),
+        Some((Role::Alert, Live::Assertive))
+    );
+}
+
+#[test]
+fn automation_ids_stay_the_same_when_labels_change() {
+    let mut h = harness();
+    h.run_steps(2);
+    let label_of = |h: &Harness<'_, App>, id: &str| {
+        h.root()
+            .children_recursive()
+            .map(|n| n.accesskit_node())
+            .find(|a| a.data().author_id() == Some(id))
+            .map(|a| a.label().unwrap_or_default())
+    };
+    for id in [
+        "canvas",
+        "button.sidebar",
+        "button.command-bar",
+        "button.select-tool",
+        "button.zoom-in",
+        "button.zoom-to-fit",
+        "field.filter-layers",
+        "splitter.properties",
+    ] {
+        assert!(label_of(&h, id).is_some(), "no {id}");
+    }
+    let tab = &h.state().tabs[0];
+    let first = tab.doc.children(tab.page)[0];
+    assert!(label_of(&h, &format!("layers.{first}")).is_some());
+    assert!(label_of(&h, &format!("pages.{}", tab.page)).is_some());
+
+    // The sidebar button reads "Hide sidebar" here and "Show sidebar" in the title strip.
+    assert_eq!(
+        label_of(&h, "button.sidebar").as_deref(),
+        Some("Hide sidebar")
+    );
+    h.state_mut().show_left = false;
+    h.run_steps(6);
+    assert_eq!(
+        label_of(&h, "button.sidebar").as_deref(),
+        Some("Show sidebar")
+    );
 }

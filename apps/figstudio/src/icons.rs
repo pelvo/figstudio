@@ -414,6 +414,7 @@ pub fn sized_button(ui: &mut Ui, icon: Icon, label: &str, selected: bool, side: 
 pub fn raw_button(ui: &mut Ui, icon: Icon, label: &str, selected: bool, side: f32) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
+    crate::a11y::author(&response, format!("button.{}", crate::a11y::slug(label)));
     if ui.is_rect_visible(rect) {
         let p = theme::of(ui);
         let (hover, press) = feedback(ui, &response);

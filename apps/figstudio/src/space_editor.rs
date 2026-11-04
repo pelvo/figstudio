@@ -71,6 +71,10 @@ enum Close {
 fn swatch(ui: &mut egui::Ui, fill: Color32, label: &str, selected: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, selected, label));
+    crate::a11y::author(
+        &response,
+        format!("space.colour.{}", crate::a11y::slug(label)),
+    );
     let p = theme::of(ui);
     let (hover, press) = feedback(ui, &response);
     let c = rect.center();
@@ -87,6 +91,12 @@ fn swatch(ui: &mut egui::Ui, fill: Color32, label: &str, selected: bool) -> egui
 fn emoji_button(ui: &mut egui::Ui, emoji: &str, label: &str, selected: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, selected, label));
+    // By code points: an emoji has no letters for a slug ("space.emoji.1f680").
+    let points: Vec<String> = emoji
+        .chars()
+        .map(|c| format!("{:x}", u32::from(c)))
+        .collect();
+    crate::a11y::author(&response, format!("space.emoji.{}", points.join("-")));
     let p = theme::of(ui);
     let (hover, press) = feedback(ui, &response);
     let r = rect.shrink(press * 1.5);
@@ -115,6 +125,7 @@ fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
     let size = vec2(galley.size().x + 20.0, 24.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, selected, label));
+    crate::a11y::author(&response, format!("space.{}", crate::a11y::slug(label)));
     let (hover, press) = feedback(ui, &response);
     let r = rect.shrink(press);
     let fill = if selected {
@@ -144,6 +155,7 @@ fn pad_place(c: Color32) -> (f32, f32) {
 fn colour_pad(ui: &mut egui::Ui, current: Color32) -> Option<Color32> {
     let (rect, response) = ui.allocate_exact_size(vec2(276.0, 132.0), Sense::click_and_drag());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Slider, true, "Colour pad"));
+    crate::a11y::author(&response, "space.colour-pad");
     let p = theme::of(ui);
     const COLS: u32 = 24;
     const ROWS: u32 = 6;
@@ -401,6 +413,7 @@ fn icon_picker(ui: &mut egui::Ui, editor: &mut SpaceEditor, tab: &mut Tab) -> Cl
                 .desired_width(150.0),
         );
         crate::a11y::name_field(&typed, "Emoji");
+        crate::a11y::author(&typed, "space.emoji");
         if typed.changed() {
             let e = editor.emoji.trim();
             tab.style.symbol = (!e.is_empty()).then(|| Symbol::Emoji(e.into()));
@@ -445,6 +458,7 @@ fn rename(ui: &mut egui::Ui, editor: &mut SpaceEditor, tab: &mut Tab) -> Close {
                 .desired_width(f32::INFINITY),
         );
         crate::a11y::name_field(&field, "New name");
+        crate::a11y::author(&field, "space.name");
         if std::mem::take(&mut editor.focus) {
             field.request_focus();
         }

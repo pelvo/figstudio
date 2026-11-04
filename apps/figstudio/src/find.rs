@@ -340,6 +340,7 @@ impl crate::App {
                         .desired_width(150.0),
                 );
                 crate::a11y::name_field(&field, "Find on page");
+                crate::a11y::author(&field, "find.query");
                 if std::mem::take(&mut bar.focus) {
                     field.request_focus();
                     // Select what is there, so typing replaces the last search.
@@ -383,6 +384,10 @@ impl crate::App {
                             ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
                         response
                             .widget_info(|| WidgetInfo::labeled(WidgetType::Button, n > 0, label));
+                        crate::a11y::author(
+                            &response,
+                            format!("find.{}", crate::a11y::slug(label)),
+                        );
                         let (hover, _) = icons::feedback(ui, &response);
                         ui.painter().rect_filled(
                             r,

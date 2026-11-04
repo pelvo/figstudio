@@ -3,6 +3,7 @@
 mod a11y;
 mod anim;
 mod canvas;
+mod canvas_a11y;
 mod canvas_pick;
 mod canvas_text;
 mod chrome;

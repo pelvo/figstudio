@@ -443,6 +443,7 @@ impl App {
                                     .margin(Margin::symmetric(6, 0)),
                             );
                             crate::a11y::name_field(&edit, "Search or paste a Figma link");
+                            crate::a11y::author(&edit, "command-bar.query");
                             if std::mem::take(&mut bar.focus) {
                                 edit.request_focus();
                             }
@@ -479,6 +480,11 @@ impl App {
                                     response.widget_info(|| {
                                         WidgetInfo::labeled(WidgetType::Button, true, &e.title)
                                     });
+                                    // By place: two results can share a title (two layers).
+                                    crate::a11y::author(
+                                        &response,
+                                        format!("command-bar.result.{i}"),
+                                    );
                                     if response.hovered() && moved {
                                         bar.selected = i;
                                     }

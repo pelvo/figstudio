@@ -336,6 +336,7 @@ pub(crate) fn text_button(
 ) -> bool {
     let response = ui.interact(rect, Id::new(id), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), text));
+    crate::a11y::author(&response, format!("welcome.{}", crate::a11y::slug(text)));
     let (hover, _) = icons::feedback(ui, &response);
     ui.painter()
         .rect_filled(rect, CornerRadius::same(8), p.hover.gamma_multiply(hover));
@@ -600,8 +601,7 @@ impl App {
                             vec2(128.0, 36.0),
                         );
                         let label = if last { "Get started" } else { "Continue" };
-                        if accent_button(ui, primary, ("welcome-next", label), label, label, tint)
-                            .clicked()
+                        if accent_button(ui, primary, "welcome-next", label, label, tint).clicked()
                         {
                             if last {
                                 done = true;
@@ -770,8 +770,7 @@ impl App {
                             pos2(row.right() - 76.0, row.top()),
                             vec2(76.0, 30.0),
                         );
-                        if accent_button(ui, got, ("tip-got-it", tip), "Got it", "Got it", tint)
-                            .clicked()
+                        if accent_button(ui, got, "tip-got-it", "Got it", "Got it", tint).clicked()
                         {
                             choice = Some(TipChoice::GotIt);
                         }

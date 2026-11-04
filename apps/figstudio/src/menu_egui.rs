@@ -39,7 +39,9 @@ impl App {
             };
             #[cfg(target_arch = "wasm32")]
             if let crate::menu::Action::CjkFont(v) = action {
-                if ui.radio(item.checked == Some(true), item.label).clicked() {
+                let radio = ui.radio(item.checked == Some(true), item.label);
+                crate::a11y::author(&radio, format!("menu.{}", crate::a11y::slug(item.label)));
+                if radio.clicked() {
                     self.apply(action, ui.ctx());
                 }
                 let why = match self.web.face.reason {
@@ -61,6 +63,7 @@ impl App {
             let clicked = if let Some(mut checked) = item.checked {
                 let response =
                     ui.add_enabled(item.enabled, egui::Checkbox::new(&mut checked, item.label));
+                crate::a11y::author(&response, format!("menu.{}", crate::a11y::slug(item.label)));
                 if let Some(shortcut) = self.prefs.keymap.for_action(action) {
                     response
                         .on_hover_text(ui.ctx().format_shortcut(&shortcut))
@@ -76,7 +79,9 @@ impl App {
                 {
                     button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
                 }
-                ui.add_enabled(item.enabled, button).clicked()
+                let response = ui.add_enabled(item.enabled, button);
+                crate::a11y::author(&response, format!("menu.{}", crate::a11y::slug(item.label)));
+                response.clicked()
             };
             if clicked {
                 ui.close();
