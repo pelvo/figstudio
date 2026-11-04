@@ -193,6 +193,14 @@ impl Obj {
         self.0.iter().map(|(_, v)| v.view())
     }
 
+    /// The values already decoded: a lazy field not read yet is left out, and not decoded.
+    pub fn values_decoded(&self) -> impl Iterator<Item = &Val> {
+        self.0.iter().filter_map(|(_, v)| match v {
+            Val::Lazy(l) => l.val.get(),
+            v => Some(v),
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }
