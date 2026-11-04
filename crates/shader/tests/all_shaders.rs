@@ -73,6 +73,8 @@ fn every_shader_in_the_file_is_drawn_instead_of_skipped() {
     }
     let doc = Document::open(root().join("shaders.fig")).unwrap();
     let fills: Arc<dyn ShaderFills> = Arc::new(Fills::new(sources()));
+    // Every blank shader is listed, not only the first, so one run on a driver shows them all.
+    let mut blank = Vec::new();
     for (id, name) in LAYERS {
         let guid: Guid = id.parse().unwrap();
         let draw = |host: Option<Arc<dyn ShaderFills>>| {
@@ -102,12 +104,11 @@ fn every_shader_in_the_file_is_drawn_instead_of_skipped() {
         if !fill {
             continue;
         }
-        assert_ne!(
-            with.pixmap.data_as_u8_slice(),
-            without.pixmap.data_as_u8_slice(),
-            "{name} ({id}) drew nothing"
-        );
+        if with.pixmap.data_as_u8_slice() == without.pixmap.data_as_u8_slice() {
+            blank.push(format!("{name} ({id})"));
+        }
     }
+    assert!(blank.is_empty(), "drew nothing: {blank:?}");
 }
 
 #[test]
