@@ -150,15 +150,22 @@ fn scaling_sizes_the_screen_as_figma_does() {
         let v = view_for(screen, window, s);
         (v.zoom, v.to_screen(egui::Pos2::ZERO, screen.min))
     };
+    // Figma's Fit keeps 48 points at the sides and 60 at the top and bottom.
     assert_eq!(
         at(Scaling::Fit),
-        (0.5, egui::pos2(300.0, 0.0)),
-        "whole screen, centred"
+        (0.38, egui::pos2(324.0, 60.0)),
+        "whole screen inside the margins, centred"
     );
     assert_eq!(
         at(Scaling::FitWidth),
-        (2.0, egui::pos2(0.0, 0.0)),
-        "width fills, from the top"
+        (1.0, egui::pos2(200.0, 0.0)),
+        "a screen narrower than the window is not enlarged"
+    );
+    let small = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 50.0));
+    assert_eq!(
+        view_for(small, window, Scaling::Fit).zoom,
+        1.0,
+        "Fit only scales down, as Figma's"
     );
     assert_eq!(at(Scaling::Fill), (2.0, egui::pos2(0.0, 0.0)));
     assert_eq!(
@@ -170,10 +177,13 @@ fn scaling_sizes_the_screen_as_figma_does() {
 
 #[test]
 fn arrows_step_through_the_page_frames_and_present_hides_the_editor() {
-    let mut h = previewing();
+    // Real frame times, so the panels slide away over several frames as they do on screen.
+    let mut h = super::harness_fixture(super::FIXTURE, 1.0 / 60.0);
+    h.state_mut().tabs[0].doc = Arc::new(proto::prototype_doc());
+    h.run_steps(4);
     let ctx = h.ctx.clone();
     h.state_mut().apply(crate::menu::Action::Present, &ctx);
-    h.run_steps(4);
+    h.run_steps(60);
     let tab = &h.state().tabs[0];
     assert!(tab.preview.as_ref().is_some_and(|p| p.present));
     let canvas = tab.canvas_rect.unwrap();
@@ -182,6 +192,16 @@ fn arrows_step_through_the_page_frames_and_present_hides_the_editor() {
         "Present fills the window: {canvas:?}"
     );
     assert_eq!(screen(&h), Some(FIRST));
+    let b = figstudio_render::node_bounds(&tab.doc, FIRST).unwrap();
+    let first = egui::Rect::from_min_max(
+        egui::pos2(b.x0 as f32, b.y0 as f32),
+        egui::pos2(b.x1 as f32, b.y1 as f32),
+    );
+    assert_eq!(
+        tab.view,
+        crate::preview::view_for(first, canvas.size(), crate::preview::Scaling::Fit),
+        "fitted to the canvas Present ends up with, after the panels are gone"
+    );
     h.key_press(Key::ArrowRight);
     h.run_steps(2);
     assert_eq!(screen(&h), Some(SECOND), "→ is the next frame");
@@ -197,5 +217,23 @@ fn arrows_step_through_the_page_frames_and_present_hides_the_editor() {
     assert!(
         h.state().tabs[0].canvas_rect.unwrap().width() < super::SIZE.x - 100.0,
         "the editor is back"
+    );
+}
+
+#[test]
+fn arrows_work_after_a_text_field_had_the_keys() {
+    let mut h = previewing();
+    // As after the link dialog: a field it closed still holds the keyboard.
+    h.ctx
+        .memory_mut(|m| m.request_focus(egui::Id::new("closed-field")));
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Space);
+    h.run_steps(4);
+    assert_eq!(screen(&h), Some(FIRST));
+    h.key_press(Key::ArrowRight);
+    h.run_steps(2);
+    assert_eq!(
+        screen(&h),
+        Some(SECOND),
+        "→ steps even though a field had the keys"
     );
 }

@@ -15,10 +15,10 @@ const FLASH: f64 = 0.8;
 /// How the screen is sized in the window: Figma's Present and Preview options.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Scaling {
-    /// The whole screen in view.
+    /// The whole screen in view; a smaller screen keeps its size (Figma's "scale down").
     #[default]
     Fit,
-    /// The screen's width fills the window; a taller screen scrolls.
+    /// The screen's width fills the window, never enlarged; a taller screen scrolls.
     FitWidth,
     /// The screen covers the window; what sticks out scrolls.
     Fill,
@@ -44,14 +44,18 @@ impl Scaling {
     }
 }
 
+/// Figma's Fit keeps this much room around the screen (points; measured in Figma's Present).
+const FIT_MARGIN: egui::Vec2 = egui::vec2(48.0, 60.0);
+
 /// The view that shows page-space box `screen` in `window` (points) by `scaling`: centred
 /// where it is smaller than the window, from its top left where it is larger.
 pub fn view_for(screen: egui::Rect, window: egui::Vec2, scaling: Scaling) -> View {
     let size = screen.size().max(egui::Vec2::splat(1.0));
+    let room = (window - FIT_MARGIN * 2.0).max(egui::Vec2::splat(1.0));
     let (fit_x, fit_y) = (window.x / size.x, window.y / size.y);
     let zoom = match scaling {
-        Scaling::Fit => fit_x.min(fit_y),
-        Scaling::FitWidth => fit_x,
+        Scaling::Fit => (room.x / size.x).min(room.y / size.y).min(1.0),
+        Scaling::FitWidth => fit_x.min(1.0),
         Scaling::Fill => fit_x.max(fit_y),
         Scaling::ActualSize => 1.0,
     }
@@ -78,6 +82,28 @@ pub fn show(
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let origin = rect.min;
     tab.canvas_rect = Some(rect);
+    // A field that had the keys before Preview started (the link dialog's, say) would keep
+    // them and block the arrows: Preview takes the keyboard when it starts.
+    if tab
+        .preview
+        .as_ref()
+        .is_some_and(|p| p.fitted_size.is_none())
+    {
+        ui.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+    }
+    // Fit again when the canvas changes size too: Present hides the panels as it starts.
+    let resized = tab.preview.as_mut().is_some_and(|p| {
+        let changed = p.fitted_size.is_some_and(|s| s != rect.size());
+        p.fitted_size = Some(rect.size());
+        changed
+    });
+    if resized && tab.fit_node.is_none() {
+        tab.fit_node = tab.preview.as_ref().map(|p| p.player.screen());
+    }
     if rect.width() > 10.0
         && let Some(id) = tab.fit_node.take()
         && let Some(b) = figstudio_render::node_bounds(&tab.doc, id)

@@ -105,6 +105,8 @@ pub struct Preview {
     pub missed: Option<f64>,
     /// Present: the screen fills the window, with no sidebar, panels or pills.
     pub present: bool,
+    /// The canvas size the screen was last fitted to.
+    pub fitted_size: Option<egui::Vec2>,
 }
 
 impl Preview {
@@ -292,6 +294,7 @@ impl Tab {
             canvas,
             missed: None,
             present,
+            fitted_size: None,
         });
         true
     }

@@ -139,3 +139,46 @@ fn first_mode_depth_ceiling_and_duplicate_empty_assets_match_legacy() {
     assert_eq!(pixel(px, 70, 10), &[255, 0, 0, 255]);
     assert_eq!(output.stats.approximated_paints, 2);
 }
+
+#[test]
+fn a_bound_colour_variable_does_not_apply_its_alpha_on_top_of_the_paint_opacity() {
+    // Figma stores a 40% black variable bound to a fill as colour alpha 1 plus paint opacity 0.4.
+    let mut target = variable(
+        100,
+        vec![obj(&[(
+            "value",
+            obj(&[(
+                "colorValue",
+                obj(&[
+                    ("r", Val::Float(0.0)),
+                    ("g", Val::Float(0.0)),
+                    ("b", Val::Float(0.0)),
+                    ("a", Val::Float(0.4)),
+                ]),
+            )]),
+        )])],
+    );
+    target.data.set("key", Val::Str("dim".into()));
+    let mut rect = rectangle(2, 0.0, alias(obj(&[("guid", id(100).to_val())])));
+    if let Some(Val::Arr(p)) = rect.data.get_mut("fillPaints") {
+        p[0].set("opacity", Val::Float(0.4));
+    }
+    let doc = document(vec![node(1, 0, "CANVAS"), rect, target]);
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    let px = renderer
+        .render(
+            &doc,
+            id(1),
+            &Viewport {
+                width: 80,
+                height: 80,
+                transform: Affine::IDENTITY,
+                background: None,
+            },
+        )
+        .pixmap
+        .data_as_u8_slice()
+        .to_vec();
+    assert_eq!(pixel(&px, 10, 10)[3], 102, "40% once, not 16%");
+}

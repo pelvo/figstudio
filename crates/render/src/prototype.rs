@@ -15,8 +15,8 @@ use vello_cpu::{RenderContext, RenderSettings};
 
 use crate::geom::size;
 use crate::{
-    Ctx, Inspect, MAX_RENDER_WORK, Renderer, absolute_transform, node_bounds, page_background,
-    paint, transformed_bounds,
+    Ctx, Inspect, MAX_RENDER_WORK, Renderer, absolute_transform, node_bounds, paint,
+    transformed_bounds,
 };
 
 /// Most links listed for one screen; beyond it [`Screen::truncated`] is set.
@@ -167,11 +167,12 @@ pub fn screen_of(doc: &Document, id: Guid) -> Option<Guid> {
     }
 }
 
-/// The colour behind a screen: the page's prototype background, else its canvas colour.
+/// The colour behind a screen: the page's prototype background, else black, as in Figma.
 pub fn background(doc: &Document, page: Guid) -> AlphaColor<Srgb> {
     doc.node(page)
         .and_then(|p| paint::color(p.data.get("prototypeBackgroundColor"), 1.0))
-        .unwrap_or_else(|| page_background(doc, page))
+        // Figma's Present shows black where the page sets no prototype background.
+        .unwrap_or(AlphaColor::new([0.0, 0.0, 0.0, 1.0]))
 }
 
 /// A layer: a document node or a node inside an instance.

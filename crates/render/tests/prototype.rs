@@ -369,3 +369,12 @@ fn frames_keep_figmas_insertion_sort_where_the_comparison_is_not_transitive() {
         vec![id(13), id(11), id(10), id(12)]
     );
 }
+
+#[test]
+fn present_is_black_where_the_page_sets_no_prototype_background() {
+    let doc = prototype_doc();
+    assert_eq!(
+        prototype::background(&doc, doc.pages[0]).components,
+        [0.0, 0.0, 0.0, 1.0]
+    );
+}
