@@ -30,7 +30,7 @@ use vello_cpu::peniko::ImageAlphaType;
 #[cfg(feature = "native")]
 pub use child::{WORKER_ARG, serve_if_worker, set_worker_program, worker_pid};
 #[cfg(feature = "native")]
-pub use native::{Fills, render, render_effect};
+pub use native::{Fills, render, render_effect, render_with_deadline};
 
 /// Why a shader did not draw.
 #[derive(Debug)]
@@ -252,6 +252,21 @@ mod native {
         time_ms: f64,
     ) -> Result<Pixmap, ShaderError> {
         run(main_ts, params, width.max(1), height.max(1), time_ms, None)
+    }
+
+    /// [`render`] with its own deadline instead of 10 s: for tests of the in-process limits,
+    /// which must not race the wall clock on a busy machine.
+    #[doc(hidden)]
+    pub fn render_with_deadline(
+        main_ts: &str,
+        params: &Value,
+        (width, height): (u16, u16),
+        deadline: std::time::Duration,
+    ) -> Result<Pixmap, ShaderError> {
+        let (width, height) = (width.max(1), height.max(1));
+        let js = ts::to_js(main_ts)?;
+        let rgba = run_within(js, params, (width, height, 0.0), None, deadline)?;
+        pixmap(rgba, width, height, false)
     }
 
     /// Runs a shader effect's `main.ts` on `input` (the layer drawn without the effect,

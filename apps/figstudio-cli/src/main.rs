@@ -28,6 +28,9 @@ USAGE:
   figstudio-cli tree <file.fig> [--page <n|name>] [--depth <n>]
   figstudio-cli render <file.fig> [-o <out.png|out.webp|out.svg>] [--format png|webp|svg] [--page <n|name>] [--node <id>]
                      [--scale <x>] [--background page|transparent|#rrggbb] [--no-system-fonts]
+  figstudio-cli render <file.fig> --node <id> -o <out.mp4|out.webm|out.gif|out.zip> [--fps <n>] [--scale <x>]
+      An animated layer's timeline, one pass: MP4 (H.264 from the OS, else AV1), WebM (AV1),
+      GIF, or a zip of PNG frames.
   figstudio-cli thumbnail <file.fig> -o <out.png|out.webp> [--format png|webp]
   figstudio-cli doctor <file.fig>
       Structure report safe to share: counts, features, timings and memory only.
@@ -73,6 +76,8 @@ struct Args {
     format: Option<ImageFormat>,
     /// `--format svg`: `render` writes SVG (also inferred from an `.svg` output).
     svg: bool,
+    /// Frames a second of a motion export (`render -o out.mp4`).
+    fps: Option<u32>,
 }
 
 fn command_error(command: &str, has_output: bool) -> Option<String> {
@@ -134,6 +139,7 @@ fn parse_args(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         json_only: false,
         format: None,
         svg: false,
+        fps: None,
     };
     let mut file = None;
     while let Some(a) = raw.next() {
@@ -156,6 +162,13 @@ fn parse_args(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                     .map_err(|_| "--depth must be a number")?
             }
             "--background" => args.background = value("--background")?,
+            "--fps" => {
+                args.fps = Some(
+                    value("--fps")?
+                        .parse()
+                        .map_err(|_| "--fps must be a whole number")?,
+                )
+            }
             "--copies" | "--pages" => {
                 let name = a.clone();
                 let n: usize = value(&name)?
@@ -324,6 +337,49 @@ fn run(args: Args) -> Result<()> {
         "tree" => {
             let page = pick_page(&doc, args.page.as_deref())?;
             print_tree(&doc, page, 0, args.depth);
+        }
+        "render" if motion_format(args.out.as_deref()).is_some() => {
+            let format = motion_format(args.out.as_deref()).context("a motion format")?;
+            let out = args.out.clone().context("an output file")?;
+            let node = args
+                .node
+                .context("a motion export needs --node <id> of an animated layer")?;
+            let mut rendering = figstudio_mcp_core::rendering::Rendering::default();
+            rendering.system_fonts = args.system_fonts;
+            if let Some(fills) = figstudio_shader::Fills::for_file(&args.file) {
+                rendering.images.set_shaders(doc.instance, fills);
+            }
+            let started = std::time::Instant::now();
+            let figstudio_mcp_core::motion_export::Exported { bytes, plan, stats } =
+                figstudio_mcp_core::motion_export::export(
+                    &doc,
+                    &node.to_string(),
+                    format,
+                    args.fps,
+                    Some(args.scale),
+                    &rendering,
+                )?;
+            std::fs::write(&out, &bytes).map_err(|e| anyhow!("{}: {e}", out.display()))?;
+            println!(
+                "{} {}x{}, {} frames at {} fps ({:.2} s, {}), {} bytes in {:.1} s",
+                out.display(),
+                plan.width,
+                plan.height,
+                plan.frames,
+                plan.fps,
+                f64::from(plan.frames) / f64::from(plan.fps),
+                format.label(),
+                bytes.len(),
+                started.elapsed().as_secs_f64()
+            );
+            if plan.cut {
+                println!(
+                    "cut to {} s (the pass is {:.1} s)",
+                    figstudio_mcp_core::motion_export::MAX_SECONDS,
+                    plan.period_us / 1e6
+                );
+            }
+            println!("{stats}");
         }
         "render" => {
             let (root, page) = match args.node {
@@ -524,4 +580,10 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The motion export an output file name asks for (`.mp4`, `.webm`, `.gif`, `.zip`).
+fn motion_format(out: Option<&std::path::Path>) -> Option<figstudio_video::Format> {
+    out?.extension()
+        .and_then(|e| figstudio_video::Format::from_extension(&e.to_string_lossy()))
 }

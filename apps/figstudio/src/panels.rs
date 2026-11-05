@@ -364,9 +364,13 @@ fn toggle(tab: &mut Tab, id: Guid) {
 
 /// Returns the Copy menu item picked this frame, if any.
 pub fn properties(ui: &mut Ui, tab: &mut Tab) -> Option<Item> {
-    let (picked, select, play) = properties_view(ui, tab);
-    if play.is_some() {
-        tab.pending_motion = play;
+    let (picked, select, motion) = properties_view(ui, tab);
+    match motion {
+        Some((root, MotionClick::Play)) => tab.pending_motion = Some(root),
+        Some((root, MotionClick::Export(format))) => {
+            tab.pending_motion_export = Some((root, format))
+        }
+        None => {}
     }
     if let Some(id) = select {
         tab.show_node(id);
@@ -376,14 +380,18 @@ pub fn properties(ui: &mut Ui, tab: &mut Tab) -> Option<Item> {
 
 /// Draws the panel; returns the Copy item picked and a node to select (a Code Connect
 /// suggestion).
-fn properties_view(ui: &mut Ui, tab: &Tab) -> (Option<Item>, Option<Guid>, Option<Guid>) {
+/// The Copy item picked, a layer to select, and a Motion button clicked with its timeline root.
+fn properties_view(
+    ui: &mut Ui,
+    tab: &Tab,
+) -> (Option<Item>, Option<Guid>, Option<(Guid, MotionClick)>) {
     let doc = &tab.doc;
     let Some(node) = tab.selection.and_then(|id| doc.node(id)) else {
         return (None, document_info(ui, tab), None);
     };
     let d = &node.data;
     let mut picked: Option<Item> = None;
-    let mut play: Option<Guid> = None;
+    let mut motion_click: Option<(Guid, MotionClick)> = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -469,11 +477,12 @@ fn properties_view(ui: &mut Ui, tab: &Tab) -> (Option<Item>, Option<Guid>, Optio
             effects(ui, d.get("effects"));
             let details = tab.inspect.get(doc, node);
             if let Some(motion) = &details.motion
-                && motion_section(ui, motion, &mut picked)
+                && let Some(click) = motion_section(ui, motion, &mut picked)
             {
-                play = motion["timelineRootId"]
+                let root = motion["timelineRootId"]
                     .as_str()
                     .and_then(|id| id.parse().ok());
+                motion_click = root.map(|r| (r, click));
             }
             for shader in &details.shaders {
                 shader_section(ui, shader, &tab.shaders);
@@ -520,7 +529,7 @@ fn properties_view(ui: &mut Ui, tab: &Tab) -> (Option<Item>, Option<Guid>, Optio
                 );
             }
         });
-    (picked, None, play)
+    (picked, None, motion_click)
 }
 
 fn document_info(ui: &mut Ui, tab: &Tab) -> Option<Guid> {
@@ -673,8 +682,19 @@ fn paints(ui: &mut Ui, title: &str, list: Option<&Val>) {
 /// The layer's keyframe tracks: one row per animated field with its start and end value, a
 /// caption with the time span and easing, the timeline, and copy and play buttons. True
 /// when Play was pressed.
-fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<Item>) -> bool {
-    let mut play = false;
+/// What the Motion section's buttons asked for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum MotionClick {
+    Play,
+    Export(figstudio_video::Format),
+}
+
+fn motion_section(
+    ui: &mut Ui,
+    motion: &serde_json::Value,
+    picked: &mut Option<Item>,
+) -> Option<MotionClick> {
+    let mut click = None;
     use crate::inspect::{duration, easing_label, field_label, loop_label, motion_value};
     section(ui, "Motion", |ui| {
         let p = theme::of(ui);
@@ -723,9 +743,25 @@ fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<I
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            play = quiet_button(ui, Some(Icon::Play), "Play")
+            if quiet_button(ui, Some(Icon::Play), "Play")
                 .on_hover_text("Play this layer's timeline on the canvas")
-                .clicked();
+                .clicked()
+            {
+                click = Some(MotionClick::Play);
+            }
+            let export = quiet_button(ui, None, "Export…")
+                .on_hover_text("Save one pass of this timeline as a video, GIF or PNG frames");
+            egui::Popup::menu(&export)
+                .style(theme::menu_style)
+                .show(|ui| {
+                    for format in figstudio_video::Format::ALL {
+                        if format.available()
+                            && crate::a11y::menu_button(ui, format.label()).clicked()
+                        {
+                            click = Some(MotionClick::Export(format));
+                        }
+                    }
+                });
             if let Some(css) = motion["codeSnippets"]["css"].as_str()
                 && quiet_button(ui, None, "Copy CSS animation").clicked()
             {
@@ -737,7 +773,7 @@ fn motion_section(ui: &mut Ui, motion: &serde_json::Value, picked: &mut Option<I
             }
         });
     });
-    play
+    click
 }
 
 /// One shader fill or effect: its version, then each parameter's value (colours with a swatch,

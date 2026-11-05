@@ -96,6 +96,21 @@ pub fn tool_list() -> Vec<Value> {
             &[],
         ),
         tool(
+            "export_motion",
+            "An animated layer's timeline, one pass, as a file returned inline: gif (default here, looping) or frames (a zip of PNGs); mp4 and webm need the desktop app or the MCP server. fps 1-60, scale 0.01-8. Defaults to selection.",
+            {
+                let mut export = node.clone();
+                export.push((
+                    "format",
+                    json!({"type":["string","null"],"enum":["mp4","webm","gif","frames",null]}),
+                ));
+                export.push(("fps", integer.clone()));
+                export.push(("scale", number.clone()));
+                export
+            },
+            &[],
+        ),
+        tool(
             "get_design_context",
             "React + Tailwind reference code with inline assets, format png (default) or webp; defaults to selection.",
             design,

@@ -1,5 +1,5 @@
 //! `get_design_context`: React + Tailwind reference code for a local node, with assets.
-mod assets;
+pub(crate) mod assets;
 /// Code Connect mappings written as the project's components.
 pub mod code_connect;
 mod jsx;

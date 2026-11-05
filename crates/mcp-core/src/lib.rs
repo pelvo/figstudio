@@ -33,6 +33,8 @@ pub mod local_copy;
 pub mod metadata;
 /// Keyframe animation with CSS and motion.dev code.
 pub mod motion;
+/// Motion exports: GIF, PNG frames, WebM and MP4.
+pub mod motion_export;
 /// Accepted Figma node ID formats.
 pub mod node_id;
 /// Tool replies without an SDK type.

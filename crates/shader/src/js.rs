@@ -30,8 +30,9 @@ const RECURSION_LIMIT: usize = 512;
 /// Most bytecode instructions one run may execute, the module's top level included (Boa's
 /// instruction budget; running out is an error the script cannot catch). The 12 playground
 /// shaders use at most about 13 million (one builds its data in JavaScript); Boa runs about
-/// 25 million a second, so this stops a run in about 4 s, before the 10 s deadline.
-pub(crate) const INSTRUCTION_BUDGET: usize = 100_000_000;
+/// 25 million a second, so this stops a run in about 2 s: well before the 10 s deadline even
+/// when the machine is busy (at 100 million a loaded test run passed the deadline first).
+pub(crate) const INSTRUCTION_BUDGET: usize = 50_000_000;
 /// Largest `ArrayBuffer` (and so typed array) a script may make.
 const MAX_ARRAY_BUFFER: u64 = 256 * 1024 * 1024;
 

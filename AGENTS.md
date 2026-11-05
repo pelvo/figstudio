@@ -45,8 +45,10 @@ picking up work. Read the three documents below before changing code.
     SAFETY comment and `#[expect(unsafe_code)]`: the FFI call in `doctor.rs`, the Windows
     menu attach in `menu_native.rs`, the macOS blur view in `vibrancy.rs`, the macOS Dock
     menu hook in `dock_mac.rs`, the Windows jump list in `jump_list.rs`, the Windows
-    foreground permission in `handoff.rs` and the Windows foreground request in
-    `foreground_win.rs` (approved by the owner). Ask before adding another.
+    foreground permission in `handoff.rs`, the Windows foreground request in
+    `foreground_win.rs`, and the OS H.264 encoders for MP4 motion exports in
+    `crates/video/src/mac.rs` (AVFoundation) and `crates/video/src/win.rs` (Media
+    Foundation) (approved by the owner). Ask before adding another.
 11. **Update the plan** when you finish something: start your branch's file with
     `scripts/plan.sh new <slug> "<title>"` (`docs/plans/<date>-<slug>.md`; no PR needed), tick
     the box in it only after its check really passed, and add a progress entry with

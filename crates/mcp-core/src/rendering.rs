@@ -79,6 +79,17 @@ impl Rendering {
     /// Draws `root` with every image at the resolution `viewport` needs, reading the ones a
     /// lazy document is missing. An eager document renders once, as before.
     pub fn draw(&self, doc: &Document, root: Root<'_>, viewport: &Viewport) -> Frame {
+        self.draw_at(doc, root, viewport, None)
+    }
+
+    /// [`Rendering::draw`] with the document's motion at `playhead` (`None`: at rest).
+    pub fn draw_at(
+        &self,
+        doc: &Document,
+        root: Root<'_>,
+        viewport: &Viewport,
+        playhead: Option<figstudio_render::motion::Playhead>,
+    ) -> Frame {
         let _guard = (!doc.lazy_images.is_empty()).then(|| {
             self.lazy_lock
                 .lock()
@@ -89,6 +100,7 @@ impl Rendering {
         for (font, index) in &self.fonts {
             renderer.add_font_data(font.clone(), *index);
         }
+        renderer.playhead = playhead;
         let read = |want: &figstudio_render::images::ImageRequest| self.read(&want.entry);
         match root {
             Root::Node(id) => renderer.render_complete(doc, id, viewport, read),

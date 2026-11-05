@@ -33,14 +33,19 @@ fn endless_loops_stop_on_the_loop_limit() {
 fn endless_callbacks_stop_on_the_instruction_budget() {
     worker();
     // No JavaScript loop: a built-in calls the callback, a million times per level of a
-    // recursion under its limit, so only the budget stops it.
-    let Some(out) = run("const a = new Array(1000000).fill(0); \
-         function f(): void { a.forEach(() => {}); f(); } f();")
-    else {
-        return;
+    // recursion under its limit, so only the budget stops it. A minute's deadline, so the
+    // budget is what stops it even on a busy machine (it takes about 2 s on an idle one).
+    let main = "export function render(device: any, frame: any) { \
+         const a = new Array(1000000).fill(0); \
+         function f(): void { a.forEach(() => {}); f(); } f(); }";
+    let out =
+        figstudio_shader::render_with_deadline(main, &json!({}), (8, 8), Duration::from_secs(60));
+    let error = match out {
+        Err(e) if e.skips_test() => return,
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("an endless script finished"),
     };
     // Boa's error, not the deadline's (which would say it ran past the time limit).
-    let error = out.unwrap_err();
     assert!(error.contains("NoInstructionsRemain"), "{error}");
 }
 

@@ -26,6 +26,7 @@ struct Input {
     query: Option<String>,
     kinds: Option<Vec<String>>,
     id: Option<String>,
+    fps: Option<u32>,
 }
 
 pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String> {
@@ -110,6 +111,20 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
                 input.recursive.unwrap_or(false),
                 crate::metadata::DEFAULT_OUTPUT_BYTES,
             ),
+            // The browser build writes GIF and PNG frames (no video encoder), inline.
+            "export_motion" => match motion_format(input.format.as_deref()) {
+                Ok(format) => crate::motion_export::tool(
+                    doc,
+                    &tab.file_key,
+                    &target()?,
+                    format,
+                    input.fps,
+                    input.scale,
+                    &rendering,
+                    &design::Assets::Inline,
+                ),
+                Err(e) => Output::fault(e),
+            },
             "get_design_context" => crate::design::design_context(
                 doc,
                 &target()?,
@@ -187,4 +202,23 @@ pub(super) fn prompt(params: &Value, env: &dyn McpTabEnv) -> Result<Value, Strin
     Ok(
         json!({"description":crate::prompts::RULES_DESCRIPTION,"messages":[{"role":"user","content":{"type":"text","text":text}}]}),
     )
+}
+
+/// The motion export format asked for: `mp4`, `webm`, `gif` or `frames`; GIF when none is (the
+/// browser build has no video encoder).
+fn motion_format(name: Option<&str>) -> Result<figstudio_video::Format, String> {
+    use figstudio_video::Format;
+    match name.unwrap_or(if Format::Mp4.available() {
+        "mp4"
+    } else {
+        "gif"
+    }) {
+        "mp4" => Ok(Format::Mp4),
+        "webm" => Ok(Format::Webm),
+        "gif" => Ok(Format::Gif),
+        "frames" => Ok(Format::Frames),
+        other => Err(format!(
+            "unknown motion format {other}: mp4, webm, gif or frames"
+        )),
+    }
 }

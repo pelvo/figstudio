@@ -83,6 +83,8 @@ pub struct Tab {
     pub pending_copy: Option<crate::copy::Item>,
     /// A timeline whose Play button was pressed this frame; `main.rs` opens its preview.
     pub pending_motion: Option<Guid>,
+    /// Properties → Motion → Export asked for this timeline root in this format.
+    pub pending_motion_export: Option<(Guid, figstudio_video::Format)>,
     /// The open motion preview (`motion_preview.rs`).
     pub motion_preview: Option<crate::motion_preview::Preview>,
     /// The drag-drawn region (`marquee.rs`).
@@ -158,6 +160,7 @@ impl Tab {
             },
             pending_copy: None,
             pending_motion: None,
+            pending_motion_export: None,
             motion_preview: None,
             marquee: Default::default(),
             tint: crate::theme::HOME_TINT,

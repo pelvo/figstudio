@@ -295,6 +295,49 @@ fn export_bytes(
             }
             Ok((svg.markup.into_bytes(), gaps))
         }
+        worker::ExportFormat::Motion(format) => {
+            let mut rendering = match source {
+                Some(s) => {
+                    let s = s.clone();
+                    figstudio_mcp_core::rendering::Rendering::with_reader(
+                        std::sync::Arc::new(move |e| s.read(e).ok()),
+                        images,
+                    )
+                }
+                None => {
+                    let mut plain = figstudio_mcp_core::rendering::Rendering::default();
+                    plain.images = images;
+                    plain
+                }
+            };
+            rendering.system_fonts = true;
+            // Twice the layer's size for video and frames (sharp on a high-density screen),
+            // its own size for a GIF (256 colours a frame grow fast).
+            let scale = if format == figstudio_video::Format::Gif {
+                1.0
+            } else {
+                2.0
+            };
+            let done = figstudio_mcp_core::motion_export::export(
+                doc,
+                &root.to_string(),
+                format,
+                None,
+                Some(scale),
+                &rendering,
+            )?;
+            let mut gaps = region_png::gaps(&done.stats);
+            if done.plan.cut {
+                if !gaps.is_empty() {
+                    gaps.push_str(", ");
+                }
+                gaps.push_str(&format!(
+                    "cut to {} s",
+                    figstudio_mcp_core::motion_export::MAX_SECONDS
+                ));
+            }
+            Ok((done.bytes, gaps))
+        }
     }
 }
 
@@ -807,6 +850,20 @@ impl App {
         } else {
             tab.page
         };
+        self.export_root(ctx, root, format);
+    }
+
+    /// Exports `root` of the active tab as `format`: a save dialog (desktop) or a download
+    /// (browser), then the render on a worker; a toast says how it went.
+    fn export_root(
+        &mut self,
+        ctx: &egui::Context,
+        root: figstudio_fig::Guid,
+        format: worker::ExportFormat,
+    ) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
         let name = tab
             .doc
             .node(root)
@@ -845,11 +902,19 @@ impl App {
         format: worker::ExportFormat,
     ) {
         let ext = format.extension();
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter(format.label(), &[ext])
-            .set_file_name(format!("{name}.{ext}"))
-            .save_file()
-        else {
+        // UI tests write into the temporary folder instead of asking.
+        let chosen = if cfg!(test) {
+            Some(std::env::temp_dir().join(format!(
+                "figstudio-ui-export-{}-{name}.{ext}",
+                std::process::id()
+            )))
+        } else {
+            rfd::FileDialog::new()
+                .add_filter(format.label(), &[ext])
+                .set_file_name(format!("{name}.{ext}"))
+                .save_file()
+        };
+        let Some(path) = chosen else {
             return;
         };
         // The render and encode run off the UI thread on an immutable snapshot of the
@@ -1125,10 +1190,11 @@ impl App {
             }
         }
         while let Ok((name, bytes)) = self.web.exports.try_recv() {
-            let mime = if name.ends_with(".svg") {
-                "image/svg+xml"
-            } else {
-                "image/png"
+            let ext = name.rsplit('.').next().unwrap_or_default();
+            let mime = match figstudio_video::Format::from_extension(ext) {
+                Some(motion) => motion.mime(),
+                None if ext == "svg" => "image/svg+xml",
+                None => "image/png",
             };
             match bytes.and_then(|(bytes, gaps)| {
                 web::download(&name, mime, &bytes)?;
@@ -1530,6 +1596,13 @@ impl App {
                 );
             }
             motion_preview::tick(&ctx, &mut tab.motion_preview, tab.page);
+        }
+        if let Some((root, format)) = self
+            .tabs
+            .get_mut(self.active)
+            .and_then(|t| t.pending_motion_export.take())
+        {
+            self.export_root(&ctx, root, worker::ExportFormat::Motion(format));
         }
         self.peek_sidebar(&ctx);
         self.space_popover(&ctx);

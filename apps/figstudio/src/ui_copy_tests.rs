@@ -378,3 +378,47 @@ fn play_opens_a_motion_preview_that_draws_frames_and_pauses() {
     click_label(&mut h, &mut c, "Close the player");
     assert!(preview(&h).is_none());
 }
+
+#[test]
+fn export_in_the_motion_section_saves_the_animation() {
+    let mut h = harness_fixture("motion.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    h.state_mut().tabs[0].selection = Some(Guid(1, 1106));
+    step(&mut h, &mut c);
+    step(&mut h, &mut c);
+    click_label(&mut h, &mut c, "Export…");
+    // The menu lists what this build can write.
+    for label in ["MP4 video", "WebM video", "GIF", "PNG frames (zip)"] {
+        assert!(h.query_by_label(label).is_some(), "{label}");
+    }
+    click_label(&mut h, &mut c, "GIF");
+    // The export runs on a worker; its toast says where the file went.
+    for _ in 0..600 {
+        if h.state()
+            .toasts
+            .iter()
+            .any(|t| t.text.starts_with("Exported"))
+        {
+            break;
+        }
+        step(&mut h, &mut c);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let toast = h
+        .state()
+        .toasts
+        .iter()
+        .find(|t| t.text.starts_with("Exported"))
+        .map(|t| t.text.clone())
+        .expect("an export toast");
+    let path = toast
+        .trim_start_matches("Exported ")
+        .split(". Not exact")
+        .next()
+        .unwrap()
+        .to_owned();
+    let bytes = std::fs::read(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert!(bytes.starts_with(b"GIF89a"), "{toast}");
+    assert!(path.ends_with(".gif"));
+}

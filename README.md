@@ -132,7 +132,7 @@ cargo run --release -p figstudio -- path/to/design.fig
   watched). The shader's TypeScript runs in Boa (a JavaScript engine in Rust) and its WebGPU
   calls run on wgpu, at one pixel per layer unit as Figma runs them; animated shaders follow
   the motion preview's playhead. The code has no file or network access and runs in a child
-  process (the same program, started for it), capped at 10 million loop iterations, 100
+  process (the same program, started for it), capped at 10 million loop iterations, 50
   million instructions, 256 MiB per array buffer, 512 MiB of GPU memory and 2 GiB of memory
   for the process; a run past 10 s kills that process and the shader is not run again, and
   the process also ends itself if its program quits or crashes during a run. In the browser it runs on the page's WebGPU in a worker of a sandboxed
@@ -141,6 +141,10 @@ cargo run --release -p figstudio -- path/to/design.fig
   skipped and counted.
 - Animated layers have a **Play** button in Properties: the motion plays in place on the
   canvas, with a bar under the layer to pause, scrub and close, and springs timed like Figma's.
+  **Export…** saves one pass as MP4 (H.264 from macOS or Windows, AV1 elsewhere), WebM (AV1),
+  a looping GIF or a zip of PNG frames; no FFmpeg needed. The CLI does the same with
+  `figstudio-cli render file.fig --node <id> -o out.mp4 [--fps 30] [--scale 2]`, and agents
+  with the `export_motion` MCP tool. The browser saves GIF and PNG frames.
 - Paste a `figma.com` or `figstudio://` URL into the command bar (⌘L, Ctrl+L elsewhere), then
   press Enter to open its matching local `.fig` copy and reveal the linked node. No download
   from Figma is needed. If several copies match, pick one in the link window.

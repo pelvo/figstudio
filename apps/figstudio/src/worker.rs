@@ -642,11 +642,13 @@ fn export_png(
     )
 }
 
-/// What File → Export writes: a PNG at a scale, or an SVG in design units.
+/// What File → Export writes: a PNG at a scale, an SVG in design units, or a layer's
+/// animation (Properties → Motion → Export).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ExportFormat {
     Png(f64),
     Svg,
+    Motion(figstudio_video::Format),
 }
 
 impl ExportFormat {
@@ -654,6 +656,7 @@ impl ExportFormat {
         match self {
             Self::Png(_) => "png",
             Self::Svg => "svg",
+            Self::Motion(f) => f.extension(),
         }
     }
 
@@ -662,6 +665,7 @@ impl ExportFormat {
         match self {
             Self::Png(_) => "PNG image",
             Self::Svg => "SVG image",
+            Self::Motion(f) => f.label(),
         }
     }
 }

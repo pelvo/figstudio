@@ -1,0 +1,51 @@
+[package]
+name = "figstudio-video"
+description = "Encodes frames as GIF, a zip of PNG frames, WebM (AV1) or MP4 (H.264 from the OS, else AV1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = ["av1"]
+# WebM and MP4: AV1 encoded in pure Rust (rav1e, no assembly) and the two containers. The
+# browser build leaves it out; the page records video with its own encoders.
+av1 = ["dep:rav1e", "dep:webm-iterable", "dep:mp4-atom"]
+
+[dependencies]
+tracing = { workspace = true }
+# GIF and PNG frames (already in the workspace).
+image = { workspace = true }
+zip = { workspace = true }
+# AV1 encoder in pure Rust (BSD-2), without its assembly so no nasm is needed to build.
+rav1e = { version = "0.8", default-features = false, features = ["threading"], optional = true }
+# WebM writer (Matroska tags; MIT).
+webm-iterable = { version = "0.7", optional = true }
+# MP4 boxes (MIT/Apache).
+mp4-atom = { version = "0.17", optional = true }
+
+[lints]
+workspace = true
+
+# MP4 with H.264 from macOS's encoder (mac.rs; approved FFI exception, AGENTS.md rule 10).
+# The same objc2 0.6 family eframe already uses.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDictionary", "NSError", "NSString", "NSURL", "NSValue"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDictionary"] }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "CMTime"] }
+objc2-core-video = { version = "0.3", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-media", "objc2-core-video", "AVAssetWriter", "AVAssetWriterInput", "AVMediaFormat", "AVVideoSettings"] }
+
+# MP4 with H.264 from Windows Media Foundation (win.rs; approved FFI exception, AGENTS.md
+# rule 10). The windows 0.62 the app already uses.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com"] }
+
+[dev-dependencies]
+image = { workspace = true }
+zip = { workspace = true }
+webm-iterable = "0.7"
+mp4-atom = "0.17"

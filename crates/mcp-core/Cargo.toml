@@ -9,7 +9,10 @@ publish = false
 
 [features]
 # `default-features = false` is the wasm32 build: no installed fonts, no files written.
-default = ["fs", "system-fonts"]
+default = ["fs", "system-fonts", "video"]
+# WebM and MP4 motion exports (AV1 in Rust, H.264 from the OS). Without it (the browser build)
+# motion exports are GIF and PNG frames; the page records video with its own encoders.
+video = ["figstudio-video/av1"]
 # `Assets::Dir` writes rendered assets; without it that mode gives an error result.
 fs = ["dep:tempfile"]
 # Draw text that has no stored glyph outlines with fonts installed on this machine.
@@ -22,6 +25,8 @@ figstudio-fig = { workspace = true }
 # wasm-safe (no system fonts) unless this crate's own `system-fonts` feature asks for them.
 figstudio-render = { workspace = true }
 url = { workspace = true }
+# Motion exports: GIF, PNG frames, and WebM/MP4 with the `video` feature.
+figstudio-video = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 quick-xml = { workspace = true }
