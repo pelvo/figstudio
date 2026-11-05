@@ -33,7 +33,7 @@ fn secrets(doc: &Document, path: &std::path::Path) -> Vec<String> {
     {
         out.extend(
             (0..zip.len())
-                .filter_map(|i| zip.by_index(i).ok().map(|entry| entry.name().to_owned())),
+                .filter_map(|i| zip.by_index(i).ok()?.name().ok().map(|n| n.into_owned())),
         );
     }
     for n in &doc.nodes {
