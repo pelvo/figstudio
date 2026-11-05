@@ -11,7 +11,7 @@ title: Draw layer and paint blend modes
 - [x] Recorder (parallel/tiles) and GPU scene replay blend layers
 - [x] Shadows and blurs inside a clipping frame stay clipped (filter layer wrapped in the frame's clip layer)
 - [x] Background blur still counted as skipped (vello_cpu 0.3 has no backdrop filter)
-- [ ] Open: masks clip with a clip path too, so a masked sibling's shadow or blur probably spreads past the mask (same Vello limit; predates this branch; not tested)
+- [x] Masks clip with a clip path too, so a masked sibling's shadow or blur spread past the mask (fixed on branch fix/mask-filter-clip)
 
 ## Progress
 

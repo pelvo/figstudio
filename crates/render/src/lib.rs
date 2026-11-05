@@ -337,8 +337,9 @@ struct Ctx<'a> {
     /// How far (output pixels) the open filter layers of enclosing nodes spread what is drawn
     /// now: culling grows each node by it, so a blur still reaching the output keeps it.
     inherited_reach: f64,
-    /// The innermost clipping frame's shape and transform (see [`Ctx::push_filter_layer`]).
-    frame_clip: Option<(BezPath, Affine)>,
+    /// The innermost clip path (a clipping frame or a mask) and its transform (see
+    /// [`Ctx::push_filter_layer`]).
+    clip: Option<(BezPath, Affine)>,
     /// Metadata walk: resolve visible stored emoji, but issue no drawing commands or culling.
     emoji_only: bool,
 }
@@ -680,7 +681,7 @@ impl Renderer {
             exhausted: false,
             screen,
             inherited_reach: 0.0,
-            frame_clip: None,
+            clip: None,
             emoji_only: false,
         }
     }
@@ -1367,15 +1368,13 @@ impl Ctx<'_> {
         // Children.
         if kind != "TEXT" {
             let clip = clips.then(|| base_shape(kind, data)).flatten();
-            let outer_clip = self.frame_clip.take();
+            let outer_clip = self.clip.clone();
             if let Some(clip) = &clip {
                 self.rc.set_transform(world);
                 // Not a layer: clipping does not isolate, so children still blend with
                 // what is below the frame.
                 self.rc.push_clip_path(clip);
-                self.frame_clip = Some((clip.clone(), world));
-            } else {
-                self.frame_clip.clone_from(&outer_clip);
+                self.clip = Some((clip.clone(), world));
             }
             if kind == "INSTANCE" {
                 self.draw_instance(data, world, path);
@@ -1390,7 +1389,7 @@ impl Ctx<'_> {
             if clip.is_some() {
                 self.rc.pop_clip();
             }
-            self.frame_clip = outer_clip;
+            self.clip = outer_clip;
             if stroke_last {
                 self.draw_strokes(kind, data, (fill_paths, &stroke_paths), world, (w, h));
             }
@@ -1403,11 +1402,12 @@ impl Ctx<'_> {
     }
 
     /// Pushes a filter layer and returns how many layers to pop. Vello's clip paths do not
-    /// clip what a filter spreads, so inside a clipping frame the filter layer goes into a
-    /// clip layer of the frame's shape, whose result the outer clip paths do clip.
+    /// clip what a filter spreads, so under a clipping frame or a mask the filter layer goes
+    /// into a clip layer of the innermost clip, whose result the outer clip paths do clip.
     pub(crate) fn push_filter_layer(&mut self, filter: Filter, reach: f64, world: Affine) -> usize {
         let mut layers = 1;
-        if let Some((clip, at)) = &self.frame_clip {
+        if let Some((clip, at)) = &self.clip {
+            // Nonzero covers the region of every fill rule, so this never cuts into the clip.
             self.rc.set_transform(*at);
             self.rc.set_fill_rule(vello_cpu::peniko::Fill::NonZero);
             self.rc.push_clip_layer(clip);
@@ -1624,6 +1624,7 @@ impl Ctx<'_> {
     /// Draws children, turning mask layers into clips for the siblings above them.
     fn draw_children(&mut self, node: &Node, data: &Val, world: Affine, path: Option<&[Guid]>) {
         let mut mask_layers = 0;
+        let outer_clip = self.clip.clone();
         for id in children_topmost_first(self.doc.children(node.id), data).rev() {
             if self.exhausted || !self.charge_work() {
                 break;
@@ -1666,6 +1667,7 @@ impl Ctx<'_> {
                     self.rc.set_transform(tf);
                     self.rc.push_clip_path(&combined);
                     self.rc.set_transform(world);
+                    self.clip = Some((combined, tf));
                     mask_layers += 1;
                 }
                 continue;
@@ -1680,6 +1682,7 @@ impl Ctx<'_> {
         for _ in 0..mask_layers {
             self.rc.pop_clip();
         }
+        self.clip = outer_clip;
     }
 
     fn charge_work(&mut self) -> bool {

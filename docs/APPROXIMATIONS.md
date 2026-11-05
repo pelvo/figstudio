@@ -184,8 +184,8 @@ A layer blend mode pushes a blend layer around the whole node (effects and opaci
 included). A paint blend mode blends that paint with what is already drawn. `NORMAL` and
 `PASS_THROUGH` are exact and not counted. A frame that clips its content clips with a
 non-isolating clip path, so its children still blend with what is below the frame. Vello's
-clip paths do not clip what a filter spreads, so a shadow or blur inside such a frame is
-drawn in a clip layer of the frame's shape (`Ctx::push_filter_layer`). Each layer
+clip paths do not clip what a filter spreads, so a shadow or blur inside such a frame or
+under a mask is drawn in a clip layer of the innermost clip (`Ctx::push_filter_layer`). Each layer
 or drawn paint with `LINEAR_BURN` or an unknown mode counts once and is drawn as normal.
 Shadow `blendMode` is counted in C1.
 
