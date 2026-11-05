@@ -103,6 +103,19 @@ pub struct Preview {
     pub canvas: (Guid, View),
     /// When a click hit no link (`egui` input time): the links flash, as in Figma.
     pub missed: Option<f64>,
+    /// Present: the screen fills the window, with no sidebar, panels or pills.
+    pub present: bool,
+}
+
+impl Preview {
+    /// The shown screen's place among its page's frames (`prototype::frames`), from 1, and
+    /// how many there are; `None` for a screen that is not one of them.
+    pub fn position(&self, doc: &figstudio_fig::Document) -> Option<(usize, usize)> {
+        let screen = self.player.screen();
+        let frames = prototype::frames(doc, doc.page_of(screen)?);
+        let at = frames.iter().position(|f| *f == screen)?;
+        Some((at + 1, frames.len()))
+    }
 }
 
 impl Tab {
@@ -266,7 +279,7 @@ impl Tab {
 
     /// Starts Preview at the selection's screen, else the page's first flow (see
     /// [`prototype::start`]); `false` when there is no frame to show.
-    pub fn start_preview(&mut self) -> bool {
+    pub fn start_preview(&mut self, present: bool) -> bool {
         let Some(start) = prototype::start(&self.doc, self.page, self.selection) else {
             return false;
         };
@@ -278,6 +291,7 @@ impl Tab {
             screen: self.read_screen(start),
             canvas,
             missed: None,
+            present,
         });
         true
     }
@@ -312,6 +326,29 @@ impl Tab {
             }
         }
         moved
+    }
+
+    /// Steps to the next (`forward`) or previous frame of the screen's page, as Figma's arrow
+    /// keys do; a screen that is not one of them steps to the page's first frame. Back
+    /// returns from a step like from a link. Returns whether the screen changed.
+    pub fn preview_step(&mut self, forward: bool) -> bool {
+        let Some(preview) = self.preview.as_ref() else {
+            return false;
+        };
+        let screen = preview.player.screen();
+        let Some(page) = self.doc.page_of(screen) else {
+            return false;
+        };
+        let frames = prototype::frames(&self.doc, page);
+        let next = match frames.iter().position(|f| *f == screen) {
+            Some(at) if forward => frames.get(at + 1),
+            Some(at) => at.checked_sub(1).and_then(|i| frames.get(i)),
+            None => frames.first(),
+        };
+        match next.copied() {
+            Some(to) => self.preview_go(Some(Step::Navigate(to))),
+            None => false,
+        }
     }
 
     /// Goes to the screen's page and fits it into view on the next draw.

@@ -1406,9 +1406,15 @@ impl App {
     pub(crate) fn canvas_card(&mut self, ui: &mut Ui, space_held: bool) -> Option<Pos2> {
         let ctx = ui.ctx().clone();
         let p = theme::of(ui);
-        let card = ui.max_rect().shrink(GAP);
+        // Present fills the window edge to edge; otherwise the canvas is a rounded card.
+        let present = self.presenting();
+        let (card, corner) = if present {
+            (ui.max_rect(), 0)
+        } else {
+            (ui.max_rect().shrink(GAP), CARD_RADIUS)
+        };
         self.card_rect = Some(card);
-        let radius = CornerRadius::same(CARD_RADIUS);
+        let radius = CornerRadius::same(corner);
         let painter = ui.painter();
         painter.add(card_shadow(&p, 16).as_shape(card, radius));
         painter.rect_filled(card, radius, p.card);
@@ -1436,16 +1442,17 @@ impl App {
                     let options = canvas::Options {
                         tool: self.tool,
                         space_held,
-                        radius: f32::from(CARD_RADIUS),
+                        radius: f32::from(corner),
                         frame_labels: self.prefs.frame_labels,
                         scroll_zooms: self.prefs.scroll_zooms,
+                        scaling: self.preview_scaling,
                     };
                     // Another file or page fades in over the last one, painted again from the
                     // tile cache: a crossfade, never the bare card for a frame.
                     let shown =
                         anim::arrive(&ctx, Id::new("canvas-in"), (tab.id, tab.root()), 0.16);
                     let ppp = ui.pixels_per_point();
-                    let under = (card, f32::from(CARD_RADIUS));
+                    let under = (card, f32::from(corner));
                     let underlay =
                         (self.crossfade).under(ui.painter(), &self.tiles, tab, under, shown, ppp);
                     let before = ui.opacity();
@@ -1746,9 +1753,26 @@ impl App {
                         ui.horizontal(|ui| {
                             let back = ui
                                 .add_enabled(preview.player.can_go_back(), egui::Button::new("Back"))
-                                .on_hover_text("Previous screen (Left arrow or Backspace)");
+                                .on_hover_text("Previous screen (Backspace)");
                             if back.clicked() {
                                 actions.push(Action::PreviewBack);
+                            }
+                            if let Some((at, of)) = preview.position(&tab.doc) {
+                                if ui
+                                    .add_enabled(at > 1, egui::Button::new("<"))
+                                    .on_hover_text("Previous frame (Left arrow)")
+                                    .clicked()
+                                {
+                                    actions.push(Action::PreviewStep(false));
+                                }
+                                ui.label(RichText::new(format!("{at} / {of}")).size(12.0).color(p.text_dim));
+                                if ui
+                                    .add_enabled(at < of, egui::Button::new(">"))
+                                    .on_hover_text("Next frame (Right arrow)")
+                                    .clicked()
+                                {
+                                    actions.push(Action::PreviewStep(true));
+                                }
                             }
                             ui.add(
                                 egui::Label::new(RichText::new(name).size(12.0).color(p.text))
@@ -1773,10 +1797,14 @@ impl App {
                             }
                             if ui
                                 .button("Exit")
-                                .on_hover_text("Stop the preview (Esc or ⇧Space)")
+                                .on_hover_text("Stop (Esc)")
                                 .clicked()
                             {
-                                actions.push(Action::Preview);
+                                actions.push(if preview.present {
+                                    Action::Present
+                                } else {
+                                    Action::Preview
+                                });
                             }
                         });
                     });

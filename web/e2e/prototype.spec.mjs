@@ -80,7 +80,7 @@ test("Preview: Shift+Space, a missed click flashes the link, the link navigates,
   const second = await page.screenshot({ path: testInfo.outputPath("4-after-link.png") });
   expect((await compare(page, first, second)).changed, "the link shows another screen").toBeGreaterThan(5000);
 
-  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("Backspace");
   await page.waitForTimeout(800);
   await expect.poll(async () => (await status(page)).busy).toBe(false);
   await page.waitForTimeout(800);

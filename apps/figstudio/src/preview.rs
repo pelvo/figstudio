@@ -3,14 +3,67 @@
 use egui::{Pos2, Sense, Stroke};
 use figstudio_render::kurbo::Point;
 
-use crate::canvas::{fit_node, to_color32};
-use crate::tab::Tab;
+use crate::canvas::to_color32;
+use crate::tab::{Tab, View};
 use crate::theme;
 use crate::tiles_view::Tiles;
 use crate::worker::Workers;
 
 /// How long the links flash after a click that hit none, in seconds.
 const FLASH: f64 = 0.8;
+
+/// How the screen is sized in the window: Figma's Present and Preview options.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scaling {
+    /// The whole screen in view.
+    #[default]
+    Fit,
+    /// The screen's width fills the window; a taller screen scrolls.
+    FitWidth,
+    /// The screen covers the window; what sticks out scrolls.
+    Fill,
+    /// One screen pixel per point; a larger screen scrolls.
+    ActualSize,
+}
+
+impl Scaling {
+    pub const ALL: [Scaling; 4] = [
+        Scaling::Fit,
+        Scaling::FitWidth,
+        Scaling::Fill,
+        Scaling::ActualSize,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Scaling::Fit => "Fit",
+            Scaling::FitWidth => "Fit width",
+            Scaling::Fill => "Fill",
+            Scaling::ActualSize => "Actual size",
+        }
+    }
+}
+
+/// The view that shows page-space box `screen` in `window` (points) by `scaling`: centred
+/// where it is smaller than the window, from its top left where it is larger.
+pub fn view_for(screen: egui::Rect, window: egui::Vec2, scaling: Scaling) -> View {
+    let size = screen.size().max(egui::Vec2::splat(1.0));
+    let (fit_x, fit_y) = (window.x / size.x, window.y / size.y);
+    let zoom = match scaling {
+        Scaling::Fit => fit_x.min(fit_y),
+        Scaling::FitWidth => fit_x,
+        Scaling::Fill => fit_x.max(fit_y),
+        Scaling::ActualSize => 1.0,
+    }
+    .clamp(crate::tab::MIN_ZOOM, crate::tab::MAX_ZOOM);
+    let shown = size * zoom;
+    let offset = |win: f32, len: f32| if len < win { (win - len) / 2.0 } else { 0.0 };
+    let at = egui::vec2(offset(window.x, shown.x), offset(window.y, shown.y));
+    View {
+        zoom,
+        pan: at - screen.min.to_vec2() * zoom,
+    }
+}
 
 /// Draws the Preview screen and handles its input. Returns the page-space cursor position.
 pub fn show(
@@ -19,6 +72,7 @@ pub fn show(
     workers: &mut Workers,
     tiles: &mut Tiles,
     radius: f32,
+    scaling: Scaling,
 ) -> Option<Pos2> {
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -26,8 +80,13 @@ pub fn show(
     tab.canvas_rect = Some(rect);
     if rect.width() > 10.0
         && let Some(id) = tab.fit_node.take()
+        && let Some(b) = figstudio_render::node_bounds(&tab.doc, id)
     {
-        fit_node(tab, rect, id);
+        let screen = egui::Rect::from_min_max(
+            Pos2::new(b.x0 as f32, b.y0 as f32),
+            Pos2::new(b.x1 as f32, b.y1 as f32),
+        );
+        tab.view = view_for(screen, rect.size(), scaling);
     }
     tab.fit_pending = false;
 
@@ -55,16 +114,20 @@ pub fn show(
     }
     tab.shown = tab.view;
 
-    // ← or Backspace goes back, R restarts the flow.
+    // As in Figma: → and ← step through the page's frames, Backspace goes back, R restarts.
     if !ui.ctx().egui_wants_keyboard_input() {
-        let (back, restart) = ui.input_mut(|i| {
+        let key = |i: &mut egui::InputState, k| i.consume_key(egui::Modifiers::NONE, k);
+        let (next, previous, back, restart) = ui.input_mut(|i| {
             (
-                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
-                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::R),
+                key(i, egui::Key::ArrowRight),
+                key(i, egui::Key::ArrowLeft),
+                key(i, egui::Key::Backspace),
+                key(i, egui::Key::R),
             )
         });
-        if back {
+        if next || previous {
+            tab.preview_step(next);
+        } else if back {
             tab.preview_go(Some(figstudio_render::prototype::Step::Back));
         } else if restart {
             tab.preview_go(None);

@@ -307,3 +307,42 @@ fn a_link_to_a_hidden_frame_is_listed_but_not_played() {
     let (screens, _) = prototype::reachable(&mut Renderer::new(), &doc, &[FIRST], 10);
     assert_eq!(screens.len(), 1, "a hidden frame is never shown");
 }
+
+/// A node of `kind` under `parent` with its top-left at (`x`, `y`).
+fn placed(n: u32, parent: u32, kind: &str, x: f64, y: f64) -> figstudio_fig::Node {
+    let mut node = node(n, parent, kind);
+    node.data.set(
+        "transform",
+        obj(&[("m02", Val::Float(x)), ("m12", Val::Float(y))]),
+    );
+    node
+}
+
+#[test]
+fn frames_follow_figmas_present_order() {
+    let mut set = placed(7, 1, "FRAME", 0.0, 0.0);
+    set.data.set("isStateGroup", Val::Bool(true));
+    let mut hidden = placed(8, 1, "FRAME", 10.0, 10.0);
+    hidden.data.set("visible", Val::Bool(false));
+    let doc = document(vec![
+        node(1, 0, "CANVAS"),
+        placed(2, 1, "FRAME", 500.0, 100.0),
+        placed(3, 1, "FRAME", 0.0, 100.0),
+        placed(4, 1, "SECTION", 0.0, 0.0),
+        placed(5, 4, "FRAME", 200.0, -50.0),
+        placed(6, 1, "SYMBOL", 0.0, -100.0),
+        set,
+        hidden,
+        placed(9, 1, "INSTANCE", 0.0, -200.0),
+    ]);
+    assert_eq!(
+        prototype::frames(&doc, id(1)),
+        vec![id(5), id(3), id(2)],
+        "frames in sections count; component sets, components, instances and hidden frames do not; rows top to bottom, then left to right"
+    );
+    assert_eq!(
+        prototype::start(&doc, id(1), None),
+        Some(id(5)),
+        "no flow: the first frame"
+    );
+}

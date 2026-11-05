@@ -391,6 +391,8 @@ struct App {
     command: command::CommandBar,
     appearance: menu::Appearance,
     reduce_motion: bool,
+    /// How Preview and Present size the screen (View → Prototype scaling).
+    preview_scaling: preview::Scaling,
     /// The file the sidebar showed last frame, to slide it when the file changes.
     shown_file: Option<u64>,
     /// The canvas card from the last frame (toasts and the drop overlay sit on it).
@@ -536,6 +538,7 @@ impl App {
             // egui keeps the theme preference with its memory; the menu follows it.
             appearance: menu::Appearance::from(cc.egui_ctx.options(|o| o.theme_preference)),
             reduce_motion: anim::reduced(&cc.egui_ctx),
+            preview_scaling: preview::Scaling::default(),
             shown_file: None,
             card_rect: None,
             crossfade: chrome::Crossfade::default(),
@@ -656,6 +659,14 @@ impl App {
         if self.worker_lost.first_time() {
             self.toast(ctx, "A background worker stopped; reopen the file.", true);
         }
+    }
+
+    /// Whether the active tab is in Present.
+    fn presenting(&self) -> bool {
+        self.tabs
+            .get(self.active)
+            .and_then(|t| t.preview.as_ref())
+            .is_some_and(|p| p.present)
     }
 
     fn toast(&mut self, ctx: &egui::Context, text: impl Into<String>, error: bool) {
@@ -1338,8 +1349,10 @@ impl App {
             },
         );
 
+        // Present shows the screen alone: no title strip, sidebar or Properties panel.
+        let present = self.presenting();
         // Hidden sidebar: a thin strip keeps the window controls and the way back.
-        let mut strip = !self.show_left;
+        let mut strip = !self.show_left && !present;
         egui::Panel::top("title-strip")
             .frame(egui::Frame::NONE.inner_margin(egui::Margin {
                 left: 8,
@@ -1351,7 +1364,7 @@ impl App {
             .resizable(false)
             .show_separator_line(false)
             .show_collapsible(ui, &mut strip, |ui| self.title_strip(ui));
-        let mut show_left = self.show_left;
+        let mut show_left = self.show_left && !present;
         egui::Panel::left(chrome::SIDEBAR)
             .frame(egui::Frame::NONE.inner_margin(egui::Margin {
                 left: 10,
@@ -1367,10 +1380,12 @@ impl App {
             .size_range(196.0..=560.0)
             .show_collapsible(ui, &mut show_left, |ui| self.sidebar(ui));
         // The sidebar's own button may have hidden it this frame; a drag past its edge too.
-        self.show_left = self.show_left && show_left;
+        if !present {
+            self.show_left = self.show_left && show_left;
+        }
 
         let has_tab = self.tabs.get(self.active).is_some();
-        let mut show_right = has_tab && self.show_right;
+        let mut show_right = has_tab && self.show_right && !present;
         // The Properties card follows the space's colour, crossfading with the window.
         let card_p = p.on_tint(self.tint_now(&ctx));
         let card = egui::Frame::new()
@@ -1405,7 +1420,7 @@ impl App {
                     tab.pending_copy = panels::properties(ui, tab).or(tab.pending_copy.take());
                 }
             });
-        if has_tab {
+        if has_tab && !present {
             self.show_right = show_right;
         }
 

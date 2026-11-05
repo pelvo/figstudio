@@ -59,9 +59,9 @@ fn preview_follows_links_goes_back_and_esc_returns_to_the_canvas() {
     assert_eq!(screen(&h), Some(FIRST), "the Back link goes back");
 
     click(&mut h, link, Modifiers::NONE);
-    h.key_press(Key::ArrowLeft);
+    h.key_press(Key::Backspace);
     h.run_steps(2);
-    assert_eq!(screen(&h), Some(FIRST), "← goes back too");
+    assert_eq!(screen(&h), Some(FIRST), "Backspace goes back too");
 
     h.key_press(Key::Escape);
     h.run_steps(2);
@@ -138,5 +138,64 @@ fn esc_restores_the_canvas_after_preview_crossed_pages() {
         (tab.page, tab.view),
         (original_page, original_view),
         "Esc restores the canvas we entered Preview from"
+    );
+}
+
+#[test]
+fn scaling_sizes_the_screen_as_figma_does() {
+    use crate::preview::{Scaling, view_for};
+    let screen = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(400.0, 1000.0));
+    let window = egui::vec2(800.0, 500.0);
+    let at = |s| {
+        let v = view_for(screen, window, s);
+        (v.zoom, v.to_screen(egui::Pos2::ZERO, screen.min))
+    };
+    assert_eq!(
+        at(Scaling::Fit),
+        (0.5, egui::pos2(300.0, 0.0)),
+        "whole screen, centred"
+    );
+    assert_eq!(
+        at(Scaling::FitWidth),
+        (2.0, egui::pos2(0.0, 0.0)),
+        "width fills, from the top"
+    );
+    assert_eq!(at(Scaling::Fill), (2.0, egui::pos2(0.0, 0.0)));
+    assert_eq!(
+        at(Scaling::ActualSize),
+        (1.0, egui::pos2(200.0, 0.0)),
+        "1:1, centred across"
+    );
+}
+
+#[test]
+fn arrows_step_through_the_page_frames_and_present_hides_the_editor() {
+    let mut h = previewing();
+    let ctx = h.ctx.clone();
+    h.state_mut().apply(crate::menu::Action::Present, &ctx);
+    h.run_steps(4);
+    let tab = &h.state().tabs[0];
+    assert!(tab.preview.as_ref().is_some_and(|p| p.present));
+    let canvas = tab.canvas_rect.unwrap();
+    assert!(
+        canvas.width() >= super::SIZE.x - 1.0,
+        "Present fills the window: {canvas:?}"
+    );
+    assert_eq!(screen(&h), Some(FIRST));
+    h.key_press(Key::ArrowRight);
+    h.run_steps(2);
+    assert_eq!(screen(&h), Some(SECOND), "→ is the next frame");
+    h.key_press(Key::ArrowRight);
+    h.run_steps(2);
+    assert_eq!(screen(&h), Some(SECOND), "the last frame stays");
+    h.key_press(Key::ArrowLeft);
+    h.run_steps(2);
+    assert_eq!(screen(&h), Some(FIRST), "← is the previous frame");
+    h.key_press(Key::Escape);
+    h.run_steps(4);
+    assert_eq!(screen(&h), None);
+    assert!(
+        h.state().tabs[0].canvas_rect.unwrap().width() < super::SIZE.x - 100.0,
+        "the editor is back"
     );
 }

@@ -41,6 +41,12 @@ pub(crate) enum Action {
     ZoomBy(f32),
     /// Start or stop prototype Preview (`preview.rs`).
     Preview,
+    /// Start or stop Present: Preview filling the window, without the editor around it.
+    Present,
+    /// Preview: the next (`true`) or previous frame of the page.
+    PreviewStep(bool),
+    /// How Preview and Present size the screen.
+    PreviewScaling(crate::preview::Scaling),
     /// Preview: back to the previous screen.
     PreviewBack,
     /// Preview: back to the flow's first screen.
@@ -169,7 +175,29 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
             Action::Preview,
             app.tabs
                 .get(app.active)
-                .is_some_and(|t| t.preview.is_some()),
+                .and_then(|t| t.preview.as_ref())
+                .is_some_and(|p| !p.present),
+        ),
+        Item::checked(
+            "Present prototype",
+            Action::Present,
+            app.tabs
+                .get(app.active)
+                .and_then(|t| t.preview.as_ref())
+                .is_some_and(|p| p.present),
+        ),
+        Item::group(
+            "Prototype scaling",
+            crate::preview::Scaling::ALL
+                .into_iter()
+                .map(|s| {
+                    Item::checked(
+                        s.label(),
+                        Action::PreviewScaling(s),
+                        app.preview_scaling == s,
+                    )
+                })
+                .collect(),
         ),
         Item::separator(),
         Item::checked("Sidebar", Action::ToggleLayers, app.show_left),
@@ -348,16 +376,35 @@ impl App {
                     }
                 }
             }
-            Action::Preview => {
-                let started = self.tab().map(|t| match t.preview {
+            Action::Preview | Action::Present => {
+                let present = action == Action::Present;
+                let started = self.tab().map(|t| match &t.preview {
+                    // The other mode switches over; the same one stops.
+                    Some(p) if p.present != present => {
+                        t.stop_preview();
+                        t.start_preview(present)
+                    }
                     Some(_) => {
                         t.stop_preview();
                         true
                     }
-                    None => t.start_preview(),
+                    None => t.start_preview(present),
                 });
                 if started == Some(false) {
                     self.toast(ctx, "Nothing to preview: this page has no frames.", false);
+                }
+            }
+            Action::PreviewStep(forward) => {
+                if let Some(t) = self.tab() {
+                    t.preview_step(forward);
+                }
+            }
+            Action::PreviewScaling(scaling) => {
+                self.preview_scaling = scaling;
+                if let Some(t) = self.tab()
+                    && let Some(p) = &t.preview
+                {
+                    t.fit_node = Some(p.player.screen());
                 }
             }
             Action::PreviewBack => {

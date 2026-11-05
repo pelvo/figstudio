@@ -15,8 +15,8 @@ use vello_cpu::{RenderContext, RenderSettings};
 
 use crate::geom::size;
 use crate::{
-    Ctx, Inspect, MAX_RENDER_WORK, Renderer, absolute_transform, page_background, paint,
-    transformed_bounds,
+    Ctx, Inspect, MAX_RENDER_WORK, Renderer, absolute_transform, node_bounds, page_background,
+    paint, transformed_bounds,
 };
 
 /// Most links listed for one screen; beyond it [`Screen::truncated`] is set.
@@ -57,6 +57,31 @@ pub fn flows(doc: &Document) -> Vec<Flow> {
     found.into_iter().map(|(_, _, flow)| flow).collect()
 }
 
+/// The frames Present steps through on `page`, as Figma does: visible frames that are not
+/// component sets, at the top level or inside sections, in reading order (top to bottom,
+/// then left to right).
+pub fn frames(doc: &Document, page: Guid) -> Vec<Guid> {
+    let mut found = Vec::new();
+    let mut stack: Vec<Guid> = doc.children(page).to_vec();
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.node(id) else { continue };
+        if node.data.flag("visible") == Some(false) {
+            continue;
+        }
+        match node.kind.as_str() {
+            "SECTION" => stack.extend(doc.children(id)),
+            "FRAME" if node.data.flag("isStateGroup") != Some(true) => {
+                if let Some(b) = node_bounds(doc, id) {
+                    found.push((b.y0, b.x0, id));
+                }
+            }
+            _ => {}
+        }
+    }
+    found.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    found.into_iter().map(|(_, _, id)| id).collect()
+}
+
 /// Whether `id` and every ancestor up to its page are visible.
 fn shown(doc: &Document, id: Guid) -> bool {
     let mut seen = HashSet::new();
@@ -73,8 +98,8 @@ fn shown(doc: &Document, id: Guid) -> bool {
     false
 }
 
-/// Where Preview starts on `page`: the screen holding `selection`, else the page's first flow,
-/// else the first flow of any page, else the page's first frame.
+/// Where Preview starts on `page`, as in Figma: the screen holding `selection`, else the
+/// page's first flow, else the page's first frame in [`frames`] order.
 pub fn start(doc: &Document, page: Guid, selection: Option<Guid>) -> Option<Guid> {
     let flows = flows(doc);
     selection
@@ -85,13 +110,7 @@ pub fn start(doc: &Document, page: Guid, selection: Option<Guid>) -> Option<Guid
                 .find(|f| f.page == page && shown(doc, f.start))
                 .map(|f| f.start)
         })
-        .or_else(|| flows.iter().find(|f| shown(doc, f.start)).map(|f| f.start))
-        .or_else(|| {
-            doc.children(page)
-                .iter()
-                .copied()
-                .find(|id| doc.node(*id).is_some_and(|n| n.kind == "FRAME") && shown(doc, *id))
-        })
+        .or_else(|| frames(doc, page).first().copied())
 }
 
 /// The top-level frame (a child of the page or of a section) that holds `id`.

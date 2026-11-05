@@ -909,7 +909,12 @@ history stack; `reachable` walks played links breadth first.
   draws the screen alone with no other change; `Tab::background()` is the page's prototype
   background. `canvas::show` hands the frame to `preview::show` (fit, scroll, hit test,
   link flash) and `chrome.rs` swaps the tool and status pills for the preview bar. Keys:
-  ⇧Space (`Binding::Preview`) and Esc toggle, ← / Backspace back, R restart.
+  ⇧Space (`Binding::Preview`) and Esc toggle, → / ← next and previous frame of the page,
+  Backspace back, R restart. Present (⌥⌘↩, `Binding::Present`) is the same with the title
+  strip, sidebar and Properties hidden and the canvas edge to edge. `prototype::frames`
+  is Figma's Present order: visible frames that are not component sets, at the top level or
+  inside sections, in reading order. Scaling (View → Prototype scaling, `preview::Scaling`)
+  is Fit, Fit width, Fill or Actual size, as Figma's Options menu.
   `figstudioStatus` reports `preview`.
 - CLI: `figstudio-cli prototype` prints flows, the reachable screens and their links, and
   renders them with `-o`.
