@@ -66,7 +66,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "get_prototype",
-            "Prototype flows, the screens reachable from them (or from nodeId) and each screen's links; limit 1 to 500 screens.",
+            "Prototype flows, the screens reachable from them (or from the screen holding nodeId) and each screen's links; limit 1 to 500 screens.",
             vec![
                 ("fileKey", string.clone()),
                 ("nodeId", string.clone()),

@@ -3,10 +3,13 @@ mod common;
 #[path = "common/prototype.rs"]
 mod proto;
 
-use common::{document, id, instance, node, patch};
+use common::{document, id, instance, node, obj, paint, patch, size};
 use figstudio_fig::{Document, Val};
 use figstudio_render::Renderer;
+use figstudio_render::Viewport;
+use figstudio_render::kurbo::Affine;
 use figstudio_render::kurbo::Point;
+use figstudio_render::prototype::MAX_LINKS;
 use figstudio_render::prototype::{self, Layer, Player, Screen, Step};
 use proto::*;
 
@@ -162,4 +165,145 @@ fn links_to_missing_frames_are_listed_but_not_played() {
 fn write_fixture() {
     let path = std::env::var("FIGSTUDIO_PROTOTYPE_FIXTURE").expect("FIGSTUDIO_PROTOTYPE_FIXTURE");
     prototype_doc().save(path).unwrap();
+}
+
+// Found by the adversarial review of PR #71; each failed before its fix.
+#[test]
+fn one_layer_past_the_link_cap_is_reported_truncated() {
+    let mut link = node(3, 2, "RECTANGLE");
+    let mut interactions = proto::navigate(id(4));
+    let action = interactions.items()[0].get("actions").unwrap().items()[0].clone();
+    let mut interaction = interactions.items()[0].clone();
+    interaction.set("actions", Val::Arr(vec![action; MAX_LINKS + 1]));
+    interactions = Val::Arr(vec![interaction]);
+    link.data.set("prototypeInteractions", interactions);
+    let doc = document(vec![
+        node(1, 0, "CANVAS"),
+        node(2, 1, "FRAME"),
+        link,
+        node(4, 1, "FRAME"),
+    ]);
+    let screen = Screen::read(&mut Renderer::new(), &doc, id(2));
+    assert!(screen.truncated, "discarded links must be disclosed");
+}
+
+#[test]
+fn a_rotated_link_is_hit_by_its_shape_not_its_box() {
+    let mut frame = node(2, 1, "FRAME");
+    frame.data.set("size", size(100.0, 100.0));
+    let mut link = node(3, 2, "RECTANGLE");
+    let c = std::f64::consts::FRAC_1_SQRT_2;
+    link.data.set(
+        "transform",
+        obj(&[
+            ("m00", Val::Float(c)),
+            ("m01", Val::Float(-c)),
+            ("m10", Val::Float(c)),
+            ("m11", Val::Float(c)),
+            ("m02", Val::Float(40.0)),
+        ]),
+    );
+    link.data.set("fillPaints", paint(1.0, 0.0, 0.0));
+    link.data
+        .set("prototypeInteractions", proto::navigate(id(4)));
+    let doc = document(vec![node(1, 0, "CANVAS"), frame, link, node(4, 1, "FRAME")]);
+    let mut renderer = Renderer::new();
+    let screen = Screen::read(&mut renderer, &doc, id(2));
+    let p = Point::new(13.0, 1.0);
+    let render = renderer.render(
+        &doc,
+        id(2),
+        &Viewport {
+            width: 100,
+            height: 100,
+            transform: Affine::IDENTITY,
+            background: None,
+        },
+    );
+    let pixels = render.pixmap.data_as_u8_slice();
+    let rgba = &pixels[(100 + 13) * 4..(100 + 14) * 4];
+    assert_eq!(rgba[3], 0, "the renderer draws nothing at the point");
+    assert!(
+        screen.hit(p).is_none(),
+        "a corner outside the rotated rectangle is not a link"
+    );
+}
+
+#[test]
+fn a_link_clipped_out_of_its_frame_cannot_be_clicked() {
+    let mut frame = node(2, 1, "FRAME");
+    frame.data.set("frameMaskDisabled", Val::Bool(false));
+    let mut link = node(3, 2, "RECTANGLE");
+    link.data
+        .set("transform", obj(&[("m02", Val::Float(50.0))]));
+    link.data.set("fillPaints", paint(1.0, 0.0, 0.0));
+    link.data
+        .set("prototypeInteractions", proto::navigate(id(4)));
+    let doc = document(vec![node(1, 0, "CANVAS"), frame, link, node(4, 1, "FRAME")]);
+    let mut renderer = Renderer::new();
+    let screen = Screen::read(&mut renderer, &doc, id(2));
+    let p = Point::new(60.0, 10.0);
+    let render = renderer.render(
+        &doc,
+        id(2),
+        &Viewport {
+            width: 100,
+            height: 100,
+            transform: Affine::IDENTITY,
+            background: None,
+        },
+    );
+    let pixels = render.pixmap.data_as_u8_slice();
+    let rgba = &pixels[(10 * 100 + 60) * 4..(10 * 100 + 61) * 4];
+    assert_eq!(rgba[3], 0, "the renderer draws nothing at the point");
+    assert!(
+        screen.hit(p).is_none(),
+        "a fully clipped layer cannot be clicked"
+    );
+}
+
+#[test]
+fn a_click_plays_its_navigate_even_after_an_unplayed_action() {
+    let mut link = node(3, 2, "RECTANGLE");
+    let mut interaction = proto::navigate(id(4)).items()[0].clone();
+    let navigate = interaction.get("actions").unwrap().items()[0].clone();
+    let url = obj(&[
+        ("connectionType", proto::name("URL")),
+        ("connectionURL", Val::Str("https://example.invalid/".into())),
+    ]);
+    interaction.set("actions", Val::Arr(vec![navigate, url]));
+    link.data
+        .set("prototypeInteractions", Val::Arr(vec![interaction]));
+    let doc = document(vec![
+        node(1, 0, "CANVAS"),
+        node(2, 1, "FRAME"),
+        link,
+        node(4, 1, "FRAME"),
+    ]);
+    let screen = Screen::read(&mut Renderer::new(), &doc, id(2));
+    let hit = screen.hit(Point::new(20.0, 20.0));
+    assert_eq!(
+        hit.and_then(|l| l.step),
+        Some(figstudio_render::prototype::Step::Navigate(id(4))),
+        "the supported action of this click must still play"
+    );
+}
+
+#[test]
+fn a_link_to_a_hidden_frame_is_listed_but_not_played() {
+    let mut doc = prototype_doc();
+    let mut nodes = doc.nodes.clone();
+    for n in &mut nodes {
+        if n.id == SECOND {
+            n.data.set("visible", Val::Bool(false));
+        }
+    }
+    doc.set_nodes(nodes).unwrap();
+    let first = read(&doc, FIRST);
+    assert_eq!(
+        (first.links[0].destination, first.links[0].step),
+        (Some(SECOND), None)
+    );
+    let (screens, _) = prototype::reachable(&mut Renderer::new(), &doc, &[FIRST], 10);
+    assert_eq!(screens.len(), 1, "a hidden frame is never shown");
 }

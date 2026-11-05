@@ -99,7 +99,7 @@ pub struct Tab {
 pub struct Preview {
     pub player: Player,
     pub screen: Screen,
-    /// The page and view before Preview started: the view comes back when it stops there.
+    /// The page and view before Preview started; both come back when it stops.
     pub canvas: (Guid, View),
     /// When a click hit no link (`egui` input time): the links flash, as in Figma.
     pub missed: Option<f64>,
@@ -284,11 +284,11 @@ impl Tab {
 
     pub fn stop_preview(&mut self) {
         if let Some(preview) = self.preview.take() {
+            let (page, view) = preview.canvas;
+            self.set_page(page);
             self.fit_node = None;
-            match preview.canvas {
-                (page, view) if page == self.page => self.view = view,
-                _ => self.fit_pending = true,
-            }
+            self.fit_pending = false;
+            self.view = view;
         }
     }
 

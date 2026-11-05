@@ -344,6 +344,8 @@ struct Ctx<'a> {
     outer: Option<Guid>,
     /// Layers with prototype interactions an [`Inspect::Links`] walk found, back to front.
     found: Vec<prototype::Found>,
+    /// The clipping frames around the node an [`Inspect::Links`] walk is at.
+    clips: Vec<prototype::Area>,
 }
 
 /// What a metadata walk collects.
@@ -695,6 +697,7 @@ impl Renderer {
             inspect: None,
             outer: None,
             found: Vec::new(),
+            clips: Vec::new(),
         }
     }
     /// Counts visible stored emoji on every page using the draw walk's overrides, truncation
@@ -1187,8 +1190,17 @@ impl Ctx<'_> {
         let kind = node.kind.as_str();
         let world = parent * affine(data.get("transform"));
         if let Some(inspect) = self.inspect {
+            let clip = inspect == Inspect::Links && kind != "TEXT" && clips_content(kind, data);
             if inspect == Inspect::Links {
                 self.found_link(node, path, world, data);
+            }
+            if clip {
+                let (width, height) = size(data);
+                self.clips.push(prototype::Area {
+                    transform: world,
+                    width,
+                    height,
+                });
             }
             if kind == "TEXT" {
                 if inspect == Inspect::Emoji && !stale_glyphs {
@@ -1206,6 +1218,9 @@ impl Ctx<'_> {
             } else {
                 let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
                 self.draw_children(node, data, world, child_path);
+            }
+            if clip {
+                self.clips.pop();
             }
             self.depth -= 1;
             return;

@@ -104,11 +104,28 @@ async fn bad_node_ids_are_tool_errors() {
                 "not a node inside an instance",
             ),
             (json!({"nodeId": "nope"}), "node"),
+            (json!({"nodeId": "0:1"}), "not a screen"),
         ] {
             let result = call(client, args).await;
             assert_eq!(result.is_error, Some(true));
             assert!(format!("{result:?}").contains(message), "{result:?}");
         }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_layer_starts_from_its_screen_and_nothing_is_counted_twice() {
+    run(async |client| {
+        let v = structured(&call(client, json!({"nodeId": "1:53"})).await);
+        let screens: Vec<_> = v["screens"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["nodeId"].clone())
+            .collect();
+        assert_eq!(screens, [json!("1:2"), json!("1:4")]);
+        assert_eq!(v["notPlayed"], json!(1));
     })
     .await;
 }

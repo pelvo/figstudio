@@ -72,3 +72,33 @@ fn a_file_without_flows_starts_at_the_first_frame() {
         "{stdout}"
     );
 }
+
+#[test]
+fn a_hidden_screen_is_not_played_and_does_not_stop_rendering() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut doc = proto::prototype_doc();
+    let mut nodes = doc.nodes.clone();
+    for n in &mut nodes {
+        if n.id == proto::SECOND {
+            n.data.set("visible", figstudio_fig::Val::Bool(false));
+        }
+    }
+    doc.set_nodes(nodes).unwrap();
+    let file = dir.path().join("hidden.fig");
+    doc.save(&file).unwrap();
+    let out = dir.path().join("screens");
+    let (ok, stdout, stderr) = cli(&[
+        "prototype",
+        file.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--no-system-fonts",
+    ]);
+    assert!(ok, "{stderr}");
+    assert!(stdout.contains("screens (1):"), "{stdout}");
+    assert!(
+        stdout.contains("navigate 1:4 \"Symbols and images\" (not played)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("1 links not played"), "{stdout}");
+}

@@ -66,15 +66,16 @@ pub fn run(doc: &Document, options: &Options<'_>) -> Result<()> {
         std::fs::create_dir_all(dir).map_err(|e| anyhow!("{}: {e}", dir.display()))?;
         for (i, screen) in screens.iter().enumerate() {
             let page = doc.page_of(screen.frame).unwrap_or(options.page);
-            let frame = renderer
-                .render_fit(
-                    doc,
-                    screen.frame,
-                    options.scale,
-                    0.0,
-                    Some(prototype::background(doc, page)),
-                )
-                .with_context(|| format!("screen {} has nothing visible", screen.frame))?;
+            let Some(frame) = renderer.render_fit(
+                doc,
+                screen.frame,
+                options.scale,
+                0.0,
+                Some(prototype::background(doc, page)),
+            ) else {
+                println!("{} has nothing visible; not rendered", screen.frame);
+                continue;
+            };
             let id = screen.frame.to_string().replace(':', "-");
             let out = dir.join(format!("{:02}-{id}.{}", i + 1, options.format.extension()));
             std::fs::write(&out, encode_pixmap(frame.pixmap, options.format)?)

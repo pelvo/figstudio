@@ -1,6 +1,6 @@
 //! Prototype Preview on the canvas: one screen alone, fitted; a click on a link follows it.
 //! The tiles draw `Tab::root` (the screen), so CPU, GPU and the browser work unchanged.
-use egui::{Pos2, Rect, Sense, Stroke, StrokeKind};
+use egui::{Pos2, Sense, Stroke};
 use figstudio_render::kurbo::Point;
 
 use crate::canvas::{fit_node, to_color32};
@@ -106,13 +106,14 @@ pub fn show(
         ui.pixels_per_point(),
     );
 
-    let to_screen = |b: figstudio_render::kurbo::Rect| {
-        Rect::from_min_max(
-            tab.view
-                .to_screen(origin, Pos2::new(b.x0 as f32, b.y0 as f32)),
-            tab.view
-                .to_screen(origin, Pos2::new(b.x1 as f32, b.y1 as f32)),
-        )
+    // The layer's own shape, so a rotated link is outlined as it is drawn.
+    let to_screen = |area: &figstudio_render::prototype::Area| {
+        area.corners()
+            .map(|p| {
+                tab.view
+                    .to_screen(origin, Pos2::new(p.x as f32, p.y as f32))
+            })
+            .to_vec()
     };
     let flash = tab
         .preview
@@ -123,22 +124,20 @@ pub fn show(
         ui.ctx().request_repaint();
         if let Some(preview) = &tab.preview {
             for link in preview.screen.links.iter().filter(|l| l.step.is_some()) {
-                painter.rect_filled(
-                    to_screen(link.bounds),
-                    2.0,
+                painter.add(egui::Shape::convex_polygon(
+                    to_screen(&link.area),
                     theme::ACCENT.gamma_multiply(0.25 * flash),
-                );
+                    Stroke::NONE,
+                ));
             }
         }
     }
     let playable = hovered.as_ref().is_some_and(|l| l.step.is_some());
     if let Some(link) = hovered.as_ref().filter(|_| playable) {
-        painter.rect_stroke(
-            to_screen(link.bounds),
-            2.0,
+        painter.add(egui::Shape::closed_line(
+            to_screen(&link.area),
             Stroke::new(1.5, theme::ACCENT.gamma_multiply(0.7)),
-            StrokeKind::Outside,
-        );
+        ));
     }
     if response.hovered() {
         ui.ctx().set_cursor_icon(if playable {

@@ -57,19 +57,40 @@ pub fn flows(doc: &Document) -> Vec<Flow> {
     found.into_iter().map(|(_, _, flow)| flow).collect()
 }
 
+/// Whether `id` and every ancestor up to its page are visible.
+fn shown(doc: &Document, id: Guid) -> bool {
+    let mut seen = HashSet::new();
+    let mut cur = doc.node(id);
+    while let Some(node) = cur {
+        if !seen.insert(node.id) || node.data.flag("visible") == Some(false) {
+            return false;
+        }
+        if node.kind == "CANVAS" {
+            return true;
+        }
+        cur = node.parent.and_then(|p| doc.node(p));
+    }
+    false
+}
+
 /// Where Preview starts on `page`: the screen holding `selection`, else the page's first flow,
 /// else the first flow of any page, else the page's first frame.
 pub fn start(doc: &Document, page: Guid, selection: Option<Guid>) -> Option<Guid> {
     let flows = flows(doc);
     selection
         .and_then(|id| screen_of(doc, id))
-        .or_else(|| flows.iter().find(|f| f.page == page).map(|f| f.start))
-        .or_else(|| flows.first().map(|f| f.start))
+        .or_else(|| {
+            flows
+                .iter()
+                .find(|f| f.page == page && shown(doc, f.start))
+                .map(|f| f.start)
+        })
+        .or_else(|| flows.iter().find(|f| shown(doc, f.start)).map(|f| f.start))
         .or_else(|| {
             doc.children(page)
                 .iter()
                 .copied()
-                .find(|id| doc.node(*id).is_some_and(|n| n.kind == "FRAME"))
+                .find(|id| doc.node(*id).is_some_and(|n| n.kind == "FRAME") && shown(doc, *id))
         })
 }
 
@@ -119,13 +140,46 @@ pub enum Step {
     Back,
 }
 
+/// A layer's box placed on the page: `transform` maps `0..w × 0..h` to page space, so a
+/// rotated or skewed layer keeps its shape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Area {
+    pub transform: Affine,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Area {
+    pub fn contains(&self, p: Point) -> bool {
+        if self.transform.determinant().abs() < 1e-12 {
+            return false;
+        }
+        let local = self.transform.inverse() * p;
+        (0.0..=self.width).contains(&local.x) && (0.0..=self.height).contains(&local.y)
+    }
+
+    /// The four corners in page space, clockwise from the layer's top left.
+    pub fn corners(&self) -> [Point; 4] {
+        let (w, h) = (self.width, self.height);
+        [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].map(|(x, y)| self.transform * Point::new(x, y))
+    }
+
+    fn bounds(&self) -> Rect {
+        transformed_bounds(self.transform, Rect::new(0.0, 0.0, self.width, self.height))
+    }
+}
+
 /// One action of one interaction on a layer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Link {
     pub layer: Layer,
     pub name: String,
-    /// The layer's page-space box.
+    /// The layer's page-space bounding box.
     pub bounds: Rect,
+    /// The layer's shape, for hit tests and outlines.
+    pub area: Area,
+    /// The clipping frames around the layer: a point outside any of them does not hit it.
+    pub clips: Vec<Area>,
     /// Figma's interaction type, such as `ON_CLICK`, `ON_HOVER` or `AFTER_TIMEOUT`.
     pub trigger: &'static str,
     /// For a link to a layer, Figma's navigation type (`NAVIGATE`, `OVERLAY`, `SWAP_STATE`,
@@ -170,17 +224,23 @@ impl Screen {
             truncated: ctx.exhausted || ctx.stats.depth_skipped > 0,
         };
         for found in std::mem::take(&mut ctx.found) {
-            if screen.links.len() >= MAX_LINKS {
-                screen.truncated = true;
+            screen.push(doc, found);
+            if screen.truncated {
                 break;
             }
-            screen.push(doc, found.layer, &found.data, found.bounds);
         }
-        screen.links.truncate(MAX_LINKS);
         screen
     }
 
-    fn push(&mut self, doc: &Document, layer: Layer, data: &Val, bounds: Rect) {
+    fn push(&mut self, doc: &Document, found: Found) {
+        let Found {
+            layer,
+            area,
+            clips,
+            data,
+        } = found;
+        let data = &data;
+        let bounds = area.bounds();
         let name = data.text("name").unwrap_or("");
         for interaction in interactions(doc, data) {
             if interaction.flag("isDeleted") == Some(true) {
@@ -204,10 +264,14 @@ impl Screen {
                 if trigger == "NONE" || kind == "NONE" {
                     continue;
                 }
+                if self.links.len() >= MAX_LINKS {
+                    self.truncated = true;
+                    return;
+                }
                 let step = match (trigger, kind) {
-                    ("ON_CLICK", "NAVIGATE") => destination
-                        .filter(|d| doc.node(*d).is_some())
-                        .map(Step::Navigate),
+                    ("ON_CLICK", "NAVIGATE") => {
+                        destination.filter(|d| shown(doc, *d)).map(Step::Navigate)
+                    }
                     ("ON_CLICK", "BACK") => Some(Step::Back),
                     _ => None,
                 };
@@ -215,6 +279,8 @@ impl Screen {
                     layer: layer.clone(),
                     name: name.to_owned(),
                     bounds,
+                    area,
+                    clips: clips.clone(),
                     trigger,
                     action: kind,
                     destination,
@@ -227,12 +293,25 @@ impl Screen {
         }
     }
 
-    /// The front-most "On click" link under page point `p`, played or not.
+    /// What a click at page point `p` does: on the front-most layer with an "On click" link
+    /// there, its first played action, else its first action (not played).
     pub fn hit(&self, p: Point) -> Option<&Link> {
-        self.links
+        let clicks = |l: &&Link| l.trigger == "ON_CLICK";
+        let front = self
+            .links
             .iter()
             .rev()
-            .find(|l| l.trigger == "ON_CLICK" && l.bounds.contains(p))
+            .filter(clicks)
+            .find(|l| l.area.contains(p) && l.clips.iter().all(|c| c.contains(p)))?;
+        let mut on_layer = self
+            .links
+            .iter()
+            .filter(clicks)
+            .filter(|l| l.layer == front.layer);
+        on_layer
+            .clone()
+            .find(|l| l.step.is_some())
+            .or_else(|| on_layer.next())
     }
 
     /// Links the player does not play.
@@ -318,7 +397,8 @@ impl Player {
 /// A layer with interactions, as an [`Inspect::Links`] walk found it.
 pub(crate) struct Found {
     layer: Layer,
-    bounds: Rect,
+    area: Area,
+    clips: Vec<Area>,
     data: Val,
 }
 
@@ -347,10 +427,25 @@ impl Ctx<'_> {
             }
             (Some(_), None) => return,
         };
-        let (w, h) = size(data);
+        let (width, height) = size(data);
+        let area = Area {
+            transform: world,
+            width,
+            height,
+        };
+        // A layer wholly outside a clipping frame is not drawn, so it has no link to click.
+        let bounds = area.bounds();
+        if self
+            .clips
+            .iter()
+            .any(|c| c.bounds().intersect(bounds).area() <= 0.0 && !bounds.is_zero_area())
+        {
+            return;
+        }
         self.found.push(Found {
             layer,
-            bounds: transformed_bounds(world, Rect::new(0.0, 0.0, w, h)),
+            area,
+            clips: self.clips.clone(),
             data: data.clone(),
         });
     }

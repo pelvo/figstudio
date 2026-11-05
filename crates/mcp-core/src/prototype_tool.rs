@@ -18,10 +18,18 @@ pub const MAX_LIMIT: usize = 500;
 pub fn prototype(doc: &Document, node: Option<&str>, limit: Option<usize>) -> Output {
     let flows = prototype::flows(doc);
     let starts = match node.map(parse_node_id) {
-        Some(Ok(NodeId::Node(id))) if doc.node(id).is_some() => vec![id],
-        Some(Ok(NodeId::Node(id))) => {
+        Some(Ok(NodeId::Node(id))) if doc.node(id).is_none() => {
             return Output::fault(format!("node {id} does not exist in this file"));
         }
+        // A layer starts from the screen (top-level frame) that holds it, as in the app.
+        Some(Ok(NodeId::Node(id))) => match prototype::screen_of(doc, id) {
+            Some(screen) => vec![screen],
+            None => {
+                return Output::fault(format!(
+                    "node {id} is not a screen or inside one; give a top-level frame or a layer in it"
+                ));
+            }
+        },
         Some(Ok(NodeId::InstancePath(_))) => {
             return Output::fault("nodeId must be a frame, not a node inside an instance");
         }
