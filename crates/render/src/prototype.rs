@@ -58,28 +58,66 @@ pub fn flows(doc: &Document) -> Vec<Flow> {
 }
 
 /// The frames Present steps through on `page`, as Figma does: visible frames that are not
-/// component sets, at the top level or inside sections, in reading order (top to bottom,
-/// then left to right).
+/// component sets or groups, at the top level or inside sections. Figma sorts each level
+/// (a section is one item with its own box) by "left first when they overlap vertically,
+/// else top first", with a stable insertion sort from layer order. That comparison is not
+/// transitive, so the sort itself is part of the order; matched against Figma on real files.
 pub fn frames(doc: &Document, page: Guid) -> Vec<Guid> {
     let mut found = Vec::new();
-    let mut stack: Vec<Guid> = doc.children(page).to_vec();
-    while let Some(id) = stack.pop() {
-        let Some(node) = doc.node(id) else { continue };
-        if node.data.flag("visible") == Some(false) {
-            continue;
-        }
-        match node.kind.as_str() {
-            "SECTION" => stack.extend(doc.children(id)),
-            "FRAME" if node.data.flag("isStateGroup") != Some(true) => {
-                if let Some(b) = node_bounds(doc, id) {
-                    found.push((b.y0, b.x0, id));
-                }
+    in_order(doc, page, &mut found, 0);
+    found
+}
+
+/// Appends the frames under `parent` in Figma's Present order (see [`frames`]).
+fn in_order(doc: &Document, parent: Guid, found: &mut Vec<Guid>, depth: usize) {
+    if depth > 64 {
+        return;
+    }
+    let mut items: Vec<(Rect, Guid, bool)> = doc
+        .children(parent)
+        .iter()
+        .filter_map(|id| {
+            let node = doc.node(*id)?;
+            if node.data.flag("visible") == Some(false) {
+                return None;
             }
-            _ => {}
+            let section = match node.kind.as_str() {
+                "SECTION" => true,
+                // A group is stored as a frame that resizes to fit; component sets are frames too.
+                "FRAME"
+                    if node.data.flag("isStateGroup") != Some(true)
+                        && node.data.flag("resizeToFit") != Some(true) =>
+                {
+                    false
+                }
+                _ => return None,
+            };
+            Some((node_bounds(doc, *id)?, *id, section))
+        })
+        .collect();
+    let before = |a: &Rect, b: &Rect| {
+        // Boxes that only touch count as overlapping too.
+        let (major, minor) = if a.y0 <= b.y1 && b.y0 <= a.y1 {
+            (a.x0.total_cmp(&b.x0), a.y0.total_cmp(&b.y0))
+        } else {
+            (a.y0.total_cmp(&b.y0), a.x0.total_cmp(&b.x0))
+        };
+        major.then(minor).is_lt()
+    };
+    for i in 1..items.len() {
+        let mut j = i;
+        while j > 0 && before(&items[j].0, &items[j - 1].0) {
+            items.swap(j, j - 1);
+            j -= 1;
         }
     }
-    found.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    found.into_iter().map(|(_, _, id)| id).collect()
+    for (_, id, section) in items {
+        if section {
+            in_order(doc, id, found, depth + 1);
+        } else {
+            found.push(id);
+        }
+    }
 }
 
 /// Whether `id` and every ancestor up to its page are visible.

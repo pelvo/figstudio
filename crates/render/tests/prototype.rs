@@ -346,3 +346,26 @@ fn frames_follow_figmas_present_order() {
         "no flow: the first frame"
     );
 }
+
+#[test]
+fn frames_keep_figmas_insertion_sort_where_the_comparison_is_not_transitive() {
+    // "Left first when they overlap vertically, else top first" is not transitive, so the
+    // order depends on the sort: Figma's stable insertion sort from layer order gives this
+    // one; starting from another order gives another.
+    let sized = |n: u32, x: f64, y: f64, h: f64| {
+        let mut f = placed(n, 1, "FRAME", x, y);
+        f.data.set("size", size(40.0, h));
+        f
+    };
+    let doc = document(vec![
+        node(1, 0, "CANVAS"),
+        sized(10, 200.0, 40.0, 80.0),
+        sized(11, 100.0, 100.0, 20.0),
+        sized(12, 200.0, 40.0, 20.0),
+        sized(13, 200.0, 0.0, 50.0),
+    ]);
+    assert_eq!(
+        prototype::frames(&doc, id(1)),
+        vec![id(13), id(11), id(10), id(12)]
+    );
+}
