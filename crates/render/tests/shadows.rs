@@ -406,3 +406,32 @@ fn a_clipping_frame_clips_its_childs_shadow_and_blur() {
         }
     }
 }
+
+#[test]
+fn a_mask_clips_its_siblings_shadow_and_blur() {
+    let mut group = node(2, 1, "FRAME");
+    group.data.set("size", size(80.0, 80.0));
+    let mut mask = node(3, 2, "RECTANGLE");
+    mask.data.set("size", size(30.0, 30.0));
+    mask.data.set("fillPaints", paint(0.0, 0.0, 0.0));
+    mask.data.set("mask", Val::Bool(true));
+    let mut rect = node(4, 2, "RECTANGLE");
+    rect.data.set("size", size(30.0, 30.0));
+    rect.data.set("fillPaints", paint(0.0, 0.0, 0.0));
+    let mut blur = shadow("LAYER_BLUR", 0.0, 0.0, 16.0);
+    blur.set("type", Val::Str("LAYER_BLUR".into()));
+    for effect in [shadow("DROP_SHADOW", 30.0, 30.0, 8.0), blur] {
+        rect.data.set("effects", Val::Arr(vec![effect]));
+        let doc = document(vec![
+            node(1, 0, "CANVAS"),
+            group.clone(),
+            mask.clone(),
+            rect.clone(),
+        ]);
+        let (px, _) = render(&doc);
+        assert!(pixel(&px, 15, 15)[3] > 0, "drawn inside the mask");
+        for (x, y) in [(45, 45), (34, 15), (15, 34)] {
+            assert_eq!(pixel(&px, x, y)[3], 0, "outside the mask at ({x},{y})");
+        }
+    }
+}
