@@ -283,6 +283,8 @@ pub struct Renderer {
     /// Property and style indexes of the last document drawn, by [`Document::instance`]:
     /// built once per document, not per frame (they scan every node of every page).
     indexes: Option<(u64, Arc<resolve::Definitions>, Arc<variables::Variables>)>,
+    /// Prototype state drawn on top of the document: instances showing another variant.
+    pub prototype: Arc<prototype::State>,
 }
 
 impl fmt::Debug for Renderer {
@@ -312,6 +314,7 @@ impl Default for Renderer {
             emoji_source: emoji_source::Cache::default(),
             system_fonts: true,
             indexes: None,
+            prototype: Arc::default(),
             inspection_work: InspectionWork::default(),
         }
     }
@@ -344,6 +347,8 @@ struct Ctx<'a> {
     outer: Option<Guid>,
     /// Layers with prototype interactions an [`Inspect::Links`] walk found, back to front.
     found: Vec<prototype::Found>,
+    /// Instances showing another variant ([`Renderer::prototype`]).
+    prototype: Arc<prototype::State>,
     /// The clipping frames around the node an [`Inspect::Links`] walk is at.
     clips: Vec<prototype::Area>,
 }
@@ -697,6 +702,7 @@ impl Renderer {
             inspect: None,
             outer: None,
             found: Vec::new(),
+            prototype: self.prototype.clone(),
             clips: Vec::new(),
         }
     }
@@ -1180,6 +1186,10 @@ impl Ctx<'_> {
         self.depth += 1;
         let (data, stale_glyphs, approximate_ink) =
             patched.unwrap_or_else(|| self.patched(node, path, None));
+        let data = match self.swapped_variant(node, path, data.as_ref()) {
+            Some(swapped) => Cow::Owned(swapped),
+            None => data,
+        };
         let (data, unresolved_variables) = self.variables.paints(data.as_ref());
         let data = data.as_ref();
         self.stats.approximated_paints += unresolved_variables;
@@ -1207,12 +1217,7 @@ impl Ctx<'_> {
                     self.emojis(data, world);
                 }
             } else if kind == "INSTANCE" {
-                let outer = self.outer;
-                if path.is_none() {
-                    self.outer = Some(node.id);
-                }
-                self.draw_instance(data, world, path);
-                self.outer = outer;
+                self.draw_instance(node.id, data, world, path);
             } else if kind == "CONNECTOR" {
                 self.draw_connector(node, world);
             } else {
@@ -1402,7 +1407,7 @@ impl Ctx<'_> {
                 self.rc.push_clip_layer(clip);
             }
             if kind == "INSTANCE" {
-                self.draw_instance(data, world, path);
+                self.draw_instance(node.id, data, world, path);
             } else if kind == "CONNECTOR" {
                 self.draw_connector(node, world);
             } else if !boolean_result {
@@ -1694,7 +1699,9 @@ impl Ctx<'_> {
             true
         }
     }
-    fn draw_instance(&mut self, data: &Val, world: Affine, path: Option<&[Guid]>) {
+    /// Draws an instance's component; `id` is the instance (it names paths inside it when it
+    /// is a document node, `path` `None`).
+    fn draw_instance(&mut self, id: Guid, data: &Val, world: Affine, path: Option<&[Guid]>) {
         self.stats.instances += 1;
         let Some(symbol) = resolve::symbol_id(data).and_then(|id| self.doc.node(id)) else {
             self.stats.missing_symbols += 1;
@@ -1708,8 +1715,13 @@ impl Ctx<'_> {
             return;
         }
         let base: Vec<Guid> = path.map(<[Guid]>::to_vec).unwrap_or_default();
+        let outer = self.outer;
+        if path.is_none() {
+            self.outer = Some(id);
+        }
         self.overrides.enter(symbol, data, &base);
         self.draw_children(symbol, &symbol.data, world, Some(&base));
         self.overrides.leave();
+        self.outer = outer;
     }
 }

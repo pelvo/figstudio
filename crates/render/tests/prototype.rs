@@ -378,3 +378,111 @@ fn present_is_black_where_the_page_sets_no_prototype_background() {
         [0.0, 0.0, 0.0, 1.0]
     );
 }
+
+/// Variants 2 (red) and 4 (blue), each a 40×40 component with a 20×20 child of its colour,
+/// and instance 6 of variant 2 on page 1. `extra` nodes are added.
+fn variants(extra: Vec<figstudio_fig::Node>) -> Document {
+    let variant = |n: u32, child: u32, (r, g, b): (f64, f64, f64)| {
+        let mut v = node(n, 0, "SYMBOL");
+        v.data.set("fillPaints", paint(r, g, b));
+        let mut c = node(child, n, "RECTANGLE");
+        c.data.set("size", size(20.0, 20.0));
+        c.data.set("fillPaints", paint(r, g, b));
+        c.data.set("overrideKey", id(50).to_val());
+        vec![v, c]
+    };
+    let mut inst = instance(6, 1, 2, vec![]);
+    inst.data.set("fillPaints", paint(1.0, 0.0, 0.0));
+    let mut nodes = vec![node(1, 0, "CANVAS"), inst];
+    nodes.extend(variant(2, 3, (1.0, 0.0, 0.0)));
+    nodes.extend(variant(4, 5, (0.0, 0.0, 1.0)));
+    nodes.extend(extra);
+    document(nodes)
+}
+
+fn render_with(
+    doc: &Document,
+    swaps: &[(Vec<figstudio_fig::Guid>, figstudio_fig::Guid)],
+) -> Vec<u8> {
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    renderer.prototype = std::sync::Arc::new(prototype::State {
+        swaps: swaps.iter().cloned().collect(),
+    });
+    renderer
+        .render(
+            doc,
+            id(1),
+            &figstudio_render::Viewport {
+                width: 80,
+                height: 80,
+                transform: Affine::IDENTITY,
+                background: None,
+            },
+        )
+        .pixmap
+        .data_as_u8_slice()
+        .to_vec()
+}
+
+#[test]
+fn a_swapped_instance_shows_the_other_variant_and_keeps_its_overrides() {
+    let doc = variants(vec![]);
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 255];
+    assert_eq!(common::pixel(&render_with(&doc, &[]), 30, 30), &red);
+    let swapped = render_with(&doc, &[(vec![id(6)], id(4))]);
+    assert_eq!(
+        common::pixel(&swapped, 30, 30),
+        &blue,
+        "the variant's own fill"
+    );
+    assert_eq!(
+        common::pixel(&swapped, 10, 10),
+        &blue,
+        "the variant's child"
+    );
+
+    let mut doc = variants(vec![]);
+    let mut nodes = doc.nodes.clone();
+    nodes
+        .iter_mut()
+        .find(|n| n.id == id(6))
+        .unwrap()
+        .data
+        .set("fillPaints", paint(0.0, 1.0, 0.0));
+    doc.set_nodes(nodes).unwrap();
+    let swapped = render_with(&doc, &[(vec![id(6)], id(4))]);
+    assert_eq!(
+        common::pixel(&swapped, 30, 30),
+        &[0, 255, 0, 255],
+        "an overridden fill stays"
+    );
+    assert_eq!(common::pixel(&swapped, 10, 10), &blue);
+}
+
+#[test]
+fn an_instance_inside_an_instance_is_swapped_by_its_path() {
+    // Component 7 holds instance 8 of variant 2; instance 9 of component 7 sits at (40, 40).
+    let mut holder = node(7, 0, "SYMBOL");
+    holder.data.set("size", size(40.0, 40.0));
+    let mut inner = instance(8, 7, 2, vec![]);
+    inner.data.set("fillPaints", paint(1.0, 0.0, 0.0));
+    let mut outer = instance(9, 1, 7, vec![]);
+    outer.data.set(
+        "transform",
+        obj(&[("m02", Val::Float(40.0)), ("m12", Val::Float(40.0))]),
+    );
+    let doc = variants(vec![holder, inner, outer]);
+    let swapped = render_with(&doc, &[(vec![id(9), id(8)], id(4))]);
+    assert_eq!(
+        common::pixel(&swapped, 50, 50),
+        &[0, 0, 255, 255],
+        "inside instance 9"
+    );
+    assert_eq!(
+        common::pixel(&swapped, 10, 10),
+        &[255, 0, 0, 255],
+        "instance 6 unchanged"
+    );
+}

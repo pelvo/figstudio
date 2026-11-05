@@ -4,7 +4,7 @@
 //! Played: "On click" links that navigate to a frame or go back. Every other interaction
 //! (hover, after delay, overlays, swap state, scroll to, URLs, variables) is listed with
 //! [`Link::step`] `None`, so each surface can count it instead of hiding it.
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
 use figstudio_fig::resolve::{self, InstancePath};
@@ -180,6 +180,94 @@ pub fn background(doc: &Document, page: Guid) -> AlphaColor<Srgb> {
 pub enum Layer {
     Node(Guid),
     Path(InstancePath),
+}
+
+impl Layer {
+    /// The layer as a guid path: the document node, or the instance and its override keys.
+    pub fn key(&self) -> Vec<Guid> {
+        match self {
+            Layer::Node(id) => vec![*id],
+            Layer::Path(path) => std::iter::once(path.instance())
+                .chain(path.keys().iter().copied())
+                .collect(),
+        }
+    }
+}
+
+/// What a running prototype has changed that the drawing must show.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct State {
+    /// Instances showing another variant, by [`Layer::key`]: the component they show instead.
+    pub swaps: HashMap<Vec<Guid>, Guid>,
+}
+
+/// Fields of an instance that are not its look: never taken from a swapped-in variant.
+const KEEP_ON_SWAP: &[&str] = &[
+    "guid",
+    "parentIndex",
+    "name",
+    "type",
+    "transform",
+    "symbolData",
+    "overriddenSymbolID",
+    "overrideKey",
+    "componentPropAssignments",
+    "componentPropDefs",
+    "isStateGroup",
+    "isPublishable",
+    "variantPropSpecs",
+    "phase",
+    "editInfo",
+    "key",
+    "version",
+    "userFacingVersion",
+    "publishedVersion",
+    "sharedSymbolReference",
+    "visible",
+    "locked",
+];
+
+impl Ctx<'_> {
+    /// `data` of instance `node` showing the variant the prototype swapped it to, if any. As
+    /// in Figma, the new variant's own look (fills, size, layout…) replaces the old variant's
+    /// wherever the instance did not override it; overrides stay.
+    pub(crate) fn swapped_variant(
+        &self,
+        node: &Node,
+        path: Option<&[Guid]>,
+        data: &Val,
+    ) -> Option<Val> {
+        if node.kind != "INSTANCE" || self.prototype.swaps.is_empty() {
+            return None;
+        }
+        let key: Vec<Guid> = match path {
+            None => vec![node.id],
+            Some(keys) => std::iter::once(self.outer?)
+                .chain(keys.iter().copied())
+                .collect(),
+        };
+        let to = *self.prototype.swaps.get(&key)?;
+        let new = self.doc.node(to)?;
+        let old = resolve::symbol_id(data).and_then(|id| self.doc.node(id));
+        let mut out = data.clone();
+        if let (Some(old), Val::Obj(new_fields), Val::Obj(fields)) = (old, &new.data, &mut out) {
+            let inherited = |k: &str| data.get(k) == old.data.get(k);
+            for (k, v) in new_fields.iter() {
+                if !KEEP_ON_SWAP.contains(&k) && inherited(k) {
+                    fields.insert(k, v.clone());
+                }
+            }
+            let gone: Vec<&'static str> = fields
+                .keys()
+                .filter(|k| !KEEP_ON_SWAP.contains(k) && new.data.get(k).is_none() && inherited(k))
+                .collect();
+            for k in gone {
+                fields.remove(k);
+            }
+        }
+        out.set("overriddenSymbolID", to.to_val());
+        Some(out)
+    }
 }
 
 impl fmt::Display for Layer {
