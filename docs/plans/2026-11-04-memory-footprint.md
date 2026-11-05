@@ -75,5 +75,17 @@ title: Cut decoded document memory
   opened a text layer inside an instance; the layers filter worked. No errors in its log.
   Footprint with both files: 3.0 GB after opening, 3.5 GB after the pages, search and
   selections, against 5.8 GB for the installed 0.2.0 app with the same two files.
-- Not verified: the MCP server and the browser build by hand.
+- Not verified: (the MCP server and the browser build, see the next entry).
+
+### 2026-11-05T120000Z memory-footprint
+- What changed and how it was checked: MCP server, main and this branch over stdio with the
+  same two large files, 171 tool calls across 13 tools: answers byte-identical except
+  `list_files` page counts (the runs opened files at different points) and the
+  `compare_files` property count, about -12%, which matches row by row the GUID references
+  whose two parts both changed (one row now, two before). Peak 5.5 -> 3.2 GB. Browser
+  build from this branch (fonts copied from the released site; no font tools here): every
+  runnable web/e2e spec passes (19); the larger file dropped into the page opens in 9 s at
+  1.07 GB wasm memory, 1.2 GB after drawing five pages, no panic or page error.
+- Not verified: a main browser build for a side-by-side wasm number; the emoji and relay
+  specs (generated input, worker).
 
