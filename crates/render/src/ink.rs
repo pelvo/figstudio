@@ -144,6 +144,10 @@ impl Canvas for InkCanvas {
     fn push_opacity_layer(&mut self, _opacity: f32) {
         self.open.push(Effect::None);
     }
+    /// A blend layer mixes colours; what it holds covers the same area.
+    fn push_blend_layer(&mut self, _mode: BlendMode) {
+        self.open.push(Effect::None);
+    }
     fn push_filter_layer(&mut self, filter: Filter, reach: f64) {
         let effect = self.effect_of(&filter, reach);
         self.open.push(effect);

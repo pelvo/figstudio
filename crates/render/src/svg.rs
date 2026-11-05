@@ -558,6 +558,17 @@ impl Canvas for SvgCanvas<'_> {
             self.open_group(&format!(r#" opacity="{}""#, num(f64::from(opacity))));
         }
     }
+    /// A group with the layer's `mix-blend-mode`; a Porter-Duff composite other than
+    /// source-over has no SVG equivalent: a plain group, counted.
+    fn push_blend_layer(&mut self, mode: BlendMode) {
+        if mode.compose != Compose::SrcOver {
+            self.approximated += 1;
+        }
+        match blend_name(mode.mix) {
+            Some(name) => self.open_group(&format!(r#" style="mix-blend-mode:{name}""#)),
+            None => self.open_group(""),
+        }
+    }
     fn push_filter_layer(&mut self, filter: Filter, _reach: f64) {
         match self.filter(&filter) {
             Some(id) => self.open_group(&format!(r#" filter="url(#{id})""#)),
@@ -703,6 +714,24 @@ mod tests {
         assert!(svg.contains(r#"<g mask="url(#m1)">"#), "{svg}");
         assert!(svg.contains(r##"<mask id="m1""##), "{svg}");
         assert_eq!(svg.matches("<path").count(), 2, "{svg}");
+    }
+
+    #[test]
+    fn a_blend_layer_is_a_group_with_its_blend_mode() {
+        let mut c = SvgCanvas::new(10.0, 10.0, usize::MAX);
+        c.push_blend_layer(BlendMode::new(Mix::Multiply, Compose::SrcOver));
+        c.fill_path(&rect(0.0, 0.0, 10.0, 10.0));
+        c.pop_layer();
+        // A composite SVG cannot express: a plain group, counted.
+        c.push_blend_layer(BlendMode::new(Mix::Normal, Compose::Xor));
+        c.fill_path(&rect(0.0, 0.0, 5.0, 5.0));
+        c.pop_layer();
+        let (svg, approximated, _) = c.finish();
+        assert!(
+            svg.contains(r#"<g style="mix-blend-mode:multiply">"#),
+            "{svg}"
+        );
+        assert_eq!(approximated, 1);
     }
 
     #[test]
