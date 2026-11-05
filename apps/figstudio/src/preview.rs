@@ -186,8 +186,23 @@ pub fn show(
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, radius, to_color32(tab.background()));
     let view = tab.view;
+    // As in Figma's prototypes, a screen is cut at its frame even when it does not clip its
+    // content.
+    let screen = tab.preview.as_ref().map(|p| p.player.screen());
+    let frame = screen
+        .and_then(|id| figstudio_render::node_bounds(&tab.doc, id))
+        .map(|b| {
+            egui::Rect::from_min_max(
+                view.to_screen(origin, Pos2::new(b.x0 as f32, b.y0 as f32)),
+                view.to_screen(origin, Pos2::new(b.x1 as f32, b.y1 as f32)),
+            )
+        });
+    let tiles_painter = frame.map_or_else(
+        || painter.clone(),
+        |f| painter.with_clip_rect(f.intersect(rect)),
+    );
     tiles.show(
-        &painter,
+        &tiles_painter,
         (rect, radius),
         tab,
         view,

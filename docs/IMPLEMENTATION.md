@@ -922,8 +922,8 @@ history stack; `reachable` walks played links breadth first.
   and through the browser bridge.
 
 Screens are read on the UI thread with the pick renderer: about 0.1 s for a screen with
-hundreds of instance links in a 100k-node file. Content of a non-clipping frame that
-overflows it still shows in Preview.
+hundreds of instance links in a 100k-node file. As in Figma's prototypes, Preview and
+Present cut a screen at its frame even when the frame does not clip its content.
 
 ### The browser app (`apps/figstudio` on wasm32)
 
