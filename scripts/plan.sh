@@ -38,7 +38,8 @@ case "${1:-}" in
   link)
     f=$(find_file); pr="${2:-$(gh pr view --json number -q .number 2>/dev/null || true)}"
     [[ "$pr" =~ ^[0-9]+$ ]] || { echo "no PR found for $branch yet; open it, or pass the number" >&2; exit 1; }
-    sed -i "s/^pr:.*/pr: $pr/" "$f"; echo "docs/plans/$f -> #$pr" ;;
+    # Not `sed -i`: GNU and BSD (macOS) sed disagree on its argument.
+    sed "s/^pr:.*/pr: $pr/" "$f" > "$f.tmp" && mv "$f.tmp" "$f"; echo "docs/plans/$f -> #$pr" ;;
   note)
     [[ "${2:-}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || { echo 'usage: plan.sh note <kebab-slug>' >&2; exit 2; }
     f=$(find_file)
