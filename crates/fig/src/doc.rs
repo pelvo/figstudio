@@ -182,6 +182,9 @@ pub(crate) struct Source {
     pub archive_entries: Option<Vec<(String, Vec<u8>)>>,
     /// Opened lazily: images and other entries were not read, so the file cannot be written.
     pub lazy: bool,
+    /// The decoder the nodes were read with: their still-encoded fields ([`crate::Lazy`]) made
+    /// by it are written back as their original bytes.
+    pub decoder: Option<std::sync::Arc<crate::read::Decoder>>,
 }
 
 /// What an archive holds besides the canvas.
@@ -401,8 +404,8 @@ impl Document {
         let (message_bytes, message_codec) = decompress(chunks[1], limits.chunk)?;
         let decode_err =
             |e: String| FigError::malformed(format!("cannot decode the document: {e}"));
-        let reader = Reader::new(&schema).map_err(decode_err)?;
-        let def = &schema.defs[message_def];
+        let reader = Reader::new(schema).map_err(decode_err)?;
+        let def = &reader.schema().defs[message_def];
         let mut bb = ByteBuffer::new(&message_bytes);
 
         let mut message_extra = BTreeMap::new();
@@ -432,6 +435,7 @@ impl Document {
                     }
                     nodes.reserve(len);
                     index.reserve(len);
+                    reader.lazy.set(true);
                     for _ in 0..len {
                         let data = reader
                             .value(&mut bb, field.type_id, 1)
@@ -447,6 +451,7 @@ impl Document {
                             nodes.push(node);
                         }
                     }
+                    reader.lazy.set(false);
                 }
                 "blobs" if field.is_array => {
                     had_blobs = true;
@@ -496,6 +501,7 @@ impl Document {
                 had_blobs,
                 archive_entries: parts.archive_entries,
                 lazy: parts.lazy,
+                decoder: Some(reader.dec.clone()),
             },
         };
         doc.reindex();

@@ -21,4 +21,4 @@ pub use doc::{
 };
 pub use error::one_line;
 pub use open::LAZY_ABOVE;
-pub use val::{Guid, Obj, Val, hex, intern};
+pub use val::{Guid, Lazy, Obj, Val, hex, intern};

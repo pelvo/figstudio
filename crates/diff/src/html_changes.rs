@@ -37,6 +37,7 @@ pub(crate) fn plain(v: Option<&Val>) -> String {
         Some(Val::Float(f)) => f.to_string(),
         Some(Val::Bool(b)) => b.to_string(),
         Some(Val::Enum(e)) => escape(e),
+        Some(Val::Guid(g)) => g.to_string(),
         Some(other) => escape(&serde_json::to_string(other).unwrap_or_default()),
     }
 }

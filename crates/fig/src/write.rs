@@ -11,7 +11,10 @@ use kiwi_schema::{
     TYPE_STRING, TYPE_UINT, TYPE_UINT64,
 };
 
+use std::sync::Arc;
+
 use crate::doc::{Codec, Document, FigError};
+use crate::read::Decoder;
 use crate::val::Val;
 
 fn fail<T>(msg: String) -> Result<T, FigError> {
@@ -20,11 +23,14 @@ fn fail<T>(msg: String) -> Result<T, FigError> {
 
 struct Encoder<'a> {
     schema: &'a Schema,
+    /// The decoder the document was read with; its unedited lazy fields are copied as bytes.
+    decoder: Option<&'a Arc<Decoder>>,
     bb: ByteBufferMut,
 }
 
 impl Encoder<'_> {
     fn value(&mut self, type_id: i32, v: &Val, at: &str) -> Result<(), FigError> {
+        let v = v.view();
         let bb = &mut self.bb;
         let int = |v: &Val| match v {
             Val::Int(i) => Ok(*i),
@@ -70,6 +76,19 @@ impl Encoder<'_> {
                         };
                         bb.write_var_uint(field.value);
                     }
+                    DefKind::Struct if let Val::Guid(g) = v => {
+                        if def.fields.len() != 2 {
+                            return fail(format!("{at}: {} is not a GUID", def.name));
+                        }
+                        for field in &def.fields {
+                            let part = match field.name.as_str() {
+                                "sessionID" => g.0,
+                                "localID" => g.1,
+                                _ => return fail(format!("{at}: {} is not a GUID", def.name)),
+                            };
+                            self.field(field, &Val::Int(i64::from(part)), at)?;
+                        }
+                    }
                     DefKind::Struct => {
                         for field in &def.fields {
                             let Some(fv) = v.get(&field.name) else {
@@ -86,7 +105,7 @@ impl Encoder<'_> {
                             return fail(format!("{at}: {} has no field {unknown}", def.name));
                         }
                         for field in &def.fields {
-                            if let Some(fv) = map.get(&field.name) {
+                            if let Some(fv) = map.get_raw(&field.name) {
                                 self.bb.write_var_uint(field.value);
                                 self.field(field, fv, at)?;
                             }
@@ -100,6 +119,14 @@ impl Encoder<'_> {
     }
 
     fn field(&mut self, field: &Field, v: &Val, at: &str) -> Result<(), FigError> {
+        // Still encoded, by this document's schema: the original bytes, not re-encoded.
+        if let Val::Lazy(l) = v
+            && let Some(bytes) = l.bytes_for(self.decoder)
+        {
+            self.bb.write_bytes(bytes);
+            return Ok(());
+        }
+        let v = v.view();
         if !field.is_array {
             return self.value(field.type_id, v, at);
         }
@@ -144,7 +171,8 @@ fn kind(v: &Val) -> &'static str {
         Val::Enum(_) => "enum",
         Val::Bytes(_) => "bytes",
         Val::Arr(_) => "list",
-        Val::Obj(_) => "object",
+        Val::Obj(_) | Val::Guid(_) => "object",
+        Val::Lazy(l) => kind(l.get()),
     }
 }
 
@@ -179,6 +207,7 @@ impl Document {
         };
         let mut enc = Encoder {
             schema: &schema,
+            decoder: self.source.decoder.as_ref(),
             bb: ByteBufferMut::new(),
         };
         // Figma writes the other fields in schema order and the two big lists last; doing the

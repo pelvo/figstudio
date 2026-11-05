@@ -1,13 +1,11 @@
 mod common;
 use common::*;
-use figstudio_fig::{Document, Val};
+use figstudio_fig::{Document, Guid, Val};
 
-fn part(local: i64, fields: &[(&str, Val)]) -> Val {
+fn part(local: u32, fields: &[(&str, Val)]) -> Val {
     let mut v = obj(fields);
-    let guid = obj(&[
-        ("sessionID", Val::Int(40_000_000)),
-        ("localID", Val::Int(local)),
-    ]);
+    // As decoded from a file: an inline `Val::Guid`, not a two-field object.
+    let guid = Guid(40_000_000, local).to_val();
     v.set("guidPath", obj(&[("guids", Val::Arr(vec![guid]))]));
     v
 }

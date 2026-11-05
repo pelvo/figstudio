@@ -183,5 +183,7 @@ fn raw(value: &Val) -> Value {
         Val::Arr(v) => Value::Array(v.iter().map(raw).collect()),
         Val::Obj(o) => Value::Object(o.iter().map(|(k, v)| (k.into(), raw(v))).collect()),
         Val::Bytes(_) => Value::Null,
+        Val::Guid(g) => json!({"localID": g.1, "sessionID": g.0}),
+        Val::Lazy(l) => raw(l.get()),
     }
 }

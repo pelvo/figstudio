@@ -122,6 +122,9 @@ fn value(data: &Val) -> Value {
         return json!(id.to_string());
     }
     match data {
+        // Returned above by `as_guid`.
+        Val::Guid(id) => json!(id.to_string()),
+        Val::Lazy(l) => value(l.get()),
         Val::Bool(v) => json!(v),
         Val::Int(v) => json!(v),
         Val::Float(v) => json!(v),
