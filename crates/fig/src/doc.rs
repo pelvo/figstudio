@@ -311,7 +311,10 @@ impl Document {
                 let mut entry = zip
                     .by_index(i)
                     .map_err(|e| FigError::archive("bad archive entry", e))?;
-                let name = entry.name().to_string();
+                let name = entry
+                    .name()
+                    .map_err(|e| FigError::archive("bad archive entry name", e))?
+                    .into_owned();
                 let mut data = Vec::new();
                 let remaining = limits.archive.saturating_sub(total);
                 read_limited(&mut entry, limits.chunk.min(remaining), &mut data, &name)?;
@@ -1094,7 +1097,7 @@ mod limit_tests {
         let mut canvas = Vec::new();
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).unwrap();
-            let is_canvas = entry.name() == "canvas.fig";
+            let is_canvas = entry.name().unwrap() == "canvas.fig";
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf).unwrap();
             largest = largest.max(buf.len());

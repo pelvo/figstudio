@@ -32,7 +32,11 @@ fn zip_crate_entries(bytes: &[u8]) -> Vec<(String, u16, u64, u64, Vec<u8>)> {
                 zip::CompressionMethod::Deflated => 8,
                 m => panic!("unexpected method {m:?}"),
             };
-            let (name, cs, size) = (e.name().to_string(), e.compressed_size(), e.size());
+            let (name, cs, size) = (
+                e.name().unwrap().into_owned(),
+                e.compressed_size(),
+                e.size(),
+            );
             let mut data = Vec::new();
             e.read_to_end(&mut data).unwrap();
             (name, method, cs, size, data)
