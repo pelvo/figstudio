@@ -51,6 +51,12 @@ jobs:
           prefix-key: v1-rust
           cache-workspace-crates: true
       - run: scripts/check.sh --lint
+      # The workspace's declared MSRV (rust-version), so a newer-Cargo-only manifest or API
+      # does not slip in unnoticed.
+      - name: MSRV (Rust 1.95) check
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          cargo +1.95.0 check --workspace --all-targets --locked
 
   test:
     name: build + test
@@ -67,3 +73,12 @@ jobs:
           prefix-key: v1-rust
           cache-workspace-crates: true
       - run: scripts/check.sh --test
+      # The shader tests skip without a GPU adapter; on a software one (Mesa's lavapipe) they
+      # run, and FIGSTUDIO_REQUIRE_GPU makes a missing adapter a failure, not a skip. After
+      # the gate, so the other GPU tests keep the runner as they were.
+      - name: Shader tests on a software GPU
+        env:
+          FIGSTUDIO_REQUIRE_GPU: "1"
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers
+          cargo +"$FIGSTUDIO_TOOLCHAIN" test --profile fast -p figstudio-shader

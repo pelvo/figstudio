@@ -759,10 +759,12 @@ mod tests {
     #[test]
     fn the_tree_reports_omissions_and_pending_indexing() {
         fn frame_status(ctx: &egui::Context, t: &mut Tab) -> egui::accesskit::Node {
-            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 let canvas = ui.allocate_rect(SCREEN, egui::Sense::click());
                 super::layers(ui, &canvas, t, Pos2::ZERO);
             });
+            // Nothing draws here: drop the font atlas upload (debug builds assert otherwise).
+            output.textures_delta.clear();
             output
                 .platform_output
                 .accesskit_update

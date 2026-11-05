@@ -9,7 +9,10 @@ publish = false
 
 [features]
 # `default-features = false` is the wasm32 build: no installed fonts, no files written.
-default = ["fs", "system-fonts"]
+default = ["fs", "system-fonts", "video"]
+# WebM and MP4 motion exports (AV1 in Rust, H.264 from the OS). Without it (the browser build)
+# motion exports are GIF and PNG frames; the page records video with its own encoders.
+video = ["figstudio-video/av1"]
 # `Assets::Dir` writes rendered assets; without it that mode gives an error result.
 fs = ["dep:tempfile"]
 # Draw text that has no stored glyph outlines with fonts installed on this machine.
@@ -18,9 +21,12 @@ system-fonts = ["figstudio-render/system-fonts"]
 [dependencies]
 tracing.workspace = true
 figstudio-fig = { workspace = true }
-# node_bounds for the region walk; no default features, so it stays wasm-safe (no system fonts).
-figstudio-render = { workspace = true, default-features = false }
+# node_bounds for the region walk; the workspace entry has no default features, so it stays
+# wasm-safe (no system fonts) unless this crate's own `system-fonts` feature asks for them.
+figstudio-render = { workspace = true }
 url = { workspace = true }
+# Motion exports: GIF, PNG frames, and WebM/MP4 with the `video` feature.
+figstudio-video = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 quick-xml = { workspace = true }
@@ -35,6 +41,12 @@ epaint_default_fonts = "0.36"
 vello_cpu = { workspace = true }
 # local_copy tests: folders of .fig files with set modification times.
 tempfile = { workspace = true }
+# tests/svg.rs: rasterize exported SVG to compare it with the PNG render (linebender's
+# maintained SVG renderer; no text or system fonts needed, text is exported as outlines;
+# raster-images so image fills, embedded as data URLs, are drawn and compared too).
+resvg = { version = "0.49", default-features = false, features = ["raster-images"] }
+# tests/shaders_missing.rs: shader zips built in the test.
+zip = { workspace = true, features = ["deflate-flate2"] }
 
 [lints]
 workspace = true

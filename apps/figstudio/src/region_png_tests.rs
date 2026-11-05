@@ -139,6 +139,24 @@ fn a_webp_node_job_encodes_lossless_pixels_on_desktop_too() {
 }
 
 #[test]
+fn an_svg_node_job_returns_markup_for_the_clipboard() {
+    let doc = Document::from_bytes(STRUCTURE).unwrap();
+    let node = doc.nodes.iter().find(|n| n.kind == "FRAME").unwrap();
+    let done = render(Images::default(), &doc, None, Job::SvgNode(node.id), false).unwrap();
+    let svg = done.svg.expect("SVG markup");
+    assert!(
+        svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""),
+        "{svg}"
+    );
+    assert!(svg.contains("<path"), "{svg}");
+    assert!(done.encoded.is_none() && done.rgba.is_empty());
+    let b = node_bounds(&doc, node.id).unwrap();
+    assert_eq!(done.width, b.width().ceil() as usize);
+    let missing = Job::SvgNode(figstudio_fig::Guid(99, 99));
+    assert!(render(Images::default(), &doc, None, missing, false).is_err());
+}
+
+#[test]
 fn a_bad_job_is_an_error_not_a_panic() {
     let doc = Document::from_bytes(STRUCTURE).unwrap();
     let page = doc.pages[0];

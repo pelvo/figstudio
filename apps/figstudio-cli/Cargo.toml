@@ -15,7 +15,12 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 figstudio-fig = { workspace = true }
-figstudio-render = { workspace = true }
+figstudio-render = { workspace = true, features = ["system-fonts"] }
+# Shader fills drawn from the shader folder next to the file.
+figstudio-shader = { workspace = true }
+# Motion exports (render -o out.mp4|webm|gif|zip): frames from mcp-core, files from figstudio-video.
+figstudio-mcp-core = { workspace = true, features = ["fs", "system-fonts", "video"] }
+figstudio-video = { workspace = true, features = ["av1"] }
 figstudio-diff = { workspace = true }
 fontdb = { workspace = true }
 image = { workspace = true }

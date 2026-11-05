@@ -45,8 +45,10 @@ picking up work. Read the three documents below before changing code.
     SAFETY comment and `#[expect(unsafe_code)]`: the FFI call in `doctor.rs`, the Windows
     menu attach in `menu_native.rs`, the macOS blur view in `vibrancy.rs`, the macOS Dock
     menu hook in `dock_mac.rs`, the Windows jump list in `jump_list.rs`, the Windows
-    foreground permission in `handoff.rs` and the Windows foreground request in
-    `foreground_win.rs` (approved by the owner). Ask before adding another.
+    foreground permission in `handoff.rs`, the Windows foreground request in
+    `foreground_win.rs`, and the OS H.264 encoders for MP4 motion exports in
+    `crates/video/src/mac.rs` (AVFoundation) and `crates/video/src/win.rs` (Media
+    Foundation) (approved by the owner). Ask before adding another.
 11. **Update the plan** when you finish something: start your branch's file with
     `scripts/plan.sh new <slug> "<title>"` (`docs/plans/<date>-<slug>.md`; no PR needed), tick
     the box in it only after its check really passed, and add a progress entry with
@@ -93,7 +95,11 @@ driver for wgpu, GTK/portal for the file dialog). macOS needs only Xcode command
   app (`figstudio-vX.Y.Z-macos-arm64.zip`) and the CLI/MCP binaries to the GitHub release.
   Do not bump versions or edit `CHANGELOG.md` by hand.
 - Do not commit `target/`, generated PNGs, stress files (`synth` output) or private `.fig`
-  files. Only the 7 fixtures in `tests/fixtures` (MIT, from fig2sketch) belong in the repo.
+  files. Only the fixtures in `tests/fixtures` belong in the repo: 7 from fig2sketch (MIT),
+  2 Figma Community files with their images removed (CC BY 4.0, `LICENSE-figma-community`),
+  and `motion-probe.fig`, a file of plain rectangles made for the motion tests. A file made
+  or saved in someone's Figma account carries that account: before adding one, remove every
+  node's `editInfo` (its user id) and the message's `originFileKey`, as these three were.
 - Do not put people's names, chat names, phone numbers or local paths in commits, issues or
   docs. Say "the requester" or "a user".
 - **PII check before every commit and push** (ground rule 9). Run

@@ -559,8 +559,12 @@ fn the_text_size_survives_a_restart() {
         cc.storage = Some(&storage);
         let second = App::new(&cc, Vec::new());
         assert_eq!(second.prefs.text_size, size, "{button}");
-        // egui applies a new zoom at the start of its next pass.
-        let _ = cc.egui_ctx.run_ui(egui::RawInput::default(), |_| {});
+        // egui applies a new zoom at the start of its next pass. Its first pass uploads the
+        // font atlas; nothing draws it here, so the upload is dropped (debug builds assert).
+        cc.egui_ctx
+            .run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
         assert_eq!(cc.egui_ctx.zoom_factor(), size, "{button}");
     }
     // ⌘+ is kept too, and Settings says what it is.
@@ -573,7 +577,10 @@ fn the_text_size_survives_a_restart() {
         let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
         cc.storage = Some(&storage);
         let _second = App::new(&cc, Vec::new());
-        let _ = cc.egui_ctx.run_ui(egui::RawInput::default(), |_| {});
+        cc.egui_ctx
+            .run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
         cc.egui_ctx.zoom_factor()
     };
     assert!((cc - 1.1).abs() < 1e-3, "{cc}");

@@ -104,6 +104,10 @@ fn init_tracing() {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Started to run shader code for a figstudio process (`figstudio_shader::child`).
+    if figstudio_shader::serve_if_worker() {
+        return Ok(());
+    }
     init_tracing();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

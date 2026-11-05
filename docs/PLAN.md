@@ -33,7 +33,7 @@ crates/fig            .fig container + Kiwi schema decode -> Document (nodes, tr
 crates/render         Document -> Vello CPU drawing -> Pixmap; hit test, bounds, render stats
 apps/figstudio-cli    headless: info, tree, render PNG, thumbnail, doctor
 apps/figstudio        desktop app (eframe); later also the wasm web shell
-tests/fixtures        7 sample .fig files (from fig2sketch, see LICENSE-fig2sketch)
+tests/fixtures        10 sample .fig files (7 from fig2sketch, 3 Figma Community; see the LICENSE files)
 ```
 
 Rules:
@@ -111,8 +111,8 @@ Checklist: `scripts/plan.sh show P6` (items live in `docs/plans/`, one file per 
 ### P7 — Offline MCP server (`apps/figstudio-mcp`, plan in `docs/MCP-PLAN.md`)
 Checklist: `scripts/plan.sh show P7` (items live in `docs/plans/`, one file per branch).
 
-**Done when:** every lane's gate passed (it did, L0–L12). The open boxes need a real motion
-file, a real FigJam file or a person with the clients.
+**Done when:** every lane's gate passed (it did, L0–L12). The open boxes need a real FigJam
+file or a person with the clients.
 
 ## Verification commands
 

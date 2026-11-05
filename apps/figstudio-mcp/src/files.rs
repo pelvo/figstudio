@@ -136,15 +136,22 @@ impl FileRegistry {
     async fn open_entry(file: &FileEntry, lazy_above: u64) -> Result<Arc<Document>, McpError> {
         let cached = file.document.clone();
         let path = file.path.clone();
+        let images = file.rendering.images.clone();
         // The initializer outlives a cancelled request and caches its completed decode.
         tokio::spawn(async move {
             cached
                 .get_or_try_init(|| async move {
-                    tokio::task::spawn_blocking(move || Document::open_auto_above(path, lazy_above))
-                        .await
-                        .map_err(McpError::load_task)?
-                        .map(Arc::new)
-                        .map_err(McpError::open)
+                    tokio::task::spawn_blocking(move || {
+                        let doc = Document::open_auto_above(&path, lazy_above)?;
+                        if let Some(fills) = figstudio_shader::Fills::for_file(&path) {
+                            images.set_shaders(doc.instance, fills);
+                        }
+                        Ok::<_, figstudio_fig::FigError>(doc)
+                    })
+                    .await
+                    .map_err(McpError::load_task)?
+                    .map(Arc::new)
+                    .map_err(McpError::open)
                 })
                 .await
                 .cloned()
