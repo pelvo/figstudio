@@ -141,3 +141,45 @@ fn a_shader_marker_asks_for_that_shaders_code() {
         Some(Some(CONCENTRIC_ID.to_owned()))
     );
 }
+
+#[test]
+fn shaders_changing_in_one_file_do_not_strand_another_files_tiles() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    let ctx = h.ctx.clone();
+    let app = h.state_mut();
+    let shown = app.active;
+    let key = crate::tiles::Key {
+        doc: app.tabs[shown].doc.instance,
+        page: app.tabs[shown].page,
+        level: 0,
+        x: 0,
+        y: 0,
+    };
+    let images = app.workers.images_arrived();
+    app.tabs[shown].tile_requests = vec![key];
+    // The other file's shaders change (as when it opens): the tile in flight comes back
+    // with the old stamp and is dropped.
+    app.apply_shaders(1 - shown);
+    let done = crate::worker::RenderDone {
+        tab: app.tabs[shown].id,
+        key,
+        images,
+        pixels: crate::recordings::Pixels::Cpu {
+            size: [1, 1],
+            rgba: vec![0, 0, 0, 255],
+        },
+        stats: Default::default(),
+        elapsed: std::time::Duration::ZERO,
+    };
+    app.tiles.accept(&ctx, &mut app.tabs[shown], done);
+    assert!(
+        !app.tabs[shown].tile_requests.contains(&key),
+        "a dropped tile still counted as requested is never asked for again"
+    );
+}
