@@ -4,8 +4,15 @@
 # with the ruleset. The toolchain is pinned to the one docs/TESTING.md names; bump both
 # together.
 #
-# These two jobs are the whole workflow. Extra slice jobs showed up next to them and
-# compiled the same crates again, so the pull request waited just as long. In-job
+# A small `changes` job runs first. When a push or pull request touches only files no check
+# reads (docs, Markdown, the web deploy and its workflow), both jobs are skipped by their
+# `if:`. A job skipped that way reports success, so the required checks still pass; a
+# `paths:` filter on the workflow would leave them waiting forever instead.
+#
+# The two checks split scripts/check.sh's slices so neither waits on the other: --lint also
+# runs the thin-LTO release build, which shares no artifacts with the `fast` profile the
+# tests use. Extra slice jobs showed up next to them and compiled the same crates again,
+# so the pull request waited just as long. In-job
 # `parallel` steps are not used either: a workflow that contained that key failed in
 # zero seconds with no jobs, so the required checks never reported.
 #
@@ -36,8 +43,49 @@ env:
   FIGSTUDIO_TOOLCHAIN: 1.99.0
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.files.outputs.code }}
+    steps:
+      - name: Does this change touch anything CI checks?
+        id: files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          # Files no check reads. Keep this list narrow: anything else, a manual run, or a
+          # failure to list the files runs both jobs. Renames count their old path too.
+          skip='^(docs/|[^/]+\.md$|(apps|crates)/[^/]+/README\.md$|\.agents/|\.github/(FUNDING\.yml|workflows/web-deploy\.yml)$|release-please-config\.json$|\.release-please-manifest\.json$|wrangler\.jsonc$|web/(_headers|deploy/|e2e/|executor-auth\.mjs|worker/|wrangler\.public\.jsonc)|scripts/(gui-smoke\.sh|macos-app\.sh|mcp-golden\.sh|plan\.sh|thumb-sheet\.py|web-build\.sh|web-serve\.py)$)'
+          files=""
+          case "$EVENT" in
+            pull_request)
+              files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+                --jq '.[] | .filename, (.previous_filename // empty)') || files="" ;;
+            push)
+              # The compare API lists at most 300 files; at that size, run everything.
+              files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$AFTER" \
+                --jq 'if (.files | length) >= 300 then error("too many files") else .files[] | .filename, (.previous_filename // empty) end') || files="" ;;
+          esac
+          if [ -n "$files" ] && ! grep -qvE "$skip" <<<"$files"; then
+            echo "only files no check reads changed; skipping fmt + clippy and build + test"
+            echo "code=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "code=true" >>"$GITHUB_OUTPUT"
+          fi
+
   lint:
     name: fmt + clippy
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -60,6 +108,8 @@ jobs:
 
   test:
     name: build + test
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -75,10 +125,16 @@ jobs:
       - run: scripts/check.sh --test
       # The shader tests skip without a GPU adapter; on a software one (Mesa's lavapipe) they
       # run, and FIGSTUDIO_REQUIRE_GPU makes a missing adapter a failure, not a skip. After
-      # the gate, so the other GPU tests keep the runner as they were.
+      # the gate, so the other GPU tests keep the runner as they were. The gate already built
+      # these test binaries: `-p figstudio-shader` alone resolves other features and
+      # recompiled about 90 crates, so this runs the workspace build's binaries instead.
       - name: Shader tests on a software GPU
         env:
           FIGSTUDIO_REQUIRE_GPU: "1"
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers
-          cargo +"$FIGSTUDIO_TOOLCHAIN" test --profile fast -p figstudio-shader
+          mapfile -t tests < <(cargo +"$FIGSTUDIO_TOOLCHAIN" test --profile fast --workspace --no-run --message-format=json |
+            jq -r 'select(.reason == "compiler-artifact" and .profile.test and (.manifest_path | endswith("/crates/shader/Cargo.toml"))) | .executable')
+          [ ${#tests[@]} -gt 0 ] || { echo "no figstudio-shader test binaries found" >&2; exit 1; }
+          cd crates/shader
+          for t in "${tests[@]}"; do echo "== $t"; "$t"; done
