@@ -23,10 +23,16 @@ fn concentric_zip() -> Vec<u8> {
     z.finish().unwrap().into_inner()
 }
 
-/// Steps until the shaders missing code are counted (in the background).
+/// Steps until the shaders missing code are counted and the warning chip shows (both in
+/// the background).
 fn counted(h: &mut Harness<'_, App>, c: &mut Vec<String>) {
     wait(h, c, "the shader count", |a| {
         a.tabs.iter().all(|t| t.shaders.counting.is_none())
+    });
+    // The notice hangs under the chip, which shows once tiles report what they skipped:
+    // a chip appearing between finding a button and clicking it moves the button away.
+    wait(h, c, "the warning chip", |a| {
+        !crate::region_png::gaps(&a.tabs[0].stats).is_empty()
     });
     // The notice or markers it brings show from the next frames (egui lays a new area out
     // before it takes clicks).
@@ -107,14 +113,7 @@ fn a_file_with_shaders_but_no_code_says_so_and_takes_their_zips() {
     }
     assert!(h.state().tabs[0].shaders.notice_closed);
     assert!(h.query_by_label("Choose shader zips…").is_none());
-    // The warning chip (shown once tiles report what they skipped) brings it back.
-    for _ in 0..400 {
-        if h.query_by_label("Page warnings").is_some() {
-            break;
-        }
-        step(&mut h, &mut c);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    // The warning chip (`counted` waited for it) brings it back.
     h.get_by_label("Page warnings").click();
     for _ in 0..3 {
         step(&mut h, &mut c);
@@ -140,5 +139,47 @@ fn a_shader_marker_asks_for_that_shaders_code() {
     assert_eq!(
         h.state().tabs[0].shaders.choose.take(),
         Some(Some(CONCENTRIC_ID.to_owned()))
+    );
+}
+
+#[test]
+fn shaders_changing_in_one_file_do_not_strand_another_files_tiles() {
+    let mut h = Harness::builder()
+        .with_size(SIZE)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| App::new(cc, vec![fixture(FIXTURE), fixture("vector.fig")]));
+    wait(&mut h, &mut Vec::new(), "both files to load", |a| {
+        a.tabs.len() == 2
+    });
+    let ctx = h.ctx.clone();
+    let app = h.state_mut();
+    let shown = app.active;
+    let key = crate::tiles::Key {
+        doc: app.tabs[shown].doc.instance,
+        page: app.tabs[shown].page,
+        level: 0,
+        x: 0,
+        y: 0,
+    };
+    let images = app.workers.images_arrived();
+    app.tabs[shown].tile_requests = vec![key];
+    // The other file's shaders change (as when it opens): the tile in flight comes back
+    // with the old stamp and is dropped.
+    app.apply_shaders(1 - shown);
+    let done = crate::worker::RenderDone {
+        tab: app.tabs[shown].id,
+        key,
+        images,
+        pixels: crate::recordings::Pixels::Cpu {
+            size: [1, 1],
+            rgba: vec![0, 0, 0, 255],
+        },
+        stats: Default::default(),
+        elapsed: std::time::Duration::ZERO,
+    };
+    app.tiles.accept(&ctx, &mut app.tabs[shown], done);
+    assert!(
+        !app.tabs[shown].tile_requests.contains(&key),
+        "a dropped tile still counted as requested is never asked for again"
     );
 }
