@@ -2070,8 +2070,8 @@ impl Ctx<'_> {
             exhausted: self.exhausted,
             screen,
             inherited_reach: 0.0,
-            // Another canvas: the outer frame's clip is applied when its output is drawn.
-            frame_clip: None,
+            // Another canvas: the outer clip is applied when its output is drawn.
+            clip: None,
             emoji_only: false,
             playhead: self.playhead.clone(),
             shaders: self.shaders.clone(),
