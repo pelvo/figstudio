@@ -3,7 +3,7 @@
 //! Decoding directly (instead of through `kiwi_schema::Value`) avoids a second copy of the
 //! whole document and a hash map per object, which dominated memory on large files.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -36,6 +36,20 @@ const LAZY_FIELDS: [&str; 4] = [
     "derivedTextData",
 ];
 
+/// How a node record's field is read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Plain,
+    /// Equal encoded values decode once and are shared ([`Val::Shared`]): nodes repeat the
+    /// same paints, transforms and sizes thousands of times.
+    Share,
+    /// Kept encoded until first read ([`Lazy`]); equal bytes share one.
+    Lazy,
+}
+
+/// Node fields never shared: unique per node, so sharing would only cost lookups.
+const UNIQUE_FIELDS: [&str; 2] = ["guid", "parentIndex"];
+
 /// What decoding needs from a file's schema. Shared (`Arc`) by the document's lazy fields so
 /// they can decode themselves later, and by the writer to tell their schema is its own.
 pub(crate) struct Decoder {
@@ -46,6 +60,8 @@ pub(crate) struct Decoder {
     enums: Vec<HashMap<u32, &'static str>>,
     /// Per definition: a `{sessionID, localID}` struct, decoded as `Val::Guid` (no heap).
     guids: Vec<bool>,
+    /// Per definition and field: how it is read inside node records.
+    modes: Vec<Box<[Mode]>>,
 }
 
 impl std::fmt::Debug for Decoder {
@@ -54,11 +70,16 @@ impl std::fmt::Debug for Decoder {
     }
 }
 
+/// First occurrences of shared node fields: (definition, field, hash of the bytes) -> the
+/// byte range in the message and the value made from it.
+type Seen = HashMap<(usize, usize, u64), Vec<(usize, usize, Val)>>;
+
 pub(crate) struct Reader {
     pub dec: Arc<Decoder>,
     decoded_items: Cell<usize>,
-    /// Set while node records are read: their [`LAZY_FIELDS`] are skipped and kept encoded.
-    pub lazy: Cell<bool>,
+    /// Set while node records are read: their fields are read by [`Decoder::modes`].
+    pub nodes: Cell<bool>,
+    seen: RefCell<Seen>,
     /// Decoding bytes [`Reader::skip_field`] already checked at open. List lengths were
     /// checked then against the whole document; the field's own bytes can be fewer (a list of
     /// zero-byte empty structs), so the check is not repeated.
@@ -77,6 +98,43 @@ pub(crate) fn decode_field(dec: &Arc<Decoder>, def: usize, field: usize, bytes: 
     reader.field(&mut ByteBuffer::new(bytes), f, 2)
 }
 
+/// How each field is read in node records: the record's [`LAZY_FIELDS`] lazily, its other
+/// fields that own memory shared, everything else plainly.
+fn modes(schema: &Schema) -> Vec<Box<[Mode]>> {
+    let node = schema
+        .def("Message")
+        .and_then(|m| m.field("nodeChanges"))
+        .and_then(|f| usize::try_from(f.type_id).ok());
+    let owns_memory = |f: &Field| {
+        f.is_array
+            || f.type_id == TYPE_STRING
+            || usize::try_from(f.type_id)
+                .ok()
+                .and_then(|i| schema.defs.get(i))
+                .is_some_and(|d| d.kind != DefKind::Enum && !is_guid(d))
+    };
+    let mode = |f: &Field| {
+        if LAZY_FIELDS.contains(&f.name.as_str()) {
+            Mode::Lazy
+        } else if owns_memory(f) && !UNIQUE_FIELDS.contains(&f.name.as_str()) {
+            Mode::Share
+        } else {
+            Mode::Plain
+        }
+    };
+    schema
+        .defs
+        .iter()
+        .enumerate()
+        .map(
+            |(i, d)| match node == Some(i) && d.kind == DefKind::Message {
+                true => d.fields.iter().map(mode).collect(),
+                false => vec![Mode::Plain; d.fields.len()].into(),
+            },
+        )
+        .collect()
+}
+
 /// A struct of exactly `sessionID: uint, localID: uint`, in that order.
 fn is_guid(def: &kiwi_schema::Def) -> bool {
     let uint = |f: &Field, name: &str| f.name == name && f.type_id == TYPE_UINT && !f.is_array;
@@ -89,7 +147,8 @@ impl Reader {
         Reader {
             dec,
             decoded_items: Cell::new(0),
-            lazy: Cell::new(false),
+            nodes: Cell::new(false),
+            seen: RefCell::default(),
             walked: false,
         }
     }
@@ -146,11 +205,13 @@ impl Reader {
             })
             .collect();
         let guids = schema.defs.iter().map(is_guid).collect();
+        let modes = modes(&schema);
         let dec = Arc::new(Decoder {
             schema,
             names,
             enums,
             guids,
+            modes,
         });
         live.push(Arc::downgrade(&dec));
         Ok(Reader::with(dec))
@@ -223,6 +284,55 @@ impl Reader {
             }
         }
         Ok(())
+    }
+
+    /// Reads a shared or lazy field of a node record: equal bytes of the same field give the
+    /// value made the first time (a clone of one `Arc`), so they are neither decoded nor
+    /// stored again.
+    fn node_field(
+        &self,
+        bb: &mut ByteBuffer,
+        mode: Mode,
+        def: usize,
+        field: usize,
+        depth: u32,
+    ) -> R<Val> {
+        let f = &self.dec.schema.defs[def].fields[field];
+        let start = bb.index();
+        self.skip_field(bb, f, depth)?;
+        let (all, end) = (bb.data(), bb.index());
+        let bytes = &all[start..end];
+        let mut hasher = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(bytes, &mut hasher);
+        let key = (def, field, std::hash::Hasher::finish(&hasher));
+        if let Some(bucket) = self.seen.borrow().get(&key)
+            && let Some((.., v)) = bucket.iter().find(|(s, e, _)| &all[*s..*e] == bytes)
+        {
+            return Ok(v.clone());
+        }
+        let v = if mode == Mode::Lazy {
+            Val::Lazy(Arc::new(Lazy::new(
+                self.dec.clone(),
+                def,
+                field,
+                bytes.into(),
+            )))
+        } else {
+            // Read again over the same buffer, so the byte ranges nested node records record
+            // stay ranges of `all`; skip_field already spent the item budget.
+            let budget = self.decoded_items.get();
+            let mut again = ByteBuffer::new(all);
+            bad(again.read_bytes(start))?;
+            let v = self.field(&mut again, f, depth)?;
+            self.decoded_items.set(budget);
+            match v {
+                Val::Str(_) | Val::Bytes(_) | Val::Arr(_) | Val::Obj(_) => Val::Shared(Arc::new(v)),
+                v => v,
+            }
+        };
+        let mut seen = self.seen.borrow_mut();
+        seen.entry(key).or_default().push((start, end, v.clone()));
+        Ok(v)
     }
 
     /// The definition `type_id` names, checked, with its index.
@@ -323,13 +433,12 @@ impl Reader {
                                 return Err(format!("{} has no field {tag}", def.name));
                             };
                             let key = self.dec.names[idx][i];
-                            let v = if depth == 1 && self.lazy.get() && LAZY_FIELDS.contains(&key) {
-                                let start = bb.index();
-                                self.skip_field(bb, &def.fields[i], depth + 1)?;
-                                let bytes = bb.data()[start..bb.index()].into();
-                                Val::Lazy(Arc::new(Lazy::new(self.dec.clone(), idx, i, bytes)))
-                            } else {
-                                self.field(bb, &def.fields[i], depth + 1)?
+                            let v = match self.dec.modes[idx][i] {
+                                Mode::Plain => self.field(bb, &def.fields[i], depth + 1)?,
+                                _ if !self.nodes.get() => {
+                                    self.field(bb, &def.fields[i], depth + 1)?
+                                }
+                                mode => self.node_field(bb, mode, idx, i, depth + 1)?,
                             };
                             // A repeated field keeps the last value, like the reference decoder.
                             match o.get_mut(key) {

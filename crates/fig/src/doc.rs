@@ -435,7 +435,7 @@ impl Document {
                     }
                     nodes.reserve(len);
                     index.reserve(len);
-                    reader.lazy.set(true);
+                    reader.nodes.set(true);
                     for _ in 0..len {
                         let data = reader
                             .value(&mut bb, field.type_id, 1)
@@ -451,7 +451,7 @@ impl Document {
                             nodes.push(node);
                         }
                     }
-                    reader.lazy.set(false);
+                    reader.nodes.set(false);
                 }
                 "blobs" if field.is_array => {
                     had_blobs = true;

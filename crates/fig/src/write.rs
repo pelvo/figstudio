@@ -173,6 +173,7 @@ fn kind(v: &Val) -> &'static str {
         Val::Arr(_) => "list",
         Val::Obj(_) | Val::Guid(_) => "object",
         Val::Lazy(l) => kind(l.get()),
+        Val::Shared(v) => kind(v),
     }
 }
 
