@@ -4,8 +4,8 @@
 #   scripts/check.sh            fmt, clippy (-D warnings), tests, release build
 #   scripts/check.sh --cross    also `cargo check` for macOS and Windows
 #   scripts/check.sh --web      also build the browser app (scripts/web-build.sh; nightly)
-#   scripts/check.sh --lint     only fmt and clippy (CI job "fmt + clippy")
-#   scripts/check.sh --test     tests, release build, wasm32 (CI job "build + test")
+#   scripts/check.sh --lint     fmt, clippy, release build (CI job "fmt + clippy")
+#   scripts/check.sh --test     tests, wasm32 (CI job "build + test")
 #   scripts/check.sh --lint-one NAME
 #   scripts/check.sh --test-one NAME
 #                               one slice, for a local run. CI does not call these.
@@ -113,8 +113,8 @@ run_slice() {
       ;;
     *)
       echo "unknown check slice: $1" >&2
-      echo "lint: fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp accesskit" >&2
-      echo "test: tests-workspace tests-gpu tests-mcp-core tests-npm tests-browser-fonts release wasm32" >&2
+      echo "lint: fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp accesskit release" >&2
+      echo "test: tests-workspace tests-gpu tests-mcp-core tests-npm tests-browser-fonts wasm32" >&2
       exit 2
       ;;
   esac
@@ -122,8 +122,10 @@ run_slice() {
 
 MODE="${1:-}"
 SLICE="${2:-}"
-lint_names="fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp accesskit"
-test_names="tests-workspace tests-gpu tests-mcp-core tests-npm tests-browser-fonts release wasm32"
+# `release` sits in the lint half: it shares no artifacts with the `fast` tests, so in CI it
+# runs next to them instead of after them.
+lint_names="fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp accesskit release"
+test_names="tests-workspace tests-gpu tests-mcp-core tests-npm tests-browser-fonts wasm32"
 if [ "$MODE" = "--lint-one" ] || [ "$MODE" = "--test-one" ]; then
   [ -n "$SLICE" ] || { echo "$MODE needs a slice name" >&2; exit 2; }
   case "$MODE" in
@@ -148,10 +150,10 @@ if [ "$MODE" != "--test" ]; then
 fi
 [ "$MODE" = "--lint" ] && { step "lint checks passed"; exit 0; }
 
-# --test includes release and wasm32. A pull request never runs the macOS release job,
-# and that job does not build wasm32, so dropping either here would leave the required
-# check green for a break it used to catch.
-for name in tests-workspace tests-gpu tests-mcp-core tests-npm tests-browser-fonts release wasm32; do
+# A pull request never runs the macOS release job, and that job does not build wasm32, so
+# the release build (in --lint) and wasm32 (here) must each stay in a required check, or
+# it would stay green for a break they used to catch.
+for name in $test_names; do
   step "$name"
   run_slice "$name"
 done

@@ -47,12 +47,13 @@ and verify the menu does not outlive its HWND. Native behavior is not headless-t
 scripts/check.sh            # fmt --check, clippy -D warnings, all tests, release build
 scripts/check.sh --cross    # also cargo check for aarch64-apple-darwin
 FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh   # if the default Rust is older than 1.95
-scripts/check.sh --lint     # only fmt + clippy; CI runs --lint and --test as its two jobs
-scripts/check.sh --test     # tests, npm launcher tests, release build, wasm32; CI job "build + test"
+scripts/check.sh --lint     # fmt + clippy, release build; CI runs --lint and --test as its two jobs
+scripts/check.sh --test     # tests, npm launcher tests, wasm32; CI job "build + test"
 scripts/check.sh --lint-one fmt   # one slice, for a local run
 scripts/check.sh --lint-one accesskit   # the shipped desktop app builds eframe with AccessKit
 # CI is the two required jobs. The cache prefix is `v1-rust` so the next miss saves
-# this repo's crates. A later exact hit does not update that snapshot.
+# this repo's crates. A later exact hit does not update that snapshot. Both jobs skip
+# (and pass) when a change touches only files no check reads: see `changes` in ci.yml.
 ```
 
 The `tests-npm` slice runs `node --test npm/figstudio-mcp/test/*.test.mjs` (the npm launcher and
