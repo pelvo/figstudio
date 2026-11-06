@@ -5,7 +5,7 @@
 # together.
 #
 # A small `changes` job runs first. When a push or pull request touches only files no check
-# reads (docs, Markdown, the web deploy, other workflows), both jobs are skipped by their
+# reads (docs, Markdown, the web deploy and its workflow), both jobs are skipped by their
 # `if:`. A job skipped that way reports success, so the required checks still pass; a
 # `paths:` filter on the workflow would leave them waiting forever instead.
 #
@@ -64,7 +64,7 @@ jobs:
         run: |
           # Files no check reads. Keep this list narrow: anything else, a manual run, or a
           # failure to list the files runs both jobs. Renames count their old path too.
-          skip='^(docs/|[^/]+\.md$|(apps|crates)/[^/]+/README\.md$|\.agents/|\.github/(FUNDING\.yml|workflows/(release-please|web-deploy)\.yml)$|release-please-config\.json$|\.release-please-manifest\.json$|wrangler\.jsonc$|web/(_headers|deploy/|e2e/|executor-auth\.mjs|worker/|wrangler\.public\.jsonc)|scripts/(gui-smoke\.sh|macos-app\.sh|mcp-golden\.sh|plan\.sh|thumb-sheet\.py|web-build\.sh|web-serve\.py)$)'
+          skip='^(docs/|[^/]+\.md$|(apps|crates)/[^/]+/README\.md$|\.agents/|\.github/(FUNDING\.yml|workflows/web-deploy\.yml)$|release-please-config\.json$|\.release-please-manifest\.json$|wrangler\.jsonc$|web/(_headers|deploy/|e2e/|executor-auth\.mjs|worker/|wrangler\.public\.jsonc)|scripts/(gui-smoke\.sh|macos-app\.sh|mcp-golden\.sh|plan\.sh|thumb-sheet\.py|web-build\.sh|web-serve\.py)$)'
           files=""
           case "$EVENT" in
             pull_request)
