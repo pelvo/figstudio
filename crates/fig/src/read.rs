@@ -26,8 +26,8 @@ fn bad<T>(r: Result<T, ()>) -> R<T> {
     r.map_err(|()| "the document data is truncated or invalid".to_string())
 }
 
-/// Node fields kept encoded until first read ([`Lazy`]). Together about two thirds of a
-/// large document's decoded tree; the first three are read only when an instance is resolved,
+/// Node fields kept encoded until first read ([`Lazy`]). Together over half of a large
+/// document's decoded tree; the first three are read only when an instance is resolved,
 /// `derivedTextData` (stored glyph outlines) only when that text is drawn or selected.
 const LAZY_FIELDS: [&str; 4] = [
     "derivedSymbolData",
