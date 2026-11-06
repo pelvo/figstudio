@@ -1,6 +1,6 @@
 ---
 branch: test/shader-notice-flake
-pr:
+pr: 79
 title: Shader notice test: wait for the warning chip
 ---
 
