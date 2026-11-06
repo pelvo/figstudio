@@ -1497,6 +1497,7 @@ impl App {
                 self.gaps_chip(ui, card, card.top());
             } else if !self.render_worker_lost && self.tabs.get(self.active).is_some() {
                 let tools = self.tool_pill(ui, card, &mut actions);
+                self.present_pill(ui, card, &mut actions);
                 self.status_pill(ui, card, tools);
                 let below = self.find_bar(ui, card);
                 self.gaps_chip(ui, card, below);
@@ -1664,6 +1665,85 @@ impl App {
             actions.push(Action::ZoomBy(1.25));
         }
         rect
+    }
+
+    /// Figma's prototype button at the bottom right: play starts Present, the chevron opens
+    /// a menu with Present and Preview and their keys.
+    fn present_pill(&mut self, ui: &mut Ui, card: Rect, actions: &mut Vec<Action>) {
+        // A narrow card has no room beside the centred tool pill; View and the keys still work.
+        if card.width() < 440.0 {
+            return;
+        }
+        let ctx = ui.ctx().clone();
+        let p = theme::of(ui);
+        let accent = self.tint_now(&ctx).accent;
+        let (b, pad, chevron) = (30.0, 4.0, 20.0);
+        let rect = Rect::from_min_size(
+            pos2(
+                card.right() - 12.0 - (pad * 2.0 + b + chevron),
+                card.bottom() - 51.0,
+            ),
+            vec2(pad * 2.0 + b + chevron, 38.0),
+        );
+        let radius = CornerRadius::same(19);
+        ui.interact(rect, Id::new("present-pill"), Sense::click());
+        let painter = ui.painter();
+        painter.add(card_shadow(&p, 14).as_shape(rect, radius));
+        painter.rect_filled(rect, radius, p.glass);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, p.card_stroke),
+            StrokeKind::Inside,
+        );
+        let keys = |action| {
+            self.prefs
+                .keymap
+                .for_action(action)
+                .map(|k| ctx.format_shortcut(&k))
+                .unwrap_or_default()
+        };
+        let play = Rect::from_min_size(pos2(rect.left() + pad, rect.top() + 4.0), vec2(b, b));
+        let tip = format!("Present ({})", keys(Action::Present));
+        if pill_button(
+            ui,
+            play,
+            Id::new("present"),
+            (Some(Icon::Play), "Present", &tip),
+            false,
+            accent,
+        )
+        .clicked()
+        {
+            actions.push(Action::Present);
+        }
+        let more = Rect::from_min_size(pos2(play.right(), rect.top() + 4.0), vec2(chevron, b));
+        let response = pill_button(
+            ui,
+            more,
+            Id::new("present-menu"),
+            (
+                Some(Icon::Chevron),
+                "Prototype options",
+                "Present or Preview",
+            ),
+            false,
+            accent,
+        );
+        egui::Popup::menu(&response)
+            .style(theme::menu_style)
+            .show(|ui| {
+                for (label, action) in [("Present", Action::Present), ("Preview", Action::Preview)]
+                {
+                    if ui
+                        .add(egui::Button::new(label).shortcut_text(keys(action)))
+                        .clicked()
+                    {
+                        actions.push(action);
+                        ui.close();
+                    }
+                }
+            });
     }
 
     /// What draws the canvas, the cursor, the render time and agent access, at the bottom

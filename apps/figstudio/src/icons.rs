@@ -44,6 +44,10 @@ pub enum Icon {
     Info,
     Grid,
     List,
+    /// Present / Preview a prototype (Figma's play button).
+    Play,
+    /// A small downward chevron, for a button's menu.
+    Chevron,
 }
 
 /// The icon for a node type in the layer tree.
@@ -337,6 +341,12 @@ pub fn paint(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
                 painter.circle_filled(g.p(2.6, y), 0.95 * g.scale, color);
                 capsule((5.5, y), (14.0, y));
             }
+        }
+        Icon::Play => {
+            path(&[(4.5, 2.5), (13.0, 8.0), (4.5, 13.5)], true);
+        }
+        Icon::Chevron => {
+            path(&[(4.5, 6.5), (8.0, 10.0), (11.5, 6.5)], false);
         }
         Icon::Warning => {
             path(&[(8.0, 2.0), (14.5, 13.5), (1.5, 13.5)], true);

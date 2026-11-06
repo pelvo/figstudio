@@ -271,3 +271,30 @@ fn hovering_a_button_shows_its_hover_variant_and_leaving_restores_it() {
         "and the document's own tiles"
     );
 }
+
+#[test]
+fn the_canvas_has_a_present_button_and_a_menu_with_preview() {
+    let mut h = previewing();
+    h.get_by_label("Present").click();
+    h.run_steps(4);
+    assert!(
+        h.state().tabs[0]
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.present),
+        "the play button starts Present"
+    );
+    h.key_press(Key::Escape);
+    h.run_steps(4);
+    h.get_by_label("Prototype options").click();
+    h.run_steps(2);
+    h.get_by_label_contains("Preview").click();
+    h.run_steps(4);
+    assert!(
+        h.state().tabs[0]
+            .preview
+            .as_ref()
+            .is_some_and(|p| !p.present),
+        "the menu's Preview starts Preview"
+    );
+}
