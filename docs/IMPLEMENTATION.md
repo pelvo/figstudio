@@ -900,9 +900,16 @@ lists a frame's links: the renderer walks the frame once in draw order without d
 inside instances get their `I…;…` path, overrides, constraints and visibility exactly as
 drawn. An instance without its own interactions uses its component's. Each `Link` keeps
 Figma's trigger, action and transition names; `Link::step` is the only place that decides
-what plays (`ON_CLICK` + `NAVIGATE` to a frame in the file, `ON_CLICK` + `BACK`). Every other
-link stays in the list with `step: None` and is counted (`Screen::skipped`). `Player` is the
-history stack; `reachable` walks played links breadth first.
+what plays: navigate (to a visible frame), back and "change to" (`Step::Swap`, Figma's
+interactive components) on click, hover, press, mouse enter/leave/down/up, after delay and
+drag. Overlays, scroll to, URLs and variables stay in the list with `step: None` and are
+counted (`Screen::skipped`). `Player` holds the screen history and a `State` (variant
+swaps by layer path); it takes pointer events (`Player::pointer`: "while hovering" and
+"while pressing" are undone when the pointer leaves the layer's shape or is released) and
+time (`Player::tick` for "after delay"). The renderer draws a `State` (`Renderer::prototype`;
+`Ctx::swapped_variant` takes the new variant's look where the instance did not override it),
+and the app keys the tiles of each state by its own document number (`Tab::tile_doc`), so
+going back to a state reuses its tiles. `reachable` walks played navigate links breadth first.
 
 - App and browser: `Tab::preview` holds the player and the shown screen's links. `Tab::root()`
   is the screen while previewing, so the tile pipeline (keys, recordings, GPU, crossfade)

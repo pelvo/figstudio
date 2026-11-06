@@ -48,6 +48,9 @@ pub struct RenderJob {
     /// `Workers::images_arrived` when requested, echoed back (see `tiles::Entry::images`).
     pub images: u64,
     pub tiles: VecDeque<tiles::Key>,
+    /// Prototype state drawn on top of the document (Preview); empty otherwise. Tiles of a
+    /// state have their own document number (`Tab::tile_doc`).
+    pub prototype: Arc<figstudio_render::prototype::State>,
     /// Tiles (and their `images`) the UI received since its last batch, so the worker
     /// stops skipping them: a received tile asked for again was evicted and is rendered.
     pub received: Vec<(tiles::Key, u64)>,
@@ -332,6 +335,10 @@ impl Workers {
                     }
                 }
                 let start = Instant::now();
+                // A running prototype draws instances as the variants it swapped them to.
+                if !Arc::ptr_eq(&renderer.prototype, &job.prototype) {
+                    renderer.prototype = job.prototype.clone();
+                }
                 let drawn = gpu.draw(&mut recordings, &mut renderer, job, &key);
                 let elapsed = start.elapsed();
                 let (pixels, stats, wanted) = drawn.into_parts();

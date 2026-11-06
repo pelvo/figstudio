@@ -89,6 +89,7 @@ fn draw_one(
         images: 0,
         tiles: [key].into_iter().collect(),
         received: Vec::new(),
+        prototype: Default::default(),
     };
     let drawn = gpu.draw(recordings, renderer, &job, &key);
     match drawn.into_parts() {
@@ -210,6 +211,7 @@ fn scene_at(
         images: 0,
         tiles: [key].into_iter().collect(),
         received: Vec::new(),
+        prototype: Default::default(),
     };
     let mut renderer = Renderer::new();
     renderer.system_fonts = false;

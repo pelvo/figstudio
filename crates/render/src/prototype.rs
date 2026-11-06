@@ -280,10 +280,15 @@ impl fmt::Display for Layer {
 }
 
 /// What a played link does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     Navigate(Guid),
     Back,
+    /// Show variant `to` in place of instance `target` (Figma's "change to").
+    Swap {
+        target: Layer,
+        to: Guid,
+    },
 }
 
 /// A layer's box placed on the page: `transform` maps `0..w × 0..h` to page space, so a
@@ -338,6 +343,8 @@ pub struct Link {
     pub transition: &'static str,
     /// What the player does on it; `None` when the link is not played.
     pub step: Option<Step>,
+    /// Seconds before an `AFTER_TIMEOUT` link fires.
+    pub delay: f64,
 }
 
 /// One frame of the prototype and its links in paint order (back to front).
@@ -370,7 +377,7 @@ impl Screen {
             truncated: ctx.exhausted || ctx.stats.depth_skipped > 0,
         };
         for found in std::mem::take(&mut ctx.found) {
-            screen.push(doc, found);
+            screen.push(doc, &ctx.prototype, found);
             if screen.truncated {
                 break;
             }
@@ -378,7 +385,7 @@ impl Screen {
         screen
     }
 
-    fn push(&mut self, doc: &Document, found: Found) {
+    fn push(&mut self, doc: &Document, state: &State, found: Found) {
         let Found {
             layer,
             area,
@@ -414,12 +421,20 @@ impl Screen {
                     self.truncated = true;
                     return;
                 }
-                let step = match (trigger, kind) {
-                    ("ON_CLICK", "NAVIGATE") => {
-                        destination.filter(|d| shown(doc, *d)).map(Step::Navigate)
+                let step = if !TRIGGERS.contains(&trigger) {
+                    None
+                } else {
+                    match kind {
+                        "NAVIGATE" => destination.filter(|d| shown(doc, *d)).map(Step::Navigate),
+                        "BACK" => Some(Step::Back),
+                        "SWAP_STATE" => destination.and_then(|to| {
+                            Some(Step::Swap {
+                                target: swap_target(doc, state, &layer, to)?,
+                                to,
+                            })
+                        }),
+                        _ => None,
                     }
-                    ("ON_CLICK", "BACK") => Some(Step::Back),
-                    _ => None,
                 };
                 self.links.push(Link {
                     layer: layer.clone(),
@@ -434,6 +449,10 @@ impl Screen {
                     transition: name_of(action.get("transitionType"))
                         .unwrap_or("INSTANT_TRANSITION"),
                     step,
+                    delay: interaction
+                        .path(&["event", "transitionTimeout"])
+                        .and_then(Val::as_f32)
+                        .map_or(0.8, f64::from),
                 });
             }
         }
@@ -494,16 +513,49 @@ pub fn reachable(
     (screens, false)
 }
 
-/// Follows played links: the screens visited, newest last; never empty.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A pointer event in page space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pointer {
+    Move(Point),
+    Down(Point),
+    Up(Point),
+    /// The pointer left the screen.
+    Leave,
+}
+
+/// Runs a prototype: the screens visited (newest last, never empty), the variants instances
+/// show, and what the pointer is over or pressing. Time is in seconds, from the caller.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Player {
     history: Vec<Guid>,
+    state: State,
+    /// Layers with hover links under the pointer, with their shape and clips when entered:
+    /// "while hovering" lasts until the pointer leaves that shape, whatever the swapped-in
+    /// variant's own links are.
+    hovered: Vec<(Layer, Area, Vec<Area>)>,
+    /// The layer pressed, if the press started on one with click or press links.
+    pressed: Option<Layer>,
+    /// Temporary swaps ("while hovering", "while pressing"), by target key and trigger: the
+    /// variant to go back to (`None`: the instance's own).
+    reverts: Vec<(Vec<Guid>, &'static str, Option<Guid>)>,
+    /// When the screen or the state last changed: "after delay" counts from here.
+    since: f64,
+    now: f64,
 }
+
+const HOVER: &[&str] = &["ON_HOVER", "MOUSE_ENTER", "MOUSE_LEAVE"];
+const PRESS: &[&str] = &["ON_CLICK", "ON_PRESS", "MOUSE_DOWN", "MOUSE_UP", "DRAG"];
 
 impl Player {
     pub fn new(start: Guid) -> Player {
         Player {
             history: vec![start],
+            state: State::default(),
+            hovered: Vec::new(),
+            pressed: None,
+            reverts: Vec::new(),
+            since: 0.0,
+            now: 0.0,
         }
     }
 
@@ -512,32 +564,274 @@ impl Player {
         self.history[self.history.len() - 1]
     }
 
+    /// The variants instances show now.
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
     /// Whether [`Step::Back`] has somewhere to go.
     pub fn can_go_back(&self) -> bool {
         self.history.len() > 1
     }
 
-    /// Follows `step`; returns whether the screen changed.
+    /// Follows `step`; returns whether the screen or the state changed.
     pub fn go(&mut self, step: Step) -> bool {
-        match step {
+        let changed = match step {
             Step::Navigate(to) if to != self.screen() => {
                 self.history.push(to);
+                self.left_screen();
                 true
             }
             Step::Back if self.can_go_back() => {
                 self.history.pop();
+                self.left_screen();
                 true
             }
+            Step::Swap { target, to } => self.state.swaps.insert(target.key(), to) != Some(to),
             _ => false,
+        };
+        if changed {
+            self.since = self.now;
         }
+        changed
     }
 
-    /// Back to the first screen; returns whether the screen changed.
+    /// Back to the first screen and the document's own variants; returns whether anything
+    /// changed.
     pub fn restart(&mut self) -> bool {
-        let moved = self.can_go_back();
+        let moved = self.can_go_back() || !self.state.swaps.is_empty();
         self.history.truncate(1);
+        self.state = State::default();
+        self.left_screen();
+        self.since = self.now;
         moved
     }
+
+    fn left_screen(&mut self) {
+        self.hovered.clear();
+        self.pressed = None;
+        self.reverts.clear();
+    }
+
+    /// Acts on a pointer event over `screen` (its links read with this player's state);
+    /// returns whether the screen or the state changed.
+    pub fn pointer(&mut self, screen: &Screen, event: Pointer, now: f64) -> bool {
+        self.now = now;
+        let inside = |area: &Area, clips: &[Area], p: Point| {
+            area.contains(p) && clips.iter().all(|c| c.contains(p))
+        };
+        let under_links = |p: Point, triggers: &[&str]| -> Vec<&Link> {
+            let mut found: Vec<&Link> = Vec::new();
+            for link in screen.links.iter().rev() {
+                if triggers.contains(&link.trigger)
+                    && inside(&link.area, &link.clips, p)
+                    && !found.iter().any(|f| f.layer == link.layer)
+                {
+                    found.push(link);
+                }
+            }
+            found
+        };
+        let under = |p: Point, triggers: &[&str]| -> Vec<Layer> {
+            under_links(p, triggers)
+                .into_iter()
+                .map(|l| l.layer.clone())
+                .collect()
+        };
+        let mut changed = false;
+        match event {
+            Pointer::Move(_) | Pointer::Leave => {
+                let at = match event {
+                    Pointer::Move(p) => Some(p),
+                    _ => None,
+                };
+                let (stay, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.hovered)
+                    .into_iter()
+                    .partition(|(_, area, clips)| at.is_some_and(|p| inside(area, clips, p)));
+                let left: Vec<Layer> = gone.into_iter().map(|(l, _, _)| l).collect();
+                let entered: Vec<(Layer, Area, Vec<Area>)> = at
+                    .map(|p| under_links(p, HOVER))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|l| !stay.iter().any(|(s, _, _)| *s == l.layer))
+                    .map(|l| (l.layer.clone(), l.area, l.clips.clone()))
+                    .collect();
+                self.hovered = stay;
+                self.hovered.extend(entered.iter().cloned());
+                let entered: Vec<Layer> = entered.into_iter().map(|(l, _, _)| l).collect();
+                for layer in &left {
+                    changed |= self.revert(layer, "ON_HOVER", screen);
+                    changed |= self.run(screen, layer, "MOUSE_LEAVE", false);
+                }
+                for layer in &entered {
+                    changed |= self.run(screen, layer, "MOUSE_ENTER", false);
+                    changed |= self.run(screen, layer, "ON_HOVER", true);
+                }
+            }
+            Pointer::Down(p) => {
+                self.pressed = under(p, PRESS).into_iter().next();
+                if let Some(layer) = self.pressed.clone() {
+                    changed |= self.run(screen, &layer, "MOUSE_DOWN", false);
+                    changed |= self.run(screen, &layer, "ON_PRESS", true);
+                }
+            }
+            Pointer::Up(p) => {
+                let pressed = self.pressed.take();
+                if let Some(layer) = &pressed {
+                    changed |= self.revert(layer, "ON_PRESS", screen);
+                }
+                if let Some(layer) = under(p, PRESS).into_iter().next() {
+                    changed |= self.run(screen, &layer, "MOUSE_UP", false);
+                    if pressed.as_ref() == Some(&layer) {
+                        changed |= self.run(screen, &layer, "ON_CLICK", false);
+                        changed |= self.run(screen, &layer, "DRAG", false);
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// Fires the first "after delay" link of `screen` that is due at `now`; returns whether
+    /// the screen or the state changed.
+    pub fn tick(&mut self, screen: &Screen, now: f64) -> bool {
+        self.now = now;
+        let due = screen
+            .links
+            .iter()
+            .filter(|l| l.trigger == "AFTER_TIMEOUT" && l.step.is_some())
+            .find(|l| now - self.since >= l.delay)
+            .and_then(|l| l.step.clone());
+        due.is_some_and(|step| self.go(step))
+    }
+
+    /// When the next "after delay" link of `screen` is due, if it has any.
+    pub fn next_due(&self, screen: &Screen) -> Option<f64> {
+        screen
+            .links
+            .iter()
+            .filter(|l| l.trigger == "AFTER_TIMEOUT" && l.step.is_some())
+            .map(|l| self.since + l.delay)
+            .reduce(f64::min)
+    }
+
+    /// Runs the played links of `layer` for `trigger`; `temporary` swaps are undone by
+    /// [`Player::revert`].
+    fn run(
+        &mut self,
+        screen: &Screen,
+        layer: &Layer,
+        trigger: &'static str,
+        temporary: bool,
+    ) -> bool {
+        let steps: Vec<Step> = screen
+            .links
+            .iter()
+            .filter(|l| l.trigger == trigger && &l.layer == layer)
+            .filter_map(|l| l.step.clone())
+            .collect();
+        let mut changed = false;
+        for step in steps {
+            if temporary && let Step::Swap { target, .. } = &step {
+                let key = target.key();
+                if !self
+                    .reverts
+                    .iter()
+                    .any(|(k, t, _)| *k == key && *t == trigger)
+                {
+                    let before = self.state.swaps.get(&key).copied();
+                    self.reverts.push((key, trigger, before));
+                }
+            }
+            changed |= self.go(step);
+        }
+        changed
+    }
+
+    /// Undoes the temporary swaps `layer`'s `trigger` links made.
+    fn revert(&mut self, layer: &Layer, trigger: &'static str, screen: &Screen) -> bool {
+        let targets: Vec<Vec<Guid>> = screen
+            .links
+            .iter()
+            .filter(|l| &l.layer == layer)
+            .filter_map(|l| match &l.step {
+                Some(Step::Swap { target, .. }) => Some(target.key()),
+                _ => None,
+            })
+            .chain(std::iter::once(layer.key()))
+            .collect();
+        let mut changed = false;
+        self.reverts.retain(|(key, t, before)| {
+            if *t != trigger || !targets.contains(key) {
+                return true;
+            }
+            match before {
+                Some(v) => changed |= self.state.swaps.insert(key.clone(), *v) != Some(*v),
+                None => changed |= self.state.swaps.remove(key).is_some(),
+            }
+            false
+        });
+        if changed {
+            self.since = self.now;
+        }
+        changed
+    }
+}
+
+/// The triggers the player acts on.
+pub const TRIGGERS: &[&str] = &[
+    "ON_CLICK",
+    "ON_HOVER",
+    "ON_PRESS",
+    "MOUSE_ENTER",
+    "MOUSE_LEAVE",
+    "MOUSE_DOWN",
+    "MOUSE_UP",
+    "AFTER_TIMEOUT",
+    "DRAG",
+];
+
+/// The instance a "change to `to`" on `layer` swaps, as in Figma: the layer or the nearest
+/// instance around it whose current variant is in the same component set as `to`.
+fn swap_target(doc: &Document, state: &State, layer: &Layer, to: Guid) -> Option<Layer> {
+    let set = doc.node(to)?.parent?;
+    let variant = |candidate: &Layer| -> Option<Guid> {
+        if let Some(swapped) = state.swaps.get(&candidate.key()) {
+            return Some(*swapped);
+        }
+        match candidate {
+            Layer::Node(id) => {
+                let node = doc.node(*id)?;
+                (node.kind == "INSTANCE").then(|| resolve::symbol_id(&node.data))?
+            }
+            Layer::Path(path) => {
+                let resolved = resolve::resolve_path(doc, path).ok()?;
+                (resolved.data.text("type") == Some("INSTANCE"))
+                    .then(|| resolve::symbol_id(&resolved.data))?
+            }
+        }
+    };
+    let mut candidates = Vec::new();
+    let mut outer = match layer {
+        Layer::Node(id) => Some(*id),
+        Layer::Path(path) => {
+            let keys = path.keys();
+            for n in (1..=keys.len()).rev() {
+                let mut guids = vec![path.instance()];
+                guids.extend(&keys[..n]);
+                candidates.extend(InstancePath::new(guids).map(Layer::Path));
+            }
+            Some(path.instance())
+        }
+    };
+    let mut seen = HashSet::new();
+    while let Some(id) = outer.filter(|id| seen.insert(*id)) {
+        candidates.push(Layer::Node(id));
+        outer = doc.node(id).and_then(|n| n.parent);
+    }
+    candidates
+        .into_iter()
+        .find(|c| variant(c).and_then(|v| doc.node(v)?.parent) == Some(set))
 }
 
 /// A layer with interactions, as an [`Inspect::Links`] walk found it.

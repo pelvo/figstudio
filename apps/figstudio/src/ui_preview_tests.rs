@@ -237,3 +237,37 @@ fn arrows_work_after_a_text_field_had_the_keys() {
         "→ steps even though a field had the keys"
     );
 }
+
+#[test]
+fn hovering_a_button_shows_its_hover_variant_and_leaving_restores_it() {
+    let mut h = harness();
+    h.state_mut().tabs[0].doc = Arc::new(proto::hover_doc());
+    h.run_steps(4);
+    let ctx = h.ctx.clone();
+    h.state_mut().apply(crate::menu::Action::Preview, &ctx);
+    h.run_steps(4);
+    let own = h.state().tabs[0].doc.instance;
+    assert_eq!(h.state().tabs[0].tile_doc(), own);
+    let button = super::centre_of(&h, proto::BUTTON);
+    h.event(egui::Event::PointerMoved(button));
+    h.run_steps(2);
+    let tab = &h.state().tabs[0];
+    assert_eq!(
+        tab.prototype_state().swaps.get(&vec![proto::BUTTON]),
+        Some(&proto::HOVERED),
+        "hovered: the button shows its hover variant"
+    );
+    assert_ne!(tab.tile_doc(), own, "the tiles draw the hover state");
+    let away = tab.canvas_rect.unwrap().left_top() + egui::vec2(4.0, 4.0);
+    h.event(egui::Event::PointerMoved(away));
+    h.run_steps(2);
+    assert!(
+        h.state().tabs[0].prototype_state().swaps.is_empty(),
+        "left: back to the default"
+    );
+    assert_eq!(
+        h.state().tabs[0].tile_doc(),
+        own,
+        "and the document's own tiles"
+    );
+}

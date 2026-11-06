@@ -61,7 +61,9 @@ pub fn run(doc: &Document, options: &Options<'_>) -> Result<()> {
         }
         skipped += screen.skipped();
     }
-    println!("{skipped} links not played (Preview plays \"On click\" navigate and back)");
+    println!(
+        "{skipped} links not played (Preview plays navigate, back and change-to on click, hover, press, mouse enter/leave/down/up, after delay and drag)"
+    );
     if let Some(dir) = options.out {
         std::fs::create_dir_all(dir).map_err(|e| anyhow!("{}: {e}", dir.display()))?;
         for (i, screen) in screens.iter().enumerate() {

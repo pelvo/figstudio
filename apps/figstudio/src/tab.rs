@@ -95,6 +95,20 @@ pub struct Tab {
     pub preview: Option<Preview>,
 }
 
+/// The document number for tiles of `doc` drawn with prototype `state`: the document's own
+/// for no state, else one per state, so going back to a state reuses its tiles.
+fn state_doc(doc: u64, state: &prototype::State) -> u64 {
+    use std::hash::{Hash, Hasher};
+    if state.swaps.is_empty() {
+        return doc;
+    }
+    let mut swaps: Vec<_> = state.swaps.iter().collect();
+    swaps.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (doc, swaps).hash(&mut hasher);
+    hasher.finish() | 1 << 63
+}
+
 /// Prototype Preview: the screens visited and the links of the one shown.
 pub struct Preview {
     pub player: Player,
@@ -107,6 +121,8 @@ pub struct Preview {
     pub present: bool,
     /// The canvas size the screen was last fitted to.
     pub fitted_size: Option<egui::Vec2>,
+    /// The player's state as the tiles draw it, and their document number for it.
+    pub drawn: (u64, Arc<prototype::State>),
 }
 
 impl Preview {
@@ -295,6 +311,7 @@ impl Tab {
             missed: None,
             present,
             fitted_size: None,
+            drawn: (self.doc.instance, Arc::default()),
         });
         true
     }
@@ -315,20 +332,73 @@ impl Tab {
         let Some(preview) = self.preview.as_mut() else {
             return false;
         };
-        let moved = match step {
+        let before = preview.player.screen();
+        let changed = match step {
             Some(step) => preview.player.go(step),
             None => preview.player.restart(),
         };
-        if moved {
-            let screen = preview.player.screen();
-            self.show_screen(screen);
-            let links = self.read_screen(screen);
-            if let Some(preview) = self.preview.as_mut() {
-                preview.screen = links;
-                preview.missed = None;
-            }
+        self.after_player(before, changed);
+        changed
+    }
+
+    /// Passes a pointer event (page space) to the player; returns whether anything changed.
+    pub fn preview_pointer(&mut self, event: prototype::Pointer, now: f64) -> bool {
+        let Some(preview) = self.preview.as_mut() else {
+            return false;
+        };
+        let before = preview.player.screen();
+        let changed = preview.player.pointer(&preview.screen, event, now);
+        self.after_player(before, changed);
+        changed
+    }
+
+    /// Fires a due "after delay" link; returns when the next one is due, if any.
+    pub fn preview_tick(&mut self, now: f64) -> Option<f64> {
+        let preview = self.preview.as_mut()?;
+        let before = preview.player.screen();
+        let changed = preview.player.tick(&preview.screen, now);
+        self.after_player(before, changed);
+        let preview = self.preview.as_ref()?;
+        preview.player.next_due(&preview.screen)
+    }
+
+    /// After the player changed the screen or the state: show the screen, draw the state and
+    /// read the links its variants have.
+    fn after_player(&mut self, before: Guid, changed: bool) {
+        let Some(preview) = self.preview.as_mut() else {
+            return;
+        };
+        if !changed {
+            return;
         }
-        moved
+        let screen = preview.player.screen();
+        let state = preview.player.state().clone();
+        if *preview.drawn.1 != state {
+            preview.drawn = (state_doc(self.doc.instance, &state), Arc::new(state));
+        }
+        if screen != before {
+            self.show_screen(screen);
+        }
+        let links = self.read_screen(screen);
+        if let Some(preview) = self.preview.as_mut() {
+            preview.screen = links;
+            preview.missed = None;
+        }
+    }
+
+    /// The document number the tiles of what the canvas shows are stored under: the
+    /// document's, or one for the prototype state Preview draws.
+    pub fn tile_doc(&self) -> u64 {
+        self.preview
+            .as_ref()
+            .map_or(self.doc.instance, |p| p.drawn.0)
+    }
+
+    /// The prototype state the tiles draw (empty outside Preview).
+    pub fn prototype_state(&self) -> Arc<prototype::State> {
+        self.preview
+            .as_ref()
+            .map_or_else(Arc::default, |p| p.drawn.1.clone())
     }
 
     /// Steps to the next (`forward`) or previous frame of the screen's page, as Figma's arrow
@@ -365,8 +435,12 @@ impl Tab {
     // shortcut: read on the UI thread with the pick renderer (about 0.1 s for a screen with
     // hundreds of instance links in a 100k-node file); move to the worker if that shows.
     fn read_screen(&self, frame: Guid) -> Screen {
+        let state = self.prototype_state();
         self.pick_cache.with(&self.doc, |renderer, _| {
-            Screen::read(renderer, &self.doc, frame)
+            let canvas = std::mem::replace(&mut renderer.prototype, state);
+            let screen = Screen::read(renderer, &self.doc, frame);
+            renderer.prototype = canvas;
+            screen
         })
     }
 

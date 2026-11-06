@@ -56,7 +56,7 @@ fn a_click_on_a_link_navigates_and_back_returns() {
         .find(|l| l.layer == Layer::Node(HOVER))
         .unwrap();
     assert_eq!(
-        (hover.trigger, hover.action, hover.step),
+        (hover.trigger, hover.action, hover.step.clone()),
         ("ON_HOVER", "OVERLAY", None)
     );
     assert_eq!(
@@ -117,7 +117,7 @@ fn links_inside_instances_follow_the_component_and_its_overrides() {
     let layers: Vec<_> = screen
         .links
         .iter()
-        .map(|l| (l.layer.to_string(), l.step))
+        .map(|l| (l.layer.to_string(), l.step.clone()))
         .collect();
     assert_eq!(
         layers,
@@ -156,7 +156,7 @@ fn links_inside_instances_follow_the_component_and_its_overrides() {
 fn links_to_missing_frames_are_listed_but_not_played() {
     let doc = instance_doc(navigate(id(777)), Val::Arr(vec![]), vec![]);
     let link = &read(&doc, id(4)).links[0];
-    assert_eq!((link.destination, link.step), (Some(id(777)), None));
+    assert_eq!((link.destination, link.step.clone()), (Some(id(777)), None));
 }
 
 /// Writes the prototype to `$FIGSTUDIO_PROTOTYPE_FIXTURE` for `web/e2e/prototype.spec.mjs`.
@@ -283,7 +283,7 @@ fn a_click_plays_its_navigate_even_after_an_unplayed_action() {
     let screen = Screen::read(&mut Renderer::new(), &doc, id(2));
     let hit = screen.hit(Point::new(20.0, 20.0));
     assert_eq!(
-        hit.and_then(|l| l.step),
+        hit.and_then(|l| l.step.clone()),
         Some(figstudio_render::prototype::Step::Navigate(id(4))),
         "the supported action of this click must still play"
     );
@@ -301,7 +301,7 @@ fn a_link_to_a_hidden_frame_is_listed_but_not_played() {
     doc.set_nodes(nodes).unwrap();
     let first = read(&doc, FIRST);
     assert_eq!(
-        (first.links[0].destination, first.links[0].step),
+        (first.links[0].destination, first.links[0].step.clone()),
         (Some(SECOND), None)
     );
     let (screens, _) = prototype::reachable(&mut Renderer::new(), &doc, &[FIRST], 10);
@@ -484,5 +484,128 @@ fn an_instance_inside_an_instance_is_swapped_by_its_path() {
         common::pixel(&swapped, 10, 10),
         &[255, 0, 0, 255],
         "instance 6 unchanged"
+    );
+}
+
+fn swap_to(to: figstudio_fig::Guid) -> Vec<(&'static str, Val)> {
+    vec![
+        ("transitionNodeID", to.to_val()),
+        ("connectionType", name("INTERNAL_NODE")),
+        ("navigationType", name("SWAP_STATE")),
+    ]
+}
+
+/// A button set 20 with variants 21 (default) and 22 (hover); screen 30 holds instance 31 of
+/// the default at (0, 0). `default` and `hover` are the variants' interactions.
+fn button(default: Val, hover: Val) -> Document {
+    let mut set = placed(20, 1, "FRAME", 500.0, 0.0);
+    set.data.set("isStateGroup", Val::Bool(true));
+    let mut a = node(21, 20, "SYMBOL");
+    a.data.set("prototypeInteractions", default);
+    let mut b = placed(22, 20, "SYMBOL", 50.0, 0.0);
+    b.data.set("prototypeInteractions", hover);
+    let mut screen = node(30, 1, "FRAME");
+    screen.data.set("size", size(100.0, 100.0));
+    document(vec![
+        node(1, 0, "CANVAS"),
+        set,
+        a,
+        b,
+        screen,
+        instance(31, 30, 21, vec![]),
+    ])
+}
+
+fn read_with(doc: &Document, player: &Player) -> Screen {
+    let mut renderer = Renderer::new();
+    renderer.prototype = std::sync::Arc::new(player.state().clone());
+    Screen::read(&mut renderer, doc, id(30))
+}
+
+#[test]
+fn while_hovering_swaps_the_variant_and_leaving_restores_it() {
+    use prototype::Pointer;
+    let doc = button(interaction("ON_HOVER", &swap_to(id(22))), Val::Arr(vec![]));
+    let mut player = Player::new(id(30));
+    let screen = read_with(&doc, &player);
+    assert_eq!(
+        screen.links[0].step,
+        Some(Step::Swap {
+            target: Layer::Node(id(31)),
+            to: id(22)
+        })
+    );
+    assert!(player.pointer(&screen, Pointer::Move(Point::new(10.0, 10.0)), 0.0));
+    assert_eq!(
+        player.state().swaps.get(&vec![id(31)]),
+        Some(&id(22)),
+        "hovered"
+    );
+    let screen = read_with(&doc, &player);
+    assert!(
+        screen.links.is_empty(),
+        "the hover variant's own (no) links"
+    );
+    assert!(
+        !player.pointer(&screen, Pointer::Move(Point::new(12.0, 12.0)), 0.05),
+        "still over the button: the hover holds though the new variant has no hover link"
+    );
+    assert_eq!(player.state().swaps.get(&vec![id(31)]), Some(&id(22)));
+    assert!(player.pointer(&screen, Pointer::Move(Point::new(90.0, 90.0)), 0.1));
+    assert!(player.state().swaps.is_empty(), "left: back to the default");
+}
+
+#[test]
+fn a_click_swaps_for_good_and_after_delay_fires_on_time() {
+    use prototype::Pointer;
+    let delayed = {
+        let mut i = interaction("AFTER_TIMEOUT", &swap_to(id(21)));
+        if let Val::Arr(items) = &mut i {
+            items[0]
+                .get_mut("event")
+                .unwrap()
+                .set("transitionTimeout", Val::Float(0.5));
+        }
+        i
+    };
+    let doc = button(interaction("ON_CLICK", &swap_to(id(22))), delayed);
+    let mut player = Player::new(id(30));
+    let screen = read_with(&doc, &player);
+    let at = Point::new(10.0, 10.0);
+    assert!(
+        !player.pointer(&screen, Pointer::Down(at), 1.0),
+        "a press alone does nothing"
+    );
+    assert!(
+        player.pointer(&screen, Pointer::Up(at), 1.1),
+        "a click swaps"
+    );
+    let screen = read_with(&doc, &player);
+    assert_eq!(player.next_due(&screen), Some(1.6));
+    assert!(!player.tick(&screen, 1.5), "not yet");
+    assert!(
+        player.tick(&screen, 1.6),
+        "after 0.5 s the hover variant swaps back"
+    );
+    assert_eq!(player.state().swaps.get(&vec![id(31)]), Some(&id(21)));
+}
+
+#[test]
+fn the_hover_fixture_button_has_a_played_swap() {
+    let doc = hover_doc();
+    let screen = read(&doc, FIRST);
+    let button = screen.links.iter().find(|l| l.layer == Layer::Node(BUTTON));
+    assert_eq!(
+        button.map(|l| l.step.clone()),
+        Some(Some(Step::Swap {
+            target: Layer::Node(BUTTON),
+            to: HOVERED
+        })),
+        "{:?}",
+        screen
+            .links
+            .iter()
+            .map(|l| (l.layer.to_string(), l.trigger))
+            .collect::<Vec<_>>()
     );
 }

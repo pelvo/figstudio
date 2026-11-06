@@ -105,3 +105,73 @@ pub fn prototype_file(dir: &std::path::Path) -> PathBuf {
     prototype_doc().save(&path).unwrap();
     path
 }
+
+fn at(
+    id: Guid,
+    parent: Guid,
+    kind: &str,
+    (x, y, w, h): (f64, f64, f64, f64),
+) -> figstudio_fig::Node {
+    figstudio_fig::Node::from_data(fields(&[
+        ("guid", id.to_val()),
+        ("type", Val::Str(kind.into())),
+        ("visible", Val::Bool(true)),
+        (
+            "parentIndex",
+            fields(&[
+                ("guid", parent.to_val()),
+                ("position", Val::Str("~".into())),
+            ]),
+        ),
+        (
+            "size",
+            fields(&[("x", Val::Float(w)), ("y", Val::Float(h))]),
+        ),
+        (
+            "transform",
+            fields(&[
+                ("m00", Val::Float(1.0)),
+                ("m11", Val::Float(1.0)),
+                ("m02", Val::Float(x)),
+                ("m12", Val::Float(y)),
+            ]),
+        ),
+    ]))
+    .unwrap()
+}
+
+/// The hover button of [`hover_doc`]: an instance on [`FIRST`].
+pub const BUTTON: Guid = Guid(1, 9101);
+/// Its hover variant.
+pub const HOVERED: Guid = Guid(1, 9103);
+
+/// [`prototype_doc`] plus a button on [`FIRST`]: instance [`BUTTON`] of a default variant
+/// that changes to [`HOVERED`] while hovered (a component set off the screens).
+pub fn hover_doc() -> Document {
+    let mut doc = prototype_doc();
+    let page = doc.pages[0];
+    let set = Guid(1, 9100);
+    let default = Guid(1, 9102);
+    let mut nodes = doc.nodes.clone();
+    let mut s = at(set, page, "FRAME", (-500.0, -500.0, 200.0, 100.0));
+    s.data.set("isStateGroup", Val::Bool(true));
+    let mut d = at(default, set, "SYMBOL", (0.0, 0.0, 60.0, 30.0));
+    d.data.set(
+        "prototypeInteractions",
+        interaction(
+            "ON_HOVER",
+            &[
+                ("transitionNodeID", HOVERED.to_val()),
+                ("connectionType", name("INTERNAL_NODE")),
+                ("navigationType", name("SWAP_STATE")),
+            ],
+        ),
+    );
+    let h = at(HOVERED, set, "SYMBOL", (100.0, 0.0, 60.0, 30.0));
+    let mut b = at(BUTTON, FIRST, "INSTANCE", (300.0, 20.0, 60.0, 30.0));
+    b.data
+        .set("symbolData", fields(&[("symbolID", default.to_val())]));
+    nodes.extend([s, d, h, b]);
+    doc.set_nodes(nodes).unwrap();
+    doc
+}

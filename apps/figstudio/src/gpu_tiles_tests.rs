@@ -112,6 +112,7 @@ fn job(doc: &std::sync::Arc<figstudio_fig::Document>, tiles: &[Key]) -> RenderJo
         images: 0,
         tiles: tiles.iter().copied().collect(),
         received: Vec::new(),
+        prototype: Default::default(),
     }
 }
 

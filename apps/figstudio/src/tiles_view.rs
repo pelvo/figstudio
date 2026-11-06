@@ -166,7 +166,7 @@ impl Tiles {
     ) {
         // Drawn: what `tab.view` shows (an ease in progress, maybe). Planned and requested:
         // the `target` view it is heading for.
-        let (doc, page, view) = (tab.doc.instance, tab.root(), tab.view);
+        let (doc, page, view) = (tab.tile_doc(), tab.root(), tab.view);
         let visible = tiles::visible_page(view.zoom, view.pan.into(), rect.size().into());
         let planned = tiles::visible_page(target.zoom, target.pan.into(), rect.size().into());
         let range = tiles::plan(
@@ -224,6 +224,7 @@ impl Tiles {
             // An empty batch still goes out: it cancels the tiles of the previous one.
             tiles: batch.iter().copied().collect(),
             received: std::mem::take(&mut tab.tiles_received),
+            prototype: tab.prototype_state(),
         };
         tab.tile_requests = if workers.render(job).is_ok() {
             batch

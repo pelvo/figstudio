@@ -431,7 +431,7 @@ impl CanvasShot {
     fn of(tab: &crate::tab::Tab) -> Self {
         CanvasShot {
             key: (tab.id, tab.root()),
-            doc: tab.doc.instance,
+            doc: tab.tile_doc(),
             view: tab.shown,
             background: canvas::to_color32(tab.background()),
         }
@@ -470,7 +470,11 @@ impl Crossfade {
         shown: f32,
         ppp: f32,
     ) -> Vec<crate::tiles::Key> {
-        if self.last.is_some_and(|s| s.key != (tab.id, tab.root())) {
+        // Another file, page or Preview screen, or another prototype state (its own tiles).
+        if self
+            .last
+            .is_some_and(|s| s.key != (tab.id, tab.root()) || s.doc != tab.tile_doc())
+        {
             self.from = self.last.take();
         }
         if shown >= 1.0 {
@@ -1449,8 +1453,12 @@ impl App {
                     };
                     // Another file or page fades in over the last one, painted again from the
                     // tile cache: a crossfade, never the bare card for a frame.
-                    let shown =
-                        anim::arrive(&ctx, Id::new("canvas-in"), (tab.id, tab.root()), 0.16);
+                    let shown = anim::arrive(
+                        &ctx,
+                        Id::new("canvas-in"),
+                        (tab.id, tab.root(), tab.tile_doc()),
+                        0.16,
+                    );
                     let ppp = ui.pixels_per_point();
                     let under = (card, f32::from(corner));
                     let underlay =

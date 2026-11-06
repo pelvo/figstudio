@@ -35,6 +35,7 @@ fn batch(tab: u64, xs: &[i32], received: &[i32]) -> Msg {
         images: 0,
         tiles: xs.iter().map(|&x| key(x)).collect(),
         received: received.iter().map(|&x| (key(x), 0)).collect(),
+        prototype: Default::default(),
     })
 }
 

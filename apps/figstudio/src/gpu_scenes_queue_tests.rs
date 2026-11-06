@@ -96,6 +96,7 @@ impl Model {
                 images: 0,
                 tiles: batch.iter().copied().collect(),
                 received: std::mem::take(&mut self.tab.tiles_received),
+                prototype: Default::default(),
             };
             self.worker.take(Msg::Batch(job));
             self.tab.tile_requests = batch;

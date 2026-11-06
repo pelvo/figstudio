@@ -2,6 +2,7 @@
 //! The tiles draw `Tab::root` (the screen), so CPU, GPU and the browser work unchanged.
 use egui::{Pos2, Sense, Stroke};
 use figstudio_render::kurbo::Point;
+use figstudio_render::prototype::Pointer;
 
 use crate::canvas::to_color32;
 use crate::tab::{Tab, View};
@@ -161,25 +162,41 @@ pub fn show(
     }
 
     let cursor = response.hover_pos().map(|p| tab.view.to_page(origin, p));
+    let page_point = |p: Pos2| Point::new(f64::from(p.x), f64::from(p.y));
+    let now = ui.input(|i| i.time);
+    // The player gets the pointer as Figma's prototypes do: hover, press, release (a click is
+    // a press and a release on the same layer), and leaving the screen.
+    let (pressed, released) =
+        ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released()));
+    let event = match cursor {
+        Some(p) if pressed && response.hovered() => Some(Pointer::Down(page_point(p))),
+        Some(p) if released => Some(Pointer::Up(page_point(p))),
+        Some(p) => Some(Pointer::Move(page_point(p))),
+        None => Some(Pointer::Leave),
+    };
+    let mut acted = false;
+    if let Some(event) = event {
+        // Hover is tracked before a press, so "while hovering" and a click on the same layer
+        // both apply.
+        if let Pointer::Down(p) | Pointer::Up(p) = event {
+            tab.preview_pointer(Pointer::Move(p), now);
+        }
+        acted = tab.preview_pointer(event, now);
+    }
+    if let Some(due) = tab.preview_tick(now) {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64((due - now).max(0.0)));
+    }
     let hit = |tab: &Tab| {
         let p = cursor?;
         let screen = &tab.preview.as_ref()?.screen;
-        screen
-            .hit(Point::new(f64::from(p.x), f64::from(p.y)))
-            .cloned()
+        screen.hit(page_point(p)).cloned()
     };
     let hovered = hit(tab);
-    let now = ui.input(|i| i.time);
-    if response.clicked() {
-        match hovered.as_ref().and_then(|l| l.step) {
-            Some(step) => {
-                tab.preview_go(Some(step));
-            }
-            None => {
-                if let Some(preview) = tab.preview.as_mut() {
-                    preview.missed = Some(now);
-                }
-            }
+    if released && !acted && response.hovered() && !response.dragged() {
+        let on_link = hovered.as_ref().is_some_and(|l| l.step.is_some());
+        if let Some(preview) = tab.preview.as_mut().filter(|_| !on_link) {
+            preview.missed = Some(now);
         }
     }
 
