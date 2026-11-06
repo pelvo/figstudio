@@ -236,7 +236,7 @@ impl Ctx<'_> {
         node: &Node,
         path: Option<&[Guid]>,
         data: &Val,
-    ) -> Option<Val> {
+    ) -> Option<(Val, HashMap<Guid, Guid>)> {
         if node.kind != "INSTANCE" || self.prototype.swaps.is_empty() {
             return None;
         }
@@ -266,7 +266,38 @@ impl Ctx<'_> {
             }
         }
         out.set("overriddenSymbolID", to.to_val());
-        Some(out)
+        let mut remap = HashMap::new();
+        if let Some(old) = old {
+            match_layers(self.doc, new.id, old.id, &mut remap, 0);
+        }
+        Some((out, remap))
+    }
+}
+
+/// Maps the layer keys under variant `new` to those of the matching layers under `old`, as
+/// Figma keeps overrides across a variant swap: by name and type, in order. Nested instances
+/// are matched but not entered (their layers belong to their own component).
+fn match_layers(doc: &Document, new: Guid, old: Guid, map: &mut HashMap<Guid, Guid>, depth: usize) {
+    if depth > 32 {
+        return;
+    }
+    let mut free: Vec<&Node> = doc
+        .children(old)
+        .iter()
+        .filter_map(|id| doc.node(*id))
+        .collect();
+    for child in doc.children(new).iter().filter_map(|id| doc.node(*id)) {
+        let Some(at) = free
+            .iter()
+            .position(|o| o.name == child.name && o.kind == child.kind)
+        else {
+            continue;
+        };
+        let other = free.remove(at);
+        map.insert(child.override_key(), other.override_key());
+        if child.kind != "INSTANCE" {
+            match_layers(doc, child.id, other.id, map, depth + 1);
+        }
     }
 }
 

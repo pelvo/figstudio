@@ -123,6 +123,9 @@ pub struct Preview {
     pub fitted_size: Option<egui::Vec2>,
     /// The player's state as the tiles draw it, and their document number for it.
     pub drawn: (u64, Arc<prototype::State>),
+    /// The tile document number of the state shown before: its tiles stay under the new
+    /// state's until those arrive, so a hover changes the button in place, without a blank.
+    pub previous: Option<u64>,
 }
 
 impl Preview {
@@ -312,6 +315,7 @@ impl Tab {
             present,
             fitted_size: None,
             drawn: (self.doc.instance, Arc::default()),
+            previous: None,
         });
         true
     }
@@ -374,6 +378,7 @@ impl Tab {
         let screen = preview.player.screen();
         let state = preview.player.state().clone();
         if *preview.drawn.1 != state {
+            preview.previous = Some(preview.drawn.0);
             preview.drawn = (state_doc(self.doc.instance, &state), Arc::new(state));
         }
         if screen != before {

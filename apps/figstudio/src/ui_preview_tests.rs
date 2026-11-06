@@ -258,6 +258,11 @@ fn hovering_a_button_shows_its_hover_variant_and_leaving_restores_it() {
         "hovered: the button shows its hover variant"
     );
     assert_ne!(tab.tile_doc(), own, "the tiles draw the hover state");
+    assert_eq!(
+        tab.preview.as_ref().and_then(|p| p.previous),
+        Some(own),
+        "the previous state's tiles stay underneath until the hover state's arrive"
+    );
     let away = tab.canvas_rect.unwrap().left_top() + egui::vec2(4.0, 4.0);
     h.event(egui::Event::PointerMoved(away));
     h.run_steps(2);

@@ -349,6 +349,11 @@ struct Ctx<'a> {
     found: Vec<prototype::Found>,
     /// Instances showing another variant ([`Renderer::prototype`]).
     prototype: Arc<prototype::State>,
+    /// A swapped instance about to be drawn: its id and its new variant's layer keys mapped
+    /// to the old variant's, so overrides made on the old one still apply.
+    next_remap: Option<(Guid, std::collections::HashMap<Guid, Guid>)>,
+    /// The layer key maps of swapped instances being drawn, by override depth.
+    remaps: Vec<(usize, std::collections::HashMap<Guid, Guid>)>,
     /// The clipping frames around the node an [`Inspect::Links`] walk is at.
     clips: Vec<prototype::Area>,
 }
@@ -703,6 +708,8 @@ impl Renderer {
             outer: None,
             found: Vec::new(),
             prototype: self.prototype.clone(),
+            next_remap: None,
+            remaps: Vec::new(),
             clips: Vec::new(),
         }
     }
@@ -1187,7 +1194,10 @@ impl Ctx<'_> {
         let (data, stale_glyphs, approximate_ink) =
             patched.unwrap_or_else(|| self.patched(node, path, None));
         let data = match self.swapped_variant(node, path, data.as_ref()) {
-            Some(swapped) => Cow::Owned(swapped),
+            Some((swapped, remap)) => {
+                self.next_remap = Some((node.id, remap));
+                Cow::Owned(swapped)
+            }
             None => data,
         };
         let (data, unresolved_variables) = self.variables.paints(data.as_ref());
@@ -1720,7 +1730,14 @@ impl Ctx<'_> {
             self.outer = Some(id);
         }
         self.overrides.enter(symbol, data, &base);
+        let remap = self.next_remap.take().filter(|(of, _)| *of == id);
+        if let Some((_, map)) = &remap {
+            self.remaps.push((self.overrides.depth(), map.clone()));
+        }
         self.draw_children(symbol, &symbol.data, world, Some(&base));
+        if remap.is_some() {
+            self.remaps.pop();
+        }
         self.overrides.leave();
         self.outer = outer;
     }

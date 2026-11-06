@@ -609,3 +609,35 @@ fn the_hover_fixture_button_has_a_played_swap() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn an_override_survives_a_swap_to_a_variant_whose_layers_have_other_keys() {
+    // As Figma's variants: the same "Label" layer has another override key in each variant.
+    let variant = |n: u32, child: u32, key: u32| {
+        let mut v = node(n, 0, "SYMBOL");
+        v.data.set("name", Val::Str(format!("State={n}")));
+        let mut c = node(child, n, "RECTANGLE");
+        c.data.set("name", Val::Str("Label".into()));
+        c.data.set("size", size(20.0, 20.0));
+        c.data.set("fillPaints", paint(1.0, 0.0, 0.0));
+        c.data.set("overrideKey", id(key).to_val());
+        vec![v, c]
+    };
+    let green = paint(0.0, 1.0, 0.0);
+    let mut nodes = vec![
+        node(1, 0, "CANVAS"),
+        instance(6, 1, 2, vec![patch(&[50], &[("fillPaints", green)])]),
+    ];
+    nodes.extend(variant(2, 3, 50));
+    nodes.extend(variant(4, 5, 51));
+    let doc = document(nodes);
+    assert_eq!(
+        common::pixel(&render_with(&doc, &[]), 10, 10),
+        &[0, 255, 0, 255]
+    );
+    assert_eq!(
+        common::pixel(&render_with(&doc, &[(vec![id(6)], id(4))]), 10, 10),
+        &[0, 255, 0, 255],
+        "the instance's override of Label follows it into the other variant"
+    );
+}

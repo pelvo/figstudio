@@ -176,6 +176,22 @@ impl Tiles {
         );
         let level = range.level;
         self.cache.begin_frame(doc, page, range);
+        // Preview: the previous prototype state's tiles under the new state's, until they
+        // arrive (they differ only where the state changed).
+        if let Some(before) = tab
+            .preview
+            .as_ref()
+            .and_then(|p| p.previous)
+            .filter(|d| *d != doc)
+        {
+            let keys = self.cache.draw_order(before, page, level, visible);
+            for key in &keys {
+                self.cache.touch(key);
+                if let Some(entry) = self.cache.get(key) {
+                    paint_key(painter, key, entry.value.texture.id(), view, (rect, radius));
+                }
+            }
+        }
         let mut stats: Option<Stats> = None;
         let mut elapsed = Duration::ZERO;
         let mut fallbacks = 0;
