@@ -467,7 +467,7 @@ pages.
 
 ## Tools
 
-21 tools and 1 prompt, plus 3 live tools in the app. "Official" means Figma's server;
+22 tools and 1 prompt, plus 3 live tools in the app. "Official" means Figma's server;
 "differs offline" lists what a client should expect to be different. The two
 `compare_*` tools are native only (the diff crate renders through the native
 renderer), so the browser MCP build does not register them.
