@@ -181,12 +181,17 @@ impl Obj {
         self.get_raw(key).is_some()
     }
 
-    /// Sets `key`, replacing an existing value in place. Returns the old value.
+    /// The stored slot, to replace without decoding or unsharing the old value.
+    pub(crate) fn get_raw_mut(&mut self, key: &str) -> Option<&mut Val> {
+        self.0.iter_mut().find(|(k, _)| *k == key).map(|(_, v)| v)
+    }
+
+    /// Sets `key`, replacing an existing value in place. Returns the old value as stored: a
+    /// field still encoded or shared is handed back as it is (read it through its accessors).
     pub fn insert(&mut self, key: &str, value: Val) -> Option<Val> {
-        if let Some(slot) = self.get_mut(key) {
+        if let Some(slot) = self.get_raw_mut(key) {
             return Some(std::mem::replace(slot, value));
         }
-        // (get_mut settled a lazy slot, so the old value handed back is decoded.)
         self.0.push((intern(key), value));
         None
     }
@@ -196,11 +201,10 @@ impl Obj {
         self.0.push((key, value));
     }
 
+    /// Removes `key`, handing back its value as stored (see [`Obj::insert`]).
     pub fn remove(&mut self, key: &str) -> Option<Val> {
         let i = self.0.iter().position(|(k, _)| *k == key)?;
-        let mut old = self.0.remove(i).1;
-        old.settle();
-        Some(old)
+        Some(self.0.remove(i).1)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&'static str, &Val)> {
@@ -639,6 +643,36 @@ mod tests {
         let read = |id| again.node(id).unwrap().data.get("fillPaints").cloned();
         assert!(read(ida).is_none_or(|p| p.items().is_empty()));
         assert_eq!(read(idb), before);
+    }
+
+    /// Overwriting or removing a field still encoded, on a copy of a node (as the renderer
+    /// does with stale glyphs and instance overrides), does not decode the document's copy.
+    #[test]
+    fn replacing_a_lazy_field_does_not_decode_it() {
+        use super::Val;
+        let doc = fixture("noise_and_grain");
+        let node = doc
+            .nodes
+            .iter()
+            .find(|n| {
+                n.kind == "TEXT"
+                    && matches!(&n.data, Val::Obj(o) if o.contains_key("derivedTextData"))
+            })
+            .unwrap();
+        let undecoded = || {
+            let Val::Obj(fields) = &node.data else {
+                panic!()
+            };
+            matches!(fields.get_raw("derivedTextData"), Some(Val::Lazy(l)) if l.val.get().is_none())
+        };
+        assert!(undecoded());
+        let mut copy = node.data.clone();
+        copy.set("derivedTextData", Val::Arr(Vec::new()));
+        let Val::Obj(fields) = &mut node.data.clone() else {
+            panic!()
+        };
+        fields.remove("derivedTextData");
+        assert!(undecoded());
     }
 
     /// A copy of a node made before the read (as instance resolution makes) shares the

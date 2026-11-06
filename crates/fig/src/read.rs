@@ -71,8 +71,9 @@ impl std::fmt::Debug for Decoder {
 }
 
 /// First occurrences of shared node fields: (definition, field, hash of the bytes) -> the
-/// byte range in the message and the value made from it.
-type Seen = HashMap<(usize, usize, u64), Vec<(usize, usize, Val)>>;
+/// byte range in the message and the value made from it. A second value with the same hash
+/// is not shared (and not kept).
+type Seen = HashMap<(usize, usize, u64), (usize, usize, Val)>;
 
 pub(crate) struct Reader {
     pub dec: Arc<Decoder>,
@@ -298,18 +299,18 @@ impl Reader {
         depth: u32,
     ) -> R<Val> {
         let f = &self.dec.schema.defs[def].fields[field];
-        let start = bb.index();
+        let (start, budget) = (bb.index(), self.decoded_items.get());
         self.skip_field(bb, f, depth)?;
         let (all, end) = (bb.data(), bb.index());
         let bytes = &all[start..end];
         let mut hasher = std::hash::DefaultHasher::new();
         std::hash::Hash::hash(bytes, &mut hasher);
         let key = (def, field, std::hash::Hasher::finish(&hasher));
-        if let Some(bucket) = self.seen.borrow().get(&key)
-            && let Some((.., v)) = bucket.iter().find(|(s, e, _)| &all[*s..*e] == bytes)
-        {
-            return Ok(v.clone());
-        }
+        let taken = match self.seen.borrow().get(&key) {
+            Some((s, e, v)) if &all[*s..*e] == bytes => return Ok(v.clone()),
+            Some(_) => true,
+            None => false,
+        };
         let v = if mode == Mode::Lazy {
             Val::Lazy(Arc::new(Lazy::new(
                 self.dec.clone(),
@@ -319,19 +320,19 @@ impl Reader {
             )))
         } else {
             // Read again over the same buffer, so the byte ranges nested node records record
-            // stay ranges of `all`; skip_field already spent the item budget.
-            let budget = self.decoded_items.get();
+            // stay ranges of `all`. It spends the budget the skip spent, not twice as much.
+            self.decoded_items.set(budget);
             let mut again = ByteBuffer::new(all);
             bad(again.read_bytes(start))?;
             let v = self.field(&mut again, f, depth)?;
-            self.decoded_items.set(budget);
             match v {
                 Val::Str(_) | Val::Bytes(_) | Val::Arr(_) | Val::Obj(_) => Val::Shared(Arc::new(v)),
                 v => v,
             }
         };
-        let mut seen = self.seen.borrow_mut();
-        seen.entry(key).or_default().push((start, end, v.clone()));
+        if !taken {
+            self.seen.borrow_mut().insert(key, (start, end, v.clone()));
+        }
         Ok(v)
     }
 
@@ -441,7 +442,7 @@ impl Reader {
                                 mode => self.node_field(bb, mode, idx, i, depth + 1)?,
                             };
                             // A repeated field keeps the last value, like the reference decoder.
-                            match o.get_mut(key) {
+                            match o.get_raw_mut(key) {
                                 Some(slot) => *slot = v,
                                 None => o.push(key, v),
                             }
