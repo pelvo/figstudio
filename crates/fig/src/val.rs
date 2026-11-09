@@ -86,8 +86,8 @@ impl fmt::Debug for Lazy {
     }
 }
 
-/// Returns a `'static` copy of `s`, shared by every caller. Meant for schema identifiers
-/// (field and enum names), which are a small fixed set; each distinct string is kept once.
+/// Limits on the interned names, counting their text only (each also costs a leaked
+/// `Box<str>` and a table entry).
 const MAX_INTERNED_SCHEMA_NAMES: usize = 200_000;
 const MAX_INTERNED_SCHEMA_BYTES: usize = 32 * 1024 * 1024;
 
@@ -149,6 +149,8 @@ fn locked() -> std::sync::MutexGuard<'static, Table> {
     table().lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Returns a `'static` copy of `s`, shared by every caller. Meant for schema identifiers
+/// (field and enum names), which are a small fixed set; each distinct string is kept once.
 pub fn intern(s: &str) -> &'static str {
     name(s).as_str()
 }
@@ -301,7 +303,7 @@ impl PartialEq for Obj {
             && self
                 .0
                 .iter()
-                .all(|(k, v)| other.get_raw(k.as_str()) == Some(v))
+                .all(|(k, v)| other.get_raw_named(*k) == Some(v))
     }
 }
 
