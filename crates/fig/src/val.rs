@@ -704,6 +704,28 @@ mod tests {
         assert!(undecoded());
     }
 
+    /// An instance's overrides stay encoded until the instance is entered; reading them
+    /// through the instance gives the list.
+    #[test]
+    fn instance_overrides_stay_encoded_until_read() {
+        use super::Val;
+        let doc = fixture("shaders");
+        let mut checked = 0;
+        for node in doc.nodes.iter().filter(|n| n.kind == "INSTANCE") {
+            let Some(Val::Obj(symbol)) = node.data.get("symbolData") else {
+                continue;
+            };
+            let Some(raw) = symbol.get_raw("symbolOverrides") else {
+                continue;
+            };
+            assert!(matches!(raw, Val::Lazy(_)), "{raw:?}");
+            let read = node.data.path(&["symbolData", "symbolOverrides"]);
+            assert!(read.is_some_and(|v| matches!(v, Val::Arr(_))));
+            checked += 1;
+        }
+        assert!(checked > 100, "{checked} instances with overrides");
+    }
+
     /// A copy of a node made before the read (as instance resolution makes) shares the
     /// decoded value instead of decoding the bytes again.
     #[test]

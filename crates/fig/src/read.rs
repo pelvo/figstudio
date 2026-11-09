@@ -100,8 +100,13 @@ pub(crate) fn decode_field(dec: &Arc<Decoder>, def: usize, field: usize, bytes: 
     reader.field(&mut ByteBuffer::new(bytes), f, 2)
 }
 
-/// How each field is read in node records: the record's [`LAZY_FIELDS`] lazily, its other
-/// fields that own memory shared, everything else plainly.
+/// Fields of nested messages kept encoded until first read, as (message, field): an
+/// instance's overrides are read only when the instance is entered.
+const LAZY_NESTED: [(&str, &str); 1] = [("SymbolData", "symbolOverrides")];
+
+/// How each field is read in node records: the record's [`LAZY_FIELDS`] and the nested
+/// [`LAZY_NESTED`] lazily, the record's other fields that own memory shared, everything else
+/// plainly.
 fn modes(schema: &Schema) -> Vec<Box<[Mode]>> {
     let node = schema
         .def("Message")
@@ -131,7 +136,16 @@ fn modes(schema: &Schema) -> Vec<Box<[Mode]>> {
         .map(
             |(i, d)| match node == Some(i) && d.kind == DefKind::Message {
                 true => d.fields.iter().map(mode).collect(),
-                false => vec![Mode::Plain; d.fields.len()].into(),
+                false => d
+                    .fields
+                    .iter()
+                    .map(
+                        |f| match LAZY_NESTED.contains(&(d.name.as_str(), f.name.as_str())) {
+                            true if d.kind == DefKind::Message => Mode::Lazy,
+                            _ => Mode::Plain,
+                        },
+                    )
+                    .collect(),
             },
         )
         .collect()
