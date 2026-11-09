@@ -152,6 +152,37 @@ fn an_edited_lazy_field_is_written_as_edited() {
     assert_eq!(list.items().len(), 1);
 }
 
+/// An instance's override list, kept encoded inside `symbolData` until read, is written as
+/// edited once changed, and other instances' unedited lists keep their bytes.
+#[test]
+fn an_edited_nested_lazy_field_is_written_as_edited() {
+    let mut doc = Document::open(fixture("shaders")).unwrap();
+    let overrides = |data: &Val| {
+        data.path(&["symbolData", "symbolOverrides"])
+            .map(|v| v.items().len())
+    };
+    let mut nodes = doc.nodes.clone();
+    let mut with = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| overrides(&n.data).is_some_and(|len| len > 1))
+        .map(|(i, n)| (i, n.id, overrides(&n.data)));
+    let (i, edited, _) = with.next().unwrap();
+    let (_, other, other_len) = with.next().unwrap();
+    let Some(Val::Arr(list)) = nodes[i]
+        .data
+        .get_mut("symbolData")
+        .and_then(|s| s.get_mut("symbolOverrides"))
+    else {
+        panic!()
+    };
+    list.truncate(1);
+    doc.set_nodes(nodes).unwrap();
+    let again = Document::from_bytes(&doc.to_bytes().unwrap()).unwrap();
+    assert_eq!(overrides(&again.node(edited).unwrap().data), Some(1));
+    assert_eq!(overrides(&again.node(other).unwrap().data), other_len);
+}
+
 /// Two copies of a document compare equal without decoding their still-encoded fields
 /// (as compare does for every unchanged node), and a real difference is still seen.
 #[test]
