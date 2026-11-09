@@ -64,6 +64,13 @@ pub(crate) struct Decoder {
     modes: Vec<Box<[Mode]>>,
 }
 
+impl Decoder {
+    /// The interned name of field `field` of definition `def`.
+    pub(crate) fn name(&self, def: usize, field: usize) -> Option<Name> {
+        self.names.get(def)?.get(field).copied()
+    }
+}
+
 impl std::fmt::Debug for Decoder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Decoder({} definitions)", self.schema.defs.len())

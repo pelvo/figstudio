@@ -104,6 +104,12 @@ impl Name {
     pub(crate) fn as_str(self) -> &'static str {
         self.0
     }
+
+    /// Whether both are the same name. Every name is interned once per process, so this is
+    /// a pointer comparison, without reading the text.
+    pub(crate) fn is(self, other: Name) -> bool {
+        std::ptr::eq(self.0, other.0)
+    }
 }
 
 impl fmt::Debug for Name {
@@ -203,6 +209,11 @@ impl Obj {
             .iter()
             .find(|(k, _)| k.as_str() == key)
             .map(|(_, v)| v)
+    }
+
+    /// [`Obj::get_raw`] by interned name (the writer, per schema field of every object).
+    pub(crate) fn get_raw_named(&self, name: Name) -> Option<&Val> {
+        self.0.iter().find(|(k, _)| k.is(name)).map(|(_, v)| v)
     }
 
     /// The value to change; a lazy field is decoded and stored decoded first.
