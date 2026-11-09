@@ -354,6 +354,8 @@ struct Ctx<'a> {
     next_remap: Option<(Guid, std::collections::HashMap<Guid, Guid>)>,
     /// The layer key maps of swapped instances being drawn, by override depth.
     remaps: Vec<(usize, std::collections::HashMap<Guid, Guid>)>,
+    /// The variant each instance an [`Inspect::Links`] walk passed shows, by layer key.
+    variants: std::collections::HashMap<Vec<Guid>, Guid>,
     /// The clipping frames around the node an [`Inspect::Links`] walk is at.
     clips: Vec<prototype::Area>,
 }
@@ -710,6 +712,7 @@ impl Renderer {
             prototype: self.prototype.clone(),
             next_remap: None,
             remaps: Vec::new(),
+            variants: std::collections::HashMap::new(),
             clips: Vec::new(),
         }
     }
@@ -1213,6 +1216,19 @@ impl Ctx<'_> {
             let clip = inspect == Inspect::Links && kind != "TEXT" && clips_content(kind, data);
             if inspect == Inspect::Links {
                 self.found_link(node, path, world, data);
+                if kind == "INSTANCE"
+                    && let Some(variant) = resolve::symbol_id(data)
+                {
+                    let key = match path {
+                        None => Some(vec![node.id]),
+                        Some(keys) => self
+                            .outer
+                            .map(|o| std::iter::once(o).chain(keys.iter().copied()).collect()),
+                    };
+                    if let Some(key) = key {
+                        self.variants.insert(key, variant);
+                    }
+                }
             }
             if clip {
                 let (width, height) = size(data);

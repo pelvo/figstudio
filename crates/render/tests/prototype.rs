@@ -641,3 +641,60 @@ fn an_override_survives_a_swap_to_a_variant_whose_layers_have_other_keys() {
         "the instance's override of Label follows it into the other variant"
     );
 }
+
+#[test]
+fn change_to_a_variant_of_another_copy_of_the_set_uses_the_same_named_variant() {
+    // Set 40 is the original (its Hover variant 42); set 20 a republished copy whose
+    // default variant 21 still links to 42. The button (an instance of 21) changes to the
+    // copy's own Hover, 22, as in Figma.
+    let named = |mut n: figstudio_fig::Node, name: &str| {
+        n.data.set("name", Val::Str(name.into()));
+        n.name = name.into();
+        n
+    };
+    let hover_to_42 = interaction("ON_HOVER", &swap_to(id(42)));
+    let mut set = placed(20, 1, "FRAME", 500.0, 0.0);
+    set.data.set("isStateGroup", Val::Bool(true));
+    let mut default = named(node(21, 20, "SYMBOL"), "Size=L, State=Default");
+    default.data.set("prototypeInteractions", hover_to_42);
+    let hover = named(placed(22, 20, "SYMBOL", 50.0, 0.0), "State=Hover, Size=L");
+    let mut original = placed(40, 1, "FRAME", 900.0, 0.0);
+    original.data.set("isStateGroup", Val::Bool(true));
+    let original_hover = named(node(42, 40, "SYMBOL"), "Size=L, State=Hover");
+    let mut screen = node(30, 1, "FRAME");
+    screen.data.set("size", size(100.0, 100.0));
+    let doc = document(vec![
+        node(1, 0, "CANVAS"),
+        set,
+        default,
+        hover,
+        original,
+        original_hover,
+        screen,
+        instance(31, 30, 21, vec![]),
+    ]);
+    let links = Screen::read(&mut Renderer::new(), &doc, id(30)).links;
+    assert_eq!(
+        links[0].step,
+        Some(Step::Swap {
+            target: Layer::Node(id(31)),
+            to: id(22)
+        })
+    );
+}
+
+#[test]
+fn mouse_out_is_played_like_mouse_leave() {
+    use prototype::Pointer;
+    let doc = button(interaction("MOUSE_OUT", &swap_to(id(22))), Val::Arr(vec![]));
+    let mut player = Player::new(id(30));
+    let screen = read_with(&doc, &player);
+    assert!(screen.links[0].step.is_some(), "MOUSE_OUT is played");
+    player.pointer(&screen, Pointer::Move(Point::new(10.0, 10.0)), 0.0);
+    assert!(player.pointer(&screen, Pointer::Move(Point::new(90.0, 90.0)), 0.1));
+    assert_eq!(
+        player.state().swaps.get(&vec![id(31)]),
+        Some(&id(22)),
+        "swapped on leaving"
+    );
+}

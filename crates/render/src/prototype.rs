@@ -6,6 +6,7 @@
 //! [`Link::step`] `None`, so each surface can count it instead of hiding it.
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::sync::Arc;
 
 use figstudio_fig::resolve::{self, InstancePath};
 use figstudio_fig::{Document, Guid, Node, Val};
@@ -407,8 +408,12 @@ impl Screen {
             links: Vec::new(),
             truncated: ctx.exhausted || ctx.stats.depth_skipped > 0,
         };
+        let mut variants: HashMap<Vec<Guid>, Option<Guid>> = std::mem::take(&mut ctx.variants)
+            .into_iter()
+            .map(|(k, v)| (k, Some(v)))
+            .collect();
         for found in std::mem::take(&mut ctx.found) {
-            screen.push(doc, &ctx.prototype, found);
+            screen.push(doc, &ctx.prototype, &ctx.definitions, &mut variants, found);
             if screen.truncated {
                 break;
             }
@@ -416,7 +421,14 @@ impl Screen {
         screen
     }
 
-    fn push(&mut self, doc: &Document, state: &State, found: Found) {
+    fn push(
+        &mut self,
+        doc: &Document,
+        state: &State,
+        definitions: &Arc<resolve::Definitions>,
+        variants: &mut HashMap<Vec<Guid>, Option<Guid>>,
+        found: Found,
+    ) {
         let Found {
             layer,
             area,
@@ -459,10 +471,9 @@ impl Screen {
                         "NAVIGATE" => destination.filter(|d| shown(doc, *d)).map(Step::Navigate),
                         "BACK" => Some(Step::Back),
                         "SWAP_STATE" => destination.and_then(|to| {
-                            Some(Step::Swap {
-                                target: swap_target(doc, state, &layer, to)?,
-                                to,
-                            })
+                            let (target, to) =
+                                swap_target(doc, state, definitions, variants, &layer, to)?;
+                            Some(Step::Swap { target, to })
                         }),
                         _ => None,
                     }
@@ -574,7 +585,13 @@ pub struct Player {
     now: f64,
 }
 
-const HOVER: &[&str] = &["ON_HOVER", "MOUSE_ENTER", "MOUSE_LEAVE"];
+const HOVER: &[&str] = &[
+    "ON_HOVER",
+    "MOUSE_ENTER",
+    "MOUSE_LEAVE",
+    "MOUSE_IN",
+    "MOUSE_OUT",
+];
 const PRESS: &[&str] = &["ON_CLICK", "ON_PRESS", "MOUSE_DOWN", "MOUSE_UP", "DRAG"];
 
 impl Player {
@@ -693,9 +710,11 @@ impl Player {
                 for layer in &left {
                     changed |= self.revert(layer, "ON_HOVER", screen);
                     changed |= self.run(screen, layer, "MOUSE_LEAVE", false);
+                    changed |= self.run(screen, layer, "MOUSE_OUT", false);
                 }
                 for layer in &entered {
                     changed |= self.run(screen, layer, "MOUSE_ENTER", false);
+                    changed |= self.run(screen, layer, "MOUSE_IN", false);
                     changed |= self.run(screen, layer, "ON_HOVER", true);
                 }
             }
@@ -816,6 +835,9 @@ pub const TRIGGERS: &[&str] = &[
     "ON_PRESS",
     "MOUSE_ENTER",
     "MOUSE_LEAVE",
+    // Older names of mouse enter and leave.
+    "MOUSE_IN",
+    "MOUSE_OUT",
     "MOUSE_DOWN",
     "MOUSE_UP",
     "AFTER_TIMEOUT",
@@ -824,23 +846,33 @@ pub const TRIGGERS: &[&str] = &[
 
 /// The instance a "change to `to`" on `layer` swaps, as in Figma: the layer or the nearest
 /// instance around it whose current variant is in the same component set as `to`.
-fn swap_target(doc: &Document, state: &State, layer: &Layer, to: Guid) -> Option<Layer> {
+/// Returns the instance and the variant it is to show.
+fn swap_target(
+    doc: &Document,
+    state: &State,
+    definitions: &Arc<resolve::Definitions>,
+    variants: &mut HashMap<Vec<Guid>, Option<Guid>>,
+    layer: &Layer,
+    to: Guid,
+) -> Option<(Layer, Guid)> {
     let set = doc.node(to)?.parent?;
-    let variant = |candidate: &Layer| -> Option<Guid> {
-        if let Some(swapped) = state.swaps.get(&candidate.key()) {
+    // Many links share the instances around them: each one's variant is resolved once a read.
+    let mut variant = |candidate: &Layer| -> Option<Guid> {
+        let key = candidate.key();
+        if let Some(swapped) = state.swaps.get(&key) {
             return Some(*swapped);
         }
-        match candidate {
+        *variants.entry(key).or_insert_with(|| match candidate {
             Layer::Node(id) => {
                 let node = doc.node(*id)?;
                 (node.kind == "INSTANCE").then(|| resolve::symbol_id(&node.data))?
             }
             Layer::Path(path) => {
-                let resolved = resolve::resolve_path(doc, path).ok()?;
+                let resolved = resolve::resolve_path_with(doc, definitions, path).ok()?;
                 (resolved.data.text("type") == Some("INSTANCE"))
                     .then(|| resolve::symbol_id(&resolved.data))?
             }
-        }
+        })
     };
     let mut candidates = Vec::new();
     let mut outer = match layer {
@@ -860,9 +892,35 @@ fn swap_target(doc: &Document, state: &State, layer: &Layer, to: Guid) -> Option
         candidates.push(Layer::Node(id));
         outer = doc.node(id).and_then(|n| n.parent);
     }
-    candidates
-        .into_iter()
-        .find(|c| variant(c).and_then(|v| doc.node(v)?.parent) == Some(set))
+    let mut set_of = |c: &Layer| variant(c).and_then(|v| doc.node(v)?.parent);
+    if let Some(found) = candidates.iter().find(|c| set_of(c) == Some(set)) {
+        return Some((found.clone(), to));
+    }
+    // The link may name a variant of another copy of the set (a library republished as a
+    // new set): as Figma does, take the variant with the same properties in the candidate's
+    // own set.
+    let wanted = variant_props(&doc.node(to)?.name);
+    candidates.into_iter().find_map(|c| {
+        let own = set_of(&c)?;
+        let same = doc.children(own).iter().find(|v| {
+            doc.node(**v)
+                .is_some_and(|n| variant_props(&n.name) == wanted)
+        })?;
+        Some((c, *same))
+    })
+}
+
+/// A variant's name as its property assignments ("Size=L, State=Hover"), order-free.
+fn variant_props(name: &str) -> Vec<(String, String)> {
+    let mut props: Vec<(String, String)> = name
+        .split(',')
+        .filter_map(|p| {
+            let (k, v) = p.split_once('=')?;
+            Some((k.trim().to_owned(), v.trim().to_owned()))
+        })
+        .collect();
+    props.sort();
+    props
 }
 
 /// A layer with interactions, as an [`Inspect::Links`] walk found it.
