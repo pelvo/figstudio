@@ -4,7 +4,7 @@
 //! the file schema and are interned once per process, so a document with millions of fields
 //! does not allocate a string per field.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -91,15 +91,46 @@ impl fmt::Debug for Lazy {
 const MAX_INTERNED_SCHEMA_NAMES: usize = 200_000;
 const MAX_INTERNED_SCHEMA_BYTES: usize = 32 * 1024 * 1024;
 
-fn table() -> &'static Mutex<HashSet<&'static str>> {
-    static TABLE: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+/// An interned name as one pointer: object fields are the most numerous thing in a decoded
+/// document, and a `&'static str` key would take twice the space.
+#[derive(Clone, Copy)]
+#[expect(
+    clippy::borrowed_box,
+    reason = "a reference to the Box is one pointer; a &str would be two"
+)]
+pub(crate) struct Name(&'static Box<str>);
+
+impl Name {
+    pub(crate) fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+impl fmt::Debug for Name {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_str().fmt(f)
+    }
+}
+
+/// Interned names by their text.
+type Table = HashMap<&'static str, Name>;
+
+fn table() -> &'static Mutex<Table> {
+    static TABLE: OnceLock<Mutex<Table>> = OnceLock::new();
     TABLE.get_or_init(Default::default)
+}
+
+/// Keeps `s` for the life of the process and adds it to `table`.
+fn leak(table: &mut Table, s: &str) -> Name {
+    let name = Name(Box::leak(Box::new(s.into())));
+    table.insert(name.as_str(), name);
+    name
 }
 
 /// The table, locked. In the browser this spins instead of waiting: its UI thread may not
 /// wait on a lock (`Atomics.wait` traps there and the app freezes), and render or decode
 /// workers hold this one only for a lookup or an insert.
-fn locked() -> std::sync::MutexGuard<'static, HashSet<&'static str>> {
+fn locked() -> std::sync::MutexGuard<'static, Table> {
     #[cfg(target_arch = "wasm32")]
     loop {
         match table().try_lock() {
@@ -113,13 +144,16 @@ fn locked() -> std::sync::MutexGuard<'static, HashSet<&'static str>> {
 }
 
 pub fn intern(s: &str) -> &'static str {
+    name(s).as_str()
+}
+
+/// [`intern`] as a one-pointer [`Name`].
+pub(crate) fn name(s: &str) -> Name {
     let mut table = locked();
-    if let Some(&found) = table.get(s) {
-        return found;
+    match table.get(s) {
+        Some(&found) => found,
+        None => leak(&mut table, s),
     }
-    let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
-    table.insert(leaked);
-    leaked
 }
 
 /// Preflights and interns a schema's identifiers atomically within a fixed process-wide budget.
@@ -128,28 +162,27 @@ pub(crate) fn intern_schema<'a>(names: impl IntoIterator<Item = &'a str>) -> Res
     let unique = names.into_iter().collect::<HashSet<_>>();
     let additions = unique
         .iter()
-        .filter(|name| !table.contains(**name))
+        .filter(|name| !table.contains_key(**name))
         .copied()
         .collect::<Vec<_>>();
     let count = table.len().saturating_add(additions.len());
     let bytes = table
         .iter()
-        .map(|name| name.len())
+        .map(|name| name.0.len())
         .sum::<usize>()
         .saturating_add(additions.iter().map(|name| name.len()).sum::<usize>());
     if count > MAX_INTERNED_SCHEMA_NAMES || bytes > MAX_INTERNED_SCHEMA_BYTES {
         return Err("schema identifier budget exhausted".into());
     }
     for name in additions {
-        let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
-        table.insert(leaked);
+        leak(&mut table, name);
     }
     Ok(())
 }
 
 /// Object fields in decode order. Lookups are linear; objects have a handful of fields.
 #[derive(Clone, Debug, Default)]
-pub struct Obj(Vec<(&'static str, Val)>);
+pub struct Obj(Vec<(Name, Val)>);
 
 impl Obj {
     pub fn new() -> Obj {
@@ -166,12 +199,15 @@ impl Obj {
 
     /// The stored value, a [`Val::Lazy`] still encoded included (for the writer).
     pub(crate) fn get_raw(&self, key: &str) -> Option<&Val> {
-        self.0.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
+        self.0
+            .iter()
+            .find(|(k, _)| k.as_str() == key)
+            .map(|(_, v)| v)
     }
 
     /// The value to change; a lazy field is decoded and stored decoded first.
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Val> {
-        let (_, v) = self.0.iter_mut().find(|(k, _)| *k == key)?;
+        let (_, v) = self.0.iter_mut().find(|(k, _)| k.as_str() == key)?;
         v.settle();
         Some(v)
     }
@@ -183,7 +219,10 @@ impl Obj {
 
     /// The stored slot, to replace without decoding or unsharing the old value.
     pub(crate) fn get_raw_mut(&mut self, key: &str) -> Option<&mut Val> {
-        self.0.iter_mut().find(|(k, _)| *k == key).map(|(_, v)| v)
+        self.0
+            .iter_mut()
+            .find(|(k, _)| k.as_str() == key)
+            .map(|(_, v)| v)
     }
 
     /// Sets `key`, replacing an existing value in place. Returns the old value as stored: a
@@ -193,28 +232,28 @@ impl Obj {
         if let Some(slot) = self.get_raw_mut(key) {
             return Some(std::mem::replace(slot, value));
         }
-        self.0.push((intern(key), value));
+        self.0.push((name(key), value));
         None
     }
 
     /// Adds a field known not to be present yet (used by the decoder).
-    pub(crate) fn push(&mut self, key: &'static str, value: Val) {
+    pub(crate) fn push(&mut self, key: Name, value: Val) {
         self.0.push((key, value));
     }
 
     /// Removes `key`, handing back its value as stored: read it through its accessors or
     /// [`Val::into_owned`] rather than matching its variant (see [`Obj::insert`]).
     pub fn remove(&mut self, key: &str) -> Option<Val> {
-        let i = self.0.iter().position(|(k, _)| *k == key)?;
+        let i = self.0.iter().position(|(k, _)| k.as_str() == key)?;
         Some(self.0.remove(i).1)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&'static str, &Val)> {
-        self.0.iter().map(|(k, v)| (*k, v.view()))
+        self.0.iter().map(|(k, v)| (k.as_str(), v.view()))
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.0.iter().map(|(k, _)| *k)
+        self.0.iter().map(|(k, _)| k.as_str())
     }
 
     pub fn values(&self) -> impl Iterator<Item = &Val> {
@@ -247,7 +286,11 @@ impl Obj {
 impl PartialEq for Obj {
     fn eq(&self, other: &Obj) -> bool {
         // Stored values, so two still-encoded fields reach `Val`'s byte comparison undecoded.
-        self.len() == other.len() && self.0.iter().all(|(k, v)| other.get_raw(k) == Some(v))
+        self.len() == other.len()
+            && self
+                .0
+                .iter()
+                .all(|(k, v)| other.get_raw(k.as_str()) == Some(v))
     }
 }
 
@@ -509,6 +552,18 @@ pub fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A field is one pointer for its name and the value: documents hold millions of them.
+    #[test]
+    fn a_field_is_a_name_pointer_and_a_value() {
+        assert_eq!(size_of::<super::Name>(), size_of::<usize>());
+        assert_eq!(
+            size_of::<(super::Name, super::Val)>(),
+            size_of::<usize>() + size_of::<super::Val>()
+        );
+        let name = super::name("someField");
+        assert!(std::ptr::eq(name.as_str(), super::intern("someField")));
+    }
+
     #[test]
     fn hex_is_lowercase_two_digits_per_byte() {
         assert_eq!(super::hex(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");

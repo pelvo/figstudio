@@ -12,7 +12,7 @@ use kiwi_schema::{
     TYPE_STRING, TYPE_UINT, TYPE_UINT64,
 };
 
-use crate::val::{Guid, Lazy, Obj, Val, intern, intern_schema};
+use crate::val::{Guid, Lazy, Name, Obj, Val, intern, intern_schema, name};
 
 /// Deepest nesting accepted; real documents stay far below this.
 const MAX_DEPTH: u32 = 256;
@@ -55,7 +55,7 @@ const UNIQUE_FIELDS: [&str; 2] = ["guid", "parentIndex"];
 pub(crate) struct Decoder {
     pub schema: Schema,
     /// Interned field names per definition, in `def.fields` order.
-    names: Vec<Vec<&'static str>>,
+    names: Vec<Vec<Name>>,
     /// Enum value -> interned name, per definition.
     enums: Vec<HashMap<u32, &'static str>>,
     /// Per definition: a `{sessionID, localID}` struct, decoded as `Val::Guid` (no heap).
@@ -208,7 +208,7 @@ impl Reader {
         let names = schema
             .defs
             .iter()
-            .map(|d| d.fields.iter().map(|f| intern(&f.name)).collect())
+            .map(|d| d.fields.iter().map(|f| name(&f.name)).collect())
             .collect();
         let enums = schema
             .defs
@@ -465,7 +465,7 @@ impl Reader {
                                 mode => self.node_field(bb, mode, idx, i, depth + 1)?,
                             };
                             // A repeated field keeps the last value, like the reference decoder.
-                            match o.get_raw_mut(key) {
+                            match o.get_raw_mut(key.as_str()) {
                                 Some(slot) => *slot = v,
                                 None => o.push(key, v),
                             }
