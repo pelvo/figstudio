@@ -169,10 +169,12 @@ impl crate::App {
         self.workers
             .set_shaders(instance, host(&self.shader_code, sources));
         // Tiles already being drawn come back with the old code: dropped, asked for again.
+        // The stamp is shared, so every file's tiles in flight are dropped, not only this
+        // one's: a request left standing for them would never be sent again.
         self.workers.fonts_changed();
         self.tiles.fonts_changed(self.workers.images_arrived());
         self.tiles.forget(instance);
-        for tab in self.tabs.iter_mut().filter(|t| t.doc.instance == instance) {
+        for tab in &mut self.tabs {
             tab.tile_requests.clear();
         }
     }
