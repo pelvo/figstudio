@@ -314,7 +314,7 @@ fn the_canvas_has_a_present_button_and_a_menu_with_preview() {
 }
 
 #[test]
-fn the_wheel_scrolls_a_scrolling_frame_and_pans_elsewhere() {
+fn the_wheel_scrolls_a_scrolling_frame_and_never_moves_the_screen_off_the_window() {
     let mut h = harness();
     h.state_mut().tabs[0].doc = Arc::new(proto::scroll_proto_doc());
     h.run_steps(4);
@@ -353,11 +353,27 @@ fn the_wheel_scrolls_a_scrolling_frame_and_pans_elsewhere() {
             .is_some_and(|p| p.stale_since.is_none()),
         "the links were read again once the scroll paused"
     );
-    let corner = h.state().tabs[0].canvas_rect.unwrap().left_top() + egui::vec2(8.0, 8.0);
+    for _ in 0..40 {
+        wheel(&mut h, frame);
+    }
+    let tab = &h.state().tabs[0];
+    assert_eq!(
+        tab.prototype_state()
+            .scrolls
+            .get(&vec![proto::SCROLLER])
+            .copied(),
+        Some((0, 80)),
+        "scrolled to the end of its content"
+    );
+    assert_eq!(
+        tab.view.pan, pan,
+        "past the end the screen does not move off the window"
+    );
+    let corner = tab.canvas_rect.unwrap().left_top() + egui::vec2(8.0, 8.0);
     wheel(&mut h, corner);
-    assert_ne!(
+    assert_eq!(
         h.state().tabs[0].view.pan,
         pan,
-        "outside the frame the wheel pans"
+        "a screen that fits the window stays put, as in Figma's Present"
     );
 }

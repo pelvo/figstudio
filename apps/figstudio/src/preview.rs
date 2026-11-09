@@ -48,6 +48,25 @@ impl Scaling {
 /// Figma's Fit keeps this much room around the screen (points; measured in Figma's Present).
 const FIT_MARGIN: egui::Vec2 = egui::vec2(48.0, 60.0);
 
+/// The pan that keeps page-space box `screen` on a `window`-sized canvas at `view`'s zoom:
+/// centred along an axis where it fits, its edges at most at the window's where it is larger.
+pub fn keep_on_window(screen: egui::Rect, window: egui::Vec2, view: View) -> egui::Vec2 {
+    let axis = |pan: f32, min: f32, len: f32, win: f32| {
+        let size = len * view.zoom;
+        let at = pan + min * view.zoom;
+        let at = if size <= win {
+            (win - size) / 2.0
+        } else {
+            at.clamp(win - size, 0.0)
+        };
+        at - min * view.zoom
+    };
+    egui::vec2(
+        axis(view.pan.x, screen.min.x, screen.width(), window.x),
+        axis(view.pan.y, screen.min.y, screen.height(), window.y),
+    )
+}
+
 /// The view that shows page-space box `screen` in `window` (points) by `scaling`: centred
 /// where it is smaller than the window, from its top left where it is larger.
 pub fn view_for(screen: egui::Rect, window: egui::Vec2, scaling: Scaling) -> View {
@@ -148,6 +167,19 @@ pub fn show(
                 tab.view.pan += scroll;
             }
         }
+    }
+    // As in Figma's Present, the screen never moves off the window: along an axis where it
+    // fits it stays where scaling put it, where it is larger it pans only up to its edges.
+    if let Some(b) = tab
+        .preview
+        .as_ref()
+        .and_then(|p| figstudio_render::node_bounds(&tab.doc, p.player.screen()))
+    {
+        let screen = egui::Rect::from_min_max(
+            Pos2::new(b.x0 as f32, b.y0 as f32),
+            Pos2::new(b.x1 as f32, b.y1 as f32),
+        );
+        tab.view.pan = keep_on_window(screen, rect.size(), tab.view);
     }
     tab.shown = tab.view;
 
