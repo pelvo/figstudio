@@ -217,6 +217,11 @@ fn every_control_of_the_motion_player_has_a_name() {
             break;
         }
     }
+    // The walk covered the player, so the check above ran.
+    assert!(
+        seen.contains(&egui::Id::new("motion-play")),
+        "Tab reached the player's Play/Pause button"
+    );
 }
 
 #[test]
