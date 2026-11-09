@@ -32,6 +32,8 @@ impl eframe::Storage for Memory {
     fn flush(&mut self) {}
 }
 
+#[path = "ui_a11y_tests.rs"]
+mod a11y;
 #[path = "ui_chrome_tests.rs"]
 mod chrome;
 #[path = "ui_copy_tests.rs"]
@@ -64,6 +66,8 @@ mod pick_order;
 mod preview;
 #[path = "ui_recents_tests.rs"]
 mod recents;
+#[path = "ui_shader_tests.rs"]
+mod shader_code;
 #[path = "ui_text_drag_tests.rs"]
 mod text_drag;
 #[path = "ui_text_select_tests.rs"]

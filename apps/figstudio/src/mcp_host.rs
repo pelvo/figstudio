@@ -88,21 +88,25 @@ impl McpHost {
     }
 
     pub fn menu(&mut self, ui: &mut egui::Ui) {
-        ui.checkbox(&mut self.on, "Agent access (MCP server)")
-            .on_hover_text(
-                "Lets MCP clients read the open tabs and select nodes. Loopback only \
+        let on = ui.checkbox(&mut self.on, "Agent access (MCP server)");
+        crate::a11y::author(&on, "agents.on");
+        on.on_hover_text(
+            "Lets MCP clients read the open tabs and select nodes. Loopback only \
              unless 'Allow remote agents' is on. Remembered between launches.",
-            );
+        );
         ui.add_enabled_ui(!self.on, |ui| {
-            ui.checkbox(&mut self.remote, "Allow remote agents")
-                .on_hover_text(
-                    "Listen on the address below instead of loopback. Clients must send the \
+            let remote = ui.checkbox(&mut self.remote, "Allow remote agents");
+            crate::a11y::author(&remote, "agents.remote");
+            remote.on_hover_text(
+                "Listen on the address below instead of loopback. Clients must send the \
                  bearer token shown in the status bar. Plain HTTP: use Tailscale or an SSH tunnel.",
-                );
+            );
             if self.remote {
-                ui.add(
+                let field = ui.add(
                     egui::TextEdit::singleline(&mut self.remote_addr).hint_text("100.x.y.z:3845"),
                 );
+                crate::a11y::name_field(&field, "Address");
+                crate::a11y::author(&field, "agents.address");
             }
         });
     }

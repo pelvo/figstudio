@@ -47,11 +47,13 @@ and verify the menu does not outlive its HWND. Native behavior is not headless-t
 scripts/check.sh            # fmt --check, clippy -D warnings, all tests, release build
 scripts/check.sh --cross    # also cargo check for aarch64-apple-darwin
 FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh   # if the default Rust is older than 1.95
-scripts/check.sh --lint     # only fmt + clippy; CI runs --lint and --test as its two jobs
-scripts/check.sh --test     # tests, npm launcher tests, release build, wasm32; CI job "build + test"
+scripts/check.sh --lint     # fmt + clippy, release build; CI runs --lint and --test as its two jobs
+scripts/check.sh --test     # tests, npm launcher tests, wasm32; CI job "build + test"
 scripts/check.sh --lint-one fmt   # one slice, for a local run
+scripts/check.sh --lint-one accesskit   # the shipped desktop app builds eframe with AccessKit
 # CI is the two required jobs. The cache prefix is `v1-rust` so the next miss saves
-# this repo's crates. A later exact hit does not update that snapshot.
+# this repo's crates. A later exact hit does not update that snapshot. Both jobs skip
+# (and pass) when a change touches only files no check reads: see `changes` in ci.yml.
 ```
 
 The `tests-npm` slice runs `node --test npm/figstudio-mcp/test/*.test.mjs` (the npm launcher and
@@ -81,7 +83,7 @@ epaint panics when the context drops ("Dropped TexturesDelta with 1 unapplied de
 
 | File | Test | Guards |
 |---|---|---|
-| `crates/fig/tests/decode.rs` | `decodes_every_fixture_with_its_own_schema` | all 7 fixtures decode; node counts |
+| `crates/fig/tests/decode.rs` | `decodes_every_fixture_with_its_own_schema` | all 10 fixtures decode; node counts |
 | | `builds_the_tree_in_sibling_order` | parent/child links, fractional-index order |
 | | `reads_metadata_images_and_blobs` | `meta.json` name, images, blobs, thumbnail |
 | | `refuses_files_that_are_not_fig` | bad input is an error, not a panic |
@@ -136,7 +138,12 @@ every accepted tile.
 
 ## 3. Fixtures
 
-`tests/fixtures/*.fig` come from fig2sketch (MIT, `tests/fixtures/LICENSE-fig2sketch`).
+Seven of `tests/fixtures/*.fig` come from fig2sketch (MIT, `tests/fixtures/LICENSE-fig2sketch`).
+`motion.fig` (keyframes, timelines, animation presets) and `shaders.fig` (shader fills and
+effects) are Figma Community files under CC BY 4.0 with their images and videos removed
+(`tests/fixtures/LICENSE-figma-community`); they are the only public files with motion and
+shader data. `motion-probe.fig` is a file of plain rectangles made for the motion easing tests.
+None of the three keeps the account that saved it (no `editInfo`, no `originFileKey`). The full downloads, if kept, go in the git-ignored `tests/local/`.
 
 | File | Exercises (from `figstudio-cli doctor`) |
 |---|---|
@@ -403,6 +410,49 @@ public-fixture copies and isolated stores; no user workspace or Recents data is 
 Painted widgets (icon buttons, rows, pills) set an accesskit label with `widget_info`, so
 `get_by_label("Hand tool")` finds them; the drawn menus sit behind the "Menu" button.
 
+### Accessibility (`ui_a11y_tests.rs`)
+
+The tests read the same AccessKit tree a screen reader gets. kittest turns AccessKit on
+through egui_kittest, a dev-dependency, and a release build does not inherit that. So the
+`accesskit` lint slice checks the shipped build with `cargo tree -e normal`. Without that
+slice these tests would pass while users got no tree at all.
+
+- **Names:** every control (a node that takes a click or focus, or has a control role) has a
+  name. This is checked on Recents, an open file, the command bar, find, the link window, the
+  space popovers, the welcome sheet, every Settings tab, the drawn menu with a submenu, and a
+  right-click menu. egui's scroll bars are left out. Nodes the app adds a role to (splitters,
+  menus, the canvas) must have bounds: a node for a widget that was not drawn has none.
+- **Canvas and layer rows:** the canvas says its page, zoom and selection. A layer row with
+  children reports expanded or collapsed, and its arrow is a named button.
+- **Focus:** Tab goes once round the open file, Settings and Recents, and each focused
+  control must show a focus ring (a `Palette::focus` rect stroke around it; text fields show
+  their caret instead). Tab must not leave Settings or the command bar for the app behind
+  them. Closing Settings, the command bar or the welcome sheet gives focus back to what had
+  it.
+- **Roles:** one-of-a-set choices (tools, Settings segments, the space editor's choices) are
+  radio buttons; the Settings sections are tabs.
+- **Agents and automation:** the canvas lists its visible layers (name, kind, size, place,
+  selected), and pressing one through AccessKit selects it unless a modal blocks the canvas.
+  Bounds follow the drawn view, intersected with the screen and clipping frames; this is
+  geometric visibility, not occlusion/opacity testing. `canvas_a11y::tests` covers clipping,
+  breadth-first capping, omission counts, bounded incremental reach, tab/page/document cache
+  isolation and name limits, plus the timing bench (`timing`, ignored; needs
+  `FIGSTUDIO_A11Y_BENCH`). The UI tests cover the named, polite file-opening progress node,
+  button ids across label changes and space ids after closing an earlier space.
+  Properties rows read as "W: 120". Toasts are live regions (errors assertive). Every control
+  has a unique automation id (`author_id`), and the ids stay the same when labels change.
+- **Text size:** ⌘+ / ⌘− / ⌘0 change egui's zoom factor and leave the canvas zoom alone.
+  Settings → General → Text size sets the same factor, and `Prefs` keeps it across a restart.
+- **Contrast:** `theme.rs` tests check every text colour on every opaque surface it is drawn
+  on (gradient, hovered and selected rows, cards, wells, dialogs, the pills over any canvas)
+  at WCAG AA, and the focus ring at 3:1. Both appearances and custom space colours are
+  covered. The translucent macOS sidebar is not: what shows through depends on the desktop.
+
+Not covered by a test: a real screen reader (VoiceOver, Narrator, Orca) reading the app. Run
+one by hand after a change to these paths and report it as unverified if you could not. The
+browser build has no AccessKit (eframe 0.36 does not support it on the web). Its "Read controls
+aloud" setting uses egui's speech output, and only the switch itself is tested.
+
 ### Internal-page navigation
 
 `cargo test --profile fast -p figstudio internal_pages` covers the collapsed internal-page
@@ -571,6 +621,20 @@ requests, then the four successful lazy fetches and no app panic, and writes a J
 visual inspection. It also seeds a symbol-bearing Recents title without opening a
 file and checks that one bundle is fetched. Wait for egui's textbox and initial frames
 before dropping the public input; the HTML loading message clears before handlers exist.
+
+Browser shaders: `web/e2e/shaders.spec.mjs` (same build and server) drops the public
+shaders fixture and the Concentric shader's code (zipped in the test with `zip`), waits for
+`figstudioStatus.shaders_missing` to go from 12 to 11, and checks the sandbox ran the shader
+(`__figstudioShaders.runs`: some ok, none failed) in one opaque-origin frame. It needs a
+browser with WebGPU and a working GPU canvas: full Chromium in new-headless mode
+(`CHROMIUM_PATH=…/Google Chrome for Testing`; the headless shell has no GPU canvas). It is
+skipped when the page has no `navigator.gpu`. Its other cases: an endless loop stops on the
+step limit, a built-in that never returns ends with its worker, and a shader queued behind a
+stuck one still draws; the page answers throughout.
+
+Shader tests on the GPU: the `figstudio-shader` tests skip without a GPU adapter. CI also runs
+them on Mesa's software Vulkan (lavapipe, `mesa-vulkan-drivers`) with `FIGSTUDIO_REQUIRE_GPU=1`,
+which turns a missing adapter into a failure. Set it locally too to be sure they ran.
 
 Canvas emoji checks: `cargo test --profile fast -p figstudio-render --features gpu emoji`
 runs synthetic sbix colour/strike/limit tests, empty-database and monochrome fallback,

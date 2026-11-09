@@ -44,8 +44,8 @@ pub enum Icon {
     Info,
     Grid,
     List,
-    /// Present / Preview a prototype (Figma's play button).
     Play,
+    Pause,
     /// A small downward chevron, for a button's menu.
     Chevron,
     /// Start again (a circular arrow).
@@ -344,8 +344,10 @@ pub fn paint(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
                 capsule((5.5, y), (14.0, y));
             }
         }
-        Icon::Play => {
-            path(&[(4.5, 2.5), (13.0, 8.0), (4.5, 13.5)], true);
+        Icon::Play => path(&[(5.0, 3.0), (13.0, 8.0), (5.0, 13.0)], true),
+        Icon::Pause => {
+            capsule((5.5, 3.5), (5.5, 12.5));
+            capsule((10.5, 3.5), (10.5, 12.5));
         }
         Icon::Restart => {
             // Most of a circle, open at the top right, with an arrowhead at its end.
@@ -387,8 +389,23 @@ pub fn chevron(painter: &Painter, rect: Rect, color: Color32, turn: f32) {
     ));
 }
 
+/// The keyboard focus ring: an accent outline just inside `rect` while `response` has focus
+/// (Tab, or a screen reader moving to it; a click does not focus egui widgets).
+pub fn focus_ring(ui: &Ui, response: &Response, rect: Rect, radius: u8) {
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(radius),
+            Stroke::new(2.0, theme::of(ui).focus),
+            StrokeKind::Inside,
+        );
+    }
+}
+
 /// Hover fill and press dip for a custom-painted widget: returns `(hover 0..1, press 0..1)`.
+/// Also draws its focus ring ([`focus_ring`]).
 pub fn feedback(ui: &Ui, response: &Response) -> (f32, f32) {
+    focus_ring(ui, response, response.rect, 8);
     let ctx = ui.ctx();
     let hover = ctx.animate_bool_with_time(
         response.id.with("hover"),
@@ -409,7 +426,8 @@ pub fn feedback(ui: &Ui, response: &Response) -> (f32, f32) {
 }
 
 /// A square icon button with a tooltip and an accessible `label`. Hover fades a soft fill in,
-/// a press dips it, and `selected` keeps it lit.
+/// a press dips it, and `selected` keeps it lit. Screen readers hear a plain button; one of a
+/// set of choices says so with [`choice_button`].
 pub fn button(ui: &mut Ui, icon: Icon, label: &str, selected: bool) -> Response {
     sized_button(ui, icon, label, selected, 28.0)
 }
@@ -421,8 +439,8 @@ pub fn sized_button(ui: &mut Ui, icon: Icon, label: &str, selected: bool, side: 
 /// [`sized_button`] without the tooltip (for a button that opens a menu).
 pub fn raw_button(ui: &mut Ui, icon: Icon, label: &str, selected: bool, side: f32) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::click());
-    response
-        .widget_info(|| WidgetInfo::selected(WidgetType::Button, ui.is_enabled(), selected, label));
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
+    crate::a11y::author(&response, format!("button.{}", crate::a11y::slug(label)));
     if ui.is_rect_visible(rect) {
         let p = theme::of(ui);
         let (hover, press) = feedback(ui, &response);
@@ -442,6 +460,15 @@ pub fn raw_button(ui: &mut Ui, icon: Icon, label: &str, selected: bool, side: f3
         let icon_rect = Rect::from_center_size(r.center(), vec2(16.0, 16.0) * (r.width() / side));
         paint(ui.painter(), icon, icon_rect, color);
     }
+    response
+}
+
+/// [`button`] that is one of a set of choices (the Recents grid or list, a space's icon):
+/// screen readers hear a radio button and whether it is the chosen one.
+pub fn choice_button(ui: &mut Ui, icon: Icon, label: &str, on: bool, side: f32) -> Response {
+    let response = sized_button(ui, icon, label, on, side);
+    response
+        .widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, ui.is_enabled(), on, label));
     response
 }
 

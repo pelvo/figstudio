@@ -124,7 +124,8 @@ pub enum Picked {
     },
 }
 
-type Exported = (String, anyhow::Result<Vec<u8>>);
+/// A file name and its bytes with what is not drawn exactly (see `export_bytes`).
+type Exported = (String, anyhow::Result<(Vec<u8>, String)>);
 
 use crate::cjk::Variant;
 
@@ -852,4 +853,36 @@ pub fn download(name: &str, mime: &str, bytes: &[u8]) -> anyhow::Result<()> {
     a.set_download(name);
     a.click();
     web_sys::Url::revoke_object_url(&url).map_err(js)
+}
+
+/// Lets the user pick shader zips for tab `tab` (for `shader` when one is picked); they arrive
+/// on `tx`.
+pub fn pick_zips(
+    ctx: &egui::Context,
+    tab: u64,
+    shader: Option<String>,
+    tx: std::sync::mpsc::Sender<crate::shader_code::Zip>,
+) {
+    let ctx = ctx.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let Some(files) = rfd::AsyncFileDialog::new()
+            .set_title("Choose shader code (Figma's View code → Download files)")
+            .add_filter("Shader code", &["zip"])
+            .pick_files()
+            .await
+        else {
+            return;
+        };
+        let one = files.len() == 1;
+        for f in files {
+            let zip = crate::shader_code::Zip {
+                tab,
+                name: f.file_name(),
+                shader: shader.clone().filter(|_| one),
+                bytes: f.read().await,
+            };
+            let _ = tx.send(zip);
+        }
+        ctx.request_repaint();
+    });
 }

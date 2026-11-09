@@ -21,6 +21,8 @@ pub(super) struct Output {
     pub(super) notes: Notes,
     /// The size cap cut the code.
     pub(super) truncated: bool,
+    /// Import lines of the Code Connect components written, in first-use order.
+    pub(super) imports: Vec<String>,
 }
 
 pub(super) struct Writer<'a> {
@@ -94,6 +96,49 @@ pub(super) fn write(
 }
 
 impl Writer<'_> {
+    /// Writes a layer mapped by Code Connect as its code component: the mapping's snippet,
+    /// or `<Name data-node-id=… props />`. Its subtree is not written.
+    fn connected(
+        &mut self,
+        item: &Item<'_>,
+        component: figstudio_fig::Guid,
+        mapped: &super::code_connect::CodeComponent,
+        depth: usize,
+    ) {
+        for line in super::code_connect::imports(mapped) {
+            if !self.out.imports.contains(&line) {
+                self.out.imports.push(line);
+            }
+        }
+        self.out
+            .notes
+            .add("layers written as Code Connect components");
+        let id = item.target.id();
+        self.line(
+            depth,
+            &format!(
+                "{{/* data-node-id=\"{id}\": Code Connect {} */}}",
+                attr(&mapped.source)
+            ),
+        );
+        match &mapped.snippet {
+            Some(snippet) => {
+                for text in snippet.lines() {
+                    self.line(depth, text);
+                }
+            }
+            None => {
+                let mut tag = format!("<{} data-node-id=\"{id}\"", mapped.name);
+                for prop in super::code_connect::props(self.doc, component, &item.data) {
+                    tag.push(' ');
+                    tag.push_str(&prop);
+                }
+                tag.push_str(" />");
+                self.line(depth, &tag);
+            }
+        }
+    }
+
     fn line(&mut self, depth: usize, text: &str) {
         self.out.code.push_str(&"  ".repeat(depth));
         self.out.code.push_str(text);
@@ -115,6 +160,16 @@ impl Writer<'_> {
         depth: usize,
     ) -> Option<&'static str> {
         let data = &*item.data;
+        let id = match &item.target {
+            super::walk::Target::Node(id) => Some(*id),
+            super::walk::Target::Path(_) => None,
+        };
+        if let Some((component, mapped)) =
+            super::code_connect::mapping(self.doc, item.kind, id, data, &self.options.code_connect)
+        {
+            self.connected(item, component, mapped, depth);
+            return None;
+        }
         if item.scale != 1.0 && layout::keeps_stored_lengths(data) {
             self.out
                 .notes

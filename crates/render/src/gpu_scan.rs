@@ -151,6 +151,9 @@ impl Canvas for Scan {
         }
     }
     fn pop_clip(&mut self) {}
+    fn push_blend_layer(&mut self, _: BlendMode) {
+        self.push_opacity_layer(1.0);
+    }
     fn push_opacity_layer(&mut self, _: f32) {
         if let Some(b) = &mut self.bytes {
             b.layer(None, self.transform, self.view);

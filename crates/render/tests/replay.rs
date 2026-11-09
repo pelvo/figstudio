@@ -117,6 +117,32 @@ fn effects_clips_and_negative_tiles_replay_like_direct_renders() {
 }
 
 #[test]
+fn blended_layers_and_fills_replay_like_direct_renders() {
+    let mut doc = effects_doc();
+    let mut nodes = doc.nodes.clone();
+    for n in &mut nodes {
+        match n.id {
+            g if g == id(3) => n.data.set("blendMode", Val::Str("MULTIPLY".into())),
+            g if g == id(4) => {
+                if let Some(Val::Arr(paints)) = n.data.get_mut("fillPaints") {
+                    paints[0].set("blendMode", Val::Str("SCREEN".into()));
+                }
+            }
+            _ => {}
+        }
+    }
+    doc.set_nodes(nodes).unwrap();
+    let rec = record(&doc, id(1), 1.0);
+    assert_eq!(rec.stats().approximated_blends, 0);
+    for y in -2..=1 {
+        for x in -2..=1 {
+            let (worst, _) = compare(&doc, id(1), &rec, 1.0, x, y);
+            assert!(worst <= 1, "tile ({x},{y}) differs by {worst}");
+        }
+    }
+}
+
+#[test]
 fn a_tile_far_from_content_replays_no_fill() {
     let doc = effects_doc();
     let rec = record(&doc, id(1), 1.0);

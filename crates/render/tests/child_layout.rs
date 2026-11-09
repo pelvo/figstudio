@@ -82,8 +82,24 @@ fn one_focus_lays_out_all_siblings_with_nested_resize_rotation_and_scale() {
     assert!(renderer.child_layouts(&doc, id(99), None, 10).is_empty());
 }
 
+/// Instances checked per file by default: spread evenly over the whole file.
+const SAMPLE: usize = 100;
+
 #[test]
 fn child_layout_matches_path_inspection_on_every_public_fixture() {
+    compare_child_layouts(Some(SAMPLE));
+}
+
+/// Every instance of every fixture (about 2 minutes): `cargo test -- --ignored`.
+#[test]
+#[ignore = "slow: every instance of the shaders fixture"]
+fn child_layout_matches_path_inspection_on_every_instance() {
+    compare_child_layouts(None);
+}
+
+/// Compares the child layouts of `per_file` instances of each fixture (all when `None`), taken
+/// at an even stride so a break anywhere in a file can be caught.
+fn compare_child_layouts(per_file: Option<usize>) {
     let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
     let mut files: Vec<_> = std::fs::read_dir(fixtures)
         .unwrap()
@@ -91,13 +107,18 @@ fn child_layout_matches_path_inspection_on_every_public_fixture() {
         .filter(|p| p.extension().is_some_and(|e| e == "fig"))
         .collect();
     files.sort();
-    assert_eq!(files.len(), 7);
+    // 7 fig2sketch files, 2 Figma Community files (motion, shaders) and motion-probe.
+    assert_eq!(files.len(), 10);
     let mut compared = 0;
     for file in files {
         let doc = Document::open(&file).unwrap();
         let mut renderer = Renderer::new();
         let definitions = renderer.definitions(&doc);
-        for instance in doc.nodes.iter().filter(|n| n.kind == "INSTANCE") {
+        // The plain resolver rebuilds the file's definitions on every call, so the default
+        // keeps the shaders fixture (3,600 instances) to seconds by sampling.
+        let instances: Vec<_> = doc.nodes.iter().filter(|n| n.kind == "INSTANCE").collect();
+        let stride = per_file.map_or(1, |n| instances.len().div_ceil(n).max(1));
+        for instance in instances.into_iter().step_by(stride) {
             let mut pending = vec![None];
             while let Some(parent) = pending.pop() {
                 for layout in renderer.child_layouts(&doc, instance.id, parent.as_ref(), 2048) {

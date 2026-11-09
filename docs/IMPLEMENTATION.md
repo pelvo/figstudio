@@ -161,7 +161,7 @@ apps/figstudio/src/      egui 0.36 app: desktop, and browser (wasm32, threads)
                          + semibold), CJK font fallback (desktop) / detection (web)
 web/                     index.html (boot: init, thread pool, start), _headers (COOP/COEP)
 scripts/                 check.sh, thumb-sheet.py, gui-smoke.sh, web-build.sh, web-serve.py
-tests/fixtures/          7 sample .fig files (MIT, fig2sketch)
+tests/fixtures/          9 sample .fig files (7 MIT from fig2sketch, 2 CC BY Figma Community)
 ```
 
 Dependencies are declared once in the root `Cargo.toml` (`[workspace.dependencies]`).
@@ -1080,6 +1080,40 @@ Keep work off the UI thread. Check it with `scripts/gui-smoke.sh` and look at th
 screenshots. Things only a real desktop can check (file dialogs, Wayland, HiDPI, drag and
 drop from a file manager) must be listed as unverified in your report.
 
+### Keep the app accessible
+The desktop app builds eframe with `accesskit`. Screen readers read the tree egui builds, so:
+
+- A painted widget calls `response.widget_info(..)` with a name, and draws
+  `icons::focus_ring` (or uses `icons::feedback`, which draws it for you).
+- A text field gets `a11y::name_field`, because its placeholder is not a label.
+- A pointer-only area (a drag strip, a backdrop, a click catcher) uses `Sense::CLICK`
+  without `FOCUSABLE` and calls `a11y::hide`.
+- A modal's backdrop calls `a11y::modal` each frame so Tab stays inside the dialog.
+- A menu goes through `chrome::context_menu` or `a11y::submenu` so it gets a Menu role and a
+  name.
+- New text colours pass the `theme.rs` contrast tests (4.5:1).
+- Every control gets an automation id with `a11y::author` (`button.<fixed id>`, `menu.<slug>`,
+  `settings.<slug>`; ids built from node ids for layers). Pick one that does not change with
+  the label. Menu items use `a11y::menu_button`.
+- A message that appears on its own (toast, error) calls `a11y::announce`.
+- Canvas layers come from `canvas_a11y.rs`, capped by `MAX_NODES` and `MAX_VISITS`. List
+  breadth-first so screens precede their contents, and announce the omitted count (a lower
+  bound when counting or visiting is capped; count at most 400 extra visible layers). Reach
+  indexing advances in bounded steps per UI frame and is kept per tab/page, with a weak
+  document identity; no work runs with AccessKit off. Layer presses respect the same modal
+  interaction gate as pointer input.
+- The local accessibility tree contains document layer names/text, file names and fields
+  such as the export path. Apps permitted to use macOS Accessibility, Windows UI Automation
+  or Linux AT-SPI can read it. Layer names and text values are limited to 300 Unicode
+  characters each. This is local OS accessibility, not the MCP relay, logging or browser
+  speech. Recent-file automation ids use a per-process randomized path hash, not raw paths.
+- Canvas visibility means viewport and ancestor clipping bounds, not composited occlusion
+  or opacity; a covered or transparent layer may still be listed. Bounds follow the drawn
+  view during zoom animation, not the target view.
+
+`ui_a11y_tests.rs` catches a missing name or focus ring in the states it visits. Add your
+new state there.
+
 ### Logs and errors
 Logs use `tracing`. Libraries only call the macros; each binary installs a `tracing-subscriber`
 fmt layer on **stderr** (browser: `tracing-web`, the console) with default level `warn`.
@@ -1166,7 +1200,7 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T3 | `corners.fig`: two outline shapes are drawn below the rectangles but are not in the stored thumbnail. Find out whether they are hidden, off-page, or stale-thumbnail | `crates/render` | Explained in `docs/TESTING.md` known differences, or fixed with a test |
 | T4 | Virtualise the Layers panel (draw only visible rows) | `apps/figstudio/src/panels.rs` | 100k-node stress file: Layers expand-all stays under 16 ms per frame (`FIGSTUDIO_PROFILE=1`) |
 | T5 | Fit-to-page on huge pages (~0.4 s per frame today): level-of-detail or tile cache | `crates/render`, `apps/figstudio/src/canvas.rs` | 100k-node stress page pans smoothly at fit zoom; culling test still passes |
-| T6 | Inner shadow, background blur, blend modes | `crates/render/src/lib.rs` | Each drawn and tested, or still counted; thumb sheet reviewed |
+| T6 | Background blur, `LINEAR_BURN` (inner shadow and the other blend modes are drawn) | `crates/render/src/lib.rs` | Each drawn and tested, or still counted; thumb sheet reviewed. Background blur needs a backdrop filter vello_cpu 0.3 lacks (see `docs/APPROXIMATIONS.md`) |
 | T21 | MCP inside the app: shared `mcp-core`, embedded desktop server (off by default), right-click Copy and Copy region (issue #9); plan and lanes in `docs/MCP-APP.md` | `crates/mcp-core`, `apps/figstudio-mcp`, `apps/figstudio` | Lanes L0–L9 in `docs/MCP-APP.md` done |
 | T20 | GPU canvas with `vello_gpu` (desktop + browser) with CPU fallback; plan and lanes in `docs/GPU.md` | `crates/render`, `apps/figstudio` | Lanes L1–L5 in `docs/GPU.md` done |
 | T19 | Clear the approximation counters, one fix at a time (plan and measurements in `docs/APPROXIMATIONS.md`) | `crates/render/src` | Each row of the plan done or explained; counters re-measured and logged there |
@@ -1183,8 +1217,8 @@ Pick one, keep to it, and report against its "Done when". Ordered by usefulness.
 | T15 | Doctor on a file with a parent cycle or oversized input (report U1 from the audit) | `apps/figstudio-cli/src/doctor.rs` | Doctor reports the cycle as an error and exits 1, with a test |
 | T16 | Derive a shared render-work budget from real-file measurements and bound all traversal work | `crates/render/src/lib.rs` | Shared `MAX_RENDER_WORK` test bounds ordinary, mask, and instance work; page 4 completed without reported truncation. Attempt-count telemetry for the final real-file render remains pending. |
 | T17 | Make the synth command's `set_nodes` error path a test (`apps/figstudio-cli/src/synth.rs`) | `apps/figstudio-cli/` | A test covers a synth that would create a cycle |
-| M1 | MCP: `get_motion_context` (deferred: no public file with motion data to validate the schema) | `apps/figstudio-mcp/src/tools` | A real motion file decoded; the tool tested on that file's shape and on documents built in the test, proven by mutation |
-| M2 | MCP: SVG export in `download_assets` | `apps/figstudio-mcp/src/tools/assets.rs`, `crates/render` | A vector writer (or a trustworthy crate) with tests; the tool description updated |
+| M1 | ~~MCP: `get_motion_context`~~ done 2026-10-27 on `tests/fixtures/motion.fig` | `apps/figstudio-mcp/src/tools` | A real motion file decoded; the tool tested on that file's shape and on documents built in the test, proven by mutation |
+| M2 | ~~MCP: SVG export in `download_assets`~~ done 2026-10-27 (`crates/render/src/svg.rs`) | `apps/figstudio-mcp/src/tools/assets.rs`, `crates/render` | A vector writer (or a trustworthy crate) with tests; the tool description updated |
 | M3 | MCP: ancestor masks and clips for instance-child screenshots (`I…;…`) | `crates/render/src/focus.rs` | A built document with a masked ancestor renders the same as the node inside the full instance |
 | M4 | MCP: nested-instance override visibility in `download_assets original=true` (frames between nested instances use stored visibility, the `shortcut:` in `tools/assets/originals.rs`) | `apps/figstudio-mcp/src/tools/assets/originals.rs` | A hidden override on a nested instance hides its image fills; test proven by mutation |
 | M5 | MCP: live-client check (Claude Code, Cursor, VS Code, Codex) over stdio and HTTP | — | A person runs each client; result recorded in `docs/PLAN.md` |

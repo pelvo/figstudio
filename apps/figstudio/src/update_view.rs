@@ -283,7 +283,7 @@ impl App {
                             let rect =
                                 Rect::from_min_size(pos2(*right - w, footer.top()), vec2(w, 36.0));
                             *right -= w + 8.0;
-                            accent_button(ui, rect, (SHEET, text), text, text, tint).clicked()
+                            accent_button(ui, rect, "update-primary", text, text, tint).clicked()
                         };
                         match &state {
                             State::Installing(_) => later |= quiet(ui, "Hide", &mut right),

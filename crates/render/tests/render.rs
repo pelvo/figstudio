@@ -342,7 +342,7 @@ fn malformed_vectors_and_unsupported_blends_are_reported() {
     let page = doc.pages[0];
     let mut nodes = doc.nodes.clone();
     let frame = nodes.iter_mut().find(|n| n.kind == "FRAME").unwrap();
-    frame.data.set("blendMode", Val::Enum("MULTIPLY"));
+    frame.data.set("blendMode", Val::Enum("LINEAR_BURN"));
     let mut malformed = frame.clone();
     malformed.id = Guid(99, 1);
     malformed.data.set("guid", malformed.id.to_val());

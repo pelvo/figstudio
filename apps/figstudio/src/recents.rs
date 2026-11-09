@@ -623,10 +623,11 @@ impl App {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             toggle_ui.spacing_mut().item_spacing.x = 2.0;
-            if icons::button(&mut toggle_ui, Icon::Grid, "Grid view", !list).clicked() {
+            if icons::choice_button(&mut toggle_ui, Icon::Grid, "Grid view", !list, 28.0).clicked()
+            {
                 self.prefs.recents_list = false;
             }
-            if icons::button(&mut toggle_ui, Icon::List, "List view", list).clicked() {
+            if icons::choice_button(&mut toggle_ui, Icon::List, "List view", list, 28.0).clicked() {
                 self.prefs.recents_list = true;
             }
         }
@@ -1038,6 +1039,14 @@ fn card_response(
         card.name.clone()
     };
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
+    // A hash of the path: stable, and the path itself stays out of the tree.
+    crate::a11y::author(
+        &response,
+        format!(
+            "recents.{}",
+            crate::a11y::short_hash(&card.id.path.to_string_lossy())
+        ),
+    );
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         *hovered = Some(card.colour);
@@ -1087,10 +1096,9 @@ fn menu_and_click(response: &Response, card: &Card) -> Option<Pick> {
     }
     context_menu(response, |ui| {
         ui.set_min_width(190.0);
-        if ui
-            .add_enabled(!card.missing, egui::Button::new("Open"))
-            .clicked()
-        {
+        let open = ui.add_enabled(!card.missing, egui::Button::new("Open"));
+        crate::a11y::author(&open, "menu.open");
+        if open.clicked() {
             pick = Some(Pick::Open(card.id.clone()));
         }
         // The browser has no folder to show.
@@ -1101,15 +1109,14 @@ fn menu_and_click(response: &Response, card: &Card) -> Option<Pick> {
             } else {
                 "Show in folder"
             };
-            if ui
-                .add_enabled(!card.missing, egui::Button::new(reveal))
-                .clicked()
-            {
+            let shown = ui.add_enabled(!card.missing, egui::Button::new(reveal));
+            crate::a11y::author(&shown, "menu.reveal");
+            if shown.clicked() {
                 pick = Some(Pick::Reveal(card.id.clone()));
             }
         }
         ui.separator();
-        if ui.button("Remove from recents").clicked() {
+        if crate::a11y::menu_button(ui, "Remove from recents").clicked() {
             pick = Some(Pick::Remove(card.id.clone()));
         }
     });

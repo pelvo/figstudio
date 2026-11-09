@@ -1,0 +1,296 @@
+//! Screen-reader details egui leaves to the app: names for widgets it builds without one (text
+//! fields, the panels' resize handles) and pointer-only areas kept out of the AccessKit tree.
+//!
+//! Each call edits the node egui made for `id` this frame; with no screen reader attached
+//! (AccessKit off) egui keeps no tree and the calls do nothing. `ui_a11y_tests.rs` checks that
+//! every control has a name.
+
+use egui::accesskit::{Live, Role};
+use egui::{Context, Id, Response, Ui};
+
+use crate::tab::Tab;
+
+/// Leaves `response` (a window drag strip, a click catcher behind a pill, a modal backdrop)
+/// out of what screen readers read: it only takes the pointer.
+pub fn hide(response: &Response) {
+    response
+        .ctx
+        .accesskit_node_builder(response.id, |n| n.set_hidden());
+}
+
+/// Makes the layer of `ui` (a modal's backdrop) modal: Tab, screen readers' focus and the
+/// pointer stay on it and the layers above it (the dialog), not the app behind. Call it every
+/// frame the modal is open.
+pub fn modal(ui: &Ui) {
+    let layer = ui.layer_id();
+    ui.ctx().memory_mut(|m| m.set_modal_layer(layer));
+}
+
+/// What [`restore_focus`] remembers about one modal.
+#[derive(Clone, Copy, Debug, Default)]
+struct ModalFocus {
+    open: bool,
+    /// What had focus when it opened; after it closed, still to be given back.
+    saved: Option<Id>,
+    /// Frames left to give it back in (the opener may be gone for good).
+    left: u8,
+}
+
+fn modal_key(modal: &str) -> Id {
+    Id::new(("modal-focus", modal))
+}
+
+/// Remembers what has keyboard focus when the modal `modal` opens, so [`give_focus_back`]
+/// can return it there once it closes (WCAG 2.4.3): Escape out of Settings lands on the
+/// control that opened it, not nowhere. Call it every frame with whether the modal is open,
+/// before the modal moves focus.
+pub fn restore_focus(ctx: &Context, modal: &str, open: bool) {
+    let key = modal_key(modal);
+    let mut state = ctx
+        .data(|d| d.get_temp::<ModalFocus>(key))
+        .unwrap_or_default();
+    if open && !state.open {
+        state = ModalFocus {
+            open: true,
+            saved: ctx.memory(|m| m.focused()),
+            left: 0,
+        };
+    } else if !open && state.open {
+        state.open = false;
+        state.left = 60;
+    }
+    ctx.data_mut(|d| d.insert_temp(key, state));
+}
+
+/// After the frame is drawn: gives focus back to what `modal` saved, once it is drawn again
+/// and nothing outside a closing modal (a foreground layer) took focus meanwhile. Only a
+/// widget drawn this frame gets it: focus on a widget with no node would break the
+/// accessibility tree (AccessKit requires the focused node to exist).
+pub fn give_focus_back(ctx: &Context, modal: &str) {
+    let key = modal_key(modal);
+    let Some(mut state) = ctx.data(|d| d.get_temp::<ModalFocus>(key)) else {
+        return;
+    };
+    let Some(saved) = state.saved.filter(|_| !state.open && state.left > 0) else {
+        return;
+    };
+    let drawn = |id: Id| ctx.viewport(|v| v.this_pass.widgets.get(id).is_some());
+    let taken = ctx.memory(|m| m.focused()).is_some_and(|f| {
+        drawn(f)
+            && ctx
+                .read_response(f)
+                .is_some_and(|r| r.layer_id.order != egui::Order::Foreground)
+    });
+    if taken {
+        state.saved = None;
+    } else if drawn(saved) {
+        ctx.memory_mut(|m| m.request_focus(saved));
+        state.saved = None;
+    } else {
+        state.left -= 1;
+    }
+    ctx.data_mut(|d| d.insert_temp(key, state));
+}
+
+/// Leaves out the title bar of the `egui::Window` whose id is `window` (shown this frame):
+/// a drag strip without a name. The window itself is named after its title.
+pub fn hide_window_title_bar(ctx: &Context, window: Id) {
+    ctx.accesskit_node_builder(window.with("__title_click"), |n| n.set_hidden());
+}
+
+/// Names a menu egui drew (`popup` is the response `Popup::show` returned): egui gives a
+/// popup's node no role or name, and the items sit inside it.
+pub fn name_menu(popup: &Response, label: &str) {
+    popup.ctx.accesskit_node_builder(popup.id, |n| {
+        n.set_role(Role::Menu);
+        n.set_label(label);
+        n.set_author_id(format!("menu.{}.popup", slug(label)));
+    });
+}
+
+/// `Ui::menu_button` inside a menu, with the submenu it opens named `label`.
+pub fn submenu<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+    let (button, popup) = egui::containers::menu::SubMenuButton::new(label).ui(ui, add);
+    author(&button, format!("menu.{}", slug(label)));
+    popup.map(|popup| {
+        name_menu(&popup.response, label);
+        popup.inner
+    })
+}
+
+/// Names a text field: its placeholder disappears as soon as the user types, so a screen
+/// reader needs a label of its own.
+pub fn name_field(response: &Response, label: &str) {
+    response
+        .ctx
+        .accesskit_node_builder(response.id, |n| n.set_label(label));
+}
+
+/// Names the resize handle of the side panel `panel` (the id given to `egui::Panel`), and
+/// rings it while it has focus (egui's handle takes Tab focus but shows none). Call it only
+/// when the panel drew its handle this frame: a node egui did not make would be added with
+/// no place on screen.
+pub fn panel_handle(ctx: &Context, panel: &str, label: &str) {
+    let id = Id::new(panel).with("__resize");
+    ctx.accesskit_node_builder(id, |n| {
+        n.set_role(Role::Splitter);
+        n.set_label(label);
+        n.set_author_id(format!("splitter.{}", slug(panel)));
+    });
+    if ctx.memory(|m| m.has_focus(id))
+        && let Some(handle) = ctx.read_response(id)
+    {
+        let layer = egui::LayerId::new(egui::Order::Foreground, id.with("focus"));
+        ctx.layer_painter(layer).rect_stroke(
+            handle.rect,
+            egui::CornerRadius::same(3),
+            egui::Stroke::new(2.0, crate::theme::palette(ctx).focus),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+/// Makes `response` a tab (the Settings sections): screen readers hear "tab", and which is
+/// selected, instead of a toggle button.
+pub fn tab(response: &Response, selected: bool) {
+    response.ctx.accesskit_node_builder(response.id, |n| {
+        n.set_role(Role::Tab);
+        n.clear_toggled();
+        n.set_selected(selected);
+    });
+}
+
+/// Marks `response` (a layer row with children) expanded or collapsed.
+pub fn set_expanded(response: &Response, expanded: bool) {
+    response
+        .ctx
+        .accesskit_node_builder(response.id, |n| n.set_expanded(expanded));
+}
+
+/// Names the canvas after its page, and describes the zoom and the selected layer, so a
+/// screen reader says where the user is and what a click picked.
+pub fn describe_canvas(response: &Response, tab: &Tab) {
+    response.ctx.accesskit_node_builder(response.id, |n| {
+        let page = tab
+            .doc
+            .node(tab.page)
+            .map(crate::panels::display_name)
+            .unwrap_or_default();
+        let selected = tab
+            .selection
+            .and_then(|id| tab.doc.node(id))
+            .map_or_else(|| "nothing".to_owned(), crate::panels::display_name);
+        let zoom = (tab.view.zoom * 100.0).round();
+        // A group, not Role::Canvas: macOS reads a canvas as an image, and an image's
+        // children (the layers, `canvas_a11y.rs`) are not looked into.
+        n.set_role(Role::Group);
+        n.set_role_description("canvas");
+        n.set_author_id("canvas");
+        n.set_label(format!("Canvas, page {page}"));
+        n.set_description(format!("Zoom {zoom}%. Selected: {selected}."));
+    });
+}
+
+/// Reads a Properties row as one item, "Width: 120", instead of a key and a value that a screen
+/// reader or agent would have to pair up by position: the key's node is hidden and the
+/// value's says both.
+pub fn key_value(key: &Response, value: &Response, k: &str, v: &str) {
+    hide(key);
+    value.ctx.accesskit_node_builder(value.id, |n| {
+        n.set_value(format!("{k}: {v}"));
+    });
+}
+
+/// Makes a message that appears on its own (a toast, an error) a live region: screen readers
+/// and agents are told when it shows, without looking for it. An `error` interrupts.
+pub fn announce(label: &Response, error: bool) {
+    label.ctx.accesskit_node_builder(label.id, |n| {
+        n.set_live(if error { Live::Assertive } else { Live::Polite });
+        if error {
+            n.set_role(Role::Alert);
+            if let Some(text) = n.value().map(str::to_owned) {
+                n.set_label(text);
+            }
+        }
+    });
+}
+
+/// Names a spinner (`response` is its place) as work in progress, announced when it starts.
+pub fn progress(response: &Response, label: &str) {
+    let r = response.rect;
+    response.ctx.accesskit_node_builder(response.id, |n| {
+        n.set_role(Role::ProgressIndicator);
+        n.set_label(label);
+        n.set_live(Live::Polite);
+        n.set_bounds(egui::accesskit::Rect {
+            x0: r.min.x.into(),
+            y0: r.min.y.into(),
+            x1: r.max.x.into(),
+            y1: r.max.y.into(),
+        });
+    });
+}
+
+/// Gives `response`'s node a stable automation id (`AXIdentifier` on macOS, `AutomationId` on
+/// Windows), so a script or an agent finds the control again however its label reads.
+/// Ids look like `button.zoom-in`, `layers.12:34` or `settings.reduce-motion`; every control
+/// has one and none is used twice (`ui_a11y_tests.rs`).
+pub fn author(response: &Response, id: impl Into<String>) {
+    let id = id.into();
+    response
+        .ctx
+        .accesskit_node_builder(response.id, |n| n.set_author_id(id));
+}
+
+/// A randomized path hash, stable within this app run but not across launches.
+pub fn short_hash(text: &str) -> String {
+    use std::hash::BuildHasher;
+    static HASHER: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+        std::sync::OnceLock::new();
+    let hash = HASHER
+        .get_or_init(std::collections::hash_map::RandomState::new)
+        .hash_one(text);
+    format!("{hash:016x}")
+}
+
+/// `text` as an id part: lower case, words joined by `-` ("Open file…" is `open-file`).
+pub fn slug(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_owned()
+}
+
+/// `ui.button(label)` in a menu, with the automation id `menu.<slug of label>`.
+pub fn menu_button(ui: &mut Ui, label: &str) -> Response {
+    let response = ui.button(label);
+    author(&response, format!("menu.{}", slug(label)));
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn recent_file_hashes_are_stable_within_a_run_but_not_unsalted_fnv() {
+        let hash = super::short_hash("synthetic.fig");
+        assert_eq!(hash, super::short_hash("synthetic.fig"));
+        assert_ne!(hash, super::short_hash("another.fig"));
+        assert_ne!(
+            hash, "9854849283168ee8",
+            "do not expose the deterministic path hash"
+        );
+    }
+
+    #[test]
+    fn a_slug_keeps_letters_and_digits_and_joins_the_rest() {
+        assert_eq!(super::slug("Open file…"), "open-file");
+        assert_eq!(super::slug("Copy as PNG"), "copy-as-png");
+        assert_eq!(super::slug("  Zoom in (+) "), "zoom-in");
+        assert_eq!(super::slug("Größe 2"), "größe-2");
+    }
+}

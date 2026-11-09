@@ -113,6 +113,8 @@ pub fn show(
     }
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
+    crate::a11y::describe_canvas(&response, tab);
+    crate::canvas_a11y::take_presses(ui, tab);
     let origin = rect.min;
     tab.canvas_rect = Some(rect);
     if tab.fit_pending && rect.width() > 10.0 {
@@ -250,6 +252,10 @@ pub fn show(
         workers,
         ui.pixels_per_point(),
     );
+    // A playing timeline over its layer, under the overlays.
+    if let Some(preview) = tab.motion_preview.as_mut() {
+        preview.paint(&painter, tab.page, tab.view, origin, ui.pixels_per_point());
+    }
 
     // Overlays.
     let labels = if frame_labels {
@@ -301,6 +307,9 @@ pub fn show(
     }
     crate::canvas_text::overlay(&painter, tab, origin);
     marquee::paint(&painter, tab, origin);
+    crate::icons::focus_ring(ui, &response, rect, radius as u8);
+    crate::canvas_a11y::layers(ui, &response, tab, origin);
+    crate::shader_code::markers(ui, &painter, tab, |id| corners(tab, origin, id));
     tab.view = target;
 
     let cursor = match tool {

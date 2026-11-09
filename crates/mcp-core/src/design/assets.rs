@@ -41,6 +41,11 @@ impl Assets {
 /// `-` and `_` before the `format` extension, so it can never name a parent directory or a
 /// hidden file. The code's `src` and the written asset both use this one name.
 pub(super) fn name(key: &str, id: &str, format: ImageFormat) -> String {
+    file_name(key, id, format.extension())
+}
+
+/// [`name`] with any extension (`mp4` for a motion export, for example).
+pub(crate) fn file_name(key: &str, id: &str, extension: &str) -> String {
     let clean = |s: &str| -> String {
         s.chars()
             .map(|c| match c {
@@ -50,7 +55,7 @@ pub(super) fn name(key: &str, id: &str, format: ImageFormat) -> String {
             })
             .collect()
     };
-    format!("{}_{}.{}", clean(key), clean(id), format.extension())
+    format!("{}_{}.{}", clean(key), clean(id), clean(extension))
 }
 
 /// Writes `bytes` as `dir/name` (creating `dir`) and returns the written path. The bytes go to
@@ -58,7 +63,7 @@ pub(super) fn name(key: &str, id: &str, format: ImageFormat) -> String {
 /// `name` is replaced, never followed out of the directory. The temporary file is removed on
 /// failure.
 #[cfg(feature = "fs")]
-pub(super) fn write(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+pub(crate) fn write(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
     use std::path::Path;
     if Path::new(name).file_name() != Some(std::ffi::OsStr::new(name)) || name.starts_with('.') {
         return Err(std::io::Error::other(

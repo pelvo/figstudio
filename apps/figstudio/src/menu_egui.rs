@@ -8,14 +8,19 @@ impl App {
         // No tooltip: egui's tooltip on the same response would keep the menu from opening.
         let response = crate::icons::raw_button(ui, crate::icons::Icon::More, "Menu", false, 28.0);
         let tree = crate::menu::tree(self);
-        egui::Popup::menu(&response)
+        let menu = egui::Popup::menu(&response)
             .style(crate::theme::menu_style)
             .show(|ui| {
                 ui.set_min_width(170.0);
                 for group in tree {
-                    ui.menu_button(group.label, |ui| self.menu_items(ui, &group.children));
+                    crate::a11y::submenu(ui, group.label, |ui| {
+                        self.menu_items(ui, &group.children);
+                    });
                 }
             });
+        if let Some(menu) = menu {
+            crate::a11y::name_menu(&menu.response, "Menu");
+        }
     }
 
     fn menu_items(&mut self, ui: &mut egui::Ui, items: &[Item]) {
@@ -26,13 +31,17 @@ impl App {
             }
             let Some(action) = item.action else {
                 ui.add_enabled_ui(item.enabled, |ui| {
-                    ui.menu_button(item.label, |ui| self.menu_items(ui, &item.children));
+                    crate::a11y::submenu(ui, item.label, |ui| {
+                        self.menu_items(ui, &item.children);
+                    });
                 });
                 continue;
             };
             #[cfg(target_arch = "wasm32")]
             if let crate::menu::Action::CjkFont(v) = action {
-                if ui.radio(item.checked == Some(true), item.label).clicked() {
+                let radio = ui.radio(item.checked == Some(true), item.label);
+                crate::a11y::author(&radio, format!("menu.{}", crate::a11y::slug(item.label)));
+                if radio.clicked() {
                     self.apply(action, ui.ctx());
                 }
                 let why = match self.web.face.reason {
@@ -54,6 +63,7 @@ impl App {
             let clicked = if let Some(mut checked) = item.checked {
                 let response =
                     ui.add_enabled(item.enabled, egui::Checkbox::new(&mut checked, item.label));
+                crate::a11y::author(&response, format!("menu.{}", crate::a11y::slug(item.label)));
                 if let Some(shortcut) = self.prefs.keymap.for_action(action) {
                     response
                         .on_hover_text(ui.ctx().format_shortcut(&shortcut))
@@ -69,7 +79,9 @@ impl App {
                 {
                     button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
                 }
-                ui.add_enabled(item.enabled, button).clicked()
+                let response = ui.add_enabled(item.enabled, button);
+                crate::a11y::author(&response, format!("menu.{}", crate::a11y::slug(item.label)));
+                response.clicked()
             };
             if clicked {
                 ui.close();

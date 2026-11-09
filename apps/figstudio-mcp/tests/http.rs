@@ -108,7 +108,7 @@ async fn check_version(version: &str) {
             let (tools, response_session) = post(&client, &uri, &version, session.clone(), json!({"jsonrpc":"2.0", "id":2, "method":"tools/list", "params":{"_meta":meta}})).await;
             if version == ProtocolVersion::LATEST.to_string() { assert!(response_session.is_none()); }
             let tools = tools["result"]["tools"].as_array().unwrap_or_else(|| panic!("tools/list failed: {tools}"));
-            assert_eq!(tools.len(), 17);
+            assert_eq!(tools.len(), 23);
             assert!(tools.iter().any(|tool| tool["name"] == "get_prototype"));
             assert!(tools.iter().any(|tool| tool["name"] == "compare_files"));
             assert!(tools.iter().any(|tool| tool["name"] == "compare_page"));
@@ -144,7 +144,7 @@ async fn check_version(version: &str) {
             assert!(tools.iter().any(|tool| tool["name"] == "get_screenshot"));
             assert!(tools.iter().any(|tool| tool["name"] == "whoami"));
             assert!(tools.iter().any(|tool| tool["name"] == "list_files"));
-            for name in ["get_context_for_code_connect", "get_code_connect_map", "add_code_connect_map", "search_design_system", "get_libraries"] {
+            for name in ["get_context_for_code_connect", "get_code_connect_map", "add_code_connect_map", "search_design_system", "get_libraries", "list_file_shaders", "get_shader", "get_motion_context", "export_motion", "get_code_connect_suggestions", "send_code_connect_mappings"] {
                 assert!(tools.iter().any(|tool| tool["name"] == name));
             }
             let (whoami, _) = post(&client, &uri, &version, session.clone(), json!({"jsonrpc":"2.0", "id":3, "method":"tools/call", "params":{"name":"whoami", "arguments":{}, "_meta":meta}})).await;

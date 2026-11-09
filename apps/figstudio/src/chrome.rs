@@ -147,9 +147,12 @@ pub(crate) fn rounded_gradient(rect: Rect, radius: f32, colours: [Color32; 4]) -
 
 /// Opens `add` as a right-click menu on `response`, in the macOS style (`theme::menu_style`).
 pub(crate) fn context_menu(response: &Response, add: impl FnOnce(&mut Ui)) {
-    egui::Popup::context_menu(response)
+    let menu = egui::Popup::context_menu(response)
         .style(theme::menu_style)
         .show(add);
+    if let Some(menu) = menu {
+        crate::a11y::name_menu(&menu.response, "Context menu");
+    }
 }
 
 /// What was clicked among the file dots this frame.
@@ -605,7 +608,7 @@ fn app_icon_image() -> Option<egui::ColorImage> {
 pub(crate) fn accent_button(
     ui: &mut Ui,
     rect: Rect,
-    id: impl std::hash::Hash + std::fmt::Debug,
+    id: &str,
     text: &str,
     label: &str,
     tint: Tint,
@@ -613,6 +616,7 @@ pub(crate) fn accent_button(
     let p = theme::of(ui);
     let response = ui.interact(rect, Id::new(id), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
+    crate::a11y::author(&response, format!("button.{id}"));
     let (hover, press) = icons::feedback(ui, &response);
     let r = rect.translate(vec2(0.0, -hover * 1.5)).shrink(press * 2.0);
     let painter = ui.painter();
@@ -666,11 +670,20 @@ fn section_label(ui: &mut Ui, title: &str, count: Option<usize>) {
     }
 }
 
+/// Clicks and drags without taking keyboard focus: window drag strips and the click catchers
+/// behind floating cards, which are not controls.
+const WINDOW_DRAG: Sense = Sense::CLICK.union(Sense::DRAG);
+
 /// The draggable line between Pages and Layers. Dragging moves the split.
 pub(crate) fn split_handle(ui: &mut Ui, share: &mut f32) {
     let p = theme::of(ui);
     let total = ui.max_rect().height().max(1.0);
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 12.0), Sense::drag());
+    // Pointer only (Tab skips it): the keyboard has no way to move a split.
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 12.0), Sense::DRAG);
+    response.widget_info(|| {
+        WidgetInfo::labeled(WidgetType::ResizeHandle, true, "Resize Pages and Layers")
+    });
+    crate::a11y::author(&response, "splitter.pages-layers");
     let response = response.on_hover_cursor(egui::CursorIcon::ResizeVertical);
     if response.dragged() {
         *share = (*share + response.drag_delta().y / total).clamp(0.05, 0.95);
@@ -704,7 +717,7 @@ pub(crate) fn filter_field(ui: &mut Ui, text: &mut String, hint: &str, fill: Col
                 icons::paint(ui.painter(), Icon::Search, icon, p.text_faint);
                 let clear = !text.is_empty();
                 let width = ui.available_width() - if clear { 22.0 } else { 0.0 };
-                ui.add_sized(
+                let field = ui.add_sized(
                     vec2(width, 24.0),
                     egui::TextEdit::singleline(text)
                         .hint_text(hint)
@@ -712,6 +725,8 @@ pub(crate) fn filter_field(ui: &mut Ui, text: &mut String, hint: &str, fill: Col
                         .frame(egui::Frame::NONE)
                         .margin(Margin::symmetric(2, 0)),
                 );
+                crate::a11y::name_field(&field, hint);
+                crate::a11y::author(&field, format!("field.{}", crate::a11y::slug(hint)));
                 if clear
                     && icons::sized_button(ui, Icon::Close, "Clear filter", false, 20.0).clicked()
                 {
@@ -727,11 +742,18 @@ fn pill_button(
     rect: Rect,
     id: Id,
     (icon, label, tip): (Option<Icon>, &str, &str),
-    active: bool,
+    // `Some` for a tool (a toggle screen readers hear as on or off), `None` for an action.
+    active: Option<bool>,
     accent: Color32,
 ) -> Response {
     let response = ui.interact(rect, id, Sense::click());
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, active, label));
+    response.widget_info(|| match active {
+        // The tools are one of a set: radio buttons.
+        Some(on) => WidgetInfo::selected(WidgetType::RadioButton, true, on, label),
+        None => WidgetInfo::labeled(WidgetType::Button, true, label),
+    });
+    crate::a11y::author(&response, format!("button.{}", crate::a11y::slug(label)));
+    let active = active.unwrap_or(false);
     let p = theme::of(ui);
     let (hover, press) = icons::feedback(ui, &response);
     let r = rect.shrink(1.0 + press * 1.5);
@@ -777,6 +799,7 @@ impl App {
     }
 
     /// In the frameless window, empty chrome moves the window; a double click zooms it.
+    /// Drags (and double-click maximises) the window; not a control, so Tab skips it.
     fn drag_window(&self, ui: &Ui, response: &Response) {
         if !self.frameless {
             return;
@@ -878,8 +901,8 @@ impl App {
             ui.set_height(30.0);
             ui.spacing_mut().item_spacing.x = 2.0;
             if self.traffic_lights(ui.ctx()) && !peek {
-                let (_, r) =
-                    ui.allocate_exact_size(vec2(TRAFFIC_LIGHTS, 28.0), Sense::click_and_drag());
+                let (_, r) = ui.allocate_exact_size(vec2(TRAFFIC_LIGHTS, 28.0), WINDOW_DRAG);
+                crate::a11y::hide(&r);
                 self.drag_window(ui, &r);
             }
             let (label, show) = match (sidebar, peek) {
@@ -888,6 +911,8 @@ impl App {
                 (false, _) => ("Show sidebar", true),
             };
             let button = icons::button(ui, Icon::Sidebar, label, false);
+            // One id however the label reads (hide, keep open, show).
+            crate::a11y::author(&button, "button.sidebar");
             if !peek {
                 self.onboarding.targets.sidebar = Some(button.rect);
             }
@@ -896,8 +921,8 @@ impl App {
             }
             let menu = self.show_drawn_menu();
             let rest = ui.available_width() - if menu { 30.0 } else { 0.0 };
-            let (rect, r) =
-                ui.allocate_exact_size(vec2(rest.max(0.0), 28.0), Sense::click_and_drag());
+            let (rect, r) = ui.allocate_exact_size(vec2(rest.max(0.0), 28.0), WINDOW_DRAG);
+            crate::a11y::hide(&r);
             self.drag_window(ui, &r);
             if !sidebar && let Some(tab) = self.tabs.get(self.active) {
                 let p = theme::of(ui);
@@ -962,7 +987,7 @@ impl App {
             .show(ctx, |ui| {
                 // The card takes the pointer everywhere, gaps and padding included, so no
                 // click or drag on it reaches the canvas underneath.
-                ui.interact(card, Id::new("peek-card"), Sense::click_and_drag());
+                crate::a11y::hide(&ui.interact(card, Id::new("peek-card"), WINDOW_DRAG));
                 let radius = CornerRadius::same(CARD_RADIUS);
                 let painter = ui.painter();
                 painter.add(card_shadow(&p, 28).as_shape(card, radius));
@@ -1054,6 +1079,7 @@ impl App {
             .unwrap_or_default();
         let label = with_keys("Command bar", &shortcut);
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
+        crate::a11y::author(&response, "button.command-bar");
         let (hover, press) = icons::feedback(ui, &response);
         let r = rect.shrink(press);
         let painter = ui.painter();
@@ -1246,7 +1272,10 @@ impl App {
         let home = self.tabs.get(self.active).is_none();
         let plus_clicked = ui
             .put(plus_at, |ui: &mut Ui| {
-                icons::button(ui, Icon::Plus, "Open file…", false)
+                let plus = icons::button(ui, Icon::Plus, "Open file…", false);
+                // The Recents page has an "Open file…" of its own.
+                crate::a11y::author(&plus, "button.new-space");
+                plus
             })
             .clicked();
         if let Some(i) = clicked.pick {
@@ -1317,6 +1346,7 @@ impl App {
             let response = ui.interact(rect, Id::new(("space-dot", tab.id)), Sense::click());
             let title = tab.space_name();
             response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, active, &title));
+            crate::a11y::author(&response, format!("space.{}", tab.id));
             let (hover, press) = icons::feedback(ui, &response);
             // Every badge the same size, as Arc's; only the colour tells the active one. A new
             // file's dot pops in, and dots slide over when one before them closes.
@@ -1373,16 +1403,16 @@ impl App {
                     ("Rename space…", Action::RenameSpace),
                     ("Edit theme colour…", Action::SpaceColour),
                 ] {
-                    if ui.button(label).clicked() {
+                    if crate::a11y::menu_button(ui, label).clicked() {
                         clicked.action = Some((i, then));
                     }
                 }
                 ui.separator();
-                if ui.button("Reset space look").clicked() {
+                if crate::a11y::menu_button(ui, "Reset space look").clicked() {
                     clicked.action = Some((i, Action::ResetSpace));
                 }
                 ui.separator();
-                if ui.button("Close space").clicked() {
+                if crate::a11y::menu_button(ui, "Close space").clicked() {
                     clicked.close = Some(i);
                 }
             });
@@ -1402,6 +1432,7 @@ impl App {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
+            crate::a11y::progress(&response, &format!("Opening {name}…"));
             response.on_hover_text(format!("Opening {name}…"));
         }
     }
@@ -1436,10 +1467,11 @@ impl App {
                 Some(_) if self.render_worker_lost => {
                     self.crossfade = Crossfade::default();
                     ui.centered_and_justified(|ui| {
-                        ui.label(
+                        let label = ui.label(
                             RichText::new("Rendering is unavailable; restart the app.")
                                 .color(p.warning),
                         );
+                        crate::a11y::announce(&label, true);
                     });
                 }
                 Some(tab) => {
@@ -1494,9 +1526,11 @@ impl App {
             } else if !self.render_worker_lost && self.tabs.get(self.active).is_some() {
                 let tools = self.tool_pill(ui, card, &mut actions);
                 self.present_pill(ui, card, &mut actions);
+                self.motion_bar(ui, card, tools);
                 self.status_pill(ui, card, tools);
                 let below = self.find_bar(ui, card);
-                self.gaps_chip(ui, card, below);
+                let chip = self.gaps_chip(ui, card, below);
+                self.shader_notice(ui, card, below, chip);
             }
         });
         // A closed file's tiles go once no fade paints them.
@@ -1523,6 +1557,118 @@ impl App {
             self.open_dialog(&ctx);
         }
         cursor
+    }
+
+    /// The bar of a timeline playing on the canvas, in the tool pill's look: play or pause, a
+    /// scrub track, the time and close. It sits under the layer, kept inside the card and
+    /// above the tool pill.
+    fn motion_bar(&mut self, ui: &mut Ui, card: Rect, tools: Rect) {
+        let ctx = ui.ctx().clone();
+        let accent = self.tint_now(&ctx).accent;
+        let p = theme::of(ui);
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let Some(origin) = tab.canvas_rect.map(|r| r.min) else {
+            return;
+        };
+        let (page, view) = (tab.page, tab.view);
+        let Some(preview) = tab.motion_preview.as_mut() else {
+            return;
+        };
+        let Some(layer) = preview.on_screen(page, view, origin) else {
+            return;
+        };
+        let (b, pad, time_w) = (30.0, 4.0, 96.0);
+        let size = vec2(330.0_f32.min(card.width() - 16.0), 38.0);
+        let x = layer.center().x.clamp(
+            card.left() + 8.0 + size.x / 2.0,
+            card.right() - 8.0 - size.x / 2.0,
+        );
+        let y = (layer.bottom() + 10.0).clamp(card.top() + 8.0, tools.top() - 8.0 - size.y);
+        let rect = Rect::from_min_size(pos2(x - size.x / 2.0, y), size);
+        let radius = CornerRadius::same(19);
+        // Catches clicks between the controls so they do not reach the canvas.
+        ui.interact(rect, Id::new("motion-bar"), Sense::click());
+        let painter = ui.painter();
+        painter.add(card_shadow(&p, 14).as_shape(rect, radius));
+        painter.rect_filled(rect, radius, p.glass);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, p.card_stroke),
+            StrokeKind::Inside,
+        );
+        let play = Rect::from_min_size(pos2(rect.left() + pad, rect.top() + 4.0), vec2(b, b));
+        let close = Rect::from_min_size(pos2(rect.right() - pad - b, rect.top() + 4.0), vec2(b, b));
+        let (icon, label) = if preview.playing {
+            (Icon::Pause, "Pause")
+        } else {
+            (Icon::Play, "Play")
+        };
+        if pill_button(
+            ui,
+            play,
+            Id::new("motion-play"),
+            (Some(icon), label, label),
+            None,
+            accent,
+        )
+        .clicked()
+        {
+            preview.toggle();
+        }
+        let period = preview.period_us();
+        let time = Rect::from_min_max(
+            pos2(close.left() - 4.0 - time_w, rect.top()),
+            pos2(close.left() - 4.0, rect.bottom()),
+        );
+        ui.painter().text(
+            time.right_center(),
+            Align2::RIGHT_CENTER,
+            format!("{:.0} / {:.0} ms", preview.time_us / 1e3, period / 1e3),
+            egui::FontId::proportional(12.0),
+            p.text_dim,
+        );
+        // The scrub track: the played part in the accent, a knob at the playhead.
+        let track = Rect::from_min_max(
+            pos2(play.right() + 10.0, rect.top()),
+            pos2(time.left() - 10.0, rect.bottom()),
+        );
+        let response = ui
+            .interact(track, Id::new("motion-scrub"), Sense::click_and_drag())
+            .on_hover_text("Scrub");
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Slider, true, "Scrub"));
+        if (response.dragged() || response.clicked())
+            && let Some(at) = response.interact_pointer_pos()
+        {
+            let f = ((at.x - track.left()) / track.width().max(1.0)).clamp(0.0, 1.0);
+            preview.scrub(f64::from(f) * period);
+        }
+        let f = (preview.time_us / period.max(1.0)).clamp(0.0, 1.0) as f32;
+        let line = Rect::from_center_size(track.center(), vec2(track.width(), 4.0));
+        let knob = pos2(line.left() + f * line.width(), line.center().y);
+        ui.painter()
+            .rect_filled(line, CornerRadius::same(2), p.separator);
+        ui.painter().rect_filled(
+            Rect::from_min_max(line.min, pos2(knob.x, line.max.y)),
+            CornerRadius::same(2),
+            accent,
+        );
+        let (hover, _) = icons::feedback(ui, &response);
+        ui.painter().circle_filled(knob, 5.5 + hover * 1.0, accent);
+        if pill_button(
+            ui,
+            close,
+            Id::new("motion-close"),
+            (Some(Icon::Close), "Close the player", "Close the player"),
+            None,
+            accent,
+        )
+        .clicked()
+        {
+            tab.motion_preview = None;
+        }
     }
 
     /// Select / Hand / Zoom with a highlight that slides between them, and the zoom controls.
@@ -1561,7 +1707,7 @@ impl App {
         );
         let radius = CornerRadius::same(19);
         // Catches clicks between the buttons so they do not reach the canvas.
-        ui.interact(rect, Id::new("tool-pill"), Sense::click());
+        crate::a11y::hide(&ui.interact(rect, Id::new("tool-pill"), Sense::CLICK));
         let painter = ui.painter();
         painter.add(card_shadow(&p, 14).as_shape(rect, radius));
         painter.rect_filled(rect, radius, p.glass);
@@ -1593,7 +1739,7 @@ impl App {
                 slot(i as f32),
                 id,
                 (Some(icon), label, tip),
-                active,
+                Some(active),
                 accent,
             )
             .clicked()
@@ -1621,7 +1767,7 @@ impl App {
                 out,
                 Id::new("zoom-out"),
                 (Some(Icon::Minus), "Zoom out", "Zoom out (-)"),
-                false,
+                None,
                 accent,
             )
             .clicked()
@@ -1631,6 +1777,7 @@ impl App {
         let percent = zoom_percent(self.tabs.get(self.active));
         let response = ui.interact(zoom, Id::new("zoom-fit"), Sense::click());
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Zoom to fit"));
+        crate::a11y::author(&response, "button.zoom-to-fit");
         let (hover, press) = icons::feedback(ui, &response);
         ui.painter().rect_filled(
             zoom.shrink(1.0 + press),
@@ -1653,7 +1800,7 @@ impl App {
                 into,
                 Id::new("zoom-in"),
                 (Some(Icon::Plus), "Zoom in", "Zoom in (+)"),
-                false,
+                None,
                 accent,
             )
             .clicked()
@@ -1682,7 +1829,8 @@ impl App {
             vec2(pad * 2.0 + b + chevron, 38.0),
         );
         let radius = CornerRadius::same(19);
-        ui.interact(rect, Id::new("present-pill"), Sense::click());
+        // Catches clicks between the buttons so they do not reach the canvas.
+        crate::a11y::hide(&ui.interact(rect, Id::new("present-pill"), Sense::CLICK));
         let painter = ui.painter();
         painter.add(card_shadow(&p, 14).as_shape(rect, radius));
         painter.rect_filled(rect, radius, p.glass);
@@ -1706,7 +1854,7 @@ impl App {
             play,
             Id::new("present"),
             (Some(Icon::Play), "Present", &tip),
-            false,
+            None,
             accent,
         )
         .clicked()
@@ -1723,7 +1871,7 @@ impl App {
                 "Prototype options",
                 "Present or Preview",
             ),
-            false,
+            None,
             accent,
         );
         egui::Popup::menu(&response)
@@ -1870,7 +2018,7 @@ impl App {
             anim::inert(ui);
         }
         let radius = CornerRadius::same(19);
-        ui.interact(rect, Id::new("preview-bar"), Sense::click());
+        crate::a11y::hide(&ui.interact(rect, Id::new("preview-bar"), Sense::CLICK));
         let painter = ui.painter();
         painter.add(card_shadow(&p, 14).as_shape(rect, radius));
         painter.rect_filled(rect, radius, p.glass);
@@ -1900,6 +2048,7 @@ impl App {
             ] {
                 let response = ui.interact(r, Id::new(("preview-step", label)), Sense::click());
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
+                crate::a11y::author(&response, format!("button.{}", crate::a11y::slug(label)));
                 let (hover, press) = icons::feedback(ui, &response);
                 if enabled {
                     ui.painter().rect_filled(
@@ -1950,7 +2099,7 @@ impl App {
             slot(x, b),
             Id::new("preview-restart"),
             (Some(Icon::Restart), "Restart", restart_tip),
-            false,
+            None,
             accent,
         )
         .clicked()
@@ -1968,7 +2117,7 @@ impl App {
             slot(x, b),
             Id::new("preview-close"),
             (Some(Icon::Close), "Close", "Close (Esc)"),
-            false,
+            None,
             accent,
         )
         .clicked()
@@ -1977,14 +2126,33 @@ impl App {
         }
     }
 
-    /// What this page uses that figstudio does not draw exactly, at the top right.
-    fn gaps_chip(&self, ui: &mut Ui, card: Rect, top: f32) {
-        let Some(tab) = self.tabs.get(self.active) else {
+    /// The shader notice under the warning chip (`chip`); clicking the chip shows it again.
+    fn shader_notice(&mut self, ui: &mut Ui, card: Rect, top: f32, chip: Option<Response>) {
+        let dark = theme::of(ui).dark;
+        let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
+        if chip.as_ref().is_some_and(Response::clicked) {
+            tab.shaders.notice_closed = false;
+        }
+        let anchor = chip.map_or(pos2(card.right() - 12.0, top + 12.0), |c| {
+            c.rect.right_bottom() + vec2(0.0, 8.0)
+        });
+        let tint = theme::space_tint(tab.colour(), dark);
+        match crate::shader_code::notice(ui, anchor, tab, tint) {
+            Some(crate::shader_code::NoticeAction::Choose) => tab.shaders.choose.set(Some(None)),
+            Some(crate::shader_code::NoticeAction::Close) => tab.shaders.notice_closed = true,
+            None => {}
+        }
+    }
+
+    /// What this page uses that figstudio does not draw exactly, at the top right. Clickable
+    /// while the file has shaders without code (it shows their notice again).
+    fn gaps_chip(&self, ui: &mut Ui, card: Rect, top: f32) -> Option<Response> {
+        let tab = self.tabs.get(self.active)?;
         // Present shows the screen alone; Preview adds the interactions it does not play.
         if tab.preview.as_ref().is_some_and(|p| p.present) {
-            return;
+            return None;
         }
         let mut gaps = crate::region_png::gaps(&tab.stats);
         let unsupported = tab.preview.as_ref().map_or(0, |p| p.screen.skipped());
@@ -2000,14 +2168,26 @@ impl App {
             };
         }
         if gaps.is_empty() {
-            return;
+            return None;
         }
+        let shaders = tab.shaders.missing.len();
         let p = theme::of(ui);
         let max = Rect::from_min_max(
             pos2(card.center().x, top + 12.0),
             pos2(card.right() - 12.0, top + 42.0),
         );
-        ui.scope_builder(
+        let hint = if shaders > 0 {
+            "Parts of this page use features figstudio does not draw yet, so it may differ from \
+             Figma. Click to see the shaders that need their code."
+        } else if tab.preview.is_some() {
+            "Parts of this page use features figstudio does not draw yet, so it may differ from \
+             Figma. Interactions Preview does not play yet (overlays, scroll to, links to a URL, \
+             variables) are counted here."
+        } else {
+            "Parts of this page use features figstudio does not draw yet, so it may differ from \
+             Figma."
+        };
+        let chip = ui.scope_builder(
             UiBuilder::new()
                 .max_rect(max)
                 .layout(Layout::right_to_left(Align::Center)),
@@ -2023,14 +2203,29 @@ impl App {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         ui.add(
                             egui::Label::new(RichText::new(gaps).size(11.5).color(p.warning))
-                                .truncate(),
-                        )
-                        .on_hover_text("Parts of this page use features figstudio does not draw yet, so it may differ from Figma. In Preview, interactions figstudio does not play yet (overlays, scroll to, links to a URL, variables) are counted here.");
+                                .truncate()
+                                .sense(Sense::hover()),
+                        );
                         let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
                         icons::paint(ui.painter(), Icon::Warning, r, p.warning);
-                    });
+                    })
+                    .response
             },
         );
+        let sense = if shaders > 0 {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let response = ui.interact(chip.inner.rect, Id::new("gaps-chip"), sense);
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Page warnings"));
+        crate::a11y::author(&response, "button.page-warnings");
+        icons::focus_ring(ui, &response, chip.inner.rect, 8);
+        let response = response.on_hover_text(hint);
+        if shaders > 0 && response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        Some(response)
     }
 
     /// Shown in the canvas card when no file is open. Returns true when "Open file…" was
@@ -2131,7 +2326,8 @@ impl App {
         let mut y = card.bottom() - 62.0;
         let mut moving = false;
         for t in self.toasts.iter().rev() {
-            let id = Id::new(("toast", t.born.to_bits()));
+            // Two toasts can be born in the same frame: the text tells them apart.
+            let id = Id::new(("toast", t.born.to_bits(), &t.text));
             let age = (now - t.born) as f32;
             let enter = if reduce {
                 1.0
@@ -2169,7 +2365,8 @@ impl App {
                                 } else {
                                     p.text
                                 });
-                                ui.add(egui::Label::new(text).wrap());
+                                let label = ui.add(egui::Label::new(text).wrap());
+                                crate::a11y::announce(&label, t.error);
                             });
                         });
                 });

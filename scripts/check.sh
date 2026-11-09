@@ -4,8 +4,8 @@
 #   scripts/check.sh            fmt, clippy (-D warnings), tests, release build
 #   scripts/check.sh --cross    also `cargo check` for macOS and Windows
 #   scripts/check.sh --web      also build the browser app (scripts/web-build.sh; nightly)
-#   scripts/check.sh --lint     only fmt and clippy (CI job "fmt + clippy")
-#   scripts/check.sh --test     tests, release build, wasm32 (CI job "build + test")
+#   scripts/check.sh --lint     fmt, clippy, release build (CI job "fmt + clippy")
+#   scripts/check.sh --test     tests, wasm32 (CI job "build + test")
 #   scripts/check.sh --lint-one NAME
 #   scripts/check.sh --test-one NAME
 #                               one slice, for a local run. CI does not call these.
@@ -54,6 +54,25 @@ run_slice() {
     clippy-app-no-mcp)
       cargo $TC clippy --profile fast -p figstudio --no-default-features --all-targets -- -D warnings
       ;;
+    # Screen readers: the shipped desktop app must build eframe with AccessKit. The UI tests
+    # get it from egui_kittest (a dev-dependency), which a release build does not inherit,
+    # so the tests alone cannot catch it missing. `-e normal` leaves dev-dependencies out;
+    # `cargo tree` resolves for the host unless given a --target. The browser build has no
+    # AccessKit; its "Read controls aloud" needs web_screen_reader, checked for wasm32.
+    accesskit)
+      features=$(cargo $TC tree -p figstudio -e normal -e features -i eframe)
+      if ! grep -q 'eframe feature "accesskit"' <<<"$features"; then
+        echo "the desktop app builds eframe without its accesskit feature (apps/figstudio/Cargo.toml)" >&2
+        exit 1
+      fi
+      echo "eframe is built with accesskit"
+      web=$(cargo $TC tree -p figstudio -e normal -e features -i eframe --target wasm32-unknown-unknown)
+      if ! grep -q 'eframe feature "web_screen_reader"' <<<"$web"; then
+        echo "the browser app builds eframe without web_screen_reader (apps/figstudio/Cargo.toml)" >&2
+        exit 1
+      fi
+      echo "the browser build has web_screen_reader"
+      ;;
     tests-workspace)
       cargo $TC test --profile fast --workspace
       ;;
@@ -94,8 +113,8 @@ run_slice() {
       ;;
     *)
       echo "unknown check slice: $1" >&2
-      echo "lint: fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp" >&2
-      echo "test: tests-workspace tests-gpu tests-mcp-core tests-npm tests-browser-fonts release wasm32" >&2
+      echo "lint: fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp accesskit release" >&2
+      echo "test: tests-workspace tests-gpu tests-mcp-core tests-npm tests-browser-fonts wasm32" >&2
       exit 2
       ;;
   esac
@@ -103,8 +122,10 @@ run_slice() {
 
 MODE="${1:-}"
 SLICE="${2:-}"
-lint_names="fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp"
-test_names="tests-workspace tests-gpu tests-mcp-core tests-npm tests-browser-fonts release wasm32"
+# `release` sits in the lint half: it shares no artifacts with the `fast` tests, so in CI it
+# runs next to them instead of after them.
+lint_names="fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp accesskit release"
+test_names="tests-workspace tests-gpu tests-mcp-core tests-npm tests-browser-fonts wasm32"
 if [ "$MODE" = "--lint-one" ] || [ "$MODE" = "--test-one" ]; then
   [ -n "$SLICE" ] || { echo "$MODE needs a slice name" >&2; exit 2; }
   case "$MODE" in
@@ -122,17 +143,17 @@ if [ "$MODE" = "--lint-one" ] || [ "$MODE" = "--test-one" ]; then
 fi
 
 if [ "$MODE" != "--test" ]; then
-  for name in fmt clippy-workspace clippy-parallel clippy-gpu clippy-app-no-mcp; do
+  for name in $lint_names; do
     step "$name"
     run_slice "$name"
   done
 fi
 [ "$MODE" = "--lint" ] && { step "lint checks passed"; exit 0; }
 
-# --test includes release and wasm32. A pull request never runs the macOS release job,
-# and that job does not build wasm32, so dropping either here would leave the required
-# check green for a break it used to catch.
-for name in tests-workspace tests-gpu tests-mcp-core tests-npm tests-browser-fonts release wasm32; do
+# A pull request never runs the macOS release job, and that job does not build wasm32, so
+# the release build (in --lint) and wasm32 (here) must each stay in a required check, or
+# it would stay green for a break they used to catch.
+for name in $test_names; do
   step "$name"
   run_slice "$name"
 done

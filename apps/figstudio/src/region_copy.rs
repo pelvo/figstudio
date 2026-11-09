@@ -15,11 +15,11 @@ use crate::tab::Tab;
 
 /// The region menu body: Copy region (text) and Copy region as PNG.
 pub fn menu(ui: &mut egui::Ui, tab: &Tab, rect: Rect, picked: &mut Option<Item>) {
-    if ui.button("Copy region").clicked() {
+    if crate::a11y::menu_button(ui, "Copy region").clicked() {
         *picked = Some(text_item(tab, rect));
         ui.close();
     }
-    if ui.button("Copy region as PNG").clicked() {
+    if crate::a11y::menu_button(ui, "Copy region as PNG").clicked() {
         let job = Job::Region {
             page: tab.page,
             rect: region_array(rect),

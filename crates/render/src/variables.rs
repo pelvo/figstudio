@@ -21,8 +21,9 @@ const PAINT_REFERENCES: [&str; 4] = [
     "styleIdForStrokeFill",
 ];
 
-/// True when `value` or anything nested in it has one of [`PAINT_REFERENCES`].
-fn mentions_paint_reference(value: &Val) -> bool {
+/// True when `value` or anything nested in it has one of [`PAINT_REFERENCES`]. Fields still
+/// encoded are looked into only with `open_lazy` (it decodes them).
+fn mentions_paint_reference(value: &Val, open_lazy: bool) -> bool {
     let mut stack = vec![value];
     while let Some(v) = stack.pop() {
         match v {
@@ -30,7 +31,11 @@ fn mentions_paint_reference(value: &Val) -> bool {
                 if o.keys().any(|k| PAINT_REFERENCES.contains(&k)) {
                     return true;
                 }
-                stack.extend(o.values());
+                if open_lazy {
+                    stack.extend(o.values());
+                } else {
+                    stack.extend(o.values_decoded());
+                }
             }
             Val::Arr(items) => stack.extend(items),
             _ => {}
@@ -44,7 +49,13 @@ pub(crate) use figstudio_fig::resolve::STYLED_PAINTS;
 impl Variables {
     pub fn new(doc: &Document) -> Self {
         Self {
-            used: doc.nodes.iter().any(|n| mentions_paint_reference(&n.data)),
+            // The decoded fields first: most documents mention a style there, and the heavy
+            // still-encoded ones are decoded only when nothing else does.
+            used: [false, true].into_iter().any(|open| {
+                doc.nodes
+                    .iter()
+                    .any(|n| mentions_paint_reference(&n.data, open))
+            }),
             tokens: Tokens::new(doc),
         }
     }
@@ -138,3 +149,7 @@ impl Variables {
         (Cow::Owned(data), unresolved + style_unresolved)
     }
 }
+
+#[cfg(test)]
+#[path = "variables_tests.rs"]
+mod tests;

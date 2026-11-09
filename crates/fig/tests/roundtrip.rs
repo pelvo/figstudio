@@ -3,11 +3,14 @@ use std::path::PathBuf;
 
 use figstudio_fig::{Document, Guid, Node, Val};
 
-const FIXTURES: [&str; 7] = [
+const FIXTURES: [&str; 10] = [
     "broken_images",
     "corners",
+    "motion",
+    "motion-probe",
     "noise_and_grain",
     "sections",
+    "shaders",
     "stacks_wrap",
     "structure",
     "vector",
@@ -92,6 +95,94 @@ fn encoded_message_matches_the_original_bytes() {
             raw_message(&file).len()
         );
     }
+}
+
+/// GUIDs decode inline (no heap object each) and still write back, also when an edit
+/// supplies one as the two-field object a JSON round trip produces.
+#[test]
+fn guids_decode_inline_and_write_back_in_either_form() {
+    let mut doc = Document::open(fixture("structure")).unwrap();
+    let node = doc.node(Guid(1, 42)).unwrap();
+    assert!(matches!(
+        node.data.get("guid"),
+        Some(Val::Guid(Guid(1, 42)))
+    ));
+    let parent = node.data.path(&["parentIndex", "guid"]).unwrap().clone();
+    assert!(matches!(parent, Val::Guid(_)));
+    assert_eq!(parent.as_guid(), node.parent);
+
+    let as_obj: Val = serde_json::from_value(serde_json::to_value(&parent).unwrap()).unwrap();
+    assert!(matches!(as_obj, Val::Obj(_)));
+    assert_eq!(as_obj, parent);
+    let mut nodes = doc.nodes.clone();
+    let edited = nodes.iter_mut().find(|n| n.id == Guid(1, 42)).unwrap();
+    let Some(Val::Obj(index)) = edited.data.get_mut("parentIndex") else {
+        panic!()
+    };
+    index.insert("guid", as_obj);
+    doc.set_nodes(nodes).unwrap();
+    let again = Document::from_bytes(&doc.to_bytes().unwrap()).unwrap();
+    assert_eq!(again.node(Guid(1, 42)).unwrap().parent, parent.as_guid());
+}
+
+/// A field still encoded when opened (`derivedSymbolData`) is written as edited, not as its
+/// original bytes, once changed through `get_mut`.
+#[test]
+fn an_edited_lazy_field_is_written_as_edited() {
+    let mut doc = Document::open(fixture("structure")).unwrap();
+    let mut nodes = doc.nodes.clone();
+    let node = nodes
+        .iter_mut()
+        .find(|n| n.data.get("derivedSymbolData").is_some())
+        .unwrap();
+    let id = node.id;
+    let Some(Val::Arr(items)) = node.data.get_mut("derivedSymbolData") else {
+        panic!()
+    };
+    assert!(items.len() > 1);
+    items.truncate(1);
+    doc.set_nodes(nodes).unwrap();
+    let again = Document::from_bytes(&doc.to_bytes().unwrap()).unwrap();
+    let list = again
+        .node(id)
+        .unwrap()
+        .data
+        .get("derivedSymbolData")
+        .unwrap();
+    assert_eq!(list.items().len(), 1);
+}
+
+/// Two copies of a document compare equal without decoding their still-encoded fields
+/// (as compare does for every unchanged node), and a real difference is still seen.
+#[test]
+fn equal_documents_compare_equal_without_decoding_their_lazy_fields() {
+    let encoded = |doc: &Document| -> usize {
+        doc.nodes
+            .iter()
+            .map(|n| match &n.data {
+                Val::Obj(o) => o.len() - o.values_decoded().count(),
+                _ => 0,
+            })
+            .sum()
+    };
+    let a = Document::open(fixture("structure")).unwrap();
+    let mut b = Document::open(fixture("structure")).unwrap();
+    let before = encoded(&a);
+    assert!(before > 0);
+    assert!(a.nodes.iter().zip(&b.nodes).all(|(x, y)| x.data == y.data));
+    assert_eq!((encoded(&a), encoded(&b)), (before, before));
+
+    let mut nodes = b.nodes.clone();
+    let node = nodes
+        .iter_mut()
+        .find(|n| n.data.get("derivedSymbolData").is_some())
+        .unwrap();
+    let Some(Val::Arr(items)) = node.data.get_mut("derivedSymbolData") else {
+        panic!()
+    };
+    items.truncate(1);
+    b.set_nodes(nodes).unwrap();
+    assert!(!a.nodes.iter().zip(&b.nodes).all(|(x, y)| x.data == y.data));
 }
 
 #[test]

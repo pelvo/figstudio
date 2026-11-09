@@ -36,7 +36,12 @@ pub enum Job {
     Node(Guid),
     /// One node, at 2x, encoded losslessly as WebP.
     WebpNode(Guid),
+    /// One node as SVG markup (copied as text).
+    SvgNode(Guid),
 }
+
+/// Largest SVG Copy as SVG puts on the clipboard.
+const MAX_SVG_COPY_BYTES: usize = 64 * 1024 * 1024;
 
 /// A finished render.
 #[derive(Debug)]
@@ -62,6 +67,8 @@ pub struct Done {
     pub png_twin: Option<Vec<u8>>,
     /// What the render drew approximately or skipped, e.g. `2 effects skipped`.
     pub gaps: String,
+    /// The markup of an SVG job, copied as text instead of an image.
+    pub svg: Option<String>,
 }
 
 type Msg = anyhow::Result<Done>;
@@ -108,6 +115,9 @@ pub fn render(
     } else {
         ImageFormat::Png
     };
+    if let Job::SvgNode(id) = job {
+        return render_svg(images, doc, source, id);
+    }
     let (frame, name) = match job {
         Job::Region { page, rect, zoom } => {
             let (viewport, _) =
@@ -117,7 +127,7 @@ pub fn render(
             let frame = crate::renderer(images).render_complete(doc, page, &viewport, read);
             (frame, "region".to_string())
         }
-        Job::Node(id) | Job::WebpNode(id) => {
+        Job::Node(id) | Job::WebpNode(id) | Job::SvgNode(id) => {
             let b = node_bounds(doc, id).context("Nothing to copy as an image")?;
             let p =
                 plan(b.width(), b.height(), NODE_SCALE).context("Nothing to copy as an image")?;
@@ -154,6 +164,42 @@ pub fn render(
         encoded: png,
         png_twin,
         gaps,
+        svg: None,
+    })
+}
+
+/// [`render`] for [`Job::SvgNode`]: the node at 1x as SVG, its gaps including what SVG cannot
+/// express.
+fn render_svg(
+    images: Images,
+    doc: &Document,
+    source: Option<&Source>,
+    id: Guid,
+) -> anyhow::Result<Done> {
+    let b = node_bounds(doc, id).context("Nothing to copy as SVG")?;
+    let svg = crate::renderer(images)
+        .render_export_svg_complete(doc, id, 1.0, None, MAX_SVG_COPY_BYTES, |want| {
+            source.and_then(|s| s.read(&want.entry).ok())
+        })
+        .context("Nothing to copy as SVG")?;
+    anyhow::ensure!(!svg.over_limit, "The SVG is over 64 MiB; export it instead");
+    let mut gaps = gaps(&svg.stats);
+    if svg.approximated > 0 {
+        if !gaps.is_empty() {
+            gaps.push_str(", ");
+        }
+        gaps.push_str(&format!("{} steps SVG cannot express", svg.approximated));
+    }
+    Ok(Done {
+        name: doc.node(id).map_or("node".into(), |n| file_stem(&n.name)),
+        width: b.width().ceil() as usize,
+        height: b.height().ceil() as usize,
+        rgba: Vec::new(),
+        format: ImageFormat::Png,
+        encoded: None,
+        png_twin: None,
+        gaps,
+        svg: Some(svg.markup),
     })
 }
 
@@ -198,6 +244,20 @@ pub fn drive(
     }
     while let Ok(msg) = inbox.rx.try_recv() {
         toasts.push(match msg {
+            Ok(Done {
+                svg: Some(svg),
+                gaps,
+                ..
+            }) => {
+                let kb = svg.len().div_ceil(1024);
+                ctx.copy_text(svg);
+                let warn = if gaps.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · ⚠ {gaps}")
+                };
+                (format!("Copied SVG ({kb} KB){warn}"), false)
+            }
             Ok(done) => crate::region_clipboard::finish(ctx, done, &inbox.clipboard),
             Err(e) => (figstudio_fig::one_line(e.as_ref()), true),
         });

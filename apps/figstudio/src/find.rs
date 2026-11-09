@@ -311,7 +311,7 @@ impl crate::App {
         .intersect(card.shrink(8.0))
         .translate(vec2(0.0, -(1.0 - t) * 10.0));
         if open {
-            ui.interact(rect, egui::Id::new("find-bar"), Sense::click());
+            crate::a11y::hide(&ui.interact(rect, egui::Id::new("find-bar"), Sense::CLICK));
         }
         let radius = CornerRadius::same(18);
         let painter = ui.painter();
@@ -339,6 +339,8 @@ impl crate::App {
                         .vertical_align(Align::Center)
                         .desired_width(150.0),
                 );
+                crate::a11y::name_field(&field, "Find on page");
+                crate::a11y::author(&field, "find.query");
                 if std::mem::take(&mut bar.focus) {
                     field.request_focus();
                     // Select what is there, so typing replaces the last search.
@@ -382,6 +384,10 @@ impl crate::App {
                             ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
                         response
                             .widget_info(|| WidgetInfo::labeled(WidgetType::Button, n > 0, label));
+                        crate::a11y::author(
+                            &response,
+                            format!("find.{}", crate::a11y::slug(label)),
+                        );
                         let (hover, _) = icons::feedback(ui, &response);
                         ui.painter().rect_filled(
                             r,
@@ -394,7 +400,9 @@ impl crate::App {
                             step = Some(forward);
                         }
                     }
-                    ui.label(RichText::new(count).size(11.5).color(p.text_faint));
+                    if !count.is_empty() {
+                        ui.label(RichText::new(count).size(11.5).color(p.text_faint));
+                    }
                 });
             },
         );

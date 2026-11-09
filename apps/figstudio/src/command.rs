@@ -390,8 +390,12 @@ impl App {
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
             .show(ctx, |ui| {
-                let sense = if open { Sense::click() } else { Sense::hover() };
+                let sense = if open { Sense::CLICK } else { Sense::hover() };
                 let response = ui.allocate_rect(screen, sense);
+                crate::a11y::hide(&response);
+                if open {
+                    crate::a11y::modal(ui);
+                }
                 let dim = if p.dark { 110.0 } else { 40.0 };
                 let alpha = (dim * pop.clamp(0.0, 1.0)) as u8;
                 ui.painter()
@@ -438,6 +442,8 @@ impl App {
                                     .frame(egui::Frame::NONE)
                                     .margin(Margin::symmetric(6, 0)),
                             );
+                            crate::a11y::name_field(&edit, "Search or paste a Figma link");
+                            crate::a11y::author(&edit, "command-bar.query");
                             if std::mem::take(&mut bar.focus) {
                                 edit.request_focus();
                             }
@@ -474,6 +480,11 @@ impl App {
                                     response.widget_info(|| {
                                         WidgetInfo::labeled(WidgetType::Button, true, &e.title)
                                     });
+                                    // By place: two results can share a title (two layers).
+                                    crate::a11y::author(
+                                        &response,
+                                        format!("command-bar.result.{i}"),
+                                    );
                                     if response.hovered() && moved {
                                         bar.selected = i;
                                     }
@@ -650,7 +661,12 @@ fn paint_row(ui: &egui::Ui, rect: Rect, e: &Entry, selected: bool, p: &theme::Pa
 fn command_icon(e: &Entry) -> Icon {
     match e.target {
         Target::Action(Action::Open) => Icon::Plus,
-        Target::Action(Action::ExportPage(_) | Action::ExportSelection(_)) => Icon::Image,
+        Target::Action(
+            Action::ExportPage(_)
+            | Action::ExportSelection(_)
+            | Action::ExportPageSvg
+            | Action::ExportSelectionSvg,
+        ) => Icon::Image,
         Target::Action(Action::CloseTab | Action::Quit) => Icon::Close,
         Target::Action(Action::ZoomFit | Action::ActualSize) => Icon::Fit,
         Target::Action(Action::ToggleLayers) => Icon::Sidebar,

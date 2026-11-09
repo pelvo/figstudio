@@ -8,7 +8,7 @@ pub fn tool_list() -> Vec<Value> {
     let boolean = json!({"type":["boolean","null"]});
     let strings = json!({"type":["array","null"],"items":{"type":"string"}});
     let format = json!({"type":["string","null"],"enum":["png","webp",null]});
-    let asset_format = json!({"type":["string","null"],"enum":["png","webp","jpg",null]});
+    let asset_format = json!({"type":["string","null"],"enum":["png","webp","jpg","svg",null]});
     let node = vec![("nodeId", string.clone()), ("fileKey", string.clone())];
     let mut metadata = node.clone();
     metadata.push(("depth", integer.clone()));
@@ -96,6 +96,31 @@ pub fn tool_list() -> Vec<Value> {
             &[],
         ),
         tool(
+            "get_motion_context",
+            "Keyframe animation with CSS @keyframes and motion.dev snippets; recursive adds animated descendants. Defaults to selection.",
+            {
+                let mut motion = node.clone();
+                motion.push(("recursive", boolean.clone()));
+                motion
+            },
+            &[],
+        ),
+        tool(
+            "export_motion",
+            "An animated layer's timeline, one pass, as a file returned inline: gif (default here, looping) or frames (a zip of PNGs); mp4 and webm need the desktop app or the MCP server. fps 1-60, scale 0.01-8. Defaults to selection.",
+            {
+                let mut export = node.clone();
+                export.push((
+                    "format",
+                    json!({"type":["string","null"],"enum":["mp4","webm","gif","frames",null]}),
+                ));
+                export.push(("fps", integer.clone()));
+                export.push(("scale", number.clone()));
+                export
+            },
+            &[],
+        ),
+        tool(
             "get_design_context",
             "React + Tailwind reference code with inline assets, format png (default) or webp; defaults to selection.",
             design,
@@ -103,7 +128,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "download_assets",
-            "Render up to 20 nodes, format png (default), webp or jpg (flattened onto white), or return original image fills. Defaults to selection.",
+            "Render up to 20 nodes, format png (default), webp, jpg (flattened onto white) or svg (vector markup as text), or return original image fills. Defaults to selection.",
             vec![
                 ("nodeIds", strings.clone()),
                 ("fileKey", string.clone()),
@@ -132,8 +157,20 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "get_libraries",
             "Bounded inventory of this file's own components and tokens.",
-            vec![("fileKey", string)],
+            vec![("fileKey", string.clone())],
             &[],
+        ),
+        tool(
+            "list_file_shaders",
+            "Shader fills and effects this file uses, with parameter names and usage counts. No source: it stays in Figma's cloud.",
+            vec![("fileKey", string.clone())],
+            &[],
+        ),
+        tool(
+            "get_shader",
+            "One shader's parameters (label, type, range, options, default) and the layers using it with their values. No source.",
+            vec![("id", json!({"type":"string"})), ("fileKey", string)],
+            &["id"],
         ),
         tool(
             "get_context_for_code_connect",

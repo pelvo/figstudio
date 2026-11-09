@@ -1165,11 +1165,11 @@ fn settings_open_with_their_shortcut_and_their_tabs_switch() {
     assert!(h.state().settings.is_open());
     for tab in ["General", "Canvas", "Shortcuts", "Agents", "About"] {
         assert!(
-            h.query_by_role_and_label(Role::Button, tab).is_some(),
+            h.query_by_role_and_label(Role::Tab, tab).is_some(),
             "{tab} tab"
         );
     }
-    h.get_by_role_and_label(Role::Button, "Shortcuts").click();
+    h.get_by_role_and_label(Role::Tab, "Shortcuts").click();
     h.run_steps(3);
     let row =
         |h: &Harness<'_, App>, what: &str| h.query_by_role_and_label(Role::Label, what).is_some();
@@ -1322,7 +1322,7 @@ fn general_and_canvas_settings_change_the_app() {
     let ctx = h.ctx.clone();
     h.state_mut().apply(crate::menu::Action::Settings, &ctx);
     h.run_steps(3);
-    h.get_by_role_and_label(Role::Button, "Light").click();
+    h.get_by_role_and_label(Role::RadioButton, "Light").click();
     h.run_steps(3);
     assert_eq!(ctx.theme(), egui::Theme::Light);
     let reduced = crate::anim::reduced(&ctx);
@@ -1331,15 +1331,23 @@ fn general_and_canvas_settings_change_the_app() {
     h.run_steps(2);
     assert_eq!(crate::anim::reduced(&ctx), !reduced);
 
-    h.get_by_role_and_label(Role::Button, "Canvas").click();
+    h.get_by_role_and_label(Role::Tab, "Canvas").click();
     h.run_steps(3);
     h.get_by_role_and_label(Role::CheckBox, "Frame names")
         .click();
     h.run_steps(2);
     assert!(!h.state().prefs.frame_labels);
-    h.get_by_role_and_label(Role::Button, "Zooms").click();
+    h.get_by_role_and_label(Role::RadioButton, "Zooms").click();
     h.run_steps(2);
     assert!(h.state().prefs.scroll_zooms);
+    // The shader folder shows its whole path.
+    h.state_mut().prefs.shader_folder = Some("/srv/design/shader zips".into());
+    h.run_steps(3);
+    assert!(
+        h.query_by_label_contains("Watched for new zips: /srv/design/shader zips")
+            .is_some(),
+        "the folder's full path"
+    );
     h.key_press(Key::Escape);
     // Motion is on again (toggled above): Settings takes the pointer until it has faded.
     h.run_steps(40);
@@ -1366,7 +1374,7 @@ fn a_shortcut_can_be_changed_removed_and_reset_and_the_app_follows_it() {
     let open_shortcuts = |h: &mut Harness<'_, App>| {
         h.state_mut().apply(crate::menu::Action::Settings, &ctx);
         h.run_steps(2);
-        h.get_by_role_and_label(Role::Button, "Shortcuts").click();
+        h.get_by_role_and_label(Role::Tab, "Shortcuts").click();
         h.run_steps(2);
     };
     let record = |h: &mut Harness<'_, App>, what: &str, modifiers: Modifiers, key: Key| {
@@ -1435,7 +1443,7 @@ fn a_setting_s_note_stays_clear_of_its_control() {
     h.run_steps(3);
     let note = h.get_by_label_contains("Applies at the next start").rect();
     for choice in ["Auto", "GPU", "CPU"] {
-        let control = h.get_by_role_and_label(Role::Button, choice).rect();
+        let control = h.get_by_role_and_label(Role::RadioButton, choice).rect();
         assert!(
             !note.intersects(control),
             "{choice} {control:?} drawn over the note {note:?}"

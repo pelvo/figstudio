@@ -31,14 +31,18 @@ mod gpu_bytes;
 #[cfg(feature = "gpu")]
 mod gpu_scan;
 pub mod images;
+mod ink;
 mod layout;
+pub mod motion;
 mod network;
 pub mod paint;
 pub mod prototype;
 mod record;
 #[cfg(feature = "parallel")]
 mod replay;
+pub mod shader;
 mod stroke;
+pub mod svg;
 mod text;
 #[cfg(all(test, feature = "system-fonts"))]
 mod text_test_font;
@@ -52,9 +56,9 @@ use figstudio_fig::resolve::{self, InstancePath, Overrides};
 use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
-use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape};
+use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape, Size, Vec2};
 use vello_cpu::peniko::{BlendMode, Compose, Mix};
-use vello_cpu::{Pixmap, RenderContext, RenderSettings, Resources};
+use vello_cpu::{ImageSource, PaintType, Pixmap, RenderContext, RenderSettings, Resources};
 
 use crate::effects::casts_shadow;
 use crate::geom::{
@@ -265,6 +269,23 @@ pub struct Frame {
     pub wanted: Vec<ImageRequest>,
 }
 
+/// Output of one draw that may still want images (see [`Renderer::render_complete`]).
+trait Drawn {
+    fn wanted(&self) -> &[ImageRequest];
+}
+
+impl Drawn for Frame {
+    fn wanted(&self) -> &[ImageRequest] {
+        &self.wanted
+    }
+}
+
+impl Drawn for svg::Svg {
+    fn wanted(&self) -> &[ImageRequest] {
+        &self.wanted
+    }
+}
+
 /// What a frame draws: a document node (or page), or one node inside an instance.
 #[derive(Clone, Copy)]
 enum Target<'p> {
@@ -280,6 +301,10 @@ pub struct Renderer {
     emoji_source: emoji_source::Cache,
     /// Lay out text with installed fonts when the file has no stored glyph outlines.
     pub system_fonts: bool,
+    /// Draw layers as their motion has them at this moment; `None` draws them at rest.
+    pub playhead: Option<motion::Playhead>,
+    /// Draws shader fills; `None` skips them (counted as skipped paints).
+    pub shaders: Option<Arc<dyn shader::ShaderFills>>,
     /// Property and style indexes of the last document drawn, by [`Document::instance`]:
     /// built once per document, not per frame (they scan every node of every page).
     indexes: Option<(u64, Arc<resolve::Definitions>, Arc<variables::Variables>)>,
@@ -313,6 +338,8 @@ impl Default for Renderer {
             fonts: text::SystemFonts::default(),
             emoji_source: emoji_source::Cache::default(),
             system_fonts: true,
+            playhead: None,
+            shaders: None,
             indexes: None,
             prototype: Arc::default(),
             inspection_work: InspectionWork::default(),
@@ -341,6 +368,13 @@ struct Ctx<'a> {
     /// How far (output pixels) the open filter layers of enclosing nodes spread what is drawn
     /// now: culling grows each node by it, so a blur still reaching the output keeps it.
     inherited_reach: f64,
+    /// The innermost clip path (a clipping frame or a mask) and its transform (see
+    /// [`Ctx::push_filter_layer`]).
+    clip: Option<(BezPath, Affine)>,
+    playhead: Option<motion::Playhead>,
+    shaders: Option<Arc<dyn shader::ShaderFills>>,
+    /// The motion delay of each instance being drawn (µs).
+    delays: Vec<f64>,
     /// Metadata walk: issue no drawing commands or culling, only collect what it names.
     inspect: Option<Inspect>,
     /// The document instance enclosing the node being walked (inspect walks only).
@@ -438,19 +472,19 @@ impl Renderer {
     }
 
     /// Runs `draw` until no image is wanted, reading each wanted image with `read`.
-    fn complete_with(
+    fn complete_with<T: Drawn>(
         &mut self,
         mut read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
-        draw: impl Fn(&mut Self) -> Frame,
-    ) -> Frame {
+        draw: impl Fn(&mut Self) -> T,
+    ) -> T {
         self.emoji_source.take_retry_due();
         // Thumbnail first, then the image, then perhaps a finer level: a few rounds at most.
         for _ in 0..6 {
             let frame = draw(self);
-            if frame.wanted.is_empty() && self.images.in_flight() == 0 {
+            if frame.wanted().is_empty() && self.images.in_flight() == 0 {
                 return self.retry_emoji(frame, &draw);
             }
-            for want in &frame.wanted {
+            for want in frame.wanted() {
                 match read(want) {
                     Some(bytes) => {
                         self.images.insert_encoded(&want.key, &bytes, want.level);
@@ -465,11 +499,117 @@ impl Renderer {
 
     /// A complete frame is often kept (a Recents thumbnail, an export), so a platform emoji
     /// that missed for the first time (a font still loading) gets its one retry in this call.
-    fn retry_emoji(&mut self, frame: Frame, draw: &impl Fn(&mut Self) -> Frame) -> Frame {
+    fn retry_emoji<T>(&mut self, frame: T, draw: &impl Fn(&mut Self) -> T) -> T {
         if self.emoji_source.take_retry_due() {
             draw(self)
         } else {
             frame
+        }
+    }
+
+    /// [`Renderer::render_complete`] written as SVG instead of pixels (see [`svg`]). The
+    /// markup is dropped (and [`svg::Svg::over_limit`] set) past about `limit` bytes.
+    pub fn render_svg_complete(
+        &mut self,
+        doc: &Document,
+        root: Guid,
+        viewport: &Viewport,
+        limit: usize,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> svg::Svg {
+        self.complete_svg(doc, read, |this, originals| {
+            this.render_svg_view(doc, Target::Node(root), viewport, limit, None, originals)
+        })
+    }
+
+    /// [`Renderer::render_svg_complete`] for a node inside an instance (see
+    /// [`Renderer::render_path`]).
+    pub fn render_path_svg_complete(
+        &mut self,
+        doc: &Document,
+        path: &InstancePath,
+        viewport: &Viewport,
+        limit: usize,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> svg::Svg {
+        self.complete_svg(doc, read, |this, originals| {
+            this.render_svg_view(doc, Target::Path(path), viewport, limit, None, originals)
+        })
+    }
+
+    /// [`Renderer::complete_with`] for an SVG: `draw` also gets the bytes of an image file by
+    /// hash (from the document, else read like any image), so the SVG can embed the file as
+    /// Figma's export does instead of re-encoding decoded pixels.
+    fn complete_svg(
+        &mut self,
+        doc: &Document,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+        draw: impl Fn(&mut Self, &mut dyn FnMut(&str) -> Option<Vec<u8>>) -> svg::Svg,
+    ) -> svg::Svg {
+        // `read` is used between draws and, for the originals, during one: never both at once.
+        let read = std::cell::RefCell::new(read);
+        self.complete_with(
+            |want| (*read.borrow_mut())(want),
+            |this| {
+                let mut original = |hash: &str| {
+                    if let Some(bytes) = doc.images.get(hash) {
+                        return Some(bytes.clone());
+                    }
+                    let entry = doc.lazy_images.get(hash)?;
+                    let want = ImageRequest {
+                        hash: hash.to_owned(),
+                        key: images::cache_key(doc, hash),
+                        level: 0,
+                        entry: entry.clone(),
+                    };
+                    (*read.borrow_mut())(&want)
+                };
+                draw(this, &mut original)
+            },
+        )
+    }
+
+    /// The SVG of `root` in `viewport`, showing only `crop` (output units) when given.
+    /// `originals` gives an image file's bytes by hash.
+    fn render_svg_view(
+        &mut self,
+        doc: &Document,
+        root: Target<'_>,
+        viewport: &Viewport,
+        limit: usize,
+        crop: Option<Rect>,
+        originals: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
+    ) -> svg::Svg {
+        let (w, h) = (
+            f64::from(viewport.width.max(1)),
+            f64::from(viewport.height.max(1)),
+        );
+        let mut canvas = svg::SvgCanvas::new(w, h, limit).with_originals(originals);
+        if let Some(bg) = viewport.background {
+            canvas.background(bg);
+        }
+        let (stats, wanted) = self.walk(
+            doc,
+            root,
+            viewport.transform,
+            Rect::new(0.0, 0.0, w, h),
+            &mut canvas,
+            MAX_RENDER_WORK,
+            0,
+        );
+        let view = crop.unwrap_or(Rect::new(0.0, 0.0, w, h));
+        let (markup, approximated, over_limit) = match crop {
+            None => canvas.finish(),
+            Some(view) => canvas.finish_view(view),
+        };
+        svg::Svg {
+            markup,
+            stats,
+            wanted,
+            approximated,
+            over_limit,
+            width: view.width(),
+            height: view.height(),
         }
     }
 
@@ -735,6 +875,13 @@ impl Renderer {
             child_filter: None,
             scroll_depth: 0,
             clips: Vec::new(),
+            clip: None,
+            playhead: self.playhead.clone(),
+            shaders: self
+                .shaders
+                .clone()
+                .or_else(|| self.images.shaders(doc.instance)),
+            delays: Vec::new(),
         }
     }
     /// Counts visible stored emoji on every page using the draw walk's overrides, truncation
@@ -793,6 +940,176 @@ impl Renderer {
         let (viewport, _, _) = fit_viewport(doc, root, scale, padding, background)?;
         Some(self.render_complete(doc, root, &viewport, read))
     }
+
+    /// What an export of `root` draws, cropped like Figma's export (its render bounds): the
+    /// pixels actually drawn, and never less than the box of a frame, component or instance
+    /// (a page has no box). Text and shapes shrink to their ink, a shadow or an overflowing
+    /// child widens the crop. `background` is painted under the crop afterwards. `None` when
+    /// nothing is drawn.
+    pub fn render_export_complete(
+        &mut self,
+        doc: &Document,
+        root: Guid,
+        scale: f64,
+        background: Option<AlphaColor<Srgb>>,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> Option<Frame> {
+        let (mut viewport, _, _) = fit_viewport(doc, root, scale, 0.0, None)?;
+        let crop = self.export_crop(doc, root, &viewport)?;
+        // The crop starts between pixels: move the drawing so its corner falls on one, and
+        // leave room for the rounded-up size.
+        let shift = Vec2::new(crop.x0 - crop.x0.floor(), crop.y0 - crop.y0.floor());
+        viewport.transform = Affine::translate(-shift) * viewport.transform;
+        viewport.width = viewport.width.saturating_add(1);
+        viewport.height = viewport.height.saturating_add(1);
+        let crop = crop - shift;
+        let mut frame = self.render_complete(doc, root, &viewport, read);
+        frame.pixmap = crop_pixmap(&frame.pixmap, crop, background);
+        Some(frame)
+    }
+
+    /// [`Renderer::render_export_complete`] as SVG: the `viewBox` is the crop (the ink of the
+    /// drawn fills, at least a frame-like layer's box). `None` when nothing is drawn.
+    pub fn render_export_svg_complete(
+        &mut self,
+        doc: &Document,
+        root: Guid,
+        scale: f64,
+        background: Option<AlphaColor<Srgb>>,
+        limit: usize,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> Option<svg::Svg> {
+        let (viewport, _, _) = fit_viewport(doc, root, scale, 0.0, background)?;
+        let crop = self.export_crop(doc, root, &viewport)?;
+        Some(self.complete_svg(doc, read, |this, originals| {
+            this.render_svg_view(
+                doc,
+                Target::Node(root),
+                &viewport,
+                limit,
+                Some(crop),
+                originals,
+            )
+        }))
+    }
+
+    /// The export crop of `root` in `viewport` (output pixels): the area its drawing covers
+    /// ([`ink::InkCanvas`]), never less than a frame-like layer's box. `None` when it draws
+    /// nothing.
+    fn export_crop(&mut self, doc: &Document, root: Guid, viewport: &Viewport) -> Option<Rect> {
+        let full = Rect::new(
+            0.0,
+            0.0,
+            f64::from(viewport.width.max(1)),
+            f64::from(viewport.height.max(1)),
+        );
+        let mut canvas = ink::InkCanvas::new();
+        let (_, wanted) = self.walk(
+            doc,
+            Target::Node(root),
+            viewport.transform,
+            full,
+            &mut canvas,
+            MAX_RENDER_WORK,
+            0,
+        );
+        // Images this walk asked for are read by the render after it, which must be able
+        // to ask again.
+        for want in &wanted {
+            self.images.abandon(&want.key, want.level);
+        }
+        crop_rect(canvas.ink(), export_keep(doc, root, viewport), viewport)
+    }
+
+    /// [`Renderer::render_fit_complete`] written as SVG (see [`svg`]); `None` when nothing is
+    /// visible. The markup is dropped (and [`svg::Svg::over_limit`] set) past about `limit`
+    /// bytes.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "render_fit_complete plus the size limit"
+    )]
+    pub fn render_fit_svg_complete(
+        &mut self,
+        doc: &Document,
+        root: Guid,
+        scale: f64,
+        padding: f64,
+        background: Option<AlphaColor<Srgb>>,
+        limit: usize,
+        read: impl FnMut(&ImageRequest) -> Option<Vec<u8>>,
+    ) -> Option<svg::Svg> {
+        let (viewport, _, _) = fit_viewport(doc, root, scale, padding, background)?;
+        Some(self.render_svg_complete(doc, root, &viewport, limit, read))
+    }
+}
+
+/// The box an export of `root` keeps even where nothing is drawn: a frame-like layer's own
+/// box (output pixels), as Figma's export does. `None` for pages and other layers.
+fn export_keep(doc: &Document, root: Guid, viewport: &Viewport) -> Option<Rect> {
+    let node = doc.node(root)?;
+    if !is_container(&node.kind) {
+        return None;
+    }
+    Some(
+        viewport
+            .transform
+            .transform_rect_bbox(node_bounds(doc, root)?),
+    )
+}
+
+/// The export crop: `ink` and `keep` together, kept inside the viewport. Like Figma's
+/// export it starts exactly where the drawing does; only its size is rounded up to whole
+/// pixels. `None` when both are empty.
+fn crop_rect(ink: Option<Rect>, keep: Option<Rect>, viewport: &Viewport) -> Option<Rect> {
+    let area = match (ink, keep) {
+        (Some(a), Some(b)) => a.union(b),
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => return None,
+    };
+    let full = Rect::new(
+        0.0,
+        0.0,
+        f64::from(viewport.width.max(1)),
+        f64::from(viewport.height.max(1)),
+    );
+    let area = area.intersect(full);
+    // Float noise (a side of 74.0001) must not add a whole pixel when rounding up.
+    let size = Size::new((area.width() - 2e-3).ceil(), (area.height() - 2e-3).ceil());
+    (size.width >= 1.0 && size.height >= 1.0).then(|| Rect::from_origin_size(area.origin(), size))
+}
+
+/// The pixels of `pixmap` inside `area` (whole pixels), over `background` when one is given.
+fn crop_pixmap(pixmap: &Pixmap, area: Rect, background: Option<AlphaColor<Srgb>>) -> Pixmap {
+    let src_w = usize::from(pixmap.width());
+    let src_h = usize::from(pixmap.height());
+    // Whole pixels (the shifted crop may be off by float noise), inside the source.
+    let (x0, y0) = (
+        (area.x0.round().max(0.0) as usize).min(src_w),
+        (area.y0.round().max(0.0) as usize).min(src_h),
+    );
+    // At most the source size, which fits a u16.
+    let w = u16::try_from((area.width().round() as usize).min(src_w - x0)).unwrap_or(u16::MAX);
+    let h = u16::try_from((area.height().round() as usize).min(src_h - y0)).unwrap_or(u16::MAX);
+    let mut out = Pixmap::new(w, h);
+    let src = pixmap.data_as_u8_slice();
+    let bg = background.map(|c| c.premultiply().to_rgba8().to_u8_array());
+    let dst = out.data_as_u8_slice_mut();
+    let row = usize::from(w) * 4;
+    for y in 0..usize::from(h) {
+        let from = ((y0 + y) * src_w + x0) * 4;
+        let line = &mut dst[y * row..(y + 1) * row];
+        line.copy_from_slice(&src[from..from + row]);
+        if let Some(bg) = bg {
+            // Source over background, both premultiplied.
+            for px in line.as_chunks_mut::<4>().0 {
+                let keep = 255 - u16::from(px[3]);
+                for c in 0..4 {
+                    px[c] = px[c].saturating_add(((u16::from(bg[c]) * keep + 127) / 255) as u8);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The viewport showing `root`'s content at `scale` (shrunk to fit [`MAX_SIDE`]) with `padding`,
@@ -1129,8 +1446,34 @@ impl Ctx<'_> {
         }
     }
 
-    /// Patched node data, plus whether glyphs are stale or inherited ink remains approximate.
+    /// Patched node data (overrides, then motion at the playhead), plus whether glyphs are
+    /// stale or inherited ink remains approximate.
     fn patched<'n>(
+        &self,
+        node: &'n Node,
+        path: Option<&[Guid]>,
+        parent: Option<(&Val, &Val)>,
+    ) -> (Cow<'n, Val>, bool, bool) {
+        let (data, stale, ink) = self.overridden(node, path, parent);
+        let Some(playhead) = &self.playhead else {
+            return (data, stale, ink);
+        };
+        let delay = self.delays.iter().sum();
+        match playhead
+            .motion
+            .pose(self.doc, node, &data, delay, playhead.time_us)
+        {
+            Some(pose) => {
+                let mut data = data.into_owned();
+                motion::apply(&node.kind, &mut data, &pose);
+                (Cow::Owned(data), stale, ink)
+            }
+            None => (data, stale, ink),
+        }
+    }
+
+    /// Node data with instance overrides applied (see [`Ctx::patched`]).
+    fn overridden<'n>(
         &self,
         node: &'n Node,
         path: Option<&[Guid]>,
@@ -1307,11 +1650,14 @@ impl Ctx<'_> {
             self.depth -= 1;
             return;
         }
+        if self.draw_shader_effects(node, data, world, path, (stale_glyphs, approximate_ink)) {
+            self.depth -= 1;
+            return;
+        }
         self.stats.nodes += 1;
         self.stats.approximated_instance_ink += usize::from(approximate_ink);
-        if data.text("blendMode").is_some_and(|mode| mode != "NORMAL") {
-            self.stats.approximated_blends += 1;
-        }
+        let blend = paint::blend_mode(data.text("blendMode"));
+        self.stats.approximated_blends += usize::from(blend.is_none());
         // The shape the node's fills and its shadows follow.
         let mut fill_paths = geometry(
             data,
@@ -1379,6 +1725,12 @@ impl Ctx<'_> {
         let casts = casts_shadow(data, &shadow_paths);
         let mut shadows = Vec::new();
         let mut layers = 0;
+        // Outermost, so the node's effects and opacity are blended with what is below too.
+        if let Some(mode) = blend.filter(|m| *m != BlendMode::default()) {
+            self.rc.set_transform(world);
+            self.rc.push_blend_layer(mode);
+            layers += 1;
+        }
         let mut shadow_layers = 0;
         let outer_reach = self.inherited_reach;
         let silhouette = casts
@@ -1435,11 +1787,12 @@ impl Ctx<'_> {
                     continue;
                 }
             };
-            self.rc.set_transform(world);
-            self.rc
-                .push_filter_layer(Filter::from_primitive(primitive), effect_reach(effect));
+            layers += self.push_filter_layer(
+                Filter::from_primitive(primitive),
+                effect_reach(effect),
+                world,
+            );
             self.inherited_reach += effect_reach(effect) * paint::linear_scale(world);
-            layers += 1;
         }
         let opacity = data.num("opacity").unwrap_or(1.0).clamp(0.0, 1.0);
         if opacity < 1.0 {
@@ -1473,9 +1826,13 @@ impl Ctx<'_> {
         // Children.
         if kind != "TEXT" {
             let clip = clips.then(|| base_shape(kind, data)).flatten();
+            let outer_clip = self.clip.clone();
             if let Some(clip) = &clip {
                 self.rc.set_transform(world);
-                self.rc.push_clip_layer(clip);
+                // Not a layer: clipping does not isolate, so children still blend with
+                // what is below the frame.
+                self.rc.push_clip_path(clip);
+                self.clip = Some((clip.clone(), world));
             }
             if self.layered_out(node.id, path) {
                 // A scroll layer pass's base: the frame is drawn empty, its content is a layer.
@@ -1491,8 +1848,9 @@ impl Ctx<'_> {
                 self.draw_children(node, data, world, child_path);
             }
             if clip.is_some() {
-                self.rc.pop_layer();
+                self.rc.pop_clip();
             }
+            self.clip = outer_clip;
             if stroke_last {
                 self.draw_strokes(kind, data, (fill_paths, &stroke_paths), world, (w, h));
             }
@@ -1502,6 +1860,23 @@ impl Ctx<'_> {
         }
         self.inherited_reach = outer_reach;
         self.depth -= 1;
+    }
+
+    /// Pushes a filter layer and returns how many layers to pop. Vello's clip paths do not
+    /// clip what a filter spreads, so under a clipping frame or a mask the filter layer goes
+    /// into a clip layer of the innermost clip, whose result the outer clip paths do clip.
+    pub(crate) fn push_filter_layer(&mut self, filter: Filter, reach: f64, world: Affine) -> usize {
+        let mut layers = 1;
+        if let Some((clip, at)) = &self.clip {
+            // Nonzero covers the region of every fill rule, so this never cuts into the clip.
+            self.rc.set_transform(*at);
+            self.rc.set_fill_rule(vello_cpu::peniko::Fill::NonZero);
+            self.rc.push_clip_layer(clip);
+            layers += 1;
+        }
+        self.rc.set_transform(world);
+        self.rc.push_filter_layer(filter, reach);
+        layers
     }
 
     /// Strokes: precomputed outline geometry, or stroke the base shape.
@@ -1674,14 +2049,29 @@ impl Ctx<'_> {
                     images: self.images,
                     wanted: &mut self.wanted,
                     screen: paint::linear_scale(world),
+                    full: self.rc.full_images(),
+                    shaders: self.shaders.as_deref(),
+                    time_ms: self.playhead.as_ref().map_or(0.0, |p| p.time_us / 1e3),
                 };
                 let Some(resolved) = paint::resolve(p, w, h, self.doc, &mut img, &mut self.stats)
                 else {
                     continue;
                 };
+                let mode = paint::blend_mode(p.text("blendMode"));
+                self.stats.approximated_blends += usize::from(mode.is_none());
+                let blend = mode.filter(|m| *m != BlendMode::default());
+                if let Some(hash) = &resolved.source
+                    && let PaintType::Image(image) = &resolved.paint
+                    && let ImageSource::Pixmap(pixmap) = &image.image
+                {
+                    self.rc.image_source(pixmap, hash);
+                }
                 self.rc.set_transform(world);
+                if let Some(mode) = blend {
+                    self.rc.set_blend_mode(mode);
+                }
                 if let Some(clip) = resolved.clip {
-                    self.rc.push_clip_layer(&clip.to_path(0.1));
+                    self.rc.push_clip_path(&clip.to_path(0.1));
                 }
                 self.rc.set_paint(resolved.paint);
                 self.rc.set_paint_transform(resolved.transform);
@@ -1689,13 +2079,142 @@ impl Ctx<'_> {
                     self.rc.set_fill_rule(g.rule);
                     self.rc.fill_path(&g.path);
                 }
+                if blend.is_some() {
+                    self.rc.set_blend_mode(BlendMode::default());
+                }
                 self.rc.set_paint_transform(Affine::IDENTITY);
                 if resolved.clip.is_some() {
-                    self.rc.pop_layer();
+                    self.rc.pop_clip();
                 }
             }
             start = end;
         }
+    }
+
+    /// A layer with shader effects (`CUSTOM` effects a host can run): drawn without them into
+    /// a pixmap over its box, run through them in order, and drawn in its place. `false`
+    /// leaves the layer to the normal path (which counts the effects as skipped).
+    // shortcut: the input is the layer's own box, so content outside it (children past an
+    // unclipped frame, shadows) is cut; widen to the render bounds when a file needs it.
+    fn draw_shader_effects(
+        &mut self,
+        node: &Node,
+        data: &Val,
+        world: Affine,
+        path: Option<&[Guid]>,
+        (stale, ink): (bool, bool),
+    ) -> bool {
+        let Some(host) = self.shaders.clone() else {
+            return false;
+        };
+        let effects = data.get("effects").map(Val::items).unwrap_or_default();
+        let custom: Vec<&Val> = effects
+            .iter()
+            .filter(|e| e.text("type") == Some("CUSTOM") && e.flag("visible") != Some(false))
+            .collect();
+        if custom.is_empty() || !custom.iter().all(|e| host.has_effect(self.doc, e)) {
+            return false;
+        }
+        let (w, h) = size(data);
+        let (pw, ph) = shader::pixel_size(w, h);
+        let to_pixels =
+            Affine::scale_non_uniform(f64::from(pw) / w.max(1e-6), f64::from(ph) / h.max(1e-6));
+        // The layer without its shader effects, drawn with its box on the pixmap.
+        let mut without = data.clone();
+        if let Val::Obj(fields) = &mut without {
+            let rest: Vec<Val> = effects
+                .iter()
+                .filter(|e| e.text("type") != Some("CUSTOM"))
+                .cloned()
+                .collect();
+            fields.insert("effects", Val::Arr(rest));
+        }
+        let parent = to_pixels * affine(data.get("transform")).inverse();
+        let mut canvas = RenderContext::new_with(pw, ph, RenderSettings::default());
+        let screen = Rect::new(0.0, 0.0, f64::from(pw), f64::from(ph));
+        self.offscreen(&mut canvas, screen, |ctx| {
+            ctx.draw_with_data(node, parent, path, Some((Cow::Owned(without), stale, ink)));
+        });
+        canvas.flush();
+        let mut input = Pixmap::new(pw, ph);
+        canvas.render(&mut input, &mut Resources::new());
+        let time_ms = self.playhead.as_ref().map_or(0.0, |p| p.time_us / 1e3);
+        let mut out = Arc::new(input);
+        for effect in custom {
+            match host.effect(self.doc, effect, &out, time_ms) {
+                shader::Shaded::Drawn(next) => out = next,
+                // Drawn without it until it arrives.
+                shader::Shaded::Pending => self.stats.images_loading += 1,
+                shader::Shaded::Unavailable => self.stats.skipped_effects += 1,
+            }
+        }
+        self.rc.set_transform(world);
+        self.rc.set_paint(PaintType::Image(vello_cpu::Image {
+            image: ImageSource::Pixmap(out),
+            sampler: vello_cpu::peniko::ImageSampler {
+                x_extend: vello_cpu::peniko::Extend::Pad,
+                y_extend: vello_cpu::peniko::Extend::Pad,
+                quality: vello_cpu::peniko::ImageQuality::Medium,
+                alpha: 1.0,
+            },
+        }));
+        self.rc.set_paint_transform(to_pixels.inverse());
+        self.rc.fill_path(&Rect::new(0.0, 0.0, w, h).to_path(0.1));
+        self.rc.set_paint_transform(Affine::IDENTITY);
+        true
+    }
+
+    /// Runs `draw` as this walk on another canvas (output area `screen`): overrides, stats,
+    /// image requests and the work budget carry over and come back.
+    fn offscreen(&mut self, rc: &mut dyn Canvas, screen: Rect, draw: impl FnOnce(&mut Ctx<'_>)) {
+        let overrides = std::mem::replace(
+            &mut self.overrides,
+            Overrides::new(self.definitions.clone()),
+        );
+        let mut sub = Ctx {
+            doc: self.doc,
+            rc,
+            stats: std::mem::take(&mut self.stats),
+            images: self.images,
+            wanted: std::mem::take(&mut self.wanted),
+            fonts: self.fonts.as_deref_mut(),
+            emoji_source: &mut *self.emoji_source,
+            overrides,
+            variables: self.variables.clone(),
+            definitions: self.definitions.clone(),
+            inspection_work: &mut *self.inspection_work,
+            work_left: self.work_left,
+            depth: self.depth,
+            exhausted: self.exhausted,
+            screen,
+            inherited_reach: 0.0,
+            // Another canvas: the outer clip is applied when its output is drawn.
+            clip: None,
+            playhead: self.playhead.clone(),
+            shaders: self.shaders.clone(),
+            delays: std::mem::take(&mut self.delays),
+            // The prototype's state draws inside an offscreen group as outside it.
+            inspect: self.inspect,
+            outer: self.outer,
+            found: Vec::new(),
+            prototype: self.prototype.clone(),
+            next_remap: self.next_remap.take(),
+            remaps: std::mem::take(&mut self.remaps),
+            child_scroll: self.child_scroll.take(),
+            scrollers: Vec::new(),
+            child_filter: self.child_filter.take(),
+            scroll_depth: self.scroll_depth,
+            variants: std::collections::HashMap::new(),
+            clips: Vec::new(),
+        };
+        draw(&mut sub);
+        self.overrides = sub.overrides;
+        self.stats = sub.stats;
+        self.wanted = sub.wanted;
+        self.work_left = sub.work_left;
+        self.exhausted = sub.exhausted;
+        self.delays = sub.delays;
+        self.remaps = sub.remaps;
     }
 
     /// Draws children, turning mask layers into clips for the siblings above them.
@@ -1703,6 +2222,7 @@ impl Ctx<'_> {
         let mut mask_layers = 0;
         let scroll = self.child_scroll.take();
         let filter = self.child_filter.take();
+        let outer_clip = self.clip.clone();
         for id in children_topmost_first(self.doc.children(node.id), data).rev() {
             if self.exhausted || !self.charge_work() {
                 break;
@@ -1755,6 +2275,7 @@ impl Ctx<'_> {
                     self.rc.set_transform(tf);
                     self.rc.push_clip_path(&combined);
                     self.rc.set_transform(world);
+                    self.clip = Some((combined, tf));
                     mask_layers += 1;
                 }
                 continue;
@@ -1769,6 +2290,7 @@ impl Ctx<'_> {
         for _ in 0..mask_layers {
             self.rc.pop_clip();
         }
+        self.clip = outer_clip;
     }
 
     fn charge_work(&mut self) -> bool {
@@ -1805,6 +2327,11 @@ impl Ctx<'_> {
         if path.is_none() {
             self.outer = Some(id);
         }
+        let delay = self
+            .playhead
+            .as_ref()
+            .map_or(0.0, |p| p.motion.instance_delay(data));
+        self.delays.push(delay);
         self.overrides.enter(symbol, data, &base);
         self.child_scroll = self.scroll_of(id, path, data);
         let remap = self.next_remap.take().filter(|(of, _)| *of == id);
@@ -1817,5 +2344,6 @@ impl Ctx<'_> {
         }
         self.overrides.leave();
         self.outer = outer;
+        self.delays.pop();
     }
 }

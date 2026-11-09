@@ -19,13 +19,19 @@ use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
 
+/// Largest SVG `render` writes; a bigger one is an error, not a cut file.
+const MAX_SVG_BYTES: usize = 256 * 1024 * 1024;
+
 const USAGE: &str = "figstudio-cli — headless tools for Figma .fig files
 
 USAGE:
   figstudio-cli info <file.fig>
   figstudio-cli tree <file.fig> [--page <n|name>] [--depth <n>]
-  figstudio-cli render <file.fig> [-o <out.png|out.webp>] [--format png|webp] [--page <n|name>] [--node <id>]
+  figstudio-cli render <file.fig> [-o <out.png|out.webp|out.svg>] [--format png|webp|svg] [--page <n|name>] [--node <id>]
                      [--scale <x>] [--background page|transparent|#rrggbb] [--no-system-fonts]
+  figstudio-cli render <file.fig> --node <id> -o <out.mp4|out.webm|out.gif|out.zip> [--fps <n>] [--scale <x>]
+      An animated layer's timeline, one pass: MP4 (H.264 from the OS, else AV1), WebM (AV1),
+      GIF, or a zip of PNG frames.
   figstudio-cli thumbnail <file.fig> -o <out.png|out.webp> [--format png|webp]
   figstudio-cli doctor <file.fig>
       Structure report safe to share: counts, features, timings and memory only.
@@ -37,7 +43,7 @@ USAGE:
   figstudio-cli compare <old.fig> <new.fig> -o <dir> [--scale <x>] [--no-render]
                         [--json-only] [--no-system-fonts] [--format png|webp]
       Version report: report.json, report.html and lossless WebP images under <dir>/render.
-      Compare defaults to WebP; render/thumbnail infer .webp from -o, otherwise PNG.
+      Compare defaults to WebP; render/thumbnail infer .webp (render also .svg) from -o, otherwise PNG.
   figstudio-cli prototype <file.fig> [--flow <n|name>] [--page <n|name>] [-o <dir>]
                           [--scale <x>] [--format png|webp] [--no-system-fonts]
       Prototype flows, the screens they reach and every link on them; -o renders the
@@ -74,6 +80,10 @@ struct Args {
     json_only: bool,
     format: Option<ImageFormat>,
     flow: Option<String>,
+    /// `--format svg`: `render` writes SVG (also inferred from an `.svg` output).
+    svg: bool,
+    /// Frames a second of a motion export (`render -o out.mp4`).
+    fps: Option<u32>,
 }
 
 fn command_error(command: &str, has_output: bool) -> Option<String> {
@@ -136,6 +146,8 @@ fn parse_args(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
         json_only: false,
         format: None,
         flow: None,
+        svg: false,
+        fps: None,
     };
     let mut file = None;
     while let Some(a) = raw.next() {
@@ -159,6 +171,13 @@ fn parse_args(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
                     .map_err(|_| "--depth must be a number")?
             }
             "--background" => args.background = value("--background")?,
+            "--fps" => {
+                args.fps = Some(
+                    value("--fps")?
+                        .parse()
+                        .map_err(|_| "--fps must be a whole number")?,
+                )
+            }
             "--copies" | "--pages" => {
                 let name = a.clone();
                 let n: usize = value(&name)?
@@ -176,13 +195,16 @@ fn parse_args(mut raw: impl Iterator<Item = String>) -> Result<Args, String> {
             "--no-system-fonts" => args.system_fonts = false,
             "--no-render" => args.no_render = true,
             "--json-only" => args.json_only = true,
-            "--format" => {
-                args.format = Some(
-                    value("--format")?
-                        .parse()
-                        .map_err(|e: std::io::Error| e.to_string())?,
-                )
-            }
+            "--format" => match value("--format")?.as_str() {
+                "svg" => args.svg = true,
+                other => {
+                    args.format = Some(
+                        other
+                            .parse()
+                            .map_err(|e: std::io::Error| format!("{e} (or svg for render)"))?,
+                    )
+                }
+            },
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             path if file.is_none() => file = Some(PathBuf::from(path)),
             path if args.command == "compare" && args.file2.is_none() => {
@@ -339,6 +361,49 @@ fn run(args: Args) -> Result<()> {
             let page = pick_page(&doc, args.page.as_deref())?;
             print_tree(&doc, page, 0, args.depth);
         }
+        "render" if motion_format(args.out.as_deref()).is_some() => {
+            let format = motion_format(args.out.as_deref()).context("a motion format")?;
+            let out = args.out.clone().context("an output file")?;
+            let node = args
+                .node
+                .context("a motion export needs --node <id> of an animated layer")?;
+            let mut rendering = figstudio_mcp_core::rendering::Rendering::default();
+            rendering.system_fonts = args.system_fonts;
+            if let Some(fills) = figstudio_shader::Fills::for_file(&args.file) {
+                rendering.images.set_shaders(doc.instance, fills);
+            }
+            let started = std::time::Instant::now();
+            let figstudio_mcp_core::motion_export::Exported { bytes, plan, stats } =
+                figstudio_mcp_core::motion_export::export(
+                    &doc,
+                    &node.to_string(),
+                    format,
+                    args.fps,
+                    Some(args.scale),
+                    &rendering,
+                )?;
+            std::fs::write(&out, &bytes).map_err(|e| anyhow!("{}: {e}", out.display()))?;
+            println!(
+                "{} {}x{}, {} frames at {} fps ({:.2} s, {}), {} bytes in {:.1} s",
+                out.display(),
+                plan.width,
+                plan.height,
+                plan.frames,
+                plan.fps,
+                f64::from(plan.frames) / f64::from(plan.fps),
+                format.label(),
+                bytes.len(),
+                started.elapsed().as_secs_f64()
+            );
+            if plan.cut {
+                println!(
+                    "cut to {} s (the pass is {:.1} s)",
+                    figstudio_mcp_core::motion_export::MAX_SECONDS,
+                    plan.period_us / 1e6
+                );
+            }
+            println!("{stats}");
+        }
         "render" => {
             let (root, page) = match args.node {
                 Some(id) => {
@@ -360,26 +425,71 @@ fn run(args: Args) -> Result<()> {
             let background = parse_background(&args.background, &doc, page)?;
             let mut renderer = Renderer::new();
             renderer.system_fonts = args.system_fonts;
-            let frame = renderer
-                .render_fit(
-                    &doc,
-                    root,
-                    args.scale,
-                    16.0 * args.scale.min(2.0),
-                    background,
-                )
-                .context("nothing visible to render")?;
+            renderer.shaders = figstudio_shader::Fills::for_file(&args.file)
+                .map(|f| f as std::sync::Arc<dyn figstudio_render::shader::ShaderFills>);
+            let svg = args.svg
+                || args
+                    .out
+                    .as_ref()
+                    .and_then(|o| o.extension())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
             let out = args.out.clone().unwrap_or_else(|| {
                 let stem = args
                     .file
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or("out".into());
-                PathBuf::from(format!(
-                    "{stem}.{}",
+                let ext = if svg {
+                    "svg"
+                } else {
                     args.format.unwrap_or_default().extension()
-                ))
+                };
+                PathBuf::from(format!("{stem}.{ext}"))
             });
+            // A node is cropped like Figma's export (its drawn pixels, at least a frame's box);
+            // a page keeps its padding.
+            let node = args.node.is_some();
+            let padding = 16.0 * args.scale.min(2.0);
+            if svg {
+                let drawn = if node {
+                    renderer.render_export_svg_complete(
+                        &doc,
+                        root,
+                        args.scale,
+                        background,
+                        MAX_SVG_BYTES,
+                        |_| None,
+                    )
+                } else {
+                    renderer.render_fit_svg_complete(
+                        &doc,
+                        root,
+                        args.scale,
+                        padding,
+                        background,
+                        MAX_SVG_BYTES,
+                        |_| None,
+                    )
+                }
+                .context("nothing visible to render")?;
+                if drawn.over_limit {
+                    bail!("the SVG is over 256 MiB; render a smaller node");
+                }
+                std::fs::write(&out, &drawn.markup)
+                    .map_err(|e| anyhow!("{}: {e}", out.display()))?;
+                println!("{} {} bytes of SVG", out.display(), drawn.markup.len());
+                println!("{}", drawn.stats);
+                if drawn.approximated > 0 {
+                    println!("{} drawing steps SVG cannot express", drawn.approximated);
+                }
+                return Ok(());
+            }
+            let frame = if node {
+                renderer.render_export_complete(&doc, root, args.scale, background, |_| None)
+            } else {
+                renderer.render_fit(&doc, root, args.scale, padding, background)
+            }
+            .context("nothing visible to render")?;
             let (w, h) = (frame.pixmap.width(), frame.pixmap.height());
             let bytes = encode_pixmap(frame.pixmap, image_output::format(args.format, &out))?;
             std::fs::write(&out, bytes).map_err(|e| anyhow!("{}: {e}", out.display()))?;
@@ -462,6 +572,10 @@ fn init_tracing() {
 }
 
 fn main() -> ExitCode {
+    // Started to run shader code for a figstudio process (`figstudio_shader::child`).
+    if figstudio_shader::serve_if_worker() {
+        return ExitCode::SUCCESS;
+    }
     init_tracing();
     // Usage problems (exit 2) print the help text; failures on a valid command (exit 1) do not.
     let args = match parse(std::env::args().skip(1)) {
@@ -489,4 +603,10 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The motion export an output file name asks for (`.mp4`, `.webm`, `.gif`, `.zip`).
+fn motion_format(out: Option<&std::path::Path>) -> Option<figstudio_video::Format> {
+    out?.extension()
+        .and_then(|e| figstudio_video::Format::from_extension(&e.to_string_lossy()))
 }

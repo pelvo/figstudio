@@ -115,7 +115,6 @@ pub struct Settings {
 }
 
 impl Settings {
-    #[cfg(test)]
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -335,10 +334,34 @@ fn keycap(ui: &Ui, text: &str, right: f32, y: f32, recording: bool) -> Rect {
     cap
 }
 
+/// Settings → General in the browser: egui's own screen reader, which speaks what gets focus
+/// or a click with the browser's speech synthesis. eframe has no AccessKit on the web, so a
+/// system screen reader sees only the canvas element. The choice is kept with egui's memory.
+/// What it speaks includes names and text from the open file, and a browser may use an online
+/// voice for it: the note says so.
+#[cfg_attr(all(not(target_arch = "wasm32"), not(test)), expect(dead_code))]
+fn read_aloud_setting(ui: &mut Ui) {
+    let ctx = ui.ctx().clone();
+    let mut on = ctx.options(|o| o.screen_reader);
+    setting(
+        ui,
+        "Read controls aloud",
+        "The browser says what has focus or was clicked, names and text from the open file \
+         included. Some browsers send what they speak to an online voice.",
+        |ui| {
+            if switch(ui, &mut on, "Read controls aloud").changed() {
+                ctx.options_mut(|o| o.screen_reader = on);
+            }
+        },
+    );
+}
+
 /// A switch, macOS style: the knob slides, the track fills with blue when on.
 fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(34.0, 20.0), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, *on, label));
+    crate::a11y::author(&response, format!("settings.{}", crate::a11y::slug(label)));
+    icons::focus_ring(ui, &response, rect.expand(3.0), 13);
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
@@ -429,8 +452,13 @@ fn segmented<T: Copy + PartialEq>(
         );
         let response = ui.interact(r, Id::new((id, i)), Sense::click());
         response.widget_info(|| {
-            WidgetInfo::selected(WidgetType::Button, true, *value == current, *label)
+            WidgetInfo::selected(WidgetType::RadioButton, true, *value == current, *label)
         });
+        crate::a11y::author(
+            &response,
+            format!("settings.{id}.{}", crate::a11y::slug(label)),
+        );
+        icons::focus_ring(ui, &response, r, 6);
         ui.painter().text(
             r.center(),
             Align2::CENTER_CENTER,
@@ -458,6 +486,8 @@ fn pill(ui: &mut Ui, text: &str, enabled: bool) -> Response {
     };
     let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x + 28.0, 26.0), sense);
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
+    crate::a11y::author(&response, format!("settings.{}", crate::a11y::slug(text)));
+    icons::focus_ring(ui, &response, rect, 6);
     let lift = if enabled && response.hovered() {
         0.08
     } else {
@@ -783,8 +813,12 @@ impl App {
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
             .show(ctx, |ui| {
-                let sense = if open { Sense::click() } else { Sense::hover() };
+                let sense = if open { Sense::CLICK } else { Sense::hover() };
                 let response = ui.allocate_rect(screen, sense);
+                crate::a11y::hide(&response);
+                if open {
+                    crate::a11y::modal(ui);
+                }
                 let alpha = (if look.dark { 90.0 } else { 36.0 } * pop.clamp(0.0, 1.0)) as u8;
                 ui.painter()
                     .rect_filled(screen, 0.0, Color32::from_black_alpha(alpha));
@@ -909,6 +943,8 @@ impl App {
             Sense::click(),
         );
         close.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Close settings"));
+        crate::a11y::author(&close, "settings.close");
+        icons::focus_ring(ui, &close, close.rect, 11);
         ui.painter()
             .circle_filled(close_at, 6.5, Color32::from_rgb(255, 95, 87));
         if close.hovered() {
@@ -972,6 +1008,11 @@ impl App {
             let response = ui.interact(r, Id::new(("settings-tab", i)), Sense::click());
             let on = tab == t;
             response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, on, t.label()));
+            crate::a11y::tab(&response, on);
+            crate::a11y::author(
+                &response,
+                format!("settings.tab.{}", crate::a11y::slug(t.label())),
+            );
             let (hover, _) = icons::feedback(ui, &response);
             let (icon, name) = tab_ink(&look, on, hover);
             icons::paint(
@@ -1016,6 +1057,36 @@ impl App {
             if let Some(a) = picked {
                 self.apply(Action::Appearance(a), &ctx);
             }
+            // egui's zoom of the whole UI: also ⌘+ / ⌘− (Ctrl elsewhere) and ⌘0, remembered
+            // with the window. Percent, so the steps compare exactly.
+            let steps =
+                |key| ctx.format_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, key));
+            let percent = (ctx.zoom_factor() * 100.0).round() as u16;
+            // A size set with the keys between the presets: say what it is.
+            let now = if [100, 125, 150, 200].contains(&percent) {
+                String::new()
+            } else {
+                format!("Now {percent}%. ")
+            };
+            let note = format!(
+                "{now}{} and {} for the steps between",
+                steps(egui::Key::Plus),
+                steps(egui::Key::Minus)
+            );
+            let mut size = None;
+            setting(ui, "Text size", &note, |ui| {
+                size = segmented(
+                    ui,
+                    "text-size",
+                    percent,
+                    &[("100%", 100), ("125%", 125), ("150%", 150), ("200%", 200)],
+                );
+            });
+            if let Some(size) = size {
+                ctx.set_zoom_factor(f32::from(size) / 100.0);
+            }
+            #[cfg(target_arch = "wasm32")]
+            read_aloud_setting(ui);
             let mut reduce = self.reduce_motion;
             setting(ui, "Reduce motion", "No springs, slides or fades", |ui| {
                 if switch(ui, &mut reduce, "Reduce motion").changed() {
@@ -1026,7 +1097,8 @@ impl App {
             setting(
                 ui,
                 "Translucent sidebar",
-                "The desktop shows through, blurred",
+                "The desktop shows through, blurred. Text contrast then depends on the \
+                 desktop; turn it off for the most contrast.",
                 |ui| {
                     switch(ui, &mut self.prefs.translucent, "Translucent sidebar");
                 },
@@ -1052,7 +1124,8 @@ impl App {
             &[Glyph::Icon(Icon::Gear)],
             "General",
             "How figstudio looks. The appearance can follow the system or stay light or \
-             dark; each space keeps its own colour (right-click its dot).",
+             dark; each space keeps its own colour (right-click its dot). Text size scales \
+             the whole window, not the design on the canvas.",
         );
     }
 
@@ -1078,6 +1151,36 @@ impl App {
                 });
                 if let Some(r) = picked {
                     self.prefs.renderer = r;
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                section(ui, "Shader code");
+                let note = self.prefs.shader_folder.as_ref().map_or_else(
+                    || "Zips of Figma's View code, for every file".to_owned(),
+                    |dir| format!("Watched for new zips: {}", dir.display()),
+                );
+                let mut choose = false;
+                let mut clear = false;
+                setting(ui, "Shader folder", &note, |ui| {
+                    // Right to left: the main action outermost, as other rows have it.
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    if pill(ui, "Choose…", true).clicked() {
+                        choose = true;
+                    }
+                    if self.prefs.shader_folder.is_some() && pill(ui, "Clear", true).clicked() {
+                        clear = true;
+                    }
+                });
+                if clear {
+                    self.prefs.shader_folder = None;
+                }
+                if choose
+                    && let Some(dir) = rfd::FileDialog::new()
+                        .set_title("Folder of shader code zips")
+                        .pick_folder()
+                {
+                    self.prefs.shader_folder = Some(dir);
                 }
             }
             section(ui, "On the canvas");
@@ -1107,7 +1210,9 @@ impl App {
             &[Glyph::Icon(Icon::Frame)],
             "Canvas",
             "How pages are drawn and moved around. The GPU draws faster; the CPU draws \
-             everything figstudio supports and is used when the GPU cannot.",
+             everything figstudio supports and is used when the GPU cannot. Shader layers \
+             need their code from Figma (View code, then Download files): a folder set here is \
+             used for every file.",
         );
     }
 
@@ -1141,11 +1246,13 @@ impl App {
                 if *access.remote {
                     setting(ui, "Address", "This computer's address and port", |ui| {
                         ui.add_enabled_ui(!on, |ui| {
-                            ui.add(
+                            let field = ui.add(
                                 egui::TextEdit::singleline(access.remote_addr)
                                     .hint_text("100.x.y.z:3845")
                                     .desired_width(130.0),
                             );
+                            crate::a11y::name_field(&field, "Address");
+                            crate::a11y::author(&field, "settings.agents.address");
                         });
                     });
                 }
@@ -1221,7 +1328,7 @@ impl App {
                 ))
                 .layout(Layout::left_to_right(Align::Center)),
         );
-        search.add(
+        let field = search.add(
             egui::TextEdit::singleline(&mut self.settings.filter)
                 .hint_text(RichText::new("Type a feature name or shortcut").color(look.title))
                 .font(FontId::proportional(13.5))
@@ -1229,6 +1336,8 @@ impl App {
                 .frame(egui::Frame::NONE)
                 .desired_width(f32::INFINITY),
         );
+        crate::a11y::name_field(&field, "Search shortcuts");
+        crate::a11y::author(&field, "settings.search");
         let mut rows = left.new_child(
             UiBuilder::new()
                 .max_rect(Rect::from_min_max(
@@ -1347,6 +1456,10 @@ impl App {
                 let hit = ui.interact(cap, Id::new(("shortcut", binding)), Sense::click());
                 let label = format!("{} shortcut", binding.label());
                 hit.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
+                crate::a11y::author(
+                    &hit,
+                    format!("settings.shortcut.{}", crate::a11y::slug(binding.label())),
+                );
                 if hit
                     .on_hover_text("Click, then press the new keys")
                     .clicked()
@@ -1590,5 +1703,38 @@ mod look_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod read_aloud_tests {
+    use egui::accesskit::Role;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn the_read_aloud_switch_turns_egui_s_screen_reader_on_and_off() {
+        let mut h = Harness::new_ui(super::read_aloud_setting);
+        h.run();
+        assert!(!h.ctx.options(|o| o.screen_reader));
+        h.get_by_role_and_label(Role::CheckBox, "Read controls aloud")
+            .click();
+        h.run();
+        assert!(h.ctx.options(|o| o.screen_reader));
+        h.get_by_role_and_label(Role::CheckBox, "Read controls aloud")
+            .click();
+        h.run();
+        assert!(!h.ctx.options(|o| o.screen_reader));
+    }
+
+    #[test]
+    fn the_read_aloud_note_says_file_content_is_spoken_and_may_go_online() {
+        let mut h = Harness::new_ui(super::read_aloud_setting);
+        h.run();
+        assert!(
+            h.query_by_label_contains("names and text from the open file")
+                .is_some()
+        );
+        assert!(h.query_by_label_contains("online voice").is_some());
     }
 }

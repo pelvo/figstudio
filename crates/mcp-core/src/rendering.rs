@@ -79,6 +79,43 @@ impl Rendering {
     /// Draws `root` with every image at the resolution `viewport` needs, reading the ones a
     /// lazy document is missing. An eager document renders once, as before.
     pub fn draw(&self, doc: &Document, root: Root<'_>, viewport: &Viewport) -> Frame {
+        self.draw_at(doc, root, viewport, None)
+    }
+
+    /// [`Rendering::draw`] with the document's motion at `playhead` (`None`: at rest).
+    pub fn draw_at(
+        &self,
+        doc: &Document,
+        root: Root<'_>,
+        viewport: &Viewport,
+        playhead: Option<figstudio_render::motion::Playhead>,
+    ) -> Frame {
+        let _guard = (!doc.lazy_images.is_empty()).then(|| {
+            self.lazy_lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        });
+        let mut renderer = Renderer::with_images(self.images.clone());
+        renderer.system_fonts = self.system_fonts || !self.fonts.is_empty();
+        for (font, index) in &self.fonts {
+            renderer.add_font_data(font.clone(), *index);
+        }
+        renderer.playhead = playhead;
+        let read = |want: &figstudio_render::images::ImageRequest| self.read(&want.entry);
+        match root {
+            Root::Node(id) => renderer.render_complete(doc, id, viewport, read),
+            Root::Path(path) => renderer.render_path_complete(doc, path, viewport, read),
+        }
+    }
+
+    /// [`Rendering::draw`] as SVG; the markup is dropped past about `limit` bytes.
+    pub fn draw_svg(
+        &self,
+        doc: &Document,
+        root: Root<'_>,
+        viewport: &Viewport,
+        limit: usize,
+    ) -> figstudio_render::svg::Svg {
         let _guard = (!doc.lazy_images.is_empty()).then(|| {
             self.lazy_lock
                 .lock()
@@ -91,8 +128,33 @@ impl Rendering {
         }
         let read = |want: &figstudio_render::images::ImageRequest| self.read(&want.entry);
         match root {
-            Root::Node(id) => renderer.render_complete(doc, id, viewport, read),
-            Root::Path(path) => renderer.render_path_complete(doc, path, viewport, read),
+            Root::Node(id) => renderer.render_svg_complete(doc, id, viewport, limit, read),
+            Root::Path(path) => renderer.render_path_svg_complete(doc, path, viewport, limit, read),
         }
+    }
+
+    /// `id` as SVG cropped like an export (see `Renderer::render_export_svg_complete`): the
+    /// same box the app's Export and Copy as SVG and the CLI give it. `None` when it draws
+    /// nothing.
+    pub fn draw_export_svg(
+        &self,
+        doc: &Document,
+        id: figstudio_fig::Guid,
+        scale: f64,
+        background: Option<figstudio_render::color::AlphaColor<figstudio_render::color::Srgb>>,
+        limit: usize,
+    ) -> Option<figstudio_render::svg::Svg> {
+        let _guard = (!doc.lazy_images.is_empty()).then(|| {
+            self.lazy_lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        });
+        let mut renderer = Renderer::with_images(self.images.clone());
+        renderer.system_fonts = self.system_fonts || !self.fonts.is_empty();
+        for (font, index) in &self.fonts {
+            renderer.add_font_data(font.clone(), *index);
+        }
+        let read = |want: &figstudio_render::images::ImageRequest| self.read(&want.entry);
+        renderer.render_export_svg_complete(doc, id, scale, background, limit, read)
     }
 }

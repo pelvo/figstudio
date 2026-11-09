@@ -13,12 +13,15 @@ rust-version = "1.95"
 tempfile = "3.23"
 figstudio-fig = { path = "crates/fig" }
 figstudio-diff = { path = "crates/diff" }
-figstudio-render = { path = "crates/render" }
+# No default features here: Cargo 1.95 (the MSRV) refuses a member turning them off.
+figstudio-render = { path = "crates/render", default-features = false }
 figstudio-mcp-core = { path = "crates/mcp-core", default-features = false }
+figstudio-shader = { path = "crates/shader" }
+figstudio-video = { path = "crates/video", default-features = false }
 kiwi-schema = "0.2.1"
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 ruzstd = "0.9"
-zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.3", default-features = false, features = ["deflate-flate2"] }
 vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "png", "u8_pipeline"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 clipboard-rs = { version = "0.3.5", default-features = false, features = ["wayland"] }

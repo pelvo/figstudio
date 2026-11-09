@@ -52,7 +52,8 @@ impl std::fmt::Debug for Tile {
 #[derive(Debug)]
 pub struct Tiles {
     cache: Cache<Tile>,
-    #[cfg(any(test, target_arch = "wasm32"))]
+    /// Tiles asked for before this many images had arrived were drawn with old fonts or old
+    /// shader code: dropped when they come back, and asked for again.
     font_stamp: u64,
     /// Registers GPU tiles with egui (desktop with the GPU canvas).
     #[cfg(not(target_arch = "wasm32"))]
@@ -66,7 +67,6 @@ impl Default for Tiles {
     fn default() -> Self {
         Tiles {
             cache: Cache::new(BUDGET_BYTES / TILE_BYTES),
-            #[cfg(any(test, target_arch = "wasm32"))]
             font_stamp: 0,
             gpu: None,
         }
@@ -91,7 +91,8 @@ impl Tiles {
             .is_some_and(crate::gpu_tiles_web::WebGpu::busy)
     }
 
-    #[cfg(any(test, target_arch = "wasm32"))]
+    /// Fonts or shader code changed at `stamp` (`Workers::images_arrived` after
+    /// `Workers::fonts_changed`).
     pub fn fonts_changed(&mut self, stamp: u64) {
         self.font_stamp = stamp;
     }
@@ -122,7 +123,6 @@ impl Tiles {
 
     /// Uploads a finished tile and stores it.
     pub fn accept(&mut self, ctx: &egui::Context, tab: &mut Tab, done: RenderDone) {
-        #[cfg(any(test, target_arch = "wasm32"))]
         if done.images < self.font_stamp {
             tab.tiles_received.push((done.key, done.images));
             return;

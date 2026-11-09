@@ -129,9 +129,9 @@ impl Ctx<'_> {
         }
     }
 
-    fn push_shadow_layer(&mut self, s: &Shadow, effect: &Val, world: Affine) {
-        self.rc.set_transform(world);
-        self.rc.push_filter_layer(
+    /// Returns how many layers to pop.
+    fn push_shadow_layer(&mut self, s: &Shadow, effect: &Val, world: Affine) -> usize {
+        let layers = self.push_filter_layer(
             Filter::from_primitive(FilterPrimitive::DropShadowOnly {
                 dx: s.dx,
                 dy: s.dy,
@@ -140,8 +140,10 @@ impl Ctx<'_> {
                 edge_mode: EdgeMode::None,
             }),
             effect_reach(effect),
+            world,
         );
         self.rc.set_paint(PaintType::Solid(AlphaColor::BLACK));
+        layers
     }
 
     pub(crate) fn fallback_shadow(&mut self, effect: &Val) -> FilterPrimitive {
@@ -158,7 +160,7 @@ impl Ctx<'_> {
     pub(crate) fn draw_drop_shadow(&mut self, effect: &Val, fill: &[GeomPath], world: Affine) {
         let s = self.shadow(effect);
         self.stats.shadows += 1;
-        self.push_shadow_layer(&s, effect, world);
+        let layers = self.push_shadow_layer(&s, effect, world);
         for g in fill {
             self.rc.set_fill_rule(g.rule);
             self.rc.fill_path(&g.path);
@@ -167,7 +169,9 @@ impl Ctx<'_> {
                 self.rc.fill_path(&spread_outline(&g.path, s.spread));
             }
         }
-        self.rc.pop_layer();
+        for _ in 0..layers {
+            self.rc.pop_layer();
+        }
     }
 
     pub(crate) fn draw_inner_shadow(&mut self, effect: &Val, fill: &[GeomPath], world: Affine) {
@@ -179,7 +183,7 @@ impl Ctx<'_> {
         self.rc.set_transform(world);
         self.rc.set_fill_rule(rule);
         self.rc.push_clip_layer(&path);
-        self.push_shadow_layer(&s, effect, world);
+        let layers = self.push_shadow_layer(&s, effect, world);
         // The outside of the shape, reaching past anything the blur can carry inwards.
         let margin = effect_reach(effect) + 1.0;
         let mut outside = path.clone();
@@ -198,7 +202,8 @@ impl Ctx<'_> {
             self.rc.set_fill_rule(Fill::NonZero);
             self.rc.fill_path(&spread_outline(&path, s.spread));
         }
-        self.rc.pop_layer();
-        self.rc.pop_layer();
+        for _ in 0..=layers {
+            self.rc.pop_layer();
+        }
     }
 }
