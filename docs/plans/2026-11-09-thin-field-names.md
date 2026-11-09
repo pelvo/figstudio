@@ -1,6 +1,6 @@
 ---
 branch: perf/fig-thin-field-names
-pr:
+pr: 85
 title: Store object field names as one pointer
 ---
 
@@ -22,5 +22,8 @@ title: Store object field names as one pointer
   interleaved runs (load 60-150): memory after open 568 -> 518 MB and 772 -> 704 MB (-9%);
   saving -48% / -48%; reading every field -7% / -4%; lookups by name -5% / 0%; opening
   +1% / -8% (within the spread).
+- check.sh on 1.99.0: all checks passed (225 test groups, wasm32), after a clippy
+  `borrowed_box` `#[expect]` on `Name`. Quiet-machine CPU (load 4-14): render and `info`
+  within 1%; compare time unchanged, peak -8% / -7%.
 - Not verified: the desktop app and the browser build by hand.
 
