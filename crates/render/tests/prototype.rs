@@ -862,3 +862,73 @@ fn small_scroll_steps_add_up_and_are_taken_by_the_frame() {
         "1.2 units: one"
     );
 }
+
+fn render_pass(doc: &Document, pass: prototype::Pass, shift: (f64, f64)) -> Vec<u8> {
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    renderer.prototype = std::sync::Arc::new(prototype::State {
+        pass,
+        ..Default::default()
+    });
+    renderer
+        .render(
+            doc,
+            id(1),
+            &figstudio_render::Viewport {
+                width: 80,
+                height: 80,
+                transform: Affine::translate(shift),
+                background: None,
+            },
+        )
+        .pixmap
+        .data_as_u8_slice()
+        .to_vec()
+}
+
+/// `top` over `bottom` (premultiplied RGBA), only inside `clip` (x0, y0, x1, y1).
+fn over(bottom: &mut [u8], top: &[u8], clip: (usize, usize, usize, usize)) {
+    for y in clip.1..clip.3 {
+        for x in clip.0..clip.2 {
+            let i = (y * 80 + x) * 4;
+            let a = u32::from(top[i + 3]);
+            for c in 0..4 {
+                bottom[i + c] =
+                    (u32::from(top[i + c]) + u32::from(bottom[i + c]) * (255 - a) / 255) as u8;
+            }
+        }
+    }
+}
+
+#[test]
+fn base_plus_shifted_content_plus_pinned_layers_equals_the_full_scrolled_picture() {
+    use prototype::{Pass, Pin};
+    let doc = scroll_doc();
+    let frame = vec![id(32)];
+    let offset = (0.0, 75.0);
+    let mut full_state = prototype::State::default();
+    full_state.scrolls.insert(frame.clone(), (0, 75));
+    let full = render_state(&doc, full_state);
+
+    let scroller = Screen::read(&mut Renderer::new(), &doc, id(30))
+        .scrollers
+        .remove(0);
+    assert_eq!(
+        scroller.pinned,
+        vec![(id(34), Pin::Sticky(30.0, 10.0)), (id(35), Pin::Fixed)]
+    );
+    let viewport = (0, 0, 80, 40);
+    let mut picture = render_pass(&doc, Pass::Base(vec![frame.clone()]), (0.0, 0.0));
+    let content = render_pass(&doc, Pass::Content(frame.clone()), (-offset.0, -offset.1));
+    over(&mut picture, &content, viewport);
+    for (child, pin) in &scroller.pinned {
+        let layer = render_pass(&doc, Pass::Pinned(frame.clone(), *child), pin.shift(offset));
+        over(&mut picture, &layer, viewport);
+    }
+    assert!(picture == full, "the layered picture is the full one");
+    assert_ne!(
+        render_pass(&doc, Pass::Base(vec![frame]), (0.0, 0.0)),
+        full,
+        "the base alone has no content"
+    );
+}

@@ -252,7 +252,7 @@ fn hovering_a_button_shows_its_hover_variant_and_leaving_restores_it() {
         a.tabs[0]
             .preview
             .as_ref()
-            .is_some_and(|p| p.previous.is_some())
+            .is_some_and(|p| p.complete.contains_key(&crate::tab::LayerId::Screen))
     });
     let button = super::centre_of(&h, proto::BUTTON);
     h.event(egui::Event::PointerMoved(button));
@@ -267,8 +267,7 @@ fn hovering_a_button_shows_its_hover_variant_and_leaving_restores_it() {
     assert_eq!(
         tab.preview
             .as_ref()
-            .and_then(|p| p.previous.as_ref())
-            .map(|(doc, _)| *doc),
+            .and_then(|p| p.complete.get(&crate::tab::LayerId::Screen).copied()),
         Some(own),
         "the last complete state's tiles stay underneath until the hover state's arrive"
     );
@@ -421,5 +420,52 @@ fn preview_counts_unsupported_interactions_in_the_warning_chip_and_present_hides
     assert!(
         h.query_by_label_contains("not supported").is_none(),
         "Present shows the screen alone"
+    );
+}
+
+#[test]
+fn scrolling_moves_the_frames_layer_and_re_renders_nothing() {
+    let mut h = harness();
+    h.state_mut().tabs[0].doc = Arc::new(proto::scroll_proto_doc());
+    h.run_steps(4);
+    let ctx = h.ctx.clone();
+    h.state_mut().apply(crate::menu::Action::Preview, &ctx);
+    h.run_steps(4);
+    let layers = |h: &Harness<'static, App>| h.state().tabs[0].draw_layers();
+    let before = layers(&h);
+    assert_eq!(
+        before.len(),
+        2,
+        "the screen without the frame's content, and the content"
+    );
+    assert_eq!(
+        before[1].id,
+        crate::tab::LayerId::Content(vec![proto::SCROLLER])
+    );
+    let frame = super::centre_of(&h, proto::SCROLLER);
+    h.event(egui::Event::PointerMoved(frame));
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -10.0),
+        modifiers: Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+    });
+    h.run_steps(3);
+    let after = layers(&h);
+    let docs = |l: &[crate::tab::DrawLayer]| l.iter().map(|l| l.doc).collect::<Vec<_>>();
+    assert_eq!(
+        docs(&after),
+        docs(&before),
+        "the same pictures: nothing to render again"
+    );
+    assert!(
+        after[1].shift.y < 0.0,
+        "the content is drawn moved up: {:?}",
+        after[1].shift
+    );
+    assert_eq!(
+        after[0].shift,
+        egui::Vec2::ZERO,
+        "the rest of the screen stays"
     );
 }

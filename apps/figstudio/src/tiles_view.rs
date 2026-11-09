@@ -166,84 +166,99 @@ impl Tiles {
     ) {
         // Drawn: what `tab.view` shows (an ease in progress, maybe). Planned and requested:
         // the `target` view it is heading for.
-        let (doc, page, view) = (tab.tile_doc(), tab.root(), tab.view);
-        let visible = tiles::visible_page(view.zoom, view.pan.into(), rect.size().into());
-        let planned = tiles::visible_page(target.zoom, target.pan.into(), rect.size().into());
-        let range = tiles::plan(
-            tiles::level_for(target.zoom * ppp),
-            planned,
-            self.cache.budget(),
-        );
-        let level = range.level;
-        self.cache.begin_frame(doc, page, range);
-        // Preview: the last complete prototype state's tiles under the new state's until
-        // they arrive (they differ only where the state changed); inside a frame scrolled
-        // since, shifted by the distance, so scrolling answers at once.
-        let fallback = tab
-            .preview
-            .as_ref()
-            .and_then(|p| p.previous.clone())
-            .filter(|(d, _)| *d != doc);
-        if let Some((before, before_state)) = fallback {
-            let keys = self.cache.draw_order(before, page, level, visible);
-            let mut paint_all = |painter: &egui::Painter, shown: crate::tab::View| {
-                for key in &keys {
-                    self.cache.touch(key);
-                    if let Some(entry) = self.cache.get(key) {
-                        paint_key(
-                            painter,
-                            key,
-                            entry.value.texture.id(),
-                            shown,
-                            (rect, radius),
-                        );
-                    }
-                }
-            };
-            paint_all(painter, view);
-            let now = tab.prototype_state();
-            for scroller in tab.preview.iter().flat_map(|p| &p.screen.scrollers) {
-                let key = scroller.layer.key();
-                let at = |s: &figstudio_render::prototype::State| {
-                    s.scrolls.get(&key).copied().unwrap_or((0, 0))
-                };
-                let ((x0, y0), (x1, y1)) = (at(&before_state), at(&now));
-                if (x0, y0) == (x1, y1) {
-                    continue;
-                }
-                let (lo, hi) = scroller.area.corners().iter().fold(
-                    (Pos2::new(f32::MAX, f32::MAX), Pos2::new(f32::MIN, f32::MIN)),
-                    |(lo, hi), c| {
-                        let p = view.to_screen(rect.min, Pos2::new(c.x as f32, c.y as f32));
-                        (lo.min(p), hi.max(p))
-                    },
-                );
-                let clip = Rect::from_min_max(lo, hi).intersect(painter.clip_rect());
-                let mut shifted = view;
-                shifted.pan -= egui::vec2((x1 - x0) as f32, (y1 - y0) as f32) * view.zoom;
-                paint_all(&painter.with_clip_rect(clip), shifted);
-            }
-        }
+        let (page, view) = (tab.root(), tab.view);
+        let layers = tab.draw_layers();
+        let level = tiles::level_for(target.zoom * ppp);
+        let images = workers.images_arrived();
         let mut stats: Option<Stats> = None;
         let mut elapsed = Duration::ZERO;
         let mut fallbacks = 0;
-        for key in self.cache.draw_order(doc, page, level, visible) {
-            self.cache.touch(&key);
-            let Some(entry) = self.cache.get(&key) else {
-                continue;
+        let mut wanted = Vec::new();
+        for (i, layer) in layers.iter().enumerate() {
+            // A layer drawn moved by `shift`: the view sees it at its page position + shift.
+            let moved = |v: crate::tab::View| crate::tab::View {
+                zoom: v.zoom,
+                pan: v.pan + layer.shift * v.zoom,
             };
-            paint_key(
-                painter,
-                &key,
-                entry.value.texture.id(),
-                view,
-                (rect, radius),
-            );
-            if key.level == level {
-                fallbacks += entry.stats.gpu_fallback_tiles;
-                stats.get_or_insert_default().max_with(&entry.stats);
-                elapsed += entry.value.elapsed;
+            let (shown, heading) = (moved(view), moved(target));
+            let clip = layer.clip.map(|c| {
+                Rect::from_min_max(
+                    view.to_screen(rect.min, c.min),
+                    view.to_screen(rect.min, c.max),
+                )
+            });
+            let painter = match clip {
+                Some(c) => painter.with_clip_rect(c.intersect(painter.clip_rect())),
+                None => painter.clone(),
+            };
+            // Only what can show: a layer's tiles inside its clip, as the layer sees it.
+            let in_layer = |r: figstudio_render::kurbo::Rect| match layer.clip {
+                Some(c) => {
+                    let c = c.translate(-layer.shift);
+                    r.intersect(figstudio_render::kurbo::Rect::new(
+                        f64::from(c.min.x),
+                        f64::from(c.min.y),
+                        f64::from(c.max.x),
+                        f64::from(c.max.y),
+                    ))
+                }
+                None => r,
+            };
+            let visible = in_layer(tiles::visible_page(
+                shown.zoom,
+                shown.pan.into(),
+                rect.size().into(),
+            ));
+            let planned = in_layer(tiles::visible_page(
+                heading.zoom,
+                heading.pan.into(),
+                rect.size().into(),
+            ));
+            if i > 0 && planned.is_zero_area() {
+                continue;
             }
+            let range = tiles::plan(level, planned, self.cache.budget());
+            if i == 0 {
+                self.cache.begin_frame(layer.doc, page, range);
+            } else {
+                self.cache.plan_also(layer.doc, range);
+            }
+            // The layer's last complete picture under the new one until its tiles arrive.
+            let before = tab
+                .preview
+                .as_ref()
+                .and_then(|p| p.complete.get(&layer.id).copied());
+            for doc in before
+                .filter(|d| *d != layer.doc)
+                .into_iter()
+                .chain([layer.doc])
+            {
+                for key in self.cache.draw_order(doc, page, range.level, visible) {
+                    self.cache.touch(&key);
+                    let Some(entry) = self.cache.get(&key) else {
+                        continue;
+                    };
+                    paint_key(
+                        &painter,
+                        &key,
+                        entry.value.texture.id(),
+                        shown,
+                        (rect, radius),
+                    );
+                    if i == 0 && doc == layer.doc && key.level == range.level {
+                        fallbacks += entry.stats.gpu_fallback_tiles;
+                        stats.get_or_insert_default().max_with(&entry.stats);
+                        elapsed += entry.value.elapsed;
+                    }
+                }
+            }
+            let missing = tiles::wanted(&self.cache, range, layer.doc, page, images);
+            if missing.is_empty()
+                && let Some(preview) = tab.preview.as_mut()
+            {
+                preview.complete.insert(layer.id.clone(), layer.doc);
+            }
+            wanted.extend(missing);
         }
         // The status bar describes the sharp tiles on screen (each count is a lower bound: the
         // largest of any one tile); it keeps the last numbers while none has arrived.
@@ -257,18 +272,10 @@ impl Tiles {
         if rect.width() * ppp < 1.0 || rect.height() * ppp < 1.0 {
             return;
         }
-        let images = workers.images_arrived();
-        let wanted = tiles::wanted(&self.cache, range, doc, page, images);
-        // Every tile of this state is here: it is the picture to fall back on from now on.
-        if wanted.is_empty() {
-            let state = tab.prototype_state();
-            if let Some(preview) = tab.preview.as_mut() {
-                preview.previous = Some((doc, state));
-            }
-        }
         let Some(batch) = tiles::next_batch(wanted, &tab.tile_requests) else {
             return;
         };
+        let main = &layers[0];
         let job = RenderJob {
             tab: tab.id,
             doc: tab.doc.clone(),
@@ -279,7 +286,11 @@ impl Tiles {
             // An empty batch still goes out: it cancels the tiles of the previous one.
             tiles: batch.iter().copied().collect(),
             received: std::mem::take(&mut tab.tiles_received),
-            prototype: tab.prototype_state(),
+            prototype: main.state.clone(),
+            layers: layers[1..]
+                .iter()
+                .map(|l| (l.doc, l.state.clone()))
+                .collect(),
         };
         tab.tile_requests = if workers.render(job).is_ok() {
             batch

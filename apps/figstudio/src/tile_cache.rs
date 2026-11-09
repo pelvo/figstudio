@@ -7,6 +7,31 @@ use figstudio_render::kurbo::Rect;
 
 use crate::tiles::{Key, Range};
 
+/// What the last frame planned (see [`Cache::begin_frame`]).
+pub type Plan = Option<Planned>;
+
+/// The tiles a frame planned: on one page, a range per document drawn (the first is the
+/// main picture; Preview adds its scroll layers).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Planned {
+    pub page: Guid,
+    pub ranges: Vec<(u64, Range)>,
+}
+
+impl Planned {
+    /// The planned range `key` is in, if any.
+    pub fn range_of(&self, key: &Key) -> Option<Range> {
+        (key.page == self.page)
+            .then(|| {
+                self.ranges
+                    .iter()
+                    .find(|(d, r)| *d == key.doc && r.contains(key))
+            })
+            .flatten()
+            .map(|(_, r)| *r)
+    }
+}
+
 /// A fallback tile covering more planned tiles than this is never counted as redundant (the
 /// check would be slow, and such a coarse tile is rarely fully covered).
 const MAX_COVER_CHECK: usize = 64;
@@ -39,7 +64,7 @@ pub struct Cache<T> {
     clock: u64,
     frame: u64,
     /// What the last frame planned (see [`Cache::begin_frame`]); at most half the budget.
-    plan: Option<(u64, Guid, Range)>,
+    plan: Plan,
 }
 
 impl<T> Cache<T> {
@@ -70,7 +95,17 @@ impl<T> Cache<T> {
     /// half the budget): tiles touched from now on are on screen until the next call.
     pub fn begin_frame(&mut self, doc: u64, page: Guid, plan: Range) {
         self.frame += 1;
-        self.plan = Some((doc, page, plan));
+        self.plan = Some(Planned {
+            page,
+            ranges: vec![(doc, plan)],
+        });
+    }
+
+    /// Adds `range` of `doc` to this frame's plan (Preview's scroll layers).
+    pub fn plan_also(&mut self, doc: u64, range: Range) {
+        if let Some(plan) = &mut self.plan {
+            plan.ranges.push((doc, range));
+        }
     }
 
     /// What the last frame planned: document, page and tiles (see [`Cache::begin_frame`]).
@@ -78,8 +113,8 @@ impl<T> Cache<T> {
         all(not(test), not(target_arch = "wasm32")),
         expect(dead_code, reason = "the browser prunes its GPU scenes by it")
     )]
-    pub fn plan(&self) -> Option<(u64, Guid, Range)> {
-        self.plan
+    pub fn plan(&self) -> Plan {
+        self.plan.clone()
     }
 
     /// Marks a tile as drawn this frame: a fallback on screen is evicted after tiles that are
@@ -129,10 +164,11 @@ impl<T> Cache<T> {
     /// already covered by cached planned tiles; another fallback on screen; a planned tile
     /// (of the planned range, drawn yet or not: the plan fits in the budget).
     fn keep_rank(&self, key: &Key, entry: &Entry<T>) -> u8 {
-        let Some((doc, page, plan)) = self.plan else {
+        let Some(planned) = &self.plan else {
             return 0;
         };
-        if key.doc == doc && key.page == page && plan.contains(key) {
+        let plan = planned.ranges[0].1;
+        if planned.range_of(key).is_some() {
             3
         } else if entry.frame != self.frame {
             0

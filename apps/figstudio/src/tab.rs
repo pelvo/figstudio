@@ -95,6 +95,43 @@ pub struct Tab {
     pub preview: Option<Preview>,
 }
 
+/// One picture the canvas draws (see [`Tab::draw_layers`]).
+#[derive(Clone, Debug)]
+pub struct DrawLayer {
+    pub id: LayerId,
+    /// The document number its tiles are stored under.
+    pub doc: u64,
+    pub state: Arc<prototype::State>,
+    /// Page units it is drawn moved by.
+    pub shift: egui::Vec2,
+    /// Page-space rectangle it is drawn inside (before the shift), if any.
+    pub clip: Option<egui::Rect>,
+}
+
+/// Which picture a [`DrawLayer`] is, kept across states (for its fallback).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LayerId {
+    Screen,
+    Content(Vec<Guid>),
+    Pinned(Vec<Guid>, Guid),
+}
+
+/// The page-space bounding box of an area.
+fn area_rect(area: &prototype::Area) -> egui::Rect {
+    let c = area.corners();
+    let (lo, hi) = c.iter().fold(
+        (
+            egui::pos2(f32::MAX, f32::MAX),
+            egui::pos2(f32::MIN, f32::MIN),
+        ),
+        |(lo, hi), p| {
+            let p = egui::pos2(p.x as f32, p.y as f32);
+            (lo.min(p), hi.max(p))
+        },
+    );
+    egui::Rect::from_min_max(lo, hi)
+}
+
 /// Seconds without scrolling before Preview reads the moved links again.
 const SCROLL_SETTLE: f64 = 0.15;
 
@@ -102,7 +139,7 @@ const SCROLL_SETTLE: f64 = 0.15;
 /// for no state, else one per state, so going back to a state reuses its tiles.
 fn state_doc(doc: u64, state: &prototype::State) -> u64 {
     use std::hash::{Hash, Hasher};
-    if state.swaps.is_empty() && state.scrolls.is_empty() {
+    if state.swaps.is_empty() && state.scrolls.is_empty() && state.pass == prototype::Pass::Full {
         return doc;
     }
     let mut swaps: Vec<_> = state.swaps.iter().collect();
@@ -110,7 +147,7 @@ fn state_doc(doc: u64, state: &prototype::State) -> u64 {
     let mut scrolls: Vec<_> = state.scrolls.iter().collect();
     scrolls.sort();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (doc, swaps, scrolls).hash(&mut hasher);
+    (doc, swaps, scrolls, &state.pass).hash(&mut hasher);
     hasher.finish() | 1 << 63
 }
 
@@ -131,10 +168,10 @@ pub struct Preview {
     pub fitted_size: Option<egui::Vec2>,
     /// The player's state as the tiles draw it, and their document number for it.
     pub drawn: (u64, Arc<prototype::State>),
-    /// The last state whose tiles were all on screen, and its tile document number: its
-    /// tiles stay under a new state's until those arrive (a hover changes the button in
-    /// place, without a blank), shifted where a frame scrolled since.
-    pub previous: Option<(u64, Arc<prototype::State>)>,
+    /// Per layer drawn, the tile document number of its last picture whose tiles were all
+    /// on screen: they stay under a newer picture's until those arrive (a hover changes the
+    /// button in place, without a blank).
+    pub complete: std::collections::HashMap<LayerId, u64>,
     /// When a scroll moved the links without reading them again (`Tab::preview_tick` reads
     /// them once the scroll has paused for [`SCROLL_SETTLE`]).
     pub stale_since: Option<f64>,
@@ -328,7 +365,7 @@ impl Tab {
             fitted_size: None,
             active_at: 0.0,
             drawn: (self.doc.instance, Arc::default()),
-            previous: None,
+            complete: std::collections::HashMap::new(),
             stale_since: None,
         });
         true
@@ -460,12 +497,77 @@ impl Tab {
         }
     }
 
-    /// The document number the tiles of what the canvas shows are stored under: the
+    /// The document number the tiles of the canvas's main picture are stored under: the
     /// document's, or one for the prototype state Preview draws.
     pub fn tile_doc(&self) -> u64 {
-        self.preview
-            .as_ref()
-            .map_or(self.doc.instance, |p| p.drawn.0)
+        self.draw_layers()[0].doc
+    }
+
+    /// What the canvas draws, in order: the main picture, then in Preview each scrolling
+    /// frame's content (shifted by its scroll offset, clipped to the frame) and its pinned
+    /// children. Scrolling changes only the shifts, so it re-renders nothing.
+    pub fn draw_layers(&self) -> Vec<DrawLayer> {
+        let whole = |doc, state| DrawLayer {
+            id: LayerId::Screen,
+            doc,
+            state,
+            shift: egui::Vec2::ZERO,
+            clip: None,
+        };
+        let Some(preview) = &self.preview else {
+            return vec![whole(self.doc.instance, Arc::default())];
+        };
+        let layered: Vec<&prototype::Scroller> = preview
+            .screen
+            .scrollers
+            .iter()
+            .filter(|s| !s.nested)
+            .collect();
+        if layered.is_empty() {
+            return vec![whole(preview.drawn.0, preview.drawn.1.clone())];
+        }
+        let keys: Vec<Vec<Guid>> = layered.iter().map(|s| s.layer.key()).collect();
+        let mut unscrolled = (*preview.drawn.1).clone();
+        unscrolled.scrolls.retain(|k, _| !keys.contains(k));
+        let with = |pass: prototype::Pass| {
+            let state = prototype::State {
+                pass,
+                ..unscrolled.clone()
+            };
+            (state_doc(self.doc.instance, &state), Arc::new(state))
+        };
+        let (doc, state) = with(prototype::Pass::Base(keys.clone()));
+        let mut layers = vec![whole(doc, state)];
+        for scroller in layered {
+            let key = scroller.layer.key();
+            let (x, y) = preview.drawn.1.scrolls.get(&key).copied().unwrap_or((0, 0));
+            let offset = (f64::from(x), f64::from(y));
+            let clip = scroller
+                .clips
+                .iter()
+                .map(area_rect)
+                .fold(area_rect(&scroller.area), |a, b| a.intersect(b));
+            let (doc, state) = with(prototype::Pass::Content(key.clone()));
+            layers.push(DrawLayer {
+                id: LayerId::Content(key.clone()),
+                doc,
+                state,
+                shift: egui::vec2(-offset.0 as f32, -offset.1 as f32),
+                clip: Some(clip),
+            });
+            for (child, pin) in &scroller.pinned {
+                let (dx, dy) = pin.shift(offset);
+                let (doc, state) = with(prototype::Pass::Pinned(key.clone(), *child));
+                layers.push(DrawLayer {
+                    id: LayerId::Pinned(key.clone(), *child),
+                    doc,
+                    state,
+                    shift: egui::vec2(dx as f32, dy as f32),
+                    clip: Some(clip),
+                });
+            }
+        }
+        layers
     }
 
     /// The prototype state the tiles draw (empty outside Preview).

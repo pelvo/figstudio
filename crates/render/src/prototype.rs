@@ -203,6 +203,82 @@ pub struct State {
     /// Scrolled frames, by [`Layer::key`]: how far their content is scrolled, in whole
     /// units of the frame (whole units keep states comparable and their tiles reusable).
     pub scrolls: HashMap<Vec<Guid>, (i32, i32)>,
+    /// Which part of the picture to draw (the app draws scrolling frames as layers).
+    pub pass: Pass,
+}
+
+/// What a render draws of a screen: all of it, or one part of a scroll-layered picture. The
+/// app draws the base, then each scrolling frame's content shifted by its scroll offset and
+/// clipped to the frame, then its pinned children: scrolling moves layers, it never re-renders.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Pass {
+    /// Everything, scroll offsets applied.
+    #[default]
+    Full,
+    /// Everything but the content of these scrolling frames (by layer key), drawn empty.
+    Base(Vec<Vec<Guid>>),
+    /// Only this frame's scrolling content (not its fixed or sticky children), unclipped and
+    /// unscrolled.
+    Content(Vec<Guid>),
+    /// Only this child (a document node id) of this frame, unscrolled.
+    Pinned(Vec<Guid>, Guid),
+}
+
+impl Pass {
+    /// Whether the walk draws nothing until it reaches a frame.
+    pub(crate) fn starts_hidden(&self) -> bool {
+        matches!(self, Pass::Content(_) | Pass::Pinned(..))
+    }
+}
+
+/// Which children of a scroll layer's frame a pass draws.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ChildFilter {
+    Scrolling,
+    Only(Guid),
+}
+
+impl ChildFilter {
+    pub(crate) fn keeps(&self, child: Guid, data: &Val) -> bool {
+        match self {
+            ChildFilter::Scrolling => pin_of(data).is_none(),
+            ChildFilter::Only(id) => *id == child,
+        }
+    }
+}
+
+/// A child of a scrolling frame that does not scroll with its content.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pin {
+    /// Stays where it is.
+    Fixed,
+    /// Scrolls until its top left (in the frame's units) reaches the frame's edge.
+    Sticky(f64, f64),
+}
+
+impl Pin {
+    /// How far (page units of the frame) the child moves at scroll `offset`.
+    pub fn shift(self, (dx, dy): (f64, f64)) -> (f64, f64) {
+        match self {
+            Pin::Fixed => (0.0, 0.0),
+            Pin::Sticky(x, y) => (-dx.min(x.max(0.0)), -dy.min(y.max(0.0))),
+        }
+    }
+}
+
+/// The pin of a scrolling frame's child, from Figma's `scrollBehavior`.
+fn pin_of(child: &Val) -> Option<Pin> {
+    let at = |m: &str| {
+        child
+            .path(&["transform", m])
+            .and_then(Val::as_f32)
+            .map_or(0.0, f64::from)
+    };
+    match child.text("scrollBehavior") {
+        Some("FIXED_WHEN_CHILD_OF_SCROLLING_FRAME") => Some(Pin::Fixed),
+        Some("STICKY_SCROLLS") => Some(Pin::Sticky(at("m02"), at("m12"))),
+        _ => None,
+    }
 }
 
 /// A frame that scrolls its content in Preview: Figma's overflow scrolling on a frame that
@@ -218,6 +294,10 @@ pub struct Scroller {
     pub content: (f64, f64),
     /// Scrolls across, down.
     pub axes: (bool, bool),
+    /// Its children that do not scroll with the content, by document node id, back to front.
+    pub pinned: Vec<(Guid, Pin)>,
+    /// Inside another scrolling frame's content (drawn as part of that frame's layer).
+    pub nested: bool,
 }
 
 impl Scroller {
@@ -240,23 +320,10 @@ impl Scroller {
 /// The transform scrolling adds to a child of a frame scrolled by `offset`: by the offset,
 /// none for a child fixed in place, and for a sticky child only until it reaches the frame's
 /// top or left edge, where it stays (Figma's scroll behaviours).
-pub(crate) fn scrolled(child: &Val, (dx, dy): (f64, f64)) -> Affine {
-    match child.text("scrollBehavior") {
-        Some("FIXED_WHEN_CHILD_OF_SCROLLING_FRAME") => Affine::IDENTITY,
-        Some("STICKY_SCROLLS") => {
-            let (x, y) = (
-                child
-                    .path(&["transform", "m02"])
-                    .and_then(Val::as_f32)
-                    .map_or(0.0, f64::from),
-                child
-                    .path(&["transform", "m12"])
-                    .and_then(Val::as_f32)
-                    .map_or(0.0, f64::from),
-            );
-            Affine::translate((-dx.min(x.max(0.0)), -dy.min(y.max(0.0))))
-        }
-        _ => Affine::translate((-dx, -dy)),
+pub(crate) fn scrolled(child: &Val, offset: (f64, f64)) -> Affine {
+    match pin_of(child) {
+        Some(pin) => Affine::translate(pin.shift(offset)),
+        None => Affine::translate((-offset.0, -offset.1)),
     }
 }
 
@@ -314,6 +381,26 @@ impl Ctx<'_> {
         }
     }
 
+    /// The children filter of the scroll layer pass at frame `node`, if this is its frame.
+    pub(crate) fn layer_target(&self, node: Guid, path: Option<&[Guid]>) -> Option<ChildFilter> {
+        let key = self.layer_key(node, path)?;
+        match &self.prototype.pass {
+            Pass::Content(frame) if *frame == key => Some(ChildFilter::Scrolling),
+            Pass::Pinned(frame, child) if *frame == key => Some(ChildFilter::Only(*child)),
+            _ => None,
+        }
+    }
+
+    /// Whether the base pass draws frame `node` empty (its content is a layer).
+    pub(crate) fn layered_out(&self, node: Guid, path: Option<&[Guid]>) -> bool {
+        match &self.prototype.pass {
+            Pass::Base(frames) => self
+                .layer_key(node, path)
+                .is_some_and(|k| frames.contains(&k)),
+            _ => false,
+        }
+    }
+
     /// How far the prototype state scrolls the content of frame `node`, if at all.
     pub(crate) fn scroll_of(
         &self,
@@ -321,7 +408,8 @@ impl Ctx<'_> {
         path: Option<&[Guid]>,
         data: &Val,
     ) -> Option<(f64, f64)> {
-        if self.prototype.scrolls.is_empty() {
+        // Layer passes draw their frame's content unscrolled; the app shifts it.
+        if self.prototype.scrolls.is_empty() || self.prototype.pass.starts_hidden() {
             return None;
         }
         let kind = data.text("type").unwrap_or("");
@@ -330,25 +418,25 @@ impl Ctx<'_> {
         Some((f64::from(x), f64::from(y)))
     }
 
-    /// Records `node` when it scrolls its content (Links walks).
+    /// Records `node` when it scrolls its content (Links walks); returns whether it does.
     pub(crate) fn found_scroller(
         &mut self,
         node: &Node,
         path: Option<&[Guid]>,
         world: Affine,
         data: &Val,
-    ) {
+    ) -> bool {
         let Some(axes) = scroll_axes(&node.kind, data) else {
-            return;
+            return false;
         };
         let Some(key) = self.layer_key(node.id, path) else {
-            return;
+            return false;
         };
         let layer = match path {
             None => Layer::Node(node.id),
             Some(_) => match InstancePath::new(key) {
                 Some(p) => Layer::Path(p),
-                None => return,
+                None => return false,
             },
         };
         // The content's reach, from the children as stored (in the frame's units); for an
@@ -359,6 +447,7 @@ impl Ctx<'_> {
             node.id
         };
         let mut content = (0.0f64, 0.0f64);
+        let mut pinned = Vec::new();
         for child in self
             .doc
             .children(parent)
@@ -367,6 +456,9 @@ impl Ctx<'_> {
         {
             if child.data.flag("visible") == Some(false) {
                 continue;
+            }
+            if let Some(pin) = pin_of(&child.data) {
+                pinned.push((child.id, pin));
             }
             let (w, h) = size(&child.data);
             let b = transformed_bounds(
@@ -386,7 +478,10 @@ impl Ctx<'_> {
             clips: self.clips.clone(),
             content,
             axes,
+            pinned,
+            nested: self.scroll_depth > 0,
         });
+        true
     }
 
     /// `data` of instance `node` showing the variant the prototype swapped it to, if any. As

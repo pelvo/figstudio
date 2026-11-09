@@ -7,14 +7,13 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use figstudio_fig::Guid;
 use figstudio_render::{GPU_LAYER_TEXTURE, Recording, Renderer, Viewport};
 use web_time::Duration;
 
 use crate::gpu_common::{CpuWhy, Fallback, guarded};
 pub use crate::gpu_credits::{Credits, Reservation};
 use crate::recordings::{Drawn, Recordings};
-use crate::tiles::{Key, Range};
+use crate::tiles::Key;
 use crate::worker::{RenderDone, RenderJob};
 
 /// A GPU tile on its way to the main thread: its scene, rendered there, and the reservation of
@@ -160,7 +159,7 @@ impl<T> std::fmt::Debug for Pending<T> {
 }
 
 /// The plan scenes are kept for: the last frame's document, page and tiles (ring included).
-pub type Plan = Option<(u64, Guid, Range)>;
+pub use crate::tile_cache::Plan;
 
 impl<T: Keyed> Pending<T> {
     /// Queues `item`; over [`MAX_PENDING`], drops the scenes farthest from `plan` (possibly
@@ -194,10 +193,7 @@ impl<T: Keyed> Pending<T> {
     /// every other one to `dropped`.
     pub fn prune(&mut self, plan: Plan, mut dropped: impl FnMut(T)) {
         let rank = |k: &Key| {
-            let (doc, page, range) = plan?;
-            if k.doc != doc || k.page != page || !range.contains(k) {
-                return None;
-            }
+            let range = plan.as_ref()?.range_of(k)?;
             // Twice the distance from the range's centre, in f64: no overflow at any pan.
             let d = |k: i32, a: i32, b: i32| 2.0 * f64::from(k) + 1.0 - f64::from(a) - f64::from(b);
             let (dx, dy) = (d(k.x, range.x0, range.x1), d(k.y, range.y0, range.y1));

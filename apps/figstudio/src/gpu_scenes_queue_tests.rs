@@ -97,6 +97,7 @@ impl Model {
                 tiles: batch.iter().copied().collect(),
                 received: std::mem::take(&mut self.tab.tiles_received),
                 prototype: Default::default(),
+                layers: Vec::new(),
             };
             self.worker.take(Msg::Batch(job));
             self.tab.tile_requests = batch;
@@ -237,7 +238,7 @@ fn a_frame_renders_at_most_a_few_scenes_and_the_queue_is_bounded() {
     let (plan, mut dropped) = (m.cache.plan(), 0);
     for &key in by_distance.iter().rev() {
         let item = scene(&Credits::default(), 0, 1, key, 0).unwrap();
-        m.pending.push(item, plan, |_| dropped += 1);
+        m.pending.push(item, plan.clone(), |_| dropped += 1);
         assert!(m.pending.len() <= MAX_PENDING, "{} scenes", m.pending.len());
     }
     assert_eq!((m.pending.len(), dropped), (MAX_PENDING, 400 - MAX_PENDING));

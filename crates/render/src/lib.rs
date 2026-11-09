@@ -359,6 +359,10 @@ struct Ctx<'a> {
     child_scroll: Option<(f64, f64)>,
     /// Scrolling frames an [`Inspect::Links`] walk passed, back to front.
     scrollers: Vec<prototype::Scroller>,
+    /// Which children `draw_children` draws next (scroll layer passes), taken by it.
+    child_filter: Option<prototype::ChildFilter>,
+    /// How many scrolling frames around the node an [`Inspect::Links`] walk is in.
+    scroll_depth: usize,
     /// The variant each instance an [`Inspect::Links`] walk passed shows, by layer key.
     variants: std::collections::HashMap<Vec<Guid>, Guid>,
     /// The clipping frames around the node an [`Inspect::Links`] walk is at.
@@ -372,6 +376,9 @@ enum Inspect {
     Emoji,
     /// Layers with prototype interactions, into `Ctx::found`.
     Links,
+    /// Nothing until the frame of a scroll layer pass ([`prototype::Pass`]), whose children
+    /// are then drawn.
+    Layer,
 }
 
 impl Renderer {
@@ -711,7 +718,12 @@ impl Renderer {
             exhausted: false,
             screen,
             inherited_reach: 0.0,
-            inspect: None,
+            // A scroll layer pass draws nothing until its frame.
+            inspect: self
+                .prototype
+                .pass
+                .starts_hidden()
+                .then_some(Inspect::Layer),
             outer: None,
             found: Vec::new(),
             prototype: self.prototype.clone(),
@@ -720,6 +732,8 @@ impl Renderer {
             variants: std::collections::HashMap::new(),
             child_scroll: None,
             scrollers: Vec::new(),
+            child_filter: None,
+            scroll_depth: 0,
             clips: Vec::new(),
         }
     }
@@ -1220,10 +1234,31 @@ impl Ctx<'_> {
         let kind = node.kind.as_str();
         let world = parent * affine(data.get("transform"));
         if let Some(inspect) = self.inspect {
+            // A scroll layer pass: at its frame, draw the children it keeps, unclipped and
+            // unscrolled; nothing else.
+            if inspect == Inspect::Layer
+                && let Some(filter) = self.layer_target(node.id, path)
+            {
+                self.inspect = None;
+                self.child_scroll = None;
+                self.child_filter = Some(filter);
+                if kind == "INSTANCE" {
+                    self.draw_instance(node.id, data, world, path);
+                } else {
+                    let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
+                    self.draw_children(node, data, world, child_path);
+                }
+                self.child_filter = None;
+                self.inspect = Some(Inspect::Layer);
+                self.depth -= 1;
+                return;
+            }
             let clip = inspect == Inspect::Links && kind != "TEXT" && clips_content(kind, data);
+            let mut scroller = false;
             if inspect == Inspect::Links {
                 self.found_link(node, path, world, data);
-                self.found_scroller(node, path, world, data);
+                scroller = self.found_scroller(node, path, world, data);
+                self.scroll_depth += usize::from(scroller);
                 if kind == "INSTANCE"
                     && let Some(variant) = resolve::symbol_id(data)
                 {
@@ -1262,6 +1297,7 @@ impl Ctx<'_> {
             if clip {
                 self.clips.pop();
             }
+            self.scroll_depth -= usize::from(scroller);
             self.depth -= 1;
             return;
         }
@@ -1441,7 +1477,9 @@ impl Ctx<'_> {
                 self.rc.set_transform(world);
                 self.rc.push_clip_layer(clip);
             }
-            if kind == "INSTANCE" {
+            if self.layered_out(node.id, path) {
+                // A scroll layer pass's base: the frame is drawn empty, its content is a layer.
+            } else if kind == "INSTANCE" {
                 self.draw_instance(node.id, data, world, path);
             } else if kind == "CONNECTOR" {
                 self.draw_connector(node, world);
@@ -1664,6 +1702,7 @@ impl Ctx<'_> {
     fn draw_children(&mut self, node: &Node, data: &Val, world: Affine, path: Option<&[Guid]>) {
         let mut mask_layers = 0;
         let scroll = self.child_scroll.take();
+        let filter = self.child_filter.take();
         for id in children_topmost_first(self.doc.children(node.id), data).rev() {
             if self.exhausted || !self.charge_work() {
                 break;
@@ -1673,6 +1712,12 @@ impl Ctx<'_> {
             };
             let (child_path, (child_data, stale_glyphs, approximate_ink)) =
                 self.child_patch(node, data, child, path);
+            if filter
+                .as_ref()
+                .is_some_and(|f| !f.keeps(child.id, &child_data))
+            {
+                continue;
+            }
             let world = match scroll {
                 Some(offset) => world * prototype::scrolled(&child_data, offset),
                 None => world,

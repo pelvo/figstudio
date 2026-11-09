@@ -19,6 +19,7 @@ fn job(doc: &Arc<Document>, tiles: &[Key], images: u64) -> RenderJob {
         tiles: tiles.iter().copied().collect::<VecDeque<_>>(),
         received: Vec::new(),
         prototype: Default::default(),
+        layers: Vec::new(),
     }
 }
 
