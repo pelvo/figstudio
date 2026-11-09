@@ -40,7 +40,7 @@ fn preview_follows_links_goes_back_and_esc_returns_to_the_canvas() {
         !tab.tile_requests.is_empty() && tab.tile_requests.iter().all(|k| k.page == FIRST),
         "the tiles draw the screen alone"
     );
-    let _ = h.get_by_label("Exit");
+    let _ = h.get_by_label("Close");
 
     let link = super::centre_of(&h, LINK);
     click(&mut h, link, Modifiers::NONE);
@@ -375,5 +375,51 @@ fn the_wheel_scrolls_a_scrolling_frame_and_never_moves_the_screen_off_the_window
         h.state().tabs[0].view.pan,
         pan,
         "a screen that fits the window stays put, as in Figma's Present"
+    );
+}
+
+#[test]
+fn present_controls_fade_out_while_the_pointer_rests_and_come_back_when_it_moves() {
+    let mut h = super::harness_fixture(super::FIXTURE, 1.0 / 60.0);
+    h.state_mut().tabs[0].doc = Arc::new(proto::prototype_doc());
+    h.run_steps(4);
+    let ctx = h.ctx.clone();
+    h.state_mut().apply(crate::menu::Action::Present, &ctx);
+    h.run_steps(30);
+    assert!(
+        h.query_by_label("Next frame").is_some(),
+        "the controls show at first"
+    );
+    h.run_steps(200);
+    assert!(
+        h.query_by_label("Next frame").is_none(),
+        "after the pointer rested for over 2 s they are gone"
+    );
+    h.event(egui::Event::PointerMoved(egui::pos2(300.0, 300.0)));
+    h.run_steps(30);
+    assert!(
+        h.query_by_label("Next frame").is_some(),
+        "moving the pointer brings them back"
+    );
+}
+
+#[test]
+fn preview_counts_unsupported_interactions_in_the_warning_chip_and_present_hides_it() {
+    let mut h = previewing();
+    h.state_mut().tabs[0].select(Some(BACK));
+    let ctx = h.ctx.clone();
+    h.state_mut().apply(crate::menu::Action::Preview, &ctx);
+    h.run_steps(4);
+    assert_eq!(screen(&h), Some(SECOND), "the screen with a hover overlay");
+    assert!(
+        h.query_by_label_contains("1 interaction not supported")
+            .is_some(),
+        "Preview names what it does not play"
+    );
+    h.state_mut().apply(crate::menu::Action::Present, &ctx);
+    h.run_steps(4);
+    assert!(
+        h.query_by_label_contains("not supported").is_none(),
+        "Present shows the screen alone"
     );
 }

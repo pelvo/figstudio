@@ -21,6 +21,8 @@ use crate::{APP_NAME, App, panels};
 /// How far the sidebar's content slides when switching to a space that is not next to the
 /// current one (a click on a far dot, the command bar); neighbours turn a whole page.
 const SLIDE: f32 = 36.0;
+/// Seconds without the pointer moving before Present's controls fade out.
+const PRESENT_IDLE: f64 = 2.0;
 /// Space between two spaces' pages while they slide side by side.
 const PAGE_GAP: f32 = 24.0;
 /// The sidebar panel's id (its width is kept with egui's memory).
@@ -1802,7 +1804,9 @@ impl App {
         );
     }
 
-    /// Preview's bar at the bottom: back, the screen's name, what is not played, restart, exit.
+    /// Preview's controls at the bottom centre, as Figma's: the page's frames (‹ n / N ›), the
+    /// screen's name, Restart and Close. Built like the tool pill and the find bar. In
+    /// Present they fade out while the pointer rests, and come back when it moves.
     fn preview_bar(&self, ui: &mut Ui, card: Rect, actions: &mut Vec<Action>) {
         let Some(tab) = self.tabs.get(self.active) else {
             return;
@@ -1810,88 +1814,167 @@ impl App {
         let Some(preview) = &tab.preview else {
             return;
         };
+        let ctx = ui.ctx().clone();
         let p = theme::of(ui);
+        let accent = self.tint_now(&ctx).accent;
         let name = tab
             .doc
             .node(preview.player.screen())
-            .map_or("", |n| n.name.as_str());
-        let skipped = preview.screen.skipped();
-        let max = Rect::from_min_max(
-            pos2(card.left() + 12.0, card.bottom() - 52.0),
-            pos2(card.right() - 12.0, card.bottom() - 12.0),
+            .map_or(String::new(), |n| n.name.clone());
+        let position = preview.position(&tab.doc);
+        let (b, pad, sep, counter) = (30.0, 4.0, 9.0, 56.0);
+        let name_font = theme::semibold(12.0);
+        let name_w = ui
+            .painter()
+            .layout_no_wrap(name.clone(), name_font.clone(), p.text)
+            .size()
+            .x
+            .min(240.0);
+        let stepper = if position.is_some() {
+            b * 2.0 + counter + sep
+        } else {
+            0.0
+        };
+        let width = pad * 2.0 + stepper + 12.0 + name_w + 12.0 + sep + b * 2.0;
+        let rect = Rect::from_center_size(
+            pos2(card.center().x, card.bottom() - 32.0),
+            vec2(width.min(card.width() - 24.0), 38.0),
         );
-        ui.scope_builder(
-            UiBuilder::new()
-                .max_rect(max)
-                .layout(Layout::top_down(Align::Center)),
-            |ui| {
-                egui::Frame::new()
-                    .fill(p.glass)
-                    .corner_radius(CornerRadius::same(17))
-                    .stroke(Stroke::new(1.0, p.card_stroke))
-                    .shadow(card_shadow(&p, 14))
-                    .inner_margin(Margin::symmetric(8, 5))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let back = ui
-                                .add_enabled(preview.player.can_go_back(), egui::Button::new("Back"))
-                                .on_hover_text("Previous screen (Backspace)");
-                            if back.clicked() {
-                                actions.push(Action::PreviewBack);
-                            }
-                            if let Some((at, of)) = preview.position(&tab.doc) {
-                                if ui
-                                    .add_enabled(at > 1, egui::Button::new("<"))
-                                    .on_hover_text("Previous frame (Left arrow)")
-                                    .clicked()
-                                {
-                                    actions.push(Action::PreviewStep(false));
-                                }
-                                ui.label(RichText::new(format!("{at} / {of}")).size(12.0).color(p.text_dim));
-                                if ui
-                                    .add_enabled(at < of, egui::Button::new(">"))
-                                    .on_hover_text("Next frame (Right arrow)")
-                                    .clicked()
-                                {
-                                    actions.push(Action::PreviewStep(true));
-                                }
-                            }
-                            ui.add(
-                                egui::Label::new(RichText::new(name).size(12.0).color(p.text))
-                                    .truncate(),
-                            );
-                            if skipped > 0 {
-                                ui.label(
-                                    RichText::new(format!("{skipped} not played"))
-                                        .size(11.5)
-                                        .color(p.text_dim),
-                                )
-                                .on_hover_text(
-                                    "Links on this screen that Preview does not follow yet. It plays \"On click\" links that navigate or go back; hover, overlays, swaps, scroll, delays and URLs are skipped.",
-                                );
-                            }
-                            if ui
-                                .add_enabled(preview.player.can_go_back(), egui::Button::new("Restart"))
-                                .on_hover_text("Back to the first screen (R)")
-                                .clicked()
-                            {
-                                actions.push(Action::PreviewRestart);
-                            }
-                            if ui
-                                .button("Exit")
-                                .on_hover_text("Stop (Esc)")
-                                .clicked()
-                            {
-                                actions.push(if preview.present {
-                                    Action::Present
-                                } else {
-                                    Action::Preview
-                                });
-                            }
-                        });
-                    });
-            },
+        // Present: fade out after two seconds without the pointer moving; back on movement or
+        // while the pointer is over the bar.
+        let now = ctx.input(|i| i.time);
+        let over = ctx
+            .pointer_hover_pos()
+            .is_some_and(|q| rect.expand(12.0).contains(q));
+        let resting = now - preview.active_at > PRESENT_IDLE;
+        let shown_now = !preview.present || over || !resting;
+        if preview.present && !resting {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(PRESENT_IDLE));
+        }
+        let fade = ctx.animate_bool_with_time(Id::new(("preview-bar", tab.id)), shown_now, 0.25);
+        // The bar arrives as the find bar does: up from a little below, fading in.
+        let arrive = anim::arrive(
+            &ctx,
+            Id::new("preview-bar-in"),
+            (tab.id, preview.present),
+            0.18,
         );
+        let t = fade.min(arrive);
+        if t <= 0.0 {
+            return;
+        }
+        let rect = rect.translate(vec2(0.0, (1.0 - arrive) * 10.0));
+        let ui = &mut ui.new_child(UiBuilder::new().max_rect(rect));
+        ui.multiply_opacity(t);
+        if t < 1.0 {
+            anim::inert(ui);
+        }
+        let radius = CornerRadius::same(19);
+        ui.interact(rect, Id::new("preview-bar"), Sense::click());
+        let painter = ui.painter();
+        painter.add(card_shadow(&p, 14).as_shape(rect, radius));
+        painter.rect_filled(rect, radius, p.glass);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, p.card_stroke),
+            StrokeKind::Inside,
+        );
+        let mut x = rect.left() + pad;
+        let slot = |x: f32, w: f32| Rect::from_min_size(pos2(x, rect.top() + 4.0), vec2(w, b));
+        if let Some((at, of)) = position {
+            let previous = slot(x, b);
+            let count = slot(x + b, counter);
+            let next = slot(x + b + counter, b);
+            x += b * 2.0 + counter;
+            ui.painter().text(
+                count.center(),
+                Align2::CENTER_CENTER,
+                format!("{at} / {of}"),
+                theme::semibold(12.0),
+                p.text_dim,
+            );
+            for (r, turn, label, key, forward, enabled) in [
+                (previous, 2.0, "Previous frame", "Left arrow", false, at > 1),
+                (next, 0.0, "Next frame", "Right arrow", true, at < of),
+            ] {
+                let response = ui.interact(r, Id::new(("preview-step", label)), Sense::click());
+                response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
+                let (hover, press) = icons::feedback(ui, &response);
+                if enabled {
+                    ui.painter().rect_filled(
+                        r.shrink(1.0 + press * 1.5),
+                        CornerRadius::same(13),
+                        p.hover.gamma_multiply(hover * 1.6),
+                    );
+                }
+                let color = if enabled {
+                    p.text_dim.lerp_to_gamma(p.text, hover)
+                } else {
+                    p.text_faint
+                };
+                icons::chevron(ui.painter(), r.shrink(8.0), color, turn);
+                if response.on_hover_text(format!("{label} ({key})")).clicked() && enabled {
+                    actions.push(Action::PreviewStep(forward));
+                }
+            }
+            ui.painter().vline(
+                x + sep / 2.0,
+                (rect.top() + 10.0)..=(rect.bottom() - 10.0),
+                Stroke::new(1.0, p.separator),
+            );
+            x += sep;
+        }
+        let name_rect =
+            Rect::from_min_size(pos2(x + 12.0, rect.top()), vec2(name_w, rect.height()));
+        let galley = ui.painter().layout(name, name_font, p.text, name_w + 0.5);
+        let galley_clip = ui.painter().with_clip_rect(name_rect);
+        galley_clip.galley(
+            pos2(
+                name_rect.left(),
+                name_rect.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            p.text,
+        );
+        x = name_rect.right() + 12.0;
+        ui.painter().vline(
+            x + sep / 2.0,
+            (rect.top() + 10.0)..=(rect.bottom() - 10.0),
+            Stroke::new(1.0, p.separator),
+        );
+        x += sep;
+        let restart_tip = "Restart (R)";
+        if pill_button(
+            ui,
+            slot(x, b),
+            Id::new("preview-restart"),
+            (Some(Icon::Restart), "Restart", restart_tip),
+            false,
+            accent,
+        )
+        .clicked()
+        {
+            actions.push(Action::PreviewRestart);
+        }
+        x += b;
+        let close = if preview.present {
+            Action::Present
+        } else {
+            Action::Preview
+        };
+        if pill_button(
+            ui,
+            slot(x, b),
+            Id::new("preview-close"),
+            (Some(Icon::Close), "Close", "Close (Esc)"),
+            false,
+            accent,
+        )
+        .clicked()
+        {
+            actions.push(close);
+        }
     }
 
     /// What this page uses that figstudio does not draw exactly, at the top right.
@@ -1899,7 +1982,23 @@ impl App {
         let Some(tab) = self.tabs.get(self.active) else {
             return;
         };
-        let gaps = crate::region_png::gaps(&tab.stats);
+        // Present shows the screen alone; Preview adds the interactions it does not play.
+        if tab.preview.as_ref().is_some_and(|p| p.present) {
+            return;
+        }
+        let mut gaps = crate::region_png::gaps(&tab.stats);
+        let unsupported = tab.preview.as_ref().map_or(0, |p| p.screen.skipped());
+        if unsupported > 0 {
+            let note = format!(
+                "{unsupported} interaction{} not supported",
+                if unsupported == 1 { "" } else { "s" }
+            );
+            gaps = if gaps.is_empty() {
+                note
+            } else {
+                format!("{gaps}, {note}")
+            };
+        }
         if gaps.is_empty() {
             return;
         }
@@ -1926,7 +2025,7 @@ impl App {
                             egui::Label::new(RichText::new(gaps).size(11.5).color(p.warning))
                                 .truncate(),
                         )
-                        .on_hover_text("Parts of this page use features figstudio does not draw yet, so it may differ from Figma.");
+                        .on_hover_text("Parts of this page use features figstudio does not draw yet, so it may differ from Figma. In Preview, interactions figstudio does not play yet (overlays, scroll to, links to a URL, variables) are counted here.");
                         let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
                         icons::paint(ui.painter(), Icon::Warning, r, p.warning);
                     });

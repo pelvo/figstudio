@@ -47,8 +47,6 @@ pub(crate) enum Action {
     PreviewStep(bool),
     /// How Preview and Present size the screen.
     PreviewScaling(crate::preview::Scaling),
-    /// Preview: back to the previous screen.
-    PreviewBack,
     /// Preview: back to the flow's first screen.
     PreviewRestart,
     #[cfg(target_arch = "wasm32")]
@@ -405,11 +403,6 @@ impl App {
                     && let Some(p) = &t.preview
                 {
                     t.fit_node = Some(p.player.screen());
-                }
-            }
-            Action::PreviewBack => {
-                if let Some(t) = self.tab() {
-                    t.preview_go(Some(figstudio_render::prototype::Step::Back));
                 }
             }
             Action::PreviewRestart => {

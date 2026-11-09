@@ -124,6 +124,9 @@ pub struct Preview {
     pub missed: Option<f64>,
     /// Present: the screen fills the window, with no sidebar, panels or pills.
     pub present: bool,
+    /// When the pointer last moved over Preview (`egui` input time): Present's controls fade
+    /// out after it rests.
+    pub active_at: f64,
     /// The canvas size the screen was last fitted to.
     pub fitted_size: Option<egui::Vec2>,
     /// The player's state as the tiles draw it, and their document number for it.
@@ -323,6 +326,7 @@ impl Tab {
             missed: None,
             present,
             fitted_size: None,
+            active_at: 0.0,
             drawn: (self.doc.instance, Arc::default()),
             previous: None,
             stale_since: None,

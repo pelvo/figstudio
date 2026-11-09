@@ -204,6 +204,21 @@ pub fn show(
     }
 
     let cursor = response.hover_pos().map(|p| tab.view.to_page(origin, p));
+    let active = ui.input(|i| {
+        i.pointer.any_down()
+            || i.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::PointerMoved(_) | egui::Event::MouseWheel { .. }
+                )
+            })
+    });
+    if active {
+        let now = ui.input(|i| i.time);
+        if let Some(preview) = tab.preview.as_mut() {
+            preview.active_at = now;
+        }
+    }
     let page_point = |p: Pos2| Point::new(f64::from(p.x), f64::from(p.y));
     let now = ui.input(|i| i.time);
     // The player gets the pointer as Figma's prototypes do: hover, press, release (a click is
@@ -295,13 +310,8 @@ pub fn show(
             }
         }
     }
+    // As in Figma, a link shows only as the pointing hand: no outline over what it hovers.
     let playable = hovered.as_ref().is_some_and(|l| l.step.is_some());
-    if let Some(link) = hovered.as_ref().filter(|_| playable) {
-        painter.add(egui::Shape::closed_line(
-            to_screen(&link.area),
-            Stroke::new(1.5, theme::ACCENT.gamma_multiply(0.7)),
-        ));
-    }
     if response.hovered() {
         ui.ctx().set_cursor_icon(if playable {
             egui::CursorIcon::PointingHand
