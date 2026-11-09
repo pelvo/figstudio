@@ -451,7 +451,7 @@ impl Document {
                             nodes.push(node);
                         }
                     }
-                    reader.nodes.set(false);
+                    reader.end_nodes();
                 }
                 "blobs" if field.is_array => {
                     had_blobs = true;

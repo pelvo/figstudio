@@ -187,7 +187,8 @@ impl Obj {
     }
 
     /// Sets `key`, replacing an existing value in place. Returns the old value as stored: a
-    /// field still encoded or shared is handed back as it is (read it through its accessors).
+    /// field still encoded or shared is handed back as it is, so read it through its accessors
+    /// or [`Val::into_owned`] rather than matching its variant.
     pub fn insert(&mut self, key: &str, value: Val) -> Option<Val> {
         if let Some(slot) = self.get_raw_mut(key) {
             return Some(std::mem::replace(slot, value));
@@ -337,6 +338,13 @@ impl Val {
 
     /// Replaces a [`Val::Lazy`] with its decoded value, so it can be changed (copied when
     /// another copy of the node still shares it).
+    /// The value itself: a [`Val::Lazy`] decoded, a [`Val::Shared`] unshared. Use it on a
+    /// value taken out of an [`Obj`] before matching its variant.
+    pub fn into_owned(mut self) -> Val {
+        self.settle();
+        self
+    }
+
     fn settle(&mut self) {
         if !matches!(self, Val::Lazy(_) | Val::Shared(_)) {
             return;
@@ -643,6 +651,26 @@ mod tests {
         let read = |id| again.node(id).unwrap().data.get("fillPaints").cloned();
         assert!(read(ida).is_none_or(|p| p.items().is_empty()));
         assert_eq!(read(idb), before);
+    }
+
+    /// A shared field taken out of a node matches as its value once owned.
+    #[test]
+    fn a_removed_shared_field_matches_once_owned() {
+        use super::Val;
+        let doc = fixture("shaders");
+        let mut data = doc
+            .nodes
+            .iter()
+            .find(|n| matches!(&n.data, Val::Obj(o) if matches!(o.get_raw("fillPaints"), Some(Val::Shared(_)))))
+            .unwrap()
+            .data
+            .clone();
+        let Val::Obj(fields) = &mut data else {
+            panic!()
+        };
+        let taken = fields.remove("fillPaints").unwrap();
+        assert!(matches!(taken, Val::Shared(_)));
+        assert!(matches!(taken.into_owned(), Val::Arr(_)));
     }
 
     /// Overwriting or removing a field still encoded, on a copy of a node (as the renderer

@@ -80,6 +80,7 @@ pub(crate) struct Reader {
     decoded_items: Cell<usize>,
     /// Set while node records are read: their fields are read by [`Decoder::modes`].
     pub nodes: Cell<bool>,
+    /// Only while node records are read; [`Reader::end_nodes`] frees it.
     seen: RefCell<Seen>,
     /// Decoding bytes [`Reader::skip_field`] already checked at open. List lengths were
     /// checked then against the whole document; the field's own bytes can be fewer (a list of
@@ -285,6 +286,12 @@ impl Reader {
             }
         }
         Ok(())
+    }
+
+    /// Node records are read: stop sharing and free what was kept to share.
+    pub fn end_nodes(&self) {
+        self.nodes.set(false);
+        self.seen.take();
     }
 
     /// Reads a shared or lazy field of a node record: equal bytes of the same field give the
