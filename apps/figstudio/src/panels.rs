@@ -831,6 +831,7 @@ pub(crate) fn quiet_button(ui: &mut Ui, icon: Option<Icon>, text: &str) -> egui:
         ui.allocate_exact_size(vec2(galley.size().x + icon_w + 20.0, 26.0), Sense::click());
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
+    crate::a11y::author(&response, format!("properties.{}", crate::a11y::slug(text)));
     if ui.is_rect_visible(rect) {
         let (hover, press) = crate::icons::feedback(ui, &response);
         let r = rect.shrink(press);

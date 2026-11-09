@@ -456,11 +456,17 @@ fn describe(
         _ => Role::Image,
     };
     n.set_role(role);
-    n.set_role_description(match kind {
+    let kind_name = match kind {
         "SYMBOL" => "component".to_owned(),
         _ => kind_name,
+    };
+    // A layer named with spaces only still needs a name to be read and pressed by: its kind.
+    n.set_label(if name.trim().is_empty() {
+        kind_name.clone()
+    } else {
+        name.clone()
     });
-    n.set_label(name.clone());
+    n.set_role_description(kind_name);
     if kind == "TEXT" {
         // A text layer reads as what it says (a label's name is its value).
         let text = crate::text_select::characters(data);
@@ -664,6 +670,25 @@ mod tests {
             described.label().expect("name").chars().count(),
             super::MAX_TEXT
         );
+    }
+
+    #[test]
+    fn a_layer_without_a_name_is_named_by_its_kind() {
+        let t = tab(vec![
+            node(1, 0, "CANVAS", "page", 0.0, 0.0),
+            node(2, 1, "FRAME", " ", 0.0, 0.0),
+        ]);
+        let node = t.doc.node(Guid(9, 2)).expect("layer");
+        let mut described = egui::accesskit::Node::new(egui::accesskit::Role::Group);
+        super::describe(
+            &mut described,
+            &t.doc,
+            node.id,
+            &node.kind,
+            &node.data,
+            None,
+        );
+        assert_eq!(described.label(), Some("frame"));
     }
 
     #[test]

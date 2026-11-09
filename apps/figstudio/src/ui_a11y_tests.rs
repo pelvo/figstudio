@@ -193,6 +193,19 @@ fn every_control_in_each_settings_tab_has_a_name() {
 }
 
 #[test]
+fn every_control_of_the_motion_player_has_a_name() {
+    let mut h = super::harness_fixture("motion.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    h.state_mut().tabs[0].selection = Some(figstudio_fig::Guid(1, 1106));
+    super::step(&mut h, &mut c);
+    super::step(&mut h, &mut c);
+    super::click_label(&mut h, &mut c, "Play");
+    super::step(&mut h, &mut c);
+    assert!(h.state().tabs[0].motion_preview.is_some(), "playing");
+    assert_all_named(&h, "motion player");
+}
+
+#[test]
 fn a_right_click_menu_is_a_named_menu_of_named_items() {
     let mut h = harness();
     // A layer of structure.fig (the one the Copy menu tests use).
