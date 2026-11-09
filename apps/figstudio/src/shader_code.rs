@@ -708,13 +708,18 @@ pub fn markers(
                 vec2(HEIGHT, HEIGHT)
             };
             let pill = egui::Rect::from_min_size(bounds.min.max(clip.min) + vec2(6.0, 6.0), size);
+            // One marker per shader on a layer: a layer with two shaders missing code has two.
             let response = ui.interact(
                 pill,
-                egui::Id::new(("shader-marker", tab.id, layer)),
+                egui::Id::new(("shader-marker", tab.id, layer, &missing.id)),
                 Sense::click(),
             );
             response
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
+            crate::a11y::author(
+                &response,
+                format!("canvas.shader-marker.{layer}.{}", missing.id),
+            );
             let response = response
                 .on_hover_text(format!(
                     "{text}. Click to choose it: the zip of Figma's View code, then Download files"

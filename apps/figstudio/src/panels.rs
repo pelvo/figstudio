@@ -744,13 +744,13 @@ fn motion_section(
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            if quiet_button(ui, Some(Icon::Play), "Play")
+            if quiet_button(ui, "properties.play", Some(Icon::Play), "Play")
                 .on_hover_text("Play this layer's timeline on the canvas")
                 .clicked()
             {
                 click = Some(MotionClick::Play);
             }
-            let export = quiet_button(ui, None, "Export…")
+            let export = quiet_button(ui, "properties.export", None, "Export…")
                 .on_hover_text("Save one pass of this timeline as a video, GIF or PNG frames");
             egui::Popup::menu(&export)
                 .style(theme::menu_style)
@@ -764,7 +764,13 @@ fn motion_section(
                     }
                 });
             if let Some(css) = motion["codeSnippets"]["css"].as_str()
-                && quiet_button(ui, None, "Copy CSS animation").clicked()
+                && quiet_button(
+                    ui,
+                    "properties.copy-css-animation",
+                    None,
+                    "Copy CSS animation",
+                )
+                .clicked()
             {
                 *picked = Some(Item::text(
                     "Copy CSS animation",
@@ -802,9 +808,14 @@ fn shader_section(ui: &mut Ui, shader: &serde_json::Value, code: &crate::shader_
                 crate::icons::paint(ui.painter(), Icon::Warning, r, p.warning);
                 ui.label(RichText::new("Not drawn: its code is missing").color(p.warning));
             });
-            if quiet_button(ui, None, "Choose its zip…")
-                .on_hover_text("The zip of Figma's View code, then Download files, for this shader")
-                .clicked()
+            if quiet_button(
+                ui,
+                &format!("properties.choose-its-zip.{id}"),
+                None,
+                "Choose its zip…",
+            )
+            .on_hover_text("The zip of Figma's View code, then Download files, for this shader")
+            .clicked()
             {
                 code.choose.set(Some(Some(id.to_owned())));
             }
@@ -821,9 +832,14 @@ fn shader_section(ui: &mut Ui, shader: &serde_json::Value, code: &crate::shader_
 
 /// A secondary action inside a Properties section: an outlined, rounded button (an icon, if
 /// given, before its text) that fills softly on hover. The section's main action uses
-/// `chrome::accent_button`. Its automation id is `properties.<slug of text>`: use it in
-/// Properties only, or give it an id parameter first.
-pub(crate) fn quiet_button(ui: &mut Ui, icon: Option<Icon>, text: &str) -> egui::Response {
+/// `chrome::accent_button`. `id` is its automation id: one control's, so a button drawn once
+/// per item (a shader, say) adds the item to it.
+pub(crate) fn quiet_button(
+    ui: &mut Ui,
+    id: &str,
+    icon: Option<Icon>,
+    text: &str,
+) -> egui::Response {
     let p = theme::of(ui);
     let galley =
         ui.painter()
@@ -833,7 +849,7 @@ pub(crate) fn quiet_button(ui: &mut Ui, icon: Option<Icon>, text: &str) -> egui:
         ui.allocate_exact_size(vec2(galley.size().x + icon_w + 20.0, 26.0), Sense::click());
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
-    crate::a11y::author(&response, format!("properties.{}", crate::a11y::slug(text)));
+    crate::a11y::author(&response, id);
     if ui.is_rect_visible(rect) {
         let (hover, press) = crate::icons::feedback(ui, &response);
         let r = rect.shrink(press);

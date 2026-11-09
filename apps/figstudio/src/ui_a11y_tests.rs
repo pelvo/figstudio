@@ -225,6 +225,46 @@ fn every_control_of_the_motion_player_has_a_name() {
 }
 
 #[test]
+fn a_layer_with_two_shaders_missing_code_gives_each_zip_button_its_own_id() {
+    let mut h = super::harness_fixture("shaders.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    super::wait(&mut h, &mut c, "the shader count", |a| {
+        a.tabs[0].shaders.counting.is_none()
+    });
+    // The Concentric patterns layer, shown with a second shader (another one whose code is
+    // missing too), as a layer with a shader fill and a shader effect is.
+    let layer = figstudio_fig::Guid(1, 14622);
+    let tab = &h.state().tabs[0];
+    let node = tab.doc.node(layer).expect("layer");
+    let mut details = tab.inspect.get(&tab.doc, node);
+    let mut second = details.shaders[0].clone();
+    let other = (tab.shaders.missing.iter())
+        .find(|m| Some(m.id.as_str()) != second["id"].as_str())
+        .expect("another missing shader")
+        .id
+        .clone();
+    second["id"] = other.into();
+    details.shaders.push(second);
+    tab.inspect.set(&tab.doc, layer, details);
+    h.state_mut().tabs[0].selection = Some(layer);
+    super::step(&mut h, &mut c);
+    super::step(&mut h, &mut c);
+    assert_eq!(
+        h.query_all_by_label("Choose its zip…").count(),
+        2,
+        "a button per shader"
+    );
+    // The canvas tree of a 28,000-layer page is built over a few frames.
+    for _ in 0..600 {
+        if h.query_by_label("Preparing canvas layers…").is_none() {
+            break;
+        }
+        super::step(&mut h, &mut c);
+    }
+    assert_all_named(&h, "two shaders missing code");
+}
+
+#[test]
 fn a_right_click_menu_is_a_named_menu_of_named_items() {
     let mut h = harness();
     // A layer of structure.fig (the one the Copy menu tests use).

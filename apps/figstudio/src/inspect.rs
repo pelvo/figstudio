@@ -45,6 +45,14 @@ impl Cache {
         details
     }
 
+    /// Puts `details` in place of `node`'s own (tests).
+    #[cfg(test)]
+    pub fn set(&self, doc: &Document, node: Guid, details: Details) {
+        let mut kept = self.0.borrow_mut();
+        kept.retain(|(instance, id, _)| !(*instance == doc.instance && *id == node));
+        kept.push((doc.instance, node, details));
+    }
+
     /// Layers kept (tests).
     #[cfg(test)]
     pub fn kept(&self) -> Vec<Guid> {

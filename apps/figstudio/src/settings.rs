@@ -566,8 +566,9 @@ fn setting(ui: &mut Ui, label: &str, note: &str, control: impl FnOnce(&mut Ui)) 
     } else {
         beside.max(80.0)
     };
-    // The control's line under the text, and the gap above it.
-    let (control_h, control_gap) = (24.0, 8.0);
+    // The control's line under the text (`pill`, 26 pt, is the tallest control; `segmented`
+    // is 24), and the gap above it.
+    let (control_h, control_gap) = (26.0, 8.0);
     let title = ui.painter().layout(
         label.to_owned(),
         FontId::proportional(13.0),
