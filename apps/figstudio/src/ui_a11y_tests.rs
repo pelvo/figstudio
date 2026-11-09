@@ -203,6 +203,20 @@ fn every_control_of_the_motion_player_has_a_name() {
     super::step(&mut h, &mut c);
     assert!(h.state().tabs[0].motion_preview.is_some(), "playing");
     assert_all_named(&h, "motion player");
+    // The bar behind its buttons is hidden from the tree, so Tab must not stop on it either.
+    let ctx = h.ctx.clone();
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..200 {
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+        let Some(id) = ctx.memory(|m| m.focused()) else {
+            continue;
+        };
+        assert_ne!(id, egui::Id::new("motion-bar"), "Tab stopped on the bar");
+        if !seen.insert(id) {
+            break;
+        }
+    }
 }
 
 #[test]

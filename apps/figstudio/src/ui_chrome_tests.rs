@@ -1221,7 +1221,8 @@ fn a_settings_note_never_runs_under_a_wide_control() {
     assert_eq!(note.len(), 1, "the Text size note");
     for size in ["100%", "125%", "150%", "200%"] {
         // The chip: its label and the 11 pt `segmented` pads it with on each side.
-        let chip = text_rects(&h, size)[0].expand2(egui::vec2(11.0, 2.0));
+        let chip = *text_rects(&h, size).first().expect(size);
+        let chip = chip.expand2(egui::vec2(11.0, 2.0));
         let n = note[0];
         // Beside the chips with the row's gap (`setting` keeps 16 pt), or on another line.
         let clear = chip.left() - n.right() >= 12.0

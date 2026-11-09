@@ -456,17 +456,11 @@ fn describe(
         _ => Role::Image,
     };
     n.set_role(role);
-    let kind_name = match kind {
+    n.set_role_description(match kind {
         "SYMBOL" => "component".to_owned(),
         _ => kind_name,
-    };
-    // A layer named with spaces only still needs a name to be read and pressed by: its kind.
-    n.set_label(if name.trim().is_empty() {
-        kind_name.clone()
-    } else {
-        name.clone()
     });
-    n.set_role_description(kind_name);
+    n.set_label(name.clone());
     if kind == "TEXT" {
         // A text layer reads as what it says (a label's name is its value).
         let text = crate::text_select::characters(data);

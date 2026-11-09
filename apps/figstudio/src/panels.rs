@@ -18,7 +18,8 @@ pub(crate) const ROW: f32 = 26.0;
 
 pub(crate) fn display_name(node: &Node) -> String {
     let name = node.data.text("name").unwrap_or("");
-    if name.is_empty() {
+    // A name of spaces only reads as blank: show the kind instead.
+    if name.trim().is_empty() {
         node.kind.to_lowercase()
     } else {
         name.to_string()
@@ -820,7 +821,8 @@ fn shader_section(ui: &mut Ui, shader: &serde_json::Value, code: &crate::shader_
 
 /// A secondary action inside a Properties section: an outlined, rounded button (an icon, if
 /// given, before its text) that fills softly on hover. The section's main action uses
-/// `chrome::accent_button`.
+/// `chrome::accent_button`. Its automation id is `properties.<slug of text>`: use it in
+/// Properties only, or give it an id parameter first.
 pub(crate) fn quiet_button(ui: &mut Ui, icon: Option<Icon>, text: &str) -> egui::Response {
     let p = theme::of(ui);
     let galley =

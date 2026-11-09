@@ -1570,7 +1570,7 @@ impl App {
         let rect = Rect::from_min_size(pos2(x - size.x / 2.0, y), size);
         let radius = CornerRadius::same(19);
         // Catches clicks between the controls so they do not reach the canvas.
-        crate::a11y::hide(&ui.interact(rect, Id::new("motion-bar"), Sense::click()));
+        crate::a11y::hide(&ui.interact(rect, Id::new("motion-bar"), Sense::CLICK));
         let painter = ui.painter();
         painter.add(card_shadow(&p, 14).as_shape(rect, radius));
         painter.rect_filled(rect, radius, p.glass);
