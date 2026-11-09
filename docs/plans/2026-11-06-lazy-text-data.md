@@ -22,3 +22,14 @@ title: Keep stored glyph outlines encoded until first read
 - Not verified: the desktop app and the browser build by hand (no reader of the field
   changed).
 
+
+### 2026-11-09T013607Z lazy-text-data
+- What changed and how it was checked: review follow-up. A lazy field could fail to decode
+  after passing the open-time walk: a list of zero-byte items (structs with no fields) was
+  checked against the bytes left in the whole document at open but against the field's own
+  bytes later, and the failure read as an empty value. Decoding walked bytes no longer
+  repeats that length check. Test `a_lazy_list_of_empty_structs_decodes_like_it_was_checked`
+  fails without the fix. No fixture schema has a struct with no fields. check.sh on 1.99.0:
+  all checks passed.
+- Not verified: a failed lazy decode is still not counted in `Stats`; it cannot happen now
+  (comment on `Lazy::decode`).

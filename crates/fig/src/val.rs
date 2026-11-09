@@ -57,9 +57,11 @@ impl Lazy {
         self.val.get_or_init(|| self.decode())
     }
 
-    // shortcut: the bytes passed every check of the decoder when the file was opened, so this
-    // cannot fail; if it ever did, the field reads as empty and is still written back as its
-    // original bytes (an unedited lazy field is never re-encoded).
+    // The bytes passed every check of the decoder when the file was opened (`skip_field`:
+    // enum values, field tags, depth, the item budget, list lengths), so this cannot fail.
+    // shortcut: if it ever did, the field reads as empty (not counted in `Stats`) and is still
+    // written back as its original bytes; count it if a decoder check is ever added that
+    // `skip_field` does not make.
     fn decode(&self) -> Val {
         decode_field(&self.dec, self.def, self.field, &self.bytes)
             .unwrap_or_else(|_| Val::Arr(Vec::new()))
