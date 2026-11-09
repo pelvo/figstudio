@@ -176,20 +176,52 @@ impl Tiles {
         );
         let level = range.level;
         self.cache.begin_frame(doc, page, range);
-        // Preview: the previous prototype state's tiles under the new state's, until they
-        // arrive (they differ only where the state changed).
-        if let Some(before) = tab
+        // Preview: the last complete prototype state's tiles under the new state's until
+        // they arrive (they differ only where the state changed); inside a frame scrolled
+        // since, shifted by the distance, so scrolling answers at once.
+        let fallback = tab
             .preview
             .as_ref()
-            .and_then(|p| p.previous)
-            .filter(|d| *d != doc)
-        {
+            .and_then(|p| p.previous.clone())
+            .filter(|(d, _)| *d != doc);
+        if let Some((before, before_state)) = fallback {
             let keys = self.cache.draw_order(before, page, level, visible);
-            for key in &keys {
-                self.cache.touch(key);
-                if let Some(entry) = self.cache.get(key) {
-                    paint_key(painter, key, entry.value.texture.id(), view, (rect, radius));
+            let mut paint_all = |painter: &egui::Painter, shown: crate::tab::View| {
+                for key in &keys {
+                    self.cache.touch(key);
+                    if let Some(entry) = self.cache.get(key) {
+                        paint_key(
+                            painter,
+                            key,
+                            entry.value.texture.id(),
+                            shown,
+                            (rect, radius),
+                        );
+                    }
                 }
+            };
+            paint_all(painter, view);
+            let now = tab.prototype_state();
+            for scroller in tab.preview.iter().flat_map(|p| &p.screen.scrollers) {
+                let key = scroller.layer.key();
+                let at = |s: &figstudio_render::prototype::State| {
+                    s.scrolls.get(&key).copied().unwrap_or((0, 0))
+                };
+                let ((x0, y0), (x1, y1)) = (at(&before_state), at(&now));
+                if (x0, y0) == (x1, y1) {
+                    continue;
+                }
+                let (lo, hi) = scroller.area.corners().iter().fold(
+                    (Pos2::new(f32::MAX, f32::MAX), Pos2::new(f32::MIN, f32::MIN)),
+                    |(lo, hi), c| {
+                        let p = view.to_screen(rect.min, Pos2::new(c.x as f32, c.y as f32));
+                        (lo.min(p), hi.max(p))
+                    },
+                );
+                let clip = Rect::from_min_max(lo, hi).intersect(painter.clip_rect());
+                let mut shifted = view;
+                shifted.pan -= egui::vec2((x1 - x0) as f32, (y1 - y0) as f32) * view.zoom;
+                paint_all(&painter.with_clip_rect(clip), shifted);
             }
         }
         let mut stats: Option<Stats> = None;
@@ -227,6 +259,13 @@ impl Tiles {
         }
         let images = workers.images_arrived();
         let wanted = tiles::wanted(&self.cache, range, doc, page, images);
+        // Every tile of this state is here: it is the picture to fall back on from now on.
+        if wanted.is_empty() {
+            let state = tab.prototype_state();
+            if let Some(preview) = tab.preview.as_mut() {
+                preview.previous = Some((doc, state));
+            }
+        }
         let Some(batch) = tiles::next_batch(wanted, &tab.tile_requests) else {
             return;
         };

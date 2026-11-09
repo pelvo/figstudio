@@ -175,3 +175,25 @@ pub fn hover_doc() -> Document {
     doc.set_nodes(nodes).unwrap();
     doc
 }
+
+/// The scrolling frame of [`scroll_proto_doc`] on [`FIRST`].
+pub const SCROLLER: Guid = Guid(1, 9201);
+
+/// [`prototype_doc`] plus a 100×40 frame on [`FIRST`] that clips and scrolls down, holding a
+/// box 100 units down (so 80 units of scrolling).
+pub fn scroll_proto_doc() -> Document {
+    let mut doc = prototype_doc();
+    let mut nodes = doc.nodes.clone();
+    let mut frame = at(SCROLLER, FIRST, "FRAME", (40.0, 320.0, 100.0, 40.0));
+    frame.data.set("frameMaskDisabled", Val::Bool(false));
+    frame.data.set("scrollDirection", name("VERTICAL"));
+    let content = at(
+        Guid(1, 9202),
+        SCROLLER,
+        "RECTANGLE",
+        (0.0, 100.0, 20.0, 20.0),
+    );
+    nodes.extend([frame, content]);
+    doc.set_nodes(nodes).unwrap();
+    doc
+}

@@ -408,6 +408,7 @@ fn render_with(
     renderer.system_fonts = false;
     renderer.prototype = std::sync::Arc::new(prototype::State {
         swaps: swaps.iter().cloned().collect(),
+        ..Default::default()
     });
     renderer
         .render(
@@ -696,5 +697,168 @@ fn mouse_out_is_played_like_mouse_leave() {
         player.state().swaps.get(&vec![id(31)]),
         Some(&id(22)),
         "swapped on leaving"
+    );
+}
+
+/// Screen 30 (80×80) holds scroller 32 (80×40, clips, scrolls down) whose content is a red
+/// box 33 at y 100, a sticky header 34 at y 10 and a fixed badge 35 at y 0, x 60.
+fn scroll_doc() -> Document {
+    let mut screen = node(30, 1, "FRAME");
+    screen.data.set("size", size(80.0, 80.0));
+    let mut scroller = node(32, 30, "FRAME");
+    scroller.data.set("size", size(80.0, 40.0));
+    scroller.data.set("frameMaskDisabled", Val::Bool(false));
+    scroller.data.set("scrollDirection", name("VERTICAL"));
+    let mut boxed = placed(33, 32, "RECTANGLE", 0.0, 100.0);
+    boxed.data.set("size", size(20.0, 20.0));
+    boxed.data.set("fillPaints", paint(1.0, 0.0, 0.0));
+    let mut header = placed(34, 32, "RECTANGLE", 30.0, 10.0);
+    header.data.set("size", size(20.0, 5.0));
+    header.data.set("fillPaints", paint(0.0, 0.0, 1.0));
+    header.data.set("scrollBehavior", name("STICKY_SCROLLS"));
+    let mut badge = placed(35, 32, "RECTANGLE", 60.0, 0.0);
+    badge.data.set("size", size(10.0, 10.0));
+    badge.data.set("fillPaints", paint(0.0, 1.0, 0.0));
+    badge.data.set(
+        "scrollBehavior",
+        name("FIXED_WHEN_CHILD_OF_SCROLLING_FRAME"),
+    );
+    document(vec![
+        node(1, 0, "CANVAS"),
+        screen,
+        scroller,
+        boxed,
+        header,
+        badge,
+    ])
+}
+
+fn render_state(doc: &Document, state: prototype::State) -> Vec<u8> {
+    let mut renderer = Renderer::new();
+    renderer.system_fonts = false;
+    renderer.prototype = std::sync::Arc::new(state);
+    renderer
+        .render(
+            doc,
+            id(1),
+            &figstudio_render::Viewport {
+                width: 80,
+                height: 80,
+                transform: Affine::IDENTITY,
+                background: None,
+            },
+        )
+        .pixmap
+        .data_as_u8_slice()
+        .to_vec()
+}
+
+#[test]
+fn a_scrolled_frame_moves_its_content_but_not_fixed_children_and_sticky_ones_stop() {
+    let doc = scroll_doc();
+    let at_top = render_state(&doc, prototype::State::default());
+    assert_eq!(
+        common::pixel(&at_top, 10, 30)[3],
+        0,
+        "the box is below the viewport"
+    );
+    let mut state = prototype::State::default();
+    state.scrolls.insert(vec![id(32)], (0, 75));
+    let scrolled = render_state(&doc, state);
+    assert_eq!(
+        common::pixel(&scrolled, 10, 30),
+        &[255, 0, 0, 255],
+        "the box scrolled in (y 25)"
+    );
+    assert_eq!(
+        common::pixel(&scrolled, 64, 4),
+        &[0, 255, 0, 255],
+        "the fixed badge stays"
+    );
+    assert_eq!(
+        common::pixel(&scrolled, 40, 2),
+        &[0, 0, 255, 255],
+        "the sticky header stops at the top"
+    );
+    assert_eq!(
+        common::pixel(&scrolled, 10, 50)[3],
+        0,
+        "nothing drawn outside the viewport"
+    );
+}
+
+#[test]
+fn the_wheel_scrolls_the_frame_under_the_pointer_up_to_the_end_of_its_content() {
+    use figstudio_render::kurbo::Vec2;
+    use prototype::Pointer;
+    let doc = scroll_doc();
+    let screen = Screen::read(&mut Renderer::new(), &doc, id(30));
+    assert_eq!(screen.scrollers.len(), 1);
+    assert_eq!(
+        screen.scrollers[0].max(),
+        (0, 80),
+        "content reaches y 120 in a 40-high frame"
+    );
+    let mut player = Player::new(id(30));
+    assert!(
+        !player.pointer(
+            &screen,
+            Pointer::Scroll(Point::new(10.0, 60.0), Vec2::new(0.0, 30.0)),
+            0.0
+        ),
+        "outside the frame"
+    );
+    assert!(player.pointer(
+        &screen,
+        Pointer::Scroll(Point::new(10.0, 20.0), Vec2::new(0.0, 30.0)),
+        0.0
+    ));
+    assert_eq!(player.state().scrolls.get(&vec![id(32)]), Some(&(0, 30)));
+    player.pointer(
+        &screen,
+        Pointer::Scroll(Point::new(10.0, 20.0), Vec2::new(0.0, 500.0)),
+        0.0,
+    );
+    assert_eq!(
+        player.state().scrolls.get(&vec![id(32)]),
+        Some(&(0, 80)),
+        "stops at the end"
+    );
+    assert!(!player.pointer(
+        &screen,
+        Pointer::Scroll(Point::new(10.0, 20.0), Vec2::new(0.0, 10.0)),
+        0.0
+    ));
+    player.pointer(
+        &screen,
+        Pointer::Scroll(Point::new(10.0, 20.0), Vec2::new(0.0, -500.0)),
+        0.0,
+    );
+    assert!(player.state().scrolls.is_empty(), "back at the top");
+}
+
+#[test]
+fn small_scroll_steps_add_up_and_are_taken_by_the_frame() {
+    use figstudio_render::kurbo::Vec2;
+    use prototype::Pointer;
+    let doc = scroll_doc();
+    let screen = Screen::read(&mut Renderer::new(), &doc, id(30));
+    let mut player = Player::new(id(30));
+    let at = Point::new(10.0, 20.0);
+    let step = Vec2::new(0.0, 0.4);
+    assert!(
+        player.takes_scroll(&screen, at, step),
+        "a frame that can move takes even a small step"
+    );
+    assert!(
+        !player.pointer(&screen, Pointer::Scroll(at, step), 0.0),
+        "0.4: not a whole unit yet"
+    );
+    player.pointer(&screen, Pointer::Scroll(at, step), 0.0);
+    player.pointer(&screen, Pointer::Scroll(at, step), 0.0);
+    assert_eq!(
+        player.state().scrolls.get(&vec![id(32)]),
+        Some(&(0, 1)),
+        "1.2 units: one"
     );
 }

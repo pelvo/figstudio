@@ -248,6 +248,12 @@ fn hovering_a_button_shows_its_hover_variant_and_leaving_restores_it() {
     h.run_steps(4);
     let own = h.state().tabs[0].doc.instance;
     assert_eq!(h.state().tabs[0].tile_doc(), own);
+    super::wait(&mut h, &mut Vec::new(), "the screen's tiles", |a| {
+        a.tabs[0]
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.previous.is_some())
+    });
     let button = super::centre_of(&h, proto::BUTTON);
     h.event(egui::Event::PointerMoved(button));
     h.run_steps(2);
@@ -259,9 +265,12 @@ fn hovering_a_button_shows_its_hover_variant_and_leaving_restores_it() {
     );
     assert_ne!(tab.tile_doc(), own, "the tiles draw the hover state");
     assert_eq!(
-        tab.preview.as_ref().and_then(|p| p.previous),
+        tab.preview
+            .as_ref()
+            .and_then(|p| p.previous.as_ref())
+            .map(|(doc, _)| *doc),
         Some(own),
-        "the previous state's tiles stay underneath until the hover state's arrive"
+        "the last complete state's tiles stay underneath until the hover state's arrive"
     );
     let away = tab.canvas_rect.unwrap().left_top() + egui::vec2(4.0, 4.0);
     h.event(egui::Event::PointerMoved(away));
@@ -301,5 +310,54 @@ fn the_canvas_has_a_present_button_and_a_menu_with_preview() {
             .as_ref()
             .is_some_and(|p| !p.present),
         "the menu's Preview starts Preview"
+    );
+}
+
+#[test]
+fn the_wheel_scrolls_a_scrolling_frame_and_pans_elsewhere() {
+    let mut h = harness();
+    h.state_mut().tabs[0].doc = Arc::new(proto::scroll_proto_doc());
+    h.run_steps(4);
+    let ctx = h.ctx.clone();
+    h.state_mut().apply(crate::menu::Action::Preview, &ctx);
+    h.run_steps(4);
+    let wheel = |h: &mut Harness<'static, App>, at: egui::Pos2| {
+        h.event(egui::Event::PointerMoved(at));
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -10.0),
+            modifiers: Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+        });
+        h.run_steps(3);
+    };
+    let frame = super::centre_of(&h, proto::SCROLLER);
+    let pan = h.state().tabs[0].view.pan;
+    wheel(&mut h, frame);
+    let tab = &h.state().tabs[0];
+    let scrolled = tab
+        .prototype_state()
+        .scrolls
+        .get(&vec![proto::SCROLLER])
+        .copied();
+    assert!(
+        scrolled.is_some_and(|(_, y)| y > 0),
+        "the frame scrolled: {scrolled:?}"
+    );
+    assert_eq!(tab.view.pan, pan, "and the view did not pan");
+    h.run_steps(30);
+    assert!(
+        h.state().tabs[0]
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.stale_since.is_none()),
+        "the links were read again once the scroll paused"
+    );
+    let corner = h.state().tabs[0].canvas_rect.unwrap().left_top() + egui::vec2(8.0, 8.0);
+    wheel(&mut h, corner);
+    assert_ne!(
+        h.state().tabs[0].view.pan,
+        pan,
+        "outside the frame the wheel pans"
     );
 }

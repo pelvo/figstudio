@@ -135,8 +135,18 @@ pub fn show(
             tab.view.zoom_at(origin, anchor, zoom);
         } else if modifiers.command || modifiers.ctrl {
             tab.view.zoom_at(origin, anchor, (scroll.y / 200.0).exp());
-        } else {
-            tab.view.pan += scroll;
+        } else if scroll != egui::Vec2::ZERO {
+            // A frame that scrolls its content takes the wheel; elsewhere the view pans.
+            let at = tab.view.to_page(origin, anchor);
+            let delta = -scroll / tab.view.zoom;
+            let event = Pointer::Scroll(
+                Point::new(f64::from(at.x), f64::from(at.y)),
+                figstudio_render::kurbo::Vec2::new(f64::from(delta.x), f64::from(delta.y)),
+            );
+            let now = ui.input(|i| i.time);
+            if !tab.preview_scroll(event, now) {
+                tab.view.pan += scroll;
+            }
         }
     }
     tab.shown = tab.view;

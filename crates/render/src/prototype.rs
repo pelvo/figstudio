@@ -11,7 +11,7 @@ use std::sync::Arc;
 use figstudio_fig::resolve::{self, InstancePath};
 use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
-use vello_cpu::kurbo::{Affine, Point, Rect};
+use vello_cpu::kurbo::{Affine, Point, Rect, Vec2};
 use vello_cpu::{RenderContext, RenderSettings};
 
 use crate::geom::size;
@@ -200,6 +200,78 @@ impl Layer {
 pub struct State {
     /// Instances showing another variant, by [`Layer::key`]: the component they show instead.
     pub swaps: HashMap<Vec<Guid>, Guid>,
+    /// Scrolled frames, by [`Layer::key`]: how far their content is scrolled, in whole
+    /// units of the frame (whole units keep states comparable and their tiles reusable).
+    pub scrolls: HashMap<Vec<Guid>, (i32, i32)>,
+}
+
+/// A frame that scrolls its content in Preview: Figma's overflow scrolling on a frame that
+/// clips its content.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Scroller {
+    pub layer: Layer,
+    /// The frame's box: the viewport the content scrolls in.
+    pub area: Area,
+    /// The clipping frames around it.
+    pub clips: Vec<Area>,
+    /// How far the content reaches, in the frame's units from its top left.
+    pub content: (f64, f64),
+    /// Scrolls across, down.
+    pub axes: (bool, bool),
+}
+
+impl Scroller {
+    /// The largest offset the content allows on each axis.
+    pub fn max(&self) -> (i32, i32) {
+        let reach = |on: bool, content: f64, view: f64| {
+            if on {
+                (content - view).max(0.0).floor() as i32
+            } else {
+                0
+            }
+        };
+        (
+            reach(self.axes.0, self.content.0, self.area.width),
+            reach(self.axes.1, self.content.1, self.area.height),
+        )
+    }
+}
+
+/// The transform scrolling adds to a child of a frame scrolled by `offset`: by the offset,
+/// none for a child fixed in place, and for a sticky child only until it reaches the frame's
+/// top or left edge, where it stays (Figma's scroll behaviours).
+pub(crate) fn scrolled(child: &Val, (dx, dy): (f64, f64)) -> Affine {
+    match child.text("scrollBehavior") {
+        Some("FIXED_WHEN_CHILD_OF_SCROLLING_FRAME") => Affine::IDENTITY,
+        Some("STICKY_SCROLLS") => {
+            let (x, y) = (
+                child
+                    .path(&["transform", "m02"])
+                    .and_then(Val::as_f32)
+                    .map_or(0.0, f64::from),
+                child
+                    .path(&["transform", "m12"])
+                    .and_then(Val::as_f32)
+                    .map_or(0.0, f64::from),
+            );
+            Affine::translate((-dx.min(x.max(0.0)), -dy.min(y.max(0.0))))
+        }
+        _ => Affine::translate((-dx, -dy)),
+    }
+}
+
+/// Which axes a frame scrolls, from Figma's `scrollDirection`; `None` if it does not, or
+/// does not clip its content (Figma scrolls only clipped frames).
+fn scroll_axes(kind: &str, data: &Val) -> Option<(bool, bool)> {
+    if !crate::geom::clips_content(kind, data) {
+        return None;
+    }
+    match data.text("scrollDirection")? {
+        "HORIZONTAL" => Some((true, false)),
+        "VERTICAL" => Some((false, true)),
+        "BOTH" => Some((true, true)),
+        _ => None,
+    }
 }
 
 /// Fields of an instance that are not its look: never taken from a swapped-in variant.
@@ -229,6 +301,94 @@ const KEEP_ON_SWAP: &[&str] = &[
 ];
 
 impl Ctx<'_> {
+    /// The layer key of `node` drawn at override `path`: the node, or the outer instance and
+    /// the path's keys.
+    fn layer_key(&self, node: Guid, path: Option<&[Guid]>) -> Option<Vec<Guid>> {
+        match path {
+            None => Some(vec![node]),
+            Some(keys) => Some(
+                std::iter::once(self.outer?)
+                    .chain(keys.iter().copied())
+                    .collect(),
+            ),
+        }
+    }
+
+    /// How far the prototype state scrolls the content of frame `node`, if at all.
+    pub(crate) fn scroll_of(
+        &self,
+        node: Guid,
+        path: Option<&[Guid]>,
+        data: &Val,
+    ) -> Option<(f64, f64)> {
+        if self.prototype.scrolls.is_empty() {
+            return None;
+        }
+        let kind = data.text("type").unwrap_or("");
+        scroll_axes(kind, data)?;
+        let (x, y) = *self.prototype.scrolls.get(&self.layer_key(node, path)?)?;
+        Some((f64::from(x), f64::from(y)))
+    }
+
+    /// Records `node` when it scrolls its content (Links walks).
+    pub(crate) fn found_scroller(
+        &mut self,
+        node: &Node,
+        path: Option<&[Guid]>,
+        world: Affine,
+        data: &Val,
+    ) {
+        let Some(axes) = scroll_axes(&node.kind, data) else {
+            return;
+        };
+        let Some(key) = self.layer_key(node.id, path) else {
+            return;
+        };
+        let layer = match path {
+            None => Layer::Node(node.id),
+            Some(_) => match InstancePath::new(key) {
+                Some(p) => Layer::Path(p),
+                None => return,
+            },
+        };
+        // The content's reach, from the children as stored (in the frame's units); for an
+        // instance, its component's children.
+        let parent = if node.kind == "INSTANCE" {
+            resolve::symbol_id(data).unwrap_or(node.id)
+        } else {
+            node.id
+        };
+        let mut content = (0.0f64, 0.0f64);
+        for child in self
+            .doc
+            .children(parent)
+            .iter()
+            .filter_map(|c| self.doc.node(*c))
+        {
+            if child.data.flag("visible") == Some(false) {
+                continue;
+            }
+            let (w, h) = size(&child.data);
+            let b = transformed_bounds(
+                crate::geom::affine(child.data.get("transform")),
+                Rect::new(0.0, 0.0, w, h),
+            );
+            content = (content.0.max(b.x1), content.1.max(b.y1));
+        }
+        let (width, height) = size(data);
+        self.scrollers.push(Scroller {
+            layer,
+            area: Area {
+                transform: world,
+                width,
+                height,
+            },
+            clips: self.clips.clone(),
+            content,
+            axes,
+        });
+    }
+
     /// `data` of instance `node` showing the variant the prototype swapped it to, if any. As
     /// in Figma, the new variant's own look (fills, size, layout…) replaces the old variant's
     /// wherever the instance did not override it; overrides stay.
@@ -386,6 +546,8 @@ pub struct Screen {
     pub links: Vec<Link>,
     /// More links or instance nodes than the limits; the list is incomplete.
     pub truncated: bool,
+    /// The frames that scroll their content, back to front.
+    pub scrollers: Vec<Scroller>,
 }
 
 impl Screen {
@@ -407,6 +569,7 @@ impl Screen {
             frame,
             links: Vec::new(),
             truncated: ctx.exhausted || ctx.stats.depth_skipped > 0,
+            scrollers: std::mem::take(&mut ctx.scrollers),
         };
         let mut variants: HashMap<Vec<Guid>, Option<Guid>> = std::mem::take(&mut ctx.variants)
             .into_iter()
@@ -555,6 +718,9 @@ pub fn reachable(
     (screens, false)
 }
 
+/// A frame a scroll goes to: the frame, its offset now and its largest offset.
+type ScrollTarget<'s> = (&'s Scroller, (i32, i32), (i32, i32));
+
 /// A pointer event in page space.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pointer {
@@ -563,6 +729,8 @@ pub enum Pointer {
     Up(Point),
     /// The pointer left the screen.
     Leave,
+    /// A scroll by `delta` page units (positive: towards the content's end) over a point.
+    Scroll(Point, Vec2),
 }
 
 /// Runs a prototype: the screens visited (newest last, never empty), the variants instances
@@ -580,6 +748,8 @@ pub struct Player {
     /// Temporary swaps ("while hovering", "while pressing"), by target key and trigger: the
     /// variant to go back to (`None`: the instance's own).
     reverts: Vec<(Vec<Guid>, &'static str, Option<Guid>)>,
+    /// The unscrolled fraction of a unit left by the last scroll, and the frame it was for.
+    scroll_rest: Option<(Vec<Guid>, Vec2)>,
     /// When the screen or the state last changed: "after delay" counts from here.
     since: f64,
     now: f64,
@@ -602,6 +772,7 @@ impl Player {
             hovered: Vec::new(),
             pressed: None,
             reverts: Vec::new(),
+            scroll_rest: None,
             since: 0.0,
             now: 0.0,
         }
@@ -656,6 +827,8 @@ impl Player {
     }
 
     fn left_screen(&mut self) {
+        // A new screen starts scrolled to the top, as Figma's do by default.
+        self.state.scrolls.clear();
         self.hovered.clear();
         self.pressed = None;
         self.reverts.clear();
@@ -687,6 +860,9 @@ impl Player {
                 .collect()
         };
         let mut changed = false;
+        if let Pointer::Scroll(p, delta) = event {
+            return self.scroll(screen, p, delta);
+        }
         match event {
             Pointer::Move(_) | Pointer::Leave => {
                 let at = match event {
@@ -725,6 +901,7 @@ impl Player {
                     changed |= self.run(screen, &layer, "ON_PRESS", true);
                 }
             }
+            Pointer::Scroll(..) => {}
             Pointer::Up(p) => {
                 let pressed = self.pressed.take();
                 if let Some(layer) = &pressed {
@@ -740,6 +917,67 @@ impl Player {
             }
         }
         changed
+    }
+
+    /// The front-most frame under `p` that can still move by `delta` (an inner frame at its
+    /// end lets an outer one scroll), with its offset now and its largest offset.
+    fn scroller_for<'s>(
+        &self,
+        screen: &'s Screen,
+        p: Point,
+        delta: Vec2,
+    ) -> Option<ScrollTarget<'s>> {
+        screen.scrollers.iter().rev().find_map(|scroller| {
+            if !(scroller.area.contains(p) && scroller.clips.iter().all(|c| c.contains(p))) {
+                return None;
+            }
+            let at = self
+                .state
+                .scrolls
+                .get(&scroller.layer.key())
+                .copied()
+                .unwrap_or((0, 0));
+            let max = scroller.max();
+            let can = |d: f64, a: i32, m: i32| (d > 0.0 && a < m) || (d < 0.0 && a > 0);
+            (can(delta.x, at.0, max.0) || can(delta.y, at.1, max.1)).then_some((scroller, at, max))
+        })
+    }
+
+    /// Whether a scroll by `delta` over `p` goes to a frame of `screen` (else the view pans).
+    pub fn takes_scroll(&self, screen: &Screen, p: Point, delta: Vec2) -> bool {
+        self.scroller_for(screen, p, delta).is_some()
+    }
+
+    /// Scrolls the frame [`Player::scroller_for`] finds; fractions of a unit add up over
+    /// events (smooth scrolling sends small steps). Returns whether the offset changed.
+    fn scroll(&mut self, screen: &Screen, p: Point, delta: Vec2) -> bool {
+        let Some((scroller, (x, y), (mx, my))) = self.scroller_for(screen, p, delta) else {
+            return false;
+        };
+        let key = scroller.layer.key();
+        let rest = match &self.scroll_rest {
+            Some((k, rest)) if *k == key => *rest,
+            _ => Vec2::ZERO,
+        };
+        let want = Vec2::new(f64::from(x), f64::from(y)) + rest + delta;
+        let next = (
+            want.x.round().clamp(0.0, f64::from(mx)) as i32,
+            want.y.round().clamp(0.0, f64::from(my)) as i32,
+        );
+        let left = want - Vec2::new(f64::from(next.0), f64::from(next.1));
+        self.scroll_rest = Some((
+            key.clone(),
+            Vec2::new(left.x.clamp(-0.5, 0.5), left.y.clamp(-0.5, 0.5)),
+        ));
+        if next == (x, y) {
+            return false;
+        }
+        if next == (0, 0) {
+            self.state.scrolls.remove(&key);
+        } else {
+            self.state.scrolls.insert(key, next);
+        }
+        true
     }
 
     /// Fires the first "after delay" link of `screen` that is due at `now`; returns whether

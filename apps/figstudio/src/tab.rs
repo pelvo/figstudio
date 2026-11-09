@@ -95,17 +95,22 @@ pub struct Tab {
     pub preview: Option<Preview>,
 }
 
+/// Seconds without scrolling before Preview reads the moved links again.
+const SCROLL_SETTLE: f64 = 0.15;
+
 /// The document number for tiles of `doc` drawn with prototype `state`: the document's own
 /// for no state, else one per state, so going back to a state reuses its tiles.
 fn state_doc(doc: u64, state: &prototype::State) -> u64 {
     use std::hash::{Hash, Hasher};
-    if state.swaps.is_empty() {
+    if state.swaps.is_empty() && state.scrolls.is_empty() {
         return doc;
     }
     let mut swaps: Vec<_> = state.swaps.iter().collect();
     swaps.sort();
+    let mut scrolls: Vec<_> = state.scrolls.iter().collect();
+    scrolls.sort();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (doc, swaps).hash(&mut hasher);
+    (doc, swaps, scrolls).hash(&mut hasher);
     hasher.finish() | 1 << 63
 }
 
@@ -123,9 +128,13 @@ pub struct Preview {
     pub fitted_size: Option<egui::Vec2>,
     /// The player's state as the tiles draw it, and their document number for it.
     pub drawn: (u64, Arc<prototype::State>),
-    /// The tile document number of the state shown before: its tiles stay under the new
-    /// state's until those arrive, so a hover changes the button in place, without a blank.
-    pub previous: Option<u64>,
+    /// The last state whose tiles were all on screen, and its tile document number: its
+    /// tiles stay under a new state's until those arrive (a hover changes the button in
+    /// place, without a blank), shifted where a frame scrolled since.
+    pub previous: Option<(u64, Arc<prototype::State>)>,
+    /// When a scroll moved the links without reading them again (`Tab::preview_tick` reads
+    /// them once the scroll has paused for [`SCROLL_SETTLE`]).
+    pub stale_since: Option<f64>,
 }
 
 impl Preview {
@@ -316,6 +325,7 @@ impl Tab {
             fitted_size: None,
             drawn: (self.doc.instance, Arc::default()),
             previous: None,
+            stale_since: None,
         });
         true
     }
@@ -350,20 +360,75 @@ impl Tab {
         let Some(preview) = self.preview.as_mut() else {
             return false;
         };
+        // A press needs the links where they are now: read them if a scroll left them stale.
+        if matches!(
+            event,
+            prototype::Pointer::Down(_) | prototype::Pointer::Up(_)
+        ) && preview.stale_since.is_some()
+        {
+            self.reread();
+        }
+        let Some(preview) = self.preview.as_mut() else {
+            return false;
+        };
         let before = preview.player.screen();
         let changed = preview.player.pointer(&preview.screen, event, now);
+        if changed && matches!(event, prototype::Pointer::Scroll(..)) {
+            // Scrolling only moves what is inside the frame: draw it now, read the links once
+            // the scroll pauses (reading a heavy screen on every wheel event would stutter).
+            let state = preview.player.state().clone();
+            preview.drawn = (state_doc(self.doc.instance, &state), Arc::new(state));
+            preview.stale_since = Some(now);
+            return true;
+        }
         self.after_player(before, changed);
         changed
     }
 
+    /// Passes a wheel scroll to the player; returns whether a frame of the screen took it
+    /// (else the view pans), moved or not yet (fractions of a unit add up).
+    pub fn preview_scroll(&mut self, event: prototype::Pointer, now: f64) -> bool {
+        let prototype::Pointer::Scroll(p, delta) = event else {
+            return false;
+        };
+        let takes = self
+            .preview
+            .as_ref()
+            .is_some_and(|preview| preview.player.takes_scroll(&preview.screen, p, delta));
+        if takes {
+            self.preview_pointer(event, now);
+        }
+        takes
+    }
+
+    /// Reads the shown screen's links again (after scrolling moved them).
+    fn reread(&mut self) {
+        let Some(screen) = self.preview.as_ref().map(|p| p.player.screen()) else {
+            return;
+        };
+        let links = self.read_screen(screen);
+        if let Some(preview) = self.preview.as_mut() {
+            preview.screen = links;
+            preview.stale_since = None;
+        }
+    }
+
     /// Fires a due "after delay" link; returns when the next one is due, if any.
     pub fn preview_tick(&mut self, now: f64) -> Option<f64> {
+        let stale = self.preview.as_ref()?.stale_since;
+        if stale.is_some_and(|at| now - at >= SCROLL_SETTLE) {
+            self.reread();
+        }
         let preview = self.preview.as_mut()?;
         let before = preview.player.screen();
         let changed = preview.player.tick(&preview.screen, now);
         self.after_player(before, changed);
         let preview = self.preview.as_ref()?;
-        preview.player.next_due(&preview.screen)
+        let reread = preview.stale_since.map(|at| at + SCROLL_SETTLE);
+        match (preview.player.next_due(&preview.screen), reread) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// After the player changed the screen or the state: show the screen, draw the state and
@@ -378,7 +443,6 @@ impl Tab {
         let screen = preview.player.screen();
         let state = preview.player.state().clone();
         if *preview.drawn.1 != state {
-            preview.previous = Some(preview.drawn.0);
             preview.drawn = (state_doc(self.doc.instance, &state), Arc::new(state));
         }
         if screen != before {
@@ -388,6 +452,7 @@ impl Tab {
         if let Some(preview) = self.preview.as_mut() {
             preview.screen = links;
             preview.missed = None;
+            preview.stale_since = None;
         }
     }
 

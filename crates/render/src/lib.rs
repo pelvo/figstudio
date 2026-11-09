@@ -354,6 +354,11 @@ struct Ctx<'a> {
     next_remap: Option<(Guid, std::collections::HashMap<Guid, Guid>)>,
     /// The layer key maps of swapped instances being drawn, by override depth.
     remaps: Vec<(usize, std::collections::HashMap<Guid, Guid>)>,
+    /// The scroll offset `draw_children` applies to the children it is about to draw (a
+    /// scrolled frame of the prototype state), taken by it.
+    child_scroll: Option<(f64, f64)>,
+    /// Scrolling frames an [`Inspect::Links`] walk passed, back to front.
+    scrollers: Vec<prototype::Scroller>,
     /// The variant each instance an [`Inspect::Links`] walk passed shows, by layer key.
     variants: std::collections::HashMap<Vec<Guid>, Guid>,
     /// The clipping frames around the node an [`Inspect::Links`] walk is at.
@@ -713,6 +718,8 @@ impl Renderer {
             next_remap: None,
             remaps: Vec::new(),
             variants: std::collections::HashMap::new(),
+            child_scroll: None,
+            scrollers: Vec::new(),
             clips: Vec::new(),
         }
     }
@@ -1216,6 +1223,7 @@ impl Ctx<'_> {
             let clip = inspect == Inspect::Links && kind != "TEXT" && clips_content(kind, data);
             if inspect == Inspect::Links {
                 self.found_link(node, path, world, data);
+                self.found_scroller(node, path, world, data);
                 if kind == "INSTANCE"
                     && let Some(variant) = resolve::symbol_id(data)
                 {
@@ -1248,6 +1256,7 @@ impl Ctx<'_> {
                 self.draw_connector(node, world);
             } else {
                 let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
+                self.child_scroll = self.scroll_of(node.id, path, data);
                 self.draw_children(node, data, world, child_path);
             }
             if clip {
@@ -1440,6 +1449,7 @@ impl Ctx<'_> {
                 // A computed boolean paints its result, never its operand children.
                 // Override paths contain instance ancestors, not ordinary frame/group ancestors.
                 let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
+                self.child_scroll = self.scroll_of(node.id, path, data);
                 self.draw_children(node, data, world, child_path);
             }
             if clip.is_some() {
@@ -1653,6 +1663,7 @@ impl Ctx<'_> {
     /// Draws children, turning mask layers into clips for the siblings above them.
     fn draw_children(&mut self, node: &Node, data: &Val, world: Affine, path: Option<&[Guid]>) {
         let mut mask_layers = 0;
+        let scroll = self.child_scroll.take();
         for id in children_topmost_first(self.doc.children(node.id), data).rev() {
             if self.exhausted || !self.charge_work() {
                 break;
@@ -1662,6 +1673,10 @@ impl Ctx<'_> {
             };
             let (child_path, (child_data, stale_glyphs, approximate_ink)) =
                 self.child_patch(node, data, child, path);
+            let world = match scroll {
+                Some(offset) => world * prototype::scrolled(&child_data, offset),
+                None => world,
+            };
             if child_data.flag("mask") == Some(true) && visible(&child_data) {
                 if self.inspect.is_some() {
                     continue;
@@ -1746,6 +1761,7 @@ impl Ctx<'_> {
             self.outer = Some(id);
         }
         self.overrides.enter(symbol, data, &base);
+        self.child_scroll = self.scroll_of(id, path, data);
         let remap = self.next_remap.take().filter(|(of, _)| *of == id);
         if let Some((_, map)) = &remap {
             self.remaps.push((self.overrides.depth(), map.clone()));
