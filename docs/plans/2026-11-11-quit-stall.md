@@ -1,6 +1,6 @@
 ---
 branch: fix/quit-stall
-pr:
+pr: 87
 title: fix(app): quit without freezing the window on big documents
 ---
 
