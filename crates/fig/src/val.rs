@@ -202,7 +202,8 @@ impl Obj {
         self.0.push((key, value));
     }
 
-    /// Removes `key`, handing back its value as stored (see [`Obj::insert`]).
+    /// Removes `key`, handing back its value as stored: read it through its accessors or
+    /// [`Val::into_owned`] rather than matching its variant (see [`Obj::insert`]).
     pub fn remove(&mut self, key: &str) -> Option<Val> {
         let i = self.0.iter().position(|(k, _)| *k == key)?;
         Some(self.0.remove(i).1)
@@ -336,8 +337,6 @@ impl Val {
         }
     }
 
-    /// Replaces a [`Val::Lazy`] with its decoded value, so it can be changed (copied when
-    /// another copy of the node still shares it).
     /// The value itself: a [`Val::Lazy`] decoded, a [`Val::Shared`] unshared. Use it on a
     /// value taken out of an [`Obj`] before matching its variant.
     pub fn into_owned(mut self) -> Val {
@@ -345,6 +344,8 @@ impl Val {
         self
     }
 
+    /// Replaces a [`Val::Lazy`] with its decoded value, so it can be changed (copied when
+    /// another copy of the node still shares it).
     fn settle(&mut self) {
         if !matches!(self, Val::Lazy(_) | Val::Shared(_)) {
             return;
