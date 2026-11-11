@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.3.0](https://github.com/pelvo/figstudio/compare/v0.2.0...v0.3.0) (2026-11-11)
+
+
+### Features
+
+* **app:** canvas layers, automation ids and live regions for agents ([#68](https://github.com/pelvo/figstudio/issues/68)) ([e8e75ed](https://github.com/pelvo/figstudio/commit/e8e75eda77f773a6453771ebe79b7a9c358735d9))
+* **app:** check for updates, show release notes and self-install ([#62](https://github.com/pelvo/figstudio/issues/62)) ([0809074](https://github.com/pelvo/figstudio/commit/0809074273aaf1bee50a62ef3c7e3f4415b06459))
+* **mcp,app,render:** add Figma's missing MCP tools and their UI ([#66](https://github.com/pelvo/figstudio/issues/66)) ([5bf378a](https://github.com/pelvo/figstudio/commit/5bf378a71e08352aaecbccc91a06b8e1be6e30f1))
+* **render:** draw layer and paint blend modes ([#72](https://github.com/pelvo/figstudio/issues/72)) ([cb337e2](https://github.com/pelvo/figstudio/commit/cb337e23fee62ecca8dcb91990b595c951cb6f70))
+
+
+### Bug Fixes
+
+* **app,web:** keep cloud relay calls answered in a background tab ([#54](https://github.com/pelvo/figstudio/issues/54)) ([b9c7531](https://github.com/pelvo/figstudio/commit/b9c75315e74cf7f3fb1b330eb03462db267214a3))
+* **app,web:** make figstudio usable with screen readers and the keyboard ([#67](https://github.com/pelvo/figstudio/issues/67)) ([aa65158](https://github.com/pelvo/figstudio/commit/aa6515830aea0b3e934127da6d3778d6b77ad1d5))
+* **app:** fix two flaky ui tests and re-request stranded tiles ([#79](https://github.com/pelvo/figstudio/issues/79)) ([901222e](https://github.com/pelvo/figstudio/commit/901222eb22da100ca3398129d1eedfff84f3d29a))
+* **app:** keep settings notes clear of wide controls and name every control ([#81](https://github.com/pelvo/figstudio/issues/81)) ([0169b05](https://github.com/pelvo/figstudio/commit/0169b05996ad110c2cc37b3650d71ed791f2b7c7))
+* **fig:** update zip to 9.3 for security fixes ([#74](https://github.com/pelvo/figstudio/issues/74)) ([eae104f](https://github.com/pelvo/figstudio/commit/eae104f0b65b29ac6914d4af87bdeaf407fc6b2e))
+* **render,scripts:** clip shadows and blurs to masks; plan.sh on macOS ([#75](https://github.com/pelvo/figstudio/issues/75)) ([b2c67e4](https://github.com/pelvo/figstudio/commit/b2c67e4b5e6bba9d9023e33cecb3b5ddb3a1a8e6))
+* **render:** use the renamed clip field in offscreen ([#76](https://github.com/pelvo/figstudio/issues/76)) ([0bf9f29](https://github.com/pelvo/figstudio/commit/0bf9f29dc2e2c62fd7cf05447165a5d39bdde5d4))
+
+
+### Performance Improvements
+
+* **fig:** cut decoded document memory by about half ([#73](https://github.com/pelvo/figstudio/issues/73)) ([5a36a61](https://github.com/pelvo/figstudio/commit/5a36a61a423505c86ab113baf434d95f4ef10691))
+
 ## [0.2.0](https://github.com/pelvo/figstudio/compare/v0.1.0...v0.2.0) (2026-10-24)
 
 
