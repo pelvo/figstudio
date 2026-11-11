@@ -910,6 +910,10 @@ fn a_space_change_is_saved_when_its_popover_is_replaced_its_file_closes_or_the_a
     h.event(egui::Event::Text(" more".into()));
     h.run_steps(2);
     h.state_mut().on_exit();
+    assert!(
+        h.state().tabs.is_empty(),
+        "quitting leaves the documents to the OS instead of freeing them on the UI thread"
+    );
     assert_eq!(
         saved_name(&h, &key, &folder).as_deref(),
         Some("One more"),
