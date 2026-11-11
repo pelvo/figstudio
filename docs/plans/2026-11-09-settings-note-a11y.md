@@ -30,3 +30,12 @@ title: fix(app): keep settings notes clear of wide controls and name every contr
   spaces only had a blank name; they are named by their kind. Each test seen red first.
   `scripts/check.sh` passes. Looked at both in the app (macOS).
 - Not verified: Windows and Linux; a screen reader session; the browser build (same code).
+
+### 2026-11-11T014352Z settings-note-a11y
+- What changed and how it was checked: review follow-up. A layer with two shaders missing
+  code drew both markers on the same spot, so only the top one could be seen or clicked;
+  each later marker now sits to the right of the ones before it. The two-shader test now also
+  adds the layer to the second shader's `missing` layers and checks two markers that do not
+  overlap: red with the old placement (same rect) and with the old shared marker id (one
+  marker), green after. Full gate left to CI.
+- Not verified: a render of the side-by-side markers; `scripts/check.sh` locally.

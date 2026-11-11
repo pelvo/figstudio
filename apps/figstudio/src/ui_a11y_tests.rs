@@ -243,10 +243,16 @@ fn a_layer_with_two_shaders_missing_code_gives_each_zip_button_its_own_id() {
         .expect("another missing shader")
         .id
         .clone();
-    second["id"] = other.into();
+    second["id"] = other.clone().into();
     details.shaders.push(second);
     tab.inspect.set(&tab.doc, layer, details);
-    h.state_mut().tabs[0].selection = Some(layer);
+    let tab = &mut h.state_mut().tabs[0];
+    (tab.shaders.missing.iter_mut())
+        .find(|m| m.id == other)
+        .expect("the other shader")
+        .layers
+        .push(layer);
+    tab.selection = Some(layer);
     super::step(&mut h, &mut c);
     super::step(&mut h, &mut c);
     assert_eq!(
@@ -262,6 +268,22 @@ fn a_layer_with_two_shaders_missing_code_gives_each_zip_button_its_own_id() {
         super::step(&mut h, &mut c);
     }
     assert_all_named(&h, "two shaders missing code");
+    // The layer's two markers sit side by side, not on top of each other.
+    let prefix = format!("canvas.shader-marker.{layer}.");
+    let markers: Vec<_> = (h.root().children_recursive())
+        .map(|n| n.accesskit_node())
+        .filter(|a| {
+            a.data()
+                .author_id()
+                .is_some_and(|id| id.starts_with(&prefix))
+        })
+        .map(|a| a.bounding_box().expect("a place on screen"))
+        .collect();
+    assert_eq!(markers.len(), 2, "a marker per shader");
+    assert!(
+        markers[0].intersect(markers[1]).is_empty(),
+        "markers overlap: {markers:?}"
+    );
 }
 
 #[test]
