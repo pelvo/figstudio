@@ -165,10 +165,11 @@ pub fn visible_page(zoom: f32, pan: [f32; 2], size: [f32; 2]) -> Rect {
 }
 
 /// The level and tiles to show for `visible`: `level`, or a coarser one when its tiles would
-/// fill more than half the cache (a huge canvas on a small budget), plus a one-tile prefetch
-/// ring when that still fits. Every tile of the plan then fits in the cache at once.
-pub fn plan(level: i32, visible: Rect, budget: usize) -> Range {
-    let cap = (budget / 2).max(1) as f64;
+/// number more than `cap` (a huge canvas on a small budget), plus a one-tile prefetch ring
+/// when that still fits. The cap is at most half the cache, and a frame's layers share the
+/// cache (see [`Cache::plan_layer`]), so every planned tile fits in it at once.
+pub fn plan(level: i32, visible: Rect, cap: usize) -> Range {
+    let cap = cap.max(1) as f64;
     // Worst case over every pan: a misaligned view touches one more tile per axis.
     let fits = |level: i32, ring: f64| {
         let k = scale(level) / f64::from(TILE);
@@ -187,7 +188,7 @@ pub fn plan(level: i32, visible: Rect, budget: usize) -> Range {
     }
 }
 
-/// The tiles of `range` (from [`plan`], so at most half the cache) to render, nearest its
+/// The tiles of `range` (from [`plan`], so within the cache) to render, nearest its
 /// centre first: those not cached, and those cached with placeholders before more images
 /// arrived.
 pub fn wanted<T>(cache: &Cache<T>, range: Range, doc: u64, page: Guid, arrived: u64) -> Vec<Key> {

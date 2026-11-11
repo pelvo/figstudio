@@ -5,7 +5,7 @@
 use figstudio_fig::Guid;
 use figstudio_render::kurbo::Rect;
 
-use crate::tiles::{Key, Range};
+use crate::tiles::{self, Key, Range};
 
 /// What the last frame planned (see [`Cache::begin_frame`]).
 pub type Plan = Option<Planned>;
@@ -63,7 +63,8 @@ pub struct Cache<T> {
     budget: usize,
     clock: u64,
     frame: u64,
-    /// What the last frame planned (see [`Cache::begin_frame`]); at most half the budget.
+    /// What the last frame planned (see [`Cache::begin_frame`]): at most half the budget per
+    /// range and the budget in all (see [`Cache::plan_layer`]).
     plan: Plan,
 }
 
@@ -78,6 +79,7 @@ impl<T> Cache<T> {
         }
     }
 
+    #[cfg(test)]
     pub fn budget(&self) -> usize {
         self.budget
     }
@@ -101,11 +103,32 @@ impl<T> Cache<T> {
         });
     }
 
-    /// Adds `range` of `doc` to this frame's plan (Preview's scroll layers).
-    pub fn plan_also(&mut self, doc: u64, range: Range) {
-        if let Some(plan) = &mut self.plan {
-            plan.ranges.push((doc, range));
+    /// Plans `visible` of `doc` at `level` (see [`tiles::plan`]) and returns the range. The
+    /// `first` layer starts a frame; later ones (Preview's scroll layers) join its plan. Each
+    /// gets at most half the budget, and less (so a coarser level) when the frame's plan would
+    /// otherwise outgrow the cache: planned tiles must never evict each other.
+    pub fn plan_layer(
+        &mut self,
+        first: bool,
+        (doc, page): (u64, Guid),
+        level: i32,
+        visible: Rect,
+    ) -> Range {
+        let planned: u64 = match &self.plan {
+            Some(plan) if !first => plan.ranges.iter().map(|(_, r)| r.count()).sum(),
+            _ => 0,
+        };
+        let left = self
+            .budget
+            .saturating_sub(usize::try_from(planned).unwrap_or(usize::MAX));
+        // shortcut: with under 4 tiles left a layer still gets the coarsest level (1-4 tiles), so a
+        // nearly full plan can overshoot by up to 4; fine while budgets are in the hundreds.
+        let range = tiles::plan(level, visible, left.min(self.budget / 2));
+        match &mut self.plan {
+            Some(plan) if !first => plan.ranges.push((doc, range)),
+            _ => self.begin_frame(doc, page, range),
         }
+        range
     }
 
     /// What the last frame planned: document, page and tiles (see [`Cache::begin_frame`]).

@@ -217,12 +217,9 @@ impl Tiles {
             if i > 0 && planned.is_zero_area() {
                 continue;
             }
-            let range = tiles::plan(level, planned, self.cache.budget());
-            if i == 0 {
-                self.cache.begin_frame(layer.doc, page, range);
-            } else {
-                self.cache.plan_also(layer.doc, range);
-            }
+            let range = self
+                .cache
+                .plan_layer(i == 0, (layer.doc, page), level, planned);
             // The layer's last complete picture under the new one until its tiles arrive.
             let before = tab
                 .preview

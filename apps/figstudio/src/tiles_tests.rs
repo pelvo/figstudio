@@ -215,7 +215,7 @@ fn the_plan_never_lists_more_than_half_the_cache() {
         ] {
             for pan in [0.0, 37.3, 255.9, 511.0] {
                 let visible = visible_page(1.0, [pan, -pan], [w, h]);
-                let n = plan(0, visible, budget).by_distance(7, PAGE).len();
+                let n = plan(0, visible, budget / 2).by_distance(7, PAGE).len();
                 assert!(n <= budget / 2, "{budget} {w}x{h} pan {pan}: {n}");
             }
         }
