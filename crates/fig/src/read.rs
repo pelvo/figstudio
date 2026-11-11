@@ -88,7 +88,9 @@ pub(crate) struct Reader {
     walked: bool,
 }
 
-/// Decodes a field kept by [`Lazy`]: field `field` of definition `def`, at node-field depth.
+/// Decodes a field kept by [`Lazy`]: field `field` of definition `def`, at node-field depth
+/// (2). A nested lazy field such as `symbolData.symbolOverrides` sits deeper, but the skip at
+/// open already checked its real depth against `MAX_DEPTH`.
 pub(crate) fn decode_field(dec: &Arc<Decoder>, def: usize, field: usize, bytes: &[u8]) -> R<Val> {
     let Some(f) = dec.schema.defs.get(def).and_then(|d| d.fields.get(field)) else {
         return Err("the schema has no such field".into());
