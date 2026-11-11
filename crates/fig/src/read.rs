@@ -472,7 +472,7 @@ impl Reader {
                                 mode => self.node_field(bb, mode, idx, i, depth + 1)?,
                             };
                             // A repeated field keeps the last value, like the reference decoder.
-                            match o.get_raw_mut(key.as_str()) {
+                            match o.get_raw_mut_named(key) {
                                 Some(slot) => *slot = v,
                                 None => o.push(key, v),
                             }
@@ -518,5 +518,29 @@ mod tests {
         // Later: the field's own byte only.
         let val = decode_field(&reader.dec, 1, 0, &[3]).unwrap();
         assert_eq!(val.items().len(), 3);
+    }
+
+    /// A message that sends the same field twice keeps the last value, once.
+    #[test]
+    fn a_repeated_message_field_keeps_the_last_value() {
+        let schema = Schema::new(vec![Def::new(
+            "M".into(),
+            DefKind::Message,
+            vec![Field {
+                name: "n".into(),
+                type_id: kiwi_schema::TYPE_UINT,
+                is_array: false,
+                value: 1,
+            }],
+        )]);
+        let reader = Reader::new(schema).unwrap();
+        let val = reader
+            .value(&mut ByteBuffer::new(&[1, 5, 1, 7, 0]), 0, 0)
+            .unwrap();
+        let Val::Obj(o) = val else {
+            panic!("not an object: {val:?}")
+        };
+        assert_eq!(o.keys().collect::<Vec<_>>(), ["n"]);
+        assert_eq!(o.get("n").and_then(Val::as_u32), Some(7));
     }
 }

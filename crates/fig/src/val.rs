@@ -238,6 +238,11 @@ impl Obj {
             .map(|(_, v)| v)
     }
 
+    /// [`Obj::get_raw_mut`] by interned name (the reader, per field of every object).
+    pub(crate) fn get_raw_mut_named(&mut self, name: Name) -> Option<&mut Val> {
+        self.0.iter_mut().find(|(k, _)| k.is(name)).map(|(_, v)| v)
+    }
+
     /// Sets `key`, replacing an existing value in place. Returns the old value as stored: a
     /// field still encoded or shared is handed back as it is, so read it through its accessors
     /// or [`Val::into_owned`] rather than matching its variant.
