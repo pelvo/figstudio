@@ -1190,6 +1190,48 @@ fn settings_open_with_their_shortcut_and_their_tabs_switch() {
     assert!(!h.state().settings.is_open(), "Escape closes them");
 }
 
+/// Where the last frame painted each text shape whose text contains `part`.
+fn text_rects(h: &Harness<'_, App>, part: &str) -> Vec<egui::Rect> {
+    fn walk(shape: &egui::Shape, part: &str, out: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, part, out)),
+            egui::Shape::Text(t) if t.galley.job.text.contains(part) => {
+                out.push(t.galley.rect.translate(t.pos.to_vec2()));
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    h.output()
+        .shapes
+        .iter()
+        .for_each(|c| walk(&c.shape, part, &mut out));
+    out
+}
+
+#[test]
+fn a_settings_note_never_runs_under_a_wide_control() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    h.state_mut()
+        .settings
+        .show(Some(crate::settings::Tab::General), &ctx);
+    h.run_steps(5);
+    let note = text_rects(&h, "for the steps between");
+    assert_eq!(note.len(), 1, "the Text size note");
+    for size in ["100%", "125%", "150%", "200%"] {
+        // The chip: its label and the 11 pt `segmented` pads it with on each side.
+        let chip = *text_rects(&h, size).first().expect(size);
+        let chip = chip.expand2(egui::vec2(11.0, 2.0));
+        let n = note[0];
+        // Beside the chips with the row's gap (`setting` keeps 16 pt), or on another line.
+        let clear = chip.left() - n.right() >= 12.0
+            || n.top() >= chip.bottom()
+            || chip.top() >= n.bottom() + 4.0;
+        assert!(clear, "{size} chip {chip:?} against the note {n:?}");
+    }
+}
+
 #[test]
 fn the_update_check_is_off_until_turned_on_and_is_remembered() {
     use eframe::App as _;

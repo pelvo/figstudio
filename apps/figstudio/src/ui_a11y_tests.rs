@@ -193,6 +193,100 @@ fn every_control_in_each_settings_tab_has_a_name() {
 }
 
 #[test]
+fn every_control_of_the_motion_player_has_a_name() {
+    let mut h = super::harness_fixture("motion.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    h.state_mut().tabs[0].selection = Some(figstudio_fig::Guid(1, 1106));
+    super::step(&mut h, &mut c);
+    super::step(&mut h, &mut c);
+    super::click_label(&mut h, &mut c, "Play");
+    super::step(&mut h, &mut c);
+    assert!(h.state().tabs[0].motion_preview.is_some(), "playing");
+    assert_all_named(&h, "motion player");
+    // The bar behind its buttons is hidden from the tree, so Tab must not stop on it either.
+    let ctx = h.ctx.clone();
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..200 {
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+        let Some(id) = ctx.memory(|m| m.focused()) else {
+            continue;
+        };
+        assert_ne!(id, egui::Id::new("motion-bar"), "Tab stopped on the bar");
+        if !seen.insert(id) {
+            break;
+        }
+    }
+    // The walk covered the player, so the check above ran.
+    assert!(
+        seen.contains(&egui::Id::new("motion-play")),
+        "Tab reached the player's Play/Pause button"
+    );
+}
+
+#[test]
+fn a_layer_with_two_shaders_missing_code_gives_each_zip_button_its_own_id() {
+    let mut h = super::harness_fixture("shaders.fig", 1.0 / 60.0);
+    let mut c = Vec::new();
+    super::wait(&mut h, &mut c, "the shader count", |a| {
+        a.tabs[0].shaders.counting.is_none()
+    });
+    // The Concentric patterns layer, shown with a second shader (another one whose code is
+    // missing too), as a layer with a shader fill and a shader effect is.
+    let layer = figstudio_fig::Guid(1, 14622);
+    let tab = &h.state().tabs[0];
+    let node = tab.doc.node(layer).expect("layer");
+    let mut details = tab.inspect.get(&tab.doc, node);
+    let mut second = details.shaders[0].clone();
+    let other = (tab.shaders.missing.iter())
+        .find(|m| Some(m.id.as_str()) != second["id"].as_str())
+        .expect("another missing shader")
+        .id
+        .clone();
+    second["id"] = other.clone().into();
+    details.shaders.push(second);
+    tab.inspect.set(&tab.doc, layer, details);
+    let tab = &mut h.state_mut().tabs[0];
+    (tab.shaders.missing.iter_mut())
+        .find(|m| m.id == other)
+        .expect("the other shader")
+        .layers
+        .push(layer);
+    tab.selection = Some(layer);
+    super::step(&mut h, &mut c);
+    super::step(&mut h, &mut c);
+    assert_eq!(
+        h.query_all_by_label("Choose its zip…").count(),
+        2,
+        "a button per shader"
+    );
+    // The canvas tree of a 28,000-layer page is built over a few frames.
+    for _ in 0..600 {
+        if h.query_by_label("Preparing canvas layers…").is_none() {
+            break;
+        }
+        super::step(&mut h, &mut c);
+    }
+    assert_all_named(&h, "two shaders missing code");
+    // The layer's two markers sit side by side, not on top of each other.
+    let prefix = format!("canvas.shader-marker.{layer}.");
+    let markers: Vec<_> = (h.root().children_recursive())
+        .map(|n| n.accesskit_node())
+        .filter(|a| {
+            a.data()
+                .author_id()
+                .is_some_and(|id| id.starts_with(&prefix))
+        })
+        .map(|a| a.bounding_box().expect("a place on screen"))
+        .collect();
+    assert_eq!(markers.len(), 2, "a marker per shader");
+    assert!(
+        markers[0].intersect(markers[1]).is_empty(),
+        "markers overlap: {markers:?}"
+    );
+}
+
+#[test]
 fn a_right_click_menu_is_a_named_menu_of_named_items() {
     let mut h = harness();
     // A layer of structure.fig (the one the Copy menu tests use).

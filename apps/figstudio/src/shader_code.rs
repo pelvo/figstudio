@@ -679,6 +679,8 @@ pub fn markers(
     let p = theme::of(ui);
     let clip = painter.clip_rect();
     let mut drawn = 0;
+    // The width taken by each layer's markers so far: a later one sits to their right.
+    let mut taken = std::collections::HashMap::<Guid, f32>::new();
     for missing in &tab.shaders.missing {
         for &layer in &missing.layers {
             if drawn >= MAX_MARKERS {
@@ -703,20 +705,28 @@ pub fn markers(
             const ICON: f32 = 13.0;
             const HEIGHT: f32 = 24.0;
             // A layer narrower than the label gets the icon alone (its label on hover).
-            let wide = bounds.width() >= label.size().x + ICON + 40.0;
+            let x = taken.entry(layer).or_default();
+            let wide = bounds.width() - *x >= label.size().x + ICON + 40.0;
             let size = if wide {
                 vec2(label.size().x + ICON + 26.0, HEIGHT)
             } else {
                 vec2(HEIGHT, HEIGHT)
             };
-            let pill = egui::Rect::from_min_size(bounds.min.max(clip.min) + vec2(6.0, 6.0), size);
+            let pill =
+                egui::Rect::from_min_size(bounds.min.max(clip.min) + vec2(6.0 + *x, 6.0), size);
+            *x += size.x + 4.0;
+            // One marker per shader on a layer: a layer with two shaders missing code has two.
             let response = ui.interact(
                 pill,
-                egui::Id::new(("shader-marker", tab.id, layer)),
+                egui::Id::new(("shader-marker", tab.id, layer, &missing.id)),
                 Sense::click(),
             );
             response
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
+            crate::a11y::author(
+                &response,
+                format!("canvas.shader-marker.{layer}.{}", missing.id),
+            );
             let response = response
                 .on_hover_text(format!(
                     "{text}. Click to choose it: the zip of Figma's View code, then Download files"

@@ -667,6 +667,25 @@ mod tests {
     }
 
     #[test]
+    fn a_layer_without_a_name_is_named_by_its_kind() {
+        let t = tab(vec![
+            node(1, 0, "CANVAS", "page", 0.0, 0.0),
+            node(2, 1, "FRAME", " ", 0.0, 0.0),
+        ]);
+        let node = t.doc.node(Guid(9, 2)).expect("layer");
+        let mut described = egui::accesskit::Node::new(egui::accesskit::Role::Group);
+        super::describe(
+            &mut described,
+            &t.doc,
+            node.id,
+            &node.kind,
+            &node.data,
+            None,
+        );
+        assert_eq!(described.label(), Some("frame"));
+    }
+
+    #[test]
     fn reach_is_bounded_per_frame_and_resumes_until_ready() {
         let mut nodes = vec![node(1, 0, "CANVAS", "page", 0.0, 0.0)];
         for n in 2..(super::REACH_STEPS as u32 + 3) {

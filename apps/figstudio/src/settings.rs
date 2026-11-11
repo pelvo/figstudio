@@ -557,7 +557,18 @@ fn setting(ui: &mut Ui, label: &str, note: &str, control: impl FnOnce(&mut Ui)) 
         .ctx()
         .data(|d| d.get_temp::<f32>(remembered))
         .unwrap_or(0.0);
-    let wrap = (width - 2.0 * INSET - control_w - 16.0).max(80.0);
+    let beside = width - 2.0 * INSET - control_w - 16.0;
+    // A wide control (Text size's chips) leaves the note too little room beside it: the
+    // text then takes the full width and the control a line of its own under it.
+    let below = !note.is_empty() && beside < 160.0;
+    let wrap = if below {
+        width - 2.0 * INSET
+    } else {
+        beside.max(80.0)
+    };
+    // The control's line under the text (`pill`, 26 pt, is the tallest control; `segmented`
+    // is 24), and the gap above it.
+    let (control_h, control_gap) = (26.0, 8.0);
     let title = ui.painter().layout(
         label.to_owned(),
         FontId::proportional(13.0),
@@ -573,9 +584,18 @@ fn setting(ui: &mut Ui, label: &str, note: &str, control: impl FnOnce(&mut Ui)) 
             .map_or(title.size().x, |n| title.size().x.max(n.size().x)),
         title.size().y + note.as_ref().map_or(0.0, |n| 2.0 + n.size().y),
     );
-    let (rect, _) = ui.allocate_exact_size(vec2(width, (text.y + 20.0).max(48.0)), Sense::hover());
+    let height = if below {
+        text.y + control_gap + control_h + 20.0
+    } else {
+        (text.y + 20.0).max(48.0)
+    };
+    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     row_line(ui, rect);
-    let at = pos2(rect.left() + INSET, rect.center().y - text.y / 2.0);
+    let at = if below {
+        pos2(rect.left() + INSET, rect.top() + 10.0)
+    } else {
+        pos2(rect.left() + INSET, rect.center().y - text.y / 2.0)
+    };
     let spoken = if note.is_some() {
         format!("{label}. {}", note.as_ref().map_or("", |n| n.text()))
     } else {
@@ -595,10 +615,14 @@ fn setting(ui: &mut Ui, label: &str, note: &str, control: impl FnOnce(&mut Ui)) 
     }
     let mut child = ui.new_child(
         UiBuilder::new()
-            .max_rect(Rect::from_min_max(
-                rect.min,
-                pos2(rect.right() - INSET, rect.bottom()),
-            ))
+            .max_rect(if below {
+                Rect::from_min_max(
+                    pos2(rect.left(), rect.bottom() - 10.0 - control_h),
+                    pos2(rect.right() - INSET, rect.bottom() - 10.0),
+                )
+            } else {
+                Rect::from_min_max(rect.min, pos2(rect.right() - INSET, rect.bottom()))
+            })
             .layout(Layout::right_to_left(Align::Center)),
     );
     control(&mut child);
