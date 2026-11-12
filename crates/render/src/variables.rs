@@ -51,6 +51,9 @@ impl Variables {
         Self {
             // The decoded fields first: most documents mention a style there, and the heavy
             // still-encoded ones are decoded only when nothing else does.
+            // shortcut: a document whose only references sit in instance overrides (kept
+            // encoded) decodes every lazy field here; none of the fixtures or two large real
+            // files does. If one shows up, add a middle pass that opens only the overrides.
             used: [false, true].into_iter().any(|open| {
                 doc.nodes
                     .iter()

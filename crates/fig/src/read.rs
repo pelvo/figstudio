@@ -88,7 +88,9 @@ pub(crate) struct Reader {
     walked: bool,
 }
 
-/// Decodes a field kept by [`Lazy`]: field `field` of definition `def`, at node-field depth.
+/// Decodes a field kept by [`Lazy`]: field `field` of definition `def`, at node-field depth
+/// (2). A nested lazy field such as `symbolData.symbolOverrides` sits deeper, but the skip at
+/// open already checked its real depth against `MAX_DEPTH`.
 pub(crate) fn decode_field(dec: &Arc<Decoder>, def: usize, field: usize, bytes: &[u8]) -> R<Val> {
     let Some(f) = dec.schema.defs.get(def).and_then(|d| d.fields.get(field)) else {
         return Err("the schema has no such field".into());
@@ -100,8 +102,13 @@ pub(crate) fn decode_field(dec: &Arc<Decoder>, def: usize, field: usize, bytes: 
     reader.field(&mut ByteBuffer::new(bytes), f, 2)
 }
 
-/// How each field is read in node records: the record's [`LAZY_FIELDS`] lazily, its other
-/// fields that own memory shared, everything else plainly.
+/// Fields of nested messages kept encoded until first read, as (message, field): an
+/// instance's overrides are read only when the instance is entered.
+const LAZY_NESTED: [(&str, &str); 1] = [("SymbolData", "symbolOverrides")];
+
+/// How each field is read in node records: the record's [`LAZY_FIELDS`] and the nested
+/// [`LAZY_NESTED`] lazily, the record's other fields that own memory shared, everything else
+/// plainly.
 fn modes(schema: &Schema) -> Vec<Box<[Mode]>> {
     let node = schema
         .def("Message")
@@ -131,7 +138,16 @@ fn modes(schema: &Schema) -> Vec<Box<[Mode]>> {
         .map(
             |(i, d)| match node == Some(i) && d.kind == DefKind::Message {
                 true => d.fields.iter().map(mode).collect(),
-                false => vec![Mode::Plain; d.fields.len()].into(),
+                false => d
+                    .fields
+                    .iter()
+                    .map(
+                        |f| match LAZY_NESTED.contains(&(d.name.as_str(), f.name.as_str())) {
+                            true if d.kind == DefKind::Message => Mode::Lazy,
+                            _ => Mode::Plain,
+                        },
+                    )
+                    .collect(),
             },
         )
         .collect()
