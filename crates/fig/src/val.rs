@@ -29,6 +29,9 @@ pub enum Val {
     /// Shared: a copy of the node (an instance resolved from its component) reads the same
     /// decoded value instead of decoding again.
     Lazy(Arc<Lazy>),
+    /// A node field equal to the same field of other nodes, stored once. Like [`Val::Lazy`],
+    /// only an [`Obj`] holds one and its accessors hand out the value inside.
+    Shared(Arc<Val>),
 }
 
 /// A node field kept as its encoded bytes until first read, then decoded once (thread-safe)
@@ -178,12 +181,18 @@ impl Obj {
         self.get_raw(key).is_some()
     }
 
-    /// Sets `key`, replacing an existing value in place. Returns the old value.
+    /// The stored slot, to replace without decoding or unsharing the old value.
+    pub(crate) fn get_raw_mut(&mut self, key: &str) -> Option<&mut Val> {
+        self.0.iter_mut().find(|(k, _)| *k == key).map(|(_, v)| v)
+    }
+
+    /// Sets `key`, replacing an existing value in place. Returns the old value as stored: a
+    /// field still encoded or shared is handed back as it is, so read it through its accessors
+    /// or [`Val::into_owned`] rather than matching its variant.
     pub fn insert(&mut self, key: &str, value: Val) -> Option<Val> {
-        if let Some(slot) = self.get_mut(key) {
+        if let Some(slot) = self.get_raw_mut(key) {
             return Some(std::mem::replace(slot, value));
         }
-        // (get_mut settled a lazy slot, so the old value handed back is decoded.)
         self.0.push((intern(key), value));
         None
     }
@@ -193,11 +202,11 @@ impl Obj {
         self.0.push((key, value));
     }
 
+    /// Removes `key`, handing back its value as stored: read it through its accessors or
+    /// [`Val::into_owned`] rather than matching its variant (see [`Obj::insert`]).
     pub fn remove(&mut self, key: &str) -> Option<Val> {
         let i = self.0.iter().position(|(k, _)| *k == key)?;
-        let mut old = self.0.remove(i).1;
-        old.settle();
-        Some(old)
+        Some(self.0.remove(i).1)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&'static str, &Val)> {
@@ -216,6 +225,7 @@ impl Obj {
     pub fn values_decoded(&self) -> impl Iterator<Item = &Val> {
         self.0.iter().filter_map(|(_, v)| match v {
             Val::Lazy(l) => l.val.get(),
+            Val::Shared(v) => Some(&**v),
             v => Some(v),
         })
     }
@@ -255,6 +265,11 @@ impl<const N: usize> From<[(&str, Val); N]> for Obj {
 /// document always equals an unchanged copy of itself (Figma stores NaN in some fields).
 impl PartialEq for Val {
     fn eq(&self, other: &Val) -> bool {
+        match (self, other) {
+            (Val::Shared(a), Val::Shared(b)) if Arc::ptr_eq(a, b) => return true,
+            (Val::Lazy(a), Val::Lazy(b)) if Arc::ptr_eq(a, b) => return true,
+            _ => {}
+        }
         // The same bytes of the same field under one schema decode alike: no need to decode.
         if let (Val::Lazy(a), Val::Lazy(b)) = (self, other)
             && Arc::ptr_eq(&a.dec, &b.dec)
@@ -312,24 +327,40 @@ impl Guid {
 }
 
 impl Val {
-    /// The value itself, or the decoded value of a [`Val::Lazy`].
+    /// The value itself, the decoded value of a [`Val::Lazy`] or the one a [`Val::Shared`]
+    /// points to.
     pub fn view(&self) -> &Val {
         match self {
             Val::Lazy(l) => l.get(),
+            Val::Shared(v) => v,
             v => v,
         }
+    }
+
+    /// The value itself: a [`Val::Lazy`] decoded, a [`Val::Shared`] unshared. Use it on a
+    /// value taken out of an [`Obj`] before matching its variant.
+    pub fn into_owned(mut self) -> Val {
+        self.settle();
+        self
     }
 
     /// Replaces a [`Val::Lazy`] with its decoded value, so it can be changed (copied when
     /// another copy of the node still shares it).
     fn settle(&mut self) {
-        if let Val::Lazy(l) = self {
-            let v = match Arc::get_mut(l).and_then(|l| l.val.take()) {
-                Some(v) => v,
-                None => l.get().clone(),
-            };
-            *self = v;
+        if !matches!(self, Val::Lazy(_) | Val::Shared(_)) {
+            return;
         }
+        *self = match std::mem::replace(self, Val::Bool(false)) {
+            Val::Lazy(l) => match Arc::try_unwrap(l) {
+                Ok(l) => match l.val.get() {
+                    Some(_) => l.val.into_inner().unwrap_or_else(|| Val::Arr(Vec::new())),
+                    None => l.decode(),
+                },
+                Err(l) => l.get().clone(),
+            },
+            Val::Shared(v) => Arc::unwrap_or_clone(v),
+            v => v,
+        };
     }
 
     pub fn get(&self, key: &str) -> Option<&Val> {
@@ -552,6 +583,125 @@ mod tests {
         ));
         let glyphs = fields.get("derivedTextData").and_then(|d| d.get("glyphs"));
         assert!(glyphs.is_some_and(|g| !g.items().is_empty()));
+    }
+
+    fn fixture(name: &str) -> crate::Document {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/");
+        crate::Document::open(format!("{dir}{name}.fig")).unwrap()
+    }
+
+    /// Nodes with equal paints hold one shared value, and reading it through any of them
+    /// gives the same paints.
+    #[test]
+    fn equal_node_fields_are_stored_once() {
+        use super::Val;
+        let doc = fixture("shaders");
+        let mut first: std::collections::HashMap<String, &Val> = Default::default();
+        let mut shared = 0;
+        for node in &doc.nodes {
+            let Val::Obj(fields) = &node.data else {
+                continue;
+            };
+            let Some(raw) = fields.get_raw("fillPaints") else {
+                continue;
+            };
+            assert!(matches!(raw, Val::Shared(_)));
+            let json = serde_json::to_string(raw).unwrap();
+            match first.get(&json) {
+                Some(Val::Shared(a)) => {
+                    let Val::Shared(b) = raw else { unreachable!() };
+                    assert!(std::sync::Arc::ptr_eq(a, b));
+                    assert_eq!(node.data.get("fillPaints"), Some(&**a));
+                    shared += 1;
+                }
+                _ => {
+                    first.insert(json, raw);
+                }
+            }
+        }
+        assert!(shared > 100, "{shared} nodes reuse another node's paints");
+    }
+
+    /// Changing one node's shared field leaves every other node's copy as it was, in memory
+    /// and in the written file.
+    #[test]
+    fn editing_a_shared_field_changes_only_that_node() {
+        use super::Val;
+        let mut doc = fixture("shaders");
+        let mut nodes = doc.nodes.clone();
+        let paints = |n: &crate::Node| n.data.get("fillPaints").cloned();
+        let (a, b) = {
+            let mut seen: std::collections::HashMap<String, usize> = Default::default();
+            (0..nodes.len())
+                .find_map(|i| {
+                    let p = paints(&nodes[i]).filter(|p| !p.items().is_empty())?;
+                    let key = serde_json::to_string(&p).unwrap();
+                    seen.insert(key, i).map(|j| (j, i))
+                })
+                .unwrap()
+        };
+        let before = paints(&nodes[b]);
+        let Some(Val::Arr(list)) = nodes[a].data.get_mut("fillPaints") else {
+            panic!()
+        };
+        list.clear();
+        assert_eq!(paints(&nodes[b]), before);
+        let (ida, idb) = (nodes[a].id, nodes[b].id);
+        doc.set_nodes(nodes).unwrap();
+        let again = crate::Document::from_bytes(&doc.to_bytes().unwrap()).unwrap();
+        let read = |id| again.node(id).unwrap().data.get("fillPaints").cloned();
+        assert!(read(ida).is_none_or(|p| p.items().is_empty()));
+        assert_eq!(read(idb), before);
+    }
+
+    /// A shared field taken out of a node matches as its value once owned.
+    #[test]
+    fn a_removed_shared_field_matches_once_owned() {
+        use super::Val;
+        let doc = fixture("shaders");
+        let mut data = doc
+            .nodes
+            .iter()
+            .find(|n| matches!(&n.data, Val::Obj(o) if matches!(o.get_raw("fillPaints"), Some(Val::Shared(_)))))
+            .unwrap()
+            .data
+            .clone();
+        let Val::Obj(fields) = &mut data else {
+            panic!()
+        };
+        let taken = fields.remove("fillPaints").unwrap();
+        assert!(matches!(taken, Val::Shared(_)));
+        assert!(matches!(taken.into_owned(), Val::Arr(_)));
+    }
+
+    /// Overwriting or removing a field still encoded, on a copy of a node (as the renderer
+    /// does with stale glyphs and instance overrides), does not decode the document's copy.
+    #[test]
+    fn replacing_a_lazy_field_does_not_decode_it() {
+        use super::Val;
+        let doc = fixture("noise_and_grain");
+        let node = doc
+            .nodes
+            .iter()
+            .find(|n| {
+                n.kind == "TEXT"
+                    && matches!(&n.data, Val::Obj(o) if o.contains_key("derivedTextData"))
+            })
+            .unwrap();
+        let undecoded = || {
+            let Val::Obj(fields) = &node.data else {
+                panic!()
+            };
+            matches!(fields.get_raw("derivedTextData"), Some(Val::Lazy(l)) if l.val.get().is_none())
+        };
+        assert!(undecoded());
+        let mut copy = node.data.clone();
+        copy.set("derivedTextData", Val::Arr(Vec::new()));
+        let Val::Obj(fields) = &mut node.data.clone() else {
+            panic!()
+        };
+        fields.remove("derivedTextData");
+        assert!(undecoded());
     }
 
     /// A copy of a node made before the read (as instance resolution makes) shares the
