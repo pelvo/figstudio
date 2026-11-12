@@ -909,7 +909,16 @@ fn a_space_change_is_saved_when_its_popover_is_replaced_its_file_closes_or_the_a
     h.run_steps(2);
     h.event(egui::Event::Text(" more".into()));
     h.run_steps(2);
+    // A document only the tab holds (the harness's workers keep their own `Arc` of the loaded
+    // one), so it survives quitting only if the tab is not dropped.
+    let only_tab = std::sync::Arc::new(figstudio_fig::Document::open(fixture(FIXTURE)).unwrap());
+    let doc = std::sync::Arc::downgrade(&only_tab);
+    h.state_mut().tabs[0].doc = only_tab;
     h.state_mut().on_exit();
+    assert!(
+        h.state().tabs.is_empty() && doc.upgrade().is_some(),
+        "quitting leaves the documents to the OS instead of freeing them on the UI thread"
+    );
     assert_eq!(
         saved_name(&h, &key, &folder).as_deref(),
         Some("One more"),

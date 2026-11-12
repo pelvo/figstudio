@@ -1439,6 +1439,9 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.commit_space_editor();
         self.mcp.stop();
+        // eframe drops the app before it closes the window: freeing a big document node by
+        // node froze the window for seconds. The process is ending, so the OS takes it back.
+        std::mem::forget(std::mem::take(&mut self.tabs));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
