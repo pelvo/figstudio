@@ -23,8 +23,9 @@ task board) and `docs/TESTING.md` (tests, checks, how to prove a test).
 | UI in the Arc browser style | accepted (2026-10-19; was PhotoCraft-like) | same toolkit (egui 0.36): tinted window gradient per file, sidebar, rounded canvas card, command bar, springs; no Arc assets copied |
 | Large private files | must work | requester cannot share them: synthetic stress file here, `doctor` report there |
 
-Out of scope for v1: editing, Figma API / login, prototyping/interactions, variables and
-styles panels, plugins.
+Out of scope for v1: editing, Figma API / login, variables and styles panels, plugins.
+Prototype playback is being brought to parity with Figma in steps (`docs/plans/2026-11-04-
+prototype-preview.md`); what is not played yet is listed and counted, not hidden.
 
 ## Architecture
 

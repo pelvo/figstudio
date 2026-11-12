@@ -8,6 +8,9 @@
 //! key; the browser runs the module on its own WebGPU.
 //!
 //! Natively the code runs in a child process ([`serve_if_worker`]), so a run can be killed.
+// Proving the headless wgpu device and queue `Send + Sync` (a static `OnceLock`) walks
+// wgpu's internal types past the default depth of 128; newer compilers reject that.
+#![recursion_limit = "256"]
 
 #[cfg(feature = "native")]
 mod child;

@@ -26,7 +26,7 @@ fn settle(
     visible: Rect,
     per_batch: usize,
 ) -> (Range, Option<usize>) {
-    let range = plan(level, visible, cache.budget());
+    let range = plan(level, visible, cache.budget() / 2);
     for round in 0..100 {
         cache.begin_frame(7, PAGE, range);
         for k in cache.draw_order(7, PAGE, range.level, visible) {
@@ -67,6 +67,33 @@ fn a_view_within_half_the_cache_keeps_its_level_and_ring() {
     let (range, rounds) = settle(&mut c, 0, visible, 8);
     assert!(rounds.is_some());
     assert_eq!(range, Range::covering(0, visible).grow(1));
+}
+
+#[test]
+fn a_frames_layers_share_the_cache_and_all_their_tiles_stay() {
+    // Each layer alone plans 6 tiles; three of them would overflow a budget of 16.
+    let mut c = Cache::new(16);
+    let visible = Rect::new(500.0, 500.0, 1510.0, 1010.0);
+    let ranges: Vec<_> = [7, 8, 9]
+        .iter()
+        .enumerate()
+        .map(|(i, &doc)| (doc, c.plan_layer(i == 0, (doc, PAGE), 0, visible)))
+        .collect();
+    assert_eq!(ranges[0].1, Range::covering(0, visible));
+    let total: u64 = ranges.iter().map(|(_, r)| r.count()).sum();
+    assert_eq!(
+        ranges[1].1, ranges[0].1,
+        "a layer that fits keeps its level"
+    );
+    assert!(total <= 16, "{total}");
+    let keys: Vec<_> = ranges
+        .iter()
+        .flat_map(|(doc, r)| r.by_distance(*doc, PAGE))
+        .collect();
+    for k in &keys {
+        c.insert(*k, (), Stats::default(), None);
+    }
+    assert!(keys.iter().all(|k| c.get(k).is_some()));
 }
 
 #[test]

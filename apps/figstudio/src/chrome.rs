@@ -21,6 +21,8 @@ use crate::{APP_NAME, App, panels};
 /// How far the sidebar's content slides when switching to a space that is not next to the
 /// current one (a click on a far dot, the command bar); neighbours turn a whole page.
 const SLIDE: f32 = 36.0;
+/// Seconds without the pointer moving before Present's controls fade out.
+const PRESENT_IDLE: f64 = 2.0;
 /// Space between two spaces' pages while they slide side by side.
 const PAGE_GAP: f32 = 24.0;
 /// The sidebar panel's id (its width is kept with egui's memory).
@@ -433,10 +435,10 @@ pub(crate) struct CanvasShot {
 impl CanvasShot {
     fn of(tab: &crate::tab::Tab) -> Self {
         CanvasShot {
-            key: (tab.id, tab.page),
-            doc: tab.doc.instance,
+            key: (tab.id, tab.root()),
+            doc: tab.tile_doc(),
             view: tab.shown,
-            background: canvas::to_color32(figstudio_render::page_background(&tab.doc, tab.page)),
+            background: canvas::to_color32(tab.background()),
         }
     }
 }
@@ -473,7 +475,9 @@ impl Crossfade {
         shown: f32,
         ppp: f32,
     ) -> Vec<crate::tiles::Key> {
-        if self.last.is_some_and(|s| s.key != (tab.id, tab.page)) {
+        // Another file, page or Preview screen; a prototype state change is not faded (its
+        // tiles come in over the previous state's, `tiles_view`).
+        if self.last.is_some_and(|s| s.key != (tab.id, tab.root())) {
             self.from = self.last.take();
         }
         if shown >= 1.0 {
@@ -487,8 +491,7 @@ impl Crossfade {
                 tiles.paint_cached(painter, (rect, radius), page, from.view, ppp)
             }
             None => {
-                let background = figstudio_render::page_background(&tab.doc, tab.page);
-                painter.rect_filled(rect, radius, canvas::to_color32(background));
+                painter.rect_filled(rect, radius, canvas::to_color32(tab.background()));
                 Vec::new()
             }
         }
@@ -1438,9 +1441,15 @@ impl App {
     pub(crate) fn canvas_card(&mut self, ui: &mut Ui, space_held: bool) -> Option<Pos2> {
         let ctx = ui.ctx().clone();
         let p = theme::of(ui);
-        let card = ui.max_rect().shrink(GAP);
+        // Present fills the window edge to edge; otherwise the canvas is a rounded card.
+        let present = self.presenting();
+        let (card, corner) = if present {
+            (ui.max_rect(), 0)
+        } else {
+            (ui.max_rect().shrink(GAP), CARD_RADIUS)
+        };
         self.card_rect = Some(card);
-        let radius = CornerRadius::same(CARD_RADIUS);
+        let radius = CornerRadius::same(corner);
         let painter = ui.painter();
         painter.add(card_shadow(&p, 16).as_shape(card, radius));
         painter.rect_filled(card, radius, p.card);
@@ -1469,15 +1478,17 @@ impl App {
                     let options = canvas::Options {
                         tool: self.tool,
                         space_held,
-                        radius: f32::from(CARD_RADIUS),
+                        radius: f32::from(corner),
                         frame_labels: self.prefs.frame_labels,
                         scroll_zooms: self.prefs.scroll_zooms,
+                        scaling: self.preview_scaling,
                     };
                     // Another file or page fades in over the last one, painted again from the
                     // tile cache: a crossfade, never the bare card for a frame.
-                    let shown = anim::arrive(&ctx, Id::new("canvas-in"), (tab.id, tab.page), 0.16);
+                    let shown =
+                        anim::arrive(&ctx, Id::new("canvas-in"), (tab.id, tab.root()), 0.16);
                     let ppp = ui.pixels_per_point();
-                    let under = (card, f32::from(CARD_RADIUS));
+                    let under = (card, f32::from(corner));
                     let underlay =
                         (self.crossfade).under(ui.painter(), &self.tiles, tab, under, shown, ppp);
                     let before = ui.opacity();
@@ -1505,8 +1516,16 @@ impl App {
                 Stroke::new(1.0, p.card_stroke),
                 StrokeKind::Inside,
             );
-            if !self.render_worker_lost && self.tabs.get(self.active).is_some() {
+            let previewing = self
+                .tabs
+                .get(self.active)
+                .is_some_and(|t| t.preview.is_some());
+            if !self.render_worker_lost && previewing {
+                self.preview_bar(ui, card, &mut actions);
+                self.gaps_chip(ui, card, card.top());
+            } else if !self.render_worker_lost && self.tabs.get(self.active).is_some() {
                 let tools = self.tool_pill(ui, card, &mut actions);
+                self.present_pill(ui, card, &mut actions);
                 self.motion_bar(ui, card, tools);
                 self.status_pill(ui, card, tools);
                 let below = self.find_bar(ui, card);
@@ -1792,6 +1811,86 @@ impl App {
         rect
     }
 
+    /// Figma's prototype button at the bottom right: play starts Present, the chevron opens
+    /// a menu with Present and Preview and their keys.
+    fn present_pill(&mut self, ui: &mut Ui, card: Rect, actions: &mut Vec<Action>) {
+        // A narrow card has no room beside the centred tool pill; View and the keys still work.
+        if card.width() < 440.0 {
+            return;
+        }
+        let ctx = ui.ctx().clone();
+        let p = theme::of(ui);
+        let accent = self.tint_now(&ctx).accent;
+        let (b, pad, chevron) = (30.0, 4.0, 20.0);
+        let rect = Rect::from_min_size(
+            pos2(
+                card.right() - 12.0 - (pad * 2.0 + b + chevron),
+                card.bottom() - 51.0,
+            ),
+            vec2(pad * 2.0 + b + chevron, 38.0),
+        );
+        let radius = CornerRadius::same(19);
+        // Catches clicks between the buttons so they do not reach the canvas.
+        crate::a11y::hide(&ui.interact(rect, Id::new("present-pill"), Sense::CLICK));
+        let painter = ui.painter();
+        painter.add(card_shadow(&p, 14).as_shape(rect, radius));
+        painter.rect_filled(rect, radius, p.glass);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, p.card_stroke),
+            StrokeKind::Inside,
+        );
+        let keys = |action| {
+            self.prefs
+                .keymap
+                .for_action(action)
+                .map(|k| ctx.format_shortcut(&k))
+                .unwrap_or_default()
+        };
+        let play = Rect::from_min_size(pos2(rect.left() + pad, rect.top() + 4.0), vec2(b, b));
+        let tip = format!("Present ({})", keys(Action::Present));
+        if pill_button(
+            ui,
+            play,
+            Id::new("present"),
+            (Some(Icon::Play), "Present", &tip),
+            None,
+            accent,
+        )
+        .clicked()
+        {
+            actions.push(Action::Present);
+        }
+        let more = Rect::from_min_size(pos2(play.right(), rect.top() + 4.0), vec2(chevron, b));
+        let response = pill_button(
+            ui,
+            more,
+            Id::new("present-menu"),
+            (
+                Some(Icon::Chevron),
+                "Prototype options",
+                "Present or Preview",
+            ),
+            None,
+            accent,
+        );
+        egui::Popup::menu(&response)
+            .style(theme::menu_style)
+            .show(|ui| {
+                for (label, action) in [("Present", Action::Present), ("Preview", Action::Preview)]
+                {
+                    if ui
+                        .add(egui::Button::new(label).shortcut_text(keys(action)))
+                        .clicked()
+                    {
+                        actions.push(action);
+                        ui.close();
+                    }
+                }
+            });
+    }
+
     /// What draws the canvas, the cursor, the render time and agent access, at the bottom
     /// left beside the tool pill (`tools`), or above it when the card is too narrow: it never
     /// goes away, since it holds the MCP address and its Copy token button.
@@ -1854,6 +1953,180 @@ impl App {
         );
     }
 
+    /// Preview's controls at the bottom centre, as Figma's: the page's frames (‹ n / N ›), the
+    /// screen's name, Restart and Close. Built like the tool pill and the find bar. In
+    /// Present they fade out while the pointer rests, and come back when it moves.
+    fn preview_bar(&self, ui: &mut Ui, card: Rect, actions: &mut Vec<Action>) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let Some(preview) = &tab.preview else {
+            return;
+        };
+        let ctx = ui.ctx().clone();
+        let p = theme::of(ui);
+        let accent = self.tint_now(&ctx).accent;
+        let name = tab
+            .doc
+            .node(preview.player.screen())
+            .map_or(String::new(), |n| n.name.clone());
+        let position = preview.position(&tab.doc);
+        let (b, pad, sep, counter) = (30.0, 4.0, 9.0, 56.0);
+        let name_font = theme::semibold(12.0);
+        let name_w = ui
+            .painter()
+            .layout_no_wrap(name.clone(), name_font.clone(), p.text)
+            .size()
+            .x
+            .min(240.0);
+        let stepper = if position.is_some() {
+            b * 2.0 + counter + sep
+        } else {
+            0.0
+        };
+        let width = pad * 2.0 + stepper + 12.0 + name_w + 12.0 + sep + b * 2.0;
+        let rect = Rect::from_center_size(
+            pos2(card.center().x, card.bottom() - 32.0),
+            vec2(width.min(card.width() - 24.0), 38.0),
+        );
+        // Present: fade out after two seconds without the pointer moving; back on movement or
+        // while the pointer is over the bar.
+        let now = ctx.input(|i| i.time);
+        let over = ctx
+            .pointer_hover_pos()
+            .is_some_and(|q| rect.expand(12.0).contains(q));
+        let resting = now - preview.active_at > PRESENT_IDLE;
+        let shown_now = !preview.present || over || !resting;
+        if preview.present && !resting {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(PRESENT_IDLE));
+        }
+        let fade = ctx.animate_bool_with_time(Id::new(("preview-bar", tab.id)), shown_now, 0.25);
+        // The bar arrives as the find bar does: up from a little below, fading in.
+        let arrive = anim::arrive(
+            &ctx,
+            Id::new("preview-bar-in"),
+            (tab.id, preview.present),
+            0.18,
+        );
+        let t = fade.min(arrive);
+        if t <= 0.0 {
+            return;
+        }
+        let rect = rect.translate(vec2(0.0, (1.0 - arrive) * 10.0));
+        let ui = &mut ui.new_child(UiBuilder::new().max_rect(rect));
+        ui.multiply_opacity(t);
+        if t < 1.0 {
+            anim::inert(ui);
+        }
+        let radius = CornerRadius::same(19);
+        crate::a11y::hide(&ui.interact(rect, Id::new("preview-bar"), Sense::CLICK));
+        let painter = ui.painter();
+        painter.add(card_shadow(&p, 14).as_shape(rect, radius));
+        painter.rect_filled(rect, radius, p.glass);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, p.card_stroke),
+            StrokeKind::Inside,
+        );
+        let mut x = rect.left() + pad;
+        let slot = |x: f32, w: f32| Rect::from_min_size(pos2(x, rect.top() + 4.0), vec2(w, b));
+        if let Some((at, of)) = position {
+            let previous = slot(x, b);
+            let count = slot(x + b, counter);
+            let next = slot(x + b + counter, b);
+            x += b * 2.0 + counter;
+            ui.painter().text(
+                count.center(),
+                Align2::CENTER_CENTER,
+                format!("{at} / {of}"),
+                theme::semibold(12.0),
+                p.text_dim,
+            );
+            for (r, turn, label, key, forward, enabled) in [
+                (previous, 2.0, "Previous frame", "Left arrow", false, at > 1),
+                (next, 0.0, "Next frame", "Right arrow", true, at < of),
+            ] {
+                let response = ui.interact(r, Id::new(("preview-step", label)), Sense::click());
+                response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
+                crate::a11y::author(&response, format!("button.{}", crate::a11y::slug(label)));
+                let (hover, press) = icons::feedback(ui, &response);
+                if enabled {
+                    ui.painter().rect_filled(
+                        r.shrink(1.0 + press * 1.5),
+                        CornerRadius::same(13),
+                        p.hover.gamma_multiply(hover * 1.6),
+                    );
+                }
+                let color = if enabled {
+                    p.text_dim.lerp_to_gamma(p.text, hover)
+                } else {
+                    p.text_faint
+                };
+                icons::chevron(ui.painter(), r.shrink(8.0), color, turn);
+                if response.on_hover_text(format!("{label} ({key})")).clicked() && enabled {
+                    actions.push(Action::PreviewStep(forward));
+                }
+            }
+            ui.painter().vline(
+                x + sep / 2.0,
+                (rect.top() + 10.0)..=(rect.bottom() - 10.0),
+                Stroke::new(1.0, p.separator),
+            );
+            x += sep;
+        }
+        let name_rect =
+            Rect::from_min_size(pos2(x + 12.0, rect.top()), vec2(name_w, rect.height()));
+        let galley = ui.painter().layout(name, name_font, p.text, name_w + 0.5);
+        let galley_clip = ui.painter().with_clip_rect(name_rect);
+        galley_clip.galley(
+            pos2(
+                name_rect.left(),
+                name_rect.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            p.text,
+        );
+        x = name_rect.right() + 12.0;
+        ui.painter().vline(
+            x + sep / 2.0,
+            (rect.top() + 10.0)..=(rect.bottom() - 10.0),
+            Stroke::new(1.0, p.separator),
+        );
+        x += sep;
+        let restart_tip = "Restart (R)";
+        if pill_button(
+            ui,
+            slot(x, b),
+            Id::new("preview-restart"),
+            (Some(Icon::Restart), "Restart", restart_tip),
+            None,
+            accent,
+        )
+        .clicked()
+        {
+            actions.push(Action::PreviewRestart);
+        }
+        x += b;
+        let close = if preview.present {
+            Action::Present
+        } else {
+            Action::Preview
+        };
+        if pill_button(
+            ui,
+            slot(x, b),
+            Id::new("preview-close"),
+            (Some(Icon::Close), "Close", "Close (Esc)"),
+            None,
+            accent,
+        )
+        .clicked()
+        {
+            actions.push(close);
+        }
+    }
+
     /// The shader notice under the warning chip (`chip`); clicking the chip shows it again.
     fn shader_notice(&mut self, ui: &mut Ui, card: Rect, top: f32, chip: Option<Response>) {
         let dark = theme::of(ui).dark;
@@ -1878,7 +2151,23 @@ impl App {
     /// while the file has shaders without code (it shows their notice again).
     fn gaps_chip(&self, ui: &mut Ui, card: Rect, top: f32) -> Option<Response> {
         let tab = self.tabs.get(self.active)?;
-        let gaps = crate::region_png::gaps(&tab.stats);
+        // Present shows the screen alone; Preview adds the interactions it does not play.
+        if tab.preview.as_ref().is_some_and(|p| p.present) {
+            return None;
+        }
+        let mut gaps = crate::region_png::gaps(&tab.stats);
+        let unsupported = tab.preview.as_ref().map_or(0, |p| p.screen.skipped());
+        if unsupported > 0 {
+            let note = format!(
+                "{unsupported} interaction{} not supported",
+                if unsupported == 1 { "" } else { "s" }
+            );
+            gaps = if gaps.is_empty() {
+                note
+            } else {
+                format!("{gaps}, {note}")
+            };
+        }
         if gaps.is_empty() {
             return None;
         }
@@ -1891,6 +2180,10 @@ impl App {
         let hint = if shaders > 0 {
             "Parts of this page use features figstudio does not draw yet, so it may differ from \
              Figma. Click to see the shaders that need their code."
+        } else if tab.preview.is_some() {
+            "Parts of this page use features figstudio does not draw yet, so it may differ from \
+             Figma. Interactions Preview does not play yet (overlays, scroll to, links to a URL, \
+             variables) are counted here."
         } else {
             "Parts of this page use features figstudio does not draw yet, so it may differ from \
              Figma."

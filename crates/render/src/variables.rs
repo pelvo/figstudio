@@ -134,7 +134,12 @@ impl Variables {
                 let Some(variable) = paint.get("colorVar") else {
                     continue;
                 };
-                if let Some(color) = self.color(variable, 0) {
+                if let Some(mut color) = self.color(variable, 0) {
+                    // A bound variable gives the colour; its alpha is already in the paint's
+                    // opacity, as Figma stores it, so the stored alpha stays (else it counts twice).
+                    if let Some(alpha) = paint.get("color").and_then(|c| c.get("a")).cloned() {
+                        color.set("a", alpha);
+                    }
                     paint.set("color", color);
                 } else {
                     unresolved += 1;

@@ -5,7 +5,32 @@
 use figstudio_fig::Guid;
 use figstudio_render::kurbo::Rect;
 
-use crate::tiles::{Key, Range};
+use crate::tiles::{self, Key, Range};
+
+/// What the last frame planned (see [`Cache::begin_frame`]).
+pub type Plan = Option<Planned>;
+
+/// The tiles a frame planned: on one page, a range per document drawn (the first is the
+/// main picture; Preview adds its scroll layers).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Planned {
+    pub page: Guid,
+    pub ranges: Vec<(u64, Range)>,
+}
+
+impl Planned {
+    /// The planned range `key` is in, if any.
+    pub fn range_of(&self, key: &Key) -> Option<Range> {
+        (key.page == self.page)
+            .then(|| {
+                self.ranges
+                    .iter()
+                    .find(|(d, r)| *d == key.doc && r.contains(key))
+            })
+            .flatten()
+            .map(|(_, r)| *r)
+    }
+}
 
 /// A fallback tile covering more planned tiles than this is never counted as redundant (the
 /// check would be slow, and such a coarse tile is rarely fully covered).
@@ -38,8 +63,9 @@ pub struct Cache<T> {
     budget: usize,
     clock: u64,
     frame: u64,
-    /// What the last frame planned (see [`Cache::begin_frame`]); at most half the budget.
-    plan: Option<(u64, Guid, Range)>,
+    /// What the last frame planned (see [`Cache::begin_frame`]): at most half the budget per
+    /// range and the budget in all (see [`Cache::plan_layer`]).
+    plan: Plan,
 }
 
 impl<T> Cache<T> {
@@ -53,6 +79,7 @@ impl<T> Cache<T> {
         }
     }
 
+    #[cfg(test)]
     pub fn budget(&self) -> usize {
         self.budget
     }
@@ -70,7 +97,38 @@ impl<T> Cache<T> {
     /// half the budget): tiles touched from now on are on screen until the next call.
     pub fn begin_frame(&mut self, doc: u64, page: Guid, plan: Range) {
         self.frame += 1;
-        self.plan = Some((doc, page, plan));
+        self.plan = Some(Planned {
+            page,
+            ranges: vec![(doc, plan)],
+        });
+    }
+
+    /// Plans `visible` of `doc` at `level` (see [`tiles::plan`]) and returns the range. The
+    /// `first` layer starts a frame; later ones (Preview's scroll layers) join its plan. Each
+    /// gets at most half the budget, and less (so a coarser level) when the frame's plan would
+    /// otherwise outgrow the cache: planned tiles must never evict each other.
+    pub fn plan_layer(
+        &mut self,
+        first: bool,
+        (doc, page): (u64, Guid),
+        level: i32,
+        visible: Rect,
+    ) -> Range {
+        let planned: u64 = match &self.plan {
+            Some(plan) if !first => plan.ranges.iter().map(|(_, r)| r.count()).sum(),
+            _ => 0,
+        };
+        let left = self
+            .budget
+            .saturating_sub(usize::try_from(planned).unwrap_or(usize::MAX));
+        // shortcut: with under 4 tiles left a layer still gets the coarsest level (1-4 tiles), so a
+        // nearly full plan can overshoot by up to 4; fine while budgets are in the hundreds.
+        let range = tiles::plan(level, visible, left.min(self.budget / 2));
+        match &mut self.plan {
+            Some(plan) if !first => plan.ranges.push((doc, range)),
+            _ => self.begin_frame(doc, page, range),
+        }
+        range
     }
 
     /// What the last frame planned: document, page and tiles (see [`Cache::begin_frame`]).
@@ -78,8 +136,8 @@ impl<T> Cache<T> {
         all(not(test), not(target_arch = "wasm32")),
         expect(dead_code, reason = "the browser prunes its GPU scenes by it")
     )]
-    pub fn plan(&self) -> Option<(u64, Guid, Range)> {
-        self.plan
+    pub fn plan(&self) -> Plan {
+        self.plan.clone()
     }
 
     /// Marks a tile as drawn this frame: a fallback on screen is evicted after tiles that are
@@ -129,10 +187,11 @@ impl<T> Cache<T> {
     /// already covered by cached planned tiles; another fallback on screen; a planned tile
     /// (of the planned range, drawn yet or not: the plan fits in the budget).
     fn keep_rank(&self, key: &Key, entry: &Entry<T>) -> u8 {
-        let Some((doc, page, plan)) = self.plan else {
+        let Some(planned) = &self.plan else {
             return 0;
         };
-        if key.doc == doc && key.page == page && plan.contains(key) {
+        let plan = planned.ranges[0].1;
+        if planned.range_of(key).is_some() {
             3
         } else if entry.frame != self.frame {
             0

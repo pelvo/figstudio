@@ -48,9 +48,34 @@ pub struct RenderJob {
     /// `Workers::images_arrived` when requested, echoed back (see `tiles::Entry::images`).
     pub images: u64,
     pub tiles: VecDeque<tiles::Key>,
+    /// Prototype state drawn on top of the document (Preview); empty otherwise. Tiles of a
+    /// state have their own document number (`Tab::tile_doc`).
+    pub prototype: Arc<figstudio_render::prototype::State>,
+    /// Preview's scroll layers: tiles of these documents are drawn with their state and no
+    /// background (they are painted over the main picture).
+    pub layers: Vec<(u64, Arc<figstudio_render::prototype::State>)>,
     /// Tiles (and their `images`) the UI received since its last batch, so the worker
     /// stops skipping them: a received tile asked for again was evicted and is rendered.
     pub received: Vec<(tiles::Key, u64)>,
+}
+
+impl RenderJob {
+    /// The prototype state tiles of `doc` are drawn with: a scroll layer's, else the job's.
+    pub fn state_for(&self, doc: u64) -> &Arc<figstudio_render::prototype::State> {
+        self.layers
+            .iter()
+            .find(|(d, _)| *d == doc)
+            .map_or(&self.prototype, |(_, state)| state)
+    }
+
+    /// The background of tiles of `doc`: none for a scroll layer.
+    pub fn background_for(&self, doc: u64) -> Option<AlphaColor<Srgb>> {
+        if self.layers.iter().any(|(d, _)| *d == doc) {
+            None
+        } else {
+            self.background
+        }
+    }
 }
 
 /// One rendered tile.
@@ -349,6 +374,11 @@ impl Workers {
                     }
                 }
                 let start = Instant::now();
+                // A running prototype draws instances as the variants it swapped them to.
+                let state = job.state_for(key.doc);
+                if !Arc::ptr_eq(&renderer.prototype, state) {
+                    renderer.prototype = state.clone();
+                }
                 let drawn = gpu.draw(&mut recordings, &mut renderer, job, &key);
                 let elapsed = start.elapsed();
                 let (pixels, stats, wanted) = drawn.into_parts();

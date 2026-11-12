@@ -104,6 +104,7 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
                 input.rect,
                 input.limit,
             ),
+            "get_prototype" => crate::prototype_tool::prototype(doc, node, input.limit),
             "get_variable_defs" => crate::variables::variable_defs(doc, &target()?),
             "get_motion_context" => crate::motion::motion_context(
                 doc,

@@ -41,6 +41,16 @@ pub(crate) enum Action {
     SelectTool(Tool),
     ClearSelection,
     ZoomBy(f32),
+    /// Start or stop prototype Preview (`preview.rs`).
+    Preview,
+    /// Start or stop Present: Preview filling the window, without the editor around it.
+    Present,
+    /// Preview: the next (`true`) or previous frame of the page.
+    PreviewStep(bool),
+    /// How Preview and Present size the screen.
+    PreviewScaling(crate::preview::Scaling),
+    /// Preview: back to the flow's first screen.
+    PreviewRestart,
     #[cfg(target_arch = "wasm32")]
     CjkFont(crate::cjk::Variant),
 }
@@ -159,6 +169,36 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
         Item::action("Actual size", Action::ActualSize, has_tab),
         Item::action("Zoom in", Action::ZoomBy(1.25), has_tab),
         Item::action("Zoom out", Action::ZoomBy(0.8), has_tab),
+        Item::separator(),
+        Item::checked(
+            "Preview prototype",
+            Action::Preview,
+            app.tabs
+                .get(app.active)
+                .and_then(|t| t.preview.as_ref())
+                .is_some_and(|p| !p.present),
+        ),
+        Item::checked(
+            "Present prototype",
+            Action::Present,
+            app.tabs
+                .get(app.active)
+                .and_then(|t| t.preview.as_ref())
+                .is_some_and(|p| p.present),
+        ),
+        Item::group(
+            "Prototype scaling",
+            crate::preview::Scaling::ALL
+                .into_iter()
+                .map(|s| {
+                    Item::checked(
+                        s.label(),
+                        Action::PreviewScaling(s),
+                        app.preview_scaling == s,
+                    )
+                })
+                .collect(),
+        ),
         Item::separator(),
         Item::checked("Sidebar", Action::ToggleLayers, app.show_left),
         Item::checked("Properties panel", Action::ToggleProperties, app.show_right),
@@ -342,7 +382,46 @@ impl App {
             Action::SelectTool(tool) => self.tool = tool,
             Action::ZoomFit => {
                 if let Some(t) = self.tab() {
-                    t.fit_pending = true;
+                    match t.preview.as_ref() {
+                        Some(p) => t.fit_node = Some(p.player.screen()),
+                        None => t.fit_pending = true,
+                    }
+                }
+            }
+            Action::Preview | Action::Present => {
+                let present = action == Action::Present;
+                let started = self.tab().map(|t| match &t.preview {
+                    // The other mode switches over; the same one stops.
+                    Some(p) if p.present != present => {
+                        t.stop_preview();
+                        t.start_preview(present)
+                    }
+                    Some(_) => {
+                        t.stop_preview();
+                        true
+                    }
+                    None => t.start_preview(present),
+                });
+                if started == Some(false) {
+                    self.toast(ctx, "Nothing to preview: this page has no frames.", false);
+                }
+            }
+            Action::PreviewStep(forward) => {
+                if let Some(t) = self.tab() {
+                    t.preview_step(forward);
+                }
+            }
+            Action::PreviewScaling(scaling) => {
+                self.preview_scaling = scaling;
+                if let Some(t) = self.tab()
+                    && let Some(p) = &t.preview
+                {
+                    t.fit_node = Some(p.player.screen());
+                }
+            }
+            Action::PreviewRestart => {
+                if let Some(t) = self.tab() {
+                    t.preview_go(None);
                 }
             }
             Action::ActualSize => {

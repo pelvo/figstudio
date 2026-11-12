@@ -44,10 +44,7 @@ fn gpu() -> bool {
         1,
         0.0,
     );
-    if probe.as_ref().is_err_and(|e| e.skips_test()) {
-        return false;
-    }
-    true
+    !probe.as_ref().is_err_and(|e| e.skips_test())
 }
 
 /// Fill layers (`fillPaints`) and effect layers (`effects`) of the fixture, with the shader.

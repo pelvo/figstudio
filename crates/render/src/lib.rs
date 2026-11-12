@@ -36,6 +36,7 @@ mod layout;
 pub mod motion;
 mod network;
 pub mod paint;
+pub mod prototype;
 mod record;
 #[cfg(feature = "parallel")]
 mod replay;
@@ -307,6 +308,8 @@ pub struct Renderer {
     /// Property and style indexes of the last document drawn, by [`Document::instance`]:
     /// built once per document, not per frame (they scan every node of every page).
     indexes: Option<(u64, Arc<resolve::Definitions>, Arc<variables::Variables>)>,
+    /// Prototype state drawn on top of the document: instances showing another variant.
+    pub prototype: Arc<prototype::State>,
 }
 
 impl fmt::Debug for Renderer {
@@ -338,6 +341,7 @@ impl Default for Renderer {
             playhead: None,
             shaders: None,
             indexes: None,
+            prototype: Arc::default(),
             inspection_work: InspectionWork::default(),
         }
     }
@@ -367,12 +371,48 @@ struct Ctx<'a> {
     /// The innermost clip path (a clipping frame or a mask) and its transform (see
     /// [`Ctx::push_filter_layer`]).
     clip: Option<(BezPath, Affine)>,
-    /// Metadata walk: resolve visible stored emoji, but issue no drawing commands or culling.
-    emoji_only: bool,
     playhead: Option<motion::Playhead>,
     shaders: Option<Arc<dyn shader::ShaderFills>>,
     /// The motion delay of each instance being drawn (µs).
     delays: Vec<f64>,
+    /// Metadata walk: issue no drawing commands or culling, only collect what it names.
+    inspect: Option<Inspect>,
+    /// The document instance enclosing the node being walked (inspect walks only).
+    outer: Option<Guid>,
+    /// Layers with prototype interactions an [`Inspect::Links`] walk found, back to front.
+    found: Vec<prototype::Found>,
+    /// Instances showing another variant ([`Renderer::prototype`]).
+    prototype: Arc<prototype::State>,
+    /// A swapped instance about to be drawn: its id and its new variant's layer keys mapped
+    /// to the old variant's, so overrides made on the old one still apply.
+    next_remap: Option<(Guid, std::collections::HashMap<Guid, Guid>)>,
+    /// The layer key maps of swapped instances being drawn, by override depth.
+    remaps: Vec<(usize, std::collections::HashMap<Guid, Guid>)>,
+    /// The scroll offset `draw_children` applies to the children it is about to draw (a
+    /// scrolled frame of the prototype state), taken by it.
+    child_scroll: Option<(f64, f64)>,
+    /// Scrolling frames an [`Inspect::Links`] walk passed, back to front.
+    scrollers: Vec<prototype::Scroller>,
+    /// Which children `draw_children` draws next (scroll layer passes), taken by it.
+    child_filter: Option<prototype::ChildFilter>,
+    /// How many scrolling frames around the node an [`Inspect::Links`] walk is in.
+    scroll_depth: usize,
+    /// The variant each instance an [`Inspect::Links`] walk passed shows, by layer key.
+    variants: std::collections::HashMap<Vec<Guid>, Guid>,
+    /// The clipping frames around the node an [`Inspect::Links`] walk is at.
+    clips: Vec<prototype::Area>,
+}
+
+/// What a metadata walk collects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Inspect {
+    /// Visible stored emoji, into `Stats`.
+    Emoji,
+    /// Layers with prototype interactions, into `Ctx::found`.
+    Links,
+    /// Nothing until the frame of a scroll layer pass ([`prototype::Pass`]), whose children
+    /// are then drawn.
+    Layer,
 }
 
 impl Renderer {
@@ -818,8 +858,24 @@ impl Renderer {
             exhausted: false,
             screen,
             inherited_reach: 0.0,
+            // A scroll layer pass draws nothing until its frame.
+            inspect: self
+                .prototype
+                .pass
+                .starts_hidden()
+                .then_some(Inspect::Layer),
+            outer: None,
+            found: Vec::new(),
+            prototype: self.prototype.clone(),
+            next_remap: None,
+            remaps: Vec::new(),
+            variants: std::collections::HashMap::new(),
+            child_scroll: None,
+            scrollers: Vec::new(),
+            child_filter: None,
+            scroll_depth: 0,
+            clips: Vec::new(),
             clip: None,
-            emoji_only: false,
             playhead: self.playhead.clone(),
             shaders: self
                 .shaders
@@ -837,7 +893,7 @@ impl Renderer {
         // No Vello drawing in metadata mode; the platform source can still rasterize.
         let mut canvas = RenderContext::new(1, 1);
         let mut ctx = self.context(doc, &mut canvas, Rect::ZERO, MAX_RENDER_WORK, 0);
-        ctx.emoji_only = true;
+        ctx.inspect = Some(Inspect::Emoji);
         for page in &doc.pages {
             if let Some(node) = doc.node(*page) {
                 ctx.draw_children(node, &node.data, Affine::IDENTITY, None);
@@ -1504,6 +1560,13 @@ impl Ctx<'_> {
         self.depth += 1;
         let (data, stale_glyphs, approximate_ink) =
             patched.unwrap_or_else(|| self.patched(node, path, None));
+        let data = match self.swapped_variant(node, path, data.as_ref()) {
+            Some((swapped, remap)) => {
+                self.next_remap = Some((node.id, remap));
+                Cow::Owned(swapped)
+            }
+            None => data,
+        };
         let (data, unresolved_variables) = self.variables.paints(data.as_ref());
         let data = data.as_ref();
         self.stats.approximated_paints += unresolved_variables;
@@ -1513,19 +1576,71 @@ impl Ctx<'_> {
         }
         let kind = node.kind.as_str();
         let world = parent * affine(data.get("transform"));
-        if self.emoji_only {
+        if let Some(inspect) = self.inspect {
+            // A scroll layer pass: at its frame, draw the children it keeps, unclipped and
+            // unscrolled; nothing else.
+            if inspect == Inspect::Layer
+                && let Some(filter) = self.layer_target(node.id, path)
+            {
+                self.inspect = None;
+                self.child_scroll = None;
+                self.child_filter = Some(filter);
+                if kind == "INSTANCE" {
+                    self.draw_instance(node.id, data, world, path);
+                } else {
+                    let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
+                    self.draw_children(node, data, world, child_path);
+                }
+                self.child_filter = None;
+                self.inspect = Some(Inspect::Layer);
+                self.depth -= 1;
+                return;
+            }
+            let clip = inspect == Inspect::Links && kind != "TEXT" && clips_content(kind, data);
+            let mut scroller = false;
+            if inspect == Inspect::Links {
+                self.found_link(node, path, world, data);
+                scroller = self.found_scroller(node, path, world, data);
+                self.scroll_depth += usize::from(scroller);
+                if kind == "INSTANCE"
+                    && let Some(variant) = resolve::symbol_id(data)
+                {
+                    let key = match path {
+                        None => Some(vec![node.id]),
+                        Some(keys) => self
+                            .outer
+                            .map(|o| std::iter::once(o).chain(keys.iter().copied()).collect()),
+                    };
+                    if let Some(key) = key {
+                        self.variants.insert(key, variant);
+                    }
+                }
+            }
+            if clip {
+                let (width, height) = size(data);
+                self.clips.push(prototype::Area {
+                    transform: world,
+                    width,
+                    height,
+                });
+            }
             if kind == "TEXT" {
-                if !stale_glyphs {
+                if inspect == Inspect::Emoji && !stale_glyphs {
                     self.emojis(data, world);
                 }
             } else if kind == "INSTANCE" {
-                self.draw_instance(data, world, path);
+                self.draw_instance(node.id, data, world, path);
             } else if kind == "CONNECTOR" {
                 self.draw_connector(node, world);
             } else {
                 let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
+                self.child_scroll = self.scroll_of(node.id, path, data);
                 self.draw_children(node, data, world, child_path);
             }
+            if clip {
+                self.clips.pop();
+            }
+            self.scroll_depth -= usize::from(scroller);
             self.depth -= 1;
             return;
         }
@@ -1719,14 +1834,17 @@ impl Ctx<'_> {
                 self.rc.push_clip_path(clip);
                 self.clip = Some((clip.clone(), world));
             }
-            if kind == "INSTANCE" {
-                self.draw_instance(data, world, path);
+            if self.layered_out(node.id, path) {
+                // A scroll layer pass's base: the frame is drawn empty, its content is a layer.
+            } else if kind == "INSTANCE" {
+                self.draw_instance(node.id, data, world, path);
             } else if kind == "CONNECTOR" {
                 self.draw_connector(node, world);
             } else if !boolean_result {
                 // A computed boolean paints its result, never its operand children.
                 // Override paths contain instance ancestors, not ordinary frame/group ancestors.
                 let child_path = path.map(|p| &p[..p.len().saturating_sub(1)]);
+                self.child_scroll = self.scroll_of(node.id, path, data);
                 self.draw_children(node, data, world, child_path);
             }
             if clip.is_some() {
@@ -2072,10 +2190,22 @@ impl Ctx<'_> {
             inherited_reach: 0.0,
             // Another canvas: the outer clip is applied when its output is drawn.
             clip: None,
-            emoji_only: false,
             playhead: self.playhead.clone(),
             shaders: self.shaders.clone(),
             delays: std::mem::take(&mut self.delays),
+            // The prototype's state draws inside an offscreen group as outside it.
+            inspect: self.inspect,
+            outer: self.outer,
+            found: Vec::new(),
+            prototype: self.prototype.clone(),
+            next_remap: self.next_remap.take(),
+            remaps: std::mem::take(&mut self.remaps),
+            child_scroll: self.child_scroll.take(),
+            scrollers: Vec::new(),
+            child_filter: self.child_filter.take(),
+            scroll_depth: self.scroll_depth,
+            variants: std::collections::HashMap::new(),
+            clips: Vec::new(),
         };
         draw(&mut sub);
         self.overrides = sub.overrides;
@@ -2084,11 +2214,14 @@ impl Ctx<'_> {
         self.work_left = sub.work_left;
         self.exhausted = sub.exhausted;
         self.delays = sub.delays;
+        self.remaps = sub.remaps;
     }
 
     /// Draws children, turning mask layers into clips for the siblings above them.
     fn draw_children(&mut self, node: &Node, data: &Val, world: Affine, path: Option<&[Guid]>) {
         let mut mask_layers = 0;
+        let scroll = self.child_scroll.take();
+        let filter = self.child_filter.take();
         let outer_clip = self.clip.clone();
         for id in children_topmost_first(self.doc.children(node.id), data).rev() {
             if self.exhausted || !self.charge_work() {
@@ -2099,8 +2232,18 @@ impl Ctx<'_> {
             };
             let (child_path, (child_data, stale_glyphs, approximate_ink)) =
                 self.child_patch(node, data, child, path);
+            if filter
+                .as_ref()
+                .is_some_and(|f| !f.keeps(child.id, &child_data))
+            {
+                continue;
+            }
+            let world = match scroll {
+                Some(offset) => world * prototype::scrolled(&child_data, offset),
+                None => world,
+            };
             if child_data.flag("mask") == Some(true) && visible(&child_data) {
-                if self.emoji_only {
+                if self.inspect.is_some() {
                     continue;
                 }
                 if !self.charge_work() {
@@ -2164,7 +2307,9 @@ impl Ctx<'_> {
             true
         }
     }
-    fn draw_instance(&mut self, data: &Val, world: Affine, path: Option<&[Guid]>) {
+    /// Draws an instance's component; `id` is the instance (it names paths inside it when it
+    /// is a document node, `path` `None`).
+    fn draw_instance(&mut self, id: Guid, data: &Val, world: Affine, path: Option<&[Guid]>) {
         self.stats.instances += 1;
         let Some(symbol) = resolve::symbol_id(data).and_then(|id| self.doc.node(id)) else {
             self.stats.missing_symbols += 1;
@@ -2178,14 +2323,27 @@ impl Ctx<'_> {
             return;
         }
         let base: Vec<Guid> = path.map(<[Guid]>::to_vec).unwrap_or_default();
+        let outer = self.outer;
+        if path.is_none() {
+            self.outer = Some(id);
+        }
         let delay = self
             .playhead
             .as_ref()
             .map_or(0.0, |p| p.motion.instance_delay(data));
         self.delays.push(delay);
         self.overrides.enter(symbol, data, &base);
+        self.child_scroll = self.scroll_of(id, path, data);
+        let remap = self.next_remap.take().filter(|(of, _)| *of == id);
+        if let Some((_, map)) = &remap {
+            self.remaps.push((self.overrides.depth(), map.clone()));
+        }
         self.draw_children(symbol, &symbol.data, world, Some(&base));
+        if remap.is_some() {
+            self.remaps.pop();
+        }
         self.overrides.leave();
+        self.outer = outer;
         self.delays.pop();
     }
 }

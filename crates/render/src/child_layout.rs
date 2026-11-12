@@ -92,9 +92,18 @@ impl Ctx<'_> {
         child: &'n Node,
         path: Option<&[Guid]>,
     ) -> (Option<Vec<Guid>>, (Cow<'n, Val>, bool, bool)) {
+        // In a variant a prototype swapped in, a layer takes the key of its counterpart in the
+        // old variant, so the instance's overrides still find it.
+        let key = child.override_key();
+        let key = match self.remaps.last() {
+            Some((depth, map)) if *depth == self.overrides.depth() => {
+                map.get(&key).copied().unwrap_or(key)
+            }
+            _ => key,
+        };
         let child_path = path.map(|p| {
             let mut v = p.to_vec();
-            v.push(child.override_key());
+            v.push(key);
             v
         });
         let constraint =

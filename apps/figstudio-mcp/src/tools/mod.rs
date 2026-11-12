@@ -18,6 +18,8 @@ pub mod live;
 pub mod metadata;
 /// Keyframe animation with CSS and motion.dev code.
 pub mod motion;
+/// Prototype flows, screens and links.
+pub mod prototype;
 /// The nodes a page rectangle touches.
 pub mod region;
 /// Render settings and lazy image reads shared by the rendering tools.

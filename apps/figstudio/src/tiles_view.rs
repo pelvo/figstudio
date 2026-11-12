@@ -166,36 +166,96 @@ impl Tiles {
     ) {
         // Drawn: what `tab.view` shows (an ease in progress, maybe). Planned and requested:
         // the `target` view it is heading for.
-        let (doc, page, view) = (tab.doc.instance, tab.page, tab.view);
-        let visible = tiles::visible_page(view.zoom, view.pan.into(), rect.size().into());
-        let planned = tiles::visible_page(target.zoom, target.pan.into(), rect.size().into());
-        let range = tiles::plan(
-            tiles::level_for(target.zoom * ppp),
-            planned,
-            self.cache.budget(),
-        );
-        let level = range.level;
-        self.cache.begin_frame(doc, page, range);
+        let (page, view) = (tab.root(), tab.view);
+        let layers = tab.draw_layers();
+        let level = tiles::level_for(target.zoom * ppp);
+        let images = workers.images_arrived();
         let mut stats: Option<Stats> = None;
         let mut elapsed = Duration::ZERO;
         let mut fallbacks = 0;
-        for key in self.cache.draw_order(doc, page, level, visible) {
-            self.cache.touch(&key);
-            let Some(entry) = self.cache.get(&key) else {
-                continue;
+        let mut wanted = Vec::new();
+        for (i, layer) in layers.iter().enumerate() {
+            // A layer drawn moved by `shift`: the view sees it at its page position + shift.
+            let moved = |v: crate::tab::View| crate::tab::View {
+                zoom: v.zoom,
+                pan: v.pan + layer.shift * v.zoom,
             };
-            paint_key(
-                painter,
-                &key,
-                entry.value.texture.id(),
-                view,
-                (rect, radius),
-            );
-            if key.level == level {
-                fallbacks += entry.stats.gpu_fallback_tiles;
-                stats.get_or_insert_default().max_with(&entry.stats);
-                elapsed += entry.value.elapsed;
+            let (shown, heading) = (moved(view), moved(target));
+            let clip = layer.clip.map(|c| {
+                Rect::from_min_max(
+                    view.to_screen(rect.min, c.min),
+                    view.to_screen(rect.min, c.max),
+                )
+            });
+            let painter = match clip {
+                Some(c) => painter.with_clip_rect(c.intersect(painter.clip_rect())),
+                None => painter.clone(),
+            };
+            // Only what can show: a layer's tiles inside its clip, as the layer sees it.
+            let in_layer = |r: figstudio_render::kurbo::Rect| match layer.clip {
+                Some(c) => {
+                    let c = c.translate(-layer.shift);
+                    r.intersect(figstudio_render::kurbo::Rect::new(
+                        f64::from(c.min.x),
+                        f64::from(c.min.y),
+                        f64::from(c.max.x),
+                        f64::from(c.max.y),
+                    ))
+                }
+                None => r,
+            };
+            let visible = in_layer(tiles::visible_page(
+                shown.zoom,
+                shown.pan.into(),
+                rect.size().into(),
+            ));
+            let planned = in_layer(tiles::visible_page(
+                heading.zoom,
+                heading.pan.into(),
+                rect.size().into(),
+            ));
+            if i > 0 && planned.is_zero_area() {
+                continue;
             }
+            let range = self
+                .cache
+                .plan_layer(i == 0, (layer.doc, page), level, planned);
+            // The layer's last complete picture under the new one until its tiles arrive.
+            let before = tab
+                .preview
+                .as_ref()
+                .and_then(|p| p.complete.get(&layer.id).copied());
+            for doc in before
+                .filter(|d| *d != layer.doc)
+                .into_iter()
+                .chain([layer.doc])
+            {
+                for key in self.cache.draw_order(doc, page, range.level, visible) {
+                    self.cache.touch(&key);
+                    let Some(entry) = self.cache.get(&key) else {
+                        continue;
+                    };
+                    paint_key(
+                        &painter,
+                        &key,
+                        entry.value.texture.id(),
+                        shown,
+                        (rect, radius),
+                    );
+                    if i == 0 && doc == layer.doc && key.level == range.level {
+                        fallbacks += entry.stats.gpu_fallback_tiles;
+                        stats.get_or_insert_default().max_with(&entry.stats);
+                        elapsed += entry.value.elapsed;
+                    }
+                }
+            }
+            let missing = tiles::wanted(&self.cache, range, layer.doc, page, images);
+            if missing.is_empty()
+                && let Some(preview) = tab.preview.as_mut()
+            {
+                preview.complete.insert(layer.id.clone(), layer.doc);
+            }
+            wanted.extend(missing);
         }
         // The status bar describes the sharp tiles on screen (each count is a lower bound: the
         // largest of any one tile); it keeps the last numbers while none has arrived.
@@ -209,21 +269,25 @@ impl Tiles {
         if rect.width() * ppp < 1.0 || rect.height() * ppp < 1.0 {
             return;
         }
-        let images = workers.images_arrived();
-        let wanted = tiles::wanted(&self.cache, range, doc, page, images);
         let Some(batch) = tiles::next_batch(wanted, &tab.tile_requests) else {
             return;
         };
+        let main = &layers[0];
         let job = RenderJob {
             tab: tab.id,
             doc: tab.doc.clone(),
             source: tab.source.clone(),
             root: page,
-            background: Some(figstudio_render::page_background(&tab.doc, page)),
+            background: Some(tab.background()),
             images,
             // An empty batch still goes out: it cancels the tiles of the previous one.
             tiles: batch.iter().copied().collect(),
             received: std::mem::take(&mut tab.tiles_received),
+            prototype: main.state.clone(),
+            layers: layers[1..]
+                .iter()
+                .map(|l| (l.doc, l.state.clone()))
+                .collect(),
         };
         tab.tile_requests = if workers.render(job).is_ok() {
             batch

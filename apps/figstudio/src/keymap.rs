@@ -29,6 +29,8 @@ pub enum Binding {
     ActualSize,
     ZoomIn,
     ZoomOut,
+    Preview,
+    Present,
     SelectTool,
     HandTool,
     ZoomTool,
@@ -64,7 +66,7 @@ const SPACE_LABELS: [&str; 9] = [
 ];
 
 impl Binding {
-    pub const ALL: [Binding; 32] = [
+    pub const ALL: [Binding; 34] = [
         Binding::CommandBar,
         Binding::Copy,
         Binding::SelectAll,
@@ -83,6 +85,8 @@ impl Binding {
         Binding::ActualSize,
         Binding::ZoomIn,
         Binding::ZoomOut,
+        Binding::Preview,
+        Binding::Present,
         Binding::SelectTool,
         Binding::HandTool,
         Binding::ZoomTool,
@@ -127,6 +131,8 @@ impl Binding {
             Binding::ActualSize => "Actual size",
             Binding::ZoomIn => "Zoom in",
             Binding::ZoomOut => "Zoom out",
+            Binding::Preview => "Preview prototype",
+            Binding::Present => "Present prototype",
             Binding::SelectTool => "Select tool",
             Binding::HandTool => "Hand tool",
             Binding::ZoomTool => "Zoom tool (Alt to zoom out)",
@@ -159,7 +165,9 @@ impl Binding {
             | Binding::ZoomFit
             | Binding::ActualSize
             | Binding::ZoomIn
-            | Binding::ZoomOut => "View",
+            | Binding::ZoomOut
+            | Binding::Preview
+            | Binding::Present => "View",
             Binding::SelectTool | Binding::HandTool | Binding::ZoomTool => "Tools",
             Binding::NextSpace | Binding::PreviousSpace | Binding::Space(_) => "Spaces",
         }
@@ -188,6 +196,8 @@ impl Binding {
             Binding::ActualSize => k(Modifiers::SHIFT, Key::Num0),
             Binding::ZoomIn => k(Modifiers::NONE, Key::Equals),
             Binding::ZoomOut => k(Modifiers::NONE, Key::Minus),
+            Binding::Preview => k(Modifiers::SHIFT, Key::Space),
+            Binding::Present => k(Modifiers::ALT | Modifiers::COMMAND, Key::Enter),
             Binding::SelectTool => k(Modifiers::NONE, Key::V),
             Binding::HandTool => k(Modifiers::NONE, Key::H),
             Binding::ZoomTool => k(Modifiers::NONE, Key::Z),
@@ -224,6 +234,8 @@ impl Binding {
             Binding::ActualSize => Action::ActualSize,
             Binding::ZoomIn => Action::ZoomBy(1.25),
             Binding::ZoomOut => Action::ZoomBy(0.8),
+            Binding::Preview => Action::Preview,
+            Binding::Present => Action::Present,
             Binding::SelectTool => Action::SelectTool(Tool::Select),
             Binding::HandTool => Action::SelectTool(Tool::Hand),
             Binding::ZoomTool => Action::SelectTool(Tool::Zoom),

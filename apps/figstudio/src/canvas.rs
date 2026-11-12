@@ -51,7 +51,7 @@ pub fn fit(tab: &mut Tab, rect: Rect) {
 }
 
 /// Fits node `id` into `rect`; nothing happens when it has no bounds.
-fn fit_node(tab: &mut Tab, rect: Rect, id: Guid) {
+pub(crate) fn fit_node(tab: &mut Tab, rect: Rect, id: Guid) {
     if let Some(b) = figstudio_render::node_bounds(&tab.doc, id) {
         let page = Rect::from_min_max(
             Pos2::new(b.x0 as f32, b.y0 as f32),
@@ -87,6 +87,8 @@ pub struct Options {
     pub frame_labels: bool,
     /// A plain scroll wheel zooms, and pans with ⌘ / Ctrl (Settings → Canvas).
     pub scroll_zooms: bool,
+    /// How Preview sizes its screen.
+    pub scaling: crate::preview::Scaling,
 }
 
 /// Draws the canvas (with rounded corners) and handles its input. Returns the page-space
@@ -104,7 +106,11 @@ pub fn show(
         radius,
         frame_labels,
         scroll_zooms,
+        scaling,
     } = options;
+    if tab.preview.is_some() {
+        return crate::preview::show(ui, tab, workers, tiles, radius, scaling);
+    }
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     crate::a11y::describe_canvas(&response, tab);

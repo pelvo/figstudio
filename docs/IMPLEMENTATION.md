@@ -890,6 +890,48 @@ with `std::thread::spawn`, which wasm does not have. **If you add a filter, give
   while loading; answered searches and loads staying quiet),
   `crates/mcp-core/tests/local_copy.rs` (ranking, `(N)` names, ties, folders).
 
+### Prototype Preview (`crates/render/src/prototype.rs`, `apps/figstudio/src/preview.rs`)
+
+One model serves every surface. `prototype::flows` lists the flow starting points
+(`prototypeStartingPoint` on top-level frames, in page then flow order). `Screen::read`
+lists a frame's links: the renderer walks the frame once in draw order without drawing
+(`Ctx::inspect = Some(Inspect::Links)`, the same no-draw walk `emoji_counts` uses with
+`Inspect::Emoji`) and records every visible layer with `prototypeInteractions`, so links
+inside instances get their `I…;…` path, overrides, constraints and visibility exactly as
+drawn. An instance without its own interactions uses its component's. Each `Link` keeps
+Figma's trigger, action and transition names; `Link::step` is the only place that decides
+what plays: navigate (to a visible frame), back and "change to" (`Step::Swap`, Figma's
+interactive components) on click, hover, press, mouse enter/leave/down/up, after delay and
+drag. Overlays, scroll to, URLs and variables stay in the list with `step: None` and are
+counted (`Screen::skipped`). `Player` holds the screen history and a `State` (variant
+swaps by layer path); it takes pointer events (`Player::pointer`: "while hovering" and
+"while pressing" are undone when the pointer leaves the layer's shape or is released) and
+time (`Player::tick` for "after delay"). The renderer draws a `State` (`Renderer::prototype`;
+`Ctx::swapped_variant` takes the new variant's look where the instance did not override it),
+and the app keys the tiles of each state by its own document number (`Tab::tile_doc`), so
+going back to a state reuses its tiles. `reachable` walks played navigate links breadth first.
+
+- App and browser: `Tab::preview` holds the player and the shown screen's links. `Tab::root()`
+  is the screen while previewing, so the tile pipeline (keys, recordings, GPU, crossfade)
+  draws the screen alone with no other change; `Tab::background()` is the page's prototype
+  background. `canvas::show` hands the frame to `preview::show` (fit, scroll, hit test,
+  link flash) and `chrome.rs` swaps the tool and status pills for the preview bar. Keys:
+  ⇧Space (`Binding::Preview`) and Esc toggle, → / ← next and previous frame of the page,
+  Backspace back, R restart. Present (⌥⌘↩, `Binding::Present`) is the same with the title
+  strip, sidebar and Properties hidden and the canvas edge to edge. `prototype::frames`
+  is Figma's Present order: visible frames that are not component sets, at the top level or
+  inside sections, in reading order. Scaling (View → Prototype scaling, `preview::Scaling`)
+  is Fit, Fit width, Fill or Actual size, as Figma's Options menu.
+  `figstudioStatus` reports `preview`.
+- CLI: `figstudio-cli prototype` prints flows, the reachable screens and their links, and
+  renders them with `-o`.
+- MCP: `get_prototype` (`mcp-core/src/prototype_tool.rs`) returns the same as JSON, natively
+  and through the browser bridge.
+
+Screens are read on the UI thread with the pick renderer: about 0.1 s for a screen with
+hundreds of instance links in a 100k-node file. As in Figma's prototypes, Preview and
+Present cut a screen at its frame even when the frame does not clip its content.
+
 ### The browser app (`apps/figstudio` on wasm32)
 
 Build with `scripts/web-build.sh` (nightly; std rebuilt with atomics; shared memory) into

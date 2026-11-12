@@ -46,6 +46,10 @@ pub enum Icon {
     List,
     Play,
     Pause,
+    /// A small downward chevron, for a button's menu.
+    Chevron,
+    /// Start again (a circular arrow).
+    Restart,
 }
 
 /// The icon for a node type in the layer tree.
@@ -345,6 +349,21 @@ pub fn paint(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
             capsule((5.5, 3.5), (5.5, 12.5));
             capsule((10.5, 3.5), (10.5, 12.5));
         }
+        Icon::Restart => {
+            // Most of a circle, open at the top right, with an arrowhead at its end.
+            let c = g.p(8.0, 8.5);
+            let r = 5.2 * g.scale;
+            let points: Vec<Pos2> = (0..=24)
+                .map(|i| {
+                    let a = (-50.0 + 290.0 * i as f32 / 24.0).to_radians();
+                    c + vec2(a.cos(), a.sin()) * r
+                })
+                .collect();
+            painter.add(Shape::line(points, stroke));
+            path(&[(9.6, 1.6), (12.2, 4.4), (8.6, 5.2)], false);
+        }
+        // The app's chevron, pointing down.
+        Icon::Chevron => chevron(painter, rect, color, 1.0),
         Icon::Warning => {
             path(&[(8.0, 2.0), (14.5, 13.5), (1.5, 13.5)], true);
             capsule((8.0, 6.2), (8.0, 9.4));

@@ -187,7 +187,7 @@ impl Recordings {
             width: TEXTURE,
             height: TEXTURE,
             transform: key.transform(),
-            background: job.background,
+            background: job.background_for(key.doc),
         };
         let win = window(key);
         let mut wanted = Vec::new();
