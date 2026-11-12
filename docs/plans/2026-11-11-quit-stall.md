@@ -22,4 +22,6 @@ title: fix(app): quit without freezing the window on big documents
   (5 of 6 runs; one cold run 1.16 s). The new assert failed without the change and passes with
   it.
 - Not verified: real-world private files; closing one big tab (⌘W) still frees its document on
-  the UI thread; Windows and Linux quit timing.
+  the UI thread; Windows and Linux quit timing; a load that finished but was not yet taken
+  from the worker channel at Cmd-Q still frees its document on the UI thread (only `tabs` is
+  forgotten).
