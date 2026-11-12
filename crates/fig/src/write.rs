@@ -60,9 +60,9 @@ impl Encoder<'_> {
             },
             _ => {
                 let schema = self.schema;
-                let Some(def) = usize::try_from(type_id)
+                let Some((idx, def)) = usize::try_from(type_id)
                     .ok()
-                    .and_then(|i| schema.defs.get(i))
+                    .and_then(|i| Some((i, schema.defs.get(i)?)))
                 else {
                     return fail(format!("{at}: unknown type {type_id}"));
                 };
@@ -104,8 +104,14 @@ impl Encoder<'_> {
                         if let Some(unknown) = map.keys().find(|k| def.field(k).is_none()) {
                             return fail(format!("{at}: {} has no field {unknown}", def.name));
                         }
-                        for field in &def.fields {
-                            if let Some(fv) = map.get_raw(&field.name) {
+                        let decoder = self.decoder;
+                        for (i, field) in def.fields.iter().enumerate() {
+                            // The document's own schema: its decoder has the interned name.
+                            let fv = match decoder.and_then(|d| d.name(idx, i)) {
+                                Some(name) => map.get_raw_named(name),
+                                None => map.get_raw(&field.name),
+                            };
+                            if let Some(fv) = fv {
                                 self.bb.write_var_uint(field.value);
                                 self.field(field, fv, at)?;
                             }
