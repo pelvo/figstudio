@@ -26,12 +26,14 @@ fn bad<T>(r: Result<T, ()>) -> R<T> {
     r.map_err(|()| "the document data is truncated or invalid".to_string())
 }
 
-/// Node fields kept encoded until first read ([`Lazy`]). Together about half of a large
-/// document's decoded tree, and each is read only when an instance is resolved.
-const LAZY_FIELDS: [&str; 3] = [
+/// Node fields kept encoded until first read ([`Lazy`]). Together over half of a large
+/// document's decoded tree; the first three are read only when an instance is resolved,
+/// `derivedTextData` (stored glyph outlines) only when that text is drawn or selected.
+const LAZY_FIELDS: [&str; 4] = [
     "derivedSymbolData",
     "parameterConsumptionMap",
     "variableConsumptionMap",
+    "derivedTextData",
 ];
 
 /// What decoding needs from a file's schema. Shared (`Arc`) by the document's lazy fields so
@@ -57,6 +59,10 @@ pub(crate) struct Reader {
     decoded_items: Cell<usize>,
     /// Set while node records are read: their [`LAZY_FIELDS`] are skipped and kept encoded.
     pub lazy: Cell<bool>,
+    /// Decoding bytes [`Reader::skip_field`] already checked at open. List lengths were
+    /// checked then against the whole document; the field's own bytes can be fewer (a list of
+    /// zero-byte empty structs), so the check is not repeated.
+    walked: bool,
 }
 
 /// Decodes a field kept by [`Lazy`]: field `field` of definition `def`, at node-field depth.
@@ -64,7 +70,11 @@ pub(crate) fn decode_field(dec: &Arc<Decoder>, def: usize, field: usize, bytes: 
     let Some(f) = dec.schema.defs.get(def).and_then(|d| d.fields.get(field)) else {
         return Err("the schema has no such field".into());
     };
-    Reader::with(dec.clone()).field(&mut ByteBuffer::new(bytes), f, 2)
+    let reader = Reader {
+        walked: true,
+        ..Reader::with(dec.clone())
+    };
+    reader.field(&mut ByteBuffer::new(bytes), f, 2)
 }
 
 /// A struct of exactly `sessionID: uint, localID: uint`, in that order.
@@ -80,6 +90,7 @@ impl Reader {
             dec,
             decoded_items: Cell::new(0),
             lazy: Cell::new(false),
+            walked: false,
         }
     }
 
@@ -234,7 +245,7 @@ impl Reader {
         let len = usize::try_from(bad(bb.read_var_uint())?)
             .map_err(|_| "the document list is too large".to_string())?;
         let left = bb.data().len().saturating_sub(bb.index());
-        if len > left {
+        if len > left && !self.walked {
             return Err("the document data is truncated (list longer than the data left)".into());
         }
         Ok(len)
@@ -332,5 +343,40 @@ impl Reader {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kiwi_schema::{Def, Schema};
+
+    /// A list of zero-byte items (structs with no fields) is checked at open against the
+    /// bytes left in the whole document, but a lazy field holds only its own bytes; decoding
+    /// it later must still succeed, or its value would silently read as empty.
+    #[test]
+    fn a_lazy_list_of_empty_structs_decodes_like_it_was_checked() {
+        let schema = Schema::new(vec![
+            Def::new("Empty".into(), DefKind::Struct, Vec::new()),
+            Def::new(
+                "Holder".into(),
+                DefKind::Struct,
+                vec![Field {
+                    name: "items".into(),
+                    type_id: 0,
+                    is_array: true,
+                    value: 0,
+                }],
+            ),
+        ]);
+        let reader = Reader::new(schema).unwrap();
+        let field = &reader.schema().defs[1].fields[0];
+        // At open: three empty items, then more of the document.
+        let mut bb = ByteBuffer::new(&[3, 0, 0, 0]);
+        reader.skip_field(&mut bb, field, 2).unwrap();
+        assert_eq!(bb.index(), 1);
+        // Later: the field's own byte only.
+        let val = decode_field(&reader.dec, 1, 0, &[3]).unwrap();
+        assert_eq!(val.items().len(), 3);
     }
 }

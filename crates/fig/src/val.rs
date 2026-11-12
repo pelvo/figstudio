@@ -57,9 +57,11 @@ impl Lazy {
         self.val.get_or_init(|| self.decode())
     }
 
-    // shortcut: the bytes passed every check of the decoder when the file was opened, so this
-    // cannot fail; if it ever did, the field reads as empty and is still written back as its
-    // original bytes (an unedited lazy field is never re-encoded).
+    // The bytes passed every check of the decoder when the file was opened (`skip_field`:
+    // enum values, field tags, depth, the item budget, list lengths), so this cannot fail.
+    // shortcut: if it ever did, the field reads as empty (not counted in `Stats`) and is still
+    // written back as its original bytes; count it if a decoder check is ever added that
+    // `skip_field` does not make.
     fn decode(&self) -> Val {
         decode_field(&self.dec, self.def, self.field, &self.bytes)
             .unwrap_or_else(|_| Val::Arr(Vec::new()))
@@ -171,8 +173,9 @@ impl Obj {
         Some(v)
     }
 
+    /// Whether `key` is set; a field still encoded is not decoded to answer.
     pub fn contains_key(&self, key: &str) -> bool {
-        self.get(key).is_some()
+        self.get_raw(key).is_some()
     }
 
     /// Sets `key`, replacing an existing value in place. Returns the old value.
@@ -521,6 +524,34 @@ mod tests {
             reads.into_iter().map(|r| r.join().unwrap()).collect()
         });
         assert!(seen.iter().all(|v| std::ptr::eq(*v, read)));
+    }
+
+    /// Stored glyph outlines stay encoded until a text layer is drawn, and asking whether a
+    /// node has them does not decode them.
+    #[test]
+    fn stored_glyphs_stay_encoded_until_read() {
+        use super::Val;
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/noise_and_grain.fig"
+        );
+        let doc = crate::Document::open(path).unwrap();
+        let node = doc
+            .nodes
+            .iter()
+            .find(|n| n.kind == "TEXT" && n.data.get("derivedTextData").is_some())
+            .unwrap();
+        let fresh = crate::Document::open(path).unwrap();
+        let Val::Obj(fields) = &fresh.node(node.id).unwrap().data else {
+            panic!()
+        };
+        assert!(fields.contains_key("derivedTextData"));
+        assert!(matches!(
+            fields.get_raw("derivedTextData"),
+            Some(Val::Lazy(l)) if l.val.get().is_none()
+        ));
+        let glyphs = fields.get("derivedTextData").and_then(|d| d.get("glyphs"));
+        assert!(glyphs.is_some_and(|g| !g.items().is_empty()));
     }
 
     /// A copy of a node made before the read (as instance resolution makes) shares the
