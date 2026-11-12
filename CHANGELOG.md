@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.0](https://github.com/pelvo/figstudio/compare/v0.3.0...v0.4.0) (2026-11-12)
+
+
+### Features
+
+* **app,cli,mcp:** prototype preview in the app, browser, cli and mcp ([#71](https://github.com/pelvo/figstudio/issues/71)) ([58c9ed3](https://github.com/pelvo/figstudio/commit/58c9ed3db6b27863e842cae1e2e488dfa25571b7))
+
+
+### Bug Fixes
+
+* **app:** quit without freezing the window on big documents ([#87](https://github.com/pelvo/figstudio/issues/87)) ([166d7cb](https://github.com/pelvo/figstudio/commit/166d7cb9dedf7115e1796c151b44fbb4f8d0cc08))
+* **ci:** pass the cloudflare secrets to a release's web deploy ([#86](https://github.com/pelvo/figstudio/issues/86)) ([e174e4d](https://github.com/pelvo/figstudio/commit/e174e4dac9ddc00163224849a924ea4c34e5d856))
+
+
+### Performance Improvements
+
+* **fig:** keep instance overrides encoded until the instance is entered ([#84](https://github.com/pelvo/figstudio/issues/84)) ([ff30184](https://github.com/pelvo/figstudio/commit/ff301843bd0c14aceb1fd327c2fc3530da290eb5))
+* **fig:** keep stored glyph outlines encoded until first read ([#80](https://github.com/pelvo/figstudio/issues/80)) ([09d3083](https://github.com/pelvo/figstudio/commit/09d308351dc9c2445dbd8124cb69b20436148b6b))
+* **fig:** store equal node field values once ([#82](https://github.com/pelvo/figstudio/issues/82)) ([5fdc847](https://github.com/pelvo/figstudio/commit/5fdc8475c297903f8c3be14a5077cbb3e0f14d76))
+* **fig:** store object field names as one pointer ([#85](https://github.com/pelvo/figstudio/issues/85)) ([91e1107](https://github.com/pelvo/figstudio/commit/91e11078520c11f46d12f748b3cc737ae0dce1fe))
+
 ## [0.3.0](https://github.com/pelvo/figstudio/compare/v0.2.0...v0.3.0) (2026-11-11)
 
 
