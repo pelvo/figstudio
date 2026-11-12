@@ -302,6 +302,11 @@ jobs:
     uses: ./.github/workflows/web-deploy.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
+    # A called workflow sees only the secrets its caller passes, even in a job that names an
+    # environment, so without this the cloudflare environment's CLOUDFLARE_API_TOKEN is empty
+    # there (v0.3.0's deploy failed so). This repo keeps no repository secrets; the deploy job
+    # gets its own environment's.
+    secrets: inherit
 
   # npm: `npx -y figstudio-mcp` runs one of these binaries through the launcher in
   # npm/figstudio-mcp. Each binary is its own package with `os` and `cpu` set, listed as an
