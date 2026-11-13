@@ -134,7 +134,7 @@ pub fn tool_list() -> Vec<Value> {
                 ("fileKey", string.clone()),
                 ("format", asset_format),
                 ("scale", number),
-                ("original", boolean),
+                ("original", boolean.clone()),
             ],
             &[],
         ),
@@ -169,14 +169,91 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "get_shader",
             "One shader's parameters (label, type, range, options, default) and the layers using it with their values. No source.",
-            vec![("id", json!({"type":"string"})), ("fileKey", string)],
+            vec![
+                ("id", json!({"type":"string"})),
+                ("fileKey", string.clone()),
+            ],
             &["id"],
         ),
         tool(
             "get_context_for_code_connect",
             "Local component properties and variants; no cloud bindings.",
+            node.clone(),
+            &[],
+        ),
+        tool(
+            "describe_edit_ops",
+            "List every semantic EditOp variant accepted by apply_edits and its JSON shape.",
+            vec![],
+            &[],
+        ),
+        tool(
+            "get_editable",
+            "Inspect all editable layout, paint, text, component, style and variable properties of a node (defaults to selection).",
             node,
             &[],
+        ),
+        tool(
+            "apply_edits",
+            "Execute an atomic, Kiwi-schema-validated batch of EditOp mutations with automatic Auto-Layout solving and Undo support.",
+            vec![
+                ("ops", json!({"type":"array","items":{"type":"object"}})),
+                ("fileKey", string.clone()),
+                ("label", string.clone()),
+                ("dryRun", boolean),
+            ],
+            &["ops"],
+        ),
+        tool(
+            "undo",
+            "Undo the most recent edit batch on the target document.",
+            vec![("fileKey", string.clone())],
+            &[],
+        ),
+        tool(
+            "redo",
+            "Redo the most recently undone edit batch on the target document.",
+            vec![("fileKey", string.clone())],
+            &[],
+        ),
+        tool(
+            "get_history",
+            "Return the document edit revision and current Undo/Redo stack labels.",
+            vec![("fileKey", string.clone())],
+            &[],
+        ),
+        tool(
+            "import_image",
+            "Import a PNG, JPEG, WebP or GIF image (base64) into the document image store and return its 40-char SHA-1 hash.",
+            vec![
+                ("dataBase64", json!({"type":"string"})),
+                ("fileKey", string.clone()),
+            ],
+            &["dataBase64"],
+        ),
+        tool(
+            "copy_for_figma",
+            "Export one or more nodes (defaults to selection) with transitive local SYMBOL masters as Figma clipboard HTML.",
+            vec![
+                (
+                    "nodeIds",
+                    json!({"type":["array","null"],"items":{"type":"string"}}),
+                ),
+                ("fileKey", string.clone()),
+            ],
+            &[],
+        ),
+        tool(
+            "paste_from_figma",
+            "Paste Figma clipboard HTML into a page or container frame, remapping GUIDs and deduplicating local components.",
+            vec![
+                ("html", json!({"type":"string"})),
+                ("parentId", string.clone()),
+                ("dx", json!({"type":["number","null"]})),
+                ("dy", json!({"type":["number","null"]})),
+                ("fileKey", string),
+            ],
+            &["html"],
         ),
     ]
 }

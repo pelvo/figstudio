@@ -407,7 +407,7 @@ impl Val {
 
     /// Replaces a [`Val::Lazy`] with its decoded value, so it can be changed (copied when
     /// another copy of the node still shares it).
-    fn settle(&mut self) {
+    pub(crate) fn settle(&mut self) {
         if !matches!(self, Val::Lazy(_) | Val::Shared(_)) {
             return;
         }

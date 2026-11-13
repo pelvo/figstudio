@@ -3,7 +3,7 @@ use crate::tab::Tab;
 use figstudio_fig::Guid;
 use std::sync::Arc;
 
-type TabKey = (u64, usize, Guid, Option<Guid>, Option<[i64; 4]>);
+type TabKey = (u64, usize, u64, Guid, Option<Guid>, Option<[i64; 4]>);
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Key {
     tabs: Vec<TabKey>,
@@ -26,6 +26,7 @@ pub(crate) fn key(tabs: &[Tab], active: usize) -> Key {
                 (
                     t.id,
                     Arc::as_ptr(&t.doc) as usize,
+                    t.doc.instance,
                     t.page,
                     t.selection,
                     view,

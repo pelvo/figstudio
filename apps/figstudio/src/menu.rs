@@ -5,7 +5,14 @@ use crate::{App, Tool};
 pub(crate) enum Action {
     Open,
     OpenLink,
+    SaveCopy,
+    Undo,
+    Redo,
     CopyText,
+    CopyForFigma,
+    PasteFromFigma,
+    DuplicateSelection,
+    DeleteSelection,
     SelectAllText,
     SelectChild,
     SelectParent,
@@ -224,13 +231,30 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
     if cfg!(any(feature = "mcp", target_arch = "wasm32")) {
         view.push(Item::action("Agent access…", Action::AgentAccess, true));
     }
-    let edit = vec![Item::action(
-        "Copy text",
-        Action::CopyText,
-        app.tabs
-            .get(app.active)
-            .is_some_and(|t| t.selected_text().is_some()),
-    )];
+    let can_undo = app
+        .tabs
+        .get(app.active)
+        .is_some_and(|t| t.history.can_undo());
+    let can_redo = app
+        .tabs
+        .get(app.active)
+        .is_some_and(|t| t.history.can_redo());
+    let edit = vec![
+        Item::action("Undo", Action::Undo, can_undo),
+        Item::action("Redo", Action::Redo, can_redo),
+        Item::separator(),
+        Item::action(
+            "Copy text",
+            Action::CopyText,
+            app.tabs
+                .get(app.active)
+                .is_some_and(|t| t.selected_text().is_some()),
+        ),
+        Item::action("Copy for Figma", Action::CopyForFigma, selection),
+        Item::action("Paste from Figma", Action::PasteFromFigma, has_tab),
+        Item::action("Duplicate layer", Action::DuplicateSelection, selection),
+        Item::action("Delete layer", Action::DeleteSelection, selection),
+    ];
     vec![
         Item::group(
             "File",
@@ -245,6 +269,7 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                     Action::ExportSelectionSvg,
                     selection,
                 ),
+                Item::action("Save copy…", Action::SaveCopy, has_tab),
                 Item::separator(),
                 Item::action("Close file", Action::CloseTab, has_tab),
                 Item::action("Settings…", Action::Settings, true),
@@ -288,6 +313,57 @@ impl App {
             Action::OpenLink => {
                 self.link.window = true;
                 self.link.focus = true;
+            }
+            Action::SaveCopy => self.save_copy(ctx),
+            Action::Undo => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    match crate::editor::undo_tab(tab) {
+                        Ok(Some(label)) => self.toast(ctx, format!("Undid: {label}"), false),
+                        Ok(None) => {}
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
+            }
+            Action::Redo => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    match crate::editor::redo_tab(tab) {
+                        Ok(Some(label)) => self.toast(ctx, format!("Redid: {label}"), false),
+                        Ok(None) => {}
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
+            }
+            Action::CopyForFigma => {
+                if let Some(tab) = self.tabs.get(self.active) {
+                    match crate::editor::copy_selection_for_figma(ctx, tab) {
+                        Ok(msg) => self.toast(ctx, msg, false),
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
+            }
+            Action::PasteFromFigma => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    match crate::editor::paste_from_system_clipboard(tab) {
+                        Ok(msg) => self.toast(ctx, msg, false),
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
+            }
+            Action::DuplicateSelection => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    match crate::editor::duplicate_selection(tab) {
+                        Ok(msg) => self.toast(ctx, msg, false),
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
+            }
+            Action::DeleteSelection => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    match crate::editor::delete_selection(tab) {
+                        Ok(msg) => self.toast(ctx, msg, false),
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
             }
             Action::CopyText => {
                 if let Some(tab) = self.tabs.get_mut(self.active)

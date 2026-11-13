@@ -15,9 +15,12 @@ kiwi-schema = { workspace = true }
 flate2 = { workspace = true }
 ruzstd = { workspace = true }
 zip = { workspace = true }
+base64 = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 
 [dev-dependencies]
+tempfile.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 tracing-subscriber.workspace = true
 flate2 = { workspace = true }

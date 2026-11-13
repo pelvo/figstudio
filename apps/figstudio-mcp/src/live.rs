@@ -54,6 +54,30 @@ pub struct TabInfo {
     pub viewport: Option<[f64; 4]>,
 }
 
+/// Document mutation sent from an MCP tool to the live app host.
+#[derive(Debug)]
+pub enum LiveMutation {
+    ApplyEdits {
+        ops: Vec<figstudio_fig::edit::EditOp>,
+        label: Option<String>,
+        dry_run: bool,
+    },
+    Undo,
+    Redo,
+    GetHistory,
+    ImportImage {
+        bytes: Vec<u8>,
+    },
+    PasteHtml {
+        html: String,
+        parent: Option<Guid>,
+        offset: (f64, f64),
+    },
+    SaveCopy {
+        out_path: PathBuf,
+    },
+}
+
 /// A request to the app.
 #[derive(Debug)]
 pub enum Command {
@@ -77,6 +101,12 @@ pub enum Command {
         asked: std::time::Instant,
         /// What was done, one line, or why it could not be done.
         reply: oneshot::Sender<anyhow::Result<String>>,
+    },
+    /// Apply an editing mutation or query Undo/Redo history on `tab`.
+    Mutate {
+        tab: u64,
+        mutation: LiveMutation,
+        reply: oneshot::Sender<anyhow::Result<serde_json::Value>>,
     },
 }
 
@@ -264,6 +294,20 @@ impl LiveFiles {
         self.ask(OPEN_TIMEOUT, |reply| Command::OpenLink {
             link,
             asked,
+            reply,
+        })
+        .await
+    }
+
+    /// Ask the app to execute a [`LiveMutation`] on `tab`.
+    pub(crate) async fn mutate(
+        &self,
+        tab: u64,
+        mutation: LiveMutation,
+    ) -> Result<serde_json::Value, McpError> {
+        self.ask(REVEAL_TIMEOUT, |reply| Command::Mutate {
+            tab,
+            mutation,
             reply,
         })
         .await

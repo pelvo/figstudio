@@ -17,6 +17,7 @@ mcp = ["dep:figstudio-mcp", "dep:tokio", "dep:tokio-util"]
 anyhow.workspace = true
 tracing.workspace = true
 figstudio-fig = { workspace = true }
+base64 = { workspace = true }
 # Node IDs and figstudio:// links for the Copy menus (copy.rs), shared with the MCP server.
 figstudio-mcp-core = { workspace = true }
 # Motion exports (Properties → Motion → Export): GIF and PNG frames everywhere, video natively.

@@ -18,6 +18,7 @@ mod copy;
 mod copy_menu;
 #[cfg(target_os = "macos")]
 mod dock_mac;
+mod editor;
 #[cfg(target_arch = "wasm32")]
 mod emoji_canvas;
 #[cfg(any(target_arch = "wasm32", test))]
@@ -939,6 +940,62 @@ impl App {
         }
     }
 
+    /// Saves a `.fig` copy of the active tab (never overwriting the original unless explicitly
+    /// picked in the save dialog).
+    fn save_copy(&mut self, ctx: &egui::Context) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let stem = tab.title().replace(['/', '\\'], "_");
+        let default_name = format!("{stem}-edited.fig");
+        #[cfg(target_arch = "wasm32")]
+        {
+            match tab.doc.to_bytes() {
+                Ok(bytes) => match web::download(&default_name, "application/octet-stream", &bytes)
+                {
+                    Ok(()) => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            t.dirty_unsaved = false;
+                        }
+                        self.toast(ctx, format!("Downloaded {default_name}"), false);
+                    }
+                    Err(e) => self.toast(ctx, e.to_string(), true),
+                },
+                Err(e) => self.toast(ctx, e.to_string(), true),
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let chosen = if cfg!(test) {
+                Some(std::env::temp_dir().join(format!(
+                    "figstudio-ui-savecopy-{}-{default_name}",
+                    std::process::id()
+                )))
+            } else {
+                let mut dialog = rfd::FileDialog::new()
+                    .add_filter("Figma file", &["fig"])
+                    .set_file_name(&default_name);
+                if let Some(dir) = tab.real_path.parent().filter(|p| p.exists()) {
+                    dialog = dialog.set_directory(dir);
+                }
+                dialog.save_file()
+            };
+            let Some(path) = chosen else {
+                return;
+            };
+            let lazy_src = tab.real_path.exists().then_some(tab.real_path.as_path());
+            match tab.doc.save_with_lazy_source(lazy_src, &path) {
+                Ok(()) => {
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        t.dirty_unsaved = false;
+                    }
+                    self.toast(ctx, format!("Saved copy to {}", path.display()), false);
+                }
+                Err(e) => self.toast(ctx, format!("Could not save copy: {e}"), true),
+            }
+        }
+    }
+
     fn poll(&mut self, ctx: &egui::Context) {
         if let Some(problem) = self.workspace_store.take_problem() {
             self.toast(ctx, problem, true);
@@ -1261,14 +1318,39 @@ impl App {
                 u8::from(m.command) + u8::from(m.ctrl) + u8::from(m.alt) + u8::from(m.shift),
             )
         });
+        let in_preview = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| t.preview.is_some());
         let mut run = Vec::new();
         for (binding, shortcut) in bindings {
             use keymap::Binding as B;
             let action = binding.action();
             let plain = keymap::Binding::is_plain(&shortcut);
-            if (matches!(binding, B::SelectChild | B::SelectParent)
-                && (quiet || self.find.is_open() || self.command.is_up(ctx)))
-                || ((plain || binding == B::Copy) && quiet)
+            let is_edit_or_create = matches!(
+                binding,
+                B::Undo
+                    | B::Redo
+                    | B::CopyForFigma
+                    | B::PasteFromFigma
+                    | B::DuplicateSelection
+                    | B::DeleteSelection
+                    | B::FrameTool
+                    | B::SectionTool
+                    | B::RectTool
+                    | B::EllipseTool
+                    | B::LineTool
+                    | B::TextTool
+            );
+            if (is_edit_or_create && in_preview)
+                || (matches!(binding, B::SelectChild | B::SelectParent)
+                    && (quiet || self.find.is_open() || self.command.is_up(ctx)))
+                || ((plain
+                    || matches!(
+                        binding,
+                        B::Copy | B::PasteFromFigma | B::Undo | B::Redo | B::DuplicateSelection
+                    ))
+                    && quiet)
                 || (binding == B::SelectAll
                     && (quiet
                         || !self
@@ -1291,6 +1373,10 @@ impl App {
                     let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
                     i.events.retain(|e| !matches!(e, egui::Event::Copy));
                     i.consume_shortcut(&shortcut) || copy
+                }
+                B::DeleteSelection if default => {
+                    i.consume_shortcut(&shortcut)
+                        || (i.key_pressed(Key::Delete) && i.modifiers.is_none())
                 }
                 // `+` where it needs no Shift (a keypad) zooms in too. Not with ⌘ / Ctrl:
                 // that is egui's zoom of the whole UI (larger text).

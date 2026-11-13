@@ -28,8 +28,34 @@ fn hit_chain(doc: &figstudio_fig::Document, page: Guid, point: Point) -> Vec<Gui
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Select,
+    Frame,
+    Section,
+    Rectangle,
+    Ellipse,
+    Line,
+    Text,
     Hand,
     Zoom,
+}
+
+impl Tool {
+    pub fn is_creation(self) -> bool {
+        matches!(
+            self,
+            Self::Frame | Self::Section | Self::Rectangle | Self::Ellipse | Self::Line | Self::Text
+        )
+    }
+
+    pub fn shape_kind(self) -> Option<&'static str> {
+        match self {
+            Self::Frame => Some("FRAME"),
+            Self::Section => Some("SECTION"),
+            Self::Rectangle => Some("ROUNDED_RECTANGLE"),
+            Self::Ellipse => Some("ELLIPSE"),
+            Self::Line => Some("LINE"),
+            _ => None,
+        }
+    }
 }
 
 pub fn fit(tab: &mut Tab, rect: Rect) {
@@ -209,7 +235,13 @@ pub fn show(
                     target.pan = (p - origin) - page.to_vec2() * target.zoom;
                 }
             }
-            Tool::Hand => {}
+            Tool::Hand
+            | Tool::Frame
+            | Tool::Section
+            | Tool::Rectangle
+            | Tool::Ellipse
+            | Tool::Line
+            | Tool::Text => {}
         }
     }
     // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
@@ -217,11 +249,19 @@ pub fn show(
     if response.secondary_clicked() && !marquee::right_click(&response, tab, origin) {
         crate::canvas_pick::click(tab, &chain, point, deep, false);
     }
+    let gizmo_active = tool.is_creation()
+        || matches!(
+            tab.edit_drag,
+            Some(
+                crate::editor::CanvasDrag::Resize { .. }
+                    | crate::editor::CanvasDrag::Move { moved: true, .. }
+            )
+        );
     crate::canvas_text::input(
         &response,
         tab,
         origin,
-        tool == Tool::Select && !panning,
+        tool == Tool::Select && !panning && !gizmo_active,
         !inner_changed,
     );
     marquee::update(
@@ -229,7 +269,7 @@ pub fn show(
         &response,
         tab,
         origin,
-        tool == Tool::Select && !panning && tab.text_select.is_none(),
+        tool == Tool::Select && !panning && tab.text_select.is_none() && !gizmo_active,
     );
     if tab.marquee.menu {
         marquee::context(&response, tab);
@@ -306,24 +346,40 @@ pub fn show(
         }
     }
     crate::canvas_text::overlay(&painter, tab, origin);
+    let mut active_tool = tool;
+    let gizmo_cursor =
+        crate::editor::canvas_gizmos_and_input(ui, &painter, rect, tab, &mut active_tool, panning);
+    if active_tool != tool && active_tool == Tool::Select {
+        tab.reset_tool_to_select = true;
+    }
     marquee::paint(&painter, tab, origin);
     crate::icons::focus_ring(ui, &response, rect, radius as u8);
     crate::canvas_a11y::layers(ui, &response, tab, origin);
     crate::shader_code::markers(ui, &painter, tab, |id| corners(tab, origin, id));
     tab.view = target;
 
-    let cursor = match tool {
-        _ if panning => egui::CursorIcon::Grab,
-        Tool::Zoom => egui::CursorIcon::ZoomIn,
-        Tool::Hand => egui::CursorIcon::Grab,
-        Tool::Select
-            if tab.text_select.is_some()
-                && tab.selection == tab.hover
-                && (tab.inner.is_none() || inner_hover == tab.inner) =>
-        {
-            egui::CursorIcon::Text
+    let cursor = if let Some(gc) = gizmo_cursor {
+        gc
+    } else {
+        match tool {
+            _ if panning => egui::CursorIcon::Grab,
+            Tool::Zoom => egui::CursorIcon::ZoomIn,
+            Tool::Hand => egui::CursorIcon::Grab,
+            Tool::Frame
+            | Tool::Section
+            | Tool::Rectangle
+            | Tool::Ellipse
+            | Tool::Line
+            | Tool::Text => egui::CursorIcon::Crosshair,
+            Tool::Select
+                if tab.text_select.is_some()
+                    && tab.selection == tab.hover
+                    && (tab.inner.is_none() || inner_hover == tab.inner) =>
+            {
+                egui::CursorIcon::Text
+            }
+            Tool::Select => egui::CursorIcon::Default,
         }
-        Tool::Select => egui::CursorIcon::Default,
     };
     if response.hovered() {
         ui.ctx().set_cursor_icon(if response.dragged() && panning {

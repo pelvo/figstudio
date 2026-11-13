@@ -27,6 +27,19 @@ struct Input {
     kinds: Option<Vec<String>>,
     id: Option<String>,
     fps: Option<u32>,
+    ops: Option<Vec<Value>>,
+    data_base64: Option<String>,
+    html: Option<String>,
+    #[allow(dead_code)]
+    parent_id: Option<String>,
+    #[allow(dead_code)]
+    dx: Option<f64>,
+    #[allow(dead_code)]
+    dy: Option<f64>,
+    #[allow(dead_code)]
+    label: Option<String>,
+    #[allow(dead_code)]
+    dry_run: Option<bool>,
 }
 
 pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String> {
@@ -44,12 +57,18 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
     if !args.is_object() {
         return Err("Tool arguments must be an object".into());
     }
-    let input: Input = serde_json::from_value(args).map_err(|e| e.to_string())?;
+    let input: Input = serde_json::from_value(args.clone()).map_err(|e| e.to_string())?;
     if (name == "reveal_node" && input.node_id.is_none())
         || (name == "search_design_system" && input.query.is_none())
         || (name == "get_shader" && input.id.is_none())
+        || (name == "apply_edits" && input.ops.is_none())
+        || (name == "import_image" && input.data_base64.is_none())
+        || (name == "paste_from_figma" && input.html.is_none())
     {
         return Err("Missing required tool argument".into());
+    }
+    if name == "describe_edit_ops" {
+        return Ok(crate::editing::describe_ops());
     }
     if name == "list_open_tabs" {
         return Ok(live::tabs(env));
@@ -177,6 +196,19 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
             "get_context_for_code_connect" => {
                 crate::codeconnect_context::component_context(doc, &target()?)
             }
+            "get_editable" => crate::editing::editable(doc, &target()?),
+            "copy_for_figma" => {
+                let mut ids = input.node_ids.unwrap_or_default();
+                if ids.is_empty() {
+                    ids.push(target()?);
+                }
+                crate::editing::copy_for_figma(doc, &ids, &tab.file_key)
+            }
+            "apply_edits" | "undo" | "redo" | "get_history" | "import_image"
+            | "paste_from_figma" => match env.mutate_tab(tab.id, name, &args) {
+                Ok(out) => out,
+                Err(e) => Output::fault(e.to_string()),
+            },
             _ => Output::fault("Tool is unavailable"),
         })
     })();

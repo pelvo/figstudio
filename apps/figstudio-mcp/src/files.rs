@@ -11,10 +11,15 @@ use tokio::sync::OnceCell;
 /// Decoded-image bytes each registered file may keep between calls.
 pub(crate) const IMAGE_CACHE_BYTES: usize = 256 * 1024 * 1024;
 
+type EditState = Option<(Arc<Document>, figstudio_fig::edit::History)>;
+
 struct FileEntry {
     key: String,
     path: PathBuf,
     document: Arc<OnceCell<Arc<Document>>>,
+    /// Mutable in-memory editing overlay `(latest_doc, undo_history)` once a write tool touches
+    /// this file. Read tools automatically see `latest_doc`.
+    edit_state: Arc<std::sync::Mutex<EditState>>,
     /// Where this file's renders read lazy images, and their shared cache.
     rendering: Rendering,
 }
@@ -60,6 +65,7 @@ impl FileRegistry {
                         rendering: Rendering::new(path.clone(), Images::new(IMAGE_CACHE_BYTES)),
                         path,
                         document: Arc::new(OnceCell::new()),
+                        edit_state: Arc::new(std::sync::Mutex::new(None)),
                     })
                     .collect(),
             ),
@@ -134,6 +140,14 @@ impl FileRegistry {
 
     /// Open the entry `file` (already resolved, so duplicate stems stay apart).
     async fn open_entry(file: &FileEntry, lazy_above: u64) -> Result<Arc<Document>, McpError> {
+        if let Some((edited_doc, _)) = file
+            .edit_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            return Ok(edited_doc.clone());
+        }
         let cached = file.document.clone();
         let path = file.path.clone();
         let images = file.rendering.images.clone();
@@ -174,6 +188,40 @@ impl FileRegistry {
         let file = self.resolve(key)?;
         let doc = Self::open_entry(file, self.lazy_above).await?;
         Ok((doc, file.key.clone(), file.path.clone()))
+    }
+
+    /// Mutates the in-memory [`Document`] and [`figstudio_fig::edit::History`] of `key`
+    /// without touching the original file on disk unless explicitly saved.
+    pub async fn mutate_doc<R>(
+        &self,
+        key: Option<&str>,
+        f: impl FnOnce(&mut Document, &mut figstudio_fig::edit::History, &Path) -> Result<R, McpError>
+        + Send
+        + 'static,
+    ) -> Result<R, McpError>
+    where
+        R: Send + 'static,
+    {
+        let file = self.resolve(key)?;
+        let base_doc = Self::open_entry(file, self.lazy_above).await?;
+        let state = file.edit_state.clone();
+        let path = file.path.clone();
+        let images = file.rendering.images.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.is_none() {
+                *guard = Some((base_doc, figstudio_fig::edit::History::new(200)));
+            }
+            let (doc_arc, history) = guard.as_mut().unwrap();
+            let doc_mut = Arc::make_mut(doc_arc);
+            let res = f(doc_mut, history, &path)?;
+            if let Some(fills) = figstudio_shader::Fills::for_file(&path) {
+                images.set_shaders(doc_mut.instance, fills);
+            }
+            Ok(res)
+        })
+        .await
+        .map_err(McpError::load_task)?
     }
 
     /// List cached page counts without waiting for pending loads.

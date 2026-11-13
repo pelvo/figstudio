@@ -229,3 +229,86 @@ fn draining_replies_keeps_reveals_for_the_frame() {
     assert!(matches!(reveals[0], Done::Reveal { tab: 7, .. }));
     assert!(inbox.take_reveals().is_empty());
 }
+
+#[test]
+fn relay_apply_edits_and_undo_mutate_tab_on_ui_frame() {
+    let mut inbox = Inbox::default();
+    let tabs = &mut tabs();
+    let orig_name = tabs[0].doc.node(Guid(1, 25)).unwrap().name.clone();
+
+    let edit_call = json!({
+        "jsonrpc": "2.0",
+        "id": "edit-1",
+        "method": "tools/call",
+        "params": {
+            "name": "apply_edits",
+            "arguments": {
+                "fileKey": "structure",
+                "label": "Rename via relay",
+                "ops": [{ "op": "rename", "target": "1:25", "name": "RelayEdited" }]
+            }
+        }
+    });
+    inbox.dispatch(1, "e1".to_owned(), edit_call, tabs, 0);
+    let Done::Mutate {
+        generation,
+        tab,
+        tool,
+        args,
+        ack,
+        claim,
+    } = inbox
+        .rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("mutate")
+    else {
+        panic!("expected Done::Mutate");
+    };
+    assert!(claim_reveal(&claim));
+    let out = apply_mutation(Some(1), generation, tabs, tab, &tool, &args);
+    ack.send(out).unwrap();
+    let Done::Reply { text, .. } = inbox
+        .rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("reply")
+    else {
+        panic!("expected Done::Reply");
+    };
+    let reply: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(reply["body"]["result"]["isError"], false);
+    assert_eq!(tabs[0].doc.node(Guid(1, 25)).unwrap().name, "RelayEdited");
+
+    // Undo via relay
+    let undo_call = json!({
+        "jsonrpc": "2.0",
+        "id": "undo-1",
+        "method": "tools/call",
+        "params": {
+            "name": "undo",
+            "arguments": { "fileKey": "structure" }
+        }
+    });
+    inbox.dispatch(1, "u1".to_owned(), undo_call, tabs, 0);
+    let Done::Mutate {
+        generation,
+        tab,
+        tool,
+        args,
+        ack,
+        claim,
+    } = inbox
+        .rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("mutate undo")
+    else {
+        panic!("expected Done::Mutate");
+    };
+    assert!(claim_reveal(&claim));
+    ack.send(apply_mutation(Some(1), generation, tabs, tab, &tool, &args))
+        .unwrap();
+    let _ = inbox
+        .rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("reply undo");
+    assert_eq!(tabs[0].doc.node(Guid(1, 25)).unwrap().name, orig_name);
+}

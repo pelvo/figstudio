@@ -106,6 +106,14 @@ pub struct Tab {
     pub find_search: u64,
     /// Prototype Preview, while it runs: the canvas shows its screen alone.
     pub preview: Option<Preview>,
+    /// Per-tab Undo/Redo stack for non-destructive editing.
+    pub history: figstudio_fig::edit::History,
+    /// Whether this tab has uncommitted edits since opening or last Save Copy.
+    pub dirty_unsaved: bool,
+    /// Active interactive Move / Resize / Create drag on the canvas.
+    pub edit_drag: Option<crate::editor::CanvasDrag>,
+    /// Set by creation tools once a new layer is placed so the toolbar returns to Select.
+    pub reset_tool_to_select: bool,
 }
 
 /// One picture the canvas draws (see [`Tab::draw_layers`]).
@@ -268,6 +276,10 @@ impl Tab {
             find_fade: 0.0,
             find_search: 0,
             preview: None,
+            history: figstudio_fig::edit::History::new(200),
+            dirty_unsaved: false,
+            edit_drag: None,
+            reset_tool_to_select: false,
         }
     }
 
