@@ -284,25 +284,43 @@ impl Host {
         };
         for done in reveals {
             use crate::mcp_relay::Done;
-            if let Done::Reveal {
-                generation,
-                tab,
-                node,
-                ack,
-                claim,
-            } = done
-            {
-                // Claim before touching state: a worker that already expired this
-                // reveal answered the caller with a tool error, so a late frame must
-                // not apply it after that (see `claim_reveal`).
-                let result = if crate::mcp_relay::claim_reveal(&claim) {
-                    let live = (self.conn.is_some() && self.relay).then_some(self.generation);
-                    crate::mcp_relay::apply_reveal(live, generation, tabs, active, tab, node)
-                } else {
-                    Err("the reveal expired before the UI applied it".to_owned())
-                };
-                // Always answer: a worker is blocked on this ack with a bounded wait.
-                let _ = ack.send(result);
+            match done {
+                Done::Reveal {
+                    generation,
+                    tab,
+                    node,
+                    ack,
+                    claim,
+                } => {
+                    // Claim before touching state: a worker that already expired this
+                    // reveal answered the caller with a tool error, so a late frame must
+                    // not apply it after that (see `claim_reveal`).
+                    let result = if crate::mcp_relay::claim_reveal(&claim) {
+                        let live = (self.conn.is_some() && self.relay).then_some(self.generation);
+                        crate::mcp_relay::apply_reveal(live, generation, tabs, active, tab, node)
+                    } else {
+                        Err("the reveal expired before the UI applied it".to_owned())
+                    };
+                    // Always answer: a worker is blocked on this ack with a bounded wait.
+                    let _ = ack.send(result);
+                }
+                Done::Mutate {
+                    generation,
+                    tab,
+                    tool,
+                    args,
+                    ack,
+                    claim,
+                } => {
+                    let result = if crate::mcp_relay::claim_reveal(&claim) {
+                        let live = (self.conn.is_some() && self.relay).then_some(self.generation);
+                        crate::mcp_relay::apply_mutation(live, generation, tabs, tab, &tool, &args)
+                    } else {
+                        Err("the edit expired before the UI applied it".to_owned())
+                    };
+                    let _ = ack.send(result);
+                }
+                Done::Reply { .. } => {}
             }
         }
         let mut events = std::mem::take(&mut self.later);

@@ -401,6 +401,8 @@ struct Ctx<'a> {
     variants: std::collections::HashMap<Vec<Guid>, Guid>,
     /// The clipping frames around the node an [`Inspect::Links`] walk is at.
     clips: Vec<prototype::Area>,
+    /// Active variable mode per `VARIABLE_SET` inherited from enclosing containers.
+    active_modes: std::collections::HashMap<Guid, Guid>,
 }
 
 /// What a metadata walk collects.
@@ -882,6 +884,7 @@ impl Renderer {
                 .clone()
                 .or_else(|| self.images.shaders(doc.instance)),
             delays: Vec::new(),
+            active_modes: std::collections::HashMap::new(),
         }
     }
     /// Counts visible stored emoji on every page using the draw walk's overrides, truncation
@@ -1567,10 +1570,26 @@ impl Ctx<'_> {
             }
             None => data,
         };
-        let (data, unresolved_variables) = self.variables.paints(data.as_ref());
+        let mut pushed_modes: Vec<(Guid, Option<Guid>)> = Vec::new();
+        if let Some(entries) = data.path(&["variableModeBySetMap", "entries"]) {
+            for entry in entries.items() {
+                let set_id = entry
+                    .get("variableSetID")
+                    .and_then(|v| v.as_guid().or_else(|| v.get("guid").and_then(Val::as_guid)));
+                let mode_id = entry.get("variableModeID").and_then(Val::as_guid);
+                if let (Some(set_id), Some(mode_id)) = (set_id, mode_id) {
+                    let prev = self.active_modes.insert(set_id, mode_id);
+                    pushed_modes.push((set_id, prev));
+                }
+            }
+        }
+        let (data, unresolved_variables) = self
+            .variables
+            .paints_with_modes(data.as_ref(), &self.active_modes);
         let data = data.as_ref();
         self.stats.approximated_paints += unresolved_variables;
         if !visible(data) || data.flag("mask") == Some(true) {
+            self.pop_modes(pushed_modes);
             self.depth -= 1;
             return;
         }
@@ -1593,6 +1612,7 @@ impl Ctx<'_> {
                 }
                 self.child_filter = None;
                 self.inspect = Some(Inspect::Layer);
+                self.pop_modes(pushed_modes);
                 self.depth -= 1;
                 return;
             }
@@ -1641,16 +1661,19 @@ impl Ctx<'_> {
                 self.clips.pop();
             }
             self.scroll_depth -= usize::from(scroller);
+            self.pop_modes(pushed_modes);
             self.depth -= 1;
             return;
         }
         let (w, h) = size(data);
         if self.off_screen(node, kind, data, world, w, h) {
             self.stats.culled += 1;
+            self.pop_modes(pushed_modes);
             self.depth -= 1;
             return;
         }
         if self.draw_shader_effects(node, data, world, path, (stale_glyphs, approximate_ink)) {
+            self.pop_modes(pushed_modes);
             self.depth -= 1;
             return;
         }
@@ -1859,7 +1882,21 @@ impl Ctx<'_> {
             self.rc.pop_layer();
         }
         self.inherited_reach = outer_reach;
+        self.pop_modes(pushed_modes);
         self.depth -= 1;
+    }
+
+    fn pop_modes(&mut self, pushed: Vec<(Guid, Option<Guid>)>) {
+        for (set_id, prev) in pushed.into_iter().rev() {
+            match prev {
+                Some(old) => {
+                    self.active_modes.insert(set_id, old);
+                }
+                None => {
+                    self.active_modes.remove(&set_id);
+                }
+            }
+        }
     }
 
     /// Pushes a filter layer and returns how many layers to pop. Vello's clip paths do not
@@ -2206,6 +2243,7 @@ impl Ctx<'_> {
             scroll_depth: self.scroll_depth,
             variants: std::collections::HashMap::new(),
             clips: Vec::new(),
+            active_modes: self.active_modes.clone(),
         };
         draw(&mut sub);
         self.overrides = sub.overrides;

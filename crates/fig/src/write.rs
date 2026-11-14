@@ -323,6 +323,250 @@ impl Document {
         Ok(zip.finish().map_err(zip_err)?.into_inner())
     }
 
+    /// Writes a `.fig` copy to `raw_dst` with path-safety checks:
+    /// - rejects any `..` (`ParentDir`) traversal component,
+    /// - requires a `.fig` extension,
+    /// - resolves relative paths against `source_path`'s parent directory when available,
+    /// - optionally confines the canonical destination directory inside `source_path`'s directory,
+    /// - unconditionally refuses to overwrite `source_path` (even when `overwrite` is `true`),
+    /// - refuses to replace an existing file unless `overwrite` is `true` (enforced atomically via
+    ///   `hard_link` so there is no TOCTOU race).
+    pub fn save_copy_checked(
+        &self,
+        source_path: Option<&std::path::Path>,
+        raw_dst: &std::path::Path,
+        overwrite: bool,
+        confine_to_source_dir: bool,
+    ) -> Result<std::path::PathBuf, FigError> {
+        use std::path::Component;
+
+        if raw_dst
+            .components()
+            .any(|c| matches!(c, Component::ParentDir))
+        {
+            return Err(FigError::malformed(
+                "save_copy outPath must not contain '..' path traversal",
+            ));
+        }
+        let has_fig_ext = raw_dst
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("fig"));
+        if !has_fig_ext {
+            return Err(FigError::malformed(
+                "save_copy outPath must end with a .fig extension",
+            ));
+        }
+        let file_name = raw_dst
+            .file_name()
+            .ok_or_else(|| FigError::malformed("save_copy outPath has no file name"))?;
+
+        let src_dir = source_path
+            .and_then(|p| p.parent())
+            .filter(|d| !d.as_os_str().is_empty());
+        let resolved = if raw_dst.is_relative() {
+            match src_dir {
+                Some(base) => base.join(raw_dst),
+                None => raw_dst.to_path_buf(),
+            }
+        } else {
+            raw_dst.to_path_buf()
+        };
+
+        let dst_parent = match resolved.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => std::path::Path::new("."),
+        };
+        let canon_dst_parent = std::fs::canonicalize(dst_parent).map_err(|e| {
+            FigError::io(format!("destination directory {}", dst_parent.display()), e)
+        })?;
+
+        if let Some(sp) = source_path
+            && sp.exists()
+        {
+            let canon_src = std::fs::canonicalize(sp)
+                .map_err(|e| FigError::io(format!("source file {}", sp.display()), e))?;
+            if confine_to_source_dir
+                && let Some(canon_src_dir) = canon_src.parent()
+                && !canon_dst_parent.starts_with(canon_src_dir)
+            {
+                return Err(FigError::malformed(format!(
+                    "save_copy outPath must stay inside {}",
+                    canon_src_dir.display()
+                )));
+            }
+            let target_in_canon_dir = canon_dst_parent.join(file_name);
+            if target_in_canon_dir == canon_src {
+                return Err(FigError::malformed(
+                    "save_copy refuses to overwrite the original source file",
+                ));
+            }
+            if let Ok(canon_existing) = std::fs::canonicalize(&resolved)
+                && canon_existing == canon_src
+            {
+                return Err(FigError::malformed(
+                    "save_copy refuses to overwrite the original source file",
+                ));
+            }
+        }
+
+        if let Ok(meta) = std::fs::symlink_metadata(&resolved) {
+            if meta.file_type().is_symlink() {
+                return Err(FigError::malformed(
+                    "save_copy refuses to write through a symlink destination",
+                ));
+            }
+            if !overwrite {
+                return Err(FigError::malformed(format!(
+                    "{} already exists; pass overwrite: true to replace it",
+                    resolved.display()
+                )));
+            }
+        }
+
+        let final_dst = canon_dst_parent.join(file_name);
+        self.write_archive_to_temp_and_commit(source_path, &final_dst, overwrite)?;
+        Ok(final_dst)
+    }
+
+    /// Writes a `.fig` file to `dst`, streaming untouched archive entries directly from
+    /// `lazy_source` when `self` was opened with [`Document::open_lazy`].
+    pub fn save_with_lazy_source(
+        &self,
+        lazy_source: Option<&std::path::Path>,
+        dst: impl AsRef<std::path::Path>,
+    ) -> Result<(), FigError> {
+        let dst = dst.as_ref();
+        if let Some(src) = lazy_source
+            && src.exists()
+            && let Ok(canon_src) = std::fs::canonicalize(src)
+        {
+            let dst_parent = match dst.parent() {
+                Some(p) if !p.as_os_str().is_empty() => p,
+                _ => std::path::Path::new("."),
+            };
+            if let (Ok(cp), Some(fname)) = (std::fs::canonicalize(dst_parent), dst.file_name())
+                && cp.join(fname) == canon_src
+            {
+                return Err(FigError::malformed(
+                    "refusing to overwrite source file in save_with_lazy_source",
+                ));
+            }
+        }
+        self.write_archive_to_temp_and_commit(lazy_source, dst, true)
+    }
+
+    fn write_archive_to_temp_and_commit(
+        &self,
+        lazy_source: Option<&std::path::Path>,
+        dst: &std::path::Path,
+        overwrite: bool,
+    ) -> Result<(), FigError> {
+        let commit_temp = |tmp: &std::path::Path| -> Result<(), FigError> {
+            if overwrite {
+                std::fs::rename(tmp, dst).map_err(|e| FigError::io(dst.display().to_string(), e))
+            } else {
+                match std::fs::hard_link(tmp, dst) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_file(tmp);
+                        Ok(())
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        Err(FigError::malformed(format!(
+                            "{} already exists; pass overwrite: true to replace it",
+                            dst.display()
+                        )))
+                    }
+                    Err(e) => Err(FigError::io(dst.display().to_string(), e)),
+                }
+            }
+        };
+
+        if !self.source.lazy {
+            let bytes = self.to_bytes()?;
+            let (tmp, mut file) = create_temp(dst)?;
+            let written = std::io::Write::write_all(&mut file, &bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|e| FigError::io(tmp.display().to_string(), e));
+            #[cfg_attr(
+                target_arch = "wasm32",
+                expect(clippy::drop_non_drop, reason = "wasm File has no Drop")
+            )]
+            drop(file);
+            let res = written.and_then(|()| commit_temp(&tmp));
+            if res.is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+            return res;
+        }
+        let Some(src_path) = lazy_source else {
+            return Err(FigError::malformed(
+                "lazy document requires source path to stream unread archive entries",
+            ));
+        };
+        let mut src_file = std::fs::File::open(src_path)
+            .map_err(|e| FigError::io("cannot read lazy source file", e))?;
+        let src_len = src_file
+            .metadata()
+            .map_err(|e| FigError::io("cannot stat lazy source file", e))?
+            .len();
+        let entries = crate::archive::read_entries(&mut src_file, src_len)?;
+        let canvas = self.encode_canvas()?;
+
+        let (tmp, file) = create_temp(dst)?;
+        let write_res = (|| -> Result<(), FigError> {
+            let zip_err = |e: zip::result::ZipError| FigError::archive("cannot write archive", e);
+            let io = |e: std::io::Error| FigError::io("cannot write archive", e);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+                .large_file(true);
+            let mut zip = zip::ZipWriter::new(std::io::BufWriter::new(file));
+
+            zip.start_file("canvas.fig", opts).map_err(zip_err)?;
+            zip.write_all(&canvas).map_err(io)?;
+            if let Some(thumb) = &self.thumbnail {
+                zip.start_file("thumbnail.png", opts).map_err(zip_err)?;
+                zip.write_all(thumb).map_err(io)?;
+            }
+
+            // Stream every non-canvas/non-thumbnail entry from the original archive unless
+            // overridden by newly imported `self.images`.
+            for e in &entries {
+                if e.name == "canvas.fig" || e.name == "thumbnail.png" || e.name.ends_with('/') {
+                    continue;
+                }
+                if let Some(hash) = e.name.strip_prefix("images/")
+                    && self.images.contains_key(&hash.to_ascii_lowercase())
+                {
+                    continue;
+                }
+                let data = crate::archive::read_entry(&mut src_file, e)?;
+                zip.start_file(e.name.as_str(), opts).map_err(zip_err)?;
+                zip.write_all(&data).map_err(io)?;
+            }
+
+            let mut new_hashes: Vec<&String> = self.images.keys().collect();
+            new_hashes.sort();
+            for hash in new_hashes {
+                zip.start_file(format!("images/{hash}"), opts)
+                    .map_err(zip_err)?;
+                zip.write_all(&self.images[hash]).map_err(io)?;
+            }
+
+            let mut buf = zip.finish().map_err(zip_err)?;
+            buf.flush().map_err(io)?;
+            let inner = buf.into_inner().map_err(|e| io(e.into_error()))?;
+            inner.sync_all().map_err(io)?;
+            Ok(())
+        })();
+
+        let res = write_res.and_then(|()| commit_temp(&tmp));
+        if res.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        res
+    }
+
     /// Writes the file next to `path` first and then renames it over `path`, so a failed save
     /// never leaves a half-written file. The temp name is unique and created with `create_new`,
     /// so an existing file or symlink is never written through. It is removed on every failure;

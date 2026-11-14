@@ -45,6 +45,12 @@ pub trait McpTabEnv {
     /// # Errors
     /// Returns [`CoreError`] when the UI cannot accept the command.
     fn reveal(&self, tab: u64, node: Guid) -> Result<(), CoreError>;
+
+    /// Execute a document mutation (`apply_edits`, `undo`, `redo`, `get_history`,
+    /// `import_image`, `paste_from_figma`) on `tab` if the host supports live mutations.
+    fn mutate_tab(&self, _tab: u64, _tool: &str, _args: &Value) -> Result<Output, CoreError> {
+        Err(CoreError::invalid_node_id())
+    }
 }
 
 /// Dispatch one JSON-RPC request. Notifications have no response (HTTP callers send 202).

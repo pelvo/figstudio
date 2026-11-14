@@ -63,9 +63,21 @@ impl Variables {
         }
     }
 
-    pub fn color(&self, data: &Val, depth: usize) -> Option<Val> {
-        // shortcut: preserve the first stored mode; inherited mode selection is separate.
-        match self.tokens.resolve_at(data, None, depth) {
+    pub fn color_in_modes(
+        &self,
+        data: &Val,
+        active_modes: &std::collections::HashMap<figstudio_fig::Guid, figstudio_fig::Guid>,
+        depth: usize,
+    ) -> Option<Val> {
+        let mode = if active_modes.is_empty() {
+            None
+        } else {
+            data.path(&["value", "alias"])
+                .and_then(|alias| self.tokens.variable(alias))
+                .and_then(|var| var.collection)
+                .and_then(|col| active_modes.get(&col).copied())
+        };
+        match self.tokens.resolve_at(data, mode, depth) {
             Some(Value::Color(color)) => Some(color),
             _ => None,
         }
@@ -76,7 +88,11 @@ impl Variables {
         self.tokens.style(reference)?.paints.as_ref()
     }
 
-    pub fn paints<'a>(&self, data: &'a Val) -> (Cow<'a, Val>, usize) {
+    pub fn paints_with_modes<'a>(
+        &self,
+        data: &'a Val,
+        active_modes: &std::collections::HashMap<figstudio_fig::Guid, figstudio_fig::Guid>,
+    ) -> (Cow<'a, Val>, usize) {
         if !self.used {
             return (Cow::Borrowed(data), 0);
         }
@@ -88,17 +104,21 @@ impl Variables {
             .filter(|(key, paints)| data.get(key) != Some(*paints))
             .collect();
         if styled.is_empty() {
-            return self.variable_paints(data);
+            return self.variable_paints(data, active_modes);
         }
         let mut data = data.clone();
         for (key, paints) in styled {
             data.set(key, paints.clone());
         }
-        let (resolved, unresolved) = self.variable_paints(&data);
+        let (resolved, unresolved) = self.variable_paints(&data, active_modes);
         (Cow::Owned(resolved.into_owned()), unresolved)
     }
 
-    fn variable_paints<'a>(&self, data: &'a Val) -> (Cow<'a, Val>, usize) {
+    fn variable_paints<'a>(
+        &self,
+        data: &'a Val,
+        active_modes: &std::collections::HashMap<figstudio_fig::Guid, figstudio_fig::Guid>,
+    ) -> (Cow<'a, Val>, usize) {
         let has_variables = ["fillPaints", "strokePaints"].iter().any(|key| {
             data.get(key)
                 .map(Val::items)
@@ -120,7 +140,7 @@ impl Variables {
             .and_then(|v| v.get_mut("styleOverrideTable"))
         {
             for style in styles {
-                let (resolved, count) = self.paints(style);
+                let (resolved, count) = self.paints_with_modes(style, active_modes);
                 *style = resolved.into_owned();
                 style_unresolved += count;
             }
@@ -137,7 +157,7 @@ impl Variables {
                 let Some(variable) = paint.get("colorVar") else {
                     continue;
                 };
-                if let Some(mut color) = self.color(variable, 0) {
+                if let Some(mut color) = self.color_in_modes(variable, active_modes, 0) {
                     // A bound variable gives the colour; its alpha is already in the paint's
                     // opacity, as Figma stores it, so the stored alpha stays (else it counts twice).
                     if let Some(alpha) = paint.get("color").and_then(|c| c.get("a")).cloned() {

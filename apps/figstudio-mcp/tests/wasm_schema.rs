@@ -48,6 +48,7 @@ async fn browser_tools_match_native_names_properties_and_required_arguments() {
         "whoami",
         "compare_files",
         "compare_page",
+        "save_copy",
     ];
     for tool in &browser {
         let name = tool["name"].as_str().unwrap();

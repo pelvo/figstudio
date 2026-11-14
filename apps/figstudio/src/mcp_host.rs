@@ -245,6 +245,14 @@ impl Running {
                     self.links
                         .push(crate::link_open::LinkAsk { link, asked, done });
                 }
+                Command::Mutate {
+                    tab,
+                    mutation,
+                    reply,
+                } => {
+                    let res = crate::editor::handle_live_mutation(tabs, tab, mutation);
+                    let _ = reply.send(res);
+                }
             }
         }
     }

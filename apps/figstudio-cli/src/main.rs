@@ -36,6 +36,10 @@ USAGE:
   figstudio-cli doctor <file.fig>
       Structure report safe to share: counts, features, timings and memory only.
       No layer names, text, images or file paths are printed.
+  figstudio-cli census <file.fig|dir> [--json-only] [-o <out.md|out.json>]
+      Privacy-safe Kiwi schema and active NodeChange field census across one file or directory.
+  figstudio-cli clip <file.fig|clipboard.html> [--node <id>] [-o <out.html|out.fig>]
+      Encode a node subtree as Figma clipboard HTML (with --node), or decode Figma clipboard HTML to .fig.
   figstudio-cli resave <file.fig> -o <out.fig>
       Read and write the file back unchanged (tests the .fig writer).
   figstudio-cli synth <file.fig> -o <out.fig> [--copies <n>] [--pages <n>]
@@ -93,6 +97,8 @@ fn command_error(command: &str, has_output: bool) -> Option<String> {
         "render",
         "thumbnail",
         "doctor",
+        "census",
+        "clip",
         "resave",
         "synth",
         "compare",
@@ -296,6 +302,53 @@ fn run(args: Args) -> Result<()> {
     if args.command == "doctor" {
         // Opens the file itself, to time it and to keep the path out of any error.
         return doctor::run(&args.file);
+    }
+    if args.command == "census" {
+        let mut report = figstudio_fig::census::CensusReport::default();
+        if args.file.is_dir() {
+            let mut paths: Vec<PathBuf> = std::fs::read_dir(&args.file)?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "fig"))
+                .collect();
+            paths.sort();
+            for p in paths {
+                let d = Document::open_lazy(&p)?;
+                report.add_document(&d)?;
+            }
+        } else {
+            let d = Document::open_lazy(&args.file)?;
+            report.add_document(&d)?;
+        }
+        let rendered = if args.json_only
+            || args
+                .out
+                .as_ref()
+                .and_then(|o| o.extension())
+                .is_some_and(|x| x == "json")
+        {
+            report.to_json()?
+        } else {
+            report.to_markdown()
+        };
+        if let Some(out) = &args.out {
+            std::fs::write(out, &rendered)?;
+        } else {
+            print!("{rendered}");
+        }
+        return Ok(());
+    }
+    if args.command == "clip" && args.node.is_none() {
+        let html = std::fs::read_to_string(&args.file)?;
+        let decoded = figstudio_fig::clipboard::decode_clipboard_html(&html)?;
+        let out = args.out.context("clip decode needs -o <out.fig>")?;
+        std::fs::write(&out, &decoded.kiwi_bytes)?;
+        println!(
+            "{} ({} bytes, pasteID={})",
+            out.display(),
+            decoded.kiwi_bytes.len(),
+            decoded.meta.paste_id
+        );
+        return Ok(());
     }
     if args.command == "compare" {
         // -o is checked by the parser; this keeps every compare path out of the shared open.
@@ -553,6 +606,16 @@ fn run(args: Args) -> Result<()> {
                 size as f64 / 1e6,
                 start.elapsed().as_secs_f64()
             );
+        }
+        "clip" => {
+            let node = args.node.context("clip encode needs --node <id>")?;
+            let html = figstudio_fig::clipboard::encode_clipboard_html(&doc, &[node], 1, None)?;
+            if let Some(out) = &args.out {
+                std::fs::write(out, &html)?;
+                println!("{} ({} bytes)", out.display(), html.len());
+            } else {
+                println!("{html}");
+            }
         }
         other => return Err(UsageError(format!("unknown command {other}")).into()),
     }

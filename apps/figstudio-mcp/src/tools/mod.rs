@@ -9,6 +9,8 @@ pub mod compare;
 pub mod design;
 /// Local component and token discovery.
 pub mod design_system;
+/// Non-destructive `.fig` editing, Undo/Redo, Figma clipboard, and `save_copy`.
+pub mod editing;
 /// FigJam boards as metadata XML with FigJam details.
 pub mod figjam;
 mod image_format;

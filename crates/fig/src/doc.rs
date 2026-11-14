@@ -128,18 +128,21 @@ fn next_instance() -> u64 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+#[derive(Clone)]
 pub struct Document {
-    /// Unique per opened document in this process. Caches shared between documents (decoded
-    /// images) key on it, so two files using the same image hash for different bytes never
-    /// share an entry. [`Document::set_nodes`] assigns a new one, so per-document indexes
-    /// (the renderer's style and property tables) are rebuilt after an edit.
+    /// Unique per opened document/node-tree revision in this process.
     pub instance: u64,
+    /// Separate cache key for decoded images: bumped only when `images` change so node edits
+    /// do not evict decoded bitmaps on large documents.
+    pub image_instance: u64,
+    /// Monotonic edit counter incremented on every [`Document::apply_txn`] or [`Document::set_nodes`].
+    pub revision: u64,
     pub prelude: String,
     pub format_version: u32,
     pub file_name: Option<String>,
     pub nodes: Vec<Node>,
-    index: HashMap<Guid, usize>,
-    children: HashMap<Guid, Vec<Guid>>,
+    pub(crate) index: HashMap<Guid, usize>,
+    pub(crate) children: HashMap<Guid, Vec<Guid>>,
     pub root: Option<Guid>,
     /// Visible pages in document order.
     pub pages: Vec<Guid>,
@@ -185,6 +188,9 @@ pub(crate) struct Source {
     /// The decoder the nodes were read with: their still-encoded fields ([`crate::Lazy`]) made
     /// by it are written back as their original bytes.
     pub decoder: Option<std::sync::Arc<crate::read::Decoder>>,
+    /// Decoded Kiwi schema cached on first edit/census check so interactive drags do not
+    /// re-decode the schema bytes every frame.
+    pub cached_schema: std::sync::OnceLock<std::sync::Arc<Schema>>,
 }
 
 /// What an archive holds besides the canvas.
@@ -478,8 +484,11 @@ impl Document {
         nodes.shrink_to_fit();
         check_parent_links(&nodes, &index)?;
 
+        let inst = next_instance();
         let mut doc = Document {
-            instance: next_instance(),
+            instance: inst,
+            image_instance: inst,
+            revision: 0,
             prelude,
             format_version,
             file_name: parts.file_name,
@@ -502,6 +511,7 @@ impl Document {
                 archive_entries: parts.archive_entries,
                 lazy: parts.lazy,
                 decoder: Some(reader.dec.clone()),
+                cached_schema: std::sync::OnceLock::new(),
             },
         };
         doc.reindex();
@@ -525,9 +535,40 @@ impl Document {
         check_parent_links(&out, &index)?;
         self.nodes = out;
         self.index = index;
-        self.instance = next_instance();
-        self.reindex();
+        self.bump_after_edit(false);
         Ok(())
+    }
+
+    pub(crate) fn bump_after_edit(&mut self, images_changed: bool) {
+        self.instance = next_instance();
+        if images_changed {
+            self.image_instance = next_instance();
+        }
+        self.revision = self.revision.saturating_add(1);
+        self.reindex();
+    }
+
+    /// Returns the decoded Kiwi [`Schema`] for this document, caching it across edits.
+    pub fn decoded_schema(&self) -> Result<std::sync::Arc<Schema>, FigError> {
+        if let Some(s) = self.source.cached_schema.get() {
+            return Ok(s.clone());
+        }
+        let s = std::sync::Arc::new(
+            Schema::decode(&self.source.schema)
+                .map_err(|()| FigError::malformed("cannot decode the file schema"))?,
+        );
+        let _ = self.source.cached_schema.set(s.clone());
+        Ok(s)
+    }
+
+    /// Whether this document was opened lazily via [`Document::open_lazy`] / [`Document::from_lazy`].
+    pub fn is_lazy(&self) -> bool {
+        self.source.lazy
+    }
+
+    /// Raw uncompressed Kiwi schema bytes of this document.
+    pub fn schema_bytes(&self) -> &[u8] {
+        &self.source.schema
     }
 
     /// Rebuilds children lists, root and pages from `nodes` and `index`.
@@ -646,7 +687,10 @@ fn blob_bytes(blob: Val) -> Result<Vec<u8>, String> {
 
 /// Rejects parent links that form a cycle, including cycles no page reaches. Iterative, so a
 /// long chain cannot overflow the stack. Each node is walked at most once per start point.
-fn check_parent_links(nodes: &[Node], index: &HashMap<Guid, usize>) -> Result<(), FigError> {
+pub(crate) fn check_parent_links(
+    nodes: &[Node],
+    index: &HashMap<Guid, usize>,
+) -> Result<(), FigError> {
     // 0 = unvisited, 1 = on the current path, 2 = known to reach no cycle.
     let mut state = vec![0u8; nodes.len()];
     let mut path: Vec<usize> = Vec::new();

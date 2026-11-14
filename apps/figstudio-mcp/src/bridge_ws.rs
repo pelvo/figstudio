@@ -138,6 +138,7 @@ async fn session(mut socket: WebSocket, bridge: Arc<Bridge>) {
                     let (tab, node, reply) = match command {
                         Ok(Command::Reveal { tab, node, reply }) => (tab, node, reply),
                         Ok(Command::OpenLink { reply, .. }) => { let _ = reply.send(Err(anyhow::anyhow!(NO_LOCAL_COPIES))); continue; }
+                        Ok(Command::Mutate { reply, .. }) => { let _ = reply.send(Err(anyhow::anyhow!("browser bridge does not yet relay live mutations; use the desktop app or standalone figstudio-mcp"))); continue; }
                         Err(_) => break,
                     };
                     next_id += 1;
@@ -192,6 +193,9 @@ async fn session(mut socket: WebSocket, bridge: Arc<Bridge>) {
                 let _ = reply.send(Err(anyhow::anyhow!("browser disconnected")));
             }
             Command::OpenLink { reply, .. } => {
+                let _ = reply.send(Err(anyhow::anyhow!("browser disconnected")));
+            }
+            Command::Mutate { reply, .. } => {
                 let _ = reply.send(Err(anyhow::anyhow!("browser disconnected")));
             }
         }

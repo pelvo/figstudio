@@ -2141,6 +2141,7 @@ name = "figstudio"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "clipboard-rs",
  "dirs",
  "eframe",
@@ -2233,11 +2234,16 @@ dependencies = [
 name = "figstudio-fig"
 version = "0.4.0"
 dependencies = [
+ "base64 0.23.1",
  "flate2",
+ "hex",
+ "html-escape",
  "kiwi-schema",
  "ruzstd",
  "serde",
  "serde_json",
+ "sha1",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",

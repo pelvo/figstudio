@@ -1494,6 +1494,10 @@ impl App {
                     let before = ui.opacity();
                     ui.multiply_opacity(shown);
                     cursor = canvas::show(ui, tab, &mut self.workers, &mut self.tiles, options);
+                    if tab.reset_tool_to_select {
+                        tab.reset_tool_to_select = false;
+                        self.tool = Tool::Select;
+                    }
                     ui.set_opacity(before);
                     // Now that the new page has planned its tiles, so the underlay's count as
                     // on screen and are not the first to go.
@@ -1677,7 +1681,27 @@ impl App {
         let ctx = ui.ctx().clone();
         let p = theme::of(ui);
         let accent = self.tint_now(&ctx).accent;
-        let tools = [
+        let full_tools: &[(Tool, Icon, &str, &str)] = &[
+            (Tool::Select, Icon::Select, "Select tool", "Select (V)"),
+            (Tool::Frame, Icon::Frame, "Frame tool", "Frame (F)"),
+            (
+                Tool::Rectangle,
+                Icon::Rect,
+                "Rectangle tool",
+                "Rectangle (R)",
+            ),
+            (Tool::Ellipse, Icon::Ellipse, "Ellipse tool", "Ellipse (O)"),
+            (Tool::Line, Icon::Line, "Line tool", "Line (L)"),
+            (Tool::Text, Icon::Text, "Text tool", "Text (T)"),
+            (Tool::Hand, Icon::Hand, "Hand tool", "Hand (H)"),
+            (
+                Tool::Zoom,
+                Icon::Zoom,
+                "Zoom tool",
+                "Zoom (Z), Alt to zoom out",
+            ),
+        ];
+        let compact_tools: &[(Tool, Icon, &str, &str)] = &[
             (Tool::Select, Icon::Select, "Select tool", "Select (V)"),
             (Tool::Hand, Icon::Hand, "Hand tool", "Hand (H)"),
             (
@@ -1688,7 +1712,14 @@ impl App {
             ),
         ];
         let (b, pad, zoom_w, sep) = (30.0, 4.0, 52.0, 9.0);
-        let tools_only = pad * 2.0 + b * 3.0;
+        let full_bar_w = pad * 2.0 + b * full_tools.len() as f32 + sep + zoom_w + b * 2.0;
+        let tools = if card.width() >= full_bar_w + 32.0 {
+            full_tools
+        } else {
+            compact_tools
+        };
+        let n_tools = tools.len() as f32;
+        let tools_only = pad * 2.0 + b * n_tools;
         let with_zoom = tools_only + sep + zoom_w;
         let full = with_zoom + b * 2.0;
         // A narrow card drops the − and + first (the keys and menus still zoom), then the
@@ -1732,7 +1763,7 @@ impl App {
             CornerRadius::same(13),
             accent.gamma_multiply(0.16),
         );
-        for (i, (tool, icon, label, tip)) in tools.into_iter().enumerate() {
+        for (i, &(tool, icon, label, tip)) in tools.iter().enumerate() {
             let id = Id::new(("tool", label));
             let active = self.tool == tool;
             if pill_button(
@@ -1751,7 +1782,7 @@ impl App {
         if !zoom_shown {
             return rect;
         }
-        let sep_x = rect.left() + pad + 3.0 * b + sep / 2.0;
+        let sep_x = rect.left() + pad + n_tools * b + sep / 2.0;
         ui.painter().vline(
             sep_x,
             (rect.top() + 10.0)..=(rect.bottom() - 10.0),
