@@ -121,7 +121,10 @@ pub fn encode_subset_kiwi(
     doc_obj.insert("type", Val::Enum(crate::intern("DOCUMENT")));
     doc_obj.insert("name", Val::Str("Document".into()));
     doc_obj.insert("phase", Val::Enum(crate::intern("CREATED")));
-    out_nodes.push(Node::from_data(Val::Obj(doc_obj)).expect("DOCUMENT node"));
+    out_nodes.push(
+        Node::from_data(Val::Obj(doc_obj))
+            .ok_or_else(|| FigError::malformed("cannot construct synthetic DOCUMENT node"))?,
+    );
 
     let mut canvas_obj = Obj::new();
     canvas_obj.insert("guid", canvas_guid.to_val());
@@ -135,7 +138,10 @@ pub fn encode_subset_kiwi(
             ("position", Val::Str("!".into())),
         ])),
     );
-    out_nodes.push(Node::from_data(Val::Obj(canvas_obj)).expect("CANVAS node"));
+    out_nodes.push(
+        Node::from_data(Val::Obj(canvas_obj))
+            .ok_or_else(|| FigError::malformed("cannot construct synthetic CANVAS node"))?,
+    );
 
     if !internal_roots.is_empty() {
         let mut ic_obj = Obj::new();
@@ -151,7 +157,9 @@ pub fn encode_subset_kiwi(
                 ("position", Val::Str("~".into())),
             ])),
         );
-        out_nodes.push(Node::from_data(Val::Obj(ic_obj)).expect("internal CANVAS node"));
+        out_nodes.push(Node::from_data(Val::Obj(ic_obj)).ok_or_else(|| {
+            FigError::malformed("cannot construct synthetic internal CANVAS node")
+        })?);
     }
 
     // 3. Deduplicate & renumber all `*Blob` indices across included nodes.
@@ -294,7 +302,8 @@ pub fn encode_clipboard_html(
         .filter_map(|&id| doc.node(id).map(|n| n.name.as_str()))
         .filter(|s| !s.is_empty())
         .collect();
-    let plain = html_escape_min(&fallback_label.join("\n"));
+    let joined_label = fallback_label.join("\n");
+    let plain = html_escape::encode_text(&joined_label);
 
     Ok(format!(
         "<meta charset=\"utf-8\"><span data-metadata=\"<!--(figmeta){meta_b64}(/figmeta)-->\"></span><span data-buffer=\"<!--(figma){kiwi_b64}(/figma)-->\"></span><span style=\"white-space:pre-wrap;\">{plain}</span>"
@@ -303,20 +312,18 @@ pub fn encode_clipboard_html(
 
 /// Decodes a Figma HTML clipboard string (or raw `fig-kiwi` bytes if passed as base64/text).
 pub fn decode_clipboard_html(html: &str) -> Result<ClipboardPayload, FigError> {
-    let unescaped = html
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&");
+    let unescaped = html_escape::decode_html_entities(html);
 
-    let kiwi_b64 = extract_marker(&unescaped, "(figma)", "(/figma)")
+    let kiwi_b64 = extract_marker(&unescaped, "<!--(figma)", "(/figma)-->")
+        .or_else(|| extract_marker(html, "(figma)", "(/figma)"))
         .ok_or_else(|| FigError::malformed("clipboard HTML has no (figma) data-buffer"))?;
     let kiwi_bytes = B64
         .decode(kiwi_b64.trim())
         .map_err(|e| FigError::malformed(format!("invalid base64 in (figma) buffer: {e}")))?;
 
-    let meta = if let Some(meta_b64) = extract_marker(&unescaped, "(figmeta)", "(/figmeta)") {
+    let meta = if let Some(meta_b64) = extract_marker(&unescaped, "<!--(figmeta)", "(/figmeta)-->")
+        .or_else(|| extract_marker(html, "(figmeta)", "(/figmeta)"))
+    {
         let meta_bytes = B64
             .decode(meta_b64.trim())
             .map_err(|e| FigError::malformed(format!("invalid base64 in (figmeta): {e}")))?;
@@ -771,18 +778,4 @@ fn extract_marker<'a>(s: &'a str, start: &str, end: &str) -> Option<&'a str> {
     let rest = &s[i..];
     let j = rest.find(end)?;
     Some(&rest[..j])
-}
-
-fn html_escape_min(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }

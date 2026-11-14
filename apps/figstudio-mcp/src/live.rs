@@ -75,6 +75,7 @@ pub enum LiveMutation {
     },
     SaveCopy {
         out_path: PathBuf,
+        overwrite: bool,
     },
 }
 

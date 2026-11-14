@@ -484,16 +484,13 @@ pub fn set_variable_mode_value(
     Ok(())
 }
 
-fn parse_hex_bytes(hex: &str) -> Option<Vec<u8>> {
-    let s = hex.trim();
-    if s.len() != 40 {
+fn parse_hex_bytes(hex_str: &str) -> Option<Vec<u8>> {
+    let s = hex_str.trim();
+    if !s.is_ascii() || s.len() != 40 {
         return None;
     }
-    let mut out = Vec::with_capacity(20);
-    for i in (0..40).step_by(2) {
-        out.push(u8::from_str_radix(&s[i..i + 2], 16).ok()?);
-    }
-    Some(out)
+    let bytes = hex::decode(s).ok()?;
+    (bytes.len() == 20).then_some(bytes)
 }
 
 #[cfg(test)]

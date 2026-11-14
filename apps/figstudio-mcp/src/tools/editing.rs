@@ -84,8 +84,10 @@ pub(crate) struct PasteFromFigmaInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SaveCopyInput {
-    /// Destination `.fig` file path to write atomically (never overwrites original unless asked).
+    /// Destination `.fig` file path inside the opened file's directory (never overwrites source).
     out_path: String,
+    /// Set `true` to allow replacing an existing non-source `.fig` copy.
+    overwrite: Option<bool>,
     /// File key when multiple files are registered or open.
     file_key: Option<String>,
 }
@@ -137,18 +139,29 @@ impl FigstudioServer {
         match self.files() {
             Files::Registry(reg) => {
                 let res = reg
-                    .mutate_doc(input.file_key.as_deref(), move |doc, history, _| {
-                        let (report, _) = execute_edit_ops(
-                            doc,
-                            history,
-                            &parsed_ops,
-                            label.as_deref(),
-                            None,
-                            dry_run,
-                        )
-                        .map_err(McpError::open)?;
-                        Ok(serde_json::to_value(report).unwrap_or_else(|_| json!({})))
-                    })
+                    .mutate_doc(
+                        input.file_key.as_deref(),
+                        move |doc, history, saved_rev, _| {
+                            let (report, _) = execute_edit_ops(
+                                doc,
+                                history,
+                                &parsed_ops,
+                                label.as_deref(),
+                                None,
+                                dry_run,
+                            )
+                            .map_err(McpError::open)?;
+                            let mut val =
+                                serde_json::to_value(report).unwrap_or_else(|_| json!({}));
+                            if let Some(obj) = val.as_object_mut() {
+                                obj.insert(
+                                    "unsaved".into(),
+                                    json!(history.state_id() != *saved_rev),
+                                );
+                            }
+                            Ok(val)
+                        },
+                    )
                     .await;
                 match res {
                     Ok(val) => CallToolResult::structured(val),
@@ -183,11 +196,12 @@ impl FigstudioServer {
         match self.files() {
             Files::Registry(reg) => {
                 let res = reg
-                    .mutate_doc(input.file_key.as_deref(), |doc, history, _| {
+                    .mutate_doc(input.file_key.as_deref(), |doc, history, saved_rev, _| {
                         let undone = history.undo(doc).map_err(McpError::open)?;
                         Ok(json!({
                             "undone": undone.as_ref().map(|(l, _)| l.as_str()),
                             "revision": doc.revision,
+                            "unsaved": history.state_id() != *saved_rev,
                             "undoDepth": history.undo_len(),
                             "redoDepth": history.redo_len(),
                         }))
@@ -216,11 +230,12 @@ impl FigstudioServer {
         match self.files() {
             Files::Registry(reg) => {
                 let res = reg
-                    .mutate_doc(input.file_key.as_deref(), |doc, history, _| {
+                    .mutate_doc(input.file_key.as_deref(), |doc, history, saved_rev, _| {
                         let redone = history.redo(doc).map_err(McpError::open)?;
                         Ok(json!({
                             "redone": redone.as_ref().map(|(l, _)| l.as_str()),
                             "revision": doc.revision,
+                            "unsaved": history.state_id() != *saved_rev,
                             "undoDepth": history.undo_len(),
                             "redoDepth": history.redo_len(),
                         }))
@@ -247,21 +262,10 @@ impl FigstudioServer {
     #[tool(description = "Return the document edit revision and current Undo/Redo stack labels.")]
     async fn get_history(&self, Parameters(input): Parameters<FileOnlyInput>) -> CallToolResult {
         match self.files() {
-            Files::Registry(reg) => {
-                let res = reg
-                    .mutate_doc(input.file_key.as_deref(), |doc, history, _| {
-                        Ok(json!({
-                            "revision": doc.revision,
-                            "undo": history.undo_labels(),
-                            "redo": history.redo_labels(),
-                        }))
-                    })
-                    .await;
-                match res {
-                    Ok(val) => CallToolResult::structured(val),
-                    Err(e) => tool_error(e),
-                }
-            }
+            Files::Registry(reg) => match reg.inspect_history(input.file_key.as_deref()).await {
+                Ok(val) => CallToolResult::structured(val),
+                Err(e) => tool_error(e),
+            },
             Files::Live(live) => {
                 let picked = match live.pick(input.file_key.as_deref()) {
                     Ok(p) => p,
@@ -289,11 +293,18 @@ impl FigstudioServer {
         match self.files() {
             Files::Registry(reg) => {
                 let res = reg
-                    .mutate_doc(input.file_key.as_deref(), move |doc, history, _| {
-                        let (hash, _) =
-                            execute_import_image(doc, history, bytes).map_err(McpError::open)?;
-                        Ok(json!({ "sha1Hex": hash, "revision": doc.revision }))
-                    })
+                    .mutate_doc(
+                        input.file_key.as_deref(),
+                        move |doc, history, saved_rev, _| {
+                            let (hash, _) = execute_import_image(doc, history, bytes)
+                                .map_err(McpError::open)?;
+                            Ok(json!({
+                                "sha1Hex": hash,
+                                "revision": doc.revision,
+                                "unsaved": history.state_id() != *saved_rev,
+                            }))
+                        },
+                    )
                     .await;
                 match res {
                     Ok(val) => CallToolResult::structured(val),
@@ -360,13 +371,13 @@ impl FigstudioServer {
             },
             None => None,
         };
-        let offset = (input.dx.unwrap_or(0.0), input.dy.unwrap_or(0.0));
+        let offset = (input.dx.unwrap_or(24.0), input.dy.unwrap_or(24.0));
         let html = input.html;
 
         match self.files() {
             Files::Registry(reg) => {
                 let res = reg
-                    .mutate_doc(input.file_key.as_deref(), move |doc, history, _| {
+                    .mutate_doc(input.file_key.as_deref(), move |doc, history, saved_rev, _| {
                         let target_parent = parent_guid
                             .or_else(|| doc.pages.first().copied())
                             .ok_or_else(|| McpError::app("document has no pages"))?;
@@ -376,6 +387,7 @@ impl FigstudioServer {
                         Ok(json!({
                             "pastedRootIds": roots.into_iter().map(|g| g.to_string()).collect::<Vec<_>>(),
                             "revision": doc.revision,
+                            "unsaved": history.state_id() != *saved_rev,
                         }))
                     })
                     .await;
@@ -408,23 +420,30 @@ impl FigstudioServer {
     }
 
     #[tool(
-        description = "Atomically save the edited document to outPath (streaming unread images when opened lazily)."
+        description = "Atomically save the edited document to a .fig copy inside the opened file's directory (never overwrites the original source file)."
     )]
     async fn save_copy(&self, Parameters(input): Parameters<SaveCopyInput>) -> CallToolResult {
         let out_path = PathBuf::from(&input.out_path);
+        let overwrite = input.overwrite.unwrap_or(false);
         match self.files() {
             Files::Registry(reg) => {
                 let out_clone = out_path.clone();
                 let res = reg
-                    .mutate_doc(input.file_key.as_deref(), move |doc, _, src_path| {
-                        doc.save_with_lazy_source(Some(src_path), &out_clone)
-                            .map_err(McpError::open)?;
-                        Ok(json!({
-                            "savedPath": out_clone,
-                            "revision": doc.revision,
-                            "nodes": doc.nodes.len(),
-                        }))
-                    })
+                    .mutate_doc(
+                        input.file_key.as_deref(),
+                        move |doc, history, saved_rev, src_path| {
+                            let saved_to = doc
+                                .save_copy_checked(Some(src_path), &out_clone, overwrite, true)
+                                .map_err(McpError::open)?;
+                            *saved_rev = history.state_id();
+                            Ok(json!({
+                                "savedPath": saved_to,
+                                "revision": doc.revision,
+                                "unsaved": false,
+                                "nodes": doc.nodes.len(),
+                            }))
+                        },
+                    )
                     .await;
                 match res {
                     Ok(val) => CallToolResult::structured(val),
@@ -437,7 +456,13 @@ impl FigstudioServer {
                     Err(e) => return tool_error(e),
                 };
                 match live
-                    .mutate(picked.tab().id, LiveMutation::SaveCopy { out_path })
+                    .mutate(
+                        picked.tab().id,
+                        LiveMutation::SaveCopy {
+                            out_path,
+                            overwrite,
+                        },
+                    )
                     .await
                 {
                     Ok(val) => CallToolResult::structured(val),

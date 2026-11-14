@@ -13,16 +13,16 @@ const MID_CHAR: u8 = b'N'; // 78, roughly halfway between '!' and '~'
 /// If `prev >= next` (degenerate/equal existing positions), appends a suffix after `prev`
 /// so sibling ordering remains deterministic without panicking.
 pub fn between(prev: Option<&str>, next: Option<&str>) -> String {
-    let a = prev.unwrap_or("").as_bytes();
-    let b = next.unwrap_or("").as_bytes();
+    let a: Vec<u8> = prev.unwrap_or("").bytes().map(clamp_digit).collect();
+    let b: Vec<u8> = next.unwrap_or("").bytes().map(clamp_digit).collect();
     if !a.is_empty() && !b.is_empty() && a >= b {
-        return after_bytes(a);
+        return after_bytes(&a);
     }
     match (a.is_empty(), b.is_empty()) {
-        (true, true) => String::from_utf8(vec![MID_CHAR]).expect("ascii"),
-        (false, true) => after_bytes(a),
-        (true, false) => before_bytes(b),
-        (false, false) => midpoint_bytes(a, b),
+        (true, true) => String::from_utf8(vec![MID_CHAR]).unwrap_or_else(|_| "N".into()),
+        (false, true) => after_bytes(&a),
+        (true, false) => before_bytes(&b),
+        (false, false) => midpoint_bytes(&a, &b),
     }
 }
 
@@ -48,15 +48,15 @@ fn after_bytes(a: &[u8]) -> String {
         let c = clamp_digit(raw);
         if i + 1 == a.len() && c < MAX_CHAR - 1 {
             let step = ((u16::from(c) + u16::from(MAX_CHAR)) / 2) as u8;
-            if step > raw {
+            if step > c {
                 out.push(step);
-                return String::from_utf8(out).expect("ascii");
+                return String::from_utf8(out).unwrap_or_else(|_| "N".into());
             }
         }
-        out.push(raw);
+        out.push(c);
     }
     out.push(MID_CHAR);
-    String::from_utf8(out).expect("ascii")
+    String::from_utf8(out).unwrap_or_else(|_| "N".into())
 }
 
 fn before_bytes(b: &[u8]) -> String {
@@ -70,14 +70,15 @@ fn before_bytes(b: &[u8]) -> String {
         let mid = ((u16::from(MIN_CHAR) + u16::from(hi)) / 2) as u8;
         if mid > MIN_CHAR && mid < raw {
             out.push(mid);
-            return String::from_utf8(out).expect("ascii");
+            return String::from_utf8(out).unwrap_or_else(|_| "N".into());
         }
         out.push(MIN_CHAR);
         out.push(MID_CHAR);
-        return String::from_utf8(out).expect("ascii");
+        return String::from_utf8(out).unwrap_or_else(|_| "!N".into());
     }
-    // `b` consisted solely of bytes <= MIN_CHAR (e.g. "!!!"); fall back below '!'.
-    String::from(" ")
+    // `b` consisted solely of bytes <= MIN_CHAR (e.g. a malformed existing `"!"` key):
+    // stay strictly inside the documented `'!'..='~'` alphabet instead of returning `' '` (0x20).
+    String::from("!")
 }
 
 fn midpoint_bytes(a: &[u8], b: &[u8]) -> String {
@@ -96,14 +97,14 @@ fn midpoint_bytes(a: &[u8], b: &[u8]) -> String {
             let mid = ((u16::from(ca.max(MIN_CHAR)) + u16::from(hi)) / 2) as u8;
             if mid > ca && mid < cb {
                 out.push(mid);
-                return String::from_utf8(out).expect("ascii");
+                return String::from_utf8(out).unwrap_or_else(|_| "N".into());
             }
         }
         // Adjacent bytes (`cb == ca + 1`): emit `ca` and find a suffix strictly > a[i+1..].
         out.push(ca);
         let tail = after_bytes(a.get(i + 1..).unwrap_or(&[]));
         out.extend_from_slice(tail.as_bytes());
-        return String::from_utf8(out).expect("ascii");
+        return String::from_utf8(out).unwrap_or_else(|_| "N".into());
     }
 }
 

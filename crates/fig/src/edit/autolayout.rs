@@ -230,26 +230,37 @@ fn padding_of(data: &Val) -> Padding {
     }
 }
 
+fn bound_dim(v: f64, min_opt: Option<f32>, max_opt: Option<f32>) -> f64 {
+    let mut out = if v.is_finite() { v.max(0.0) } else { 0.0 };
+    let lo = min_opt
+        .map(f64::from)
+        .filter(|x| x.is_finite() && *x >= 0.0);
+    let hi = max_opt
+        .map(f64::from)
+        .filter(|x| x.is_finite() && *x >= 0.0);
+    match (lo, hi) {
+        (Some(mn), Some(mx)) if mn <= mx => out = out.max(mn).min(mx),
+        // Inverted bounds in malformed file (`min > max`): honour `min` without panicking.
+        (Some(mn), Some(_)) => out = out.max(mn),
+        (Some(mn), None) => out = out.max(mn),
+        (None, Some(mx)) => out = out.min(mx),
+        (None, None) => {}
+    }
+    out
+}
+
 fn clamp_min_max(data: &Val, w: f64, h: f64) -> (f64, f64) {
-    let min_x = data
-        .path(&["minSize", "value", "x"])
-        .and_then(Val::as_f32)
-        .map_or(0.0, f64::from);
-    let min_y = data
-        .path(&["minSize", "value", "y"])
-        .and_then(Val::as_f32)
-        .map_or(0.0, f64::from);
-    let max_x = data
-        .path(&["maxSize", "value", "x"])
-        .and_then(Val::as_f32)
-        .map_or(f64::INFINITY, f64::from);
-    let max_y = data
-        .path(&["maxSize", "value", "y"])
-        .and_then(Val::as_f32)
-        .map_or(f64::INFINITY, f64::from);
     (
-        w.clamp(min_x, max_x).max(0.0),
-        h.clamp(min_y, max_y).max(0.0),
+        bound_dim(
+            w,
+            data.path(&["minSize", "value", "x"]).and_then(Val::as_f32),
+            data.path(&["maxSize", "value", "x"]).and_then(Val::as_f32),
+        ),
+        bound_dim(
+            h,
+            data.path(&["minSize", "value", "y"]).and_then(Val::as_f32),
+            data.path(&["maxSize", "value", "y"]).and_then(Val::as_f32),
+        ),
     )
 }
 
@@ -625,7 +636,7 @@ fn distribute_primary_fill(
         for &(cid, g) in &active {
             let share = remaining * (g / total_grow);
             let (cw, ch) = sizes[&cid];
-            let cn = doc.node(cid).unwrap();
+            let Some(cn) = doc.node(cid) else { continue };
             let (clamped_w, clamped_h) = if horiz {
                 clamp_min_max(&cn.data, share, ch)
             } else {

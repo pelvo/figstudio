@@ -128,10 +128,16 @@ pub fn matrix_2x3(x: f64, y: f64, rotation_deg: f64) -> Val {
 /// Generates rounded-rectangle outline commands with per-corner radii `[tl, tr, br, bl]`
 /// and optional squircle `smoothing` (`0.0..=1.0`).
 pub fn rounded_rect_commands(w: f32, h: f32, radii: [f32; 4], smoothing: f32) -> Vec<PathCmd> {
-    let w = w.max(0.0);
-    let h = h.max(0.0);
+    let w = if w.is_finite() { w.max(0.0) } else { 0.0 };
+    let h = if h.is_finite() { h.max(0.0) } else { 0.0 };
     let max_r = (w.min(h) * 0.5).max(0.0);
-    let [tl, tr, br, bl] = radii.map(|r| r.clamp(0.0, max_r));
+    let [tl, tr, br, bl] = radii.map(|r| {
+        if r.is_finite() {
+            r.clamp(0.0, max_r)
+        } else {
+            0.0
+        }
+    });
     if tl <= 1e-4 && tr <= 1e-4 && br <= 1e-4 && bl <= 1e-4 {
         return vec![
             PathCmd::MoveTo(0.0, 0.0),
@@ -143,7 +149,11 @@ pub fn rounded_rect_commands(w: f32, h: f32, radii: [f32; 4], smoothing: f32) ->
     }
     // Kappa for circular cubic bezier (~0.55228475); smoothing pulls handles slightly further
     // along the straight tangent for iOS-style continuous curvature.
-    let smooth = smoothing.clamp(0.0, 1.0);
+    let smooth = if smoothing.is_finite() {
+        smoothing.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let k = 0.552_284_8 + smooth * 0.12;
     let mut cmds = Vec::with_capacity(10);
     cmds.push(PathCmd::MoveTo(tl, 0.0));
@@ -203,11 +213,23 @@ pub fn ellipse_commands(
     end_angle: f32,
     inner_radius: f32,
 ) -> Vec<PathCmd> {
+    let w = if w.is_finite() { w.max(0.0) } else { 0.0 };
+    let h = if h.is_finite() { h.max(0.0) } else { 0.0 };
     let (rx, ry) = (w * 0.5, h * 0.5);
     let (cx, cy) = (rx, ry);
-    let sweep = (end_angle - start_angle).abs();
-    let full = sweep >= TAU - 1e-3 || sweep <= 1e-5;
-    let inner = inner_radius.clamp(0.0, 0.999);
+    let angles_valid = start_angle.is_finite() && end_angle.is_finite();
+    let raw_delta = if angles_valid {
+        (end_angle - start_angle).clamp(-TAU, TAU)
+    } else {
+        TAU
+    };
+    let sweep = raw_delta.abs();
+    let full = !angles_valid || sweep >= TAU - 1e-3 || sweep <= 1e-5;
+    let inner = if inner_radius.is_finite() {
+        inner_radius.clamp(0.0, 0.999)
+    } else {
+        0.0
+    };
 
     if full && inner <= 1e-4 {
         let k = 0.552_284_8;
@@ -221,8 +243,12 @@ pub fn ellipse_commands(
         ];
     }
 
-    let a0 = if full { 0.0 } else { start_angle };
-    let a1 = if full { TAU } else { end_angle };
+    let a0 = if full {
+        0.0
+    } else {
+        start_angle.rem_euclid(TAU)
+    };
+    let a1 = if full { TAU } else { a0 + raw_delta };
     let mut cmds = Vec::new();
     append_arc_beziers(&mut cmds, cx, cy, rx, ry, a0, a1, true);
     if full {
@@ -252,8 +278,12 @@ fn append_arc_beziers(
     a1: f32,
     move_first: bool,
 ) {
-    let total = a1 - a0;
-    let segs = ((total.abs() / FRAC_PI_2).ceil() as usize).max(1);
+    let total = if (a1 - a0).is_finite() {
+        (a1 - a0).clamp(-TAU, TAU)
+    } else {
+        TAU
+    };
+    let segs = ((total.abs() / FRAC_PI_2).ceil() as usize).clamp(1, 8);
     let step = total / segs as f32;
     let k = (4.0 / 3.0) * (step * 0.25).tan();
     let (s0, c0) = a0.sin_cos();
@@ -277,18 +307,25 @@ fn append_arc_beziers(
 }
 
 /// Generates regular polygon (`count >= 3`) or star (`inner_scale < 1.0`) outline commands.
+/// Vertex `count` is capped at `512` to bound path allocation on malformed inputs.
 pub fn polygon_or_star_commands(
     w: f32,
     h: f32,
     count: u32,
     inner_scale: Option<f32>,
 ) -> Vec<PathCmd> {
-    let n = count.max(3) as usize;
+    let w = if w.is_finite() { w.max(0.0) } else { 0.0 };
+    let h = if h.is_finite() { h.max(0.0) } else { 0.0 };
+    let n = count.clamp(3, 512) as usize;
     let (cx, cy) = (w * 0.5, h * 0.5);
     let (rx, ry) = (w * 0.5, h * 0.5);
     let mut cmds = Vec::new();
     if let Some(inner) = inner_scale {
-        let ir = inner.clamp(0.01, 1.0);
+        let ir = if inner.is_finite() {
+            inner.clamp(0.01, 1.0)
+        } else {
+            0.5
+        };
         let total = n * 2;
         for i in 0..total {
             let angle = -FRAC_PI_2 + (i as f32 * PI / n as f32);
@@ -454,10 +491,15 @@ pub fn create_shape_node(
         obj.insert("frameMaskDisabled", Val::Bool(false));
     }
     if let Some(c) = params.count {
-        obj.insert("count", Val::Int(i64::from(c.max(3))));
+        obj.insert("count", Val::Int(i64::from(c.clamp(3, 512))));
     }
     if let Some(ir) = params.star_inner_scale {
-        obj.insert("starInnerScale", Val::Float(f64::from(ir)));
+        let clamped_ir = if ir.is_finite() {
+            ir.clamp(0.01, 1.0)
+        } else {
+            0.5
+        };
+        obj.insert("starInnerScale", Val::Float(f64::from(clamped_ir)));
     }
 
     let default_hex = match normalized_kind {
@@ -466,9 +508,8 @@ pub fn create_shape_node(
         "GROUP" | "LINE" => None,
         _ => Some("#D9D9D9"),
     };
-    if let Some(hex_str) = params.fill_hex.as_deref().or(default_hex)
-        && let Some(paint) = parse_hex_solid_paint(hex_str)
-    {
+    if let Some(hex_str) = params.fill_hex.as_deref().or(default_hex) {
+        let paint = crate::edit::styles_vars::hex_paint(hex_str)?;
         if normalized_kind == "LINE" {
             obj.insert("strokePaints", Val::Arr(vec![paint]));
             obj.insert("strokeAlign", Val::Enum(intern("CENTER")));
@@ -638,21 +679,15 @@ fn default_layer_name(kind: &str) -> String {
     }
 }
 
-pub(crate) fn parse_hex_solid_paint(hex: &str) -> Option<Val> {
-    let s = hex.trim().strip_prefix('#').unwrap_or(hex.trim());
-    let (r, g, b, a) = match s.len() {
-        6 => (
-            u8::from_str_radix(&s[0..2], 16).ok()?,
-            u8::from_str_radix(&s[2..4], 16).ok()?,
-            u8::from_str_radix(&s[4..6], 16).ok()?,
-            255u8,
-        ),
-        8 => (
-            u8::from_str_radix(&s[0..2], 16).ok()?,
-            u8::from_str_radix(&s[2..4], 16).ok()?,
-            u8::from_str_radix(&s[4..6], 16).ok()?,
-            u8::from_str_radix(&s[6..8], 16).ok()?,
-        ),
+pub(crate) fn parse_hex_solid_paint(hex_str: &str) -> Option<Val> {
+    let s = hex_str.trim().strip_prefix('#').unwrap_or(hex_str.trim());
+    if !s.is_ascii() {
+        return None;
+    }
+    let bytes = hex::decode(s).ok()?;
+    let (r, g, b, a) = match bytes.as_slice() {
+        [r, g, b] => (*r, *g, *b, 255u8),
+        [r, g, b, a] => (*r, *g, *b, *a),
         _ => return None,
     };
     Some(Val::Obj(Obj::from([

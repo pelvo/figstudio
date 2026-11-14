@@ -170,8 +170,8 @@ pub fn create_text_node(
     obj.insert(
         "lineHeight",
         Val::Obj(Obj::from([
-            ("value", Val::Float(100.0)),
-            ("units", Val::Enum(intern("RAW"))),
+            ("value", Val::Float(120.0)),
+            ("units", Val::Enum(intern("PERCENT"))),
         ])),
     );
     obj.insert(
@@ -181,9 +181,8 @@ pub fn create_text_node(
             ("units", Val::Enum(intern("PERCENT"))),
         ])),
     );
-    if let Some(paint) = parse_hex_solid_paint(fill_hex) {
-        obj.insert("fillPaints", Val::Arr(vec![paint]));
-    }
+    let paint = crate::edit::styles_vars::hex_paint(fill_hex)?;
+    obj.insert("fillPaints", Val::Arr(vec![paint]));
     obj.insert(
         "textData",
         Val::Obj(Obj::from([("characters", Val::Str(characters.into()))])),
@@ -287,7 +286,7 @@ pub fn splice_text_utf16(
         .map(|v| v.items().to_vec())
         .unwrap_or_default();
 
-    Ok(pack_text_data(&new_str, style_ids, table))
+    Ok(pack_text_data(text_data, &new_str, style_ids, table))
 }
 
 /// Applies `patch` onto UTF-16 range `[utf16_start .. utf16_end]` of `text_data` and compacts
@@ -343,7 +342,7 @@ pub fn apply_text_range_style(
         *slot = mapped;
     }
 
-    Ok(pack_text_data(chars_str, style_ids, table))
+    Ok(pack_text_data(text_data, chars_str, style_ids, table))
 }
 
 /// Applies `new_text_data` onto `node_id` in `txn`, clearing stale glyph caches and resizing.
@@ -381,8 +380,27 @@ fn expanded_style_ids(text_data: &Val, len: usize) -> Vec<u32> {
     ids
 }
 
-fn pack_text_data(characters: &str, style_ids: Vec<u32>, raw_table: Vec<Val>) -> Val {
-    let mut out = Obj::new();
+fn pack_text_data(
+    base_text_data: &Val,
+    characters: &str,
+    style_ids: Vec<u32>,
+    raw_table: Vec<Val>,
+) -> Val {
+    let mut out = match base_text_data.clone().into_owned() {
+        Val::Obj(mut o) => {
+            // Drop stale derived glyph/line caches while keeping every other `textData` field!
+            o.remove("characterStyleIDs");
+            o.remove("styleOverrideTable");
+            o.remove("glyphs");
+            o.remove("baselines");
+            o.remove("derivedLines");
+            o.remove("layoutSize");
+            o.remove("logicalIndexToCharacterOffsetMap");
+            o.remove("fontMetaData");
+            o
+        }
+        _ => Obj::new(),
+    };
     out.insert("characters", Val::Str(characters.into()));
 
     if style_ids.iter().all(|&id| id == 0) {
@@ -493,9 +511,9 @@ fn estimate_text_box(
         if ch > '\u{2E7F}' {
             font_size * 1.0
         } else if ch.is_whitespace() {
-            font_size * 0.3
+            font_size * 0.32
         } else {
-            font_size * 0.56
+            font_size * 0.65
         }
     };
     if mode == "WIDTH_AND_HEIGHT" {

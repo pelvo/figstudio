@@ -342,8 +342,9 @@ impl App {
                 }
             }
             Action::PasteFromFigma => {
+                let fallback = self.pending_paste_text.take();
                 if let Some(tab) = self.tabs.get_mut(self.active) {
-                    match crate::editor::paste_from_system_clipboard(tab) {
+                    match crate::editor::paste_from_clipboard_or_text(tab, fallback.as_deref()) {
                         Ok(msg) => self.toast(ctx, msg, false),
                         Err(e) => self.toast(ctx, e, true),
                     }

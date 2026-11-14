@@ -52,7 +52,9 @@ percent-encoding = "2.3"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
 tokio-util = "0.7"
 base64 = "0.23"
+hex = "0.4"
 html-escape = "0.2"
+sha1 = "0.10"
 futures-util = "0.3"
 # Logging and errors (docs/LOGGING-PLAN.md).
 tracing = "0.1"

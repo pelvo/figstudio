@@ -572,6 +572,8 @@ struct App {
     /// Startup files still arriving from the decode workers.
     restoring: Option<session::Restore>,
     workspace_store: session_store::Store,
+    /// Text payload captured from `egui::Event::Paste` when `⌘V` / `Ctrl+V` fires on the canvas.
+    pending_paste_text: Option<String>,
     /// Shader code for open files (`shader_code.rs`).
     shader_code: shader_code::State,
 }
@@ -679,6 +681,7 @@ impl App {
             dots_clip: egui::Rect::NOTHING,
             dot_in_view: (0, 0.0),
             find: Default::default(),
+            pending_paste_text: None,
             shader_code: Default::default(),
             #[cfg(target_os = "macos")]
             vibrancy: None,
@@ -955,7 +958,7 @@ impl App {
                 {
                     Ok(()) => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
-                            t.dirty_unsaved = false;
+                            t.mark_saved();
                         }
                         self.toast(ctx, format!("Downloaded {default_name}"), false);
                     }
@@ -984,12 +987,12 @@ impl App {
                 return;
             };
             let lazy_src = tab.real_path.exists().then_some(tab.real_path.as_path());
-            match tab.doc.save_with_lazy_source(lazy_src, &path) {
-                Ok(()) => {
+            match tab.doc.save_copy_checked(lazy_src, &path, true, false) {
+                Ok(saved_to) => {
                     if let Some(t) = self.tabs.get_mut(self.active) {
-                        t.dirty_unsaved = false;
+                        t.mark_saved();
                     }
-                    self.toast(ctx, format!("Saved copy to {}", path.display()), false);
+                    self.toast(ctx, format!("Saved copy to {}", saved_to.display()), false);
                 }
                 Err(e) => self.toast(ctx, format!("Could not save copy: {e}"), true),
             }
@@ -1322,6 +1325,11 @@ impl App {
             .tabs
             .get(self.active)
             .is_some_and(|t| t.preview.is_some());
+        let modal_open = self.command.is_up(ctx)
+            || self.find.is_open()
+            || self.link.window
+            || self.settings.is_up(ctx);
+        let mut captured_paste: Option<String> = None;
         let mut run = Vec::new();
         for (binding, shortcut) in bindings {
             use keymap::Binding as B;
@@ -1345,6 +1353,7 @@ impl App {
             if (is_edit_or_create && in_preview)
                 || (matches!(binding, B::SelectChild | B::SelectParent)
                     && (quiet || self.find.is_open() || self.command.is_up(ctx)))
+                || (binding == B::PasteFromFigma && modal_open)
                 || ((plain
                     || matches!(
                         binding,
@@ -1368,11 +1377,29 @@ impl App {
                 // layouts), so the default also matches the physical key.
                 B::ZoomFit if default => shifted_digit(i, Key::Num1, Some(Key::Exclamationmark)),
                 B::ActualSize if default => shifted_digit(i, Key::Num0, None),
-                // Platform clipboard integrations send Copy without a key event.
+                // Platform clipboard integrations send Copy and Paste without a key event.
                 B::Copy if default => {
                     let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
                     i.events.retain(|e| !matches!(e, egui::Event::Copy));
                     i.consume_shortcut(&shortcut) || copy
+                }
+                B::PasteFromFigma if default => {
+                    let mut pasted = None;
+                    i.events.retain(|e| match e {
+                        egui::Event::Paste(s) => {
+                            if pasted.is_none() {
+                                pasted = Some(s.clone());
+                            }
+                            false
+                        }
+                        _ => true,
+                    });
+                    if let Some(s) = pasted {
+                        captured_paste = Some(s);
+                        true
+                    } else {
+                        i.consume_shortcut(&shortcut)
+                    }
                 }
                 B::DeleteSelection if default => {
                     i.consume_shortcut(&shortcut)
@@ -1389,6 +1416,9 @@ impl App {
             if pressed {
                 run.push(action);
             }
+        }
+        if captured_paste.is_some() {
+            self.pending_paste_text = captured_paste;
         }
         for action in run {
             self.apply(action, ctx);

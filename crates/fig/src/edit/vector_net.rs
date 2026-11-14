@@ -61,9 +61,11 @@ pub fn decode_vector_network(bytes: &[u8]) -> Option<VectorNetwork> {
     let v_count = usize::try_from(r.word()?).ok()?;
     let s_count = usize::try_from(r.word()?).ok()?;
     let r_count = usize::try_from(r.word()?).ok()?;
+    // Minimum wire size per entry: vertex = 12 B, segment = 28 B, region header = 8 B (`packed` + `loop_count`).
     if v_count
         .checked_mul(12)?
         .checked_add(s_count.checked_mul(28)?)?
+        .checked_add(r_count.checked_mul(8)?)?
         > r.rem()
     {
         return None;

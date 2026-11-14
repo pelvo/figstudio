@@ -138,10 +138,29 @@ pub struct Dirty {
 
 /// Bounded undo/redo stack for an open [`Document`].
 #[derive(Clone, Debug)]
+struct UndoEntry {
+    label: String,
+    coalesce: Option<String>,
+    inv: Txn,
+    before_state: u64,
+    after_state: u64,
+}
+
+#[derive(Clone, Debug)]
+struct RedoEntry {
+    label: String,
+    txn: Txn,
+    before_state: u64,
+    after_state: u64,
+}
+
+#[derive(Clone, Debug)]
 pub struct History {
-    undo_stack: Vec<(String, Option<String>, Txn)>,
-    redo_stack: Vec<(String, Txn)>,
+    undo_stack: Vec<UndoEntry>,
+    redo_stack: Vec<RedoEntry>,
     max_entries: usize,
+    state_id: u64,
+    next_state_id: u64,
 }
 
 impl Default for History {
@@ -156,7 +175,15 @@ impl History {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             max_entries: max_entries.max(1),
+            state_id: 0,
+            next_state_id: 1,
         }
+    }
+
+    /// Exact logical document state identifier across commits, Undos, and Redos (unlike
+    /// [`Document::revision`], which increments monotonically to invalidate render caches).
+    pub fn state_id(&self) -> u64 {
+        self.state_id
     }
 
     pub fn can_undo(&self) -> bool {
@@ -176,11 +203,11 @@ impl History {
     }
 
     pub fn undo_labels(&self) -> Vec<&str> {
-        self.undo_stack.iter().map(|(l, _, _)| l.as_str()).collect()
+        self.undo_stack.iter().map(|e| e.label.as_str()).collect()
     }
 
     pub fn redo_labels(&self) -> Vec<&str> {
-        self.redo_stack.iter().map(|(l, _)| l.as_str()).collect()
+        self.redo_stack.iter().map(|e| e.label.as_str()).collect()
     }
 
     /// Applies `txn` to `doc` and records its mechanical inverse on the undo stack,
@@ -193,59 +220,88 @@ impl History {
         let coalesce = txn.coalesce_key.clone();
         let (inv, dirty) = doc.apply_txn(&txn)?;
         self.redo_stack.clear();
+        let prev_state = self.state_id;
+        let new_state = self.next_state_id;
+        self.next_state_id += 1;
+        self.state_id = new_state;
 
         if let Some(ref key) = coalesce
-            && let Some((_, Some(prev_key), prev_inv)) = self.undo_stack.last_mut()
-            && prev_key == key
+            && let Some(last) = self.undo_stack.last_mut()
+            && last.coalesce.as_ref() == Some(key)
         {
-            let combined = Txn::prepend_earlier_inverse(inv, std::mem::take(prev_inv));
-            *prev_inv = combined;
+            let combined = Txn::prepend_earlier_inverse(inv, std::mem::take(&mut last.inv));
+            last.inv = combined;
+            last.after_state = new_state;
             return Ok(dirty);
         }
 
         if self.undo_stack.len() >= self.max_entries {
             self.undo_stack.remove(0);
         }
-        self.undo_stack.push((label, coalesce, inv));
+        self.undo_stack.push(UndoEntry {
+            label,
+            coalesce,
+            inv,
+            before_state: prev_state,
+            after_state: new_state,
+        });
         Ok(dirty)
     }
 
     /// Breaks coalescing so the next drag gesture starts a fresh undo entry.
     pub fn seal_coalesce(&mut self) {
-        if let Some((_, key, _)) = self.undo_stack.last_mut() {
-            *key = None;
+        if let Some(last) = self.undo_stack.last_mut() {
+            last.coalesce = None;
         }
     }
 
     /// Undoes the most recent committed entry.
     pub fn undo(&mut self, doc: &mut Document) -> Result<Option<(String, Dirty)>, FigError> {
-        let Some((label, _, inv)) = self.undo_stack.pop() else {
+        let Some(entry) = self.undo_stack.pop() else {
             return Ok(None);
         };
-        let (redo_txn, dirty) = match doc.apply_txn(&inv) {
+        let (redo_txn, dirty) = match doc.apply_txn(&entry.inv) {
             Ok(res) => res,
             Err(e) => {
-                self.undo_stack.push((label, None, inv));
+                self.undo_stack.push(UndoEntry {
+                    coalesce: None,
+                    ..entry
+                });
                 return Err(e);
             }
         };
-        self.redo_stack.push((label.clone(), redo_txn));
+        self.state_id = entry.before_state;
+        let label = entry.label;
+        self.redo_stack.push(RedoEntry {
+            label: label.clone(),
+            txn: redo_txn,
+            before_state: entry.before_state,
+            after_state: entry.after_state,
+        });
         Ok(Some((label, dirty)))
     }
 
     /// Redoes the most recently undone entry.
     pub fn redo(&mut self, doc: &mut Document) -> Result<Option<(String, Dirty)>, FigError> {
-        let Some((label, redo_txn)) = self.redo_stack.pop() else {
+        let Some(entry) = self.redo_stack.pop() else {
             return Ok(None);
         };
-        let (inv, dirty) = match doc.apply_txn(&redo_txn) {
+        let (inv, dirty) = match doc.apply_txn(&entry.txn) {
             Ok(res) => res,
             Err(e) => {
-                self.redo_stack.push((label, redo_txn));
+                self.redo_stack.push(entry);
                 return Err(e);
             }
         };
-        self.undo_stack.push((label.clone(), None, inv));
+        self.state_id = entry.after_state;
+        let label = entry.label;
+        self.undo_stack.push(UndoEntry {
+            label: label.clone(),
+            coalesce: None,
+            inv,
+            before_state: entry.before_state,
+            after_state: entry.after_state,
+        });
         Ok(Some((label, dirty)))
     }
 
