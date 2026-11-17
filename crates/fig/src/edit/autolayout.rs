@@ -8,7 +8,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::edit::Txn;
-use crate::edit::geometry::{encode_path_commands, make_path_entry, rebuild_shape_geometry};
+use crate::edit::geometry::{
+    encode_path_commands, make_path_entry, rebuild_shape_geometry, unset_on_resize,
+};
 use crate::{Document, FigError, Guid, Obj, Val};
 
 /// Computed geometry update for one node after solving Auto-Layout.
@@ -126,7 +128,12 @@ pub fn append_auto_layout_patches(
                 }
             }
         }
-        txn.modify(u.id, set, Vec::new());
+        let unset = if u.size_changed {
+            unset_on_resize(node)
+        } else {
+            Vec::new()
+        };
+        txn.modify(u.id, set, unset);
     }
     count
 }
