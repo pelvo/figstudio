@@ -15,8 +15,14 @@ pub fn copy_selection_for_figma(ctx: &egui::Context, tab: &Tab) -> Result<String
     let sel = tab
         .selection
         .ok_or_else(|| "Select a layer first to copy for Figma".to_string())?;
-    let html = encode_clipboard_html(&tab.doc, &[sel], 1, tab.doc_key.as_deref())
-        .map_err(|e| e.to_string())?;
+    let html = encode_clipboard_html(
+        &tab.doc,
+        &[sel],
+        1,
+        tab.doc_key.as_deref(),
+        tab.real_path.exists().then_some(tab.real_path.as_path()),
+    )
+    .map_err(|e| e.to_string())?;
     let name = tab
         .doc
         .node(sel)
@@ -131,15 +137,22 @@ fn write_system_html_clipboard(
     .map_err(|e| format!("Could not write Figma HTML clipboard: {e}"))
 }
 
+/// shortcut: the browser build cannot write the `text/html` flavour Figma reads (that needs
+/// the async Clipboard API with `ClipboardItem`), so it refuses rather than copying markup as
+/// plain text; add the bridge when browser copy is wanted.
 #[cfg(target_arch = "wasm32")]
 fn write_system_html_clipboard(
-    ctx: &egui::Context,
-    html: &str,
+    _ctx: &egui::Context,
+    _html: &str,
     _plain: &str,
 ) -> Result<(), String> {
-    ctx.copy_text(html.to_owned());
-    Ok(())
+    Err(COPY_NEEDS_DESKTOP.into())
 }
+
+/// Why Copy for Figma is off in the browser build.
+#[cfg(target_arch = "wasm32")]
+pub(crate) const COPY_NEEDS_DESKTOP: &str =
+    "Copy for Figma needs the desktop app: the browser cannot write Figma's clipboard format";
 
 #[cfg(not(target_arch = "wasm32"))]
 fn read_system_html_clipboard() -> Result<String, String> {
@@ -163,7 +176,8 @@ fn read_system_html_clipboard() -> Result<String, String> {
 
 #[cfg(target_arch = "wasm32")]
 fn read_system_html_clipboard() -> Result<String, String> {
-    Err("Use browser paste event or MCP paste_from_figma".into())
+    // The browser's paste event carries plain text only, not the `text/html` Figma writes.
+    Err("Pasting Figma layers needs the desktop app (or the MCP paste_from_figma tool)".into())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

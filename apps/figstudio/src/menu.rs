@@ -250,7 +250,12 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                 .get(app.active)
                 .is_some_and(|t| t.selected_text().is_some()),
         ),
-        Item::action("Copy for Figma", Action::CopyForFigma, selection),
+        // Off in the browser build, which cannot write Figma's clipboard format.
+        Item::action(
+            "Copy for Figma",
+            Action::CopyForFigma,
+            selection && cfg!(not(target_arch = "wasm32")),
+        ),
         Item::action("Paste from Figma", Action::PasteFromFigma, has_tab),
         Item::action("Duplicate layer", Action::DuplicateSelection, selection),
         Item::action("Delete layer", Action::DeleteSelection, selection),
@@ -314,7 +319,9 @@ impl App {
                 self.link.window = true;
                 self.link.focus = true;
             }
-            Action::SaveCopy => self.save_copy(ctx),
+            Action::SaveCopy => {
+                self.save_copy(ctx);
+            }
             Action::Undo => {
                 if let Some(tab) = self.tabs.get_mut(self.active) {
                     match crate::editor::undo_tab(tab) {
@@ -392,7 +399,7 @@ impl App {
             Action::ExportPageSvg => self.export(ctx, false, crate::worker::ExportFormat::Svg),
             Action::ExportSelectionSvg => self.export(ctx, true, crate::worker::ExportFormat::Svg),
             Action::CloseTab => self.close(self.active),
-            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::Quit => self.quit(ctx),
             Action::ToggleLayers => self.show_left = !self.show_left,
             Action::ToggleProperties => self.show_right = !self.show_right,
             Action::CommandBar => self.command.toggle(ctx),

@@ -2240,6 +2240,7 @@ dependencies = [
  "html-escape",
  "kiwi-schema",
  "ruzstd",
+ "same-file",
  "serde",
  "serde_json",
  "sha1",

@@ -160,6 +160,11 @@ async fn mcp_editing_workflow_modifies_renders_copies_pastes_undoes_and_saves() 
         json!(true),
         "save_copy must reject overwriting source file!"
     );
+    let message = over_src["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(
+        !message.contains("could not open"),
+        "an edit error is not a load failure: {message}"
+    );
 
     // T1b: Reject non-.fig extension!
     let non_fig = call(
@@ -192,11 +197,12 @@ async fn mcp_editing_workflow_modifies_renders_copies_pastes_undoes_and_saves() 
         "save_copy must reject writing outside the registered file's directory!"
     );
 
-    // Valid save_copy to `edited_out.fig` next to `src.fig` succeeds and marks `unsaved: false`!
+    // Valid save_copy to `edited_out.fig` next to `src.fig` succeeds; the registered file still
+    // lacks the edits, so it stays `unsaved`.
     let out_fig = tmp_dir.path().join("edited_out.fig");
     let saved = call("save_copy", json!({ "outPath": out_fig.to_string_lossy() })).await;
     assert_ne!(saved["isError"], json!(true), "save_copy failed: {saved}");
-    assert_eq!(saved["structuredContent"]["unsaved"], json!(false));
+    assert_eq!(saved["structuredContent"]["unsaved"], json!(true));
 
     // T1d: Saving again over existing `edited_out.fig` WITHOUT `overwrite: true` MUST fail!
     let dup_save = call("save_copy", json!({ "outPath": out_fig.to_string_lossy() })).await;
@@ -218,11 +224,12 @@ async fn mcp_editing_workflow_modifies_renders_copies_pastes_undoes_and_saves() 
         "save_copy with overwrite: true failed: {ok_overwrite}"
     );
 
-    // T16/T19: Undo after save marks `unsaved: true`; Redo back to saved state marks `unsaved: false`!
+    // T16/T19: a copy does not move the saved state, so Undo and Redo stay `unsaved` while
+    // edits remain on top of the opened file.
     let u_after_save = call("undo", json!({})).await;
     assert_eq!(u_after_save["structuredContent"]["unsaved"], json!(true));
     let r_after_save = call("redo", json!({})).await;
-    assert_eq!(r_after_save["structuredContent"]["unsaved"], json!(false));
+    assert_eq!(r_after_save["structuredContent"]["unsaved"], json!(true));
 
     // T3: Reopen saved `.fig` and render newly created text node directly via `figstudio_render`!
     let reopened = Document::open(&out_fig).unwrap();

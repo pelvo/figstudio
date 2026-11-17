@@ -10,8 +10,9 @@ const MID_CHAR: u8 = b'N'; // 78, roughly halfway between '!' and '~'
 
 /// Returns a printable ASCII string strictly between `prev` and `next` in byte order.
 ///
-/// If `prev >= next` (degenerate/equal existing positions), appends a suffix after `prev`
-/// so sibling ordering remains deterministic without panicking.
+/// If `prev >= next` (degenerate/equal existing positions) or `next` is a malformed key that no
+/// valid key precedes, the result is not between them; use [`try_between`] to detect that.
+/// Appending (`next == None`) always succeeds.
 pub fn between(prev: Option<&str>, next: Option<&str>) -> String {
     let a: Vec<u8> = prev.unwrap_or("").bytes().map(clamp_digit).collect();
     let b: Vec<u8> = next.unwrap_or("").bytes().map(clamp_digit).collect();
@@ -24,6 +25,18 @@ pub fn between(prev: Option<&str>, next: Option<&str>) -> String {
         (true, false) => before_bytes(&b),
         (false, false) => midpoint_bytes(&a, &b),
     }
+}
+
+/// [`between`], or `None` when no valid key fits: `prev >= next`, or `next` is a malformed key
+/// that only `'!'`s could precede (such as `"!"`). A returned key is inside the alphabet, does
+/// not end in `'!'`, and sorts strictly between `prev` and `next`.
+pub fn try_between(prev: Option<&str>, next: Option<&str>) -> Option<String> {
+    let key = between(prev, next);
+    let valid = key.bytes().all(|b| (MIN_CHAR..=MAX_CHAR).contains(&b))
+        && key.as_bytes().last().is_some_and(|&b| b != MIN_CHAR)
+        && prev.is_none_or(|p| p.as_bytes() < key.as_bytes())
+        && next.is_none_or(|n| key.as_bytes() < n.as_bytes());
+    valid.then_some(key)
 }
 
 /// Generates `count` strictly ascending position keys between `prev` and `next`.
@@ -131,6 +144,37 @@ mod tests {
             );
             lo = mid;
         }
+    }
+
+    #[test]
+    fn try_between_finds_a_valid_key_for_every_ordered_pair_of_valid_keys() {
+        // Keys as the editor makes them: appends, front inserts and bisections.
+        let mut keys = vec![between(None, None)];
+        for i in 0..60 {
+            let k = match i % 3 {
+                0 => between(keys.last().map(String::as_str), None),
+                1 => between(None, Some(&keys[0])),
+                _ => between(Some(&keys[0]), Some(&keys[1])),
+            };
+            keys.push(k);
+            keys.sort();
+            keys.dedup();
+        }
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[i + 1..] {
+                let k = try_between(Some(a), Some(b));
+                assert!(k.is_some(), "no key between {a:?} and {b:?}");
+            }
+            assert!(try_between(None, Some(a)).is_some(), "no key before {a:?}");
+        }
+    }
+
+    #[test]
+    fn try_between_rejects_inputs_with_no_valid_key_between() {
+        assert_eq!(try_between(None, Some("!")), None);
+        assert_eq!(try_between(None, Some("!!")), None);
+        assert_eq!(try_between(Some("B"), Some("A")), None);
+        assert_eq!(try_between(Some("A"), Some("A")), None);
     }
 
     #[test]

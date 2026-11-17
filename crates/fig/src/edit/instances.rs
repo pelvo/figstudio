@@ -522,6 +522,23 @@ pub fn instantiate_component(
     Ok(inst_id)
 }
 
+/// The value of `field` in `instance`'s override entry for `override_path`, if set.
+pub(crate) fn existing_override_field(
+    doc: &Document,
+    instance: Guid,
+    override_path: &[Guid],
+    field: &str,
+) -> Option<Val> {
+    doc.node(instance)?
+        .data
+        .path(&["symbolData", "symbolOverrides"])?
+        .items()
+        .iter()
+        .find(|e| path_guids(e) == override_path)?
+        .get(field)
+        .map(|v| v.clone().into_owned())
+}
+
 fn path_guids(entry: &Val) -> Vec<Guid> {
     entry
         .path(&["guidPath", "guids"])

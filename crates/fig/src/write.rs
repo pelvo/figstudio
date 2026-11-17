@@ -327,10 +327,13 @@ impl Document {
     /// - rejects any `..` (`ParentDir`) traversal component,
     /// - requires a `.fig` extension,
     /// - resolves relative paths against `source_path`'s parent directory when available,
-    /// - optionally confines the canonical destination directory inside `source_path`'s directory,
+    /// - optionally confines the canonical destination directory inside `source_path`'s directory
+    ///   (and fails when there is no source file on disk to confine to),
     /// - unconditionally refuses to overwrite `source_path` (even when `overwrite` is `true`),
-    /// - refuses to replace an existing file unless `overwrite` is `true` (enforced atomically via
-    ///   `hard_link` so there is no TOCTOU race).
+    ///   comparing file identity so a differently cased name on a case-insensitive disk is caught,
+    /// - refuses to replace an existing file unless `overwrite` is `true`. The final no-overwrite
+    ///   commit is atomic (`hard_link`, or `create_new` where hard links are unsupported); the
+    ///   earlier source and symlink checks are not.
     pub fn save_copy_checked(
         &self,
         source_path: Option<&std::path::Path>,
@@ -381,9 +384,13 @@ impl Document {
             FigError::io(format!("destination directory {}", dst_parent.display()), e)
         })?;
 
-        if let Some(sp) = source_path
-            && sp.exists()
-        {
+        let existing_source = source_path.filter(|p| p.exists());
+        if confine_to_source_dir && existing_source.is_none() {
+            return Err(FigError::malformed(
+                "save_copy needs the source .fig on disk to keep outPath inside its folder",
+            ));
+        }
+        if let Some(sp) = existing_source {
             let canon_src = std::fs::canonicalize(sp)
                 .map_err(|e| FigError::io(format!("source file {}", sp.display()), e))?;
             if confine_to_source_dir
@@ -396,7 +403,9 @@ impl Document {
                 )));
             }
             let target_in_canon_dir = canon_dst_parent.join(file_name);
-            if target_in_canon_dir == canon_src {
+            if target_in_canon_dir == canon_src
+                || same_file::is_same_file(sp, &resolved).unwrap_or(false)
+            {
                 return Err(FigError::malformed(
                     "save_copy refuses to overwrite the original source file",
                 ));
@@ -463,7 +472,17 @@ impl Document {
         overwrite: bool,
     ) -> Result<(), FigError> {
         let commit_temp = |tmp: &std::path::Path| -> Result<(), FigError> {
+            let exists_err = || {
+                FigError::malformed(format!(
+                    "{} already exists; pass overwrite: true to replace it",
+                    dst.display()
+                ))
+            };
             if overwrite {
+                // Keep the replaced file's permissions. shortcut: xattrs/ACLs are not carried over.
+                if let Ok(meta) = std::fs::metadata(dst) {
+                    let _ = std::fs::set_permissions(tmp, meta.permissions());
+                }
                 std::fs::rename(tmp, dst).map_err(|e| FigError::io(dst.display().to_string(), e))
             } else {
                 match std::fs::hard_link(tmp, dst) {
@@ -471,13 +490,15 @@ impl Document {
                         let _ = std::fs::remove_file(tmp);
                         Ok(())
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                        Err(FigError::malformed(format!(
-                            "{} already exists; pass overwrite: true to replace it",
-                            dst.display()
-                        )))
-                    }
-                    Err(e) => Err(FigError::io(dst.display().to_string(), e)),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(exists_err()),
+                    // No hard links (exFAT/FAT, some SMB mounts): `create_new` is still atomic.
+                    Err(_) => copy_to_new_file(tmp, dst).map_err(|e| {
+                        if e.kind() == std::io::ErrorKind::AlreadyExists {
+                            exists_err()
+                        } else {
+                            FigError::io(dst.display().to_string(), e)
+                        }
+                    }),
                 }
             }
         };
@@ -597,6 +618,33 @@ impl Document {
 
 /// Creates a new, uniquely named file in the same directory as `path` (so the final rename stays
 /// on one filesystem). `create_new` makes it fail rather than reuse an existing name.
+/// Copies `tmp` to a new file at `dst` (failing if `dst` exists), then removes `tmp`.
+fn copy_to_new_file(tmp: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst)?;
+    let copied = std::fs::File::open(tmp)
+        .and_then(|mut src| std::io::copy(&mut src, &mut out))
+        .and_then(|_| out.sync_all());
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(clippy::drop_non_drop, reason = "wasm File has no Drop")
+    )]
+    drop(out);
+    match copied {
+        Ok(()) => {
+            let _ = std::fs::remove_file(tmp);
+            Ok(())
+        }
+        Err(e) => {
+            // `dst` is ours (create_new), so a partial copy can go.
+            let _ = std::fs::remove_file(dst);
+            Err(e)
+        }
+    }
+}
+
 fn create_temp(path: &std::path::Path) -> Result<(std::path::PathBuf, std::fs::File), FigError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);

@@ -250,6 +250,11 @@ impl Running {
                     mutation,
                     reply,
                 } => {
+                    // The tool timed out and dropped its receiver: it reported a failure and
+                    // may retry, so this edit must not apply later as well.
+                    if reply.is_closed() {
+                        continue;
+                    }
                     let res = crate::editor::handle_live_mutation(tabs, tab, mutation);
                     let _ = reply.send(res);
                 }

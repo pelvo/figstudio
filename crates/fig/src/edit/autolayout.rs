@@ -5,7 +5,7 @@
 //! and `stackChildAlignSelf == "STRETCH"`) space distribution, alignment (`MIN`, `CENTER`,
 //! `MAX`, `SPACE_BETWEEN`, `SPACE_EVENLY`, `BASELINE`), multi-line `WRAP`, and `GRID` placement.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::edit::Txn;
 use crate::edit::geometry::{encode_path_commands, make_path_entry, rebuild_shape_geometry};
@@ -84,9 +84,15 @@ pub fn compute_auto_layout(doc: &Document, scope_root: Option<Guid>) -> Vec<Layo
     out
 }
 
-/// Appends minimal Auto-Layout `NodePatch`es onto `txn` for `doc`.
-pub fn append_auto_layout_patches(doc: &Document, scope_root: Option<Guid>, txn: &mut Txn) {
+/// Appends minimal Auto-Layout `NodePatch`es onto `txn` for `doc` and returns how many nodes
+/// they move or resize.
+pub fn append_auto_layout_patches(
+    doc: &Document,
+    scope_root: Option<Guid>,
+    txn: &mut Txn,
+) -> usize {
     let updates = compute_auto_layout(doc, scope_root);
+    let count = updates.len();
     for u in updates {
         let Some(node) = doc.node(u.id) else { continue };
         let mut set = Obj::new();
@@ -122,6 +128,7 @@ pub fn append_auto_layout_patches(doc: &Document, scope_root: Option<Guid>, txn:
         }
         txn.modify(u.id, set, Vec::new());
     }
+    count
 }
 
 /// Runs Auto-Layout on `doc` and commits the resulting patches immediately.
@@ -277,10 +284,42 @@ fn flow_children(doc: &Document, parent: Guid) -> Vec<Guid> {
         .collect()
 }
 
-fn measure_bottom_up(doc: &Document, id: Guid, sizes: &mut HashMap<Guid, (f64, f64)>) {
-    for &cid in doc.children(id) {
-        measure_bottom_up(doc, cid, sizes);
+/// Pre-order of `root`'s subtree, with an explicit stack: a deep imported tree must not
+/// overflow the call stack.
+fn subtree_preorder(doc: &Document, root: Guid) -> Vec<Guid> {
+    let mut order = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        if seen.insert(id) {
+            order.push(id);
+            stack.extend(doc.children(id).iter().rev());
+        }
     }
+    order
+}
+
+/// Measures every node under `root`, each after all of its descendants.
+fn measure_bottom_up(doc: &Document, root: Guid, sizes: &mut HashMap<Guid, (f64, f64)>) {
+    for id in subtree_preorder(doc, root).into_iter().rev() {
+        measure_node(doc, id, sizes);
+    }
+}
+
+/// Lays out every node under `root`, each before its children.
+fn layout_top_down(
+    doc: &Document,
+    root: Guid,
+    sizes: &mut HashMap<Guid, (f64, f64)>,
+    positions: &mut HashMap<Guid, (f64, f64)>,
+    touched: &mut Vec<Guid>,
+) {
+    for id in subtree_preorder(doc, root) {
+        layout_node(doc, id, sizes, positions, touched);
+    }
+}
+
+fn measure_node(doc: &Document, id: Guid, sizes: &mut HashMap<Guid, (f64, f64)>) {
     let Some(node) = doc.node(id) else { return };
     let Some(mode) = stack_mode(&node.data) else {
         return;
@@ -391,7 +430,7 @@ fn measure_bottom_up(doc: &Document, id: Guid, sizes: &mut HashMap<Guid, (f64, f
     }
 }
 
-fn layout_top_down(
+fn layout_node(
     doc: &Document,
     id: Guid,
     sizes: &mut HashMap<Guid, (f64, f64)>,
@@ -553,10 +592,6 @@ fn layout_top_down(
                 }
             }
         }
-    }
-
-    for &cid in doc.children(id) {
-        layout_top_down(doc, cid, sizes, positions, touched);
     }
 }
 

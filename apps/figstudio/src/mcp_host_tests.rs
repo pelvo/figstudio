@@ -126,6 +126,64 @@ fn reveal_selects_and_fits_or_answers_tab_closed() {
 }
 
 #[test]
+fn a_mutation_whose_caller_stopped_waiting_is_not_applied() {
+    use figstudio_mcp::live::LiveMutation;
+    let mut host = host(vec![]);
+    let (commands, inbox) = mpsc::channel();
+    let (_events, news) = mpsc::channel();
+    let mut running = Running {
+        addr: None,
+        cancel: CancellationToken::new(),
+        snapshot: Default::default(),
+        commands: inbox,
+        events: news,
+        last_key: None,
+        token: None,
+        links: Vec::new(),
+    };
+    let mut tabs = vec![tab(1, "structure.fig")];
+    let mut active = 0;
+    let rename = || LiveMutation::ApplyEdits {
+        ops: vec![figstudio_fig::edit::EditOp::Rename {
+            target: Guid(1, 25),
+            name: "renamed".into(),
+        }],
+        label: None,
+        dry_run: false,
+    };
+    // Timed out: the receiver is gone before the app gets to the command.
+    let (reply, gone) = tokio::sync::oneshot::channel();
+    drop(gone);
+    commands
+        .send(Command::Mutate {
+            tab: 1,
+            mutation: rename(),
+            reply,
+        })
+        .unwrap();
+    running.drain(&mut tabs, &mut active);
+    assert_eq!(
+        tabs[0].history.undo_len(),
+        0,
+        "an abandoned edit must not apply"
+    );
+
+    let (reply, mut waiting) = tokio::sync::oneshot::channel();
+    commands
+        .send(Command::Mutate {
+            tab: 1,
+            mutation: rename(),
+            reply,
+        })
+        .unwrap();
+    running.drain(&mut tabs, &mut active);
+    waiting.try_recv().unwrap().unwrap();
+    assert_eq!(tabs[0].history.undo_len(), 1);
+    host.running = Some(running);
+    host.stop();
+}
+
+#[test]
 fn open_link_requests_wait_for_the_app_and_carry_its_answer() {
     let mut host = host(vec![]);
     let (commands, inbox) = mpsc::channel();

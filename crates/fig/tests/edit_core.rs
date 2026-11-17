@@ -162,7 +162,7 @@ fn clipboard_html_roundtrips_and_pastes_with_symbol_dependencies() {
     let root_to_copy = doc.children(page)[0];
     let before_children = doc.children(page).len();
 
-    let html = encode_clipboard_html(&doc, &[root_to_copy], 4242, Some("testkey"))
+    let html = encode_clipboard_html(&doc, &[root_to_copy], 4242, Some("testkey"), None)
         .expect("encode clipboard html");
     assert!(html.contains("data-metadata=\"<!--(figmeta)"));
     assert!(html.contains("data-buffer=\"<!--(figma)"));

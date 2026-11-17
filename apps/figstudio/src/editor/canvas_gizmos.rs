@@ -1,8 +1,10 @@
 //! Interactive canvas gizmos: 8-handle resize, direct layer drag, and shape/text creation tools.
 
 use egui::{Color32, CornerRadius, CursorIcon, Pos2, Rect, Stroke, StrokeKind, Ui, pos2, vec2};
-use figstudio_fig::Guid;
 use figstudio_fig::edit::EditOp;
+use figstudio_fig::{Document, Guid};
+use figstudio_render::absolute_transform;
+use figstudio_render::kurbo::Point;
 
 use crate::canvas::Tool;
 use crate::tab::Tab;
@@ -231,11 +233,14 @@ pub fn canvas_gizmos_and_input(
                         let key = format!("gui:move:{target}");
                         let _ = apply_tab_ops(
                             tab,
-                            &[EditOp::Move {
-                                target,
-                                x: (orig_x + dx).round(),
-                                y: (orig_y + dy).round(),
-                                relative: false,
+                            &[{
+                                let (x, y) = moved_to(&tab.doc, target, orig_x, orig_y, dx, dy);
+                                EditOp::Move {
+                                    target,
+                                    x: x.round(),
+                                    y: y.round(),
+                                    relative: false,
+                                }
                             }],
                             Some("Move layer"),
                             Some(&key),
@@ -259,23 +264,14 @@ pub fn canvas_gizmos_and_input(
                     orig_h,
                     ..
                 } => {
-                    let (mut nx, mut ny, mut nw, mut nh) = (orig_x, orig_y, orig_w, orig_h);
-                    match handle {
-                        Handle::E | Handle::NE | Handle::SE => nw = (orig_w + dx).max(1.0),
-                        Handle::W | Handle::NW | Handle::SW => {
-                            nw = (orig_w - dx).max(1.0);
-                            nx = orig_x + (orig_w - nw);
-                        }
-                        _ => {}
-                    }
-                    match handle {
-                        Handle::S | Handle::SE | Handle::SW => nh = (orig_h + dy).max(1.0),
-                        Handle::N | Handle::NW | Handle::NE => {
-                            nh = (orig_h - dy).max(1.0);
-                            ny = orig_y + (orig_h - nh);
-                        }
-                        _ => {}
-                    }
+                    let (nx, ny, nw, nh) = resized_to(
+                        &tab.doc,
+                        target,
+                        handle,
+                        (orig_x, orig_y, orig_w, orig_h),
+                        dx,
+                        dy,
+                    );
                     let key = format!("gui:resize:{target}");
                     let _ = apply_tab_ops(
                         tab,
@@ -354,6 +350,81 @@ pub fn canvas_gizmos_and_input(
     None
 }
 
+/// The vector `(dx, dy)` in page units, in `node`'s own coordinates (`None`: inverse of the
+/// parent, so the node's own transform is left out). A degenerate (zero-scale) transform
+/// leaves it as is.
+fn page_vector_in(doc: &Document, node: Option<Guid>, dx: f64, dy: f64) -> (f64, f64) {
+    let Some(node) = node else {
+        return (dx, dy);
+    };
+    let abs = absolute_transform(doc, node);
+    if abs.determinant().abs() < 1e-12 {
+        return (dx, dy);
+    }
+    let inv = abs.inverse();
+    let v = inv * Point::new(dx, dy) - inv * Point::ZERO;
+    (v.x, v.y)
+}
+
+/// Where a Move drag by page vector `(dx, dy)` puts `target`'s parent-local translation,
+/// starting at `(orig_x, orig_y)`: the pointer delta goes through the parent's transform, so
+/// the layer follows the pointer under rotated or scaled ancestors.
+pub(super) fn moved_to(
+    doc: &Document,
+    target: Guid,
+    orig_x: f64,
+    orig_y: f64,
+    dx: f64,
+    dy: f64,
+) -> (f64, f64) {
+    let parent = doc.node(target).and_then(|n| n.parent);
+    let (px, py) = page_vector_in(doc, parent, dx, dy);
+    (orig_x + px, orig_y + py)
+}
+
+/// The translation and size after dragging `handle` by page vector `(dx, dy)`, from `orig`
+/// `(x, y, w, h)`. The delta is measured along the layer's own axes, and a left or top handle
+/// moves the translation along those axes so the opposite edge stays put.
+pub(super) fn resized_to(
+    doc: &Document,
+    target: Guid,
+    handle: Handle,
+    orig: (f64, f64, f64, f64),
+    dx: f64,
+    dy: f64,
+) -> (f64, f64, f64, f64) {
+    let (orig_x, orig_y, orig_w, orig_h) = orig;
+    let (lx, ly) = page_vector_in(doc, Some(target), dx, dy);
+    let (mut nw, mut nh) = (orig_w, orig_h);
+    let (mut sx, mut sy) = (0.0, 0.0);
+    match handle {
+        Handle::E | Handle::NE | Handle::SE => nw = (orig_w + lx).max(1.0),
+        Handle::W | Handle::NW | Handle::SW => {
+            nw = (orig_w - lx).max(1.0);
+            sx = orig_w - nw;
+        }
+        _ => {}
+    }
+    match handle {
+        Handle::S | Handle::SE | Handle::SW => nh = (orig_h + ly).max(1.0),
+        Handle::N | Handle::NW | Handle::NE => {
+            nh = (orig_h - ly).max(1.0);
+            sy = orig_h - nh;
+        }
+        _ => {}
+    }
+    // The shift along the layer's axes, in its parent's coordinates (the layer's own
+    // rotation and scale, without its translation).
+    let parent = doc.node(target).and_then(|n| n.parent);
+    let own = absolute_transform(doc, target);
+    let local = match parent.map(|p| absolute_transform(doc, p)) {
+        Some(p) if p.determinant().abs() > 1e-12 => p.inverse() * own,
+        _ => own,
+    };
+    let shift = local * Point::new(sx, sy) - local * Point::ZERO;
+    (orig_x + shift.x, orig_y + shift.y, nw, nh)
+}
+
 fn paint_selection_handles(
     painter: &egui::Painter,
     canvas_rect: Rect,
@@ -381,3 +452,7 @@ fn paint_selection_handles(
     }
     Some(screen_rect)
 }
+
+#[cfg(test)]
+#[path = "canvas_gizmos_tests.rs"]
+mod tests;

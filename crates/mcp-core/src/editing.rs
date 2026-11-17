@@ -172,8 +172,14 @@ pub fn editable(doc: &Document, target: &str) -> Output {
 }
 
 /// Encodes one or more node subtrees (including transitive local `SYMBOL` masters) as Figma
-/// `text/html` clipboard markup ready for pasting into Figma.
-pub fn copy_for_figma(doc: &Document, raw_ids: &[String], file_key: &str) -> Output {
+/// `text/html` clipboard markup ready for pasting into Figma. `lazy_source` is the file a lazily
+/// opened `doc` reads its image bytes from.
+pub fn copy_for_figma(
+    doc: &Document,
+    raw_ids: &[String],
+    file_key: &str,
+    lazy_source: Option<&std::path::Path>,
+) -> Output {
     let mut roots: Vec<Guid> = Vec::with_capacity(raw_ids.len());
     for raw in raw_ids {
         match parse_node_id(raw) {
@@ -182,7 +188,7 @@ pub fn copy_for_figma(doc: &Document, raw_ids: &[String], file_key: &str) -> Out
             Err(e) => return Output::fault(e.to_string()),
         }
     }
-    match encode_clipboard_html(doc, &roots, 1, Some(file_key)) {
+    match encode_clipboard_html(doc, &roots, 1, Some(file_key), lazy_source) {
         Ok(html) => Output::structured(json!({
             "fileKey": file_key,
             "rootIds": roots.iter().map(Guid::to_string).collect::<Vec<_>>(),

@@ -108,7 +108,8 @@ pub struct Tab {
     pub preview: Option<Preview>,
     /// Per-tab Undo/Redo stack for non-destructive editing.
     pub history: figstudio_fig::edit::History,
-    /// [`figstudio_fig::edit::History::state_id`] at open time or the last Save Copy.
+    /// [`figstudio_fig::edit::History::state_id`] at open time. Save Copy does not move it: the
+    /// file the tab came from still lacks the edits.
     pub saved_revision: u64,
     /// Whether `history.state_id() != saved_revision`.
     pub dirty_unsaved: bool,
@@ -116,6 +117,9 @@ pub struct Tab {
     pub edit_drag: Option<crate::editor::CanvasDrag>,
     /// Set by creation tools once a new layer is placed so the toolbar returns to Select.
     pub reset_tool_to_select: bool,
+    /// The inspector field focused or control dragged last frame; a change seals the
+    /// coalesced undo entry (`editor::inspector`).
+    pub edit_session: Option<egui::Id>,
 }
 
 /// One picture the canvas draws (see [`Tab::draw_layers`]).
@@ -284,19 +288,14 @@ impl Tab {
             dirty_unsaved: false,
             edit_drag: None,
             reset_tool_to_select: false,
+            edit_session: None,
         }
     }
 
-    /// Recomputes `dirty_unsaved` against `saved_revision` (so Edit -> Save -> Undo is dirty,
-    /// and Redo back to the saved state clears `dirty_unsaved`).
+    /// Recomputes `dirty_unsaved` against `saved_revision` (so undoing every edit is clean
+    /// again, and Redo makes it dirty).
     pub fn sync_unsaved(&mut self) {
         self.dirty_unsaved = self.history.state_id() != self.saved_revision;
-    }
-
-    /// Marks the current `history.state_id()` as saved on disk.
-    pub fn mark_saved(&mut self) {
-        self.saved_revision = self.history.state_id();
-        self.dirty_unsaved = false;
     }
 
     /// The space's colour: the user's, else the tint picked for the file.

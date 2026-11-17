@@ -82,7 +82,12 @@ fn t4_autolayout_inverted_or_nan_min_max_bounds_do_not_panic() {
         doc.apply_txn(&t).unwrap();
     }
     let patches = compute_auto_layout(&doc, Some(frame));
-    assert!(!patches.is_empty());
+    let u = patches
+        .iter()
+        .find(|u| u.id == frame)
+        .expect("the hugging frame is resized");
+    // Inverted bounds honour min (300); the NaN min is ignored, so max (50) caps the empty hug (0).
+    assert_eq!((u.width, u.height), (300.0, 0.0));
 }
 
 #[test]
@@ -135,8 +140,11 @@ fn t8_non_finite_arc_sweep_and_huge_polygon_count_stay_bounded() {
     // Do NOT pass u32::MAX in RED run if it loops 4B times; pass 2_000_000 which already allocates >2M cmds vs <=1025 cap!
     let cmds2 = ellipse_commands(100.0, 100.0, 0.0, 1.0e5, 0.0);
     assert!(cmds2.len() <= 200, "arc cmds len was {}", cmds2.len());
-    let poly = polygon_or_star_commands(100.0, 100.0, 50_000, Some(0.5));
-    assert!(poly.len() <= 2050, "poly cmds len was {}", poly.len());
+    // Capped at 512 points: a star has two vertices per point, plus the closing command.
+    let star = polygon_or_star_commands(100.0, 100.0, 50_000, Some(0.5));
+    assert_eq!(star.len(), 512 * 2 + 1);
+    let polygon = polygon_or_star_commands(100.0, 100.0, 50_000, None);
+    assert_eq!(polygon.len(), 512 + 1);
 }
 
 #[test]
@@ -216,7 +224,7 @@ fn t10_paste_into_autolayout_frame_undoes_in_a_single_step() {
     let mut doc = Document::open(fixture("structure.fig")).unwrap();
     let page = doc.pages[0];
     let child_to_copy = doc.children(page)[0];
-    let html = encode_clipboard_html(&doc, &[child_to_copy], 1, None).unwrap();
+    let html = encode_clipboard_html(&doc, &[child_to_copy], 1, None, None).unwrap();
 
     let mut history = History::new(20);
     let (rep, _) = execute_edit_ops(
@@ -365,13 +373,32 @@ fn t15_fractional_front_insertions_stay_strictly_ordered_within_printable_alphab
         before_bang.bytes().all(|b| (b'!'..=b'~').contains(&b)),
         "before '!' produced out-of-alphabet {before_bang:?}"
     );
+    // Nothing valid sorts before a key of only '!'s, and nothing between out-of-order keys:
+    // the checked form says so instead of returning a key in the wrong place.
+    for next in ["!", "!!"] {
+        assert_eq!(fractional::try_between(None, Some(next)), None, "{next:?}");
+    }
+    assert_eq!(fractional::try_between(Some("b"), Some("a")), None);
+    // Between valid neighbours the key sorts strictly inside, at the front, back and middle.
+    let (a, b) = (
+        fractional::between(None, None),
+        fractional::between(Some("N"), None),
+    );
+    for (prev, next) in [
+        (None, Some(a.as_str())),
+        (Some(a.as_str()), Some(b.as_str())),
+        (Some(b.as_str()), None),
+    ] {
+        let k = fractional::try_between(prev, next).expect("a key fits");
+        assert!(prev.is_none_or(|p| p < k.as_str()) && next.is_none_or(|n| k.as_str() < n));
+    }
 }
 
 #[test]
 fn t20_clipboard_html_entity_decoding_does_not_double_decode_amp_lt() {
     let doc = Document::open(fixture("structure.fig")).unwrap();
     let child = doc.children(doc.pages[0])[0];
-    let html = encode_clipboard_html(&doc, &[child], 1, Some("a&lt;b")).unwrap();
+    let html = encode_clipboard_html(&doc, &[child], 1, Some("a&lt;b"), None).unwrap();
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
     let raw_kiwi = decode_clipboard_html(&html).unwrap().kiwi_bytes;

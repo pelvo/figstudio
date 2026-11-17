@@ -402,28 +402,34 @@ impl Document {
                             "node {id}: data is not an object"
                         )));
                     };
+                    // The inverse restores each key's state from before this patch, so a
+                    // patch that both unsets and sets a key still undoes to the original.
                     let mut inv_set = Obj::new();
                     let mut inv_unset = Vec::new();
                     let mut touched_keys = HashSet::new();
-
-                    for key in unset {
-                        if touched_keys.insert(key.clone())
-                            && let Some(old_raw) = map.remove(key)
-                        {
-                            inv_set.insert(key, old_raw);
+                    let keys: Vec<String> = unset
+                        .iter()
+                        .cloned()
+                        .chain(set.keys().map(str::to_string))
+                        .collect();
+                    for key in &keys {
+                        let key = key.as_str();
+                        if !touched_keys.insert(key) {
+                            continue;
+                        }
+                        match map.get_raw(key) {
+                            Some(old_raw) => {
+                                inv_set.insert(key, old_raw.clone());
+                            }
+                            None if set.contains_key(key) => inv_unset.push(key.to_string()),
+                            None => {}
                         }
                     }
+                    for key in unset {
+                        map.remove(key);
+                    }
                     for (key, new_val) in set.iter() {
-                        let first_touch = touched_keys.insert(key.to_string());
-                        match map.insert(key, new_val.clone()) {
-                            Some(old_raw) if first_touch => {
-                                inv_set.insert(key, old_raw);
-                            }
-                            None if first_touch => {
-                                inv_unset.push(key.to_string());
-                            }
-                            _ => {}
-                        }
+                        map.insert(key, new_val.clone());
                     }
                     let rebuilt = Node::from_data(node.data.clone()).ok_or_else(|| {
                         FigError::malformed(format!("node {id}: invalid node after modify"))

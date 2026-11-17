@@ -37,6 +37,17 @@ pub fn properties_history_bar(ui: &mut Ui, tab: &mut Tab) {
 
 /// Renders the interactive Edit controls section inside the right Properties panel.
 pub fn properties_edit_controls(ui: &mut Ui, tab: &mut Tab) {
+    // One undo step per edit session: when the focused field or the dragged control changes
+    // (to another one or to none), or the selection does, the last coalesced entry is sealed.
+    let session = ui
+        .ctx()
+        .memory(|m| m.focused())
+        .or_else(|| ui.ctx().dragged_id())
+        .map(|id| id.with(tab.selection));
+    if tab.edit_session != session {
+        tab.history.seal_coalesce();
+        tab.edit_session = session;
+    }
     properties_history_bar(ui, tab);
 
     // Inner-instance text override quick editor when an inner node inside an INSTANCE is selected!
@@ -104,7 +115,7 @@ pub fn properties_edit_controls(ui: &mut Ui, tab: &mut Tab) {
                             name: name_buf,
                         }],
                         Some("Rename layer"),
-                        Some("gui:rename"),
+                        Some(&format!("gui:rename:{sel}")),
                     );
                 }
             });
@@ -291,12 +302,24 @@ pub fn properties_edit_controls(ui: &mut Ui, tab: &mut Tab) {
 
             // 3. Solid Fill Hex Input
             let cur_rgba = first_solid_srgba(&node_snapshot.data).unwrap_or([217, 217, 217, 255]);
-            let mut hex_buf = format!("#{:02X}{:02X}{:02X}", cur_rgba[0], cur_rgba[1], cur_rgba[2]);
+            // While the field has focus its text is a draft, so a partial value (a deleted
+            // digit, a replacement being typed) is kept rather than reset to the fill.
+            let draft_id = egui::Id::new(("fill-hex-draft", sel));
+            let mut hex_buf = ui
+                .data(|d| d.get_temp::<String>(draft_id))
+                .unwrap_or_else(|| {
+                    format!("#{:02X}{:02X}{:02X}", cur_rgba[0], cur_rgba[1], cur_rgba[2])
+                });
             ui.horizontal(|ui| {
                 ui.label("Fill");
                 let rf = ui.add(egui::TextEdit::singleline(&mut hex_buf).desired_width(78.0));
                 crate::a11y::name_field(&rf, "Fill colour hex");
                 crate::a11y::author(&rf, "editor.fill-hex");
+                if rf.has_focus() {
+                    ui.data_mut(|d| d.insert_temp(draft_id, hex_buf.clone()));
+                } else {
+                    ui.data_mut(|d| d.remove::<String>(draft_id));
+                }
                 if rf.changed() && hex_buf.trim().len() >= 7 {
                     let _ = apply_tab_ops(
                         tab,
@@ -342,3 +365,7 @@ fn first_solid_srgba(data: &Val) -> Option<[u8; 4]> {
         (c.num("a").unwrap_or(1.0) * op * 255.0).round() as u8,
     ])
 }
+
+#[cfg(test)]
+#[path = "inspector_tests.rs"]
+mod tests;

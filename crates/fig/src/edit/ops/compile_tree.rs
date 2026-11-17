@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use crate::clipboard::paste_kiwi_into;
+use crate::clipboard::paste_kiwi_into_with;
 use crate::edit::geometry::{
     CreateShapeParams, create_shape_node, matrix_2x3, resize_node_with_constraints,
 };
@@ -138,7 +138,7 @@ pub(super) fn compile_single_op(
                 .parent
                 .ok_or_else(|| FigError::malformed("cannot duplicate root node"))?;
             let kiwi = crate::clipboard::encode_subset_kiwi(doc, &[*target], 0, "dup")?;
-            let (paste_txn, roots) = paste_kiwi_into(doc, &kiwi, parent, (*dx, *dy))?;
+            let (paste_txn, roots) = paste_kiwi_into_with(doc, &kiwi, parent, (*dx, *dy), alloc)?;
             created_ids.extend_from_slice(&roots);
             merge_step_into_batch(txn, paste_txn);
             layout_touched.push(parent);
@@ -200,6 +200,8 @@ pub(super) fn compile_single_op(
             tf.set("m02", Val::Float(nx));
             tf.set("m12", Val::Float(ny));
             txn.set_field(*target, "transform", tf);
+            // An Auto-Layout parent places its flow children, so it is re-solved.
+            layout_touched.push(*target);
         }
         EditOp::Resize {
             target,
@@ -222,6 +224,7 @@ pub(super) fn compile_single_op(
                 .and_then(Val::as_f32)
                 .map_or(0.0, f64::from);
             txn.set_field(*target, "transform", matrix_2x3(cx, cy, *degrees));
+            layout_touched.push(*target);
         }
         EditOp::Reparent {
             target,
@@ -250,7 +253,11 @@ pub(super) fn compile_single_op(
                 .get(idx)
                 .and_then(|id| doc.node(*id))
                 .map(|n| n.position.as_str());
-            let pos = fractional::between(prev, next);
+            let pos = fractional::try_between(prev, next).ok_or_else(|| {
+                FigError::malformed(format!(
+                    "cannot place {target} at index {idx}: the sibling positions there are out of order or malformed"
+                ))
+            })?;
             txn.set_field(
                 *target,
                 "parentIndex",

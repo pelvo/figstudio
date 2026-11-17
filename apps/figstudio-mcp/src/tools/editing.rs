@@ -150,7 +150,7 @@ impl FigstudioServer {
                                 None,
                                 dry_run,
                             )
-                            .map_err(McpError::open)?;
+                            .map_err(McpError::edit)?;
                             let mut val =
                                 serde_json::to_value(report).unwrap_or_else(|_| json!({}));
                             if let Some(obj) = val.as_object_mut() {
@@ -197,7 +197,7 @@ impl FigstudioServer {
             Files::Registry(reg) => {
                 let res = reg
                     .mutate_doc(input.file_key.as_deref(), |doc, history, saved_rev, _| {
-                        let undone = history.undo(doc).map_err(McpError::open)?;
+                        let undone = history.undo(doc).map_err(McpError::edit)?;
                         Ok(json!({
                             "undone": undone.as_ref().map(|(l, _)| l.as_str()),
                             "revision": doc.revision,
@@ -231,7 +231,7 @@ impl FigstudioServer {
             Files::Registry(reg) => {
                 let res = reg
                     .mutate_doc(input.file_key.as_deref(), |doc, history, saved_rev, _| {
-                        let redone = history.redo(doc).map_err(McpError::open)?;
+                        let redone = history.redo(doc).map_err(McpError::edit)?;
                         Ok(json!({
                             "redone": redone.as_ref().map(|(l, _)| l.as_str()),
                             "revision": doc.revision,
@@ -297,7 +297,7 @@ impl FigstudioServer {
                         input.file_key.as_deref(),
                         move |doc, history, saved_rev, _| {
                             let (hash, _) = execute_import_image(doc, history, bytes)
-                                .map_err(McpError::open)?;
+                                .map_err(McpError::edit)?;
                             Ok(json!({
                                 "sha1Hex": hash,
                                 "revision": doc.revision,
@@ -350,11 +350,11 @@ impl FigstudioServer {
                 Err(e) => return tool_error(e),
             },
         };
-        let (doc, fkey, _) = match self.files().open_picked(key.as_deref()).await {
+        let (doc, fkey, path) = match self.files().open_picked(key.as_deref()).await {
             Ok(t) => t,
             Err(e) => return tool_error(e),
         };
-        to_call(editing::copy_for_figma(&doc, &ids, &fkey))
+        to_call(editing::copy_for_figma(&doc, &ids, &fkey, Some(&path)))
     }
 
     #[tool(
@@ -383,7 +383,7 @@ impl FigstudioServer {
                             .ok_or_else(|| McpError::app("document has no pages"))?;
                         let (roots, _) =
                             execute_paste_html(doc, history, &html, target_parent, offset)
-                                .map_err(McpError::open)?;
+                                .map_err(McpError::edit)?;
                         Ok(json!({
                             "pastedRootIds": roots.into_iter().map(|g| g.to_string()).collect::<Vec<_>>(),
                             "revision": doc.revision,
@@ -434,12 +434,12 @@ impl FigstudioServer {
                         move |doc, history, saved_rev, src_path| {
                             let saved_to = doc
                                 .save_copy_checked(Some(src_path), &out_clone, overwrite, true)
-                                .map_err(McpError::open)?;
-                            *saved_rev = history.state_id();
+                                .map_err(McpError::edit)?;
+                            // A copy does not hold the edits for the registered file.
                             Ok(json!({
                                 "savedPath": saved_to,
                                 "revision": doc.revision,
-                                "unsaved": false,
+                                "unsaved": history.state_id() != *saved_rev,
                                 "nodes": doc.nodes.len(),
                             }))
                         },

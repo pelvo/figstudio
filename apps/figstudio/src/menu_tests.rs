@@ -93,21 +93,18 @@ fn editing_actions_duplicate_delete_undo_redo_and_save_copy_round_trip() {
     h.state_mut().apply(Action::Redo, &ctx);
     assert!(h.state().tabs[0].doc.nodes.len() > orig_count);
 
-    // Save copy in test mode writes to temp_dir and clears dirty_unsaved.
+    // Save copy writes to temp_dir but keeps the tab unsaved: its own file lacks the edits.
     h.state_mut().apply(Action::SaveCopy, &ctx);
-    assert!(!h.state().tabs[0].dirty_unsaved);
-
-    // T16: Undoing after saving moves away from `saved_revision`, so `dirty_unsaved` MUST be true!
-    h.state_mut().apply(Action::Undo, &ctx);
     assert!(
         h.state().tabs[0].dirty_unsaved,
-        "undoing past saved_revision must mark tab dirty_unsaved"
+        "a saved copy must not clear the tab's unsaved state"
     );
+
+    // Undoing back to the opened state is clean; Redo makes it dirty again.
+    h.state_mut().apply(Action::Undo, &ctx);
+    assert!(!h.state().tabs[0].dirty_unsaved);
     h.state_mut().apply(Action::Redo, &ctx);
-    assert!(
-        !h.state().tabs[0].dirty_unsaved,
-        "redoing back to saved_revision must clear dirty_unsaved"
-    );
+    assert!(h.state().tabs[0].dirty_unsaved);
 
     // Reselect the duplicated layer, delete it, and undo it back.
     let dup_count = h.state().tabs[0].doc.nodes.len();
@@ -146,6 +143,7 @@ fn cmd_v_paste_event_creates_text_layer_or_pastes_figma_html() {
         &[figstudio_fig::Guid(1, 25)],
         1,
         None,
+        None,
     )
     .unwrap();
     let before_figma_paste = h.state().tabs[0].doc.nodes.len();
@@ -157,7 +155,7 @@ fn cmd_v_paste_event_creates_text_layer_or_pastes_figma_html() {
 
 #[cfg(feature = "mcp")]
 #[test]
-fn live_mcp_save_copy_enforces_path_safety_and_clears_dirty_unsaved() {
+fn live_mcp_save_copy_enforces_path_safety_and_keeps_tab_unsaved() {
     use figstudio_mcp::live::LiveMutation;
 
     let tmp_dir = tempfile::tempdir().unwrap();
@@ -212,7 +210,7 @@ fn live_mcp_save_copy_enforces_path_safety_and_clears_dirty_unsaved() {
         .is_err()
     );
 
-    // Valid save inside the tab's directory succeeds and clears `dirty_unsaved`!
+    // Valid save inside the tab's directory succeeds; the tab stays unsaved (its file lacks the edits).
     let valid_out = tmp_dir.path().join("live_copy.fig");
     let ok = crate::editor::handle_live_mutation(
         &mut h.state_mut().tabs,
@@ -223,8 +221,8 @@ fn live_mcp_save_copy_enforces_path_safety_and_clears_dirty_unsaved() {
         },
     )
     .expect("valid live SaveCopy");
-    assert_eq!(ok["unsaved"], serde_json::json!(false));
-    assert!(!h.state().tabs[0].dirty_unsaved);
+    assert_eq!(ok["unsaved"], serde_json::json!(true));
+    assert!(h.state().tabs[0].dirty_unsaved);
 
     // Second save without `overwrite: true` fails!
     assert!(
@@ -238,4 +236,76 @@ fn live_mcp_save_copy_enforces_path_safety_and_clears_dirty_unsaved() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn platform_paste_event_pastes_figma_markup_when_paste_is_rebound() {
+    let mut h = crate::ui_tests::harness();
+    let rebound = egui::KeyboardShortcut::new(
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT | egui::Modifiers::ALT,
+        egui::Key::V,
+    );
+    assert_eq!(
+        h.state_mut()
+            .prefs
+            .keymap
+            .set(crate::keymap::Binding::PasteFromFigma, Some(rebound)),
+        None,
+        "the test shortcut must be free"
+    );
+    let html = figstudio_fig::clipboard::encode_clipboard_html(
+        &h.state().tabs[0].doc,
+        &[figstudio_fig::Guid(1, 25)],
+        1,
+        None,
+        None,
+    )
+    .unwrap();
+    let before = h.state().tabs[0].doc.nodes.len();
+    h.state_mut().tabs[0].select(None);
+    h.event(egui::Event::Paste(html));
+    h.run_steps(2);
+    assert!(h.state().tabs[0].doc.nodes.len() > before);
+}
+
+#[test]
+fn closing_a_dirty_tab_asks_and_keeps_it_until_discard() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = crate::ui_tests::harness();
+    let ctx = egui::Context::default();
+    h.state_mut().tabs[0].select(Some(figstudio_fig::Guid(1, 25)));
+    h.state_mut().apply(Action::DuplicateSelection, &ctx);
+    assert!(h.state().tabs[0].dirty_unsaved);
+    let id = h.state().tabs[0].id;
+
+    h.state_mut().apply(Action::CloseTab, &ctx);
+    assert_eq!(h.state().tabs.len(), 1, "closed without asking");
+    assert_eq!(h.state().unsaved, Some(crate::unsaved::Pending::Tab(id)));
+    h.run_steps(2);
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    assert_eq!(h.state().tabs.len(), 1);
+    assert_eq!(h.state().unsaved, None);
+
+    h.state_mut().apply(Action::CloseTab, &ctx);
+    h.run_steps(2);
+    h.get_by_label("Discard edits").click();
+    h.run_steps(2);
+    assert!(h.state().tabs.is_empty());
+}
+
+#[test]
+fn quitting_with_unsaved_edits_asks_first() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = crate::ui_tests::harness();
+    let ctx = egui::Context::default();
+    h.state_mut().tabs[0].select(Some(figstudio_fig::Guid(1, 25)));
+    h.state_mut().apply(Action::DuplicateSelection, &ctx);
+    h.state_mut().apply(Action::Quit, &ctx);
+    assert_eq!(h.state().unsaved, Some(crate::unsaved::Pending::Quit));
+    assert!(!h.state().quit_confirmed);
+    h.run_steps(2);
+    h.get_by_label("Quit without saving").click();
+    h.run_steps(2);
+    assert!(h.state().quit_confirmed);
 }

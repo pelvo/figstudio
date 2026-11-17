@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::clipboard::{decode_clipboard_html, paste_kiwi_into};
-use crate::edit::autolayout::{append_auto_layout_patches, compute_auto_layout};
+use crate::edit::autolayout::append_auto_layout_patches;
 use crate::edit::styles_vars::import_image_bytes;
 use crate::edit::{Dirty, GuidAlloc, History, Txn};
 use crate::{Document, FigError, Guid};
@@ -65,8 +65,7 @@ pub fn execute_edit_ops(
     let mut al_adjustments = 0usize;
     for root in topmost_autolayout_ancestors(&staged, &touched_for_layout) {
         let mut al_txn = Txn::new("autolayout");
-        al_adjustments += compute_auto_layout(&staged, Some(root)).len();
-        append_auto_layout_patches(&staged, Some(root), &mut al_txn);
+        al_adjustments += append_auto_layout_patches(&staged, Some(root), &mut al_txn);
         if !al_txn.is_empty() {
             staged.apply_txn(&al_txn)?;
             merge_step_into_batch(&mut batch_txn, al_txn);
@@ -149,6 +148,11 @@ pub fn execute_paste_html(
 ) -> Result<(Vec<Guid>, Dirty), FigError> {
     let payload = decode_clipboard_html(html)?;
     let (mut batch_txn, roots) = paste_kiwi_into(doc, &payload.kiwi_bytes, target_parent, offset)?;
+    for (hash, bytes) in payload.images {
+        if !doc.images.contains_key(&hash) && !doc.lazy_images.contains_key(&hash) {
+            batch_txn.add_images.push((hash, bytes));
+        }
+    }
     let mut staged = clone_document_shell(doc);
     staged.apply_txn(&batch_txn)?;
     for al_root in topmost_autolayout_ancestors(&staged, &[target_parent]) {

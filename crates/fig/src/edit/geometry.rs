@@ -505,7 +505,9 @@ pub fn create_shape_node(
     let default_hex = match normalized_kind {
         "FRAME" => Some("#FFFFFF"),
         "SECTION" => Some("#F5F5F5"),
-        "GROUP" | "LINE" => None,
+        "GROUP" => None,
+        // Figma's default line: a 1px black centred stroke.
+        "LINE" => Some("#000000"),
         _ => Some("#D9D9D9"),
     };
     if let Some(hex_str) = params.fill_hex.as_deref().or(default_hex) {
@@ -544,8 +546,31 @@ pub fn resize_node_with_constraints(
     new_w: f64,
     new_h: f64,
 ) -> Result<(), FigError> {
-    let Some(node) = doc.node(node_id) else {
+    if doc.node(node_id).is_none() {
         return Err(FigError::malformed(format!("missing node {node_id}")));
+    }
+    // A worklist instead of recursion: a deep imported tree must not overflow the call stack.
+    let mut work = vec![(node_id, new_w, new_h)];
+    let mut seen = std::collections::HashSet::new();
+    while let Some((id, w, h)) = work.pop() {
+        if seen.insert(id) {
+            resize_one(doc, txn, id, w, h, &mut work);
+        }
+    }
+    Ok(())
+}
+
+/// Resizes one node and queues the constrained children whose size changes in `work`.
+fn resize_one(
+    doc: &Document,
+    txn: &mut Txn,
+    node_id: Guid,
+    new_w: f64,
+    new_h: f64,
+    work: &mut Vec<(Guid, f64, f64)>,
+) {
+    let Some(node) = doc.node(node_id) else {
+        return;
     };
     let old_w = node
         .data
@@ -580,7 +605,13 @@ pub fn resize_node_with_constraints(
             );
         }
     }
-    txn.modify(node_id, set, Vec::new());
+    // Stored glyph positions are for the old box; without them the renderer re-wraps the text.
+    let unset = if node.kind == "TEXT" && node.data.get("derivedTextData").is_some() {
+        vec!["derivedTextData".to_string()]
+    } else {
+        Vec::new()
+    };
+    txn.modify(node_id, set, unset);
 
     let is_stack = matches!(
         node.data.text("stackMode"),
@@ -633,10 +664,9 @@ pub fn resize_node_with_constraints(
             txn.set_field(child_id, "transform", tf);
         }
         if size_changed {
-            resize_node_with_constraints(doc, txn, child_id, nw, nh)?;
+            work.push((child_id, nw, nh));
         }
     }
-    Ok(())
 }
 
 fn solve_1d_constraint(

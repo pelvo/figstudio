@@ -4,14 +4,15 @@ use crate::edit::geometry::{
     PathCmd, encode_path_commands, make_path_entry, matrix_2x3, rebuild_shape_geometry,
 };
 use crate::edit::instances::{
-    convert_frame_to_component, detach_instance, instantiate_component, reset_instance_override,
-    set_component_prop_assignment, set_instance_override, swap_instance_symbol,
-    switch_instance_variant,
+    convert_frame_to_component, detach_instance, existing_override_field, instantiate_component,
+    reset_instance_override, set_component_prop_assignment, set_instance_override,
+    swap_instance_symbol, switch_instance_variant,
 };
 use crate::edit::styles_vars::{
     bind_paint_color_variable, bind_style, create_local_style, hex_paint,
     set_explicit_variable_mode, set_variable_mode_value,
 };
+use crate::edit::text_runs::replace_characters;
 use crate::edit::vector_net::{
     boolean_combine, decode_vector_network, encode_vector_network, network_to_fill_paths,
 };
@@ -41,10 +42,14 @@ pub(super) fn compile_component_or_vector_op(
             let mut fields = Obj::new();
             let mut unset = Vec::new();
             if let Some(chars) = characters {
-                fields.insert(
-                    "textData",
-                    Val::Obj(Obj::from([("characters", Val::Str(chars.clone()))])),
-                );
+                // Start from the override's current textData so its other fields survive.
+                let mut td =
+                    match existing_override_field(doc, *instance, override_path, "textData") {
+                        Some(Val::Obj(o)) => o,
+                        _ => Obj::new(),
+                    };
+                replace_characters(&mut td, chars);
+                fields.insert("textData", Val::Obj(td));
                 unset.push("derivedTextData".into());
             }
             if let Some(v) = visible {

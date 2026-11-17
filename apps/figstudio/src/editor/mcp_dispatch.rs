@@ -141,7 +141,7 @@ fn execute_tab_mutation(tab: &mut Tab, cmd: TabMutation) -> Result<Value, String
                 .doc
                 .save_copy_checked(lazy_src, &out_path, overwrite, true)
                 .map_err(|e| e.to_string())?;
-            tab.mark_saved();
+            // A copy does not hold the tab's edits: the tab stays unsaved.
             Ok(json!({
                 "savedPath": saved_to,
                 "revision": tab.doc.revision,

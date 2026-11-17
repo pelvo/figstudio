@@ -609,7 +609,13 @@ fn run(args: Args) -> Result<()> {
         }
         "clip" => {
             let node = args.node.context("clip encode needs --node <id>")?;
-            let html = figstudio_fig::clipboard::encode_clipboard_html(&doc, &[node], 1, None)?;
+            let html = figstudio_fig::clipboard::encode_clipboard_html(
+                &doc,
+                &[node],
+                1,
+                None,
+                Some(&args.file),
+            )?;
             if let Some(out) = &args.out {
                 std::fs::write(out, &html)?;
                 println!("{} ({} bytes)", out.display(), html.len());

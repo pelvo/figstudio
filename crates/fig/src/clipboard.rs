@@ -35,6 +35,54 @@ fn default_data_type() -> String {
 pub struct ClipboardPayload {
     pub meta: FigMeta,
     pub kiwi_bytes: Vec<u8>,
+    /// Image bytes by lowercase SHA-1 hex, from figstudio's own `(figstudio-images)` span.
+    /// Figma's clipboard carries only hashes, so this is empty for a paste from Figma.
+    pub images: Vec<(String, Vec<u8>)>,
+}
+
+/// Image bytes referenced by `nodes`, by lowercase SHA-1 hex, read from `doc.images` or (for a
+/// lazily opened document) from `lazy_source`.
+fn referenced_images(
+    doc: &Document,
+    nodes: &[Node],
+    lazy_source: Option<&std::path::Path>,
+) -> Vec<(String, Vec<u8>)> {
+    let mut hashes: Vec<String> = Vec::new();
+    let mut stack: Vec<&Val> = nodes.iter().map(|n| &n.data).collect();
+    while let Some(v) = stack.pop() {
+        match v.view() {
+            Val::Obj(o) => {
+                if let Some(h) = o.get("hash").and_then(Val::as_bytes)
+                    && h.len() == 20
+                {
+                    let h = hex::encode(h);
+                    if !hashes.contains(&h) {
+                        hashes.push(h);
+                    }
+                }
+                stack.extend(o.values());
+            }
+            Val::Arr(a) => stack.extend(a.iter()),
+            _ => {}
+        }
+    }
+    let mut lazy_file = None;
+    hashes
+        .into_iter()
+        .filter_map(|h| {
+            if let Some(b) = doc.images.get(&h) {
+                return Some((h, b.clone()));
+            }
+            let entry = doc.lazy_images.get(&h)?;
+            // shortcut: without a source path (the browser build) lazy images are left out;
+            // pass a reader if browser copy must carry them.
+            if lazy_file.is_none() {
+                lazy_file = Some(std::fs::File::open(lazy_source?).ok()?);
+            }
+            let bytes = crate::archive::read_entry(lazy_file.as_mut()?, entry).ok()?;
+            Some((h, bytes))
+        })
+        .collect()
 }
 
 /// Encodes `roots` and all of their transitive local dependencies (`SYMBOL` masters, styles,
@@ -45,6 +93,16 @@ pub fn encode_subset_kiwi(
     paste_id: i32,
     file_key: &str,
 ) -> Result<Vec<u8>, FigError> {
+    encode_subset(doc, roots, paste_id, file_key).map(|(kiwi, _)| kiwi)
+}
+
+/// [`encode_subset_kiwi`], also returning the copied nodes.
+fn encode_subset(
+    doc: &Document,
+    roots: &[Guid],
+    paste_id: i32,
+    file_key: &str,
+) -> Result<(Vec<u8>, Vec<Node>), FigError> {
     if roots.is_empty() {
         return Err(FigError::malformed("cannot copy an empty selection"));
     }
@@ -264,16 +322,21 @@ pub fn encode_subset_kiwi(
             cached_schema: std::sync::OnceLock::new(),
         },
     };
-    sub_doc.set_nodes(out_nodes)?;
-    sub_doc.encode_canvas()
+    sub_doc.set_nodes(out_nodes.clone())?;
+    Ok((sub_doc.encode_canvas()?, out_nodes))
 }
 
 /// Encodes `roots` into the exact `text/html` clipboard string Figma reads on `⌘V` / `⌘⇧R`.
+///
+/// The bytes of referenced images go in an extra `(figstudio-images)` span (Figma ignores it)
+/// so a paste into another figstudio document keeps them. `lazy_source` is the file a lazily
+/// opened `doc` reads its images from.
 pub fn encode_clipboard_html(
     doc: &Document,
     roots: &[Guid],
     paste_id: i32,
     file_key: Option<&str>,
+    lazy_source: Option<&std::path::Path>,
 ) -> Result<String, FigError> {
     let key = file_key
         .map(str::to_owned)
@@ -286,7 +349,22 @@ pub fn encode_clipboard_html(
         })
         .unwrap_or_else(|| "figstudio".into());
 
-    let kiwi = encode_subset_kiwi(doc, roots, paste_id, &key)?;
+    let (kiwi, nodes) = encode_subset(doc, roots, paste_id, &key)?;
+    let images = referenced_images(doc, &nodes, lazy_source);
+    let images_span = if images.is_empty() {
+        String::new()
+    } else {
+        let map: BTreeMap<&str, String> = images
+            .iter()
+            .map(|(h, b)| (h.as_str(), B64.encode(b)))
+            .collect();
+        let json = serde_json::to_vec(&map)
+            .map_err(|e| FigError::malformed(format!("cannot serialize images: {e}")))?;
+        format!(
+            "<span data-figstudio-images=\"{IMAGES_START}{}{IMAGES_END}\"></span>",
+            B64.encode(json)
+        )
+    };
     let meta = FigMeta {
         file_key: key,
         paste_id,
@@ -306,7 +384,7 @@ pub fn encode_clipboard_html(
     let plain = html_escape::encode_text(&joined_label);
 
     Ok(format!(
-        "<meta charset=\"utf-8\"><span data-metadata=\"<!--(figmeta){meta_b64}(/figmeta)-->\"></span><span data-buffer=\"<!--(figma){kiwi_b64}(/figma)-->\"></span><span style=\"white-space:pre-wrap;\">{plain}</span>"
+        "<meta charset=\"utf-8\"><span data-metadata=\"<!--(figmeta){meta_b64}(/figmeta)-->\"></span><span data-buffer=\"<!--(figma){kiwi_b64}(/figma)-->\"></span>{images_span}<span style=\"white-space:pre-wrap;\">{plain}</span>"
     ))
 }
 
@@ -333,8 +411,36 @@ pub fn decode_clipboard_html(html: &str) -> Result<ClipboardPayload, FigError> {
         FigMeta::default()
     };
 
-    Ok(ClipboardPayload { meta, kiwi_bytes })
+    let mut images = Vec::new();
+    if let Some(b64) = extract_marker(&unescaped, IMAGES_START, IMAGES_END) {
+        let json = B64
+            .decode(b64.trim())
+            .map_err(|e| FigError::malformed(format!("invalid base64 in images span: {e}")))?;
+        let map: BTreeMap<String, String> = serde_json::from_slice(&json)
+            .map_err(|e| FigError::malformed(format!("invalid images span JSON: {e}")))?;
+        for (hash, b64) in map {
+            let bytes = B64
+                .decode(b64)
+                .map_err(|e| FigError::malformed(format!("invalid base64 image {hash}: {e}")))?;
+            // Clipboard text is untrusted: an image is only accepted under its own hash.
+            if crate::sha1::sha1_hex(&bytes) != hash {
+                return Err(FigError::malformed(format!(
+                    "clipboard image does not match its hash {hash}"
+                )));
+            }
+            images.push((hash, bytes));
+        }
+    }
+
+    Ok(ClipboardPayload {
+        meta,
+        kiwi_bytes,
+        images,
+    })
 }
+
+const IMAGES_START: &str = "<!--(figstudio-images)";
+const IMAGES_END: &str = "(/figstudio-images)-->";
 
 /// Pastes a decoded [`ClipboardPayload`] (or raw `fig-kiwi` bytes via [`Document::from_bytes`])
 /// into `target_doc` under `target_parent` (a `CANVAS`, `FRAME`, `SECTION`, or `GROUP`),
@@ -347,6 +453,24 @@ pub fn paste_kiwi_into(
     target_parent: Guid,
     offset: (f64, f64),
 ) -> Result<(Txn, Vec<Guid>), FigError> {
+    paste_kiwi_into_with(
+        target_doc,
+        kiwi_bytes,
+        target_parent,
+        offset,
+        &mut GuidAlloc::for_document(target_doc),
+    )
+}
+
+/// [`paste_kiwi_into`] drawing new guids from `alloc`, so a batch that pastes and then
+/// creates more nodes never hands out the same guid twice.
+pub(crate) fn paste_kiwi_into_with(
+    target_doc: &Document,
+    kiwi_bytes: &[u8],
+    target_parent: Guid,
+    offset: (f64, f64),
+    alloc: &mut GuidAlloc,
+) -> Result<(Txn, Vec<Guid>), FigError> {
     if target_doc.node(target_parent).is_none() {
         return Err(FigError::malformed(format!(
             "target parent {target_parent} does not exist"
@@ -355,7 +479,6 @@ pub fn paste_kiwi_into(
     let src_doc = Document::from_bytes(kiwi_bytes)?;
     let target_schema = target_doc.decoded_schema()?;
 
-    let mut alloc = GuidAlloc::for_document(target_doc);
     let mut txn = Txn::new("Paste from Figma clipboard");
 
     // Append source blobs at `blob_base`.
@@ -387,6 +510,7 @@ pub fn paste_kiwi_into(
                     existing_by_key.get(&(dep_node.kind.clone(), key.to_string()))
             {
                 guid_map.insert(dep_root, existing_id);
+                map_reused_subtree(&src_doc, dep_root, target_doc, existing_id, &mut guid_map);
                 collect_subtree_set(&src_doc, dep_root, &mut skip_subtrees);
                 continue;
             }
@@ -542,6 +666,46 @@ pub fn paste_kiwi_into(
     }
 
     Ok((txn, pasted_roots))
+}
+
+/// Maps the descendants of a source master onto those of the existing master it is reused
+/// as, so pasted references and override `guidPath`s reach the existing nodes. An earlier
+/// paste copied the subtree node for node, so the pre-orders line up; otherwise only nodes
+/// with a matching explicit `overrideKey` are mapped.
+fn map_reused_subtree(
+    src_doc: &Document,
+    src_root: Guid,
+    target_doc: &Document,
+    target_root: Guid,
+    guid_map: &mut HashMap<Guid, Guid>,
+) {
+    let mut src = Vec::new();
+    collect_subtree_preorder(src_doc, src_root, &mut HashSet::new(), &mut src);
+    let mut dst = Vec::new();
+    collect_subtree_preorder(target_doc, target_root, &mut HashSet::new(), &mut dst);
+    let kind = |d: &Document, g: Guid| d.node(g).map(|n| n.kind.clone());
+    let same_shape = src.len() == dst.len()
+        && src
+            .iter()
+            .zip(&dst)
+            .all(|(&s, &d)| kind(src_doc, s) == kind(target_doc, d));
+    if same_shape {
+        guid_map.extend(src.into_iter().zip(dst));
+        return;
+    }
+    let explicit_key = |d: &Document, g: Guid| {
+        d.node(g)
+            .and_then(|n| n.data.get("overrideKey").and_then(Val::as_guid))
+    };
+    let by_key: HashMap<Guid, Guid> = dst
+        .iter()
+        .filter_map(|&g| explicit_key(target_doc, g).map(|k| (k, g)))
+        .collect();
+    for s in src {
+        if let Some(&d) = explicit_key(src_doc, s).and_then(|k| by_key.get(&k)) {
+            guid_map.insert(s, d);
+        }
+    }
 }
 
 fn collect_subtree_preorder(

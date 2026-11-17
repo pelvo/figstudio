@@ -157,6 +157,15 @@ fn validate_value(schema: &Schema, type_id: i32, v: &Val, at: &str) -> Result<()
                         };
                         validate_field(schema, f, fv, &format!("{at}.{}", f.name))?;
                     }
+                    // The writer encodes only the schema's fields, so an extra one would be lost.
+                    if let Val::Obj(obj) = v
+                        && let Some(k) = obj.keys().find(|k| def.field(k).is_none())
+                    {
+                        return Err(FigError::malformed(format!(
+                            "{at}: struct {} has no field {k}",
+                            def.name
+                        )));
+                    }
                     Ok(())
                 }
                 DefKind::Message => {

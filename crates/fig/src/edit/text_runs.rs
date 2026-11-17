@@ -192,6 +192,22 @@ pub fn create_text_node(
     Ok(new_id)
 }
 
+/// Sets `characters` in a `textData` object, keeping its other fields but dropping the
+/// per-character runs and glyph caches that indexed the old text.
+pub(crate) fn replace_characters(td: &mut Obj, new_text: &str) {
+    td.insert("characters", Val::Str(new_text.into()));
+    for stale in [
+        "characterStyleIDs",
+        "styleOverrideTable",
+        "glyphs",
+        "baselines",
+        "lines",
+        "derivedLines",
+    ] {
+        td.remove(stale);
+    }
+}
+
 /// Replaces the full text of `node_id`, dropping stale `derivedTextData` and resizing the box
 /// according to `textAutoResize`.
 pub fn set_text_plain(
@@ -217,13 +233,7 @@ pub fn set_text_plain(
         .unwrap_or_else(|| Val::Obj(Obj::new()))
         .into_owned();
     if let Val::Obj(ref mut tdo) = td {
-        tdo.insert("characters", Val::Str(new_text.into()));
-        tdo.remove("characterStyleIDs");
-        tdo.remove("styleOverrideTable");
-        tdo.remove("glyphs");
-        tdo.remove("baselines");
-        tdo.remove("lines");
-        tdo.remove("derivedLines");
+        replace_characters(tdo, new_text);
     }
     set.insert("textData", td);
     if node.data.flag("autoRename") == Some(true) {
@@ -316,14 +326,18 @@ pub fn apply_text_range_style(
         .iter()
         .filter_map(|e| e.get("styleID").and_then(Val::as_u32))
         .max()
-        .unwrap_or(0)
-        + 1;
+        .unwrap_or(0);
+    let overflow = || FigError::malformed("text style IDs exhausted (styleID at u32::MAX)");
 
     // Cache derived style ID per base style ID within the range so contiguous runs share one entry.
     let mut derived_for_base: HashMap<u32, u32> = HashMap::new();
     for slot in &mut style_ids[utf16_start..utf16_end] {
         let base_id = *slot;
-        let mapped = *derived_for_base.entry(base_id).or_insert_with(|| {
+        if let Some(&mapped) = derived_for_base.get(&base_id) {
+            *slot = mapped;
+            continue;
+        }
+        let mapped = {
             let mut obj = table
                 .iter()
                 .find(|e| e.get("styleID").and_then(Val::as_u32) == Some(base_id))
@@ -332,13 +346,14 @@ pub fn apply_text_range_style(
                     _ => None,
                 })
                 .unwrap_or_default();
-            let sid = next_id;
-            next_id += 1;
-            obj.insert("styleID", Val::Int(i64::from(sid)));
+            // 0 is the unstyled sentinel, so a wrap would silently drop the style.
+            next_id = next_id.checked_add(1).ok_or_else(overflow)?;
+            obj.insert("styleID", Val::Int(i64::from(next_id)));
             patch.apply_to_override_obj(&mut obj);
             table.push(Val::Obj(obj));
-            sid
-        });
+            next_id
+        };
+        derived_for_base.insert(base_id, mapped);
         *slot = mapped;
     }
 

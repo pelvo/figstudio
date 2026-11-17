@@ -117,6 +117,7 @@ mod tiles;
 mod tiles_view;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod ui_tests;
+mod unsaved;
 #[cfg(not(target_arch = "wasm32"))]
 mod update;
 #[cfg(not(target_arch = "wasm32"))]
@@ -574,6 +575,10 @@ struct App {
     workspace_store: session_store::Store,
     /// Text payload captured from `egui::Event::Paste` when `⌘V` / `Ctrl+V` fires on the canvas.
     pending_paste_text: Option<String>,
+    /// A close or quit waiting for the user's answer about unsaved edits (`unsaved.rs`).
+    unsaved: Option<unsaved::Pending>,
+    /// The user chose to quit without saving: the next window close goes through.
+    quit_confirmed: bool,
     /// Shader code for open files (`shader_code.rs`).
     shader_code: shader_code::State,
 }
@@ -682,6 +687,8 @@ impl App {
             dot_in_view: (0, 0.0),
             find: Default::default(),
             pending_paste_text: None,
+            unsaved: None,
+            quit_confirmed: false,
             shader_code: Default::default(),
             #[cfg(target_os = "macos")]
             vibrancy: None,
@@ -825,7 +832,8 @@ impl App {
         self.tabs.get_mut(self.active)
     }
 
-    fn close(&mut self, i: usize) {
+    /// Closes tab `i` without asking (see `close` in `unsaved.rs`).
+    fn close_now(&mut self, i: usize) {
         if i < self.tabs.len() {
             let previous = self.tabs.get(self.active).map(|t| t.id);
             // A space popover on this file saves first: its style lives only on the tab.
@@ -944,10 +952,10 @@ impl App {
     }
 
     /// Saves a `.fig` copy of the active tab (never overwriting the original unless explicitly
-    /// picked in the save dialog).
-    fn save_copy(&mut self, ctx: &egui::Context) {
+    /// picked in the save dialog). Returns whether a copy was written.
+    fn save_copy(&mut self, ctx: &egui::Context) -> bool {
         let Some(tab) = self.tabs.get(self.active) else {
-            return;
+            return false;
         };
         let stem = tab.title().replace(['/', '\\'], "_");
         let default_name = format!("{stem}-edited.fig");
@@ -957,14 +965,18 @@ impl App {
                 Ok(bytes) => match web::download(&default_name, "application/octet-stream", &bytes)
                 {
                     Ok(()) => {
-                        if let Some(t) = self.tabs.get_mut(self.active) {
-                            t.mark_saved();
-                        }
                         self.toast(ctx, format!("Downloaded {default_name}"), false);
+                        true
                     }
-                    Err(e) => self.toast(ctx, e.to_string(), true),
+                    Err(e) => {
+                        self.toast(ctx, e.to_string(), true);
+                        false
+                    }
                 },
-                Err(e) => self.toast(ctx, e.to_string(), true),
+                Err(e) => {
+                    self.toast(ctx, e.to_string(), true);
+                    false
+                }
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -984,17 +996,19 @@ impl App {
                 dialog.save_file()
             };
             let Some(path) = chosen else {
-                return;
+                return false;
             };
             let lazy_src = tab.real_path.exists().then_some(tab.real_path.as_path());
             match tab.doc.save_copy_checked(lazy_src, &path, true, false) {
+                // A copy does not hold the tab's edits: the tab stays unsaved.
                 Ok(saved_to) => {
-                    if let Some(t) = self.tabs.get_mut(self.active) {
-                        t.mark_saved();
-                    }
                     self.toast(ctx, format!("Saved copy to {}", saved_to.display()), false);
+                    true
                 }
-                Err(e) => self.toast(ctx, format!("Could not save copy: {e}"), true),
+                Err(e) => {
+                    self.toast(ctx, format!("Could not save copy: {e}"), true);
+                    false
+                }
             }
         }
     }
@@ -1383,7 +1397,9 @@ impl App {
                     i.events.retain(|e| !matches!(e, egui::Event::Copy));
                     i.consume_shortcut(&shortcut) || copy
                 }
-                B::PasteFromFigma if default => {
+                // The platform's paste arrives as `Event::Paste` (no key event), so it pastes
+                // whatever the binding's own shortcut is.
+                B::PasteFromFigma => {
                     let mut pasted = None;
                     i.events.retain(|e| match e {
                         egui::Event::Paste(s) => {
@@ -1608,6 +1624,7 @@ impl App {
         self.native_events(&ctx);
         // Ahead of the shortcuts: the dialog's Escape must be consumed first.
         self.mcp.confirm(&ctx);
+        self.unsaved_confirm(&ctx);
         // Before anything this frame moves focus (the command field, the welcome sheet): a
         // modal that opened remembers what had focus; one that closed gives it back at the
         // end of the frame (`give_focus_back`).

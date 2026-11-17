@@ -1974,7 +1974,7 @@ impl Ctx<'_> {
             } else if let Some(ring) = ring {
                 self.paint_paths(data, "strokePaints", &[ring], world, w, h);
             } else if let (Some(weight), Some(shape)) =
-                (data.num("strokeWeight"), base_shape(kind, data))
+                (data.num("strokeWeight"), geom::stroke_shape(kind, data))
                 && weight > 0.0
             {
                 let width = f64::from(weight) * if aligned.is_some() { 2.0 } else { 1.0 };
