@@ -1,6 +1,11 @@
 //! Asks before closing a file, or quitting, would drop edits that are in no file.
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
+
 use crate::App;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::update;
 
 /// A close waiting for the user's answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +39,21 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         } else {
             self.unsaved = Some(Pending::Quit);
+        }
+    }
+
+    /// Restarts into the updated bundle, first asking when any tab has unsaved edits: a
+    /// restart quits, so it drops them like a quit does.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn restart(&mut self, bundle: PathBuf, ctx: &egui::Context) {
+        if !self.quit_confirmed && self.any_unsaved() {
+            self.restart_after_quit = Some(bundle);
+            self.unsaved = Some(Pending::Quit);
+            return;
+        }
+        match update::relaunch(&bundle) {
+            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Err(e) => self.toast(ctx, format!("{e:#}"), true),
         }
     }
 
@@ -107,9 +127,19 @@ impl App {
             return;
         };
         self.unsaved = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        let restart = self.restart_after_quit.take();
         match (pending, reply) {
             (_, Reply::Cancel) => {}
             (Pending::Quit, _) => {
+                // A restart that cannot be scheduled does not quit (as without edits).
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(bundle) = restart
+                    && let Err(e) = update::relaunch(&bundle)
+                {
+                    self.toast(ctx, format!("{e:#}"), true);
+                    return;
+                }
                 self.quit_confirmed = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -132,3 +162,7 @@ impl App {
         }
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "unsaved_tests.rs"]
+mod tests;

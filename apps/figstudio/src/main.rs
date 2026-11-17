@@ -579,6 +579,10 @@ struct App {
     unsaved: Option<unsaved::Pending>,
     /// The user chose to quit without saving: the next window close goes through.
     quit_confirmed: bool,
+    /// An update restart waiting on the unsaved-edits question: the bundle to start once
+    /// the user agrees to quit.
+    #[cfg(not(target_arch = "wasm32"))]
+    restart_after_quit: Option<PathBuf>,
     /// Shader code for open files (`shader_code.rs`).
     shader_code: shader_code::State,
 }
@@ -689,6 +693,8 @@ impl App {
             pending_paste_text: None,
             unsaved: None,
             quit_confirmed: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            restart_after_quit: None,
             shader_code: Default::default(),
             #[cfg(target_os = "macos")]
             vibrancy: None,
@@ -1304,6 +1310,10 @@ impl App {
         // none, so a shortcut pressed right after closing it works).
         if self.onboarding.sheet_open() {
             self.welcome_keys(ctx);
+            return;
+        }
+        // The unsaved-edits question is modal: its own buttons and Escape only.
+        if self.unsaved.is_some() {
             return;
         }
         let keys = |b: keymap::Binding| self.prefs.keymap.get(b);
