@@ -12,6 +12,7 @@ mod compile_props;
 mod compile_tree;
 
 pub use crate::edit::guid_wire;
+pub(crate) use batch::merge_step_into_batch;
 pub use batch::{
     describe_edit_ops_markdown, execute_edit_ops, execute_import_image, execute_paste_html,
 };

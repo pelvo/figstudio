@@ -3,11 +3,13 @@
 pub mod autolayout;
 pub mod fractional;
 pub mod geometry;
+pub mod groups;
 pub mod guid;
 pub mod guid_wire;
 pub mod instances;
 pub mod ops;
 pub mod schema_check;
+pub mod space;
 pub mod styles_vars;
 pub mod text_runs;
 pub mod txn;

@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use crate::clipboard::{decode_clipboard_html, paste_kiwi_into};
 use crate::edit::autolayout::append_auto_layout_patches;
+use crate::edit::groups::fit_groups;
 use crate::edit::styles_vars::import_image_bytes;
 use crate::edit::{Dirty, GuidAlloc, History, Txn};
 use crate::{Document, FigError, Guid};
@@ -60,8 +61,13 @@ pub fn execute_edit_ops(
         }
     }
 
-    // Derive Pass: solve Auto-Layout strictly on the topmost Auto-Layout ancestors of touched
-    // nodes — never across unrelated frames or pages in the document!
+    // Derive passes. Groups first: a refitted group can change an Auto-Layout parent's content.
+    let mut group_touched: Vec<Guid> = batch_txn.patches.iter().map(|(id, _)| *id).collect();
+    group_touched.extend_from_slice(&touched_for_layout);
+    let fitted = fit_groups(&mut staged, &group_touched, &mut batch_txn)?;
+    touched_for_layout.extend(fitted);
+    // Auto-Layout strictly on the topmost Auto-Layout ancestors of touched nodes, never across
+    // unrelated frames or pages.
     let mut al_adjustments = 0usize;
     for root in topmost_autolayout_ancestors(&staged, &touched_for_layout) {
         let mut al_txn = Txn::new("autolayout");
@@ -155,7 +161,9 @@ pub fn execute_paste_html(
     }
     let mut staged = clone_document_shell(doc);
     staged.apply_txn(&batch_txn)?;
-    for al_root in topmost_autolayout_ancestors(&staged, &[target_parent]) {
+    let mut touched = vec![target_parent];
+    touched.extend(fit_groups(&mut staged, &[target_parent], &mut batch_txn)?);
+    for al_root in topmost_autolayout_ancestors(&staged, &touched) {
         let mut al_txn = Txn::new("Paste Auto-Layout");
         append_auto_layout_patches(&staged, Some(al_root), &mut al_txn);
         if !al_txn.is_empty() {
@@ -214,7 +222,7 @@ fn topmost_autolayout_ancestors(doc: &Document, touched: &[Guid]) -> Vec<Guid> {
     roots
 }
 
-pub(super) fn merge_step_into_batch(batch: &mut Txn, step: Txn) {
+pub(crate) fn merge_step_into_batch(batch: &mut Txn, step: Txn) {
     batch.patches.extend(step.patches);
     batch.add_blobs.extend(step.add_blobs);
     for (h, b) in step.add_images {

@@ -44,7 +44,7 @@ Shared pieces the later ops need.
 | World geometry in `crates/fig` | `edit::geometry::world_transform(doc, id)` and `layer_bounds(doc, id, space)` (transform × size, rotation included; no stroke or effect outsets, as Figma aligns on layer bounds). `crates/render` keeps its own; a test checks they agree. |
 | Groups as Figma stores them | Saved files have no `GROUP` node type: a group is a `FRAME` with `resizeToFit: true` and no fills (306 in the fixtures). `create_shape GROUP` is changed to write that. |
 | Group fitting pass | A derive pass, like the Auto-Layout one: after a batch, every group ancestor of a touched node is refitted to the union of its children's bounds, and the children's translations are compensated so nothing moves on the page. It runs before Auto-Layout and is part of the same undo entry. |
-| Typed specs | `PaintSpec`, `EffectSpec`, `StrokeSpec`, `TypographySpec` (serde, in `edit::specs`) shared by ops, MCP JSON and GUI. Converting to `Val` fills only the fields the spec sets. |
+| Typed specs | `PaintSpec`, `EffectSpec`, `StrokeSpec`, `TypographySpec` (serde, in `edit::specs`) shared by ops, MCP JSON and GUI. Converting to `Val` fills only the fields the spec sets. Added with the E1 ops that use them, so none sits unused. |
 
 **Done when:** moving a child of a group refits the group, keeps every page position, and
 undoes in one step; `world_transform` matches `figstudio_render::absolute_transform` on every
