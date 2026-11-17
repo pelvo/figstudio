@@ -106,8 +106,12 @@ Checklist: `scripts/plan.sh show P5` (items live in `docs/plans/`, one file per 
 ### Deferred image formats
 Checklist: `scripts/plan.sh show Deferred` (items live in `docs/plans/`, one file per branch).
 
-### P6 — Editing (later, not started until asked)
+### P6 — Editing (plan in `docs/EDITING-PLAN.md`)
 Checklist: `scripts/plan.sh show P6` (items live in `docs/plans/`, one file per branch).
+
+Started on request (2026-11-17), in a follow-up PR stacked on PR #90: the engine is completed first (E0–E3, every
+capability an `EditOp` usable over MCP), then the controls (U1–U8). Each phase's **Done when**
+is in `docs/EDITING-PLAN.md`.
 
 ### P7 — Offline MCP server (`apps/figstudio-mcp`, plan in `docs/MCP-PLAN.md`)
 Checklist: `scripts/plan.sh show P7` (items live in `docs/plans/`, one file per branch).
