@@ -35,6 +35,14 @@ impl App {
 
     /// Quits, first asking when any tab has unsaved edits.
     pub(crate) fn quit(&mut self, ctx: &egui::Context) {
+        self.quit_for(ctx, cfg!(target_arch = "wasm32"));
+    }
+
+    /// Quits on desktop; no-op in the browser build where `ViewportCommand::Close` is ignored.
+    pub(crate) fn quit_for(&mut self, ctx: &egui::Context, browser: bool) {
+        if browser {
+            return;
+        }
         if self.quit_confirmed || !self.any_unsaved() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         } else {
@@ -57,7 +65,8 @@ impl App {
         }
     }
 
-    fn any_unsaved(&self) -> bool {
+    /// Whether any open tab has edits that are not saved to its file.
+    pub(crate) fn any_unsaved(&self) -> bool {
         self.tabs.iter().any(|t| t.dirty_unsaved)
     }
 
@@ -132,6 +141,9 @@ impl App {
         match (pending, reply) {
             (_, Reply::Cancel) => {}
             (Pending::Quit, _) => {
+                if cfg!(target_arch = "wasm32") {
+                    return;
+                }
                 // A restart that cannot be scheduled does not quit (as without edits).
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(bundle) = restart

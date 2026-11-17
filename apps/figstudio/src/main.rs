@@ -1599,6 +1599,7 @@ impl eframe::App for App {
         gpu::cap_window(ui.ctx(), &mut self.window_cap);
         #[cfg(target_arch = "wasm32")]
         {
+            web::set_unsaved(self.any_unsaved());
             web::cap_canvas(ui.ctx().input(|i| i.max_texture_side));
             web::publish_status(&self.status_json());
         }

@@ -139,6 +139,11 @@ impl Item {
 }
 
 pub(crate) fn tree(app: &App) -> Vec<Item> {
+    tree_for(app, cfg!(target_arch = "wasm32"))
+}
+
+/// Menu items for desktop (`browser == false`) or browser (`browser == true`).
+pub(crate) fn tree_for(app: &App, browser: bool) -> Vec<Item> {
     let has_tab = app.tabs.get(app.active).is_some();
     let selection = app
         .tabs
@@ -254,7 +259,7 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
         Item::action(
             "Copy for Figma",
             Action::CopyForFigma,
-            selection && cfg!(not(target_arch = "wasm32")),
+            selection && !browser,
         ),
         Item::action("Paste from Figma", Action::PasteFromFigma, has_tab),
         Item::action("Duplicate layer", Action::DuplicateSelection, selection),
@@ -278,7 +283,7 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                 Item::separator(),
                 Item::action("Close file", Action::CloseTab, has_tab),
                 Item::action("Settings…", Action::Settings, true),
-                Item::action("Quit", Action::Quit, true),
+                Item::action("Quit", Action::Quit, !browser),
             ],
         ),
         Item::group("Edit", edit),

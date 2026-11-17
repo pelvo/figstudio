@@ -12,7 +12,7 @@
 //!
 //! Page setup is in `web/index.html`; build with `scripts/web-build.sh`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -41,6 +41,7 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
     // Before eframe's own drop listener: a dropped file's handle is only there during the
     // event (Recents keeps it to open the file again).
     crate::recents_web::watch_drops();
+    watch_before_unload();
     CANVAS.with(|c| *c.borrow_mut() = Some((canvas.clone(), 0.0)));
     runner
         .start(
@@ -84,6 +85,36 @@ fn follow_reduced_motion(ctx: &egui::Context) {
     let _ = query.add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
     // Lives as long as the page.
     on_change.forget();
+}
+
+thread_local! {
+    /// Updated each frame from `App::any_unsaved()` so `beforeunload` can decide synchronously.
+    static UNSAVED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Records whether any open browser tab currently has unsaved edits.
+pub fn set_unsaved(unsaved: bool) {
+    UNSAVED.set(unsaved);
+}
+
+/// Asks before leaving or reloading the browser tab while any open file has unsaved edits.
+fn watch_before_unload() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let on_unload = Closure::<dyn FnMut(web_sys::BeforeUnloadEvent)>::new(
+        |event: web_sys::BeforeUnloadEvent| {
+            if UNSAVED.get() {
+                event.prevent_default();
+                // Older browsers require a non-empty returnValue to show the confirmation prompt.
+                event.set_return_value("unsaved");
+            }
+        },
+    );
+    let _ =
+        window.add_event_listener_with_callback("beforeunload", on_unload.as_ref().unchecked_ref());
+    // Lives as long as the page.
+    on_unload.forget();
 }
 
 /// Logs go to the browser console. No ANSI colours and no timestamps (the browser has no

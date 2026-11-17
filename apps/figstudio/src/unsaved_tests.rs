@@ -79,3 +79,45 @@ fn an_update_restart_asks_about_unsaved_edits_before_scheduling_the_restart() {
     assert_eq!(h.state().unsaved, None);
     assert!(!h.state().quit_confirmed);
 }
+
+fn find_action(items: &[crate::menu::Item], action: Action) -> Option<&crate::menu::Item> {
+    items.iter().find_map(|item| {
+        if item.action == Some(action) {
+            Some(item)
+        } else {
+            find_action(&item.children, action)
+        }
+    })
+}
+
+#[test]
+fn browser_disables_quit_and_tracks_unsaved_edits() {
+    let mut h = edited();
+    let ctx = egui::Context::default();
+    assert!(
+        !find_action(&crate::menu::tree_for(h.state(), true), Action::Quit)
+            .unwrap()
+            .enabled
+    );
+    assert!(
+        find_action(&crate::menu::tree_for(h.state(), false), Action::Quit)
+            .unwrap()
+            .enabled
+    );
+    h.state_mut().quit_for(&ctx, true);
+    assert_eq!(h.state().unsaved, None);
+    assert!(!h.state().quit_confirmed);
+
+    assert!(h.state().any_unsaved());
+    h.state_mut().apply(Action::SaveCopy, &ctx);
+    assert!(h.state().any_unsaved());
+    h.state_mut().apply(Action::Undo, &ctx);
+    assert!(!h.state().any_unsaved());
+    h.state_mut().apply(Action::Redo, &ctx);
+    assert!(h.state().any_unsaved());
+    h.state_mut().apply(Action::CloseTab, &ctx);
+    h.run_steps(2);
+    h.get_by_label("Discard edits").click();
+    h.run_steps(2);
+    assert!(!h.state().any_unsaved());
+}
