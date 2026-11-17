@@ -55,6 +55,7 @@ impl App {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn restart(&mut self, bundle: PathBuf, ctx: &egui::Context) {
         if !self.quit_confirmed && self.any_unsaved() {
+            self.updater.notes_open = false;
             self.restart_after_quit = Some(bundle);
             self.unsaved = Some(Pending::Quit);
             return;
@@ -130,6 +131,7 @@ impl App {
                 }
             });
         });
+        ctx.move_to_top(modal.response.layer_id);
         if reply.is_none() && modal.should_close() {
             reply = Some(Reply::Cancel);
         }

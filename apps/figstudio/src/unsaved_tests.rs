@@ -160,3 +160,34 @@ fn canvas_gizmos_do_not_act_behind_the_unsaved_question() {
     assert_eq!(h.state().unsaved, None);
     assert_eq!(h.state().tabs[0].doc.nodes.len(), nodes_before);
 }
+
+#[test]
+fn restart_from_update_notes_closes_notes_so_cancel_is_clickable() {
+    let mut h = edited();
+    let rel = crate::update::Release {
+        version: semver::Version::new(9, 9, 9),
+        page: "https://example.invalid/release".into(),
+        app: None,
+        notes: vec![],
+    };
+    h.state_mut().updater.state =
+        crate::update::State::Installed(rel, "/nonexistent/figstudio.app".into());
+    h.state_mut().updater.notes_open = true;
+    h.run_steps(3);
+    h.get_by_label("Restart now").click();
+    h.run_steps(3);
+    assert_eq!(h.state().unsaved, Some(Pending::Quit));
+
+    let cancel = h.get_by_label("Cancel").rect().center();
+    h.event(egui::Event::PointerMoved(cancel));
+    crate::ui_tests::press(&h, cancel, egui::PointerButton::Primary, true);
+    crate::ui_tests::press(&h, cancel, egui::PointerButton::Primary, false);
+    h.run_steps(2);
+    assert_eq!(
+        h.state().unsaved,
+        None,
+        "pointer click on Cancel must dismiss the unsaved-edits modal"
+    );
+    assert!(!h.state().updater.notes_open);
+    assert!(!h.state().quit_confirmed);
+}
