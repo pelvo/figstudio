@@ -1635,7 +1635,7 @@ impl App {
         self.native_events(&ctx);
         // Ahead of the shortcuts: the dialog's Escape must be consumed first.
         self.mcp.confirm(&ctx);
-        self.unsaved_confirm(&ctx);
+        let unsaved_up = self.unsaved_confirm(&ctx);
         // Before anything this frame moves focus (the command field, the welcome sheet): a
         // modal that opened remembers what had focus; one that closed gives it back at the
         // end of the frame (`give_focus_back`).
@@ -1752,7 +1752,7 @@ impl App {
 
         let mut cursor = None;
         egui::CentralPanel::no_frame().show(ui, |ui| {
-            cursor = self.canvas_card(ui, space_held);
+            cursor = self.canvas_card(ui, space_held, unsaved_up || self.unsaved.is_some());
         });
         self.cursor = cursor;
         let tab = self.tabs.get_mut(self.active);

@@ -71,8 +71,9 @@ impl App {
     }
 
     /// Shows the question while a close waits, and carries out the answer. Also holds a
-    /// window close from the OS (title bar, Dock) while edits are unsaved.
-    pub(crate) fn unsaved_confirm(&mut self, ctx: &egui::Context) {
+    /// window close from the OS (title bar, Dock) while edits are unsaved. Returns whether the
+    /// question is drawn this frame.
+    pub(crate) fn unsaved_confirm(&mut self, ctx: &egui::Context) -> bool {
         if ctx.input(|i| i.viewport().close_requested())
             && !self.quit_confirmed
             && self.any_unsaved()
@@ -81,13 +82,13 @@ impl App {
             self.unsaved = Some(Pending::Quit);
         }
         let Some(pending) = self.unsaved else {
-            return;
+            return false;
         };
         let (title, body, discard) = match pending {
             Pending::Tab(id) => {
                 let Some(tab) = self.tabs.iter().find(|t| t.id == id) else {
                     self.unsaved = None;
-                    return;
+                    return false;
                 };
                 (
                     format!("Close “{}” without saving?", tab.title()),
@@ -133,7 +134,7 @@ impl App {
             reply = Some(Reply::Cancel);
         }
         let Some(reply) = reply else {
-            return;
+            return true;
         };
         self.unsaved = None;
         #[cfg(not(target_arch = "wasm32"))]
@@ -142,7 +143,7 @@ impl App {
             (_, Reply::Cancel) => {}
             (Pending::Quit, _) => {
                 if cfg!(target_arch = "wasm32") {
-                    return;
+                    return true;
                 }
                 // A restart that cannot be scheduled does not quit (as without edits).
                 #[cfg(not(target_arch = "wasm32"))]
@@ -150,7 +151,7 @@ impl App {
                     && let Err(e) = update::relaunch(&bundle)
                 {
                     self.toast(ctx, format!("{e:#}"), true);
-                    return;
+                    return true;
                 }
                 self.quit_confirmed = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -172,6 +173,7 @@ impl App {
                 }
             }
         }
+        true
     }
 }
 

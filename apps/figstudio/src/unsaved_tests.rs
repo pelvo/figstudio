@@ -121,3 +121,42 @@ fn browser_disables_quit_and_tracks_unsaved_edits() {
     h.run_steps(2);
     assert!(!h.state().any_unsaved());
 }
+
+#[test]
+fn canvas_gizmos_do_not_act_behind_the_unsaved_question() {
+    let mut h = edited();
+    let ctx = h.ctx.clone();
+    h.state_mut()
+        .apply(Action::SelectTool(crate::canvas::Tool::Rectangle), &ctx);
+    h.state_mut().apply(Action::CloseTab, &ctx);
+    h.run_steps(2);
+    let nodes_before = h.state().tabs[0].doc.nodes.len();
+    let cancel = h.get_by_label("Cancel").rect().center();
+
+    h.event(egui::Event::PointerMoved(cancel));
+    crate::ui_tests::press(&h, cancel, egui::PointerButton::Primary, true);
+    h.step();
+    assert!(
+        h.state().tabs[0].edit_drag.is_none(),
+        "creation drag must not start behind the unsaved-edits modal"
+    );
+    h.event(egui::Event::PointerMoved(cancel + egui::vec2(60.0, 40.0)));
+    h.step();
+    crate::ui_tests::press(
+        &h,
+        cancel + egui::vec2(60.0, 40.0),
+        egui::PointerButton::Primary,
+        false,
+    );
+    h.run_steps(2);
+    assert_eq!(h.state().tabs[0].doc.nodes.len(), nodes_before);
+
+    // Same-frame click on Cancel dismisses the modal without triggering the canvas underneath.
+    h.event(egui::Event::PointerMoved(cancel));
+    crate::ui_tests::press(&h, cancel, egui::PointerButton::Primary, true);
+    h.step();
+    crate::ui_tests::press(&h, cancel, egui::PointerButton::Primary, false);
+    h.run_steps(2);
+    assert_eq!(h.state().unsaved, None);
+    assert_eq!(h.state().tabs[0].doc.nodes.len(), nodes_before);
+}

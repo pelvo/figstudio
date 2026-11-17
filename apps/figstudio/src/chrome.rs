@@ -1438,7 +1438,12 @@ impl App {
     }
 
     /// The canvas card and everything floating on it. Returns the page-space cursor.
-    pub(crate) fn canvas_card(&mut self, ui: &mut Ui, space_held: bool) -> Option<Pos2> {
+    pub(crate) fn canvas_card(
+        &mut self,
+        ui: &mut Ui,
+        space_held: bool,
+        inert: bool,
+    ) -> Option<Pos2> {
         let ctx = ui.ctx().clone();
         let p = theme::of(ui);
         // Present fills the window edge to edge; otherwise the canvas is a rounded card.
@@ -1478,6 +1483,7 @@ impl App {
                     let options = canvas::Options {
                         tool: self.tool,
                         space_held,
+                        inert,
                         radius: f32::from(corner),
                         frame_labels: self.prefs.frame_labels,
                         scroll_zooms: self.prefs.scroll_zooms,
