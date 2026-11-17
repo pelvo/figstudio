@@ -308,6 +308,11 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
 
 impl App {
     pub(crate) fn apply(&mut self, action: Action, ctx: &egui::Context) {
+        // The native menu still works while the unsaved-edits question is up: nothing acts
+        // behind it (a close would swap the question, an edit would change what it is about).
+        if self.unsaved.is_some() {
+            return;
+        }
         // A menu used while the welcome sheet is up (the native menu still works): the
         // person has moved on, so the sheet makes way.
         if !matches!(action, Action::Welcome | Action::Quit) {

@@ -87,10 +87,7 @@ impl App {
                 ctx.copy_text(update::BREW_UPGRADE.to_owned());
                 self.toast(ctx, "Copied the Homebrew command", false);
             }
-            Ask::Restart(bundle) => match update::relaunch(&bundle) {
-                Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                Err(e) => self.toast(ctx, format!("{e:#}"), true),
-            },
+            Ask::Restart(bundle) => self.restart(bundle, ctx),
         }
     }
 
