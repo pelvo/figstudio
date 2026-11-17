@@ -32,6 +32,11 @@ impl McpError {
         CoreError::open(cause).into()
     }
 
+    /// An edit, undo, redo, paste or save that the document refused (not a load failure).
+    pub(crate) fn edit(cause: figstudio_fig::FigError) -> Self {
+        CoreError::input(cause.to_string()).into()
+    }
+
     pub(crate) fn load_task(cause: tokio::task::JoinError) -> Self {
         Self {
             kind: Kind::LoadTask(cause),

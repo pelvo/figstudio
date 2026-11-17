@@ -87,10 +87,7 @@ impl App {
                 ctx.copy_text(update::BREW_UPGRADE.to_owned());
                 self.toast(ctx, "Copied the Homebrew command", false);
             }
-            Ask::Restart(bundle) => match update::relaunch(&bundle) {
-                Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                Err(e) => self.toast(ctx, format!("{e:#}"), true),
-            },
+            Ask::Restart(bundle) => self.restart(bundle, ctx),
         }
     }
 
@@ -128,7 +125,7 @@ impl App {
     /// release page's link, and a footer with "Don't remind me" on the left and the buttons
     /// on the right. One layer (the backdrop and the card), raised above Settings.
     pub(crate) fn update_notes(&mut self, ctx: &egui::Context) {
-        let open = self.updater.notes_open;
+        let open = self.updater.notes_open && self.unsaved.is_none();
         let pop = anim::presence(ctx, Id::new(SHEET), open);
         if !open && pop <= 0.001 {
             return;
@@ -164,6 +161,7 @@ impl App {
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
             .fade_in(false)
+            .interactable(open)
             .show(ctx, |ui| {
                 if !open {
                     anim::inert(ui);

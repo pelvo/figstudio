@@ -31,6 +31,14 @@ pub(crate) enum Done {
         /// applying, the worker can expire it.
         claim: Arc<AtomicU8>,
     },
+    Mutate {
+        generation: u32,
+        tab: u64,
+        tool: String,
+        args: serde_json::Value,
+        ack: Sender<Result<figstudio_mcp_core::output::Output, String>>,
+        claim: Arc<AtomicU8>,
+    },
     Reply {
         generation: u32,
         text: String,
@@ -210,6 +218,57 @@ impl McpTabEnv for Snapshot {
             }
         }
     }
+
+    fn mutate_tab(
+        &self,
+        tab: u64,
+        tool: &str,
+        args: &serde_json::Value,
+    ) -> Result<figstudio_mcp_core::output::Output, CoreError> {
+        let (ack, done) = channel();
+        let claim = Arc::new(AtomicU8::new(REVEAL_PENDING));
+        self.tx
+            .send(Done::Mutate {
+                generation: self.generation,
+                tab,
+                tool: tool.to_owned(),
+                args: args.clone(),
+                ack,
+                claim: claim.clone(),
+            })
+            .map_err(|_| CoreError::input("Browser UI disconnected"))?;
+        let deadline = Instant::now() + self.ack_timeout;
+        loop {
+            match done.try_recv() {
+                Ok(result) => return result.map_err(CoreError::input),
+                Err(TryRecvError::Disconnected) => {
+                    return Err(CoreError::input("Browser UI disconnected"));
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+            if Instant::now() >= deadline
+                && claim
+                    .compare_exchange(
+                        REVEAL_PENDING,
+                        REVEAL_EXPIRED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+            {
+                return Err(CoreError::input(
+                    "the browser tab did not apply the edit within 2 s",
+                ));
+            }
+            #[cfg(target_arch = "wasm32")]
+            let ran = rayon::yield_now() == Some(rayon::Yield::Executed);
+            #[cfg(not(target_arch = "wasm32"))]
+            let ran = false;
+            if !ran {
+                std::thread::sleep(ACK_POLL);
+            }
+        }
+    }
 }
 
 /// The UI thread's side of a reveal (run by `McpHost::frame`): try to claim it before
@@ -240,6 +299,25 @@ pub(crate) fn apply_reveal(
     match live {
         Some(current) if current == generation => crate::mcp_state::reveal(tabs, active, tab, node),
         Some(_) => Err("the tab reconnected; this reveal was dropped".to_owned()),
+        None => Err("the browser tab disconnected".to_owned()),
+    }
+}
+
+/// Apply a claimed browser-relay document mutation on the UI thread.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn apply_mutation(
+    live: Option<u32>,
+    generation: u32,
+    tabs: &mut [Tab],
+    tab: u64,
+    tool: &str,
+    args: &serde_json::Value,
+) -> Result<figstudio_mcp_core::output::Output, String> {
+    match live {
+        Some(current) if current == generation => {
+            crate::editor::handle_wasm_mutation(tabs, tab, tool, args)
+        }
+        Some(_) => Err("the tab reconnected; this edit was dropped".to_owned()),
         None => Err("the browser tab disconnected".to_owned()),
     }
 }
@@ -336,7 +414,9 @@ impl Inbox {
                     self.pending = self.pending.saturating_sub(1);
                     replies.push((generation, text));
                 }
-                reveal @ Done::Reveal { .. } => self.reveals.push_back(reveal),
+                reveal @ (Done::Reveal { .. } | Done::Mutate { .. }) => {
+                    self.reveals.push_back(reveal)
+                }
             }
         }
         replies

@@ -18,6 +18,8 @@ pub mod codeconnect_suggest;
 pub mod design;
 /// Local component, style and variable search.
 pub mod design_system;
+/// Editable node inspection, `EditOp` schema documentation, and Figma clipboard export.
+pub mod editing;
 /// Errors for node IDs, file keys, links and loading a document.
 pub mod error;
 /// FigJam boards as metadata XML.

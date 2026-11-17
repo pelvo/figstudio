@@ -156,6 +156,7 @@ mod system {
         /// The glyph outline in font units, y up.
         path: BezPath,
         units_per_em: f64,
+        font_size: f64,
         x: f64,
         advance: f64,
         ch: char,
@@ -383,21 +384,75 @@ mod system {
             let (w, h) = crate::geom::size(data);
             let wrap = data.text("textAutoResize") != Some("WIDTH_AND_HEIGHT") && w > 0.0;
 
+            // Optional per-UTF-16-unit mixed style overrides (`characterStyleIDs` + `styleOverrideTable`).
+            let char_style_ids: Vec<u32> = data
+                .path(&["textData", "characterStyleIDs"])
+                .map(Val::items)
+                .unwrap_or_default()
+                .iter()
+                .map(|v| v.as_u32().unwrap_or(0))
+                .collect();
+            let mut override_map: HashMap<u32, &Val> = HashMap::new();
+            for entry in data
+                .path(&["textData", "styleOverrideTable"])
+                .map(Val::items)
+                .unwrap_or_default()
+            {
+                if let Some(sid) = entry.get("styleID").and_then(Val::as_u32) {
+                    override_map.insert(sid, entry);
+                }
+            }
+
             // Shape characters into lines (greedy wrap at spaces; CJK may break anywhere).
             let mut lines: Vec<Vec<Placed>> = vec![Vec::new()];
             let mut x = 0.0;
             let mut last_break: Option<usize> = None;
+            let mut utf16_idx = 0usize;
             for ch in text.chars() {
+                let ch_u16 = ch.len_utf16();
+                let style_id = char_style_ids.get(utf16_idx).copied().unwrap_or(0);
+                utf16_idx += ch_u16;
+
                 if ch == '\n' || ch == '\u{2028}' {
                     lines.push(Vec::new());
                     x = 0.0;
                     last_break = None;
                     continue;
                 }
-                let Some((path, units_per_em, adv)) = self.glyph_for(&faces, ch) else {
+                let ov = (style_id != 0)
+                    .then(|| override_map.get(&style_id).copied())
+                    .flatten();
+                let ch_font_size = ov
+                    .and_then(|o| o.num("fontSize"))
+                    .map_or(font_size, |s| f64::from(s).max(1.0));
+                let ch_spacing = match ov.and_then(|o| o.get("letterSpacing")) {
+                    Some(ls) => match (ls.text("units"), ls.num("value")) {
+                        (Some("PERCENT"), Some(v)) => f64::from(v) / 100.0 * ch_font_size,
+                        (_, Some(v)) => f64::from(v),
+                        _ => spacing,
+                    },
+                    None => spacing,
+                };
+                let custom_faces = ov.and_then(|o| o.get("fontName")).map(|fn_val| {
+                    let fam = fn_val.text("family").unwrap_or(family);
+                    let sty_name = fn_val.text("style").unwrap_or(style_name);
+                    let sty = if sty_name.to_ascii_lowercase().contains("italic") {
+                        Style::Italic
+                    } else {
+                        Style::Normal
+                    };
+                    let mut list = Vec::new();
+                    if let Some(id) = self.query(fam, weight_of(sty_name), sty) {
+                        list.push(id);
+                    }
+                    list.extend(self.fallbacks());
+                    list
+                });
+                let use_faces = custom_faces.as_deref().unwrap_or(&faces);
+                let Some((path, units_per_em, adv)) = self.glyph_for(use_faces, ch) else {
                     continue;
                 };
-                let advance = adv * font_size + spacing;
+                let advance = adv * ch_font_size + ch_spacing;
                 let line = lines.last_mut().unwrap();
                 if wrap && x + advance > w + 0.5 && !line.is_empty() && !ch.is_whitespace() {
                     let cjk = ch > '\u{2e7f}';
@@ -427,6 +482,7 @@ mod system {
                 line.push(Placed {
                     path,
                     units_per_em,
+                    font_size: ch_font_size,
                     x,
                     advance,
                     ch,
@@ -461,7 +517,7 @@ mod system {
                     if placed.path.elements().is_empty() {
                         continue;
                     }
-                    let scale = font_size / placed.units_per_em;
+                    let scale = placed.font_size / placed.units_per_em;
                     let mut path = placed.path;
                     path.apply_affine(
                         Affine::translate((dx + placed.x, baseline))

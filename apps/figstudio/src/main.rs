@@ -18,6 +18,7 @@ mod copy;
 mod copy_menu;
 #[cfg(target_os = "macos")]
 mod dock_mac;
+mod editor;
 #[cfg(target_arch = "wasm32")]
 mod emoji_canvas;
 #[cfg(any(target_arch = "wasm32", test))]
@@ -116,6 +117,7 @@ mod tiles;
 mod tiles_view;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod ui_tests;
+mod unsaved;
 #[cfg(not(target_arch = "wasm32"))]
 mod update;
 #[cfg(not(target_arch = "wasm32"))]
@@ -571,6 +573,16 @@ struct App {
     /// Startup files still arriving from the decode workers.
     restoring: Option<session::Restore>,
     workspace_store: session_store::Store,
+    /// Text payload captured from `egui::Event::Paste` when `⌘V` / `Ctrl+V` fires on the canvas.
+    pending_paste_text: Option<String>,
+    /// A close or quit waiting for the user's answer about unsaved edits (`unsaved.rs`).
+    unsaved: Option<unsaved::Pending>,
+    /// The user chose to quit without saving: the next window close goes through.
+    quit_confirmed: bool,
+    /// An update restart waiting on the unsaved-edits question: the bundle to start once
+    /// the user agrees to quit.
+    #[cfg(not(target_arch = "wasm32"))]
+    restart_after_quit: Option<PathBuf>,
     /// Shader code for open files (`shader_code.rs`).
     shader_code: shader_code::State,
 }
@@ -678,6 +690,11 @@ impl App {
             dots_clip: egui::Rect::NOTHING,
             dot_in_view: (0, 0.0),
             find: Default::default(),
+            pending_paste_text: None,
+            unsaved: None,
+            quit_confirmed: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            restart_after_quit: None,
             shader_code: Default::default(),
             #[cfg(target_os = "macos")]
             vibrancy: None,
@@ -821,7 +838,8 @@ impl App {
         self.tabs.get_mut(self.active)
     }
 
-    fn close(&mut self, i: usize) {
+    /// Closes tab `i` without asking (see `close` in `unsaved.rs`).
+    fn close_now(&mut self, i: usize) {
         if i < self.tabs.len() {
             let previous = self.tabs.get(self.active).map(|t| t.id);
             // A space popover on this file saves first: its style lives only on the tab.
@@ -936,6 +954,68 @@ impl App {
         // document. The result comes back through `poll`, which reports it once.
         if let Err(e) = self.workers.export(doc, root, format, path, source) {
             self.toast(ctx, e, true);
+        }
+    }
+
+    /// Saves a `.fig` copy of the active tab (never overwriting the original unless explicitly
+    /// picked in the save dialog). Returns whether a copy was written.
+    fn save_copy(&mut self, ctx: &egui::Context) -> bool {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return false;
+        };
+        let stem = tab.title().replace(['/', '\\'], "_");
+        let default_name = format!("{stem}-edited.fig");
+        #[cfg(target_arch = "wasm32")]
+        {
+            match tab.doc.to_bytes() {
+                Ok(bytes) => match web::download(&default_name, "application/octet-stream", &bytes)
+                {
+                    Ok(()) => {
+                        self.toast(ctx, format!("Downloaded {default_name}"), false);
+                        true
+                    }
+                    Err(e) => {
+                        self.toast(ctx, e.to_string(), true);
+                        false
+                    }
+                },
+                Err(e) => {
+                    self.toast(ctx, e.to_string(), true);
+                    false
+                }
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let chosen = if cfg!(test) {
+                Some(std::env::temp_dir().join(format!(
+                    "figstudio-ui-savecopy-{}-{default_name}",
+                    std::process::id()
+                )))
+            } else {
+                let mut dialog = rfd::FileDialog::new()
+                    .add_filter("Figma file", &["fig"])
+                    .set_file_name(&default_name);
+                if let Some(dir) = tab.real_path.parent().filter(|p| p.exists()) {
+                    dialog = dialog.set_directory(dir);
+                }
+                dialog.save_file()
+            };
+            let Some(path) = chosen else {
+                return false;
+            };
+            let lazy_src = tab.real_path.exists().then_some(tab.real_path.as_path());
+            match tab.doc.save_copy_checked(lazy_src, &path, true, false) {
+                // A copy does not hold the tab's edits: the tab stays unsaved.
+                Ok(saved_to) => {
+                    self.toast(ctx, format!("Saved copy to {}", saved_to.display()), false);
+                    true
+                }
+                Err(e) => {
+                    self.toast(ctx, format!("Could not save copy: {e}"), true);
+                    false
+                }
+            }
         }
     }
 
@@ -1232,6 +1312,10 @@ impl App {
             self.welcome_keys(ctx);
             return;
         }
+        // The unsaved-edits question is modal: its own buttons and Escape only.
+        if self.unsaved.is_some() {
+            return;
+        }
         let keys = |b: keymap::Binding| self.prefs.keymap.get(b);
         // The command bar is modal, also while it fades out (it still covers the app): only
         // its own shortcut (which closes or reopens it) gets through, so nothing changes the
@@ -1261,14 +1345,45 @@ impl App {
                 u8::from(m.command) + u8::from(m.ctrl) + u8::from(m.alt) + u8::from(m.shift),
             )
         });
+        let in_preview = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| t.preview.is_some());
+        let modal_open = self.command.is_up(ctx)
+            || self.find.is_open()
+            || self.link.window
+            || self.settings.is_up(ctx);
+        let mut captured_paste: Option<String> = None;
         let mut run = Vec::new();
         for (binding, shortcut) in bindings {
             use keymap::Binding as B;
             let action = binding.action();
             let plain = keymap::Binding::is_plain(&shortcut);
-            if (matches!(binding, B::SelectChild | B::SelectParent)
-                && (quiet || self.find.is_open() || self.command.is_up(ctx)))
-                || ((plain || binding == B::Copy) && quiet)
+            let is_edit_or_create = matches!(
+                binding,
+                B::Undo
+                    | B::Redo
+                    | B::CopyForFigma
+                    | B::PasteFromFigma
+                    | B::DuplicateSelection
+                    | B::DeleteSelection
+                    | B::FrameTool
+                    | B::SectionTool
+                    | B::RectTool
+                    | B::EllipseTool
+                    | B::LineTool
+                    | B::TextTool
+            );
+            if (is_edit_or_create && in_preview)
+                || (matches!(binding, B::SelectChild | B::SelectParent)
+                    && (quiet || self.find.is_open() || self.command.is_up(ctx)))
+                || (binding == B::PasteFromFigma && modal_open)
+                || ((plain
+                    || matches!(
+                        binding,
+                        B::Copy | B::PasteFromFigma | B::Undo | B::Redo | B::DuplicateSelection
+                    ))
+                    && quiet)
                 || (binding == B::SelectAll
                     && (quiet
                         || !self
@@ -1286,11 +1401,35 @@ impl App {
                 // layouts), so the default also matches the physical key.
                 B::ZoomFit if default => shifted_digit(i, Key::Num1, Some(Key::Exclamationmark)),
                 B::ActualSize if default => shifted_digit(i, Key::Num0, None),
-                // Platform clipboard integrations send Copy without a key event.
+                // Platform clipboard integrations send Copy and Paste without a key event.
                 B::Copy if default => {
                     let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
                     i.events.retain(|e| !matches!(e, egui::Event::Copy));
                     i.consume_shortcut(&shortcut) || copy
+                }
+                // The platform's paste arrives as `Event::Paste` (no key event), so it pastes
+                // whatever the binding's own shortcut is.
+                B::PasteFromFigma => {
+                    let mut pasted = None;
+                    i.events.retain(|e| match e {
+                        egui::Event::Paste(s) => {
+                            if pasted.is_none() {
+                                pasted = Some(s.clone());
+                            }
+                            false
+                        }
+                        _ => true,
+                    });
+                    if let Some(s) = pasted {
+                        captured_paste = Some(s);
+                        true
+                    } else {
+                        i.consume_shortcut(&shortcut)
+                    }
+                }
+                B::DeleteSelection if default => {
+                    i.consume_shortcut(&shortcut)
+                        || (i.key_pressed(Key::Delete) && i.modifiers.is_none())
                 }
                 // `+` where it needs no Shift (a keypad) zooms in too. Not with ⌘ / Ctrl:
                 // that is egui's zoom of the whole UI (larger text).
@@ -1303,6 +1442,9 @@ impl App {
             if pressed {
                 run.push(action);
             }
+        }
+        if captured_paste.is_some() {
+            self.pending_paste_text = captured_paste;
         }
         for action in run {
             self.apply(action, ctx);
@@ -1457,6 +1599,7 @@ impl eframe::App for App {
         gpu::cap_window(ui.ctx(), &mut self.window_cap);
         #[cfg(target_arch = "wasm32")]
         {
+            web::set_unsaved(self.any_unsaved());
             web::cap_canvas(ui.ctx().input(|i| i.max_texture_side));
             web::publish_status(&self.status_json());
         }
@@ -1492,6 +1635,7 @@ impl App {
         self.native_events(&ctx);
         // Ahead of the shortcuts: the dialog's Escape must be consumed first.
         self.mcp.confirm(&ctx);
+        let unsaved_up = self.unsaved_confirm(&ctx);
         // Before anything this frame moves focus (the command field, the welcome sheet): a
         // modal that opened remembers what had focus; one that closed gives it back at the
         // end of the frame (`give_focus_back`).
@@ -1608,7 +1752,7 @@ impl App {
 
         let mut cursor = None;
         egui::CentralPanel::no_frame().show(ui, |ui| {
-            cursor = self.canvas_card(ui, space_held);
+            cursor = self.canvas_card(ui, space_held, unsaved_up || self.unsaved.is_some());
         });
         self.cursor = cursor;
         let tab = self.tabs.get_mut(self.active);

@@ -161,7 +161,7 @@ async fn stdio_discovers_and_calls_tools() {
             "standalone names live mode"
         );
         let tools = client.list_all_tools().await.unwrap();
-        assert_eq!(tools.len(), 23);
+        assert_eq!(tools.len(), 33);
         for name in [
             "compare_files",
             "compare_page",

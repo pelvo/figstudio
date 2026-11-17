@@ -12,7 +12,14 @@ use crate::menu::Action;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Binding {
     CommandBar,
+    Undo,
+    Redo,
+    SaveCopy,
     Copy,
+    CopyForFigma,
+    PasteFromFigma,
+    DuplicateSelection,
+    DeleteSelection,
     SelectAll,
     SelectChild,
     SelectParent,
@@ -32,6 +39,12 @@ pub enum Binding {
     Preview,
     Present,
     SelectTool,
+    FrameTool,
+    SectionTool,
+    RectTool,
+    EllipseTool,
+    LineTool,
+    TextTool,
     HandTool,
     ZoomTool,
     NextSpace,
@@ -66,9 +79,16 @@ const SPACE_LABELS: [&str; 9] = [
 ];
 
 impl Binding {
-    pub const ALL: [Binding; 34] = [
+    pub const ALL: [Binding; 47] = [
         Binding::CommandBar,
+        Binding::Undo,
+        Binding::Redo,
+        Binding::SaveCopy,
         Binding::Copy,
+        Binding::CopyForFigma,
+        Binding::PasteFromFigma,
+        Binding::DuplicateSelection,
+        Binding::DeleteSelection,
         Binding::SelectAll,
         Binding::SelectChild,
         Binding::SelectParent,
@@ -88,6 +108,12 @@ impl Binding {
         Binding::Preview,
         Binding::Present,
         Binding::SelectTool,
+        Binding::FrameTool,
+        Binding::SectionTool,
+        Binding::RectTool,
+        Binding::EllipseTool,
+        Binding::LineTool,
+        Binding::TextTool,
         Binding::HandTool,
         Binding::ZoomTool,
         Binding::NextSpace,
@@ -114,7 +140,14 @@ impl Binding {
     pub fn label(self) -> &'static str {
         match self {
             Binding::CommandBar => "Command bar",
+            Binding::Undo => "Undo edit",
+            Binding::Redo => "Redo edit",
+            Binding::SaveCopy => "Save a .fig copy",
             Binding::Copy => "Copy the text of the selection",
+            Binding::CopyForFigma => "Copy layer for Figma",
+            Binding::PasteFromFigma => "Paste layer from Figma",
+            Binding::DuplicateSelection => "Duplicate selected layer",
+            Binding::DeleteSelection => "Delete selected layer",
             Binding::SelectAll => "Select all text",
             Binding::SelectChild => "Select child",
             Binding::SelectParent => "Select parent",
@@ -134,6 +167,12 @@ impl Binding {
             Binding::Preview => "Preview prototype",
             Binding::Present => "Present prototype",
             Binding::SelectTool => "Select tool",
+            Binding::FrameTool => "Frame tool",
+            Binding::SectionTool => "Section tool",
+            Binding::RectTool => "Rectangle tool",
+            Binding::EllipseTool => "Ellipse tool",
+            Binding::LineTool => "Line tool",
+            Binding::TextTool => "Text tool",
             Binding::HandTool => "Hand tool",
             Binding::ZoomTool => "Zoom tool (Alt to zoom out)",
             Binding::NextSpace => "Next space",
@@ -149,7 +188,14 @@ impl Binding {
     pub fn group(self) -> &'static str {
         match self {
             Binding::CommandBar
+            | Binding::Undo
+            | Binding::Redo
+            | Binding::SaveCopy
             | Binding::Copy
+            | Binding::CopyForFigma
+            | Binding::PasteFromFigma
+            | Binding::DuplicateSelection
+            | Binding::DeleteSelection
             | Binding::SelectAll
             | Binding::SelectChild
             | Binding::SelectParent
@@ -168,7 +214,15 @@ impl Binding {
             | Binding::ZoomOut
             | Binding::Preview
             | Binding::Present => "View",
-            Binding::SelectTool | Binding::HandTool | Binding::ZoomTool => "Tools",
+            Binding::SelectTool
+            | Binding::FrameTool
+            | Binding::SectionTool
+            | Binding::RectTool
+            | Binding::EllipseTool
+            | Binding::LineTool
+            | Binding::TextTool
+            | Binding::HandTool
+            | Binding::ZoomTool => "Tools",
             Binding::NextSpace | Binding::PreviousSpace | Binding::Space(_) => "Spaces",
         }
     }
@@ -179,7 +233,14 @@ impl Binding {
         let shift_cmd = Modifiers::COMMAND | Modifiers::SHIFT;
         match self {
             Binding::CommandBar => k(cmd, Key::L),
+            Binding::Undo => k(cmd, Key::Z),
+            Binding::Redo => k(shift_cmd, Key::Z),
+            Binding::SaveCopy => k(shift_cmd, Key::S),
             Binding::Copy => k(cmd, Key::C),
+            Binding::CopyForFigma => k(Modifiers::ALT | Modifiers::COMMAND, Key::C),
+            Binding::PasteFromFigma => k(cmd, Key::V),
+            Binding::DuplicateSelection => k(cmd, Key::D),
+            Binding::DeleteSelection => k(Modifiers::NONE, Key::Backspace),
             Binding::SelectAll => k(cmd, Key::A),
             Binding::SelectChild => k(Modifiers::NONE, Key::Enter),
             Binding::SelectParent => k(Modifiers::SHIFT, Key::Enter),
@@ -199,6 +260,12 @@ impl Binding {
             Binding::Preview => k(Modifiers::SHIFT, Key::Space),
             Binding::Present => k(Modifiers::ALT | Modifiers::COMMAND, Key::Enter),
             Binding::SelectTool => k(Modifiers::NONE, Key::V),
+            Binding::FrameTool => k(Modifiers::NONE, Key::F),
+            Binding::SectionTool => k(Modifiers::SHIFT, Key::S),
+            Binding::RectTool => k(Modifiers::NONE, Key::R),
+            Binding::EllipseTool => k(Modifiers::NONE, Key::O),
+            Binding::LineTool => k(Modifiers::NONE, Key::L),
+            Binding::TextTool => k(Modifiers::NONE, Key::T),
             Binding::HandTool => k(Modifiers::NONE, Key::H),
             Binding::ZoomTool => k(Modifiers::NONE, Key::Z),
             Binding::NextSpace => k(Modifiers::CTRL, Key::Tab),
@@ -217,7 +284,14 @@ impl Binding {
     pub fn action(self) -> Action {
         match self {
             Binding::CommandBar => Action::CommandBar,
+            Binding::Undo => Action::Undo,
+            Binding::Redo => Action::Redo,
+            Binding::SaveCopy => Action::SaveCopy,
             Binding::Copy => Action::CopyText,
+            Binding::CopyForFigma => Action::CopyForFigma,
+            Binding::PasteFromFigma => Action::PasteFromFigma,
+            Binding::DuplicateSelection => Action::DuplicateSelection,
+            Binding::DeleteSelection => Action::DeleteSelection,
             Binding::SelectAll => Action::SelectAllText,
             Binding::SelectChild => Action::SelectChild,
             Binding::SelectParent => Action::SelectParent,
@@ -237,6 +311,12 @@ impl Binding {
             Binding::Preview => Action::Preview,
             Binding::Present => Action::Present,
             Binding::SelectTool => Action::SelectTool(Tool::Select),
+            Binding::FrameTool => Action::SelectTool(Tool::Frame),
+            Binding::SectionTool => Action::SelectTool(Tool::Section),
+            Binding::RectTool => Action::SelectTool(Tool::Rectangle),
+            Binding::EllipseTool => Action::SelectTool(Tool::Ellipse),
+            Binding::LineTool => Action::SelectTool(Tool::Line),
+            Binding::TextTool => Action::SelectTool(Tool::Text),
             Binding::HandTool => Action::SelectTool(Tool::Hand),
             Binding::ZoomTool => Action::SelectTool(Tool::Zoom),
             Binding::NextSpace => Action::NextSpace,

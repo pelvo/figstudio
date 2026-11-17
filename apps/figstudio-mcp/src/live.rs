@@ -22,6 +22,9 @@ use tokio::sync::oneshot;
 /// How long `reveal_node` waits for the app.
 pub const REVEAL_TIMEOUT: Duration = Duration::from_secs(5);
 
+const NO_REPLY: &str = "the app did not respond";
+const NO_MUTATE_REPLY: &str = "the app did not respond; the edit may still have applied, so check get_history before retrying";
+
 /// How long `reveal_node` waits for the app to open a local copy: a large file loads for seconds.
 /// The whole request shares it: the app may list its link folders for up to 20 s first, and
 /// answers "still opening" a few seconds before this runs out if the load has not finished
@@ -54,6 +57,31 @@ pub struct TabInfo {
     pub viewport: Option<[f64; 4]>,
 }
 
+/// Document mutation sent from an MCP tool to the live app host.
+#[derive(Debug)]
+pub enum LiveMutation {
+    ApplyEdits {
+        ops: Vec<figstudio_fig::edit::EditOp>,
+        label: Option<String>,
+        dry_run: bool,
+    },
+    Undo,
+    Redo,
+    GetHistory,
+    ImportImage {
+        bytes: Vec<u8>,
+    },
+    PasteHtml {
+        html: String,
+        parent: Option<Guid>,
+        offset: (f64, f64),
+    },
+    SaveCopy {
+        out_path: PathBuf,
+        overwrite: bool,
+    },
+}
+
 /// A request to the app.
 #[derive(Debug)]
 pub enum Command {
@@ -77,6 +105,12 @@ pub enum Command {
         asked: std::time::Instant,
         /// What was done, one line, or why it could not be done.
         reply: oneshot::Sender<anyhow::Result<String>>,
+    },
+    /// Apply an editing mutation or query Undo/Redo history on `tab`.
+    Mutate {
+        tab: u64,
+        mutation: LiveMutation,
+        reply: oneshot::Sender<anyhow::Result<serde_json::Value>>,
     },
 }
 
@@ -253,17 +287,37 @@ impl LiveFiles {
 
     /// Ask the app to show `node` in tab `tab` and wait up to [`REVEAL_TIMEOUT`].
     pub(crate) async fn reveal(&self, tab: u64, node: Guid) -> Result<(), McpError> {
-        self.ask(REVEAL_TIMEOUT, |reply| Command::Reveal { tab, node, reply })
-            .await
+        self.ask(REVEAL_TIMEOUT, NO_REPLY, |reply| Command::Reveal {
+            tab,
+            node,
+            reply,
+        })
+        .await
     }
 
     /// Ask the app to open the local copy `link` names and reveal its node; wait up to
     /// [`OPEN_TIMEOUT`]. Returns the app's one-line answer.
     pub(crate) async fn open_link(&self, link: &str) -> Result<String, McpError> {
         let (link, asked) = (link.to_owned(), std::time::Instant::now());
-        self.ask(OPEN_TIMEOUT, |reply| Command::OpenLink {
+        self.ask(OPEN_TIMEOUT, NO_REPLY, |reply| Command::OpenLink {
             link,
             asked,
+            reply,
+        })
+        .await
+    }
+
+    /// Ask the app to execute a [`LiveMutation`] on `tab`.
+    pub(crate) async fn mutate(
+        &self,
+        tab: u64,
+        mutation: LiveMutation,
+    ) -> Result<serde_json::Value, McpError> {
+        // The app skips a mutation whose caller stopped waiting before it started, but one
+        // already running when the wait ends still applies.
+        self.ask(REVEAL_TIMEOUT, NO_MUTATE_REPLY, |reply| Command::Mutate {
+            tab,
+            mutation,
             reply,
         })
         .await
@@ -273,10 +327,11 @@ impl LiveFiles {
     async fn ask<T>(
         &self,
         timeout: Duration,
+        no_reply: &'static str,
         make: impl FnOnce(oneshot::Sender<anyhow::Result<T>>) -> Command,
     ) -> Result<T, McpError> {
         let (reply, answer) = oneshot::channel();
-        let no_reply = || McpError::app("the app did not respond");
+        let no_reply = || McpError::app(no_reply);
         self.commands.send(make(reply)).map_err(|_| no_reply())?;
         (self.wake)();
         match tokio::time::timeout(timeout, answer).await {

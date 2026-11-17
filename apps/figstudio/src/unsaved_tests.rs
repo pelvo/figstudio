@@ -1,0 +1,193 @@
+//! The unsaved-edits question is modal: nothing else acts while it is up, and an update
+//! restart (which quits) asks it too.
+
+use egui_kittest::kittest::Queryable;
+use figstudio_fig::Guid;
+
+use crate::menu::Action;
+use crate::unsaved::Pending;
+
+/// The fixture with one edit, so its tab has unsaved edits.
+fn edited() -> egui_kittest::Harness<'static, crate::App> {
+    let mut h = crate::ui_tests::harness();
+    let ctx = egui::Context::default();
+    h.state_mut().tabs[0].select(Some(Guid(1, 25)));
+    h.state_mut().apply(Action::DuplicateSelection, &ctx);
+    assert!(h.state().tabs[0].dirty_unsaved);
+    h
+}
+
+#[test]
+fn shortcuts_and_menu_commands_wait_while_the_question_is_up() {
+    let mut h = edited();
+    let ctx = egui::Context::default();
+    h.state_mut().apply(Action::Quit, &ctx);
+    h.run_steps(2);
+    let nodes = h.state().tabs[0].doc.nodes.len();
+    let revision = h.state().tabs[0].doc.revision;
+
+    // ⌘W would swap the quit question for a close question.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
+    h.run_steps(2);
+    assert_eq!(h.state().unsaved, Some(Pending::Quit));
+
+    // The native macOS menu reaches `apply` while the modal is up.
+    h.state_mut().apply(Action::DeleteSelection, &ctx);
+    h.state_mut().apply(Action::CloseTab, &ctx);
+    h.run_steps(2);
+    assert_eq!(h.state().unsaved, Some(Pending::Quit));
+    assert_eq!(h.state().tabs.len(), 1);
+    assert_eq!(h.state().tabs[0].doc.nodes.len(), nodes);
+    assert_eq!(
+        h.state().tabs[0].doc.revision,
+        revision,
+        "no edit behind the question"
+    );
+}
+
+#[test]
+fn escape_cancels_the_question_and_goes_no_further() {
+    let mut h = edited();
+    let selection = h.state().tabs[0].selection;
+    assert!(selection.is_some());
+    let ctx = egui::Context::default();
+    h.state_mut().apply(Action::CloseTab, &ctx);
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().unsaved, None);
+    assert_eq!(h.state().tabs.len(), 1);
+    assert_eq!(
+        h.state().tabs[0].selection,
+        selection,
+        "the Escape that cancels must not also clear the selection"
+    );
+}
+
+#[test]
+fn an_update_restart_asks_about_unsaved_edits_before_scheduling_the_restart() {
+    let mut h = edited();
+    let ctx = egui::Context::default();
+    h.state_mut().update_ask(
+        crate::update_view::Ask::Restart("/nonexistent/figstudio.app".into()),
+        &ctx,
+    );
+    assert_eq!(h.state().unsaved, Some(Pending::Quit));
+    h.run_steps(2);
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    assert_eq!(h.state().unsaved, None);
+    assert!(!h.state().quit_confirmed);
+}
+
+fn find_action(items: &[crate::menu::Item], action: Action) -> Option<&crate::menu::Item> {
+    items.iter().find_map(|item| {
+        if item.action == Some(action) {
+            Some(item)
+        } else {
+            find_action(&item.children, action)
+        }
+    })
+}
+
+#[test]
+fn browser_disables_quit_and_tracks_unsaved_edits() {
+    let mut h = edited();
+    let ctx = egui::Context::default();
+    assert!(
+        !find_action(&crate::menu::tree_for(h.state(), true), Action::Quit)
+            .unwrap()
+            .enabled
+    );
+    assert!(
+        find_action(&crate::menu::tree_for(h.state(), false), Action::Quit)
+            .unwrap()
+            .enabled
+    );
+    h.state_mut().quit_for(&ctx, true);
+    assert_eq!(h.state().unsaved, None);
+    assert!(!h.state().quit_confirmed);
+
+    assert!(h.state().any_unsaved());
+    h.state_mut().apply(Action::SaveCopy, &ctx);
+    assert!(h.state().any_unsaved());
+    h.state_mut().apply(Action::Undo, &ctx);
+    assert!(!h.state().any_unsaved());
+    h.state_mut().apply(Action::Redo, &ctx);
+    assert!(h.state().any_unsaved());
+    h.state_mut().apply(Action::CloseTab, &ctx);
+    h.run_steps(2);
+    h.get_by_label("Discard edits").click();
+    h.run_steps(2);
+    assert!(!h.state().any_unsaved());
+}
+
+#[test]
+fn canvas_gizmos_do_not_act_behind_the_unsaved_question() {
+    let mut h = edited();
+    let ctx = h.ctx.clone();
+    h.state_mut()
+        .apply(Action::SelectTool(crate::canvas::Tool::Rectangle), &ctx);
+    h.state_mut().apply(Action::CloseTab, &ctx);
+    h.run_steps(2);
+    let nodes_before = h.state().tabs[0].doc.nodes.len();
+    let cancel = h.get_by_label("Cancel").rect().center();
+
+    h.event(egui::Event::PointerMoved(cancel));
+    crate::ui_tests::press(&h, cancel, egui::PointerButton::Primary, true);
+    h.step();
+    assert!(
+        h.state().tabs[0].edit_drag.is_none(),
+        "creation drag must not start behind the unsaved-edits modal"
+    );
+    h.event(egui::Event::PointerMoved(cancel + egui::vec2(60.0, 40.0)));
+    h.step();
+    crate::ui_tests::press(
+        &h,
+        cancel + egui::vec2(60.0, 40.0),
+        egui::PointerButton::Primary,
+        false,
+    );
+    h.run_steps(2);
+    assert_eq!(h.state().tabs[0].doc.nodes.len(), nodes_before);
+
+    // Same-frame click on Cancel dismisses the modal without triggering the canvas underneath.
+    h.event(egui::Event::PointerMoved(cancel));
+    crate::ui_tests::press(&h, cancel, egui::PointerButton::Primary, true);
+    h.step();
+    crate::ui_tests::press(&h, cancel, egui::PointerButton::Primary, false);
+    h.run_steps(2);
+    assert_eq!(h.state().unsaved, None);
+    assert_eq!(h.state().tabs[0].doc.nodes.len(), nodes_before);
+}
+
+#[test]
+fn restart_from_update_notes_closes_notes_so_cancel_is_clickable() {
+    let mut h = edited();
+    let rel = crate::update::Release {
+        version: semver::Version::new(9, 9, 9),
+        page: "https://example.invalid/release".into(),
+        app: None,
+        notes: vec![],
+    };
+    h.state_mut().updater.state =
+        crate::update::State::Installed(rel, "/nonexistent/figstudio.app".into());
+    h.state_mut().updater.notes_open = true;
+    h.run_steps(3);
+    h.get_by_label("Restart now").click();
+    h.run_steps(3);
+    assert_eq!(h.state().unsaved, Some(Pending::Quit));
+
+    let cancel = h.get_by_label("Cancel").rect().center();
+    h.event(egui::Event::PointerMoved(cancel));
+    crate::ui_tests::press(&h, cancel, egui::PointerButton::Primary, true);
+    crate::ui_tests::press(&h, cancel, egui::PointerButton::Primary, false);
+    h.run_steps(2);
+    assert_eq!(
+        h.state().unsaved,
+        None,
+        "pointer click on Cancel must dismiss the unsaved-edits modal"
+    );
+    assert!(!h.state().updater.notes_open);
+    assert!(!h.state().quit_confirmed);
+}

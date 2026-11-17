@@ -179,6 +179,21 @@ pub fn base_shape(kind: &str, data: &Val) -> Option<BezPath> {
     }
 }
 
+/// Path a stroke follows when the node stores no stroke geometry: the base shape, or for a
+/// `LINE` (which has none) its segment from the origin along its width.
+pub fn stroke_shape(kind: &str, data: &Val) -> Option<BezPath> {
+    if kind != "LINE" {
+        return base_shape(kind, data);
+    }
+    let (w, _) = size(data);
+    (w > 0.0).then(|| {
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.line_to((w, 0.0));
+        p
+    })
+}
+
 /// Whether a frame-like node clips its children ("Clip content").
 pub fn clips_content(kind: &str, data: &Val) -> bool {
     is_container(kind)

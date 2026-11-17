@@ -676,7 +676,14 @@ fn command_icon(e: &Entry) -> Icon {
         }
         Target::Action(Action::RenameSpace) => Icon::Text,
         Target::Action(Action::FindOnPage) => Icon::Search,
+        Target::Action(Action::SaveCopy) => Icon::Page,
         Target::Action(Action::SelectTool(crate::canvas::Tool::Hand)) => Icon::Hand,
+        Target::Action(Action::SelectTool(crate::canvas::Tool::Frame)) => Icon::Frame,
+        Target::Action(Action::SelectTool(crate::canvas::Tool::Section)) => Icon::Section,
+        Target::Action(Action::SelectTool(crate::canvas::Tool::Rectangle)) => Icon::Rect,
+        Target::Action(Action::SelectTool(crate::canvas::Tool::Ellipse)) => Icon::Ellipse,
+        Target::Action(Action::SelectTool(crate::canvas::Tool::Line)) => Icon::Vector,
+        Target::Action(Action::SelectTool(crate::canvas::Tool::Text)) => Icon::Text,
         _ => Icon::More,
     }
 }

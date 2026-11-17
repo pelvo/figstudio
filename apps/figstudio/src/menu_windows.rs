@@ -13,7 +13,7 @@ impl App {
     /// The update popup is open (desktop): Escape and plain keys are its.
     pub(crate) fn update_notes_up(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
-        return self.updater.notes_open;
+        return self.updater.notes_open && self.unsaved.is_none();
         #[cfg(target_arch = "wasm32")]
         false
     }

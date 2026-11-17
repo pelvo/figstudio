@@ -111,6 +111,10 @@ async fn serve(snapshot: Snapshot, answer: Answer, opens_links: bool) -> App {
                     }
                     continue;
                 }
+                Command::Mutate { reply, .. } => {
+                    let _ = reply.send(Err(anyhow::anyhow!("fake host does not mutate")));
+                    continue;
+                }
             };
             seen.lock().unwrap().push((tab, node));
             match answer {

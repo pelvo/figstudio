@@ -913,7 +913,7 @@ impl App {
         let layer = area.response.layer_id;
         // egui raises a frame's layers in no fixed order: the update popup above Settings
         // raises itself, so Settings does not while it is open.
-        if !self.update_notes_up() {
+        if !self.update_notes_up() && self.unsaved.is_none() {
             ctx.move_to_top(layer);
         }
         let scale = 0.96 + 0.04 * pop;

@@ -33,10 +33,10 @@ const MAX_LEVEL: u8 = 12;
 /// Default cache size.
 pub const DEFAULT_BUDGET: usize = 1 << 30;
 
-/// The cache key of image `hash` in `doc`: images are cached per document (see
-/// `Document::instance`).
+/// The cache key of image `hash` in `doc`: images are cached per `Document::image_instance`
+/// so node/text/layout edits do not evict decoded bitmaps.
 pub fn cache_key(doc: &figstudio_fig::Document, hash: &str) -> String {
-    format!("{:x}/{hash}", doc.instance)
+    format!("{:x}/{hash}", doc.image_instance)
 }
 
 /// An image the render needs from a lazily opened document.
