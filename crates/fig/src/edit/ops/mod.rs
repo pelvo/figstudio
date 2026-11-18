@@ -13,6 +13,7 @@ mod compile_props;
 mod compile_style;
 mod compile_tree;
 
+pub use crate::edit::component_props::PropKind as ComponentPropKind;
 pub use crate::edit::guid_wire;
 pub use crate::edit::specs::{
     EffectPatch, EffectSpec, GradientKind, ImageScale, PaintPatch, PaintSlot, PaintSpec, StopSpec,
@@ -27,6 +28,7 @@ pub use compile_arrange::{AlignEdge, AlignTo, Axis, Pivot, ZOrder};
 use serde::{Deserialize, Serialize};
 
 use crate::Guid;
+use crate::edit::component_props::PropKind;
 use crate::edit::instances::ComponentPropVal;
 use crate::edit::text_runs::TextStyleRunPatch;
 use crate::edit::vector_net::{BooleanOp, VectorNetwork};
@@ -435,6 +437,62 @@ pub enum EditOp {
         fill_hex: Option<String>,
         #[serde(default)]
         opacity: Option<f64>,
+        /// Any other overridable fields, in the `patch_raw` value form (checked against the
+        /// file's schema; structural fields such as `transform` or `parentIndex` are refused).
+        #[serde(default)]
+        fields: Option<serde_json::Map<String, serde_json::Value>>,
+    },
+    /// Adds a `BOOL`, `TEXT` or `INSTANCE_SWAP` property to a component (or its variant set).
+    /// Its id is reported in `created_ids`.
+    AddComponentProp {
+        #[serde(with = "guid_wire")]
+        component: Guid,
+        name: String,
+        kind: PropKind,
+        default: ComponentPropVal,
+    },
+    /// Renames a component property and/or changes its default (`prop`: name or id).
+    EditComponentProp {
+        #[serde(with = "guid_wire")]
+        component: Guid,
+        prop: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        default: Option<ComponentPropVal>,
+    },
+    /// Removes a component property with its layer bindings and instance assignments.
+    RemoveComponentProp {
+        #[serde(with = "guid_wire")]
+        component: Guid,
+        prop: String,
+    },
+    /// Binds a layer inside a component to one of its properties: a `BOOL` drives visibility,
+    /// a `TEXT` the characters (TEXT layers), an `INSTANCE_SWAP` the swapped component
+    /// (instances).
+    BindComponentProp {
+        #[serde(with = "guid_wire")]
+        node: Guid,
+        prop: String,
+    },
+    /// Removes a layer's binding of the given kind.
+    UnbindComponentProp {
+        #[serde(with = "guid_wire")]
+        node: Guid,
+        kind: PropKind,
+    },
+    /// Combines sibling components into a variant set. Names like `Size=Large, State=Hover`
+    /// become properties; a plain name becomes `Property 1=<name>`.
+    CombineAsVariants {
+        #[serde(with = "guid_wire::vec")]
+        components: Vec<Guid>,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Adds a copy of variant `from` to its set with a new value for the first property.
+    AddVariant {
+        #[serde(with = "guid_wire")]
+        from: Guid,
     },
     /// Resets overrides on an `INSTANCE` (all, one path, or one field).
     ResetInstanceOverride {

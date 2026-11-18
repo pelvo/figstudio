@@ -333,3 +333,36 @@ async fn mcp_paint_stroke_and_effect_ops_run_in_one_batch() {
     client.cancel().await.unwrap();
     server_task.await.unwrap().ok();
 }
+
+/// Component definition ops in one `apply_edits` batch.
+#[tokio::test]
+async fn mcp_component_definition_ops_run_in_one_batch() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let src_path = tmp_dir.path().join("src.fig");
+    std::fs::copy(fixture("structure.fig"), &src_path).unwrap();
+    let page = Document::open(&src_path).unwrap().pages[0].to_string();
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let server_task = tokio::spawn(FigstudioServer::new(vec![src_path], true).serve(a));
+    let client = ().serve(b).await.unwrap();
+    let (c1, c2, t1) = ("3000000000:960", "3000000000:961", "3000000000:962");
+    let frame = |id: &str, name: &str, x: f64| {
+        json!({ "op": "create_shape", "id": id, "kind": "FRAME", "parent": page, "name": name,
+                "x": x, "y": 0.0, "width": 80.0, "height": 30.0 })
+    };
+    let ops = json!({ "ops": [
+        frame(c1, "State=Default", 0.0), frame(c2, "State=Hover", 100.0),
+        { "op": "create_text", "id": t1, "parent": c1, "x": 2, "y": 2, "characters": "Hi" },
+        { "op": "create_component", "frame": c1 }, { "op": "create_component", "frame": c2 },
+        { "op": "add_component_prop", "component": c1, "name": "Label", "kind": "text",
+          "default": { "kind": "text", "value": "Hi" } },
+        { "op": "bind_component_prop", "node": t1, "prop": "Label" },
+        { "op": "combine_as_variants", "components": [c1, c2], "name": "Chip" },
+        { "op": "add_variant", "from": c2 }
+    ]});
+    let params = CallToolRequestParams::new("apply_edits")
+        .with_arguments(ops.as_object().cloned().unwrap_or_default());
+    let res = serde_json::to_value(client.call_tool(params).await.unwrap()).unwrap();
+    assert_ne!(res["isError"], json!(true), "{res}");
+    client.cancel().await.unwrap();
+    server_task.await.unwrap().ok();
+}

@@ -202,7 +202,7 @@ fn shared_parent(doc: &Document, targets: &[Guid]) -> Result<Guid, FigError> {
 
 /// Wraps `targets` in a new group (`group`) or frame, at the topmost target's place; every
 /// target keeps its page position and the targets keep their order.
-fn wrap(
+pub(super) fn wrap(
     doc: &Document,
     txn: &mut Txn,
     alloc: &mut GuidAlloc,

@@ -10,7 +10,7 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - [x] E1 Group/Ungroup, Frame selection, Align, Distribute, Flip, Rotate pivot, Reorder
 - [x] E1 fills/strokes as paint lists (solid, gradients, image), stroke style, effects list
 - [x] E1 node-level typography
-- [ ] E2 component properties, variants, generic instance overrides
+- [x] E2 component properties, variants, generic instance overrides
 - [ ] E2 styles (all kinds), variables (collections, modes, all types, binding)
 - [ ] E3 vertex editing, convert/flatten/outline stroke, N-operand exact booleans
 - [ ] E3 masks, layout grids, export settings, prototype reactions
@@ -62,3 +62,17 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
 - Not verified: Figma reopening edited paints/effects; image crop transforms and filters drawn
   by the renderer (stored only); per-side stroke weights on non-box shapes.
+
+### 2026-11-18T060000Z editing-engine-e2-components
+- What changed and how it was checked: `edit::component_props` and ops `add_component_prop`,
+  `edit_component_prop`, `remove_component_prop` (drops bindings and instance assignments),
+  `bind_component_prop` / `unbind_component_prop` (BOOL → visible, TEXT → characters,
+  INSTANCE_SWAP → nested instance), `combine_as_variants` (a `FRAME isStateGroup` with VARIANT
+  definitions and `variantPropSpecs`; names only for files whose schema has neither),
+  `add_variant`; `set_instance_override` takes schema-checked `fields` and refuses structural
+  ones. Tests `crates/fig/tests/edit_components.rs` (instances resolved through
+  `resolve_instance`, the renderer's merge) on an old and a new schema, and an MCP batch; the
+  binding removal, structural-field refusal and old-schema handling fail when reverted. Gate:
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
+- Not verified: Figma reopening a set or properties made here; NUMBER/COLOR and other newer
+  property kinds (not offered yet).

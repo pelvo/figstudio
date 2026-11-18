@@ -1,6 +1,7 @@
 //! Non-destructive, schema-validated editing engine for Figma `.fig` documents.
 
 pub mod autolayout;
+pub mod component_props;
 pub mod fractional;
 pub mod geometry;
 pub mod groups;
@@ -18,9 +19,9 @@ pub mod vector_net;
 
 pub use guid::{EDIT_SESSION_BASE, GuidAlloc};
 pub use ops::{
-    AlignEdge, AlignTo, Axis, EditBatchReport, EditOp, EffectPatch, EffectSpec, GradientKind,
-    ImageScale, PaintPatch, PaintSlot, PaintSpec, Pivot, ShadowSpec, StopSpec, TextLength,
-    TypographyExtra, ZOrder, describe_edit_ops_markdown, execute_edit_ops, execute_import_image,
-    execute_paste_html,
+    AlignEdge, AlignTo, Axis, ComponentPropKind, EditBatchReport, EditOp, EffectPatch, EffectSpec,
+    GradientKind, ImageScale, PaintPatch, PaintSlot, PaintSpec, Pivot, ShadowSpec, StopSpec,
+    TextLength, TypographyExtra, ZOrder, describe_edit_ops_markdown, execute_edit_ops,
+    execute_import_image, execute_paste_html,
 };
 pub use txn::{Dirty, History, NodePatch, Txn};

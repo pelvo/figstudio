@@ -1,5 +1,6 @@
 //! Component, instance, style, variable, vector network, and Boolean [`EditOp`] compilation.
 
+use crate::edit::component_props;
 use crate::edit::geometry::{
     PathCmd, encode_path_commands, make_path_entry, matrix_2x3, rebuild_shape_geometry,
 };
@@ -38,9 +39,37 @@ pub(super) fn compile_component_or_vector_op(
             visible,
             fill_hex,
             opacity,
+            fields: extra,
         } => {
             let mut fields = Obj::new();
             let mut unset = Vec::new();
+            for (k, jv) in extra.iter().flatten() {
+                // Fields that place or identify a layer are not overridable in Figma.
+                if matches!(
+                    k.as_str(),
+                    "guid"
+                        | "guidPath"
+                        | "parentIndex"
+                        | "type"
+                        | "phase"
+                        | "transform"
+                        | "overrideKey"
+                        | "symbolData"
+                        | "componentPropDefs"
+                        | "key"
+                ) {
+                    return Err(FigError::malformed(format!("{k} cannot be overridden")));
+                }
+                let v: Val = serde_json::from_value(jv.clone())
+                    .map_err(|e| FigError::malformed(format!("invalid Val for {k}: {e}")))?;
+                crate::edit::schema_check::validate_node_field(
+                    &*doc.decoded_schema()?,
+                    k,
+                    &v,
+                    "override",
+                )?;
+                fields.insert(k, v);
+            }
             if let Some(chars) = characters {
                 // Start from the override's current textData so its other fields survive.
                 let mut td =
@@ -262,6 +291,78 @@ pub(super) fn compile_component_or_vector_op(
             created_ids.push(bool_id);
             layout_touched.push(parent);
         }
+        EditOp::AddComponentProp {
+            component,
+            name,
+            kind,
+            default,
+        } => {
+            let id = component_props::add_prop(doc, txn, alloc, *component, name, *kind, default)?;
+            created_ids.push(id);
+            layout_touched.push(*component);
+        }
+        EditOp::EditComponentProp {
+            component,
+            prop,
+            name,
+            default,
+        } => {
+            component_props::edit_prop(
+                doc,
+                txn,
+                *component,
+                prop,
+                name.as_deref(),
+                default.as_ref(),
+            )?;
+            layout_touched.push(*component);
+        }
+        EditOp::RemoveComponentProp { component, prop } => {
+            component_props::remove_prop(doc, txn, *component, prop)?;
+            layout_touched.push(*component);
+        }
+        EditOp::BindComponentProp { node, prop } => {
+            component_props::bind_prop(doc, txn, *node, Some(prop), None)?;
+            layout_touched.push(*node);
+        }
+        EditOp::UnbindComponentProp { node, kind } => {
+            component_props::bind_prop(doc, txn, *node, None, Some(*kind))?;
+            layout_touched.push(*node);
+        }
+        EditOp::CombineAsVariants { components, name } => {
+            let set = super::compile_arrange::wrap(
+                doc,
+                txn,
+                alloc,
+                components,
+                Some(name.as_deref().unwrap_or("Component set")),
+                false,
+            )?;
+            component_props::make_variant_set(doc, txn, alloc, set, components)?;
+            created_ids.push(set);
+            layout_touched.push(set);
+        }
+        EditOp::AddVariant { from } => {
+            let node = ensure_exists(doc, *from)?;
+            let set = node
+                .parent
+                .filter(|p| doc.node(*p).is_some_and(component_props::is_variant_set))
+                .ok_or_else(|| FigError::malformed(format!("{from} is not a variant")))?;
+            let (w, _) = crate::edit::space::size(&node.data);
+            let kiwi = crate::clipboard::encode_subset_kiwi(doc, &[*from], 0, "variant")?;
+            let (paste, roots) =
+                crate::clipboard::paste_kiwi_into_with(doc, &kiwi, set, (w + 20.0, 0.0), alloc)?;
+            super::merge_step_into_batch(txn, paste);
+            let new_id = *roots
+                .first()
+                .ok_or_else(|| FigError::malformed("the variant copy was empty"))?;
+            // A component's library key identifies it: the copy is a new component.
+            txn.modify(new_id, Obj::new(), vec!["key".into()]);
+            component_props::finish_added_variant(doc, txn, alloc, set, *from, new_id)?;
+            grow_to_fit(doc, txn, set, *from, w + 20.0)?;
+            created_ids.push(new_id);
+            layout_touched.push(set);
+        }
         EditOp::PatchRaw { target, set, unset } => {
             ensure_exists(doc, *target)?;
             let mut obj = Obj::new();
@@ -274,6 +375,29 @@ pub(super) fn compile_component_or_vector_op(
             layout_touched.push(*target);
         }
         _ => {}
+    }
+    Ok(())
+}
+
+/// Grows the (fixed-size) variant `set` so a copy of `from` moved by `dx` stays inside it.
+fn grow_to_fit(
+    doc: &Document,
+    txn: &mut Txn,
+    set: Guid,
+    from: Guid,
+    dx: f64,
+) -> Result<(), FigError> {
+    let set_node = ensure_exists(doc, set)?;
+    let b = crate::edit::space::bounds_in_parent(&ensure_exists(doc, from)?.data)
+        .ok_or_else(|| FigError::malformed(format!("{from} has no bounds")))?;
+    let (w, h) = crate::edit::space::size(&set_node.data);
+    let need_w = b.x1 + dx + 20.0;
+    if need_w > w {
+        txn.set_field(
+            set,
+            "size",
+            Val::Obj(Obj::from([("x", Val::Float(need_w)), ("y", Val::Float(h))])),
+        );
     }
     Ok(())
 }

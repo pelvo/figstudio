@@ -79,6 +79,7 @@ pub fn properties_edit_controls(ui: &mut Ui, tab: &mut Tab) {
                     visible: None,
                     fill_hex: None,
                     opacity: None,
+                    fields: None,
                 }],
                 Some("Edit instance text"),
                 Some("gui:inst:text"),

@@ -198,6 +198,7 @@ fn end_to_end_batch_creates_autolayout_card_with_rich_text_component_and_undo() 
                 visible: None,
                 fill_hex: None,
                 opacity: None,
+                fields: None,
             },
             EditOp::DetachInstance { instance: inst_id },
         ],
