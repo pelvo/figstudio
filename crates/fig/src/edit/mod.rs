@@ -17,7 +17,7 @@ pub mod vector_net;
 
 pub use guid::{EDIT_SESSION_BASE, GuidAlloc};
 pub use ops::{
-    EditBatchReport, EditOp, ShadowSpec, describe_edit_ops_markdown, execute_edit_ops,
-    execute_import_image, execute_paste_html,
+    AlignEdge, AlignTo, Axis, EditBatchReport, EditOp, Pivot, ShadowSpec, ZOrder,
+    describe_edit_ops_markdown, execute_edit_ops, execute_import_image, execute_paste_html,
 };
 pub use txn::{Dirty, History, NodePatch, Txn};

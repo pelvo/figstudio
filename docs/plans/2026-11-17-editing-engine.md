@@ -7,7 +7,7 @@ title: feat(edit): complete the editing engine and its controls
 ## P6 — Editing (plan in `docs/EDITING-PLAN.md`)
 Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/editing`).
 - [x] E0 world geometry in `crates/fig`, groups as `FRAME resizeToFit`, group fitting pass (typed specs move to E1 with their ops)
-- [ ] E1 Group/Ungroup, Frame selection, Align, Distribute, Flip, Rotate pivot, Reorder
+- [x] E1 Group/Ungroup, Frame selection, Align, Distribute, Flip, Rotate pivot, Reorder
 - [ ] E1 fills/strokes as paint lists (solid, gradients, image), stroke style, effects list
 - [ ] E1 node-level typography
 - [ ] E2 component properties, variants, generic instance overrides
@@ -35,3 +35,15 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   reverted). Gate: `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
 - Not verified: that Figma reopens a group made here (no Figma run); groups with rotated or
   flipped children were reasoned, not tested.
+
+### 2026-11-18T020000Z editing-engine-e1-arrange
+- What changed and how it was checked: new ops `group`, `frame_selection`, `ungroup`, `align`,
+  `distribute`, `flip`, `reorder` and a `pivot` on `rotate` (`compile_arrange.rs`); `reparent`
+  now shares the placement helper. Engine tests in `crates/fig/tests/edit_arrange.rs` (page
+  positions kept, z order, refusals, JSON forms), a pixel test in
+  `crates/render/tests/edit_arrange.rs` (grouping draws the same, flip mirrors, align moves) and
+  one MCP batch using every op (`apps/figstudio-mcp/tests/editing.rs`). Gate:
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed (a first run failed only because the
+  build cache evicted rlibs mid-link).
+- Not verified: align/distribute across layers with different rotated parents beyond the
+  page-space maths; Figma reopening the results.

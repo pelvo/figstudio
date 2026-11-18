@@ -257,3 +257,46 @@ async fn mcp_editing_workflow_modifies_renders_copies_pastes_undoes_and_saves() 
     client.cancel().await.unwrap();
     let _ = server_task.await.unwrap();
 }
+
+/// Every arrangement op in one `apply_edits` batch, then `ungroup` on the made group.
+#[tokio::test]
+async fn mcp_arrangement_ops_run_in_one_batch() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let src_path = tmp_dir.path().join("src.fig");
+    std::fs::copy(fixture("structure.fig"), &src_path).unwrap();
+    let page = Document::open(&src_path).unwrap().pages[0].to_string();
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let server_task = tokio::spawn(FigstudioServer::new(vec![src_path], true).serve(a));
+    let client = ().serve(b).await.unwrap();
+    let call = |args: Value| {
+        let c = client.clone();
+        async move {
+            let params = CallToolRequestParams::new("apply_edits")
+                .with_arguments(args.as_object().cloned().unwrap_or_default());
+            serde_json::to_value(c.call_tool(params).await.unwrap()).unwrap()
+        }
+    };
+    let rect = |id: &str, x: f64| {
+        json!({ "op": "create_shape", "id": id, "kind": "RECTANGLE", "parent": page,
+                "x": x, "y": 0.0, "width": 20.0, "height": 10.0 })
+    };
+    let ids = ["3000000000:901", "3000000000:902", "3000000000:903"];
+    let res = call(json!({ "ops": [
+        rect(ids[0], 0.0), rect(ids[1], 40.0), rect(ids[2], 200.0),
+        { "op": "align", "targets": ids, "edge": "top" },
+        { "op": "distribute", "targets": ids, "axis": "horizontal" },
+        { "op": "flip", "target": ids[1], "axis": "vertical" },
+        { "op": "rotate", "target": ids[2], "degrees": 30.0, "pivot": "center" },
+        { "op": "reorder", "target": ids[0], "to": "front" },
+        { "op": "frame_selection", "targets": [ids[2]] },
+        { "op": "group", "targets": [ids[1], ids[0]], "name": "Pair" }
+    ]}))
+    .await;
+    assert_ne!(res["isError"], json!(true), "{res}");
+    let created = res["structuredContent"]["created_ids"].as_array().unwrap();
+    let group = created.last().unwrap().as_str().unwrap();
+    let res = call(json!({ "ops": [{ "op": "ungroup", "target": group }] })).await;
+    assert_ne!(res["isError"], json!(true), "{res}");
+    client.cancel().await.unwrap();
+    server_task.await.unwrap().ok();
+}

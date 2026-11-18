@@ -7,6 +7,7 @@
 //! [`History`].
 
 mod batch;
+mod compile_arrange;
 mod compile_components;
 mod compile_props;
 mod compile_tree;
@@ -16,6 +17,7 @@ pub(crate) use batch::merge_step_into_batch;
 pub use batch::{
     describe_edit_ops_markdown, execute_edit_ops, execute_import_image, execute_paste_html,
 };
+pub use compile_arrange::{AlignEdge, AlignTo, Axis, Pivot, ZOrder};
 
 use serde::{Deserialize, Serialize};
 
@@ -126,11 +128,61 @@ pub enum EditOp {
         width: f64,
         height: f64,
     },
-    /// Sets rotation in degrees (preserving current `(m02, m12)` translation).
+    /// Sets rotation in degrees about `pivot` (default `top_left`: keeps the `(m02, m12)`
+    /// translation; `center`: keeps the layer's centre in place).
     Rotate {
         #[serde(with = "guid_wire")]
         target: Guid,
         degrees: f64,
+        #[serde(default)]
+        pivot: Pivot,
+    },
+    /// Wraps sibling layers in a new group (a resize-to-fit frame) at the topmost one's place.
+    Group {
+        #[serde(with = "guid_wire::vec")]
+        targets: Vec<Guid>,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Wraps sibling layers in a new frame sized to them.
+    FrameSelection {
+        #[serde(with = "guid_wire::vec")]
+        targets: Vec<Guid>,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Moves a group's children to its parent (keeping page positions and order) and deletes it.
+    Ungroup {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+    },
+    /// Aligns layers on an edge or centre line of their union (or of each one's parent).
+    Align {
+        #[serde(with = "guid_wire::vec")]
+        targets: Vec<Guid>,
+        edge: AlignEdge,
+        #[serde(default)]
+        to: AlignTo,
+    },
+    /// Spaces layers evenly along an axis (`spacing` = a fixed gap instead).
+    Distribute {
+        #[serde(with = "guid_wire::vec")]
+        targets: Vec<Guid>,
+        axis: Axis,
+        #[serde(default)]
+        spacing: Option<f64>,
+    },
+    /// Mirrors a layer about its own centre line.
+    Flip {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        axis: Axis,
+    },
+    /// Moves a layer to the front, back, one step forward or one step backward among its siblings.
+    Reorder {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        to: ZOrder,
     },
     /// Reparents and/or reorders `target` under `new_parent` at `index` (`None` = append/topmost).
     Reparent {
