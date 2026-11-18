@@ -35,6 +35,14 @@ impl App {
 
     /// Quits, first asking when any tab has unsaved edits.
     pub(crate) fn quit(&mut self, ctx: &egui::Context) {
+        self.quit_for(ctx, cfg!(target_arch = "wasm32"));
+    }
+
+    /// Quits on desktop; no-op in the browser build where `ViewportCommand::Close` is ignored.
+    pub(crate) fn quit_for(&mut self, ctx: &egui::Context, browser: bool) {
+        if browser {
+            return;
+        }
         if self.quit_confirmed || !self.any_unsaved() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         } else {
@@ -47,6 +55,7 @@ impl App {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn restart(&mut self, bundle: PathBuf, ctx: &egui::Context) {
         if !self.quit_confirmed && self.any_unsaved() {
+            self.updater.notes_open = false;
             self.restart_after_quit = Some(bundle);
             self.unsaved = Some(Pending::Quit);
             return;
@@ -57,13 +66,15 @@ impl App {
         }
     }
 
-    fn any_unsaved(&self) -> bool {
+    /// Whether any open tab has edits that are not saved to its file.
+    pub(crate) fn any_unsaved(&self) -> bool {
         self.tabs.iter().any(|t| t.dirty_unsaved)
     }
 
     /// Shows the question while a close waits, and carries out the answer. Also holds a
-    /// window close from the OS (title bar, Dock) while edits are unsaved.
-    pub(crate) fn unsaved_confirm(&mut self, ctx: &egui::Context) {
+    /// window close from the OS (title bar, Dock) while edits are unsaved. Returns whether the
+    /// question is drawn this frame.
+    pub(crate) fn unsaved_confirm(&mut self, ctx: &egui::Context) -> bool {
         if ctx.input(|i| i.viewport().close_requested())
             && !self.quit_confirmed
             && self.any_unsaved()
@@ -72,13 +83,13 @@ impl App {
             self.unsaved = Some(Pending::Quit);
         }
         let Some(pending) = self.unsaved else {
-            return;
+            return false;
         };
         let (title, body, discard) = match pending {
             Pending::Tab(id) => {
                 let Some(tab) = self.tabs.iter().find(|t| t.id == id) else {
                     self.unsaved = None;
-                    return;
+                    return false;
                 };
                 (
                     format!("Close “{}” without saving?", tab.title()),
@@ -120,11 +131,12 @@ impl App {
                 }
             });
         });
+        ctx.move_to_top(modal.response.layer_id);
         if reply.is_none() && modal.should_close() {
             reply = Some(Reply::Cancel);
         }
         let Some(reply) = reply else {
-            return;
+            return true;
         };
         self.unsaved = None;
         #[cfg(not(target_arch = "wasm32"))]
@@ -132,13 +144,16 @@ impl App {
         match (pending, reply) {
             (_, Reply::Cancel) => {}
             (Pending::Quit, _) => {
+                if cfg!(target_arch = "wasm32") {
+                    return true;
+                }
                 // A restart that cannot be scheduled does not quit (as without edits).
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(bundle) = restart
                     && let Err(e) = update::relaunch(&bundle)
                 {
                     self.toast(ctx, format!("{e:#}"), true);
-                    return;
+                    return true;
                 }
                 self.quit_confirmed = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -160,6 +175,7 @@ impl App {
                 }
             }
         }
+        true
     }
 }
 

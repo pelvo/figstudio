@@ -107,6 +107,8 @@ pub struct Options {
     pub tool: Tool,
     /// Space is held: dragging pans.
     pub space_held: bool,
+    /// A modal covers the app: ignore canvas gizmo pointer input.
+    pub inert: bool,
     /// The card's corner radius.
     pub radius: f32,
     /// Names above top-level frames (Settings → Canvas).
@@ -129,6 +131,7 @@ pub fn show(
     let Options {
         tool,
         space_held,
+        inert,
         radius,
         frame_labels,
         scroll_zooms,
@@ -347,8 +350,14 @@ pub fn show(
     }
     crate::canvas_text::overlay(&painter, tab, origin);
     let mut active_tool = tool;
-    let gizmo_cursor =
-        crate::editor::canvas_gizmos_and_input(ui, &painter, rect, tab, &mut active_tool, panning);
+    let gizmo_cursor = if inert {
+        if tab.edit_drag.take().is_some() {
+            tab.history.seal_coalesce();
+        }
+        None
+    } else {
+        crate::editor::canvas_gizmos_and_input(ui, &painter, rect, tab, &mut active_tool, panning)
+    };
     if active_tool != tool && active_tool == Tool::Select {
         tab.reset_tool_to_select = true;
     }
@@ -362,6 +371,7 @@ pub fn show(
         gc
     } else {
         match tool {
+            _ if inert => egui::CursorIcon::Default,
             _ if panning => egui::CursorIcon::Grab,
             Tool::Zoom => egui::CursorIcon::ZoomIn,
             Tool::Hand => egui::CursorIcon::Grab,

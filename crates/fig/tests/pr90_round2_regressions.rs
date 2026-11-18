@@ -552,3 +552,80 @@ fn resizing_text_drops_its_stored_glyph_layout() {
         "the old line breaks would still be drawn"
     );
 }
+
+#[test]
+fn auto_layout_resizing_text_drops_its_stored_glyph_layout() {
+    let mut doc = Document::open(fixture("noise_and_grain.fig")).unwrap();
+    let (text, text_w) = doc
+        .nodes
+        .iter()
+        .find_map(|n| {
+            if n.kind == "TEXT" && n.data.get("derivedTextData").is_some() {
+                let w = f64::from(n.data.path(&["size", "x"]).and_then(Val::as_f32)?);
+                Some((n.id, w))
+            } else {
+                None
+            }
+        })
+        .expect("a TEXT with stored glyphs in the fixture");
+    let page = doc.pages[0];
+    let mut history = History::new(10);
+    let frame = run(&mut doc, &mut history, &[shape("FRAME", page, 0.0, 0.0)])[0];
+    run(
+        &mut doc,
+        &mut history,
+        &[
+            EditOp::Reparent {
+                target: text,
+                new_parent: frame,
+                index: None,
+            },
+            serde_json::from_value(serde_json::json!({
+                "op": "set_auto_layout",
+                "target": frame.to_string(),
+                "mode": "VERTICAL",
+                "padding": [10.0, 10.0, 10.0, 10.0],
+                "primary_sizing": "FIXED",
+                "counter_sizing": "FIXED"
+            }))
+            .unwrap(),
+            EditOp::Resize {
+                target: frame,
+                width: text_w + 200.0,
+                height: 300.0,
+            },
+        ],
+    );
+    let mut txn = Txn::new("stretch text child");
+    txn.set_field(text, "stackChildAlignSelf", Val::Enum(intern("STRETCH")));
+    doc.apply_txn(&txn).unwrap();
+    run(
+        &mut doc,
+        &mut history,
+        &[EditOp::Resize {
+            target: frame,
+            width: text_w + 300.0,
+            height: 320.0,
+        }],
+    );
+    let after_w = f64::from(
+        doc.node(text)
+            .unwrap()
+            .data
+            .path(&["size", "x"])
+            .and_then(Val::as_f32)
+            .unwrap(),
+    );
+    assert!(
+        after_w > text_w,
+        "Auto-Layout should have widened the TEXT child"
+    );
+    assert!(
+        doc.node(text)
+            .unwrap()
+            .data
+            .get("derivedTextData")
+            .is_none(),
+        "Auto-Layout resized TEXT from {text_w} to {after_w} but kept stale derivedTextData"
+    );
+}

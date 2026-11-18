@@ -6,7 +6,7 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use serde::{Deserialize, Serialize};
 
 use crate::edit::{Txn, fractional};
-use crate::{Document, FigError, Guid, Obj, Val, intern};
+use crate::{Document, FigError, Guid, Node, Obj, Val, intern};
 
 /// One command in a Figma `commandsBlob` path stream (`0..=4` + little-endian `f32` coords).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -613,13 +613,7 @@ fn resize_one(
             );
         }
     }
-    // Stored glyph positions are for the old box; without them the renderer re-wraps the text.
-    let unset = if node.kind == "TEXT" && node.data.get("derivedTextData").is_some() {
-        vec!["derivedTextData".to_string()]
-    } else {
-        Vec::new()
-    };
-    txn.modify(node_id, set, unset);
+    txn.modify(node_id, set, unset_on_resize(node));
 
     let is_stack = matches!(
         node.data.text("stackMode"),
@@ -714,6 +708,16 @@ fn default_layer_name(kind: &str) -> String {
         "TEXT" => "Text".into(),
         "VECTOR" => "Vector".into(),
         _ => kind.to_string(),
+    }
+}
+
+/// Fields invalidated when `node`'s box size changes: stored glyph positions (`derivedTextData`)
+/// are for the old box, so without them the renderer re-wraps the text.
+pub(crate) fn unset_on_resize(node: &Node) -> Vec<String> {
+    if node.kind == "TEXT" && node.data.get("derivedTextData").is_some() {
+        vec!["derivedTextData".to_string()]
+    } else {
+        Vec::new()
     }
 }
 
