@@ -300,3 +300,36 @@ async fn mcp_arrangement_ops_run_in_one_batch() {
     client.cancel().await.unwrap();
     server_task.await.unwrap().ok();
 }
+
+/// Paint, stroke and effect list ops in one `apply_edits` batch.
+#[tokio::test]
+async fn mcp_paint_stroke_and_effect_ops_run_in_one_batch() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let src_path = tmp_dir.path().join("src.fig");
+    std::fs::copy(fixture("structure.fig"), &src_path).unwrap();
+    let page = Document::open(&src_path).unwrap().pages[0].to_string();
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let server_task = tokio::spawn(FigstudioServer::new(vec![src_path], true).serve(a));
+    let client = ().serve(b).await.unwrap();
+    let id = "3000000000:950";
+    let ops = json!({ "ops": [
+        { "op": "create_shape", "id": id, "kind": "RECTANGLE", "parent": page,
+          "x": 0.0, "y": 0.0, "width": 80.0, "height": 40.0 },
+        { "op": "set_paints", "target": id, "slot": "fill", "paints": [
+            { "type": "solid", "hex": "#336699" },
+            { "type": "gradient", "kind": "linear",
+              "stops": [{ "position": 0, "hex": "#FFFFFF00" }, { "position": 1, "hex": "#FFFFFF" }] }
+        ]},
+        { "op": "update_paint", "target": id, "slot": "fill", "index": 0, "patch": { "opacity": 0.5 } },
+        { "op": "add_paint", "target": id, "slot": "stroke", "paint": { "type": "solid", "hex": "#000000" } },
+        { "op": "set_stroke_style", "target": id, "weight": 2, "dashes": [4, 2], "cap": "ROUND" },
+        { "op": "add_effect", "target": id, "effect": { "type": "drop_shadow", "radius": 8 } },
+        { "op": "update_effect", "target": id, "index": 0, "patch": { "offset": [0, 2] } }
+    ]});
+    let params = CallToolRequestParams::new("apply_edits")
+        .with_arguments(ops.as_object().cloned().unwrap_or_default());
+    let res = serde_json::to_value(client.call_tool(params).await.unwrap()).unwrap();
+    assert_ne!(res["isError"], json!(true), "{res}");
+    client.cancel().await.unwrap();
+    server_task.await.unwrap().ok();
+}

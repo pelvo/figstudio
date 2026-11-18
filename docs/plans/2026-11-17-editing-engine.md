@@ -8,8 +8,8 @@ title: feat(edit): complete the editing engine and its controls
 Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/editing`).
 - [x] E0 world geometry in `crates/fig`, groups as `FRAME resizeToFit`, group fitting pass (typed specs move to E1 with their ops)
 - [x] E1 Group/Ungroup, Frame selection, Align, Distribute, Flip, Rotate pivot, Reorder
-- [ ] E1 fills/strokes as paint lists (solid, gradients, image), stroke style, effects list
-- [ ] E1 node-level typography
+- [x] E1 fills/strokes as paint lists (solid, gradients, image), stroke style, effects list
+- [x] E1 node-level typography
 - [ ] E2 component properties, variants, generic instance overrides
 - [ ] E2 styles (all kinds), variables (collections, modes, all types, binding)
 - [ ] E3 vertex editing, convert/flatten/outline stroke, N-operand exact booleans
@@ -47,3 +47,18 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   build cache evicted rlibs mid-link).
 - Not verified: align/distribute across layers with different rotated parents beyond the
   page-space maths; Figma reopening the results.
+
+### 2026-11-18T040000Z editing-engine-e1-style
+- What changed and how it was checked: `edit::specs` (PaintSpec solid/gradient/image, PaintPatch,
+  EffectSpec, EffectPatch, TextLength, TypographyExtra). New ops `set_paints`, `add_paint`,
+  `update_paint`, `remove_paint`, `move_paint`, `set_stroke_style`, `add_effect`,
+  `update_effect`, `remove_effect`, `move_effect`; `set_effects` takes a full list; whole-node
+  typography on `set_typography`. Editing a styled list detaches its style. The renderer
+  restrokes a VECTOR from its network when its stored stroke geometry was dropped. Image "Crop"
+  is stored as Figma's `STRETCH` (was an invalid `CROP`). Tests:
+  `crates/fig/tests/edit_style.rs`, pixel tests `crates/render/tests/edit_style.rs` (gradient
+  direction, dash gaps, drop shadow, vector restroke), one MCP batch; the vector restroke, the
+  crop mapping and the run-clearing typography tests fail with their change reverted. Gate:
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
+- Not verified: Figma reopening edited paints/effects; image crop transforms and filters drawn
+  by the renderer (stored only); per-side stroke weights on non-box shapes.

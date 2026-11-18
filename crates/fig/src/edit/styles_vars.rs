@@ -105,7 +105,15 @@ pub fn image_paint(sha1_hex: &str, scale_mode: &str, opacity: f64) -> Result<Val
         ("visible", Val::Bool(true)),
         ("opacity", Val::Float(opacity.clamp(0.0, 1.0))),
         ("blendMode", Val::Enum(intern("NORMAL"))),
-        ("imageScaleMode", Val::Enum(intern(scale_mode))),
+        // Figma's "Crop" is stored as `STRETCH`.
+        (
+            "imageScaleMode",
+            Val::Enum(intern(if scale_mode.eq_ignore_ascii_case("CROP") {
+                "STRETCH"
+            } else {
+                scale_mode
+            })),
+        ),
         (
             "image",
             Val::Obj(Obj::from([

@@ -10,9 +10,14 @@ mod batch;
 mod compile_arrange;
 mod compile_components;
 mod compile_props;
+mod compile_style;
 mod compile_tree;
 
 pub use crate::edit::guid_wire;
+pub use crate::edit::specs::{
+    EffectPatch, EffectSpec, GradientKind, ImageScale, PaintPatch, PaintSlot, PaintSpec, StopSpec,
+    TextLength, TypographyExtra,
+};
 pub(crate) use batch::merge_step_into_batch;
 pub use batch::{
     describe_edit_ops_markdown, execute_edit_ops, execute_import_image, execute_paste_html,
@@ -273,7 +278,8 @@ pub enum EditOp {
         #[serde(default)]
         align: Option<String>,
     },
-    /// Replaces effects with a shadow and/or blur, or clears effects when empty.
+    /// Replaces the effect list: with `effects` when given, else with the shorthand shadow
+    /// and/or blur (no fields clears the list).
     SetEffects {
         #[serde(with = "guid_wire")]
         target: Guid,
@@ -283,6 +289,96 @@ pub enum EditOp {
         blur_radius: Option<f64>,
         #[serde(default)]
         background_blur: bool,
+        #[serde(default)]
+        effects: Option<Vec<EffectSpec>>,
+    },
+    /// Inserts an effect at `index` (default: the end).
+    AddEffect {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        effect: EffectSpec,
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Changes fields of the effect at `index`, keeping the others.
+    UpdateEffect {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        index: usize,
+        patch: EffectPatch,
+    },
+    /// Removes the effect at `index`.
+    RemoveEffect {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        index: usize,
+    },
+    /// Moves the effect at `from` to `to`.
+    MoveEffect {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        from: usize,
+        to: usize,
+    },
+    /// Replaces a fill or stroke paint list (solid, gradient and image paints). Detaches a
+    /// bound paint style, as editing the list does in Figma.
+    SetPaints {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        slot: PaintSlot,
+        paints: Vec<PaintSpec>,
+    },
+    /// Inserts a paint at `index` (default: the end, which Figma draws on top).
+    AddPaint {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        slot: PaintSlot,
+        paint: PaintSpec,
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Changes fields of the paint at `index`, keeping the others.
+    UpdatePaint {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        slot: PaintSlot,
+        index: usize,
+        patch: PaintPatch,
+    },
+    /// Removes the paint at `index`.
+    RemovePaint {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        slot: PaintSlot,
+        index: usize,
+    },
+    /// Moves the paint at `from` to `to`.
+    MovePaint {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        slot: PaintSlot,
+        from: usize,
+        to: usize,
+    },
+    /// Sets stroke weight, position, caps, joins, miter limit, dashes (empty list = solid) and
+    /// per-side weights `[top, right, bottom, left]`.
+    SetStrokeStyle {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        #[serde(default)]
+        weight: Option<f64>,
+        #[serde(default)]
+        align: Option<String>,
+        #[serde(default)]
+        cap: Option<String>,
+        #[serde(default)]
+        join: Option<String>,
+        #[serde(default)]
+        miter_limit: Option<f64>,
+        #[serde(default)]
+        dashes: Option<Vec<f64>>,
+        #[serde(default)]
+        sides: Option<[f64; 4]>,
     },
     /// Replaces the entire string of a `TEXT` layer (or an inner `TEXT` override when `instance` is set).
     SetText {
@@ -320,6 +416,10 @@ pub enum EditOp {
         align_horizontal: Option<String>,
         #[serde(default)]
         auto_resize: Option<String>,
+        /// Line height, letter and paragraph spacing, vertical align, decoration, case and
+        /// truncation for the whole text (each removes that setting from the character runs).
+        #[serde(flatten, default)]
+        extra: TypographyExtra,
     },
     /// Sets an override on a descendant inside an `INSTANCE` (`override_path` of `overrideKey` GUIDs).
     SetInstanceOverride {
