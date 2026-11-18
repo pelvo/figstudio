@@ -240,9 +240,29 @@ pub(super) fn compile_prop_op(
         }
         EditOp::SetEffects {
             target,
+            effects: Some(list),
+            ..
+        } => {
+            super::compile_style::set_effect_list(doc, txn, *target, list)?;
+        }
+        EditOp::SetPaints { .. }
+        | EditOp::AddPaint { .. }
+        | EditOp::UpdatePaint { .. }
+        | EditOp::RemovePaint { .. }
+        | EditOp::MovePaint { .. }
+        | EditOp::SetStrokeStyle { .. }
+        | EditOp::AddEffect { .. }
+        | EditOp::UpdateEffect { .. }
+        | EditOp::RemoveEffect { .. }
+        | EditOp::MoveEffect { .. } => {
+            super::compile_style::compile_style_op(doc, txn, op, layout_touched)?;
+        }
+        EditOp::SetEffects {
+            target,
             drop_shadow,
             blur_radius,
             background_blur,
+            effects: None,
         } => {
             ensure_exists(doc, *target)?;
             let mut effs = Vec::new();
@@ -303,9 +323,41 @@ pub(super) fn compile_prop_op(
             font_size,
             align_horizontal,
             auto_resize,
+            extra,
         } => {
             let node = ensure_exists(doc, *target)?;
             let mut set = Obj::new();
+            let fields = extra.fields()?;
+            if !fields.is_empty() && node.kind != "TEXT" {
+                return Err(FigError::malformed(format!("{target} is not a TEXT layer")));
+            }
+            // A whole-node setting replaces the same setting on every character run.
+            if let Some(td) = node.data.get("textData")
+                && td.get("styleOverrideTable").is_some()
+                && !fields.is_empty()
+            {
+                let mut td = td.clone().into_owned();
+                let table: Vec<Val> = td
+                    .get("styleOverrideTable")
+                    .map(Val::items)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|e| {
+                        let mut e = e.clone().into_owned();
+                        if let Val::Obj(o) = &mut e {
+                            for (k, _) in &fields {
+                                o.remove(k);
+                            }
+                        }
+                        e
+                    })
+                    .collect();
+                td.set("styleOverrideTable", Val::Arr(table));
+                set.insert("textData", td);
+            }
+            for (k, v) in fields {
+                set.insert(k, v);
+            }
             if font_family.is_some() || font_style.is_some() {
                 let fam = font_family
                     .clone()

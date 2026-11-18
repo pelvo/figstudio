@@ -257,3 +257,112 @@ async fn mcp_editing_workflow_modifies_renders_copies_pastes_undoes_and_saves() 
     client.cancel().await.unwrap();
     let _ = server_task.await.unwrap();
 }
+
+/// Every arrangement op in one `apply_edits` batch, then `ungroup` on the made group.
+#[tokio::test]
+async fn mcp_arrangement_ops_run_in_one_batch() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let src_path = tmp_dir.path().join("src.fig");
+    std::fs::copy(fixture("structure.fig"), &src_path).unwrap();
+    let page = Document::open(&src_path).unwrap().pages[0].to_string();
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let server_task = tokio::spawn(FigstudioServer::new(vec![src_path], true).serve(a));
+    let client = ().serve(b).await.unwrap();
+    let call = |args: Value| {
+        let c = client.clone();
+        async move {
+            let params = CallToolRequestParams::new("apply_edits")
+                .with_arguments(args.as_object().cloned().unwrap_or_default());
+            serde_json::to_value(c.call_tool(params).await.unwrap()).unwrap()
+        }
+    };
+    let rect = |id: &str, x: f64| {
+        json!({ "op": "create_shape", "id": id, "kind": "RECTANGLE", "parent": page,
+                "x": x, "y": 0.0, "width": 20.0, "height": 10.0 })
+    };
+    let ids = ["3000000000:901", "3000000000:902", "3000000000:903"];
+    let res = call(json!({ "ops": [
+        rect(ids[0], 0.0), rect(ids[1], 40.0), rect(ids[2], 200.0),
+        { "op": "align", "targets": ids, "edge": "top" },
+        { "op": "distribute", "targets": ids, "axis": "horizontal" },
+        { "op": "flip", "target": ids[1], "axis": "vertical" },
+        { "op": "rotate", "target": ids[2], "degrees": 30.0, "pivot": "center" },
+        { "op": "reorder", "target": ids[0], "to": "front" },
+        { "op": "frame_selection", "targets": [ids[2]] },
+        { "op": "group", "targets": [ids[1], ids[0]], "name": "Pair" }
+    ]}))
+    .await;
+    assert_ne!(res["isError"], json!(true), "{res}");
+    let created = res["structuredContent"]["created_ids"].as_array().unwrap();
+    let group = created.last().unwrap().as_str().unwrap();
+    let res = call(json!({ "ops": [{ "op": "ungroup", "target": group }] })).await;
+    assert_ne!(res["isError"], json!(true), "{res}");
+    client.cancel().await.unwrap();
+    server_task.await.unwrap().ok();
+}
+
+/// Paint, stroke and effect list ops in one `apply_edits` batch.
+#[tokio::test]
+async fn mcp_paint_stroke_and_effect_ops_run_in_one_batch() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let src_path = tmp_dir.path().join("src.fig");
+    std::fs::copy(fixture("structure.fig"), &src_path).unwrap();
+    let page = Document::open(&src_path).unwrap().pages[0].to_string();
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let server_task = tokio::spawn(FigstudioServer::new(vec![src_path], true).serve(a));
+    let client = ().serve(b).await.unwrap();
+    let id = "3000000000:950";
+    let ops = json!({ "ops": [
+        { "op": "create_shape", "id": id, "kind": "RECTANGLE", "parent": page,
+          "x": 0.0, "y": 0.0, "width": 80.0, "height": 40.0 },
+        { "op": "set_paints", "target": id, "slot": "fill", "paints": [
+            { "type": "solid", "hex": "#336699" },
+            { "type": "gradient", "kind": "linear",
+              "stops": [{ "position": 0, "hex": "#FFFFFF00" }, { "position": 1, "hex": "#FFFFFF" }] }
+        ]},
+        { "op": "update_paint", "target": id, "slot": "fill", "index": 0, "patch": { "opacity": 0.5 } },
+        { "op": "add_paint", "target": id, "slot": "stroke", "paint": { "type": "solid", "hex": "#000000" } },
+        { "op": "set_stroke_style", "target": id, "weight": 2, "dashes": [4, 2], "cap": "ROUND" },
+        { "op": "add_effect", "target": id, "effect": { "type": "drop_shadow", "radius": 8 } },
+        { "op": "update_effect", "target": id, "index": 0, "patch": { "offset": [0, 2] } }
+    ]});
+    let params = CallToolRequestParams::new("apply_edits")
+        .with_arguments(ops.as_object().cloned().unwrap_or_default());
+    let res = serde_json::to_value(client.call_tool(params).await.unwrap()).unwrap();
+    assert_ne!(res["isError"], json!(true), "{res}");
+    client.cancel().await.unwrap();
+    server_task.await.unwrap().ok();
+}
+
+/// Component definition ops in one `apply_edits` batch.
+#[tokio::test]
+async fn mcp_component_definition_ops_run_in_one_batch() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let src_path = tmp_dir.path().join("src.fig");
+    std::fs::copy(fixture("structure.fig"), &src_path).unwrap();
+    let page = Document::open(&src_path).unwrap().pages[0].to_string();
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let server_task = tokio::spawn(FigstudioServer::new(vec![src_path], true).serve(a));
+    let client = ().serve(b).await.unwrap();
+    let (c1, c2, t1) = ("3000000000:960", "3000000000:961", "3000000000:962");
+    let frame = |id: &str, name: &str, x: f64| {
+        json!({ "op": "create_shape", "id": id, "kind": "FRAME", "parent": page, "name": name,
+                "x": x, "y": 0.0, "width": 80.0, "height": 30.0 })
+    };
+    let ops = json!({ "ops": [
+        frame(c1, "State=Default", 0.0), frame(c2, "State=Hover", 100.0),
+        { "op": "create_text", "id": t1, "parent": c1, "x": 2, "y": 2, "characters": "Hi" },
+        { "op": "create_component", "frame": c1 }, { "op": "create_component", "frame": c2 },
+        { "op": "add_component_prop", "component": c1, "name": "Label", "kind": "text",
+          "default": { "kind": "text", "value": "Hi" } },
+        { "op": "bind_component_prop", "node": t1, "prop": "Label" },
+        { "op": "combine_as_variants", "components": [c1, c2], "name": "Chip" },
+        { "op": "add_variant", "from": c2 }
+    ]});
+    let params = CallToolRequestParams::new("apply_edits")
+        .with_arguments(ops.as_object().cloned().unwrap_or_default());
+    let res = serde_json::to_value(client.call_tool(params).await.unwrap()).unwrap();
+    assert_ne!(res["isError"], json!(true), "{res}");
+    client.cancel().await.unwrap();
+    server_task.await.unwrap().ok();
+}

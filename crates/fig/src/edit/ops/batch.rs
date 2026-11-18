@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use crate::clipboard::{decode_clipboard_html, paste_kiwi_into};
 use crate::edit::autolayout::append_auto_layout_patches;
+use crate::edit::groups::fit_groups;
 use crate::edit::styles_vars::import_image_bytes;
 use crate::edit::{Dirty, GuidAlloc, History, Txn};
 use crate::{Document, FigError, Guid};
@@ -60,8 +61,13 @@ pub fn execute_edit_ops(
         }
     }
 
-    // Derive Pass: solve Auto-Layout strictly on the topmost Auto-Layout ancestors of touched
-    // nodes — never across unrelated frames or pages in the document!
+    // Derive passes. Groups first: a refitted group can change an Auto-Layout parent's content.
+    let mut group_touched: Vec<Guid> = batch_txn.patches.iter().map(|(id, _)| *id).collect();
+    group_touched.extend_from_slice(&touched_for_layout);
+    let fitted = fit_groups(&mut staged, &group_touched, &mut batch_txn)?;
+    touched_for_layout.extend(fitted);
+    // Auto-Layout strictly on the topmost Auto-Layout ancestors of touched nodes, never across
+    // unrelated frames or pages.
     let mut al_adjustments = 0usize;
     for root in topmost_autolayout_ancestors(&staged, &touched_for_layout) {
         let mut al_txn = Txn::new("autolayout");
@@ -155,7 +161,9 @@ pub fn execute_paste_html(
     }
     let mut staged = clone_document_shell(doc);
     staged.apply_txn(&batch_txn)?;
-    for al_root in topmost_autolayout_ancestors(&staged, &[target_parent]) {
+    let mut touched = vec![target_parent];
+    touched.extend(fit_groups(&mut staged, &[target_parent], &mut batch_txn)?);
+    for al_root in topmost_autolayout_ancestors(&staged, &touched) {
         let mut al_txn = Txn::new("Paste Auto-Layout");
         append_auto_layout_patches(&staged, Some(al_root), &mut al_txn);
         if !al_txn.is_empty() {
@@ -214,7 +222,7 @@ fn topmost_autolayout_ancestors(doc: &Document, touched: &[Guid]) -> Vec<Guid> {
     roots
 }
 
-pub(super) fn merge_step_into_batch(batch: &mut Txn, step: Txn) {
+pub(crate) fn merge_step_into_batch(batch: &mut Txn, step: Txn) {
     batch.patches.extend(step.patches);
     batch.add_blobs.extend(step.add_blobs);
     for (h, b) in step.add_images {
@@ -259,8 +267,14 @@ pub fn describe_edit_ops_markdown() -> &'static str {
         "- `set_layer_props`: `{ target, visible?, locked?, opacity?, blend_mode?, clip_content? }`\n",
         "- `move`: `{ target, x, y, relative? }`\n",
         "- `resize`: `{ target, width, height }` (propagates constraints & rebuilds geometry)\n",
-        "- `rotate`: `{ target, degrees }`\n",
+        "- `rotate`: `{ target, degrees, pivot?: top_left|center }`\n",
         "- `reparent`: `{ target, new_parent, index? }`\n",
+        "- `group` / `frame_selection`: `{ targets: [sibling ids], name? }` (wraps in place; groups refit to their children after every edit)\n",
+        "- `ungroup`: `{ target }`\n",
+        "- `align`: `{ targets, edge: left|h_center|right|top|v_center|bottom, to?: selection|parent }` (one target aligns to its parent)\n",
+        "- `distribute`: `{ targets, axis: horizontal|vertical, spacing? }` (equal gaps, or a fixed gap)\n",
+        "- `flip`: `{ target, axis: horizontal|vertical }`\n",
+        "- `reorder`: `{ target, to: front|back|forward|backward }`\n",
         "- `set_corner_radii`: `{ target, radii: [tl, tr, br, bl], smoothing? }`\n",
         "- `set_constraints`: `{ target, horizontal?: MIN|CENTER|MAX|STRETCH|SCALE, vertical? }`\n",
         "- `set_auto_layout`: `{ target, mode: NONE|HORIZONTAL|VERTICAL|GRID, spacing?, counter_spacing?, padding?: [top,right,bottom,left], primary_sizing?: FIXED|HUG, counter_sizing?: FIXED|HUG, primary_align?: MIN|CENTER|MAX|SPACE_BETWEEN, counter_align?: MIN|CENTER|MAX|BASELINE, wrap? }`\n",
@@ -268,12 +282,20 @@ pub fn describe_edit_ops_markdown() -> &'static str {
         "- `set_solid_fill`: `{ target, hex: \"#RRGGBB\" | null }`\n",
         "- `set_image_fill`: `{ target, sha1_hex, scale_mode?: FILL|FIT|CROP|TILE, opacity? }`\n",
         "- `set_stroke`: `{ target, hex: \"#RRGGBB\" | null, weight?, align?: INSIDE|CENTER|OUTSIDE }`\n",
-        "- `set_effects`: `{ target, drop_shadow?: { inner?, rgba:[r,g,b,a], offset:[x,y], radius, spread? }, blur_radius?, background_blur? }`\n",
+        "- `set_effects`: `{ target, effects?: [effect], drop_shadow?: { inner?, rgba:[r,g,b,a], offset:[x,y], radius, spread? }, blur_radius?, background_blur? }` (`effects` replaces the whole list)\n",
+        "- `add_effect`: `{ target, effect, index? }` / `update_effect`: `{ target, index, patch: { visible?, hex?, offset?, radius?, spread?, show_behind?, blend_mode? } }` / `remove_effect`: `{ target, index }` / `move_effect`: `{ target, from, to }`\n",
+        "  - effect: `{ type: drop_shadow|inner_shadow, hex?: \"#RRGGBBAA\", offset?: [x,y], radius?, spread?, show_behind?, visible?, blend_mode? }` or `{ type: layer_blur|background_blur, radius, visible? }`\n",
+        "- `set_paints`: `{ target, slot: fill|stroke, paints: [paint] }` / `add_paint`: `{ target, slot, paint, index? }` / `update_paint`: `{ target, slot, index, patch: { visible?, opacity?, blend_mode?, hex?, stops?, handles?: [[x,y],[x,y]], scale?, rotation?, filters? } }` / `remove_paint`: `{ target, slot, index }` / `move_paint`: `{ target, slot, from, to }` (editing a styled list detaches the style)\n",
+        "  - paint: `{ type: solid, hex, opacity?, visible?, blend_mode? }`, `{ type: gradient, kind: linear|radial|angular|diamond, stops: [{ position, hex }], from?: [x,y], to?: [x,y], ... }` (handles in the layer's unit square), or `{ type: image, hash, scale?: fill|fit|crop|tile, rotation?, tile_scale?, filters?: { exposure, contrast, saturation, temperature, tint, highlights, shadows } }`\n",
+        "- `set_stroke_style`: `{ target, weight?, align?: INSIDE|CENTER|OUTSIDE, cap?: NONE|ROUND|SQUARE|..., join?: MITER|BEVEL|ROUND, miter_limit?, dashes?: [dash, gap, ...] ([] = solid), sides?: [top, right, bottom, left] }`\n",
         "- `set_text`: `{ target, characters }`\n",
         "- `splice_text`: `{ target, utf16_start, utf16_delete_len, insert }`\n",
         "- `style_text_range`: `{ target, utf16_start, utf16_end, style: { font_family?, font_style?, font_size?, fill_hex?, text_decoration?, text_case?, letter_spacing_px?, line_height_px? } }`\n",
-        "- `set_typography`: `{ target, font_family?, font_style?, font_size?, align_horizontal?, auto_resize? }`\n",
-        "- `set_instance_override`: `{ instance, override_path: [\"1:2\", ...], characters?, visible?, fill_hex?, opacity? }`\n",
+        "- `set_typography`: `{ target, font_family?, font_style?, font_size?, align_horizontal?, auto_resize?, line_height?: \"auto\" | { px } | { percent }, letter_spacing?: { px } | { percent }, paragraph_spacing?, paragraph_indent?, align_vertical?: TOP|CENTER|BOTTOM, decoration?: NONE|UNDERLINE|STRIKETHROUGH, case?: ORIGINAL|UPPER|LOWER|TITLE|SMALL_CAPS|SMALL_CAPS_FORCED, truncate?, max_lines? }` (whole-text settings clear the same setting on character runs)\n",
+        "- `set_instance_override`: `{ instance, override_path: [\"1:2\", ...], characters?, visible?, fill_hex?, opacity?, fields?: { field: value } }` (`fields` in the `patch_raw` value form, schema-checked; structural fields refused)\n",
+        "- `add_component_prop`: `{ component, name, kind: bool|text|instance_swap, default: { kind, value } }` (id in `created_ids`) / `edit_component_prop`: `{ component, prop, name?, default? }` / `remove_component_prop`: `{ component, prop }`\n",
+        "- `bind_component_prop`: `{ node, prop }` (bool → visibility, text → characters of a TEXT layer, instance_swap → a nested instance) / `unbind_component_prop`: `{ node, kind }`\n",
+        "- `combine_as_variants`: `{ components: [sibling component ids], name? }` (names like `Size=Large, State=Hover` become variant properties) / `add_variant`: `{ from }`\n",
         "- `reset_instance_override`: `{ instance, override_path?, field? }`\n",
         "- `set_component_prop`: `{ instance, prop, kind: bool|text|instance_swap, value }`\n",
         "- `switch_variant`: `{ instance, variants: [[\"Size\", \"Large\"]] }`\n",

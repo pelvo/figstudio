@@ -46,6 +46,7 @@ fn rotated_parent() -> (Document, History, Guid) {
         EditOp::Rotate {
             target: frame,
             degrees: 90.0,
+            pivot: Default::default(),
         },
     );
     let rect = run(

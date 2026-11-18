@@ -197,6 +197,7 @@ fn instance_text_override_keeps_its_other_text_data_fields() {
                 visible: None,
                 fill_hex: None,
                 opacity: None,
+                fields: None,
             }],
         );
     };
@@ -335,6 +336,7 @@ fn a_second_paste_reusing_a_master_maps_overrides_to_its_nodes() {
             visible: None,
             fill_hex: None,
             opacity: None,
+            fields: None,
         }],
     );
     let html = encode_clipboard_html(&src, &[instance], 1, None, None).unwrap();

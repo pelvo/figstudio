@@ -7,18 +7,28 @@
 //! [`History`].
 
 mod batch;
+mod compile_arrange;
 mod compile_components;
 mod compile_props;
+mod compile_style;
 mod compile_tree;
 
+pub use crate::edit::component_props::PropKind as ComponentPropKind;
 pub use crate::edit::guid_wire;
+pub use crate::edit::specs::{
+    EffectPatch, EffectSpec, GradientKind, ImageScale, PaintPatch, PaintSlot, PaintSpec, StopSpec,
+    TextLength, TypographyExtra,
+};
+pub(crate) use batch::merge_step_into_batch;
 pub use batch::{
     describe_edit_ops_markdown, execute_edit_ops, execute_import_image, execute_paste_html,
 };
+pub use compile_arrange::{AlignEdge, AlignTo, Axis, Pivot, ZOrder};
 
 use serde::{Deserialize, Serialize};
 
 use crate::Guid;
+use crate::edit::component_props::PropKind;
 use crate::edit::instances::ComponentPropVal;
 use crate::edit::text_runs::TextStyleRunPatch;
 use crate::edit::vector_net::{BooleanOp, VectorNetwork};
@@ -125,11 +135,61 @@ pub enum EditOp {
         width: f64,
         height: f64,
     },
-    /// Sets rotation in degrees (preserving current `(m02, m12)` translation).
+    /// Sets rotation in degrees about `pivot` (default `top_left`: keeps the `(m02, m12)`
+    /// translation; `center`: keeps the layer's centre in place).
     Rotate {
         #[serde(with = "guid_wire")]
         target: Guid,
         degrees: f64,
+        #[serde(default)]
+        pivot: Pivot,
+    },
+    /// Wraps sibling layers in a new group (a resize-to-fit frame) at the topmost one's place.
+    Group {
+        #[serde(with = "guid_wire::vec")]
+        targets: Vec<Guid>,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Wraps sibling layers in a new frame sized to them.
+    FrameSelection {
+        #[serde(with = "guid_wire::vec")]
+        targets: Vec<Guid>,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Moves a group's children to its parent (keeping page positions and order) and deletes it.
+    Ungroup {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+    },
+    /// Aligns layers on an edge or centre line of their union (or of each one's parent).
+    Align {
+        #[serde(with = "guid_wire::vec")]
+        targets: Vec<Guid>,
+        edge: AlignEdge,
+        #[serde(default)]
+        to: AlignTo,
+    },
+    /// Spaces layers evenly along an axis (`spacing` = a fixed gap instead).
+    Distribute {
+        #[serde(with = "guid_wire::vec")]
+        targets: Vec<Guid>,
+        axis: Axis,
+        #[serde(default)]
+        spacing: Option<f64>,
+    },
+    /// Mirrors a layer about its own centre line.
+    Flip {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        axis: Axis,
+    },
+    /// Moves a layer to the front, back, one step forward or one step backward among its siblings.
+    Reorder {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        to: ZOrder,
     },
     /// Reparents and/or reorders `target` under `new_parent` at `index` (`None` = append/topmost).
     Reparent {
@@ -220,7 +280,8 @@ pub enum EditOp {
         #[serde(default)]
         align: Option<String>,
     },
-    /// Replaces effects with a shadow and/or blur, or clears effects when empty.
+    /// Replaces the effect list: with `effects` when given, else with the shorthand shadow
+    /// and/or blur (no fields clears the list).
     SetEffects {
         #[serde(with = "guid_wire")]
         target: Guid,
@@ -230,6 +291,96 @@ pub enum EditOp {
         blur_radius: Option<f64>,
         #[serde(default)]
         background_blur: bool,
+        #[serde(default)]
+        effects: Option<Vec<EffectSpec>>,
+    },
+    /// Inserts an effect at `index` (default: the end).
+    AddEffect {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        effect: EffectSpec,
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Changes fields of the effect at `index`, keeping the others.
+    UpdateEffect {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        index: usize,
+        patch: EffectPatch,
+    },
+    /// Removes the effect at `index`.
+    RemoveEffect {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        index: usize,
+    },
+    /// Moves the effect at `from` to `to`.
+    MoveEffect {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        from: usize,
+        to: usize,
+    },
+    /// Replaces a fill or stroke paint list (solid, gradient and image paints). Detaches a
+    /// bound paint style, as editing the list does in Figma.
+    SetPaints {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        slot: PaintSlot,
+        paints: Vec<PaintSpec>,
+    },
+    /// Inserts a paint at `index` (default: the end, which Figma draws on top).
+    AddPaint {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        slot: PaintSlot,
+        paint: PaintSpec,
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Changes fields of the paint at `index`, keeping the others.
+    UpdatePaint {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        slot: PaintSlot,
+        index: usize,
+        patch: PaintPatch,
+    },
+    /// Removes the paint at `index`.
+    RemovePaint {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        slot: PaintSlot,
+        index: usize,
+    },
+    /// Moves the paint at `from` to `to`.
+    MovePaint {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        slot: PaintSlot,
+        from: usize,
+        to: usize,
+    },
+    /// Sets stroke weight, position, caps, joins, miter limit, dashes (empty list = solid) and
+    /// per-side weights `[top, right, bottom, left]`.
+    SetStrokeStyle {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        #[serde(default)]
+        weight: Option<f64>,
+        #[serde(default)]
+        align: Option<String>,
+        #[serde(default)]
+        cap: Option<String>,
+        #[serde(default)]
+        join: Option<String>,
+        #[serde(default)]
+        miter_limit: Option<f64>,
+        #[serde(default)]
+        dashes: Option<Vec<f64>>,
+        #[serde(default)]
+        sides: Option<[f64; 4]>,
     },
     /// Replaces the entire string of a `TEXT` layer (or an inner `TEXT` override when `instance` is set).
     SetText {
@@ -267,6 +418,10 @@ pub enum EditOp {
         align_horizontal: Option<String>,
         #[serde(default)]
         auto_resize: Option<String>,
+        /// Line height, letter and paragraph spacing, vertical align, decoration, case and
+        /// truncation for the whole text (each removes that setting from the character runs).
+        #[serde(flatten, default)]
+        extra: TypographyExtra,
     },
     /// Sets an override on a descendant inside an `INSTANCE` (`override_path` of `overrideKey` GUIDs).
     SetInstanceOverride {
@@ -282,6 +437,62 @@ pub enum EditOp {
         fill_hex: Option<String>,
         #[serde(default)]
         opacity: Option<f64>,
+        /// Any other overridable fields, in the `patch_raw` value form (checked against the
+        /// file's schema; structural fields such as `transform` or `parentIndex` are refused).
+        #[serde(default)]
+        fields: Option<serde_json::Map<String, serde_json::Value>>,
+    },
+    /// Adds a `BOOL`, `TEXT` or `INSTANCE_SWAP` property to a component (or its variant set).
+    /// Its id is reported in `created_ids`.
+    AddComponentProp {
+        #[serde(with = "guid_wire")]
+        component: Guid,
+        name: String,
+        kind: PropKind,
+        default: ComponentPropVal,
+    },
+    /// Renames a component property and/or changes its default (`prop`: name or id).
+    EditComponentProp {
+        #[serde(with = "guid_wire")]
+        component: Guid,
+        prop: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        default: Option<ComponentPropVal>,
+    },
+    /// Removes a component property with its layer bindings and instance assignments.
+    RemoveComponentProp {
+        #[serde(with = "guid_wire")]
+        component: Guid,
+        prop: String,
+    },
+    /// Binds a layer inside a component to one of its properties: a `BOOL` drives visibility,
+    /// a `TEXT` the characters (TEXT layers), an `INSTANCE_SWAP` the swapped component
+    /// (instances).
+    BindComponentProp {
+        #[serde(with = "guid_wire")]
+        node: Guid,
+        prop: String,
+    },
+    /// Removes a layer's binding of the given kind.
+    UnbindComponentProp {
+        #[serde(with = "guid_wire")]
+        node: Guid,
+        kind: PropKind,
+    },
+    /// Combines sibling components into a variant set. Names like `Size=Large, State=Hover`
+    /// become properties; a plain name becomes `Property 1=<name>`.
+    CombineAsVariants {
+        #[serde(with = "guid_wire::vec")]
+        components: Vec<Guid>,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Adds a copy of variant `from` to its set with a new value for the first property.
+    AddVariant {
+        #[serde(with = "guid_wire")]
+        from: Guid,
     },
     /// Resets overrides on an `INSTANCE` (all, one path, or one field).
     ResetInstanceOverride {
