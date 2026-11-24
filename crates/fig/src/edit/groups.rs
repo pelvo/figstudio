@@ -1,6 +1,6 @@
 //! Groups: Figma stores a group as a `FRAME` with `resizeToFit: true`, whose box always fits
-//! its children. After an edit, [`fit_groups`] refits every group above a touched node without
-//! moving anything on the page.
+//! its children. After an edit, [`fit_groups`] refits every group (and boolean) above a touched
+//! node without moving anything on the page, and recomputes the booleans' results.
 
 use std::collections::HashSet;
 
@@ -32,7 +32,7 @@ pub fn fit_groups(
                 break;
             }
             let Some(node) = staged.node(id) else { break };
-            chain.push((id, is_group(node)));
+            chain.push((id, is_group(node) || node.kind == "BOOLEAN_OPERATION"));
             cur = node.parent;
         }
         let depth = chain.len();
@@ -51,6 +51,19 @@ pub fn fit_groups(
             staged.apply_txn(&txn)?;
             crate::edit::ops::merge_step_into_batch(out, txn);
             fitted.push(group);
+        }
+        // A boolean's result follows its operands (computed after its box is fitted).
+        if staged
+            .node(group)
+            .is_some_and(|n| n.kind == "BOOLEAN_OPERATION")
+        {
+            let mut txn = Txn::new("boolean result");
+            crate::edit::vector_ops::refresh_boolean(staged, &mut txn, group);
+            if !txn.is_empty() {
+                staged.apply_txn(&txn)?;
+                crate::edit::ops::merge_step_into_batch(out, txn);
+                fitted.push(group);
+            }
         }
     }
     Ok(fitted)

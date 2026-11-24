@@ -12,7 +12,7 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - [x] E1 node-level typography
 - [x] E2 component properties, variants, generic instance overrides
 - [x] E2 styles (all kinds), variables (collections, modes, all types, binding)
-- [ ] E3 vertex editing, convert/flatten/outline stroke, N-operand exact booleans
+- [x] E3 vertex editing, convert/flatten/outline stroke, N-operand exact booleans
 - [ ] E3 masks, layout grids, export settings, prototype reactions
 - [ ] U1 multi-selection model and box select
 - [ ] U2 canvas interaction (multi-move/resize, rotate handle, nudge, Alt-duplicate, snapping)
@@ -90,3 +90,20 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
 - Not verified: Figma reopening files with collections or styles made here; published
   (library) styles and variables are read-only to these ops.
+
+### 2026-11-18T130000Z editing-engine-e3-vectors
+- What changed and how it was checked: `edit::outline` (layer outlines as kurbo paths, stroke
+  outlines with align/caps/joins/dashes, path → vector network) and `edit::vector_ops`. Ops
+  `boolean_combine` on 2+ siblings (live: the group-fitting pass refits the box and recomputes
+  the result when an operand changes; a text operand drops the stored result so the renderer
+  draws the operands and counts it), `convert_to_vector` (shape's own vertex order),
+  `flatten`, `outline_stroke`, `edit_vector_network`. Decision: exact curve booleans use
+  `linesweeper` 0.5 (Linebender, MIT/Apache, no unsafe, on the kurbo 0.13 already in the
+  tree); `i_overlay` was rejected because it flattens curves. The hand-rolled 16-segment
+  boolean is removed. Fix: Exclude is stored as the file format's `XOR` (was `EXCLUDE`, which
+  failed schema validation). Tests `crates/fig/tests/edit_vectors.rs` (areas on stored
+  geometry), pixel test `crates/render/tests/edit_vectors.rs`, MCP batch; live refresh, XOR,
+  vertex order and inside-stroke clipping fail when reverted. Gate:
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed, plus `--test-one wasm32`.
+- Not verified: Figma reopening booleans made here; outline of text (refused: needs fonts);
+  vertex corner radii in networks.

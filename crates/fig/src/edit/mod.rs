@@ -9,6 +9,7 @@ pub mod guid;
 pub mod guid_wire;
 pub mod instances;
 pub mod ops;
+pub mod outline;
 pub mod schema_check;
 pub mod space;
 pub mod specs;
@@ -18,12 +19,13 @@ pub mod text_runs;
 pub mod txn;
 pub mod variables;
 pub mod vector_net;
+pub mod vector_ops;
 
 pub use guid::{EDIT_SESSION_BASE, GuidAlloc};
 pub use ops::{
     AlignEdge, AlignTo, Axis, BindField, ComponentPropKind, EditBatchReport, EditOp, EffectPatch,
     EffectSpec, GradientKind, ImageScale, PaintPatch, PaintSlot, PaintSpec, Pivot, ShadowSpec,
-    StopSpec, StyleKind, TextLength, TypographyExtra, VarType, VarValue, ZOrder,
+    StopSpec, StyleKind, TextLength, TypographyExtra, VarType, VarValue, VectorEdit, ZOrder,
     describe_edit_ops_markdown, execute_edit_ops, execute_import_image, execute_paste_html,
 };
 pub use txn::{Dirty, History, NodePatch, Txn};

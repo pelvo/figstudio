@@ -35,6 +35,7 @@ use crate::edit::component_props::PropKind;
 use crate::edit::instances::ComponentPropVal;
 use crate::edit::text_runs::TextStyleRunPatch;
 use crate::edit::vector_net::{BooleanOp, VectorNetwork};
+pub use crate::edit::vector_ops::VectorEdit;
 
 /// Complete, self-describing semantic edit operation across all Figma capabilities.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -589,15 +590,39 @@ pub enum EditOp {
         target: Guid,
         network: VectorNetwork,
     },
-    /// Combines two shape/vector nodes under a new `BOOLEAN_OPERATION` (`UNION`, `SUBTRACT`, `INTERSECT`, `EXCLUDE`).
+    /// Wraps two or more sibling layers in a live `BOOLEAN_OPERATION` (`Union`, `Subtract` =
+    /// the bottom layer minus the rest, `Intersect`, `Exclude`). Its result is recomputed
+    /// whenever an operand changes; paints come from the bottom operand.
     BooleanCombine {
         operation: BooleanOp,
-        #[serde(with = "guid_wire")]
-        a: Guid,
-        #[serde(with = "guid_wire")]
-        b: Guid,
+        #[serde(with = "guid_wire::vec")]
+        targets: Vec<Guid>,
         #[serde(default)]
         name: Option<String>,
+    },
+    /// Turns a rectangle, ellipse, polygon, star or line into an editable vector in place.
+    ConvertToVector {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+    },
+    /// Merges sibling layers into one vector of their combined fill area (bottom layer's paints).
+    Flatten {
+        #[serde(with = "guid_wire::vec")]
+        targets: Vec<Guid>,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Turns a layer's stroke into a filled vector just above it; the layer loses its stroke
+    /// (and is removed when nothing visible is left).
+    OutlineStroke {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+    },
+    /// Edits a vector's network vertex by vertex (coordinates in the network's own space).
+    EditVectorNetwork {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        edits: Vec<VectorEdit>,
     },
     /// Creates a local style: `paint` (fills and strokes) from `paints` or `from_node`'s fills,
     /// `effect` from `effects` or `from_node`, `text` and `grid` from `from_node`. Its id is

@@ -423,3 +423,42 @@ async fn mcp_style_and_variable_ops_run() {
     client.cancel().await.unwrap();
     server_task.await.unwrap().ok();
 }
+
+/// Vector ops in one `apply_edits` batch.
+#[tokio::test]
+async fn mcp_vector_ops_run_in_one_batch() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let src_path = tmp_dir.path().join("src.fig");
+    std::fs::copy(fixture("structure.fig"), &src_path).unwrap();
+    let page = Document::open(&src_path).unwrap().pages[0].to_string();
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let server_task = tokio::spawn(FigstudioServer::new(vec![src_path], true).serve(a));
+    let client = ().serve(b).await.unwrap();
+    let ids = [
+        "3000000000:980",
+        "3000000000:981",
+        "3000000000:982",
+        "3000000000:983",
+    ];
+    let shape = |id: &str, kind: &str, x: f64| {
+        json!({ "op": "create_shape", "id": id, "kind": kind, "parent": page,
+                "x": x, "y": 0.0, "width": 60.0, "height": 60.0 })
+    };
+    let ops = json!({ "ops": [
+        shape(ids[0], "RECTANGLE", 0.0), shape(ids[1], "ELLIPSE", 30.0),
+        shape(ids[2], "STAR", 200.0), shape(ids[3], "RECTANGLE", 300.0),
+        { "op": "boolean_combine", "operation": "Exclude", "targets": [ids[0], ids[1]] },
+        { "op": "convert_to_vector", "target": ids[2] },
+        { "op": "edit_vector_network", "target": ids[2],
+          "edits": [{ "edit": "move_vertex", "index": 0, "x": 30.0, "y": -10.0 }] },
+        { "op": "add_paint", "target": ids[3], "slot": "stroke",
+          "paint": { "type": "solid", "hex": "#000000" } },
+        { "op": "outline_stroke", "target": ids[3] }
+    ]});
+    let params = CallToolRequestParams::new("apply_edits")
+        .with_arguments(ops.as_object().cloned().unwrap_or_default());
+    let res = serde_json::to_value(client.call_tool(params).await.unwrap()).unwrap();
+    assert_ne!(res["isError"], json!(true), "{res}");
+    client.cancel().await.unwrap();
+    server_task.await.unwrap().ok();
+}

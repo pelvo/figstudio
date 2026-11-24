@@ -1,9 +1,7 @@
 //! Component, instance, style, variable, vector network, and Boolean [`EditOp`] compilation.
 
 use crate::edit::component_props;
-use crate::edit::geometry::{
-    PathCmd, encode_path_commands, make_path_entry, matrix_2x3, rebuild_shape_geometry,
-};
+use crate::edit::geometry::{encode_path_commands, make_path_entry};
 use crate::edit::instances::{
     convert_frame_to_component, detach_instance, existing_override_field, instantiate_component,
     reset_instance_override, set_component_prop_assignment, set_instance_override,
@@ -14,11 +12,10 @@ use crate::edit::styles_vars::{
     set_explicit_variable_mode, set_variable_mode_value,
 };
 use crate::edit::text_runs::replace_characters;
-use crate::edit::vector_net::{
-    boolean_combine, decode_vector_network, encode_vector_network, network_to_fill_paths,
-};
-use crate::edit::{GuidAlloc, Txn, fractional};
-use crate::{Document, FigError, Guid, Obj, Val, intern};
+use crate::edit::vector_net::{encode_vector_network, network_to_fill_paths};
+use crate::edit::vector_ops;
+use crate::edit::{GuidAlloc, Txn};
+use crate::{Document, FigError, Guid, Obj, Val};
 
 use super::EditOp;
 use super::compile_tree::ensure_exists;
@@ -218,78 +215,31 @@ pub(super) fn compile_component_or_vector_op(
         }
         EditOp::BooleanCombine {
             operation,
-            a,
-            b,
+            targets,
             name,
         } => {
-            let na = ensure_exists(doc, *a)?;
-            let nb = ensure_exists(doc, *b)?;
-            let parent = na
-                .parent
-                .ok_or_else(|| FigError::malformed("operand A has no parent"))?;
-            let cmds_a = extract_world_or_local_cmds(doc, na);
-            let cmds_b = extract_world_or_local_cmds(doc, nb);
-            let combined = boolean_combine(*operation, &cmds_a, &cmds_b);
-            let blob_idx = doc.blobs.len() + txn.add_blobs.len();
-            txn.add_blobs.push(encode_path_commands(&combined));
-
-            let bool_id = alloc.next_guid();
-            let pos = na.position.clone();
-            let mut obj = Obj::new();
-            obj.insert("guid", bool_id.to_val());
-            obj.insert("phase", Val::Enum(intern("CREATED")));
-            obj.insert("type", Val::Enum(intern("BOOLEAN_OPERATION")));
-            obj.insert(
-                "name",
-                Val::Str(
-                    name.clone()
-                        .unwrap_or_else(|| operation.figma_name().into()),
-                ),
-            );
-            obj.insert("visible", Val::Bool(true));
-            obj.insert("opacity", Val::Float(1.0));
-            obj.insert(
-                "booleanOperation",
-                Val::Enum(intern(operation.figma_name())),
-            );
-            obj.insert("transform", matrix_2x3(0.0, 0.0, 0.0));
-            obj.insert(
-                "size",
-                na.data.get("size").cloned().unwrap_or_else(|| {
-                    Val::Obj(Obj::from([
-                        ("x", Val::Float(100.0)),
-                        ("y", Val::Float(100.0)),
-                    ]))
-                }),
-            );
-            obj.insert(
-                "parentIndex",
-                Val::Obj(Obj::from([
-                    ("guid", parent.to_val()),
-                    ("position", Val::Str(pos)),
-                ])),
-            );
-            if let Some(fp) = na.data.get("fillPaints") {
-                obj.insert("fillPaints", fp.clone());
-            }
-            obj.insert(
-                "fillGeometry",
-                Val::Arr(vec![make_path_entry(blob_idx, false)]),
-            );
-            txn.create_node(bool_id, Val::Obj(obj));
-            let child_pos = fractional::n_between(None, None, 2);
-            for (idx, &cid) in [*a, *b].iter().enumerate() {
-                txn.set_field(
-                    cid,
-                    "parentIndex",
-                    Val::Obj(Obj::from([
-                        ("guid", bool_id.to_val()),
-                        ("position", Val::Str(child_pos[idx].clone())),
-                    ])),
-                );
-            }
-            created_ids.push(bool_id);
-            layout_touched.push(parent);
+            let id =
+                vector_ops::make_boolean(doc, txn, alloc, *operation, targets, name.as_deref())?;
+            created_ids.push(id);
+            layout_touched.push(id);
+        }
+        EditOp::ConvertToVector { target } => {
+            vector_ops::convert_to_vector(doc, txn, *target)?;
+            layout_touched.push(*target);
+        }
+        EditOp::Flatten { targets, name } => {
+            let id = vector_ops::flatten(doc, txn, alloc, targets, name.as_deref())?;
+            created_ids.push(id);
+            layout_touched.push(id);
+        }
+        EditOp::OutlineStroke { target } => {
+            let id = vector_ops::outline_stroke(doc, txn, alloc, *target)?;
+            created_ids.push(id);
+            layout_touched.push(id);
+        }
+        EditOp::EditVectorNetwork { target, edits } => {
+            vector_ops::edit_network(doc, txn, *target, edits)?;
+            layout_touched.push(*target);
         }
         EditOp::AddComponentProp {
             component,
@@ -423,67 +373,4 @@ fn grow_to_fit(
         );
     }
     Ok(())
-}
-
-fn extract_world_or_local_cmds(doc: &Document, node: &crate::Node) -> Vec<PathCmd> {
-    let dx = node
-        .data
-        .path(&["transform", "m02"])
-        .and_then(Val::as_f32)
-        .unwrap_or(0.0);
-    let dy = node
-        .data
-        .path(&["transform", "m12"])
-        .and_then(Val::as_f32)
-        .unwrap_or(0.0);
-    let mut cmds = node
-        .data
-        .get("fillGeometry")
-        .and_then(|fg| fg.items().first())
-        .and_then(|p| p.get("commandsBlob"))
-        .and_then(Val::as_u32)
-        .and_then(|idx| doc.blobs.get(idx as usize))
-        .and_then(|b| crate::edit::geometry::decode_path_commands(b))
-        .or_else(|| {
-            node.data
-                .path(&["vectorData", "vectorNetworkBlob"])
-                .and_then(Val::as_u32)
-                .and_then(|idx| doc.blobs.get(idx as usize))
-                .and_then(|b| decode_vector_network(b))
-                .and_then(|net| {
-                    network_to_fill_paths(&net)
-                        .into_iter()
-                        .next()
-                        .map(|(c, _)| c)
-                })
-        })
-        .or_else(|| rebuild_shape_geometry(&node.kind, &node.data))
-        .unwrap_or_default();
-
-    if dx != 0.0 || dy != 0.0 {
-        for c in &mut cmds {
-            match c {
-                PathCmd::MoveTo(x, y) | PathCmd::LineTo(x, y) => {
-                    *x += dx;
-                    *y += dy;
-                }
-                PathCmd::QuadTo(cx, cy, x, y) => {
-                    *cx += dx;
-                    *cy += dy;
-                    *x += dx;
-                    *y += dy;
-                }
-                PathCmd::CubicTo(c1x, c1y, c2x, c2y, x, y) => {
-                    *c1x += dx;
-                    *c1y += dy;
-                    *c2x += dx;
-                    *c2y += dy;
-                    *x += dx;
-                    *y += dy;
-                }
-                PathCmd::Close => {}
-            }
-        }
-    }
-    cmds
 }
