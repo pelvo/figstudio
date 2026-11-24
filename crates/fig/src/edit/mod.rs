@@ -12,16 +12,18 @@ pub mod ops;
 pub mod schema_check;
 pub mod space;
 pub mod specs;
+pub mod styles;
 pub mod styles_vars;
 pub mod text_runs;
 pub mod txn;
+pub mod variables;
 pub mod vector_net;
 
 pub use guid::{EDIT_SESSION_BASE, GuidAlloc};
 pub use ops::{
-    AlignEdge, AlignTo, Axis, ComponentPropKind, EditBatchReport, EditOp, EffectPatch, EffectSpec,
-    GradientKind, ImageScale, PaintPatch, PaintSlot, PaintSpec, Pivot, ShadowSpec, StopSpec,
-    TextLength, TypographyExtra, ZOrder, describe_edit_ops_markdown, execute_edit_ops,
-    execute_import_image, execute_paste_html,
+    AlignEdge, AlignTo, Axis, BindField, ComponentPropKind, EditBatchReport, EditOp, EffectPatch,
+    EffectSpec, GradientKind, ImageScale, PaintPatch, PaintSlot, PaintSpec, Pivot, ShadowSpec,
+    StopSpec, StyleKind, TextLength, TypographyExtra, VarType, VarValue, ZOrder,
+    describe_edit_ops_markdown, execute_edit_ops, execute_import_image, execute_paste_html,
 };
 pub use txn::{Dirty, History, NodePatch, Txn};

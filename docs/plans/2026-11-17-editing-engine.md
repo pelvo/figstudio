@@ -11,7 +11,7 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - [x] E1 fills/strokes as paint lists (solid, gradients, image), stroke style, effects list
 - [x] E1 node-level typography
 - [x] E2 component properties, variants, generic instance overrides
-- [ ] E2 styles (all kinds), variables (collections, modes, all types, binding)
+- [x] E2 styles (all kinds), variables (collections, modes, all types, binding)
 - [ ] E3 vertex editing, convert/flatten/outline stroke, N-operand exact booleans
 - [ ] E3 masks, layout grids, export settings, prototype reactions
 - [ ] U1 multi-selection model and box select
@@ -76,3 +76,17 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
 - Not verified: Figma reopening a set or properties made here; NUMBER/COLOR and other newer
   property kinds (not offered yet).
+
+### 2026-11-18T090000Z editing-engine-e2-design
+- What changed and how it was checked: `edit::styles` (create from specs or a layer, update
+  propagated to every user for fill, stroke, effect, grid and text styles, delete detaches with
+  the look kept; text-style binding copies its text fields) and `edit::variables` (collections,
+  modes add/rename/remove, COLOR/FLOAT/STRING/BOOLEAN variables with literal or alias values,
+  rename, delete keeping users' values, `bind_variable` for radius, opacity, stroke weight,
+  gaps, padding, size, font size, paragraph spacing, visibility and characters). Value and mode
+  changes refresh bound layers in the same undo entry. Unhandled ops now fail instead of being
+  ignored. Tests `crates/fig/tests/edit_design.rs` and an MCP batch; propagation, text-style
+  fields, the refresh and alias-keeping fail when reverted. Gate:
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
+- Not verified: Figma reopening files with collections or styles made here; published
+  (library) styles and variables are read-only to these ops.

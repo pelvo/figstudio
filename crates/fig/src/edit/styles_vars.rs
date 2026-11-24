@@ -309,6 +309,18 @@ pub fn bind_style(
             {
                 set.insert(dst_f, cached.clone());
             }
+            if slot == "text" {
+                // A layer stores the style's text settings itself, as Figma does.
+                for (k, v) in crate::edit::styles::text_fields(doc, sid)?.iter() {
+                    set.insert(k, v.clone());
+                }
+                if doc
+                    .node(node_id)
+                    .is_some_and(|n| n.data.get("derivedTextData").is_some())
+                {
+                    unset.push("derivedTextData".into());
+                }
+            }
         }
         None => {
             unset.push(style_field.into());

@@ -366,3 +366,60 @@ async fn mcp_component_definition_ops_run_in_one_batch() {
     client.cancel().await.unwrap();
     server_task.await.unwrap().ok();
 }
+
+/// Style and variable ops in `apply_edits` batches.
+#[tokio::test]
+async fn mcp_style_and_variable_ops_run() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let src_path = tmp_dir.path().join("src.fig");
+    std::fs::copy(fixture("structure.fig"), &src_path).unwrap();
+    let page = Document::open(&src_path).unwrap().pages[0].to_string();
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let server_task = tokio::spawn(FigstudioServer::new(vec![src_path], true).serve(a));
+    let client = ().serve(b).await.unwrap();
+    let call = |ops: Value| {
+        let c = client.clone();
+        async move {
+            let params = CallToolRequestParams::new("apply_edits").with_arguments(
+                json!({ "ops": ops })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            serde_json::to_value(c.call_tool(params).await.unwrap()).unwrap()
+        }
+    };
+    let rect = "3000000000:970";
+    let res = call(json!([
+        { "op": "create_shape", "id": rect, "kind": "RECTANGLE", "parent": page,
+          "x": 0, "y": 0, "width": 40, "height": 40 },
+        { "op": "create_style", "kind": "paint", "name": "Brand",
+          "paints": [{ "type": "solid", "hex": "#FF0000" }] },
+        { "op": "create_variable_collection", "name": "Tokens", "modes": ["Light", "Dark"] }
+    ]))
+    .await;
+    assert_ne!(res["isError"], json!(true), "{res}");
+    let ids = res["structuredContent"]["created_ids"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let (style, set, light) = (&ids[1], &ids[2], &ids[3]);
+    let res = call(json!([
+        { "op": "bind_style", "target": rect, "slot": "fill", "style": style },
+        { "op": "update_style", "style": style, "paints": [{ "type": "solid", "hex": "#00FF00" }] },
+        { "op": "create_variable", "collection": set, "name": "r", "kind": "number",
+          "value": { "number": 4 } }
+    ]))
+    .await;
+    assert_ne!(res["isError"], json!(true), "{res}");
+    let var = res["structuredContent"]["created_ids"][0].clone();
+    let res = call(json!([
+        { "op": "bind_variable", "target": rect, "field": "corner_radius", "variable": var },
+        { "op": "set_variable_value", "variable": var, "mode": light, "value": { "number": 9 } },
+        { "op": "delete_style", "style": style }
+    ]))
+    .await;
+    assert_ne!(res["isError"], json!(true), "{res}");
+    client.cancel().await.unwrap();
+    server_task.await.unwrap().ok();
+}

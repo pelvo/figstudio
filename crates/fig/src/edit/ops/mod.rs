@@ -9,6 +9,7 @@
 mod batch;
 mod compile_arrange;
 mod compile_components;
+mod compile_design;
 mod compile_props;
 mod compile_style;
 mod compile_tree;
@@ -19,6 +20,8 @@ pub use crate::edit::specs::{
     EffectPatch, EffectSpec, GradientKind, ImageScale, PaintPatch, PaintSlot, PaintSpec, StopSpec,
     TextLength, TypographyExtra,
 };
+pub use crate::edit::styles::StyleKind;
+pub use crate::edit::variables::{BindField, VarType, VarValue};
 pub(crate) use batch::merge_step_into_batch;
 pub use batch::{
     describe_edit_ops_markdown, execute_edit_ops, execute_import_image, execute_paste_html,
@@ -595,6 +598,99 @@ pub enum EditOp {
         b: Guid,
         #[serde(default)]
         name: Option<String>,
+    },
+    /// Creates a local style: `paint` (fills and strokes) from `paints` or `from_node`'s fills,
+    /// `effect` from `effects` or `from_node`, `text` and `grid` from `from_node`. Its id is
+    /// reported in `created_ids`.
+    CreateStyle {
+        kind: StyleKind,
+        name: String,
+        #[serde(default, with = "guid_wire::opt")]
+        from_node: Option<Guid>,
+        #[serde(default)]
+        paints: Option<Vec<PaintSpec>>,
+        #[serde(default)]
+        effects: Option<Vec<EffectSpec>>,
+    },
+    /// Renames and/or restyles a style; every layer using it is updated.
+    UpdateStyle {
+        #[serde(with = "guid_wire")]
+        style: Guid,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default, with = "guid_wire::opt")]
+        from_node: Option<Guid>,
+        #[serde(default)]
+        paints: Option<Vec<PaintSpec>>,
+        #[serde(default)]
+        effects: Option<Vec<EffectSpec>>,
+    },
+    /// Deletes a style; layers using it keep their look, detached.
+    DeleteStyle {
+        #[serde(with = "guid_wire")]
+        style: Guid,
+    },
+    /// Creates a variable collection with modes (default one, `Mode 1`). `created_ids` lists
+    /// the collection, then its modes.
+    CreateVariableCollection {
+        name: String,
+        #[serde(default)]
+        modes: Vec<String>,
+    },
+    /// Adds a mode (values copied from the first mode); its id is in `created_ids`.
+    AddVariableMode {
+        #[serde(with = "guid_wire")]
+        collection: Guid,
+        name: String,
+    },
+    RenameVariableMode {
+        #[serde(with = "guid_wire")]
+        collection: Guid,
+        #[serde(with = "guid_wire")]
+        mode: Guid,
+        name: String,
+    },
+    /// Removes a mode (not the last one) and its values.
+    RemoveVariableMode {
+        #[serde(with = "guid_wire")]
+        collection: Guid,
+        #[serde(with = "guid_wire")]
+        mode: Guid,
+    },
+    /// Creates a variable with `value` in every mode; its id is in `created_ids`.
+    CreateVariable {
+        #[serde(with = "guid_wire")]
+        collection: Guid,
+        name: String,
+        kind: VarType,
+        value: VarValue,
+    },
+    /// Sets a variable's value (or alias) for one mode; layers bound to it are updated.
+    SetVariableValue {
+        #[serde(with = "guid_wire")]
+        variable: Guid,
+        #[serde(with = "guid_wire")]
+        mode: Guid,
+        value: VarValue,
+    },
+    RenameVariable {
+        #[serde(with = "guid_wire")]
+        variable: Guid,
+        name: String,
+    },
+    /// Deletes a variable; layers, paints and aliases using it keep their current values.
+    DeleteVariable {
+        #[serde(with = "guid_wire")]
+        variable: Guid,
+    },
+    /// Binds a number, string or bool variable to a layer field (`variable: null` unbinds and
+    /// keeps the value). Colour variables bind to paints with `bind_paint_variable`.
+    BindVariable {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        field: BindField,
+        #[serde(default, with = "guid_wire::opt")]
+        variable: Option<Guid>,
     },
     /// Raw escape hatch: sets or unsets arbitrary Kiwi-validated `NodeChange` fields directly.
     PatchRaw {

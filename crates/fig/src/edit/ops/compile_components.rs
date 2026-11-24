@@ -363,6 +363,25 @@ pub(super) fn compile_component_or_vector_op(
             created_ids.push(new_id);
             layout_touched.push(set);
         }
+        EditOp::CreateStyle { .. }
+        | EditOp::UpdateStyle { .. }
+        | EditOp::DeleteStyle { .. }
+        | EditOp::CreateVariableCollection { .. }
+        | EditOp::AddVariableMode { .. }
+        | EditOp::RenameVariableMode { .. }
+        | EditOp::RemoveVariableMode { .. }
+        | EditOp::CreateVariable { .. }
+        | EditOp::SetVariableValue { .. }
+        | EditOp::RenameVariable { .. }
+        | EditOp::DeleteVariable { .. }
+        | EditOp::BindVariable { .. } => super::compile_design::compile_design_op(
+            doc,
+            txn,
+            alloc,
+            op,
+            created_ids,
+            layout_touched,
+        )?,
         EditOp::PatchRaw { target, set, unset } => {
             ensure_exists(doc, *target)?;
             let mut obj = Obj::new();
@@ -374,7 +393,11 @@ pub(super) fn compile_component_or_vector_op(
             txn.modify(*target, obj, unset.clone());
             layout_touched.push(*target);
         }
-        _ => {}
+        other => {
+            return Err(FigError::malformed(format!(
+                "edit op not handled: {other:?}"
+            )));
+        }
     }
     Ok(())
 }

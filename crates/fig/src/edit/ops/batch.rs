@@ -61,6 +61,27 @@ pub fn execute_edit_ops(
         }
     }
 
+    // Layers bound to a variable whose value or mode changed get the new value.
+    if ops.iter().any(|op| {
+        matches!(
+            op,
+            EditOp::SetVariableValue { .. }
+                | EditOp::SetVariableColor { .. }
+                | EditOp::SetVariableMode { .. }
+                | EditOp::RemoveVariableMode { .. }
+        )
+    }) {
+        let mut refresh = Txn::new("variables");
+        touched_for_layout.extend(crate::edit::variables::refresh_bound(
+            &staged,
+            &mut refresh,
+        )?);
+        if !refresh.is_empty() {
+            staged.apply_txn(&refresh)?;
+            merge_step_into_batch(&mut batch_txn, refresh);
+        }
+    }
+
     // Derive passes. Groups first: a refitted group can change an Auto-Layout parent's content.
     let mut group_touched: Vec<Guid> = batch_txn.patches.iter().map(|(id, _)| *id).collect();
     group_touched.extend_from_slice(&touched_for_layout);
@@ -307,6 +328,10 @@ pub fn describe_edit_ops_markdown() -> &'static str {
         "- `set_variable_mode`: `{ container, collection, mode: \"1:2\" | null }`\n",
         "- `set_variable_color`: `{ variable, mode, hex }`\n",
         "- `set_vector_network`: `{ target, network }` / `boolean_combine`: `{ op: Union|Subtract|Intersect|Exclude, a, b, name? }`\n",
+        "- `create_style`: `{ kind: paint|text|effect|grid, name, from_node?, paints?: [paint], effects?: [effect] }` (id in `created_ids`) / `update_style`: `{ style, name?, from_node?, paints?, effects? }` (every layer using it updates) / `delete_style`: `{ style }` (layers keep the look, detached)\n",
+        "- `create_variable_collection`: `{ name, modes?: [names] }` (`created_ids`: collection, then modes) / `add_variable_mode`: `{ collection, name }` / `rename_variable_mode`: `{ collection, mode, name }` / `remove_variable_mode`: `{ collection, mode }`\n",
+        "- `create_variable`: `{ collection, name, kind: color|number|string|bool, value: { color: \"#hex\" } | { number } | { string } | { bool } | { alias: \"id\" } }` / `set_variable_value`: `{ variable, mode, value }` (bound layers update) / `rename_variable`: `{ variable, name }` / `delete_variable`: `{ variable }` (users keep their values)\n",
+        "- `bind_variable`: `{ target, field: corner_radius|opacity|stroke_weight|item_spacing|padding_left|padding_top|padding_right|padding_bottom|width|height|font_size|paragraph_spacing|visible|characters, variable: \"id\" | null }` (colours bind to paints with `bind_paint_variable`)\n",
         "- `patch_raw`: `{ target, set: {...}, unset: [...] }`\n"
     )
 }
