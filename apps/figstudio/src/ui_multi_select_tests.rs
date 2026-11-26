@@ -7,7 +7,7 @@ use super::*;
 
 /// A new page holding rectangles `A` and `B` side by side and a frame with a child; the view
 /// fitted to it. Returns `(a, b, frame)`.
-fn layout(h: &mut Harness<'_, App>) -> (Guid, Guid, Guid) {
+pub(super) fn layout(h: &mut Harness<'_, App>) -> (Guid, Guid, Guid) {
     use figstudio_fig::edit::EditOp;
     let shape = |kind: &str, parent: Guid, x: f64| EditOp::CreateShape {
         id: None,

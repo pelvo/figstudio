@@ -154,6 +154,7 @@ pub(super) fn compile_single_op(
             opacity,
             blend_mode,
             clip_content,
+            proportions_locked,
         } => {
             let node = ensure_exists(doc, *target)?;
             let mut set = Obj::new();
@@ -174,6 +175,9 @@ pub(super) fn compile_single_op(
             }
             if let Some(clip) = clip_content {
                 set.insert("frameMaskDisabled", Val::Bool(!*clip));
+            }
+            if let Some(lock) = proportions_locked {
+                set.insert("proportionsConstrained", Val::Bool(*lock));
             }
             txn.modify(*target, set, Vec::new());
         }

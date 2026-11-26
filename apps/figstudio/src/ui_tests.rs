@@ -42,6 +42,8 @@ mod copy;
 mod copy_shortcuts;
 #[path = "ui_pick_cousins.rs"]
 mod cousins;
+#[path = "ui_design_tests.rs"]
+mod design;
 #[path = "ui_inner_tests.rs"]
 mod inner;
 #[path = "ui_inner_fixture.rs"]
@@ -170,8 +172,23 @@ pub fn right_click(h: &mut Harness<'_, App>, copied: &mut Vec<String>, at: Pos2)
     step(h, copied);
 }
 
+/// Scrolls the control `label` into the window, as a person would before using a control
+/// below the fold of a scrolling panel.
+pub fn reveal(h: &mut Harness<'_, App>, label: &str) {
+    // Inside the window with room to spare: panels clip a little short of its edges.
+    let window = h.ctx.content_rect().shrink(32.0);
+    for _ in 0..8 {
+        if window.contains_rect(h.get_by_label(label).rect()) {
+            return;
+        }
+        h.get_by_label(label).scroll_to_me();
+        h.run_steps(2);
+    }
+}
+
 /// Clicks the menu entry `label` and lets the frame that copies it run.
 pub fn click_label(h: &mut Harness<'_, App>, copied: &mut Vec<String>, label: &str) {
+    reveal(h, label);
     h.get_by_label(label).click();
     for _ in 0..4 {
         step(h, copied);

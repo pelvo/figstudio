@@ -126,6 +126,9 @@ pub enum EditOp {
         blend_mode: Option<String>,
         #[serde(default)]
         clip_content: Option<bool>,
+        /// Keep the width-to-height ratio when resizing (Figma's aspect lock).
+        #[serde(default)]
+        proportions_locked: Option<bool>,
     },
     /// Moves a node to `(x, y)` in parent space (or translates by `(dx, dy)` when `relative`).
     Move {

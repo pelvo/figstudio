@@ -5,9 +5,11 @@
 mod canvas_gizmos;
 mod clipboard_io;
 pub(crate) mod commands;
+mod design;
 mod inspector;
 mod inspector_sections;
 mod mcp_dispatch;
+mod widgets;
 
 use std::sync::Arc;
 
@@ -18,6 +20,7 @@ use crate::tab::Tab;
 
 pub use canvas_gizmos::{CanvasDrag, canvas_gizmos_and_input};
 pub use clipboard_io::{copy_selection_for_figma, paste_from_clipboard_or_text};
+pub use design::design_sections;
 pub use inspector::{properties_edit_controls, properties_history_bar};
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
 pub use mcp_dispatch::handle_live_mutation;

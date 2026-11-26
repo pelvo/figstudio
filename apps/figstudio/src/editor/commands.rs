@@ -265,6 +265,7 @@ fn layer_props(target: Guid, visible: Option<bool>, locked: Option<bool>) -> Edi
         opacity: None,
         blend_mode: None,
         clip_content: None,
+        proportions_locked: None,
     }
 }
 

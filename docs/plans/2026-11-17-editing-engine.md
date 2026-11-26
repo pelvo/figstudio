@@ -134,8 +134,10 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   `get_selection.nodes`). kittest tests in `ui_multi_select_tests.rs` (real pointer and key
   events) each fail when their behaviour is reverted; existing copy/pick/marquee/menu tests
   pass. Gate: `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
-- Not verified: the multi-selection outlines in a real window. The computer-use tool drives
-  the app in the background, so Shift and ⌘ never reach it; Figma-style "touch" box select
+- Not verified: the multi-selection outlines in a real window. (Correction, 2026-11-27: the
+  computer-use run had driven the installed figstudio.app, to which the test build handed the
+  file, not the new build; on a separately bundled build, accessibility clicks still carry no
+  Shift.) Figma-style "touch" box select
   (this selects only fully enclosed layers).
 
 ### 2026-11-27T050000Z editing-engine-u3-menus
@@ -152,3 +154,22 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   ungroup selecting its children fail when reverted; all 738 app tests pass. Gate:
   `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
 - Not verified: the submenus in the native macOS menu bar and the menus in a real window.
+
+### 2026-11-27T090000Z editing-engine-u4a-design
+- What changed and how it was checked: `editor::widgets` (number field with a scrubbing label,
+  typed numbers and one-operator expressions, `Mixed` for differing values; colour row with
+  swatch picker, draft-keeping hex and opacity) and `editor::design`: Position (six align
+  buttons, X/Y, rotation, flip), Layout (W/H with aspect lock, clip content), Appearance
+  (opacity, visibility, blend mode, corner radius with per-corner split), Fill and Stroke
+  lists (top paint first; colour or gradient/image label, opacity, show/hide, remove, add in the
+  title row; stroke position and weight), Effects list (blur, show/hide, remove; shadow offset,
+  spread and colour). They replace the read-only Layout, Layer, Fill, Stroke and Effects
+  sections; "Edit Layer" is now a collapsed "More" (rename, auto layout, text, components).
+  Each control edits every selected layer as one undo step (scrubbing coalesces).
+  `SetLayerProps` gains `proportions_locked`. kittest tests `ui_design_tests.rs`; editing
+  every selected layer, Mixed, the aspect lock and top-first order fail when reverted; the
+  shared test helper scrolls a control into view before clicking. Screenshot of a bundled
+  build reviewed (section + buttons moved into the title row, "-0" fixed). Gate:
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
+- Not verified: the colour picker popup and the blend menu opened in a real window; gradient
+  stops and image settings are shown but not editable yet (U4b).
