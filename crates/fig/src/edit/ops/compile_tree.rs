@@ -154,6 +154,7 @@ pub(super) fn compile_single_op(
             opacity,
             blend_mode,
             clip_content,
+            proportions_locked,
         } => {
             let node = ensure_exists(doc, *target)?;
             let mut set = Obj::new();
@@ -174,6 +175,9 @@ pub(super) fn compile_single_op(
             }
             if let Some(clip) = clip_content {
                 set.insert("frameMaskDisabled", Val::Bool(!*clip));
+            }
+            if let Some(lock) = proportions_locked {
+                set.insert("proportionsConstrained", Val::Bool(*lock));
             }
             txn.modify(*target, set, Vec::new());
         }
@@ -211,25 +215,24 @@ pub(super) fn compile_single_op(
             resize_node_with_constraints(doc, txn, *target, *width, *height)?;
             layout_touched.push(*target);
         }
-        EditOp::Rotate { target, degrees } => {
+        EditOp::Rotate {
+            target,
+            degrees,
+            pivot,
+        } => {
             let node = ensure_exists(doc, *target)?;
-            let cx = node
-                .data
-                .path(&["transform", "m02"])
-                .and_then(Val::as_f32)
-                .map_or(0.0, f64::from);
-            let cy = node
-                .data
-                .path(&["transform", "m12"])
-                .and_then(Val::as_f32)
-                .map_or(0.0, f64::from);
-            txn.set_field(*target, "transform", matrix_2x3(cx, cy, *degrees));
+            txn.set_field(
+                *target,
+                "transform",
+                super::compile_arrange::rotated(&node.data, *degrees, *pivot),
+            );
             layout_touched.push(*target);
         }
         EditOp::Reparent {
             target,
             new_parent,
             index,
+            keep_position,
         } => {
             let node = ensure_exists(doc, *target)?;
             ensure_exists(doc, *new_parent)?;
@@ -237,36 +240,35 @@ pub(super) fn compile_single_op(
                 layout_touched.push(old_p);
             }
             layout_touched.push(*new_parent);
-            let siblings: Vec<Guid> = doc
+            let others = doc
                 .children(*new_parent)
                 .iter()
-                .copied()
-                .filter(|&id| id != *target)
-                .collect();
-            let idx = index.unwrap_or(siblings.len()).min(siblings.len());
-            let prev = idx
-                .checked_sub(1)
-                .and_then(|i| siblings.get(i))
-                .and_then(|id| doc.node(*id))
-                .map(|n| n.position.as_str());
-            let next = siblings
-                .get(idx)
-                .and_then(|id| doc.node(*id))
-                .map(|n| n.position.as_str());
-            let pos = fractional::try_between(prev, next).ok_or_else(|| {
-                FigError::malformed(format!(
-                    "cannot place {target} at index {idx}: the sibling positions there are out of order or malformed"
-                ))
-            })?;
-            txn.set_field(
-                *target,
-                "parentIndex",
-                Val::Obj(Obj::from([
-                    ("guid", new_parent.to_val()),
-                    ("position", Val::Str(pos)),
-                ])),
-            );
+                .filter(|&&id| id != *target)
+                .count();
+            super::compile_arrange::place(doc, txn, *target, *new_parent, index.unwrap_or(others))?;
+            if *keep_position && node.parent != Some(*new_parent) {
+                let world = crate::edit::space::world_transform(doc, *target);
+                let local = crate::edit::space::world_transform(doc, *new_parent)
+                    .inverse()
+                    .ok_or_else(|| FigError::malformed(format!("{new_parent} cannot be inverted")))?
+                    .compose(world);
+                txn.set_field(*target, "transform", local.to_val());
+            }
         }
+        EditOp::Group { .. }
+        | EditOp::FrameSelection { .. }
+        | EditOp::Ungroup { .. }
+        | EditOp::Align { .. }
+        | EditOp::Distribute { .. }
+        | EditOp::Flip { .. }
+        | EditOp::Reorder { .. } => super::compile_arrange::compile_arrange_op(
+            doc,
+            txn,
+            alloc,
+            op,
+            created_ids,
+            layout_touched,
+        )?,
         other => compile_prop_op(doc, txn, alloc, other, created_ids, layout_touched)?,
     }
     Ok(())

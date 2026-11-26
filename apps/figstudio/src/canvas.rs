@@ -34,6 +34,8 @@ pub enum Tool {
     Ellipse,
     Line,
     Text,
+    /// Click points (drag for curves) to draw a path.
+    Pen,
     Hand,
     Zoom,
 }
@@ -115,6 +117,8 @@ pub struct Options {
     pub frame_labels: bool,
     /// A plain scroll wheel zooms, and pans with ⌘ / Ctrl (Settings → Canvas).
     pub scroll_zooms: bool,
+    /// Moved layers snap to their siblings and frame (Settings → Canvas).
+    pub snapping: bool,
     /// How Preview sizes its screen.
     pub scaling: crate::preview::Scaling,
 }
@@ -135,6 +139,7 @@ pub fn show(
         radius,
         frame_labels,
         scroll_zooms,
+        snapping,
         scaling,
     } = options;
     if tab.preview.is_some() {
@@ -221,11 +226,25 @@ pub fn show(
     let point = cursor_page.map(|p| Point::new(f64::from(p.x), f64::from(p.y)));
     let deep = ui.input(|i| i.modifiers.command);
     let mut inner_changed = false;
-    if response.clicked() && !panning {
+    // Editing a vector's points: clicks belong to its points, not to picking layers.
+    if response.clicked() && !panning && tab.vector_edit.is_none() {
         match tool {
             Tool::Select => {
-                inner_changed =
-                    crate::canvas_pick::click(tab, &chain, point, deep, response.double_clicked());
+                // Shift-click adds the layer under the pointer to the selection, or removes it.
+                if ui.input(|i| i.modifiers.shift)
+                    && !response.double_clicked()
+                    && let Some(id) = tab.hover
+                {
+                    tab.toggle_selected(id);
+                } else {
+                    inner_changed = crate::canvas_pick::click(
+                        tab,
+                        &chain,
+                        point,
+                        deep,
+                        response.double_clicked(),
+                    );
+                }
             }
             Tool::Zoom => {
                 if let Some(p) = response.interact_pointer_pos() {
@@ -244,19 +263,29 @@ pub fn show(
             | Tool::Rectangle
             | Tool::Ellipse
             | Tool::Line
-            | Tool::Text => {}
+            | Tool::Text
+            | Tool::Pen => {}
         }
     }
     // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
     // canvas nothing is selected, so no menu opens. Any tool, as the spec says.
-    if response.secondary_clicked() && !marquee::right_click(&response, tab, origin) {
+    // A right-click on a selected layer keeps the whole selection for the menu.
+    if response.secondary_clicked()
+        && !marquee::right_click(&response, tab, origin)
+        && !tab
+            .hover
+            .is_some_and(|h| tab.selected().contains(&h) && !tab.also.is_empty())
+    {
         crate::canvas_pick::click(tab, &chain, point, deep, false);
     }
     let gizmo_active = tool.is_creation()
+        || tool == Tool::Pen
+        || tab.vector_edit.is_some()
         || matches!(
             tab.edit_drag,
             Some(
                 crate::editor::CanvasDrag::Resize { .. }
+                    | crate::editor::CanvasDrag::Rotate { .. }
                     | crate::editor::CanvasDrag::Move { moved: true, .. }
             )
         );
@@ -323,7 +352,7 @@ pub fn show(
             Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.8)),
         );
     } else if inner_hover.is_none()
-        && let Some(h) = tab.hover.filter(|h| Some(*h) != tab.selection)
+        && let Some(h) = tab.hover.filter(|h| !tab.selected().contains(h))
     {
         let a = crate::anim::arrive(&ctx, egui::Id::new("hover-outline"), (tab.id, h), 0.12);
         outline(
@@ -347,6 +376,26 @@ pub fn show(
         } else {
             outline(&painter, tab, origin, sel, stroke);
         }
+        // The other selected layers, and the box around them all.
+        for &id in &tab.also {
+            outline(&painter, tab, origin, id, stroke);
+        }
+        if !tab.also.is_empty()
+            && let Some(b) = tab
+                .selected()
+                .into_iter()
+                .filter_map(|id| figstudio_render::node_bounds(&tab.doc, id))
+                .reduce(|a, b| a.union(b))
+        {
+            let to_screen =
+                |x: f64, y: f64| tab.view.to_screen(origin, egui::pos2(x as f32, y as f32));
+            painter.rect_stroke(
+                egui::Rect::from_two_pos(to_screen(b.x0, b.y0), to_screen(b.x1, b.y1)),
+                0.0,
+                Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.6 * a)),
+                egui::StrokeKind::Outside,
+            );
+        }
     }
     crate::canvas_text::overlay(&painter, tab, origin);
     let mut active_tool = tool;
@@ -356,12 +405,21 @@ pub fn show(
         }
         None
     } else {
-        crate::editor::canvas_gizmos_and_input(ui, &painter, rect, tab, &mut active_tool, panning)
+        crate::editor::canvas_gizmos_and_input(
+            ui,
+            &painter,
+            rect,
+            tab,
+            &mut active_tool,
+            panning,
+            snapping,
+        )
     };
     if active_tool != tool && active_tool == Tool::Select {
         tab.reset_tool_to_select = true;
     }
     marquee::paint(&painter, tab, origin);
+    crate::editor::proto_noodles(&painter, tab, origin);
     crate::icons::focus_ring(ui, &response, rect, radius as u8);
     crate::canvas_a11y::layers(ui, &response, tab, origin);
     crate::shader_code::markers(ui, &painter, tab, |id| corners(tab, origin, id));
@@ -380,7 +438,8 @@ pub fn show(
             | Tool::Rectangle
             | Tool::Ellipse
             | Tool::Line
-            | Tool::Text => egui::CursorIcon::Crosshair,
+            | Tool::Text
+            | Tool::Pen => egui::CursorIcon::Crosshair,
             Tool::Select
                 if tab.text_select.is_some()
                     && tab.selection == tab.hover

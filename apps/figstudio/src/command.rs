@@ -684,6 +684,7 @@ fn command_icon(e: &Entry) -> Icon {
         Target::Action(Action::SelectTool(crate::canvas::Tool::Ellipse)) => Icon::Ellipse,
         Target::Action(Action::SelectTool(crate::canvas::Tool::Line)) => Icon::Vector,
         Target::Action(Action::SelectTool(crate::canvas::Tool::Text)) => Icon::Text,
+        Target::Action(Action::SelectTool(crate::canvas::Tool::Pen)) => Icon::Vector,
         _ => Icon::More,
     }
 }

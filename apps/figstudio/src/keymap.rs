@@ -6,6 +6,7 @@ use egui::{Key, KeyboardShortcut, Modifiers};
 use serde::{Deserialize, Serialize};
 
 use crate::canvas::Tool;
+use crate::editor::commands::EditCmd;
 use crate::menu::Action;
 
 /// Something a shortcut does.
@@ -45,12 +46,96 @@ pub enum Binding {
     EllipseTool,
     LineTool,
     TextTool,
+    PenTool,
     HandTool,
     ZoomTool,
     NextSpace,
     PreviousSpace,
     /// Go to the space at this place in the footer (1 to 9), as Arc's ⌃1…⌃9.
     Space(u8),
+    /// An edit command on the selection (`editor::commands`).
+    Edit(EditKey),
+}
+
+/// The edit commands that have a shortcut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EditKey {
+    Group,
+    Ungroup,
+    FrameSelection,
+    BringForward,
+    SendBackward,
+    BringToFront,
+    SendToBack,
+    FlipHorizontal,
+    FlipVertical,
+    ToggleVisible,
+    ToggleLocked,
+    CreateComponent,
+    DetachInstance,
+    AlignLeft,
+    AlignHCenter,
+    AlignRight,
+    AlignTop,
+    AlignVCenter,
+    AlignBottom,
+}
+
+impl EditKey {
+    /// The command it runs.
+    pub fn command(self) -> EditCmd {
+        use figstudio_fig::edit::{AlignEdge as E, Axis, ZOrder as Z};
+        match self {
+            EditKey::Group => EditCmd::Group,
+            EditKey::Ungroup => EditCmd::Ungroup,
+            EditKey::FrameSelection => EditCmd::FrameSelection,
+            EditKey::BringForward => EditCmd::Reorder(Z::Forward),
+            EditKey::SendBackward => EditCmd::Reorder(Z::Backward),
+            EditKey::BringToFront => EditCmd::Reorder(Z::Front),
+            EditKey::SendToBack => EditCmd::Reorder(Z::Back),
+            EditKey::FlipHorizontal => EditCmd::Flip(Axis::Horizontal),
+            EditKey::FlipVertical => EditCmd::Flip(Axis::Vertical),
+            EditKey::ToggleVisible => EditCmd::ToggleVisible,
+            EditKey::ToggleLocked => EditCmd::ToggleLocked,
+            EditKey::CreateComponent => EditCmd::CreateComponent,
+            EditKey::DetachInstance => EditCmd::DetachInstance,
+            EditKey::AlignLeft => EditCmd::Align(E::Left),
+            EditKey::AlignHCenter => EditCmd::Align(E::HCenter),
+            EditKey::AlignRight => EditCmd::Align(E::Right),
+            EditKey::AlignTop => EditCmd::Align(E::Top),
+            EditKey::AlignVCenter => EditCmd::Align(E::VCenter),
+            EditKey::AlignBottom => EditCmd::Align(E::Bottom),
+        }
+    }
+
+    /// The default keys, as in Figma where this app does not already use them.
+    fn default_keys(self) -> KeyboardShortcut {
+        let k = KeyboardShortcut::new;
+        let (cmd, alt, shift) = (Modifiers::COMMAND, Modifiers::ALT, Modifiers::SHIFT);
+        match self {
+            // ⌘G / ⇧⌘G are Find next / previous here, so grouping adds ⌥.
+            EditKey::Group => k(alt | cmd, Key::G),
+            EditKey::Ungroup => k(shift | alt | cmd, Key::G),
+            EditKey::FrameSelection => k(alt | cmd, Key::F),
+            EditKey::BringForward => k(cmd, Key::CloseBracket),
+            EditKey::SendBackward => k(cmd, Key::OpenBracket),
+            EditKey::BringToFront => k(alt | cmd, Key::CloseBracket),
+            EditKey::SendToBack => k(alt | cmd, Key::OpenBracket),
+            EditKey::FlipHorizontal => k(shift, Key::H),
+            EditKey::FlipVertical => k(shift, Key::V),
+            EditKey::ToggleVisible => k(shift | cmd, Key::H),
+            // ⇧⌘L is Open Figma link here.
+            EditKey::ToggleLocked => k(shift | alt, Key::L),
+            EditKey::CreateComponent => k(alt | cmd, Key::K),
+            EditKey::DetachInstance => k(alt | cmd, Key::B),
+            EditKey::AlignLeft => k(alt, Key::A),
+            EditKey::AlignHCenter => k(alt, Key::H),
+            EditKey::AlignRight => k(alt, Key::D),
+            EditKey::AlignTop => k(alt, Key::W),
+            EditKey::AlignVCenter => k(alt, Key::V),
+            EditKey::AlignBottom => k(alt, Key::S),
+        }
+    }
 }
 
 /// The keys ⌃1…⌃9 go to the spaces with.
@@ -79,7 +164,7 @@ const SPACE_LABELS: [&str; 9] = [
 ];
 
 impl Binding {
-    pub const ALL: [Binding; 47] = [
+    pub const ALL: [Binding; 67] = [
         Binding::CommandBar,
         Binding::Undo,
         Binding::Redo,
@@ -114,6 +199,7 @@ impl Binding {
         Binding::EllipseTool,
         Binding::LineTool,
         Binding::TextTool,
+        Binding::PenTool,
         Binding::HandTool,
         Binding::ZoomTool,
         Binding::NextSpace,
@@ -127,6 +213,25 @@ impl Binding {
         Binding::Space(7),
         Binding::Space(8),
         Binding::Space(9),
+        Binding::Edit(EditKey::Group),
+        Binding::Edit(EditKey::Ungroup),
+        Binding::Edit(EditKey::FrameSelection),
+        Binding::Edit(EditKey::BringForward),
+        Binding::Edit(EditKey::SendBackward),
+        Binding::Edit(EditKey::BringToFront),
+        Binding::Edit(EditKey::SendToBack),
+        Binding::Edit(EditKey::FlipHorizontal),
+        Binding::Edit(EditKey::FlipVertical),
+        Binding::Edit(EditKey::ToggleVisible),
+        Binding::Edit(EditKey::ToggleLocked),
+        Binding::Edit(EditKey::CreateComponent),
+        Binding::Edit(EditKey::DetachInstance),
+        Binding::Edit(EditKey::AlignLeft),
+        Binding::Edit(EditKey::AlignHCenter),
+        Binding::Edit(EditKey::AlignRight),
+        Binding::Edit(EditKey::AlignTop),
+        Binding::Edit(EditKey::AlignVCenter),
+        Binding::Edit(EditKey::AlignBottom),
     ];
 
     /// The binding that goes to the space at `index` (0-based) in the footer, if any.
@@ -148,7 +253,7 @@ impl Binding {
             Binding::PasteFromFigma => "Paste layer from Figma",
             Binding::DuplicateSelection => "Duplicate selected layer",
             Binding::DeleteSelection => "Delete selected layer",
-            Binding::SelectAll => "Select all text",
+            Binding::SelectAll => "Select all",
             Binding::SelectChild => "Select child",
             Binding::SelectParent => "Select parent",
             Binding::FindOnPage => "Find on page",
@@ -173,6 +278,7 @@ impl Binding {
             Binding::EllipseTool => "Ellipse tool",
             Binding::LineTool => "Line tool",
             Binding::TextTool => "Text tool",
+            Binding::PenTool => "Pen tool",
             Binding::HandTool => "Hand tool",
             Binding::ZoomTool => "Zoom tool (Alt to zoom out)",
             Binding::NextSpace => "Next space",
@@ -181,6 +287,7 @@ impl Binding {
                 .get(usize::from(n).wrapping_sub(1))
                 .copied()
                 .unwrap_or("Go to a space"),
+            Binding::Edit(e) => e.command().label(),
         }
     }
 
@@ -221,9 +328,11 @@ impl Binding {
             | Binding::EllipseTool
             | Binding::LineTool
             | Binding::TextTool
+            | Binding::PenTool
             | Binding::HandTool
             | Binding::ZoomTool => "Tools",
             Binding::NextSpace | Binding::PreviousSpace | Binding::Space(_) => "Spaces",
+            Binding::Edit(_) => "Arrange",
         }
     }
 
@@ -266,6 +375,7 @@ impl Binding {
             Binding::EllipseTool => k(Modifiers::NONE, Key::O),
             Binding::LineTool => k(Modifiers::NONE, Key::L),
             Binding::TextTool => k(Modifiers::NONE, Key::T),
+            Binding::PenTool => k(Modifiers::NONE, Key::P),
             Binding::HandTool => k(Modifiers::NONE, Key::H),
             Binding::ZoomTool => k(Modifiers::NONE, Key::Z),
             Binding::NextSpace => k(Modifiers::CTRL, Key::Tab),
@@ -277,6 +387,7 @@ impl Binding {
                     .copied()
                     .unwrap_or(Key::Num0),
             ),
+            Binding::Edit(e) => e.default_keys(),
         }
     }
 
@@ -317,11 +428,13 @@ impl Binding {
             Binding::EllipseTool => Action::SelectTool(Tool::Ellipse),
             Binding::LineTool => Action::SelectTool(Tool::Line),
             Binding::TextTool => Action::SelectTool(Tool::Text),
+            Binding::PenTool => Action::SelectTool(Tool::Pen),
             Binding::HandTool => Action::SelectTool(Tool::Hand),
             Binding::ZoomTool => Action::SelectTool(Tool::Zoom),
             Binding::NextSpace => Action::NextSpace,
             Binding::PreviousSpace => Action::PreviousSpace,
             Binding::Space(n) => Action::GoToSpace(usize::from(n).saturating_sub(1)),
+            Binding::Edit(e) => Action::Edit(e.command()),
         }
     }
 

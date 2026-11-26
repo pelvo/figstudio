@@ -1219,11 +1219,48 @@ impl App {
             .max_height(pages_height)
             .show(ui, |ui| panels::pages(ui, tab));
         split_handle(ui, &mut self.pages_share);
-        section_label(ui, "Layers", None);
+        // Layers | Assets: two section titles, the one shown in full colour.
+        ui.horizontal(|ui| {
+            ui.add_space(2.0);
+            for (title, assets) in [("Layers", false), ("Assets", true)] {
+                let on = self.show_assets == assets;
+                let p = theme::of(ui);
+                let r = ui.add(
+                    egui::Label::new(
+                        RichText::new(title)
+                            .font(theme::semibold(11.0))
+                            .color(if on { p.text } else { p.text_faint }),
+                    )
+                    .sense(Sense::click()),
+                );
+                r.widget_info(|| {
+                    WidgetInfo::selected(
+                        WidgetType::SelectableLabel,
+                        true,
+                        on,
+                        format!("{title} tab"),
+                    )
+                });
+                crate::a11y::author(&r, format!("sidebar.{}", title.to_lowercase()));
+                crate::icons::focus_ring(ui, &r, r.rect.expand(2.0), 4);
+                if r.clicked() {
+                    self.show_assets = assets;
+                }
+            }
+        });
         let fill = theme::of(ui).field;
-        filter_field(ui, &mut self.layer_filter, "Filter layers", fill);
+        let hint = if self.show_assets {
+            "Filter assets"
+        } else {
+            "Filter layers"
+        };
+        filter_field(ui, &mut self.layer_filter, hint, fill);
         ui.add_space(4.0);
-        panels::layers(ui, tab, &self.layer_filter);
+        if self.show_assets {
+            crate::assets::assets(ui, tab, &self.layer_filter);
+        } else {
+            panels::layers(ui, tab, &self.layer_filter);
+        }
     }
 
     /// The bottom of the sidebar: one dot per open file in its colour, like Arc's spaces.
@@ -1487,6 +1524,7 @@ impl App {
                         radius: f32::from(corner),
                         frame_labels: self.prefs.frame_labels,
                         scroll_zooms: self.prefs.scroll_zooms,
+                        snapping: self.prefs.snapping,
                         scaling: self.preview_scaling,
                     };
                     // Another file or page fades in over the last one, painted again from the
@@ -1699,6 +1737,7 @@ impl App {
             (Tool::Ellipse, Icon::Ellipse, "Ellipse tool", "Ellipse (O)"),
             (Tool::Line, Icon::Line, "Line tool", "Line (L)"),
             (Tool::Text, Icon::Text, "Text tool", "Text (T)"),
+            (Tool::Pen, Icon::Vector, "Pen tool", "Pen (P)"),
             (Tool::Hand, Icon::Hand, "Hand tool", "Hand (H)"),
             (
                 Tool::Zoom,

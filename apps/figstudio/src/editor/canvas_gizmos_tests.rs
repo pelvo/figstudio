@@ -46,6 +46,7 @@ fn rotated_parent() -> (Document, History, Guid) {
         EditOp::Rotate {
             target: frame,
             degrees: 90.0,
+            pivot: Default::default(),
         },
     );
     let rect = run(
@@ -100,7 +101,15 @@ fn resize_under_a_rotated_parent_uses_the_layer_axes_and_keeps_the_opposite_edge
         let axis =
             page_point(&doc, rect, Point::new(1.0, 0.0)) - page_point(&doc, rect, Point::ZERO);
         let sign = if handle == Handle::E { 10.0 } else { -10.0 };
-        let (x, y, w, h) = resized_to(&doc, rect, handle, orig, axis.x * sign, axis.y * sign);
+        let (x, y, w, h) = resized_to(
+            &doc,
+            rect,
+            handle,
+            orig,
+            axis.x * sign,
+            axis.y * sign,
+            false,
+        );
         assert!(
             (w - 50.0).abs() < 1e-6 && (h - 20.0).abs() < 1e-6,
             "{handle:?}: {w}x{h}"

@@ -1,4 +1,5 @@
-//! Read-only text gestures use renderer-resolved layout, including instance overrides.
+//! Text gestures (click, double-click, drag to select) and the selection and caret overlay,
+//! on renderer-resolved layout including instance overrides. Typing is `text_edit`.
 use crate::{tab::Tab, text_select, theme};
 use egui::{Pos2, Stroke};
 use figstudio_render::{
@@ -91,6 +92,29 @@ pub fn overlay(painter: &egui::Painter, tab: &Tab, origin: Pos2) {
     let Some((_, tf, data)) = tab.text_layout() else {
         return;
     };
+    // Editing: the caret, and where an input method shows its candidates.
+    if crate::text_edit::editing(tab).is_some()
+        && let Some((x, top, bottom)) = text_select::caret(&data, selection.head)
+    {
+        let to_screen = |x: f64, y: f64| {
+            let p = tf * Point::new(x, y);
+            tab.view
+                .to_screen(origin, Pos2::new(p.x as f32, p.y as f32))
+        };
+        let (a, b) = (to_screen(x, top), to_screen(x, bottom));
+        if selection.anchor == selection.head {
+            painter.line_segment([a, b], Stroke::new(1.5, theme::ACCENT));
+        }
+        let cursor = egui::Rect::from_two_pos(a, b).expand2(egui::vec2(1.0, 0.0));
+        painter.ctx().output_mut(|o| {
+            o.ime = Some(egui::output::IMEOutput {
+                purpose: egui::IMEPurpose::Normal,
+                rect: painter.clip_rect(),
+                cursor_rect: cursor,
+                should_interrupt_composition: false,
+            });
+        });
+    }
     let (w, h) = geom::size(&data);
     let rects = text_select::range_rects(&data, selection.anchor, selection.head)
         .unwrap_or_else(|| vec![Rect::new(0.0, 0.0, w, h)]);

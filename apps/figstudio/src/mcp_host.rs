@@ -286,6 +286,7 @@ fn snapshot(tabs: &[Tab], active: usize) -> Snapshot {
                 doc: t.doc.clone(),
                 page: t.page,
                 selection: t.selection,
+                also: t.also.clone(),
                 viewport: viewport(t),
             })
             .collect(),

@@ -64,6 +64,9 @@ pub struct Tab {
     /// Fit this node into view on the next canvas frame (`reveal_node` from an agent).
     pub fit_node: Option<Guid>,
     pub selection: Option<Guid>,
+    /// Further selected layers (Shift-click, box select), besides `selection`, the primary one
+    /// the panels show. `select` clears them. Use [`Tab::selected`] for the whole selection.
+    pub also: Vec<Guid>,
     /// Inner canvas target; panels and MCP retain the outermost instance selection.
     pub inner: Option<figstudio_fig::resolve::InstancePath>,
     pub text_select: Option<crate::text_select::Selection>,
@@ -83,6 +86,8 @@ pub struct Tab {
     pub shown: View,
     /// A Copy menu item picked this frame; `main.rs` puts it on the clipboard.
     pub pending_copy: Option<crate::copy::Item>,
+    /// An edit command picked in a right-click menu, run by the App this frame.
+    pub pending_action: Option<crate::menu::Action>,
     /// A timeline whose Play button was pressed this frame; `main.rs` opens its preview.
     pub pending_motion: Option<Guid>,
     /// Properties → Motion → Export asked for this timeline root in this format.
@@ -115,6 +120,10 @@ pub struct Tab {
     pub dirty_unsaved: bool,
     /// Active interactive Move / Resize / Create drag on the canvas.
     pub edit_drag: Option<crate::editor::CanvasDrag>,
+    /// Editing a vector's points (double-click a vector, or Enter).
+    pub vector_edit: Option<crate::editor::VectorEditing>,
+    /// The Pen tool's path so far.
+    pub pen: Option<crate::editor::PenPath>,
     /// Set by creation tools once a new layer is placed so the toolbar returns to Select.
     pub reset_tool_to_select: bool,
     /// The inspector field focused or control dragged last frame; a change seals the
@@ -255,6 +264,7 @@ impl Tab {
             fit_pending: true,
             fit_node: None,
             selection: None,
+            also: Vec::new(),
             inner: None,
             text_select: None,
             hover: None,
@@ -271,6 +281,7 @@ impl Tab {
                 pan: egui::Vec2::ZERO,
             },
             pending_copy: None,
+            pending_action: None,
             pending_motion: None,
             pending_motion_export: None,
             motion_preview: None,
@@ -287,6 +298,8 @@ impl Tab {
             saved_revision,
             dirty_unsaved: false,
             edit_drag: None,
+            vector_edit: None,
+            pen: None,
             reset_tool_to_select: false,
             edit_session: None,
         }

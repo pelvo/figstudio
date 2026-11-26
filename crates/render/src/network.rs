@@ -276,3 +276,22 @@ fn decode(data: &Val, blobs: &[Vec<u8>]) -> Option<(Network, vello_cpu::kurbo::A
         vello_cpu::kurbo::Affine::scale_non_uniform(w / nw, h / nh),
     ))
 }
+
+/// Every segment of a vector's network as one path (each segment its own subpath), for
+/// stroking a vector that stores no stroke geometry (an edited stroke style drops it).
+pub(crate) fn stroke_path(data: &Val, blobs: &[Vec<u8>]) -> Option<BezPath> {
+    let (net, scale) = decode(data, blobs)?;
+    let mut path = BezPath::new();
+    for s in &net.segments {
+        let p = net.vertices.get(s.start)?.0;
+        let q = net.vertices.get(s.end)?.0;
+        path.move_to(p);
+        if s.a == Vec2::ZERO && s.b == Vec2::ZERO {
+            path.line_to(q);
+        } else {
+            path.curve_to(p + s.a, q + s.b, q);
+        }
+    }
+    let path = scale * path;
+    (!path.elements().is_empty() && path.is_finite()).then_some(path)
+}

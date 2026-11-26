@@ -5,6 +5,7 @@
 
 mod a11y;
 mod anim;
+mod assets;
 mod canvas;
 mod canvas_a11y;
 mod canvas_pick;
@@ -46,6 +47,7 @@ mod instance_pick;
 mod jump_list;
 mod keymap;
 mod labels;
+mod layers_edit;
 mod link_open;
 mod marquee;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -109,6 +111,7 @@ mod swipe;
 mod symbols;
 mod tab;
 mod tab_selection;
+mod text_edit;
 mod text_select;
 mod theme;
 mod tile_cache;
@@ -421,6 +424,8 @@ struct Prefs {
     frame_labels: bool,
     /// A plain scroll wheel zooms (and pans with ⌘ / Ctrl).
     scroll_zooms: bool,
+    /// Moved layers snap to their siblings and frame, with guides.
+    snapping: bool,
     /// Shortcuts changed in Settings → Shortcuts.
     keymap: keymap::Keymap,
     /// The Recents page lists files in rows instead of cards.
@@ -449,6 +454,7 @@ impl Default for Prefs {
             renderer: settings::Renderer::Automatic,
             frame_labels: true,
             scroll_zooms: false,
+            snapping: true,
             keymap: keymap::Keymap::default(),
             recents_list: false,
             agents: settings::AgentPrefs::default(),
@@ -485,6 +491,8 @@ struct App {
     /// Finished "Copy as PNG" renders (`region_png.rs`).
     png: region_png::Inbox,
     layer_filter: String,
+    /// The sidebar lists assets (components, styles, variables) instead of layers.
+    show_assets: bool,
     /// Share of the left dock's height given to the page list (the rest is layers).
     pages_share: f32,
     show_left: bool,
@@ -650,6 +658,7 @@ impl App {
             toasts: Vec::new(),
             png: Default::default(),
             layer_filter: String::new(),
+            show_assets: false,
             pages_share: 0.55,
             show_left: true,
             show_right: true,
@@ -1316,6 +1325,13 @@ impl App {
         if self.unsaved.is_some() {
             return;
         }
+        // Editing text on the canvas: its keys go to the text first.
+        if !self.command.is_up(ctx)
+            && let Some(tab) = self.tabs.get_mut(self.active)
+        {
+            text_edit::keys(ctx, tab);
+            editor::vector_keys(ctx, tab, self.tool == canvas::Tool::Pen);
+        }
         let keys = |b: keymap::Binding| self.prefs.keymap.get(b);
         // The command bar is modal, also while it fades out (it still covers the app): only
         // its own shortcut (which closes or reopens it) gets through, so nothing changes the
@@ -1373,6 +1389,7 @@ impl App {
                     | B::EllipseTool
                     | B::LineTool
                     | B::TextTool
+                    | B::PenTool
             );
             if (is_edit_or_create && in_preview)
                 || (matches!(binding, B::SelectChild | B::SelectParent)
@@ -1384,12 +1401,9 @@ impl App {
                         B::Copy | B::PasteFromFigma | B::Undo | B::Redo | B::DuplicateSelection
                     ))
                     && quiet)
-                || (binding == B::SelectAll
-                    && (quiet
-                        || !self
-                            .tabs
-                            .get(self.active)
-                            .is_some_and(|t| t.text_select.is_some())))
+                || (binding == B::SelectAll && quiet)
+                // ⌥ letters type characters in fields (⌥A is "å"), so edit shortcuts wait too.
+                || (matches!(binding, B::Edit(_)) && (quiet || in_preview))
                 || self.native_takes(action, Some(shortcut))
                 || (matches!(binding, B::NextMatch | B::PreviousMatch) && !self.find.is_open())
             {
@@ -1451,7 +1465,10 @@ impl App {
         }
         // Escape closes the find bar first, also when its field no longer has focus (a
         // click on the canvas took it); the next one clears the selection.
-        if !quiet && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+        if !quiet
+            && !layers_edit::is_renaming(ctx)
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape))
+        {
             if let Some(tab) = self
                 .tabs
                 .get_mut(self.active)
@@ -1462,6 +1479,34 @@ impl App {
                 self.find.hide();
             } else {
                 self.apply(menu::Action::ClearSelection, ctx);
+            }
+        }
+        // Arrow keys nudge the selection by 1, with Shift by 10 (page units).
+        if !quiet
+            && !in_preview
+            && !modal_open
+            && let Some(tab) = self.tabs.get_mut(self.active)
+            && !tab.selected().is_empty()
+            && tab.text_select.is_none()
+        {
+            let step = if ctx.input(|i| i.modifiers.shift) {
+                10.0
+            } else {
+                1.0
+            };
+            for (key, dx, dy) in [
+                (Key::ArrowLeft, -step, 0.0),
+                (Key::ArrowRight, step, 0.0),
+                (Key::ArrowUp, 0.0, -step),
+                (Key::ArrowDown, 0.0, step),
+            ] {
+                let pressed = ctx.input_mut(|i| {
+                    i.consume_key(egui::Modifiers::NONE, key)
+                        || i.consume_key(egui::Modifiers::SHIFT, key)
+                });
+                if pressed {
+                    editor::nudge(tab, dx, dy);
+                }
             }
         }
     }
@@ -1645,6 +1690,9 @@ impl App {
         crate::a11y::restore_focus(&ctx, "command-bar", self.command.is_open());
         crate::a11y::restore_focus(&ctx, "settings", self.settings.is_open());
         self.shortcuts(&ctx);
+        // The right-click menus show shortcuts from the user's keymap.
+        let keymap = self.prefs.keymap.clone();
+        ctx.data_mut(|d| d.insert_temp(crate::menu_egui::keymap_id(), keymap));
         self.menu_windows(&ctx);
         let space_held = ctx.input(|i| i.key_down(Key::Space)) && !ctx.egui_wants_keyboard_input();
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
@@ -1758,6 +1806,13 @@ impl App {
         let tab = self.tabs.get_mut(self.active);
         for (text, error) in region_png::drive(&ctx, &self.workers, &self.png, tab) {
             self.toast(&ctx, text, error);
+        }
+        if let Some(action) = self
+            .tabs
+            .get_mut(self.active)
+            .and_then(|t| t.pending_action.take())
+        {
+            self.apply(action, &ctx);
         }
         if let Some(tab) = self.tabs.get_mut(self.active) {
             if let Some(root) = tab.pending_motion.take() {

@@ -451,7 +451,15 @@ pub fn create_shape_node(
     let mut obj = Obj::new();
     obj.insert("guid", new_id.to_val());
     obj.insert("phase", Val::Enum(intern("CREATED")));
-    obj.insert("type", Val::Enum(intern(normalized_kind)));
+    // Figma stores a group as a frame that resizes to fit its children (`edit::groups`).
+    let group = normalized_kind == "GROUP";
+    obj.insert(
+        "type",
+        Val::Enum(intern(if group { "FRAME" } else { normalized_kind })),
+    );
+    if group {
+        obj.insert("resizeToFit", Val::Bool(true));
+    }
     obj.insert(
         "name",
         Val::Str(

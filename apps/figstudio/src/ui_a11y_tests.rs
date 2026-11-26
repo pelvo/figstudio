@@ -961,19 +961,13 @@ fn a_properties_row_reads_as_key_and_value_together() {
 
     h.state_mut().tabs[0].select(Some(figstudio_fig::Guid(1, 34)));
     h.run_steps(3);
-    let values: Vec<String> = h
-        .root()
-        .children_recursive()
-        .map(|n| n.accesskit_node())
-        .filter(|a| a.role() == Role::Label && !a.is_hidden())
-        .filter_map(|a| a.value())
-        .collect();
-    for key in ["X", "Y", "W", "H"] {
+    // Position and size are editable fields now, each named and holding its value.
+    for name in ["X position", "Y position", "Width", "Height"] {
+        let field = h.get_by_label(name);
         assert!(
-            values.iter().any(|v| v.starts_with(&format!("{key}: "))),
-            "no {key}: {values:?}"
+            field.value().is_some_and(|v| !v.is_empty()),
+            "{name} has no value"
         );
-        assert!(!values.iter().any(|v| v == key), "a lone {key}: {values:?}");
     }
 }
 

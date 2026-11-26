@@ -34,14 +34,20 @@ impl eframe::Storage for Memory {
 
 #[path = "ui_a11y_tests.rs"]
 mod a11y;
+#[path = "ui_canvas_gesture_tests.rs"]
+mod canvas_gestures;
 #[path = "ui_chrome_tests.rs"]
 mod chrome;
+#[path = "ui_components_tests.rs"]
+mod components;
 #[path = "ui_copy_tests.rs"]
 mod copy;
 #[path = "ui_copy_shortcut_tests.rs"]
 mod copy_shortcuts;
 #[path = "ui_pick_cousins.rs"]
 mod cousins;
+#[path = "ui_design_tests.rs"]
+mod design;
 #[path = "ui_inner_tests.rs"]
 mod inner;
 #[path = "ui_inner_fixture.rs"]
@@ -50,6 +56,10 @@ mod inner_fixture;
 mod inner_hover;
 #[path = "ui_inner_nested_tests.rs"]
 mod inner_nested;
+#[path = "ui_layers_edit_tests.rs"]
+mod layers_edit;
+#[path = "ui_multi_select_tests.rs"]
+mod multi_select;
 #[path = "ui_onboarding_tests.rs"]
 mod onboarding;
 #[path = "ui_pick_tests.rs"]
@@ -64,14 +74,20 @@ mod pick_drag;
 mod pick_order;
 #[path = "ui_preview_tests.rs"]
 mod preview;
+#[path = "ui_proto_tests.rs"]
+mod proto;
 #[path = "ui_recents_tests.rs"]
 mod recents;
 #[path = "ui_shader_tests.rs"]
 mod shader_code;
 #[path = "ui_text_drag_tests.rs"]
 mod text_drag;
+#[path = "ui_text_edit_tests.rs"]
+mod text_edit;
 #[path = "ui_text_select_tests.rs"]
 mod text_select;
+#[path = "ui_vector_tests.rs"]
+mod vector;
 // Without the `mcp` feature there is no View item (mcp_off.rs) and no tokio to test it with.
 #[cfg(feature = "mcp")]
 #[path = "ui_mcp_tests.rs"]
@@ -168,8 +184,23 @@ pub fn right_click(h: &mut Harness<'_, App>, copied: &mut Vec<String>, at: Pos2)
     step(h, copied);
 }
 
+/// Scrolls the control `label` into the window, as a person would before using a control
+/// below the fold of a scrolling panel.
+pub fn reveal(h: &mut Harness<'_, App>, label: &str) {
+    // Inside the window with room to spare: panels clip a little short of its edges.
+    let window = h.ctx.content_rect().shrink(32.0);
+    for _ in 0..8 {
+        if window.contains_rect(h.get_by_label(label).rect()) {
+            return;
+        }
+        h.get_by_label(label).scroll_to_me();
+        h.run_steps(2);
+    }
+}
+
 /// Clicks the menu entry `label` and lets the frame that copies it run.
 pub fn click_label(h: &mut Harness<'_, App>, copied: &mut Vec<String>, label: &str) {
+    reveal(h, label);
     h.get_by_label(label).click();
     for _ in 0..4 {
         step(h, copied);

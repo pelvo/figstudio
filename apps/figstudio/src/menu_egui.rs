@@ -90,3 +90,39 @@ impl App {
         }
     }
 }
+
+/// Where the App leaves this frame's keymap for menus drawn outside it (the right-click menus).
+pub(crate) fn keymap_id() -> egui::Id {
+    egui::Id::new("menu-keymap")
+}
+
+/// Draws `items` in an open context menu with their shortcuts; returns the action picked.
+pub(crate) fn context_items(ui: &mut egui::Ui, items: &[Item]) -> Option<crate::menu::Action> {
+    let keymap: Option<crate::keymap::Keymap> = ui.data(|d| d.get_temp(keymap_id()));
+    let mut picked = None;
+    for item in items {
+        if item.label.is_empty() {
+            ui.separator();
+            continue;
+        }
+        let Some(action) = item.action else {
+            ui.add_enabled_ui(item.enabled, |ui| {
+                crate::a11y::submenu(ui, item.label, |ui| {
+                    picked = picked.or(context_items(ui, &item.children));
+                });
+            });
+            continue;
+        };
+        let mut button = egui::Button::new(item.label);
+        if let Some(shortcut) = keymap.as_ref().and_then(|k| k.for_action(action)) {
+            button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+        }
+        let response = ui.add_enabled(item.enabled, button);
+        crate::a11y::author(&response, format!("menu.{}", crate::a11y::slug(item.label)));
+        if response.clicked() {
+            ui.close();
+            picked = Some(action);
+        }
+    }
+    picked
+}

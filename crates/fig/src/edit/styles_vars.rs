@@ -105,7 +105,15 @@ pub fn image_paint(sha1_hex: &str, scale_mode: &str, opacity: f64) -> Result<Val
         ("visible", Val::Bool(true)),
         ("opacity", Val::Float(opacity.clamp(0.0, 1.0))),
         ("blendMode", Val::Enum(intern("NORMAL"))),
-        ("imageScaleMode", Val::Enum(intern(scale_mode))),
+        // Figma's "Crop" is stored as `STRETCH`.
+        (
+            "imageScaleMode",
+            Val::Enum(intern(if scale_mode.eq_ignore_ascii_case("CROP") {
+                "STRETCH"
+            } else {
+                scale_mode
+            })),
+        ),
         (
             "image",
             Val::Obj(Obj::from([
@@ -300,6 +308,18 @@ pub fn bind_style(
                 && let Some(cached) = style_node.data.get(src_f)
             {
                 set.insert(dst_f, cached.clone());
+            }
+            if slot == "text" {
+                // A layer stores the style's text settings itself, as Figma does.
+                for (k, v) in crate::edit::styles::text_fields(doc, sid)?.iter() {
+                    set.insert(k, v.clone());
+                }
+                if doc
+                    .node(node_id)
+                    .is_some_and(|n| n.data.get("derivedTextData").is_some())
+                {
+                    unset.push("derivedTextData".into());
+                }
             }
         }
         None => {

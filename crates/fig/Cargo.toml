@@ -20,6 +20,8 @@ hex = { workspace = true }
 html-escape = { workspace = true }
 sha1 = { workspace = true }
 same-file = { workspace = true }
+kurbo = { workspace = true }
+linesweeper = { workspace = true }
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 

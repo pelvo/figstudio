@@ -4,7 +4,6 @@ use egui::{
     Color32, CornerRadius, FontId, Id, Margin, Rect, RichText, Sense, Shape, Stroke, Ui, pos2, vec2,
 };
 use figstudio_fig::{Document, Guid, Node, Val};
-use figstudio_render::geom;
 
 use crate::anim::{self, Spring};
 use crate::copy::Item;
@@ -177,6 +176,7 @@ pub fn layers(ui: &mut Ui, tab: &mut Tab, filter: &str) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
+            let mut pass = crate::layers_edit::Pass::default();
             if filter.is_empty() {
                 // Figma lists the topmost layer first, so children are drawn in reverse.
                 let mut stack: Vec<_> = doc
@@ -193,7 +193,7 @@ pub fn layers(ui: &mut Ui, tab: &mut Tab, filter: &str) {
                     // A layer's children fade in when it opens.
                     let before = ui.opacity();
                     ui.multiply_opacity(shown);
-                    row(ui, tab, &doc, id, depth, true);
+                    row(ui, tab, &doc, id, depth, true, &mut pass);
                     ui.set_opacity(before);
                     let has_children = !doc.children(id).is_empty();
                     let open = tab.expanded.contains(&id);
@@ -211,9 +211,10 @@ pub fn layers(ui: &mut Ui, tab: &mut Tab, filter: &str) {
                         );
                     }
                 }
+                crate::layers_edit::drag_rows(ui, tab, &pass.rows);
             } else {
                 let mut shown = 0;
-                search(ui, tab, &doc, tab.page, &filter, &mut shown);
+                search(ui, tab, &doc, tab.page, &filter, &mut shown, &mut pass);
                 if shown == 0 {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
@@ -222,6 +223,7 @@ pub fn layers(ui: &mut Ui, tab: &mut Tab, filter: &str) {
                     });
                 }
             }
+            crate::layers_edit::finish_selection(tab, &pass);
         });
     tab.reveal = None;
 }
@@ -233,6 +235,7 @@ fn search(
     parent: Guid,
     filter: &str,
     shown: &mut usize,
+    pass: &mut crate::layers_edit::Pass,
 ) {
     let mut stack: Vec<Guid> = doc.children(parent).iter().rev().copied().collect();
     while let Some(child) = stack.pop() {
@@ -241,24 +244,39 @@ fn search(
         };
         if *shown < 2000 && display_name(node).to_lowercase().contains(filter) {
             *shown += 1;
-            row(ui, tab, doc, child, 0, false);
+            row(ui, tab, doc, child, 0, false, pass);
         }
         stack.extend(doc.children(child).iter().rev().copied());
     }
 }
 
-/// One layer row: chevron (when `tree` and it has children), type icon and name.
-fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize, tree: bool) {
+/// One layer row: chevron (when `tree` and it has children), type icon, name, and the eye
+/// and lock buttons. In the tree, rows drag to reorder and reparent.
+fn row(
+    ui: &mut Ui,
+    tab: &mut Tab,
+    doc: &Document,
+    id: Guid,
+    depth: usize,
+    tree: bool,
+    pass: &mut crate::layers_edit::Pass,
+) {
     let Some(node) = doc.node(id) else { return };
     let p = theme::of(ui);
     let has_children = tree && !doc.children(id).is_empty();
     let expanded = tab.expanded.contains(&id);
-    let selected = tab.selection == Some(id);
+    let selected = tab.selected().contains(&id);
     let hidden = node.data.flag("visible") == Some(false);
     let name = display_name(node);
 
+    let sense = if tree {
+        Sense::click_and_drag()
+    } else {
+        Sense::click()
+    };
     let (rect, response) =
-        ui.allocate_exact_size(vec2(ui.available_width().max(180.0), ROW), Sense::click());
+        ui.allocate_exact_size(vec2(ui.available_width().max(180.0), ROW), sense);
+    pass.rows.push(crate::layers_edit::Row { id, depth, rect });
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
     });
@@ -270,7 +288,7 @@ fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize, tree:
         response.scroll_to_me(Some(egui::Align::Center));
     }
     if !ui.is_rect_visible(rect) {
-        handle_row(tab, &response, id, has_children);
+        handle_row(ui, tab, &response, id, &name, pass);
         return;
     }
     let hover = hover_fade(ui, Id::new("layers-hover"), response.id, response.hovered());
@@ -336,18 +354,42 @@ fn row(ui: &mut Ui, tab: &mut Tab, doc: &Document, id: Guid, depth: usize, tree:
         FontId::proportional(12.5)
     };
     let left = rect.left() + indent + 36.0;
-    let g = crate::chrome::elided(ui, &name, font, color, rect.right() - left - 6.0);
-    ui.painter()
-        .galley(egui::pos2(left, mid - g.size().y / 2.0), g, color);
-    handle_row(tab, &response, id, has_children);
+    let buttons = crate::layers_edit::toggles(ui, tab, id, &name, rect);
+    if crate::layers_edit::renaming(ui) == Some(id) {
+        let field = egui::Rect::from_min_max(
+            egui::pos2(left - 2.0, rect.top() + 2.0),
+            egui::pos2(rect.right() - 6.0 - buttons, rect.bottom() - 2.0),
+        );
+        crate::layers_edit::rename_field(ui, tab, id, field);
+    } else {
+        let g = crate::chrome::elided(ui, &name, font, color, rect.right() - left - 6.0 - buttons);
+        ui.painter()
+            .galley(egui::pos2(left, mid - g.size().y / 2.0), g, color);
+    }
+    handle_row(ui, tab, &response, id, &name, pass);
 }
 
-fn handle_row(tab: &mut Tab, response: &egui::Response, id: Guid, has_children: bool) {
+fn handle_row(
+    ui: &Ui,
+    tab: &mut Tab,
+    response: &egui::Response,
+    id: Guid,
+    name: &str,
+    pass: &mut crate::layers_edit::Pass,
+) {
     if response.clicked() {
+        crate::layers_edit::click(tab, pass, id, ui.input(|i| i.modifiers));
+    }
+    if response.drag_started() {
+        crate::layers_edit::start_drag(ui, tab, id);
+    }
+    // A right-click on a row outside the selection selects it, so its menu acts on it.
+    if response.secondary_clicked() && !tab.selected().contains(&id) {
         tab.select(Some(id));
     }
-    if response.double_clicked() && has_children {
-        toggle(tab, id);
+    // Double-click renames, as in Figma; the chevron opens and closes.
+    if response.double_clicked() {
+        crate::layers_edit::start_rename(ui, id, name);
     }
     if response.hovered() {
         tab.hover = Some(id);
@@ -426,64 +468,9 @@ fn properties_view(
             });
             ui.add_space(8.0);
 
-            section(ui, "Layout", |ui| {
-                let (w, h) = geom::size(d);
-                let b = figstudio_render::node_bounds(&doc, node.id);
-                let (x, y) = b.map_or((0.0, 0.0), |b| (b.x0, b.y0));
-                grid(
-                    ui,
-                    "layout",
-                    &[("X", fmt(x)), ("Y", fmt(y)), ("W", fmt(w)), ("H", fmt(h))],
-                );
-                let tf = geom::affine(d.get("transform"));
-                let c = tf.as_coeffs();
-                let angle = (-c[1]).atan2(c[0]).to_degrees();
-                if angle.abs() > 0.01 {
-                    kv(ui, "Rotation", format!("{angle:.1}°"));
-                }
-                if let Some(r) = d.num("cornerRadius").filter(|r| *r > 0.0) {
-                    kv(ui, "Corner radius", fmt(f64::from(r)));
-                }
-                if geom::clips_content(&node.kind, d) {
-                    kv(ui, "Clip content", "yes".into());
-                }
-                if let Some(mode) = d.text("stackMode").filter(|m| *m != "NONE") {
-                    let gap = d.num("stackSpacing").unwrap_or(0.0);
-                    kv(
-                        ui,
-                        "Auto layout",
-                        format!("{} · gap {}", mode.to_lowercase(), fmt(f64::from(gap))),
-                    );
-                }
-            });
-
-            section(ui, "Layer", |ui| {
-                let opacity = d.num("opacity").unwrap_or(1.0);
-                kv(ui, "Opacity", format!("{:.0}%", opacity * 100.0));
-                if let Some(mode) = d
-                    .text("blendMode")
-                    .filter(|m| *m != "PASS_THROUGH" && *m != "NORMAL")
-                {
-                    kv(ui, "Blend", mode.to_lowercase());
-                }
-                if d.flag("visible") == Some(false) {
-                    kv(ui, "Visible", "hidden".into());
-                }
-                if d.flag("mask") == Some(true) {
-                    kv(ui, "Mask", "yes".into());
-                }
-            });
-
-            paints(ui, "Fill", d.get("fillPaints"));
-            if d.get("strokePaints").is_some_and(|p| !p.items().is_empty()) {
-                paints(ui, "Stroke", d.get("strokePaints"));
-                kv(
-                    ui,
-                    "Weight",
-                    fmt(f64::from(d.num("strokeWeight").unwrap_or(0.0))),
-                );
-            }
-            effects(ui, d.get("effects"));
+            // Position, Layout, Appearance, Fill, Stroke and Effects, editable for the whole
+            // selection (`editor::design`).
+            crate::editor::design_sections(ui, tab);
             let details = tab.inspect.get(&doc, node);
             if let Some(motion) = &details.motion
                 && let Some(click) = motion_section(ui, motion, &mut picked)
@@ -576,14 +563,39 @@ fn document_info(ui: &mut Ui, tab: &Tab) -> Option<Guid> {
 
 /// A titled group of rows on a rounded well, like a settings pane.
 pub(crate) fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
+    section_title(ui, title, None);
+    section_body(ui, body);
+}
+
+/// A section's title; with `add`, a "+" button named `add` at its right. Returns its click.
+pub(crate) fn section_title(ui: &mut Ui, title: &str, add: Option<&str>) -> bool {
     let p = theme::of(ui);
     ui.add_space(2.0);
-    ui.label(
-        RichText::new(title)
-            .font(theme::semibold(11.5))
-            .color(p.text_faint),
-    );
+    let clicked = ui
+        .horizontal(|ui| {
+            ui.label(
+                RichText::new(title)
+                    .font(theme::semibold(11.5))
+                    .color(p.text_faint),
+            );
+            let Some(name) = add else { return false };
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Clear of the scroll bar, which floats over the panel's right edge.
+                ui.add_space(ui.spacing().scroll.bar_width + 2.0);
+                let r = ui.add(egui::Button::new("+").frame(false));
+                crate::a11y::name_field(&r, name);
+                crate::a11y::author(&r, format!("design.{}", crate::a11y::slug(name)));
+                r.on_hover_text(name).clicked()
+            })
+            .inner
+        })
+        .inner;
     ui.add_space(2.0);
+    clicked
+}
+
+/// A section's rounded box.
+pub(crate) fn section_body(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
         // `theme::apply` sets this to `Palette::well`; the Properties card tints it.
         .fill(ui.visuals().faint_bg_color)
@@ -595,24 +607,6 @@ pub(crate) fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
             body(ui);
         });
     ui.add_space(8.0);
-}
-
-/// Label-value pairs, two per row.
-fn grid(ui: &mut Ui, id: &str, items: &[(&str, String)]) {
-    let p = theme::of(ui);
-    egui::Grid::new(id)
-        .num_columns(4)
-        .spacing(vec2(8.0, 6.0))
-        .show(ui, |ui| {
-            for (i, (k, v)) in items.iter().enumerate() {
-                let key = ui.label(RichText::new(*k).color(p.text_faint));
-                let value = ui.add_sized(vec2(64.0, 18.0), egui::Label::new(v.as_str()));
-                crate::a11y::key_value(&key, &value, k, v);
-                if i % 2 == 1 {
-                    ui.end_row();
-                }
-            }
-        });
 }
 
 pub(crate) fn kv(ui: &mut Ui, k: &str, v: String) {
@@ -635,59 +629,6 @@ fn fmt(v: f64) -> String {
     } else {
         format!("{r}")
     }
-}
-
-fn paints(ui: &mut Ui, title: &str, list: Option<&Val>) {
-    let items = list.map(Val::items).unwrap_or_default();
-    if items.is_empty() {
-        return;
-    }
-    section(ui, title, |ui| {
-        for p in items {
-            let kind = p.text("type").unwrap_or("?");
-            let visible = p.flag("visible") != Some(false);
-            let opacity = p.num("opacity").unwrap_or(1.0);
-            ui.horizontal(|ui| {
-                let swatch = match kind {
-                    "SOLID" => figstudio_render::paint::color(p.get("color"), 1.0)
-                        .map(crate::canvas::to_color32),
-                    _ => None,
-                };
-                let p = theme::of(ui);
-                let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
-                let radius = CornerRadius::same(5);
-                match swatch {
-                    Some(c) => {
-                        ui.painter().rect_filled(r, radius, c);
-                    }
-                    None => {
-                        ui.painter().rect_filled(r, radius, Color32::from_gray(140));
-                    }
-                }
-                ui.painter().rect_stroke(
-                    r,
-                    radius,
-                    egui::Stroke::new(1.0, p.card_stroke),
-                    egui::StrokeKind::Inside,
-                );
-                let label = match (kind, swatch) {
-                    ("SOLID", Some(c)) => format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b()),
-                    // A shader fill: its section below has the details.
-                    ("CUSTOM", _) => "shader".to_owned(),
-                    _ => kind.to_lowercase().replace('_', " "),
-                };
-                let text = RichText::new(label);
-                ui.label(if visible {
-                    text
-                } else {
-                    text.color(p.text_faint).strikethrough()
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(format!("{:.0}%", opacity * 100.0)).color(p.text_dim));
-                });
-            });
-        }
-    });
 }
 
 /// The layer's keyframe tracks: one row per animated field with its start and end value, a
@@ -909,30 +850,6 @@ fn swatch_row(ui: &mut Ui, label: &str, colour: Color32) {
                 egui::StrokeKind::Inside,
             );
         });
-    });
-}
-
-fn effects(ui: &mut Ui, list: Option<&Val>) {
-    let items = list.map(Val::items).unwrap_or_default();
-    if items.is_empty() {
-        return;
-    }
-    section(ui, "Effects", |ui| {
-        for e in items {
-            let kind = match e.text("type").unwrap_or("?") {
-                // A shader effect: its section below has the details.
-                "CUSTOM" => "shader".to_owned(),
-                other => other.to_lowercase().replace('_', " "),
-            };
-            let radius = e.num("radius").unwrap_or(0.0);
-            let visible = e.flag("visible") != Some(false);
-            let text = RichText::new(format!("{kind} · {}", fmt(f64::from(radius))));
-            ui.label(if visible {
-                text
-            } else {
-                text.color(theme::of(ui).text_faint).strikethrough()
-            });
-        }
     });
 }
 

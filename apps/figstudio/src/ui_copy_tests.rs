@@ -303,6 +303,7 @@ fn code_connect_suggests_connects_and_removes_a_component() {
     assert_eq!(h.state().tabs[0].selection, Some(Guid(1, 37)));
     assert!(h.query_by_label("Not connected").is_some());
 
+    reveal(&mut h, "Source");
     h.get_by_label("Source").click();
     step(&mut h, &mut c);
     h.get_by_label("Source").type_text("src/Button.tsx");

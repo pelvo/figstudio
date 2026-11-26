@@ -60,6 +60,8 @@ pub(crate) enum Action {
     PreviewRestart,
     #[cfg(target_arch = "wasm32")]
     CjkFont(crate::cjk::Variant),
+    /// An edit command on the selection (Edit menu, right-click menu, shortcuts).
+    Edit(crate::editor::commands::EditCmd),
 }
 
 /// View > Appearance: follow the system, or force light or dark.
@@ -264,7 +266,11 @@ pub(crate) fn tree_for(app: &App, browser: bool) -> Vec<Item> {
         Item::action("Paste from Figma", Action::PasteFromFigma, has_tab),
         Item::action("Duplicate layer", Action::DuplicateSelection, selection),
         Item::action("Delete layer", Action::DeleteSelection, selection),
-    ];
+        Item::separator(),
+    ]
+    .into_iter()
+    .chain(edit_items(app.tabs.get(app.active)))
+    .collect::<Vec<_>>();
     vec![
         Item::group(
             "File",
@@ -306,6 +312,86 @@ pub(crate) fn tree_for(app: &App, browser: bool) -> Vec<Item> {
             vec![
                 Item::action("Welcome tour", Action::Welcome, true),
                 Item::action("About figstudio", Action::About, true),
+            ],
+        ),
+    ]
+}
+
+/// The right-click menu's edit part: duplicate and delete, then [`edit_items`].
+pub(crate) fn context_edit_items(tab: &crate::tab::Tab) -> Vec<Item> {
+    let any = !tab.selected().is_empty();
+    let mut items = vec![
+        Item::action("Duplicate layer", Action::DuplicateSelection, any),
+        Item::action("Delete layer", Action::DeleteSelection, any),
+        Item::separator(),
+    ];
+    items.extend(edit_items(Some(tab)));
+    items
+}
+
+/// The arrange, component and vector commands, shared by the Edit menu and the right-click
+/// menus. Each is enabled when it applies to the selection.
+pub(crate) fn edit_items(tab: Option<&crate::tab::Tab>) -> Vec<Item> {
+    use crate::editor::commands::EditCmd as C;
+    use figstudio_fig::edit::vector_net::BooleanOp as B;
+    use figstudio_fig::edit::{AlignEdge as E, Axis as A, ZOrder as Z};
+    let item = |cmd: C| {
+        Item::action(
+            cmd.label(),
+            Action::Edit(cmd),
+            tab.is_some_and(|t| cmd.enabled(t)),
+        )
+    };
+    vec![
+        item(C::Group),
+        item(C::Ungroup),
+        item(C::FrameSelection),
+        Item::group(
+            "Arrange",
+            vec![
+                item(C::Reorder(Z::Front)),
+                item(C::Reorder(Z::Forward)),
+                item(C::Reorder(Z::Backward)),
+                item(C::Reorder(Z::Back)),
+                Item::separator(),
+                item(C::Flip(A::Horizontal)),
+                item(C::Flip(A::Vertical)),
+                item(C::Rotate90(true)),
+                item(C::Rotate90(false)),
+            ],
+        ),
+        Item::group(
+            "Align",
+            vec![
+                item(C::Align(E::Left)),
+                item(C::Align(E::HCenter)),
+                item(C::Align(E::Right)),
+                Item::separator(),
+                item(C::Align(E::Top)),
+                item(C::Align(E::VCenter)),
+                item(C::Align(E::Bottom)),
+                Item::separator(),
+                item(C::Distribute(A::Horizontal)),
+                item(C::Distribute(A::Vertical)),
+            ],
+        ),
+        Item::separator(),
+        item(C::ToggleVisible),
+        item(C::ToggleLocked),
+        Item::separator(),
+        item(C::CreateComponent),
+        item(C::DetachInstance),
+        Item::group(
+            "Boolean",
+            vec![
+                item(C::Boolean(B::Union)),
+                item(C::Boolean(B::Subtract)),
+                item(C::Boolean(B::Intersect)),
+                item(C::Boolean(B::Exclude)),
+                Item::separator(),
+                item(C::Flatten),
+                item(C::OutlineStroke),
+                item(C::UseAsMask),
             ],
         ),
     ]
@@ -375,6 +461,14 @@ impl App {
                     }
                 }
             }
+            Action::Edit(cmd) => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    match crate::editor::commands::run(tab, cmd) {
+                        Ok(msg) => self.toast(ctx, msg, false),
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
+            }
             Action::DeleteSelection => {
                 if let Some(tab) = self.tabs.get_mut(self.active) {
                     match crate::editor::delete_selection(tab) {
@@ -395,9 +489,27 @@ impl App {
                     tab.select_relative(action == Action::SelectChild);
                 }
             }
+            // Text being selected gets all its text; otherwise every layer on the page, as in
+            // Figma.
             Action::SelectAllText => {
                 if let Some(tab) = self.tabs.get_mut(self.active) {
-                    tab.select_all_text();
+                    if tab.text_select.is_some() {
+                        tab.select_all_text();
+                    } else {
+                        let layers: Vec<_> = tab
+                            .doc
+                            .children(tab.page)
+                            .iter()
+                            .copied()
+                            .filter(|&id| {
+                                tab.doc.node(id).is_some_and(|n| {
+                                    n.data.flag("visible") != Some(false)
+                                        && n.data.flag("locked") != Some(true)
+                                })
+                            })
+                            .collect();
+                        tab.select_all_of(&layers);
+                    }
                 }
             }
             Action::ExportPage(scale) => {

@@ -51,8 +51,10 @@ pub struct TabInfo {
     pub doc: Arc<Document>,
     /// The page (canvas) shown.
     pub page: Guid,
-    /// The selected node.
+    /// The selected node (the primary one when several are selected).
     pub selection: Option<Guid>,
+    /// The other selected nodes, in the order they were added.
+    pub also: Vec<Guid>,
     /// The visible part of the page, `[x, y, w, h]` in page units.
     pub viewport: Option<[f64; 4]>,
 }

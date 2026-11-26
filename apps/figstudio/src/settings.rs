@@ -1211,6 +1211,14 @@ impl App {
             setting(ui, "Frame names", "Above top-level frames", |ui| {
                 switch(ui, &mut self.prefs.frame_labels, "Frame names");
             });
+            setting(
+                ui,
+                "Snapping",
+                "Moved layers meet edges and centres; ⌘ or Ctrl held moves freely",
+                |ui| {
+                    switch(ui, &mut self.prefs.snapping, "Snapping");
+                },
+            );
             let mut picked = None;
             setting(
                 ui,
