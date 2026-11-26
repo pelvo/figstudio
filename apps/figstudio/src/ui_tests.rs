@@ -38,6 +38,8 @@ mod a11y;
 mod canvas_gestures;
 #[path = "ui_chrome_tests.rs"]
 mod chrome;
+#[path = "ui_components_tests.rs"]
+mod components;
 #[path = "ui_copy_tests.rs"]
 mod copy;
 #[path = "ui_copy_shortcut_tests.rs"]

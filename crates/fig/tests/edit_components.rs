@@ -404,3 +404,55 @@ fn generic_instance_overrides_are_schema_checked_and_refuse_structure() {
         );
     }
 }
+
+#[test]
+fn panels_read_component_and_instance_properties_with_variant_options() {
+    use figstudio_fig::edit::component_props::{PropViewValue, component_props, instance_props};
+    let mut f = Fx::open("shaders");
+    let (small, _, _) = f.button("Size=Small", 0.0);
+    let (large, _, _) = f.button("Size=Large", 150.0);
+    let set = f
+        .run(vec![EditOp::CombineAsVariants {
+            components: vec![small, large],
+            name: Some("Button".into()),
+        }])
+        .unwrap()[0];
+    f.run(vec![EditOp::AddComponentProp {
+        component: set,
+        name: "Icon".into(),
+        kind: ComponentPropKind::Bool,
+        default: ComponentPropVal::Bool(true),
+    }])
+    .unwrap();
+    let props = component_props(&f.doc, large);
+    let names: Vec<_> = props.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["Size", "Icon"]);
+    assert_eq!(
+        props[0].value,
+        PropViewValue::Variant {
+            value: "Large".into(),
+            options: vec!["Small".into(), "Large".into()]
+        }
+    );
+    assert_eq!(props[1].value, PropViewValue::Bool(true));
+
+    // An instance shows its own values: the variant it shows and its assignments.
+    let inst = f.instance(small);
+    f.run(vec![
+        EditOp::SwitchVariant {
+            instance: inst,
+            variants: vec![("Size".into(), "Large".into())],
+        },
+        EditOp::SetComponentProp {
+            instance: inst,
+            prop: "Icon".into(),
+            val: ComponentPropVal::Bool(false),
+        },
+    ])
+    .unwrap();
+    let props = instance_props(&f.doc, inst);
+    assert!(matches!(&props[0].value, PropViewValue::Variant { value, .. } if value == "Large"));
+    assert_eq!(props[1].value, PropViewValue::Bool(false));
+    // Not an instance: nothing.
+    assert!(instance_props(&f.doc, set).is_empty());
+}

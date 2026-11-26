@@ -521,3 +521,127 @@ pub fn finish_added_variant(
     write_variant(txn, new_id, &pairs, &list);
     Ok(())
 }
+
+/// A component property as an editor shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PropView {
+    /// The definition's id (`prop` in the ops); a variant property may have none.
+    pub id: Option<Guid>,
+    pub name: String,
+    pub value: PropViewValue,
+}
+
+/// A property's value, and for a variant property the values its set offers.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PropViewValue {
+    Bool(bool),
+    Text(String),
+    InstanceSwap(Option<Guid>),
+    Variant { value: String, options: Vec<String> },
+}
+
+fn stored_value(def_type: &str, v: Option<&Val>) -> Option<PropViewValue> {
+    Some(match def_type {
+        "BOOL" => PropViewValue::Bool(v.and_then(|v| v.flag("boolValue")).unwrap_or(false)),
+        "TEXT" => PropViewValue::Text(
+            v.and_then(|v| v.path(&["textValue", "characters"]))
+                .and_then(Val::as_str)
+                .unwrap_or("")
+                .to_string(),
+        ),
+        "INSTANCE_SWAP" => {
+            PropViewValue::InstanceSwap(v.and_then(|v| v.get("guidValue")).and_then(Val::as_guid))
+        }
+        _ => return None,
+    })
+}
+
+/// The properties of `component` (a component, a variant, or a variant set) in their order:
+/// defaults, and for a variant its own variant values (a set shows its first variant's).
+pub fn component_props(doc: &Document, component: Guid) -> Vec<PropView> {
+    let Ok(owner) = owner(doc, component) else {
+        return Vec::new();
+    };
+    let variant_name = doc
+        .node(component)
+        .filter(|n| n.kind == "SYMBOL")
+        .or_else(|| {
+            doc.children(owner.id)
+                .iter()
+                .filter_map(|c| doc.node(*c))
+                .find(|c| c.kind == "SYMBOL")
+        })
+        .map(|n| n.name.clone())
+        .unwrap_or_default();
+    props(doc, owner, &variant_name, |_| None)
+}
+
+/// The properties of `instance` with its values: its assignments, else the defaults; its
+/// variant values come from its main component's name.
+pub fn instance_props(doc: &Document, instance: Guid) -> Vec<PropView> {
+    let Some(inst) = doc.node(instance).filter(|n| n.kind == "INSTANCE") else {
+        return Vec::new();
+    };
+    let Some(main) = crate::resolve::symbol_id(&inst.data).and_then(|s| doc.node(s)) else {
+        return Vec::new();
+    };
+    let Ok(owner) = owner(doc, main.id) else {
+        return Vec::new();
+    };
+    let assigned: Vec<Val> = inst
+        .data
+        .get("componentPropAssignments")
+        .map(|v| v.items().iter().map(|a| a.clone().into_owned()).collect())
+        .unwrap_or_default();
+    props(doc, owner, &main.name, |id| {
+        assigned
+            .iter()
+            .find(|a| a.get("defID").and_then(Val::as_guid) == Some(id))
+            .and_then(|a| a.get("value"))
+            .map(|v| v.clone().into_owned())
+    })
+}
+
+fn props(
+    doc: &Document,
+    owner: &Node,
+    variant_name: &str,
+    assigned: impl Fn(Guid) -> Option<Val>,
+) -> Vec<PropView> {
+    let mut defs: Vec<Val> = defs(owner)
+        .into_iter()
+        .filter(|d| d.flag("isDeleted") != Some(true))
+        .collect();
+    defs.sort_by(|a, b| a.text("sortPosition").cmp(&b.text("sortPosition")));
+    let mine = parse_variant_name(variant_name);
+    let variants: Vec<std::collections::HashMap<String, String>> = doc
+        .children(owner.id)
+        .iter()
+        .filter_map(|c| doc.node(*c))
+        .filter(|c| c.kind == "SYMBOL")
+        .map(|c| parse_variant_name(&c.name))
+        .collect();
+    defs.iter()
+        .filter_map(|d| {
+            let id = d.get("id").and_then(Val::as_guid);
+            let name = base_name(d).to_string();
+            let ty = d.text("type").unwrap_or("");
+            let value = if ty == "VARIANT" {
+                let mut options: Vec<String> = Vec::new();
+                for v in variants.iter().filter_map(|m| m.get(&name)) {
+                    if !options.contains(v) {
+                        options.push(v.clone());
+                    }
+                }
+                PropViewValue::Variant {
+                    value: mine.get(&name).cloned().unwrap_or_default(),
+                    options,
+                }
+            } else {
+                let stored = id.and_then(&assigned);
+                stored_value(ty, stored.as_ref().or(d.get("initialValue")))?
+            };
+            Some(PropView { id, name, value })
+        })
+        .collect()
+}

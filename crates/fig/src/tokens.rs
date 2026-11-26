@@ -122,6 +122,16 @@ impl Tokens {
         self.collections.get(&id)
     }
 
+    /// Iterate local collections; iteration order is unspecified.
+    pub fn collections(&self) -> impl Iterator<Item = &Collection> {
+        self.collections.values()
+    }
+
+    /// Iterate local styles; iteration order is unspecified.
+    pub fn styles(&self) -> impl Iterator<Item = &Style> {
+        self.styles.values()
+    }
+
     /// Iterate local variables; iteration order is unspecified.
     pub fn variables(&self) -> impl Iterator<Item = &Variable> {
         self.variables.values()

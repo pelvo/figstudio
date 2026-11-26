@@ -89,7 +89,24 @@ pub(super) fn kind_sections(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
         text(ui, tab, ids);
     }
     if kinds_all(tab, ids, &["INSTANCE"]) {
-        instance(ui, tab, ids);
+        super::design_component::instance(ui, tab, ids);
+    }
+    let set = |tab: &Tab, id: Guid| {
+        tab.doc
+            .node(id)
+            .is_some_and(figstudio_fig::edit::component_props::is_variant_set)
+    };
+    match ids {
+        [id] if kinds_all(tab, ids, &["SYMBOL"]) || set(tab, *id) => {
+            super::design_component::component(ui, tab, *id);
+        }
+        [_, _, ..] if kinds_all(tab, ids, &["SYMBOL"]) => {
+            super::design_component::combine(ui, tab, ids);
+        }
+        _ => {}
+    }
+    if let [id] = ids {
+        super::design_component::bindings(ui, tab, *id);
     }
 }
 
@@ -829,25 +846,6 @@ fn text(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
                 );
             }
         }
-    });
-}
-
-fn instance(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
-    section(ui, "Instance", |ui| {
-        ui.horizontal(|ui| {
-            if button(ui, "Reset", "Reset overrides").clicked() {
-                each(tab, ids, "Reset overrides", None, |id| {
-                    EditOp::ResetInstanceOverride {
-                        instance: id,
-                        override_path: None,
-                        field: None,
-                    }
-                });
-            }
-            if button(ui, "Detach", "Detach instance").clicked() {
-                let _ = super::commands::run(tab, super::commands::EditCmd::DetachInstance);
-            }
-        });
     });
 }
 

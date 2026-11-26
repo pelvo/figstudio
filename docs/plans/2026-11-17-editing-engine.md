@@ -20,7 +20,7 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - [x] U4 design panel sections and widget kit
 - [x] U5 layers panel editing
 - [x] U6 text editing on canvas
-- [ ] U7 components and assets UI
+- [x] U7 components and assets UI
 - [ ] U8 vector edit mode, prototype and export UI
 
 ## Progress
@@ -248,3 +248,24 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   word-wise moves (⌥←/→) and double-click to select a word; with a range selected the panel
   shows the layer's values, and a range's fill colour is not wired; text inside instances
   stays read-only.
+
+### 2026-11-28T000000Z editing-engine-u7-components
+- What changed and how it was checked: fig `component_props::{component_props,
+  instance_props}` read a component's or instance's properties (values, variant options) and
+  `Tokens` gains `collections()`/`styles()`. Design panel: Instance (swap the main component,
+  go to it, variant drop-downs, boolean/text/instance-swap values, reset, detach), Component
+  properties (rename, default, remove; add boolean/text/swap; add a variant), Combine as
+  variants for several components, and Component property bindings (visibility, text, swap)
+  for a layer inside a component. Sidebar: a Layers | Assets switch; Assets lists components
+  (click: place in the middle of the view; drag onto the canvas), styles (click applies; a
+  colour style with Shift goes to the stroke) and variables (a table per collection with a
+  column per mode: edit values, rename, delete, add variables, modes and collections), built
+  once per document revision. Tests: an engine test in `edit_components.rs`,
+  `assets_tests.rs`, `ui_components_tests.rs`; ten reverts each fail; the accessibility test
+  caught the new tab labels without a focus ring (fixed). Real window (bundled build): the
+  Assets tab, an instance's section, the variables table (columns widened after a look).
+  Gate: `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
+- Not verified: dragging a component onto the canvas in a real window; the colour picker
+  popups. Not done: a dropped component lands on the page, not in the frame under the
+  pointer; aliases are shown read-only; no variable binding on layer fields; text, effect
+  and grid styles have no preview; creating a style from the selection.

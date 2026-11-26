@@ -128,6 +128,27 @@ pub(crate) fn num_field_or(
     out
 }
 
+/// A one-line text field showing `current` that keeps a draft while focused and returns the
+/// new text on Enter or when it loses focus (unchanged or blank text returns nothing).
+pub(crate) fn text_field(ui: &mut Ui, name: &str, current: &str, width: f32) -> Option<String> {
+    let id = Id::new(("design-text", name));
+    let mut text: String = ui
+        .data(|d| d.get_temp(id))
+        .unwrap_or_else(|| current.to_string());
+    let edit = ui.add(TextEdit::singleline(&mut text).desired_width(width));
+    crate::a11y::name_field(&edit, name);
+    crate::a11y::author(&edit, format!("design.{}", crate::a11y::slug(name)));
+    let commit =
+        edit.lost_focus() || (edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+    if edit.has_focus() && !commit {
+        ui.data_mut(|d| d.insert_temp(id, text.clone()));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(id));
+    }
+    let t = text.trim();
+    (commit && t != current && !t.is_empty()).then(|| t.to_string())
+}
+
 /// sRGB bytes of a `Color` value and a paint opacity.
 pub(crate) fn rgba_of(color: Option<&figstudio_fig::Val>, opacity: f64) -> [u8; 4] {
     let c = |k: &str| {

@@ -7,6 +7,7 @@ mod canvas_select;
 mod clipboard_io;
 pub(crate) mod commands;
 mod design;
+mod design_component;
 mod design_more;
 mod inspector;
 mod mcp_dispatch;
@@ -23,11 +24,13 @@ pub use canvas_gizmos::{CanvasDrag, canvas_gizmos_and_input};
 pub(crate) use canvas_select::nudge;
 pub use clipboard_io::{copy_selection_for_figma, paste_from_clipboard_or_text};
 pub use design::design_sections;
+pub(crate) use design_component::local_components;
 pub use inspector::{properties_edit_controls, properties_history_bar};
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
 pub use mcp_dispatch::handle_live_mutation;
 #[cfg(any(test, target_arch = "wasm32"))]
 pub use mcp_dispatch::handle_wasm_mutation;
+pub(crate) use widgets::{button, num_field, rgba_of, text_field};
 
 /// Applies `ops` onto `tab.doc` via `tab.history`, invalidating derived caches and syncing
 /// `dirty_unsaved` against `tab.saved_revision`.

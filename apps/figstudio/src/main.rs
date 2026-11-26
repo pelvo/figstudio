@@ -5,6 +5,7 @@
 
 mod a11y;
 mod anim;
+mod assets;
 mod canvas;
 mod canvas_a11y;
 mod canvas_pick;
@@ -490,6 +491,8 @@ struct App {
     /// Finished "Copy as PNG" renders (`region_png.rs`).
     png: region_png::Inbox,
     layer_filter: String,
+    /// The sidebar lists assets (components, styles, variables) instead of layers.
+    show_assets: bool,
     /// Share of the left dock's height given to the page list (the rest is layers).
     pages_share: f32,
     show_left: bool,
@@ -655,6 +658,7 @@ impl App {
             toasts: Vec::new(),
             png: Default::default(),
             layer_filter: String::new(),
+            show_assets: false,
             pages_share: 0.55,
             show_left: true,
             show_right: true,
