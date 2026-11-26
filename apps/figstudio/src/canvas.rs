@@ -262,7 +262,13 @@ pub fn show(
     }
     // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
     // canvas nothing is selected, so no menu opens. Any tool, as the spec says.
-    if response.secondary_clicked() && !marquee::right_click(&response, tab, origin) {
+    // A right-click on a selected layer keeps the whole selection for the menu.
+    if response.secondary_clicked()
+        && !marquee::right_click(&response, tab, origin)
+        && !tab
+            .hover
+            .is_some_and(|h| tab.selected().contains(&h) && !tab.also.is_empty())
+    {
         crate::canvas_pick::click(tab, &chain, point, deep, false);
     }
     let gizmo_active = tool.is_creation()

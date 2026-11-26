@@ -1385,6 +1385,8 @@ impl App {
                     ))
                     && quiet)
                 || (binding == B::SelectAll && quiet)
+                // ⌥ letters type characters in fields (⌥A is "å"), so edit shortcuts wait too.
+                || (matches!(binding, B::Edit(_)) && (quiet || in_preview))
                 || self.native_takes(action, Some(shortcut))
                 || (matches!(binding, B::NextMatch | B::PreviousMatch) && !self.find.is_open())
             {
@@ -1640,6 +1642,9 @@ impl App {
         crate::a11y::restore_focus(&ctx, "command-bar", self.command.is_open());
         crate::a11y::restore_focus(&ctx, "settings", self.settings.is_open());
         self.shortcuts(&ctx);
+        // The right-click menus show shortcuts from the user's keymap.
+        let keymap = self.prefs.keymap.clone();
+        ctx.data_mut(|d| d.insert_temp(crate::menu_egui::keymap_id(), keymap));
         self.menu_windows(&ctx);
         let space_held = ctx.input(|i| i.key_down(Key::Space)) && !ctx.egui_wants_keyboard_input();
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
@@ -1753,6 +1758,13 @@ impl App {
         let tab = self.tabs.get_mut(self.active);
         for (text, error) in region_png::drive(&ctx, &self.workers, &self.png, tab) {
             self.toast(&ctx, text, error);
+        }
+        if let Some(action) = self
+            .tabs
+            .get_mut(self.active)
+            .and_then(|t| t.pending_action.take())
+        {
+            self.apply(action, &ctx);
         }
         if let Some(tab) = self.tabs.get_mut(self.active) {
             if let Some(root) = tab.pending_motion.take() {

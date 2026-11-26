@@ -16,7 +16,7 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - [x] E3 masks, layout grids, export settings, prototype reactions
 - [x] U1 multi-selection model and box select
 - [ ] U2 canvas interaction (multi-move/resize, rotate handle, nudge, Alt-duplicate, snapping)
-- [ ] U3 right-click menus and shortcuts for every op family
+- [x] U3 right-click menus and shortcuts for every op family
 - [ ] U4 design panel sections and widget kit
 - [ ] U5 layers panel editing
 - [ ] U6 text editing on canvas
@@ -137,3 +137,18 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - Not verified: the multi-selection outlines in a real window. The computer-use tool drives
   the app in the background, so Shift and ⌘ never reach it; Figma-style "touch" box select
   (this selects only fully enclosed layers).
+
+### 2026-11-27T050000Z editing-engine-u3-menus
+- What changed and how it was checked: `editor::commands` (one `EditCmd` per command, with
+  label, enabled-for-selection and a single-batch `run`); `Action::Edit`; the Edit menu gains
+  Group, Ungroup, Frame selection and Arrange (z-order, flip, rotate 90°), Align (six edges,
+  distribute), Show/Hide, Lock, Create component, Detach, Boolean (four ops, flatten, outline
+  stroke, use as mask) submenus. The canvas and layer-row right-click menus show Duplicate,
+  Delete and the same items above the Copy items; a right-click on a selected layer keeps the
+  selection, one on another row selects it. Rebindable shortcuts in a new "Arrange" section:
+  Figma's defaults except group ⌥⌘G / ungroup ⇧⌥⌘G (⌘G is Find next here) and lock ⇧⌥L
+  (⇧⌘L is Open Figma link); they wait while a text field has focus (⌥A types å). kittest tests
+  in `ui_multi_select_tests.rs`; keep-selection, row select, the text-field guard and
+  ungroup selecting its children fail when reverted; all 738 app tests pass. Gate:
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
+- Not verified: the submenus in the native macOS menu bar and the menus in a real window.

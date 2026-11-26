@@ -4,6 +4,7 @@
 
 mod canvas_gizmos;
 mod clipboard_io;
+pub(crate) mod commands;
 mod inspector;
 mod inspector_sections;
 mod mcp_dispatch;

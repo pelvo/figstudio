@@ -57,9 +57,18 @@ fn menu_items(ui: &mut egui::Ui, tab: &Tab, items: Vec<Item>, id: Guid, picked: 
     }
 }
 
-/// Right-click on `response` opens the node menu. Returns the item picked this frame.
-pub fn on_context(response: &egui::Response, tab: &Tab, id: Guid, picked: &mut Option<Item>) {
-    crate::chrome::context_menu(response, |ui| node_menu(ui, tab, id, picked));
+/// Right-click on `response` opens the layer menu: the edit commands for the selection, then
+/// the Copy items for `id`. A picked Copy item goes to `picked`, an edit command to
+/// `tab.pending_action`.
+pub fn on_context(response: &egui::Response, tab: &mut Tab, id: Guid, picked: &mut Option<Item>) {
+    let mut action = None;
+    crate::chrome::context_menu(response, |ui| {
+        let edit = crate::menu::context_edit_items(tab);
+        action = crate::menu_egui::context_items(ui, &edit);
+        ui.separator();
+        node_menu(ui, tab, id, picked);
+    });
+    tab.pending_action = action.or(tab.pending_action.take());
 }
 
 /// Copies a picked item to the clipboard. Returns the toast text.

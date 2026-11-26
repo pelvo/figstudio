@@ -346,6 +346,10 @@ fn handle_row(tab: &mut Tab, response: &egui::Response, id: Guid, has_children: 
     if response.clicked() {
         tab.select(Some(id));
     }
+    // A right-click on a row outside the selection selects it, so its menu acts on it.
+    if response.secondary_clicked() && !tab.selected().contains(&id) {
+        tab.select(Some(id));
+    }
     if response.double_clicked() && has_children {
         toggle(tab, id);
     }

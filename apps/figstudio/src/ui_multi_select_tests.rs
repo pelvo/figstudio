@@ -73,6 +73,14 @@ fn shift_click(h: &mut Harness<'_, App>, c: &mut Vec<String>, at: Pos2) {
     step(h, c);
 }
 
+/// Clicks the menu item whose label starts with `label` (the shortcut follows it).
+fn click_menu(h: &mut Harness<'_, App>, c: &mut Vec<String>, label: &str) {
+    h.get_by_label_contains(label).click();
+    for _ in 0..4 {
+        step(h, c);
+    }
+}
+
 fn click(h: &mut Harness<'_, App>, c: &mut Vec<String>, at: Pos2) {
     h.event(Event::PointerMoved(at));
     step(h, c);
@@ -182,4 +190,103 @@ fn command_a_on_the_focused_canvas_selects_the_page_layers() {
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
     step(&mut h, &mut c);
     assert_eq!(h.state().tabs[0].selected(), [a, b, frame]);
+}
+
+#[test]
+fn group_shortcut_and_ungroup_round_trip_the_selection() {
+    let (mut h, mut c) = (harness(), Vec::new());
+    let (a, b, _) = layout(&mut h);
+    h.state_mut().tabs[0].select_all_of(&[a, b]);
+    let empty = h.state().tabs[0].canvas_rect.unwrap().right_bottom() - vec2(20.0, 20.0);
+    h.event(Event::PointerMoved(empty));
+    step(&mut h, &mut c);
+    h.key_press_modifiers(Modifiers::ALT | Modifiers::COMMAND, egui::Key::G);
+    step(&mut h, &mut c);
+    let tab = &h.state().tabs[0];
+    let group = tab.selection.expect("the group is selected");
+    assert_eq!(tab.doc.children(group), &[a, b]);
+    // Ungroup selects the freed layers.
+    h.key_press_modifiers(
+        Modifiers::SHIFT | Modifiers::ALT | Modifiers::COMMAND,
+        egui::Key::G,
+    );
+    step(&mut h, &mut c);
+    let tab = &h.state().tabs[0];
+    assert!(tab.doc.node(group).is_none());
+    assert_eq!(tab.selected(), [a, b]);
+}
+
+#[test]
+fn the_canvas_menu_offers_edit_commands_for_the_selection_and_runs_them() {
+    let (mut h, mut c) = (harness(), Vec::new());
+    let (a, b, _) = layout(&mut h);
+    h.state_mut().tabs[0].select_all_of(&[a, b]);
+    let at = centre_of(&h, a);
+    right_click(&mut h, &mut c, at);
+    h.step();
+    // Right-clicking a selected layer keeps the whole selection.
+    assert_eq!(h.state().tabs[0].selected(), [a, b]);
+    // An item's accessible label ends with its shortcut ("Group selection⌥⌘G").
+    for label in ["Group selection", "Duplicate layer", "Copy name"] {
+        assert!(
+            h.query_by_label_contains(label).is_some(),
+            "{label} is in the menu"
+        );
+    }
+    click_menu(&mut h, &mut c, "Group selection");
+    let tab = &h.state().tabs[0];
+    let group = tab.selection.expect("the group is selected");
+    assert_eq!(tab.doc.children(group), &[a, b]);
+}
+
+#[test]
+fn a_layer_row_menu_selects_the_row_and_hides_it() {
+    let (mut h, mut c) = (harness(), Vec::new());
+    let (a, b, _) = layout(&mut h);
+    h.state_mut().tabs[0].select(Some(a));
+    h.run_steps(3);
+    let row = h
+        .get_by(|n| n.author_id() == Some(&format!("layers.{b}")))
+        .rect()
+        .center();
+    right_click(&mut h, &mut c, row);
+    h.step();
+    assert_eq!(h.state().tabs[0].selected(), [b], "the row is selected");
+    click_menu(&mut h, &mut c, "Show/Hide");
+    let hidden = h.state().tabs[0].doc.node(b).unwrap().data.flag("visible");
+    assert_eq!(hidden, Some(false));
+}
+
+#[test]
+fn edit_commands_are_disabled_where_they_do_not_apply() {
+    use crate::editor::commands::EditCmd;
+    let mut h = harness();
+    let (a, _, frame) = layout(&mut h);
+    let tab = &mut h.state_mut().tabs[0];
+    tab.select(Some(a));
+    assert!(!EditCmd::Ungroup.enabled(tab));
+    assert!(!EditCmd::Distribute(figstudio_fig::edit::Axis::Horizontal).enabled(tab));
+    assert!(
+        !EditCmd::CreateComponent.enabled(tab),
+        "a rectangle is not a frame"
+    );
+    tab.select(Some(frame));
+    assert!(EditCmd::CreateComponent.enabled(tab));
+    assert!(crate::editor::commands::run(tab, EditCmd::Ungroup).is_err());
+}
+
+#[test]
+fn edit_shortcuts_wait_while_a_text_field_has_focus() {
+    let (mut h, mut c) = (harness(), Vec::new());
+    let (a, b, _) = layout(&mut h);
+    h.state_mut().tabs[0].select_all_of(&[a, b]);
+    // ⌥A types "å" into a field; it must not align the selection.
+    let before = h.state().tabs[0].doc.revision;
+    h.get_by(|n| n.author_id() == Some("field.filter-layers"))
+        .click();
+    step(&mut h, &mut c);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::A);
+    h.key_press_modifiers(Modifiers::ALT | Modifiers::COMMAND, egui::Key::G);
+    step(&mut h, &mut c);
+    assert_eq!(h.state().tabs[0].doc.revision, before, "no edit ran");
 }

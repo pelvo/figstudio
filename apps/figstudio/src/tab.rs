@@ -86,6 +86,8 @@ pub struct Tab {
     pub shown: View,
     /// A Copy menu item picked this frame; `main.rs` puts it on the clipboard.
     pub pending_copy: Option<crate::copy::Item>,
+    /// An edit command picked in a right-click menu, run by the App this frame.
+    pub pending_action: Option<crate::menu::Action>,
     /// A timeline whose Play button was pressed this frame; `main.rs` opens its preview.
     pub pending_motion: Option<Guid>,
     /// Properties → Motion → Export asked for this timeline root in this format.
@@ -275,6 +277,7 @@ impl Tab {
                 pan: egui::Vec2::ZERO,
             },
             pending_copy: None,
+            pending_action: None,
             pending_motion: None,
             pending_motion_export: None,
             motion_preview: None,
