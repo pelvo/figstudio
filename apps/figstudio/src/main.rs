@@ -110,6 +110,7 @@ mod swipe;
 mod symbols;
 mod tab;
 mod tab_selection;
+mod text_edit;
 mod text_select;
 mod theme;
 mod tile_cache;
@@ -1319,6 +1320,12 @@ impl App {
         // The unsaved-edits question is modal: its own buttons and Escape only.
         if self.unsaved.is_some() {
             return;
+        }
+        // Editing text on the canvas: its keys go to the text first.
+        if !self.command.is_up(ctx)
+            && let Some(tab) = self.tabs.get_mut(self.active)
+        {
+            text_edit::keys(ctx, tab);
         }
         let keys = |b: keymap::Binding| self.prefs.keymap.get(b);
         // The command bar is modal, also while it fades out (it still covers the app): only

@@ -650,6 +650,35 @@ impl Renderer {
     /// Node-local to page transform and transient resolved data, including constraints and
     /// uniform scale. Stale stored glyphs are removed, as they cannot locate the shown text.
     /// Hidden or unresolvable paths return `None`; the writable document is never changed.
+    /// Glyph records like `derivedTextData.glyphs` (`firstCharacter`, `position`, `fontSize`,
+    /// `advance` per unit of font size), laid out with installed fonts: carets and hit tests
+    /// for text whose stored glyphs an edit dropped. `None` without a usable font.
+    pub fn text_glyphs(&mut self, data: &Val) -> Option<Val> {
+        if !self.system_fonts {
+            return None;
+        }
+        let carets = self.fonts.carets(data)?;
+        Some(Val::Arr(
+            carets
+                .into_iter()
+                .map(|c| {
+                    Val::Obj(figstudio_fig::Obj::from([
+                        ("firstCharacter", Val::Int(c.ordinal as i64)),
+                        (
+                            "position",
+                            Val::Obj(figstudio_fig::Obj::from([
+                                ("x", Val::Float(c.x)),
+                                ("y", Val::Float(c.baseline)),
+                            ])),
+                        ),
+                        ("fontSize", Val::Float(c.font_size)),
+                        ("advance", Val::Float(c.advance / c.font_size.max(1e-9))),
+                    ]))
+                })
+                .collect(),
+        ))
+    }
+
     pub fn path_layout(&mut self, doc: &Document, path: &InstancePath) -> Option<(Affine, Val)> {
         self.inspect_path(doc, path, |transform, data, stale| {
             let mut data = data.clone();

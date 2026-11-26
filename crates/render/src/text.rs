@@ -160,6 +160,21 @@ mod system {
         x: f64,
         advance: f64,
         ch: char,
+        /// The character's position in `characters`, in Unicode scalars (Figma's
+        /// `firstCharacter`).
+        ordinal: usize,
+    }
+
+    /// Where one character sits, in node space.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Caret {
+        /// In Unicode scalars, as `derivedTextData.glyphs[].firstCharacter`.
+        pub ordinal: usize,
+        pub x: f64,
+        pub baseline: f64,
+        pub font_size: f64,
+        /// In points (Figma stores it per unit of font size).
+        pub advance: f64,
     }
 
     impl SystemFonts {
@@ -327,10 +342,32 @@ mod system {
         /// Lays out `textData.characters` with installed fonts. Returns outlines in node space,
         /// or `None` when no usable font was found.
         pub fn layout(&mut self, data: &Val) -> Option<Vec<BezPath>> {
-            let text = super::characters(data);
-            if text.trim().is_empty() {
+            if super::characters(data).trim().is_empty() {
                 return Some(Vec::new());
             }
+            Some(
+                self.layout_placed(data)?
+                    .into_iter()
+                    .filter(|(path, _)| !path.elements().is_empty())
+                    .map(|(path, _)| path)
+                    .collect(),
+            )
+        }
+
+        /// Where each laid-out character sits (spaces too), for carets and hit testing of
+        /// text whose stored glyphs an edit dropped. `None` when no usable font was found.
+        pub fn carets(&mut self, data: &Val) -> Option<Vec<Caret>> {
+            Some(
+                self.layout_placed(data)?
+                    .into_iter()
+                    .map(|(_, c)| c)
+                    .collect(),
+            )
+        }
+
+        /// Every placed character: its outline in node space and its caret.
+        fn layout_placed(&mut self, data: &Val) -> Option<Vec<(BezPath, Caret)>> {
+            let text = super::characters(data);
             let font_size = f64::from(data.num("fontSize").unwrap_or(12.0)).max(1.0);
             let family = data
                 .path(&["fontName", "family"])
@@ -408,7 +445,7 @@ mod system {
             let mut x = 0.0;
             let mut last_break: Option<usize> = None;
             let mut utf16_idx = 0usize;
-            for ch in text.chars() {
+            for (ordinal, ch) in text.chars().enumerate() {
                 let ch_u16 = ch.len_utf16();
                 let style_id = char_style_ids.get(utf16_idx).copied().unwrap_or(0);
                 utf16_idx += ch_u16;
@@ -486,6 +523,7 @@ mod system {
                     x,
                     advance,
                     ch,
+                    ordinal,
                 });
                 x += advance;
             }
@@ -514,16 +552,20 @@ mod system {
                     + (line_height - (ascent + descent)) / 2.0
                     + ascent;
                 for placed in line {
-                    if placed.path.elements().is_empty() {
-                        continue;
-                    }
                     let scale = placed.font_size / placed.units_per_em;
                     let mut path = placed.path;
                     path.apply_affine(
                         Affine::translate((dx + placed.x, baseline))
                             * Affine::scale_non_uniform(scale, -scale),
                     );
-                    out.push(path);
+                    let caret = Caret {
+                        ordinal: placed.ordinal,
+                        x: dx + placed.x,
+                        baseline,
+                        font_size: placed.font_size,
+                        advance: placed.advance,
+                    };
+                    out.push((path, caret));
                 }
             }
             Some(out)

@@ -21,7 +21,24 @@ impl Tab {
         }
         let id = self.selection?;
         let node = self.doc.node(id)?;
-        (node.kind == "TEXT").then(|| (id, absolute_transform(&self.doc, id), node.data.clone()))
+        if node.kind != "TEXT" {
+            return None;
+        }
+        let mut data = node.data.clone();
+        // An edit drops the stored glyphs: lay the text out again for carets and hit tests.
+        let stored = data
+            .path(&["derivedTextData", "glyphs"])
+            .is_some_and(|g| !g.items().is_empty());
+        if !stored
+            && let Some(glyphs) = self.pick_cache.with(&self.doc, |r, _| r.text_glyphs(&data))
+            && let Val::Obj(fields) = &mut data
+        {
+            fields.insert(
+                "derivedTextData",
+                Val::Obj(figstudio_fig::Obj::from([("glyphs", glyphs)])),
+            );
+        }
+        Some((id, absolute_transform(&self.doc, id), data))
     }
 
     pub fn set_inner(&mut self, path: Option<InstancePath>) {

@@ -78,6 +78,8 @@ mod recents;
 mod shader_code;
 #[path = "ui_text_drag_tests.rs"]
 mod text_drag;
+#[path = "ui_text_edit_tests.rs"]
+mod text_edit;
 #[path = "ui_text_select_tests.rs"]
 mod text_select;
 // Without the `mcp` feature there is no View item (mcp_off.rs) and no tokio to test it with.

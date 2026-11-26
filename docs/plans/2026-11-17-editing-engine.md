@@ -19,7 +19,7 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - [x] U3 right-click menus and shortcuts for every op family
 - [x] U4 design panel sections and widget kit
 - [x] U5 layers panel editing
-- [ ] U6 text editing on canvas
+- [x] U6 text editing on canvas
 - [ ] U7 components and assets UI
 - [ ] U8 vector edit mode, prototype and export UI
 
@@ -227,3 +227,24 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - Not verified: dragging rows in a real window (computer use cannot drag the background app).
   Not done: a collapsed frame does not open while hovered during a drag; no autoscroll at the
   list edges; rows do not drag in the filtered list.
+
+### 2026-11-27T210000Z editing-engine-u6-text
+- What changed and how it was checked: `text_edit`: in text mode on a plain text layer,
+  typing and IME commits insert, Backspace/Delete remove whole characters, Enter breaks the
+  line, arrows move (Shift extends; ⌘←/→, Home/End: line ends; ↑/↓: lines), ⌘A selects all,
+  ⌘C/⌘X/⌘V use the text, Escape leaves the text; all as `SpliceText`, one undo step per
+  typing run (a caret move ends it). These keys reach the text before the app's shortcuts
+  (letters no longer pick tools, Backspace no longer deletes the layer). The caret is drawn
+  and the IME output set. `Renderer::text_glyphs` (render, via `SystemFonts::carets`) lays the
+  text out again when an edit dropped `derivedTextData`, so carets and hit tests keep working;
+  text without stored glyphs now gets a caret where clicked instead of a whole selection.
+  Line breaks end the cluster before them in `text_select`. The Design panel's Text section
+  styles a selected range with `StyleTextRange` (font, size, line height, letter spacing,
+  decoration, case). Tests: `text_edit_tests.rs`, `ui_text_edit_tests.rs`, the updated
+  `ui_text_select_tests.rs`; nine reverts each fail. Real window (bundled build): typing
+  appended to a text layer on the canvas and in the panel. Gate:
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
+- Not verified: the caret drawing and the IME candidate window in a real window. Not done:
+  word-wise moves (⌥←/→) and double-click to select a word; with a range selected the panel
+  shows the layer's values, and a range's fill colour is not wired; text inside instances
+  stays read-only.

@@ -131,13 +131,17 @@ fn escape_exits_mode_before_clearing_the_layer() {
 }
 
 #[test]
-fn missing_glyphs_select_all_and_non_text_never_fits() {
+fn missing_glyphs_are_laid_out_again_and_non_text_never_fits() {
     let (mut h, mut c) = (harness_fixture(FIXTURE, 1.0 / 60.0), Vec::new());
     let text = Guid(1, 42);
     let at = centre_of(&h, text);
     double_click(&mut h, &mut c, at);
-    let selection = h.state().tabs[0].text_select.expect("whole-text fallback");
-    assert_eq!((selection.anchor, selection.head), (0, 3));
+    // No stored glyphs: the text is laid out with installed fonts, so the caret lands where
+    // the double-click was, inside "ABC".
+    let selection = h.state().tabs[0].text_select.expect("text mode");
+    assert_eq!(selection.anchor, selection.head);
+    assert!((1..=2).contains(&selection.head), "{selection:?}");
+    key(&mut h, &mut c, Key::A, Modifiers::COMMAND);
     key(&mut h, &mut c, Key::C, Modifiers::COMMAND);
     assert_eq!(c, ["ABC"]);
     let before = h.state().tabs[0].view;

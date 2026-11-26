@@ -5,7 +5,7 @@ use super::multi_select::layout;
 use super::*;
 
 /// Types `text` into the field labelled `label` and presses Enter.
-fn type_into(h: &mut Harness<'_, App>, label: &str, text: &str) {
+pub(super) fn type_into(h: &mut Harness<'_, App>, label: &str, text: &str) {
     reveal(h, label);
     h.get_by_label(label).click();
     // Fixed steps: the render workers keep the frame repainting.

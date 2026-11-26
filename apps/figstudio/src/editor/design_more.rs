@@ -515,6 +515,82 @@ fn type_with(target: Guid, f: impl FnOnce(&mut EditOp)) -> EditOp {
     op
 }
 
+/// `each` for the Text section: with part of one layer's text selected on the canvas, the
+/// typography a run can hold (font, size, line height, letter spacing, decoration, case)
+/// goes to that range only; alignment and resizing stay the layer's.
+fn each_text(
+    tab: &mut Tab,
+    ids: &[Guid],
+    label: &str,
+    key: Option<&str>,
+    op: impl Fn(Guid) -> EditOp,
+) {
+    if let Some((target, start, end)) = crate::text_edit::utf16_range(tab)
+        && ids == [target]
+        && let Some(range) = to_range(&tab.doc, op(target), start, end)
+    {
+        let _ = apply_tab_ops(tab, &[range], Some(label), key);
+        return;
+    }
+    each(tab, ids, label, key, op);
+}
+
+/// A `SetTypography` as a `StyleTextRange` over `start..end` (UTF-16), when every field it
+/// sets is one a text run can hold.
+fn to_range(doc: &figstudio_fig::Document, op: EditOp, start: usize, end: usize) -> Option<EditOp> {
+    let EditOp::SetTypography {
+        target,
+        font_family,
+        font_style,
+        font_size,
+        align_horizontal: None,
+        auto_resize: None,
+        extra,
+    } = op
+    else {
+        return None;
+    };
+    let TypographyExtra {
+        line_height,
+        letter_spacing,
+        paragraph_spacing: None,
+        paragraph_indent: None,
+        align_vertical: None,
+        decoration,
+        case,
+        truncate: None,
+        max_lines: None,
+        ..
+    } = extra
+    else {
+        return None;
+    };
+    let size = doc
+        .node(target)
+        .and_then(|n| n.data.num("fontSize"))
+        .map_or(12.0, f64::from);
+    let px = |l: TextLength| match l {
+        TextLength::Px(v) => Some(v),
+        TextLength::Percent(p) => Some(p / 100.0 * size),
+        TextLength::Auto => None,
+    };
+    Some(EditOp::StyleTextRange {
+        target,
+        utf16_start: start,
+        utf16_end: end,
+        style: figstudio_fig::edit::text_runs::TextStyleRunPatch {
+            font_family,
+            font_style,
+            font_size,
+            line_height_px: line_height.and_then(px),
+            letter_spacing_px: letter_spacing.and_then(px),
+            text_decoration: decoration,
+            text_case: case,
+            ..Default::default()
+        },
+    })
+}
+
 fn text(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
     section(ui, "Text", |ui| {
         let family = same(tab, ids, |d| {
@@ -549,7 +625,7 @@ fn text(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
             }
             if commit && !t.trim().is_empty() && t.trim() != shown {
                 let v = t.trim().to_string();
-                each(tab, ids, label, None, |id| {
+                each_text(tab, ids, label, None, |id| {
                     type_with(id, |op| {
                         if let EditOp::SetTypography {
                             font_family,
@@ -589,7 +665,7 @@ fn text(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
         });
         ui.horizontal(|ui| {
             if let Some(v) = num_field(ui, "Aa", "Font size", size, 0.5, 36.0) {
-                each(tab, ids, "Font size", Some("design:font-size"), |id| {
+                each_text(tab, ids, "Font size", Some("design:font-size"), |id| {
                     type_with(id, |op| {
                         if let EditOp::SetTypography { font_size, .. } = op {
                             *font_size = Some(v.clamp(1.0, 1000.0));
@@ -600,7 +676,7 @@ fn text(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
             let shown = line.filter(|v| *v >= 0.0);
             let hint = if line.is_some() { "Auto" } else { "Mixed" };
             if let Some(v) = num_field_or(ui, "↕", "Line height", shown, 0.5, 36.0, hint) {
-                each(tab, ids, "Line height", Some("design:line-height"), |id| {
+                each_text(tab, ids, "Line height", Some("design:line-height"), |id| {
                     type_with(id, |op| {
                         if let EditOp::SetTypography { extra, .. } = op {
                             extra.line_height = Some(TextLength::Px(v.max(0.0)));
@@ -609,7 +685,7 @@ fn text(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
                 });
             }
             if let Some(v) = num_field(ui, "|A|", "Letter spacing", spacing, 0.1, 36.0) {
-                each(
+                each_text(
                     tab,
                     ids,
                     "Letter spacing",
@@ -635,7 +711,7 @@ fn text(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
                 ("☰", "JUSTIFIED", "Justify text"),
             ] {
                 if toggle(ui, text, name, align.as_deref() == Some(a)).clicked() {
-                    each(tab, ids, "Text alignment", None, |id| {
+                    each_text(tab, ids, "Text alignment", None, |id| {
                         type_with(id, |op| {
                             if let EditOp::SetTypography {
                                 align_horizontal, ..
@@ -656,7 +732,7 @@ fn text(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
                 ("⤓", "BOTTOM", "Align text bottom"),
             ] {
                 if toggle(ui, text, name, valign.as_deref() == Some(a)).clicked() {
-                    each(tab, ids, "Text alignment", None, |id| {
+                    each_text(tab, ids, "Text alignment", None, |id| {
                         type_with(id, |op| {
                             if let EditOp::SetTypography { extra, .. } = op {
                                 extra.align_vertical = Some(a.into());
@@ -676,7 +752,7 @@ fn text(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
                 ("NONE", "Fixed size"),
             ];
             if let Some(v) = combo(ui, "Text resizing", resize.as_deref(), &modes, 92.0) {
-                each(tab, ids, "Text resizing", None, |id| {
+                each_text(tab, ids, "Text resizing", None, |id| {
                     type_with(id, |op| {
                         if let EditOp::SetTypography { auto_resize, .. } = op {
                             *auto_resize = Some(v.into());
@@ -693,7 +769,7 @@ fn text(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
                 ("STRIKETHROUGH", "Strikethrough"),
             ];
             if let Some(v) = combo(ui, "Text decoration", deco.as_deref(), &decos, 92.0) {
-                each(tab, ids, "Text decoration", None, |id| {
+                each_text(tab, ids, "Text decoration", None, |id| {
                     type_with(id, |op| {
                         if let EditOp::SetTypography { extra, .. } = op {
                             extra.decoration = Some(v.into());
@@ -712,7 +788,7 @@ fn text(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
             ("TITLE", "Title case"),
         ];
         if let Some(v) = combo(ui, "Letter case", case.as_deref(), &cases, 92.0) {
-            each(tab, ids, "Letter case", None, |id| {
+            each_text(tab, ids, "Letter case", None, |id| {
                 type_with(id, |op| {
                     if let EditOp::SetTypography { extra, .. } = op {
                         extra.case = Some(v.into());
@@ -720,7 +796,7 @@ fn text(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
                 })
             });
         }
-        // The characters, for one layer (several are edited on the canvas, in U6).
+        // The characters, for one layer (or double-click the text on the canvas).
         if let [id] = ids {
             let id = *id;
             let chars = tab
