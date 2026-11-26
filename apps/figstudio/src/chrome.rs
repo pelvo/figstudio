@@ -1737,6 +1737,7 @@ impl App {
             (Tool::Ellipse, Icon::Ellipse, "Ellipse tool", "Ellipse (O)"),
             (Tool::Line, Icon::Line, "Line tool", "Line (L)"),
             (Tool::Text, Icon::Text, "Text tool", "Text (T)"),
+            (Tool::Pen, Icon::Vector, "Pen tool", "Pen (P)"),
             (Tool::Hand, Icon::Hand, "Hand tool", "Hand (H)"),
             (
                 Tool::Zoom,

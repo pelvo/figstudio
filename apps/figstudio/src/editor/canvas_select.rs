@@ -41,6 +41,8 @@ pub(super) struct Pointer {
     pub down: bool,
     pub released: bool,
     pub modifiers: egui::Modifiers,
+    /// A primary double-click this frame.
+    pub double: bool,
 }
 
 /// The selected layers a gesture moves: unlocked, not the page, none inside another one.
@@ -365,6 +367,17 @@ pub(super) fn gestures(
     snapping: bool,
 ) -> Option<CursorIcon> {
     let origin = rect.min;
+    if tab.vector_edit.is_some() {
+        return super::vector_edit::gestures(painter, rect, tab, p);
+    }
+    // A double-click on a selected vector edits its points.
+    if p.double
+        && let (Some(id), true) = (tab.selection, tab.also.is_empty())
+        && super::vector_edit::editable(tab, id)
+    {
+        super::vector_edit::enter(tab, id);
+        return None;
+    }
     // 1. A gesture under way.
     if let Some(drag) = tab.edit_drag.clone() {
         if p.down

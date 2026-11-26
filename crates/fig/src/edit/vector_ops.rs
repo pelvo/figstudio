@@ -270,7 +270,27 @@ pub fn edit_network(
             )
         })
         .unwrap_or_else(|| size(&node.data));
-    let set = network_fields(
+    // The layer's box follows its points, as in Figma: when they move past it (or away from
+    // its edges) the network is re-expressed in layer units from the new top-left, the size
+    // fits the curves, and the layer moves so nothing moves on the page.
+    let mut set = Obj::new();
+    let (normalized, scale) = match refit(&mut net, scale, size(&node.data)) {
+        Some((min, (w, h))) => {
+            let t = Xform::of(&node.data);
+            let at = t.apply(min);
+            let mut moved = t;
+            moved.m02 = at.0;
+            moved.m12 = at.1;
+            set.insert("transform", moved.to_val());
+            set.insert(
+                "size",
+                Val::Obj(Obj::from([("x", Val::Float(w)), ("y", Val::Float(h))])),
+            );
+            ((w, h), Affine::IDENTITY)
+        }
+        None => (normalized, scale),
+    };
+    let fields = network_fields(
         doc,
         txn,
         &net,
@@ -278,9 +298,68 @@ pub fn edit_network(
         normalized,
         scale,
     );
+    for (k, v) in fields.iter() {
+        set.insert(k, v.clone());
+    }
     let unset = stale_stroke(node);
     txn.modify(target, set, unset);
     Ok(())
+}
+
+/// When `net`'s curves (at `scale`, in layer units) no longer start at the box's top-left or
+/// fill its `size`, rewrites `net` in layer units from their top-left and returns that corner
+/// and the curves' size.
+fn refit(
+    net: &mut VectorNetwork,
+    scale: Affine,
+    size: (f64, f64),
+) -> Option<((f64, f64), (f64, f64))> {
+    use kurbo::Shape;
+    let mut path = BezPath::new();
+    let at = |i: u32| {
+        net.vertices
+            .get(i as usize)
+            .map(|v| (f64::from(v.x), f64::from(v.y)))
+    };
+    for s in &net.segments {
+        let (Some(a), Some(b)) = (at(s.start), at(s.end)) else {
+            continue;
+        };
+        let (ts, te) = (s.tangent_start, s.tangent_end);
+        path.move_to(a);
+        path.curve_to(
+            (a.0 + f64::from(ts.0), a.1 + f64::from(ts.1)),
+            (b.0 + f64::from(te.0), b.1 + f64::from(te.1)),
+            b,
+        );
+    }
+    for v in &net.vertices {
+        path.move_to((f64::from(v.x), f64::from(v.y)));
+        path.line_to((f64::from(v.x), f64::from(v.y)));
+    }
+    if net.vertices.is_empty() {
+        return None;
+    }
+    let b = (scale * path).bounding_box();
+    let same = |a: f64, b: f64| (a - b).abs() < 1e-3;
+    if same(b.x0, 0.0) && same(b.y0, 0.0) && same(b.width(), size.0) && same(b.height(), size.1) {
+        return None;
+    }
+    let to_layer = Affine::translate((-b.x0, -b.y0)) * scale;
+    let linear = |x: f32, y: f32| {
+        let o = to_layer * kurbo::Point::ZERO;
+        let p = to_layer * kurbo::Point::new(f64::from(x), f64::from(y));
+        ((p.x - o.x) as f32, (p.y - o.y) as f32)
+    };
+    for v in &mut net.vertices {
+        let p = to_layer * kurbo::Point::new(f64::from(v.x), f64::from(v.y));
+        (v.x, v.y) = (p.x as f32, p.y as f32);
+    }
+    for s in &mut net.segments {
+        s.tangent_start = linear(s.tangent_start.0, s.tangent_start.1);
+        s.tangent_end = linear(s.tangent_end.0, s.tangent_end.1);
+    }
+    Some(((b.x0, b.y0), (b.width(), b.height())))
 }
 
 fn stale_stroke(node: &Node) -> Vec<String> {

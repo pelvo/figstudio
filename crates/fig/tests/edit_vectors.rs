@@ -310,3 +310,30 @@ fn outline_stroke_makes_the_stroke_band_a_vector_above_the_layer() {
         "no stroke left"
     );
 }
+
+#[test]
+fn moving_a_point_past_the_box_refits_it_without_moving_the_shape() {
+    let mut f = Fx::new();
+    let r = f.shape("RECTANGLE", 300.0, 0.0, 100.0, 100.0);
+    f.run(vec![EditOp::ConvertToVector { target: r }]).unwrap();
+    let area = f.area(r);
+    // Drag the top-left corner up and left, out of the box.
+    f.run(vec![EditOp::EditVectorNetwork {
+        target: r,
+        edits: vec![VectorEdit::MoveVertex {
+            index: 0,
+            x: -50.0,
+            y: -20.0,
+        }],
+    }])
+    .unwrap();
+    let b = layer_bounds(&f.doc, r, f.page).unwrap();
+    // The box now starts at the moved corner, on the page where it was dragged to.
+    assert!(near(b.x0, 250.0, 1e-6) && near(b.y0, -20.0, 1e-6), "{b:?}");
+    assert!(near(b.x1, 400.0, 1e-6) && near(b.y1, 100.0, 1e-6), "{b:?}");
+    let n = f.doc.node(r).unwrap();
+    let size = n.data.get("size").unwrap();
+    assert_eq!((size.num("x"), size.num("y")), (Some(150.0), Some(120.0)));
+    // The shape grew by the triangle the corner pulled out: 50 × 100 / 2 + 20 × 100 / 2 + …
+    assert!(f.area(r) > area);
+}

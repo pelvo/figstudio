@@ -91,12 +91,34 @@ pub fn canvas_gizmos_and_input(
     if panning || tab.preview.is_some() {
         return None;
     }
+    // Another tool picked mid-path: the path so far is kept.
+    if *tool != Tool::Pen && tab.pen.is_some() {
+        super::vector_edit::finish_pen(tab, false);
+    }
 
     let pointer_pos = ui.input(|i| i.pointer.interact_pos());
     let primary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
     let primary_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
     let primary_released = ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
 
+    let pointer = super::canvas_select::Pointer {
+        pos: pointer_pos,
+        pressed: primary_pressed,
+        down: primary_down,
+        released: primary_released,
+        modifiers: ui.input(|i| i.modifiers),
+        double: ui.input(|i| {
+            i.pointer
+                .button_double_clicked(egui::PointerButton::Primary)
+        }),
+    };
+    if *tool == Tool::Pen {
+        let cursor = super::vector_edit::pen(painter, rect, tab, &pointer);
+        if tab.reset_tool_to_select {
+            *tool = Tool::Select;
+        }
+        return cursor;
+    }
     // 1. Creation tools (`Frame`, `Section`, `Rectangle`, `Ellipse`, `Line`, `Text`).
     if tool.is_creation() {
         if primary_pressed
@@ -184,13 +206,6 @@ pub fn canvas_gizmos_and_input(
         return None;
     }
 
-    let pointer = super::canvas_select::Pointer {
-        pos: pointer_pos,
-        pressed: primary_pressed,
-        down: primary_down,
-        released: primary_released,
-        modifiers: ui.input(|i| i.modifiers),
-    };
     super::canvas_select::gestures(painter, rect, tab, &pointer, snapping)
 }
 

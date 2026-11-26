@@ -34,6 +34,8 @@ pub enum Tool {
     Ellipse,
     Line,
     Text,
+    /// Click points (drag for curves) to draw a path.
+    Pen,
     Hand,
     Zoom,
 }
@@ -224,7 +226,8 @@ pub fn show(
     let point = cursor_page.map(|p| Point::new(f64::from(p.x), f64::from(p.y)));
     let deep = ui.input(|i| i.modifiers.command);
     let mut inner_changed = false;
-    if response.clicked() && !panning {
+    // Editing a vector's points: clicks belong to its points, not to picking layers.
+    if response.clicked() && !panning && tab.vector_edit.is_none() {
         match tool {
             Tool::Select => {
                 // Shift-click adds the layer under the pointer to the selection, or removes it.
@@ -260,7 +263,8 @@ pub fn show(
             | Tool::Rectangle
             | Tool::Ellipse
             | Tool::Line
-            | Tool::Text => {}
+            | Tool::Text
+            | Tool::Pen => {}
         }
     }
     // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
@@ -275,6 +279,8 @@ pub fn show(
         crate::canvas_pick::click(tab, &chain, point, deep, false);
     }
     let gizmo_active = tool.is_creation()
+        || tool == Tool::Pen
+        || tab.vector_edit.is_some()
         || matches!(
             tab.edit_drag,
             Some(
@@ -431,7 +437,8 @@ pub fn show(
             | Tool::Rectangle
             | Tool::Ellipse
             | Tool::Line
-            | Tool::Text => egui::CursorIcon::Crosshair,
+            | Tool::Text
+            | Tool::Pen => egui::CursorIcon::Crosshair,
             Tool::Select
                 if tab.text_select.is_some()
                     && tab.selection == tab.hover

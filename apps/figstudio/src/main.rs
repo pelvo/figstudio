@@ -1330,6 +1330,7 @@ impl App {
             && let Some(tab) = self.tabs.get_mut(self.active)
         {
             text_edit::keys(ctx, tab);
+            editor::vector_keys(ctx, tab, self.tool == canvas::Tool::Pen);
         }
         let keys = |b: keymap::Binding| self.prefs.keymap.get(b);
         // The command bar is modal, also while it fades out (it still covers the app): only
@@ -1388,6 +1389,7 @@ impl App {
                     | B::EllipseTool
                     | B::LineTool
                     | B::TextTool
+                    | B::PenTool
             );
             if (is_edit_or_create && in_preview)
                 || (matches!(binding, B::SelectChild | B::SelectParent)

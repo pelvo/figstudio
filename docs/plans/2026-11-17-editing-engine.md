@@ -269,3 +269,22 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   popups. Not done: a dropped component lands on the page, not in the frame under the
   pointer; aliases are shown read-only; no variable binding on layer fields; text, effect
   and grid styles have no preview; creating a style from the selection.
+
+### 2026-11-28T030000Z editing-engine-u8a-vectors
+- What changed and how it was checked: `editor::vector_edit`. Vector edit mode (double-click
+  a vector, or Enter): drag points and the selected point's curve handles (a straight point's
+  handles sit on it and are hidden, so it stays draggable); Delete removes a point, arrows
+  nudge it (Shift: 10); Enter, Escape or a click away leaves; canvas clicks do not pick other
+  layers meanwhile. Pen tool (P): click adds a point, dragging pulls out mirrored handles,
+  clicking the first point closes the path (with a region), Enter or Escape finishes it
+  open, another tool keeps what was drawn; one undo step; a 1 pt black centred stroke, no
+  fill. fig: `EditVectorNetwork` refits the layer to its curves (size and transform, the
+  network re-expressed in layer units) so nothing moves on the page. Tests:
+  `vector_edit_tests.rs`, `ui_vector_tests.rs`, an `edit_vectors.rs` refit test; ten reverts
+  each fail (two tests strengthened after a revert passed). Real window (bundled build): the
+  points of a logo vector in edit mode, the Pen tool in the toolbar. Gate:
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
+- Not verified: dragging points in a real window (computer use cannot drag the background
+  app). Not done: adding a point on a segment; Alt-dragging a straight point into a curve;
+  the pen's new layer is sized to its points, not its curves. U8 stays open (U8b: boolean and
+  mask buttons, prototype).

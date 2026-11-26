@@ -84,6 +84,8 @@ mod text_drag;
 mod text_edit;
 #[path = "ui_text_select_tests.rs"]
 mod text_select;
+#[path = "ui_vector_tests.rs"]
+mod vector;
 // Without the `mcp` feature there is no View item (mcp_off.rs) and no tokio to test it with.
 #[cfg(feature = "mcp")]
 #[path = "ui_mcp_tests.rs"]

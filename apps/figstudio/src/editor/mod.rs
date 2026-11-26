@@ -11,6 +11,7 @@ mod design_component;
 mod design_more;
 mod inspector;
 mod mcp_dispatch;
+mod vector_edit;
 mod widgets;
 
 use std::sync::Arc;
@@ -30,6 +31,10 @@ pub use inspector::{properties_edit_controls, properties_history_bar};
 pub use mcp_dispatch::handle_live_mutation;
 #[cfg(any(test, target_arch = "wasm32"))]
 pub use mcp_dispatch::handle_wasm_mutation;
+#[cfg(test)]
+pub(crate) use vector_edit::finish_pen as vector_edit_finish_pen;
+pub(crate) use vector_edit::keys as vector_keys;
+pub(crate) use vector_edit::{PenPath, VectorEditing};
 pub(crate) use widgets::{button, num_field, rgba_of, text_field};
 
 /// Applies `ops` onto `tab.doc` via `tab.history`, invalidating derived caches and syncing

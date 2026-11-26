@@ -46,6 +46,7 @@ pub enum Binding {
     EllipseTool,
     LineTool,
     TextTool,
+    PenTool,
     HandTool,
     ZoomTool,
     NextSpace,
@@ -163,7 +164,7 @@ const SPACE_LABELS: [&str; 9] = [
 ];
 
 impl Binding {
-    pub const ALL: [Binding; 66] = [
+    pub const ALL: [Binding; 67] = [
         Binding::CommandBar,
         Binding::Undo,
         Binding::Redo,
@@ -198,6 +199,7 @@ impl Binding {
         Binding::EllipseTool,
         Binding::LineTool,
         Binding::TextTool,
+        Binding::PenTool,
         Binding::HandTool,
         Binding::ZoomTool,
         Binding::NextSpace,
@@ -276,6 +278,7 @@ impl Binding {
             Binding::EllipseTool => "Ellipse tool",
             Binding::LineTool => "Line tool",
             Binding::TextTool => "Text tool",
+            Binding::PenTool => "Pen tool",
             Binding::HandTool => "Hand tool",
             Binding::ZoomTool => "Zoom tool (Alt to zoom out)",
             Binding::NextSpace => "Next space",
@@ -325,6 +328,7 @@ impl Binding {
             | Binding::EllipseTool
             | Binding::LineTool
             | Binding::TextTool
+            | Binding::PenTool
             | Binding::HandTool
             | Binding::ZoomTool => "Tools",
             Binding::NextSpace | Binding::PreviousSpace | Binding::Space(_) => "Spaces",
@@ -371,6 +375,7 @@ impl Binding {
             Binding::EllipseTool => k(Modifiers::NONE, Key::O),
             Binding::LineTool => k(Modifiers::NONE, Key::L),
             Binding::TextTool => k(Modifiers::NONE, Key::T),
+            Binding::PenTool => k(Modifiers::NONE, Key::P),
             Binding::HandTool => k(Modifiers::NONE, Key::H),
             Binding::ZoomTool => k(Modifiers::NONE, Key::Z),
             Binding::NextSpace => k(Modifiers::CTRL, Key::Tab),
@@ -423,6 +428,7 @@ impl Binding {
             Binding::EllipseTool => Action::SelectTool(Tool::Ellipse),
             Binding::LineTool => Action::SelectTool(Tool::Line),
             Binding::TextTool => Action::SelectTool(Tool::Text),
+            Binding::PenTool => Action::SelectTool(Tool::Pen),
             Binding::HandTool => Action::SelectTool(Tool::Hand),
             Binding::ZoomTool => Action::SelectTool(Tool::Zoom),
             Binding::NextSpace => Action::NextSpace,

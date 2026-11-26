@@ -120,6 +120,10 @@ pub struct Tab {
     pub dirty_unsaved: bool,
     /// Active interactive Move / Resize / Create drag on the canvas.
     pub edit_drag: Option<crate::editor::CanvasDrag>,
+    /// Editing a vector's points (double-click a vector, or Enter).
+    pub vector_edit: Option<crate::editor::VectorEditing>,
+    /// The Pen tool's path so far.
+    pub pen: Option<crate::editor::PenPath>,
     /// Set by creation tools once a new layer is placed so the toolbar returns to Select.
     pub reset_tool_to_select: bool,
     /// The inspector field focused or control dragged last frame; a change seals the
@@ -294,6 +298,8 @@ impl Tab {
             saved_revision,
             dirty_unsaved: false,
             edit_drag: None,
+            vector_edit: None,
+            pen: None,
             reset_tool_to_select: false,
             edit_session: None,
         }
