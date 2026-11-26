@@ -581,6 +581,7 @@ fn auto_layout_resizing_text_drops_its_stored_glyph_layout() {
                 target: text,
                 new_parent: frame,
                 index: None,
+                keep_position: false,
             },
             serde_json::from_value(serde_json::json!({
                 "op": "set_auto_layout",

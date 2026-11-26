@@ -203,6 +203,8 @@ pub enum EditOp {
         to: ZOrder,
     },
     /// Reparents and/or reorders `target` under `new_parent` at `index` (`None` = append/topmost).
+    /// With `keep_position` the layer stays where it is on the page (its transform is
+    /// re-expressed in the new parent), as dragging in the layers panel does.
     Reparent {
         #[serde(with = "guid_wire")]
         target: Guid,
@@ -210,6 +212,8 @@ pub enum EditOp {
         new_parent: Guid,
         #[serde(default)]
         index: Option<usize>,
+        #[serde(default)]
+        keep_position: bool,
     },
     /// Sets uniform or per-corner radii `[tl, tr, br, bl]` and optional squircle `smoothing` (`0..=1`).
     SetCornerRadii {

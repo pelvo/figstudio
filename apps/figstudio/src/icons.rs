@@ -50,6 +50,12 @@ pub enum Icon {
     Chevron,
     /// Start again (a circular arrow).
     Restart,
+    /// Visible (an eye) and hidden (the eye struck through), for layer rows.
+    Eye,
+    EyeOff,
+    /// Locked and unlocked padlocks, for layer rows.
+    Lock,
+    Unlock,
 }
 
 /// The icon for a node type in the layer tree.
@@ -140,6 +146,39 @@ pub fn paint(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
                 line((5.0, 7.0), (9.0, 7.0));
                 line((7.0, 5.0), (7.0, 9.0));
             }
+        }
+        Icon::Eye | Icon::EyeOff => {
+            // An almond: two arcs between the corners of the eye.
+            let arc = |sign: f32| -> Vec<(f32, f32)> {
+                (0..=12)
+                    .map(|i| {
+                        let t = i as f32 / 12.0;
+                        (
+                            1.5 + 13.0 * t,
+                            8.0 + sign * 4.6 * (std::f32::consts::PI * t).sin(),
+                        )
+                    })
+                    .collect()
+            };
+            let mut outline = arc(-1.0);
+            outline.extend(arc(1.0).into_iter().rev());
+            path(&outline, true);
+            painter.circle_stroke(g.p(8.0, 8.0), 1.9 * g.scale, stroke);
+            if icon == Icon::EyeOff {
+                capsule((2.5, 13.5), (13.5, 2.5));
+            }
+        }
+        Icon::Lock | Icon::Unlock => {
+            round_rect(g.rect(3.5, 7.5, 12.5, 14.0), 1.5);
+            // The shackle: a half circle on two legs; unlocked, the right leg lifts out.
+            let right = if icon == Icon::Lock { 7.5 } else { 5.0 };
+            let mut shackle = vec![(5.5, 7.5)];
+            shackle.extend((0..=8).map(|i| {
+                let a = std::f32::consts::PI * (1.0 + i as f32 / 8.0);
+                (8.0 + 2.5 * a.cos(), 5.0 + 2.5 * a.sin())
+            }));
+            shackle.push((10.5, right));
+            path(&shackle, false);
         }
         Icon::Plus => {
             capsule((8.0, 3.0), (8.0, 13.0));

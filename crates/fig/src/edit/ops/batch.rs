@@ -289,7 +289,7 @@ pub fn describe_edit_ops_markdown() -> &'static str {
         "- `move`: `{ target, x, y, relative? }`\n",
         "- `resize`: `{ target, width, height }` (propagates constraints & rebuilds geometry)\n",
         "- `rotate`: `{ target, degrees, pivot?: top_left|center }`\n",
-        "- `reparent`: `{ target, new_parent, index? }`\n",
+        "- `reparent`: `{ target, new_parent, index?, keep_position? }` (keep_position: stays put on the page)\n",
         "- `group` / `frame_selection`: `{ targets: [sibling ids], name? }` (wraps in place; groups refit to their children after every edit)\n",
         "- `ungroup`: `{ target }`\n",
         "- `align`: `{ targets, edge: left|h_center|right|top|v_center|bottom, to?: selection|parent }` (one target aligns to its parent)\n",

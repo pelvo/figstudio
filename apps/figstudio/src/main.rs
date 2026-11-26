@@ -46,6 +46,7 @@ mod instance_pick;
 mod jump_list;
 mod keymap;
 mod labels;
+mod layers_edit;
 mod link_open;
 mod marquee;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -1451,7 +1452,10 @@ impl App {
         }
         // Escape closes the find bar first, also when its field no longer has focus (a
         // click on the canvas took it); the next one clears the selection.
-        if !quiet && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+        if !quiet
+            && !layers_edit::is_renaming(ctx)
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape))
+        {
             if let Some(tab) = self
                 .tabs
                 .get_mut(self.active)

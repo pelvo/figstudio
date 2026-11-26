@@ -269,6 +269,48 @@ fn reorder_moves_a_layer_through_its_siblings() {
 }
 
 #[test]
+fn reparent_can_keep_the_page_position_under_a_rotated_frame() {
+    let mut f = Fx::new();
+    let page = f.page;
+    let ids = f.run(&[
+        shape("FRAME", page, 100.0, 100.0, 200.0, 200.0),
+        shape("RECTANGLE", page, 10.0, 20.0, 30.0, 40.0),
+    ]);
+    let (frame, rect) = (ids[0], ids[1]);
+    f.run(&[EditOp::Rotate {
+        target: frame,
+        degrees: 30.0,
+        pivot: Default::default(),
+    }]);
+    let before = f.b(rect);
+    f.run(&[EditOp::Reparent {
+        target: rect,
+        new_parent: frame,
+        index: None,
+        keep_position: true,
+    }]);
+    assert_eq!(f.doc.children(frame), &[rect]);
+    assert!(same(f.b(rect), before), "{:?} {before:?}", f.b(rect));
+    // Back onto the page: still in place, and unrotated again.
+    f.run(&[EditOp::Reparent {
+        target: rect,
+        new_parent: page,
+        index: Some(0),
+        keep_position: true,
+    }]);
+    assert_eq!(f.doc.children(page)[0], rect);
+    assert!(same(f.b(rect), before));
+    // Without the flag the local transform is kept, so it lands elsewhere.
+    f.run(&[EditOp::Reparent {
+        target: rect,
+        new_parent: frame,
+        index: None,
+        keep_position: false,
+    }]);
+    assert!(!same(f.b(rect), before));
+}
+
+#[test]
 fn arrangement_ops_round_trip_through_json() {
     let op: EditOp = serde_json::from_value(serde_json::json!({
         "op": "align", "targets": ["1:2", "1:3"], "edge": "h_center"

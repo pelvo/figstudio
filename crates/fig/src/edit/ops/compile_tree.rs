@@ -232,6 +232,7 @@ pub(super) fn compile_single_op(
             target,
             new_parent,
             index,
+            keep_position,
         } => {
             let node = ensure_exists(doc, *target)?;
             ensure_exists(doc, *new_parent)?;
@@ -245,6 +246,14 @@ pub(super) fn compile_single_op(
                 .filter(|&&id| id != *target)
                 .count();
             super::compile_arrange::place(doc, txn, *target, *new_parent, index.unwrap_or(others))?;
+            if *keep_position && node.parent != Some(*new_parent) {
+                let world = crate::edit::space::world_transform(doc, *target);
+                let local = crate::edit::space::world_transform(doc, *new_parent)
+                    .inverse()
+                    .ok_or_else(|| FigError::malformed(format!("{new_parent} cannot be inverted")))?
+                    .compose(world);
+                txn.set_field(*target, "transform", local.to_val());
+            }
         }
         EditOp::Group { .. }
         | EditOp::FrameSelection { .. }

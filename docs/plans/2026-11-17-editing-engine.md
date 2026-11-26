@@ -18,7 +18,7 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - [x] U2 canvas interaction (multi-move/resize, rotate handle, nudge, Alt-duplicate, snapping)
 - [x] U3 right-click menus and shortcuts for every op family
 - [x] U4 design panel sections and widget kit
-- [ ] U5 layers panel editing
+- [x] U5 layers panel editing
 - [ ] U6 text editing on canvas
 - [ ] U7 components and assets UI
 - [ ] U8 vector edit mode, prototype and export UI
@@ -210,3 +210,20 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - Not verified: drags in a real window (computer use does not deliver drags to the background
   app; the UI tests drive them). Not done: resize does not snap; a rotated layer among several
   scales along its own axes instead of skewing (shortcut comment); Alt-resize from the centre.
+
+### 2026-11-27T180000Z editing-engine-u5-layers
+- What changed and how it was checked: `layers_edit` and the rows in `panels.rs`: Cmd/Ctrl-click
+  adds or removes a row, Shift-click selects the rows between the primary layer and the one
+  clicked; double-click renames in place (Enter or clicking away keeps it, Escape drops it;
+  the global Escape waits while a rename is open); eye and lock buttons on hover, and always
+  on a hidden or locked layer; dragging rows reorders and reparents (top/bottom quarter of a
+  container row: above/below, middle: inside at the top; below an open container: inside),
+  several keep their order, never into themselves or an instance. `EditOp::Reparent` gains
+  `keep_position` (opt-in, serde default false): the layer stays put on the page.
+  Tests: `layers_edit_tests.rs`, `ui_layers_edit_tests.rs`, and an engine test in
+  `edit_arrange.rs`; ten reverts each fail. Real window (bundled build): the eye-off and lock
+  icons on a hidden, locked row; a double-click opens the name field and Escape keeps the
+  name. Gate: `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
+- Not verified: dragging rows in a real window (computer use cannot drag the background app).
+  Not done: a collapsed frame does not open while hovered during a drag; no autoscroll at the
+  list edges; rows do not drag in the filtered list.
