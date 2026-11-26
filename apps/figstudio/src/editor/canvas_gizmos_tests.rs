@@ -130,3 +130,168 @@ fn resize_under_a_rotated_parent_uses_the_layer_axes_and_keeps_the_opposite_edge
         assert_near(page_point(&doc, rect, kept_after), kept);
     }
 }
+
+#[test]
+fn rotated_handle_cursors_follow_screen_orientation() {
+    let rot90 = Affine::rotate(std::f64::consts::FRAC_PI_2);
+    assert_eq!(Handle::E.cursor_for(rot90), CursorIcon::ResizeVertical);
+    assert_eq!(Handle::W.cursor_for(rot90), CursorIcon::ResizeVertical);
+    assert_eq!(Handle::N.cursor_for(rot90), CursorIcon::ResizeHorizontal);
+    assert_eq!(Handle::S.cursor_for(rot90), CursorIcon::ResizeHorizontal);
+    assert_eq!(Handle::NW.cursor_for(rot90), CursorIcon::ResizeNeSw);
+    assert_eq!(Handle::NE.cursor_for(rot90), CursorIcon::ResizeNwSe);
+
+    let rot45 = Affine::rotate(std::f64::consts::FRAC_PI_4);
+    assert_eq!(Handle::E.cursor_for(rot45), CursorIcon::ResizeNwSe);
+    assert_eq!(Handle::S.cursor_for(rot45), CursorIcon::ResizeNeSw);
+    assert_eq!(Handle::SE.cursor_for(rot45), CursorIcon::ResizeVertical);
+    assert_eq!(Handle::NE.cursor_for(rot45), CursorIcon::ResizeHorizontal);
+}
+
+fn set_matrix(doc: &mut Document, id: Guid, m: [f64; 6]) {
+    let mut nodes = doc.nodes.clone();
+    let n = nodes.iter_mut().find(|n| n.id == id).expect("node exists");
+    let tf = n.data.get_mut("transform").expect("transform field");
+    for (k, v) in [
+        ("m00", m[0]),
+        ("m01", m[1]),
+        ("m02", m[2]),
+        ("m10", m[3]),
+        ("m11", m[4]),
+        ("m12", m[5]),
+    ] {
+        tf.set(k, figstudio_fig::Val::Float(v));
+    }
+    doc.set_nodes(nodes).unwrap();
+}
+
+#[test]
+fn resize_preserves_opposite_edge_under_45deg_skew_and_nonuniform_transformed_parent() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/structure.fig");
+
+    type Mat = [f64; 6];
+    let cases: [(&str, Option<Mat>, Mat); 3] = [
+        // 45° rotated node
+        (
+            "45deg",
+            None,
+            [
+                std::f64::consts::FRAC_1_SQRT_2,
+                -std::f64::consts::FRAC_1_SQRT_2,
+                100.0,
+                std::f64::consts::FRAC_1_SQRT_2,
+                std::f64::consts::FRAC_1_SQRT_2,
+                120.0,
+            ],
+        ),
+        // Skewed node (m01 != 0)
+        ("skewed", None, [1.0, 0.5, 80.0, -0.25, 1.2, 60.0]),
+        // Node inside non-uniformly scaled & skewed parent
+        (
+            "nonuniform-skewed-parent",
+            Some([2.0, 0.6, 200.0, -0.3, 0.5, 150.0]),
+            [0.8, -0.4, 15.0, 0.3, 1.1, 25.0],
+        ),
+    ];
+
+    for (label, parent_mat, node_mat) in cases {
+        for handle in [Handle::W, Handle::N, Handle::NW] {
+            for snap_size in [false, true] {
+                let mut doc = Document::open(&path).unwrap();
+                let mut history = History::new(20);
+                let page = doc.pages[0];
+                let parent = if let Some(pm) = parent_mat {
+                    let p = execute_edit_ops(
+                        &mut doc,
+                        &mut history,
+                        &[shape("FRAME", page, 0.0, 0.0, 300.0, 300.0)],
+                        None,
+                        None,
+                        false,
+                    )
+                    .unwrap()
+                    .0
+                    .created_ids[0];
+                    set_matrix(&mut doc, p, pm);
+                    p
+                } else {
+                    page
+                };
+                let rect = execute_edit_ops(
+                    &mut doc,
+                    &mut history,
+                    &[shape("RECTANGLE", parent, 0.0, 0.0, 80.0, 50.0)],
+                    None,
+                    None,
+                    false,
+                )
+                .unwrap()
+                .0
+                .created_ids[0];
+                set_matrix(&mut doc, rect, node_mat);
+
+                let orig = crate::editor::local_xywh(&doc.node(rect).unwrap().data);
+                let opp_before = page_point(&doc, rect, Point::new(orig.2, orig.3));
+                let (x, y, w, h) = resized_with(&doc, rect, handle, orig, -13.7, -9.3, snap_size);
+                apply(
+                    &mut doc,
+                    &mut history,
+                    &[
+                        EditOp::Move {
+                            target: rect,
+                            x,
+                            y,
+                            relative: false,
+                        },
+                        EditOp::Resize {
+                            target: rect,
+                            width: w,
+                            height: h,
+                        },
+                    ],
+                );
+                let opp_after = page_point(&doc, rect, Point::new(w, h));
+                assert!(
+                    (opp_after - opp_before).hypot() < 1e-3,
+                    "{label} {handle:?} snap={snap_size}: SE corner drifted from {opp_before:?} to {opp_after:?}"
+                );
+            }
+        }
+    }
+
+    // Singular parent (zero-scale X): resized_with must still read the node's own local matrix
+    // instead of falling back to singular `P * L` and zeroing out the shift.
+    let mut doc = Document::open(&path).unwrap();
+    let mut history = History::new(20);
+    let page = doc.pages[0];
+    let parent = execute_edit_ops(
+        &mut doc,
+        &mut history,
+        &[shape("FRAME", page, 0.0, 0.0, 200.0, 200.0)],
+        None,
+        None,
+        false,
+    )
+    .unwrap()
+    .0
+    .created_ids[0];
+    set_matrix(&mut doc, parent, [0.0, 0.0, 100.0, 0.0, 1.0, 100.0]);
+    let rect = execute_edit_ops(
+        &mut doc,
+        &mut history,
+        &[shape("RECTANGLE", parent, 20.0, 30.0, 80.0, 40.0)],
+        None,
+        None,
+        false,
+    )
+    .unwrap()
+    .0
+    .created_ids[0];
+    let orig = crate::editor::local_xywh(&doc.node(rect).unwrap().data);
+    let (x, _y, w, _h) = resized_with(&doc, rect, Handle::W, orig, -10.0, 0.0, false);
+    assert!(
+        (w - 90.0).abs() < 1e-6 && (x - 10.0).abs() < 1e-6,
+        "singular parent must still use node's local matrix for W shift: got x={x}, w={w}"
+    );
+}

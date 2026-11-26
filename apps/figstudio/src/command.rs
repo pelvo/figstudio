@@ -400,7 +400,7 @@ impl App {
                 let alpha = (dim * pop.clamp(0.0, 1.0)) as u8;
                 ui.painter()
                     .rect_filled(screen, 0.0, Color32::from_black_alpha(alpha));
-                close |= response.clicked();
+                close |= open && response.clicked();
             });
         let width = (screen.width() - 48.0).clamp(280.0, 600.0);
         let top = screen.top() + (screen.height() * 0.16).max(40.0);

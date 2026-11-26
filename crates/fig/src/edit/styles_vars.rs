@@ -2,7 +2,7 @@
 //! `EFFECT`, `GRID`), and Variables & Modes (`VARIABLE_SET`, `VARIABLE`, `colorVar`,
 //! `variableConsumptionMap`, `variableModeBySetMap`).
 
-use crate::edit::geometry::parse_hex_solid_paint;
+use crate::edit::geometry::{parse_hex_solid_paint, sync_node_derived_caches};
 use crate::edit::{GuidAlloc, Txn, fractional};
 use crate::tokens::Tokens;
 use crate::{Document, FigError, Guid, Obj, Val, intern, sha1};
@@ -253,9 +253,9 @@ pub fn bind_style(
     slot: &str,
     style_id: Option<Guid>,
 ) -> Result<(), FigError> {
-    if doc.node(node_id).is_none() {
+    let Some(node) = doc.node(node_id) else {
         return Err(FigError::malformed(format!("missing node {node_id}")));
-    }
+    };
     let (style_field, legacy_field, cache_field) = match slot {
         "fill" => (
             "styleIdForFill",
@@ -288,12 +288,12 @@ pub fn bind_style(
             let Some(style_node) = doc.node(sid) else {
                 return Err(FigError::malformed(format!("missing style node {sid}")));
             };
-            set.insert(style_field, Val::Obj(Obj::from([("guid", sid.to_val())])));
             let schema = doc.decoded_schema()?;
-            if schema
-                .def("NodeChange")
-                .is_some_and(|d| d.field(legacy_field).is_some())
-            {
+            let node_def = schema.def("NodeChange");
+            if node_def.is_some_and(|d| d.field(style_field).is_some()) {
+                set.insert(style_field, Val::Obj(Obj::from([("guid", sid.to_val())])));
+            }
+            if node_def.is_some_and(|d| d.field(legacy_field).is_some()) {
                 set.insert(legacy_field, sid.to_val());
             }
             if let Some((src_f, dst_f)) = cache_field
@@ -303,10 +303,22 @@ pub fn bind_style(
             }
         }
         None => {
-            unset.push(style_field.into());
-            unset.push(legacy_field.into());
+            if node.data.get(style_field).is_some() {
+                unset.push(style_field.into());
+            }
+            if node.data.get(legacy_field).is_some() {
+                unset.push(legacy_field.into());
+            }
         }
     }
+    sync_node_derived_caches(
+        doc,
+        &node.kind,
+        &node.data,
+        &mut set,
+        &mut unset,
+        &mut txn.add_blobs,
+    );
     txn.modify(node_id, set, unset);
     Ok(())
 }

@@ -8,9 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::edit::Txn;
-use crate::edit::geometry::{
-    encode_path_commands, make_path_entry, rebuild_shape_geometry, unset_on_resize,
-};
+use crate::edit::geometry::sync_node_derived_caches;
 use crate::{Document, FigError, Guid, Obj, Val};
 
 /// Computed geometry update for one node after solving Auto-Layout.
@@ -109,30 +107,24 @@ pub fn append_auto_layout_patches(
             tf.set("m12", Val::Float(u.y));
             set.insert("transform", tf);
         }
+        let mut unset = Vec::new();
         if u.size_changed {
-            let new_size = Val::Obj(Obj::from([
-                ("x", Val::Float(u.width)),
-                ("y", Val::Float(u.height)),
-            ]));
-            set.insert("size", new_size.clone());
-            if node.data.get("fillGeometry").is_some() {
-                let mut preview = node.data.clone().into_owned();
-                preview.set("size", new_size);
-                if let Some(cmds) = rebuild_shape_geometry(&node.kind, &preview) {
-                    let blob_idx = doc.blobs.len() + txn.add_blobs.len();
-                    txn.add_blobs.push(encode_path_commands(&cmds));
-                    set.insert(
-                        "fillGeometry",
-                        Val::Arr(vec![make_path_entry(blob_idx, false)]),
-                    );
-                }
-            }
+            set.insert(
+                "size",
+                Val::Obj(Obj::from([
+                    ("x", Val::Float(u.width)),
+                    ("y", Val::Float(u.height)),
+                ])),
+            );
+            sync_node_derived_caches(
+                doc,
+                &node.kind,
+                &node.data,
+                &mut set,
+                &mut unset,
+                &mut txn.add_blobs,
+            );
         }
-        let unset = if u.size_changed {
-            unset_on_resize(node)
-        } else {
-            Vec::new()
-        };
         txn.modify(u.id, set, unset);
     }
     count
@@ -157,7 +149,7 @@ fn highest_stack_ancestor(doc: &Document, start: Guid) -> Guid {
         if n.kind == "CANVAS" || n.kind == "DOCUMENT" {
             break;
         }
-        if stack_mode(&n.data).is_some() {
+        if n.kind != "INSTANCE" && stack_mode(&n.data).is_some() {
             best = id;
         }
         cur = n.parent;
@@ -328,6 +320,11 @@ fn layout_top_down(
 
 fn measure_node(doc: &Document, id: Guid, sizes: &mut HashMap<Guid, (f64, f64)>) {
     let Some(node) = doc.node(id) else { return };
+    // An INSTANCE's children live under its SYMBOL master rather than `doc.children(id)`,
+    // so treating it as an empty stack container would collapse HUG instances to padding.
+    if node.kind == "INSTANCE" {
+        return;
+    }
     let Some(mode) = stack_mode(&node.data) else {
         return;
     };
@@ -447,7 +444,9 @@ fn layout_node(
     let Some(node) = doc.node(id) else { return };
     touched.push(id);
 
-    if let Some(mode) = stack_mode(&node.data) {
+    if node.kind != "INSTANCE"
+        && let Some(mode) = stack_mode(&node.data)
+    {
         let (cont_w, cont_h) = sizes[&id];
         let pad = padding_of(&node.data);
         let kids = flow_children(doc, id);

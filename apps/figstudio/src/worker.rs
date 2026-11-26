@@ -207,12 +207,12 @@ struct ImageQueue {
 }
 
 impl ImageQueue {
-    /// Stops reading and storing images of `instance` and drops those already stored. The
+    /// Stops reading and storing images of the document with `lineage` and drops those already stored. The
     /// image cache refuses anything for it from now on (`Images::close_document`), so a read
     /// or render still running cannot store it back.
-    fn close(&self, instance: u64) {
-        self.images.close_document(instance);
-        let prefix = format!("{instance:x}/");
+    fn close(&self, lineage: u64) {
+        self.images.close_document(lineage);
+        let prefix = format!("{lineage:x}/");
         let mut q = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         let before = q.0.len();
         q.0.retain(|(want, _)| {
@@ -348,13 +348,13 @@ impl Workers {
                     .chain(std::iter::from_fn(|| jobs.try_recv().ok()));
                 for msg in arrived {
                     match msg {
-                        Msg::Forget { doc } => {
-                            recordings.forget(doc);
+                        Msg::Forget { lineage } => {
+                            recordings.forget(lineage);
                             continue;
                         }
-                        Msg::Shaders { doc, host } => {
-                            images.images.set_shaders(doc, host);
-                            recordings.forget(doc);
+                        Msg::Shaders { lineage, host } => {
+                            images.images.set_shaders(lineage, host);
+                            recordings.forget(lineage);
                             continue;
                         }
                         msg => count.fetch_sub(queue.take(msg), Ordering::Relaxed),
@@ -499,27 +499,26 @@ impl Workers {
         }
     }
 
-    /// Draws document `instance`'s shaders with `host` from now on, from scratch: the render
-    /// worker installs it and drops the document's page recordings.
+    /// Draws the shaders of the document with `lineage` (kept by its edits) with `host` from
+    /// now on, from scratch: the render worker installs it (unless `lineage` has closed) and
+    /// drops all page recordings of `lineage`.
     pub fn set_shaders(
         &self,
-        instance: u64,
+        lineage: u64,
         host: std::sync::Arc<dyn figstudio_render::shader::ShaderFills>,
     ) {
         if let Some(tx) = &self.render_tx {
-            let _ = tx.send(Msg::Shaders {
-                doc: instance,
-                host,
-            });
+            let _ = tx.send(Msg::Shaders { lineage, host });
         }
     }
 
-    /// The last tab of document `instance` closed: drops its images, its queued image reads,
-    /// and anything a render or read still running would store for it.
-    pub fn close_document(&self, instance: u64) {
-        self.queue.close(instance);
+    /// The document with `lineage` closed: drops its images and shaders, its queued image
+    /// reads, anything a render or read still running would store for it, and all of its page
+    /// recordings across revisions and Preview states.
+    pub fn close_document(&self, lineage: u64) {
+        self.queue.close(lineage);
         if let Some(tx) = &self.render_tx {
-            let _ = tx.send(Msg::Forget { doc: instance });
+            let _ = tx.send(Msg::Forget { lineage });
         }
     }
 

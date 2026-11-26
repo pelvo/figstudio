@@ -65,6 +65,11 @@ struct Running {
     token: Option<String>,
     /// `reveal_node` links whose file no tab shows, for `App::go_to_link` (`link_open.rs`).
     links: Vec<crate::link_open::LinkAsk>,
+    /// Mutation answers held until [`Self::sync`] has published the post-edit snapshot.
+    pending_mutations: Vec<(
+        tokio::sync::oneshot::Sender<anyhow::Result<serde_json::Value>>,
+        anyhow::Result<serde_json::Value>,
+    )>,
 }
 
 impl McpHost {
@@ -256,7 +261,9 @@ impl Running {
                         continue;
                     }
                     let res = crate::editor::handle_live_mutation(tabs, tab, mutation);
-                    let _ = reply.send(res);
+                    // Defer the reply until `sync` publishes the updated snapshot so an
+                    // immediate follow-up read sees the new revision.
+                    self.pending_mutations.push((reply, res));
                 }
             }
         }
@@ -264,15 +271,17 @@ impl Running {
 
     fn sync(&mut self, tabs: &[Tab], active: usize) {
         let key = key(tabs, active);
-        if self.last_key.as_ref() == Some(&key) {
-            return;
+        if self.last_key.as_ref() != Some(&key) {
+            let snapshot = Arc::new(snapshot(tabs, active));
+            *self
+                .snapshot
+                .write()
+                .unwrap_or_else(PoisonError::into_inner) = snapshot;
+            self.last_key = Some(key);
         }
-        let snapshot = Arc::new(snapshot(tabs, active));
-        *self
-            .snapshot
-            .write()
-            .unwrap_or_else(PoisonError::into_inner) = snapshot;
-        self.last_key = Some(key);
+        for (reply, result) in self.pending_mutations.drain(..) {
+            let _ = reply.send(result);
+        }
     }
 }
 
@@ -324,6 +333,7 @@ fn start(ctx: &egui::Context, addrs: Vec<SocketAddr>, access: HttpAccess) -> Run
         last_key: None,
         token: bearer,
         links: Vec::new(),
+        pending_mutations: Vec::new(),
     }
 }
 

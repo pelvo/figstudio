@@ -20,6 +20,7 @@ mod walk;
 pub use properties::{Definitions, definitions};
 pub use scale::{STROKE_LENGTHS, scale_inherited, uniform_scale};
 pub use swap::inherit_swapped;
+pub(crate) use swap::{SHAPE_GEOMETRY, SWAP_INHERITED, swap_inherited_patch};
 pub use walk::{
     InstancePath, MAX_RESOLVED_NODES, ResolveError, Resolved, Walk, resolve_instance, resolve_path,
     resolve_path_with, tree_path, tree_path_with, walk_instance, walk_path,
@@ -197,7 +198,11 @@ impl Overrides {
     pub fn resolve<'n>(&self, doc: &Document, node: &'n Node, path: &[Guid]) -> Cow<'n, Val> {
         let matches = self.matches(path);
         let property_patch = self.property_patch(&node.data);
-        if matches.is_empty() && property_patch == Val::Obj(Obj::new()) && self.scale() == 1.0 {
+        if matches.is_empty()
+            && property_patch == Val::Obj(Obj::new())
+            && self.scale() == 1.0
+            && !swap::has_swap(&node.data, &node.data)
+        {
             return Cow::Borrowed(&node.data);
         }
         let mut data = merge(&node.data, &property_patch, &matches, |_, _| {});

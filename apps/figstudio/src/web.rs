@@ -158,6 +158,27 @@ pub enum Picked {
 /// A file name and its bytes with what is not drawn exactly (see `export_bytes`).
 type Exported = (String, anyhow::Result<(Vec<u8>, String)>);
 
+/// Outcome of an asynchronous lazy browser `.fig` copy save, tied to its start id.
+#[derive(Debug)]
+pub struct SaveDone {
+    pub id: u64,
+    pub outcome: crate::unsaved::SaveOutcome,
+}
+
+#[wasm_bindgen(module = "/js/save.js")]
+extern "C" {
+    #[wasm_bindgen(js_name = pickSaveFile, catch)]
+    async fn pick_save_file_js(suggested_name: &str) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = writeHandleParts, catch)]
+    async fn write_handle_parts_js(
+        handle: &JsValue,
+        parts: &js_sys::Array,
+    ) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = downloadBlobParts, catch)]
+    fn download_blob_parts_js(name: &str, mime: &str, parts: &js_sys::Array)
+    -> Result<(), JsValue>;
+}
+
 use crate::cjk::Variant;
 
 const CJK_STORAGE_KEY: &str = "figstudio.cjk_font";
@@ -586,6 +607,9 @@ pub struct Inbox {
     pub files: Receiver<Picked>,
     pub exports_tx: Sender<Exported>,
     pub exports: Receiver<Exported>,
+    saves_tx: Sender<SaveDone>,
+    pub saves: Receiver<SaveDone>,
+    saving: std::rc::Rc<Cell<bool>>,
     ranges_tx: Sender<FileRequest>,
     /// Shared with the wake pump, which serves reads between frames.
     ranges: std::rc::Rc<Receiver<FileRequest>>,
@@ -611,6 +635,7 @@ impl Inbox {
     pub fn new() -> Self {
         let (files_tx, files) = channel();
         let (exports_tx, exports) = channel();
+        let (saves_tx, saves) = channel();
         let (ranges_tx, ranges) = channel();
         let (fonts_tx, fonts) = channel();
         Inbox {
@@ -618,6 +643,9 @@ impl Inbox {
             files,
             exports_tx,
             exports,
+            saves_tx,
+            saves,
+            saving: std::rc::Rc::new(Cell::new(false)),
             ranges_tx,
             ranges: std::rc::Rc::new(ranges),
             serving: std::cell::Cell::new(false),
@@ -775,6 +803,230 @@ impl Inbox {
             crate::web_wake::listen(move || serve(&ranges, &ctx));
         }
         serve(&self.ranges, ctx);
+    }
+
+    /// Saves a copy of a lazily opened browser archive without materializing or decompressing
+    /// untouched images. Reports completion through [`Inbox::saves`].
+    pub fn save_lazy_copy(
+        &self,
+        ctx: &egui::Context,
+        save_id: u64,
+        tab: u64,
+        doc: std::sync::Arc<Document>,
+        default_name: String,
+    ) -> Result<(), &'static str> {
+        if self.saving.get() {
+            return Err("a save is already running");
+        }
+        let Some(source_file) = upload_file(tab) else {
+            return Err("the original archive is no longer available");
+        };
+        let source_handle = upload_origin(tab).and_then(|o| o.handle);
+        self.saving.set(true);
+        let saving = std::rc::Rc::clone(&self.saving);
+        let tx = self.saves_tx.clone();
+        let ctx = ctx.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            struct ClearOnDrop(std::rc::Rc<Cell<bool>>);
+            impl Drop for ClearOnDrop {
+                fn drop(&mut self) {
+                    self.0.set(false);
+                }
+            }
+            let guard = ClearOnDrop(saving);
+            let outcome = run_lazy_save(doc, source_file, source_handle, default_name).await;
+            drop(guard);
+            let _ = tx.send(SaveDone {
+                id: save_id,
+                outcome,
+            });
+            ctx.request_repaint();
+        });
+        Ok(())
+    }
+}
+
+/// Largest exact integer representable in JS `f64` (`Number.MAX_SAFE_INTEGER`), used to bound
+/// `Blob.slice` offsets.
+const MAX_JS_SAFE_INT: u64 = (1u64 << 53) - 1;
+/// Chunk size when copying newly generated Wasm bytes into JS `Uint8Array` parts.
+const JS_BYTES_CHUNK: usize = 16 * 1024 * 1024;
+
+enum SaveTarget {
+    Handle { handle: JsValue, name: String },
+    Download,
+    Cancelled,
+}
+
+async fn pick_save_target(
+    default_name: &str,
+    source_handle: Option<u32>,
+) -> anyhow::Result<SaveTarget> {
+    let js = |e: JsValue| anyhow::anyhow!("{}", crate::mcp_wire::js_error_text(&e));
+    let picked = pick_save_file_js(default_name).await.map_err(js)?;
+    let status = js_sys::Reflect::get(&picked, &"status".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    match status.as_deref() {
+        Some("cancelled") => Ok(SaveTarget::Cancelled),
+        Some("handle") => {
+            let handle = js_sys::Reflect::get(&picked, &"handle".into()).map_err(js)?;
+            if let Some(src_id) = source_handle
+                && crate::recents_web::is_same_handle(src_id, &handle).await
+            {
+                anyhow::bail!("cannot overwrite the open source file; choose a different name");
+            }
+            let name = js_sys::Reflect::get(&picked, &"name".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| default_name.to_owned());
+            Ok(SaveTarget::Handle { handle, name })
+        }
+        _ => Ok(SaveTarget::Download),
+    }
+}
+
+async fn nap_ms(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(window) = web_sys::window() {
+            let _ = window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(resolve.unchecked_ref(), ms);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+async fn await_worker<T>(rx: Receiver<T>) -> anyhow::Result<T> {
+    loop {
+        match rx.try_recv() {
+            Ok(val) => return Ok(val),
+            Err(TryRecvError::Empty) => {
+                if crate::worker::panicked() {
+                    anyhow::bail!("background worker stopped");
+                }
+                nap_ms(8).await;
+            }
+            Err(TryRecvError::Disconnected) => anyhow::bail!("background worker stopped"),
+        }
+    }
+}
+
+fn build_js_parts(
+    source_file: &web_sys::File,
+    file_len: u64,
+    parts: Vec<figstudio_fig::lazy_save::ArchivePart>,
+) -> anyhow::Result<js_sys::Array> {
+    use figstudio_fig::lazy_save::ArchivePart;
+    let js = |e: JsValue| anyhow::anyhow!("{}", crate::mcp_wire::js_error_text(&e));
+    let out = js_sys::Array::new();
+    for part in parts {
+        match part {
+            ArchivePart::Bytes(bytes) => {
+                // Copy out of shared Wasm memory in bounded chunks; a Blob cannot view SharedArrayBuffer.
+                for chunk in bytes.chunks(JS_BYTES_CHUNK) {
+                    let len = u32::try_from(chunk.len())
+                        .map_err(|_| anyhow::anyhow!("archive chunk too large"))?;
+                    let arr = js_sys::Uint8Array::new_with_length(len);
+                    arr.copy_from(chunk);
+                    out.push(&arr);
+                }
+            }
+            ArchivePart::SourceRange { offset, len } => {
+                if len == 0 {
+                    continue;
+                }
+                let end = offset
+                    .checked_add(len)
+                    .filter(|&e| e <= file_len && e <= MAX_JS_SAFE_INT)
+                    .ok_or_else(|| anyhow::anyhow!("archive slice out of bounds"))?;
+                let slice = source_file
+                    .slice_with_f64_and_f64(offset as f64, end as f64)
+                    .map_err(js)?;
+                if slice.size() as u64 != len {
+                    anyhow::bail!("source file changed or was cut short");
+                }
+                out.push(&slice);
+            }
+        }
+    }
+    Ok(out)
+}
+
+async fn run_lazy_save(
+    doc: std::sync::Arc<Document>,
+    source_file: web_sys::File,
+    source_handle: Option<u32>,
+    default_name: String,
+) -> crate::unsaved::SaveOutcome {
+    match run_lazy_save_inner(doc, source_file, source_handle, default_name).await {
+        Ok(outcome) => outcome,
+        Err(e) => crate::unsaved::SaveOutcome::Err(figstudio_fig::one_line(e.as_ref())),
+    }
+}
+
+async fn run_lazy_save_inner(
+    doc: std::sync::Arc<Document>,
+    source_file: web_sys::File,
+    source_handle: Option<u32>,
+    default_name: String,
+) -> anyhow::Result<crate::unsaved::SaveOutcome> {
+    use crate::unsaved::SaveOutcome;
+    use figstudio_fig::lazy_save::LazyArchiveMeta;
+
+    // Prompt first while the user's click activation is still fresh.
+    let target = pick_save_target(&default_name, source_handle).await?;
+    if matches!(target, SaveTarget::Cancelled) {
+        return Ok(SaveOutcome::Cancelled);
+    }
+
+    let raw_size = source_file.size();
+    if !raw_size.is_finite() || raw_size < 0.0 || raw_size > MAX_JS_SAFE_INT as f64 {
+        anyhow::bail!("source file size is out of supported range");
+    }
+    let file_len = raw_size as u64;
+
+    // Read only archive metadata (tail, central directory, and 30-byte local headers).
+    let tail_len = archive::TAIL_LEN.min(file_len);
+    let tail = read_range(&source_file, file_len - tail_len, tail_len).await?;
+    let (cd_offset, cd_size) = archive::central_directory(&tail, file_len)?;
+    let cd = read_range(&source_file, cd_offset, cd_size).await?;
+
+    let meta = LazyArchiveMeta::from_directory(file_len, tail, cd_offset, cd)?;
+    let offsets = meta.needed_local_headers(&doc)?;
+    let mut local_headers = Vec::with_capacity(offsets.len());
+    for offset in offsets {
+        let hdr = read_range(&source_file, offset, archive::LOCAL_HEADER_LEN).await?;
+        let arr: [u8; 30] = hdr
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("short local header read"))?;
+        local_headers.push((offset, arr));
+    }
+
+    // Encode `canvas.fig` and build ZIP structure off the main UI thread.
+    let (plan_tx, plan_rx) = channel();
+    rayon::spawn(move || {
+        let res = meta.plan(&doc, &local_headers);
+        let _ = plan_tx.send(res);
+        crate::web_wake::wake();
+    });
+    let parts = await_worker(plan_rx).await??;
+
+    let js_parts = build_js_parts(&source_file, file_len, parts)?;
+    let js = |e: JsValue| anyhow::anyhow!("{}", crate::mcp_wire::js_error_text(&e));
+    match target {
+        SaveTarget::Handle { handle, name } => {
+            write_handle_parts_js(&handle, &js_parts)
+                .await
+                .map_err(js)?;
+            Ok(SaveOutcome::Saved(name))
+        }
+        SaveTarget::Download => {
+            download_blob_parts_js(&default_name, "application/octet-stream", &js_parts)
+                .map_err(js)?;
+            Ok(SaveOutcome::Downloaded(default_name))
+        }
+        SaveTarget::Cancelled => Ok(SaveOutcome::Cancelled),
     }
 }
 

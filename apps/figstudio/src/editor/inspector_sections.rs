@@ -6,7 +6,7 @@ use figstudio_fig::{Guid, Node, Val};
 
 use crate::tab::Tab;
 
-use super::{apply_tab_ops, local_xywh};
+use super::{apply_tab_ops_ui, local_xywh};
 
 pub(super) fn autolayout_text_and_component_controls(
     ui: &mut Ui,
@@ -21,19 +21,25 @@ pub(super) fn autolayout_text_and_component_controls(
             .text("stackMode")
             .unwrap_or("NONE")
             .to_string();
-        let mut gap = f64::from(node_snapshot.data.num("stackSpacing").unwrap_or(8.0));
-        let mut ph = f64::from(
-            node_snapshot
-                .data
-                .num("stackHorizontalPadding")
-                .unwrap_or(12.0),
-        );
-        let mut pv = f64::from(
-            node_snapshot
-                .data
-                .num("stackVerticalPadding")
-                .unwrap_or(12.0),
-        );
+        let orig_gap = node_snapshot.data.num("stackSpacing").map(f64::from);
+        let orig_left = node_snapshot
+            .data
+            .num("stackHorizontalPadding")
+            .map(f64::from);
+        let orig_top = node_snapshot
+            .data
+            .num("stackVerticalPadding")
+            .map(f64::from);
+        let orig_right = node_snapshot.data.num("stackPaddingRight").map(f64::from);
+        let orig_bottom = node_snapshot.data.num("stackPaddingBottom").map(f64::from);
+        let has_any_padding = orig_left.is_some()
+            || orig_top.is_some()
+            || orig_right.is_some()
+            || orig_bottom.is_some();
+
+        let mut gap = orig_gap.unwrap_or(8.0);
+        let mut ph = orig_left.unwrap_or(12.0);
+        let mut pv = orig_top.unwrap_or(12.0);
         ui.horizontal(|ui| {
             ui.label("Auto-Layout");
             for (lbl, mode, aid) in [
@@ -43,17 +49,22 @@ pub(super) fn autolayout_text_and_component_controls(
             ] {
                 let rb = ui.selectable_label(cur_mode == mode, lbl);
                 crate::a11y::author(&rb, aid);
-                if rb.clicked() {
-                    let _ = apply_tab_ops(
+                if rb.clicked() && cur_mode != mode {
+                    let enabling = mode != "NONE";
+                    let _ = apply_tab_ops_ui(
                         tab,
                         &[EditOp::SetAutoLayout {
                             target: sel,
                             mode: mode.into(),
-                            spacing: Some(gap),
+                            spacing: (enabling && orig_gap.is_none()).then_some(gap),
                             counter_spacing: None,
-                            padding: Some([pv, ph, pv, ph]),
-                            primary_sizing: Some("HUG".into()),
-                            counter_sizing: Some("HUG".into()),
+                            padding: (enabling && !has_any_padding).then_some([pv, ph, pv, ph]),
+                            primary_sizing: (enabling
+                                && node_snapshot.data.text("stackPrimarySizing").is_none())
+                            .then(|| "HUG".into()),
+                            counter_sizing: (enabling
+                                && node_snapshot.data.text("stackCounterSizing").is_none())
+                            .then(|| "HUG".into()),
                             primary_align: None,
                             counter_align: None,
                             wrap: None,
@@ -65,30 +76,55 @@ pub(super) fn autolayout_text_and_component_controls(
             }
         });
         if cur_mode != "NONE" {
-            let mut al_changed = false;
+            let mut gap_changed = false;
+            let mut padx_changed = false;
+            let mut pady_changed = false;
             ui.horizontal(|ui| {
                 let rg = ui.add(DragValue::new(&mut gap).prefix("Gap ").speed(1.0));
                 crate::a11y::name_field(&rg, "Auto-layout gap");
                 crate::a11y::author(&rg, "editor.al-gap");
-                al_changed |= rg.changed();
+                gap_changed |= rg.changed();
                 let rpx = ui.add(DragValue::new(&mut ph).prefix("PadX ").speed(1.0));
                 crate::a11y::name_field(&rpx, "Auto-layout horizontal padding");
                 crate::a11y::author(&rpx, "editor.al-padx");
-                al_changed |= rpx.changed();
+                padx_changed |= rpx.changed();
                 let rpy = ui.add(DragValue::new(&mut pv).prefix("PadY ").speed(1.0));
                 crate::a11y::name_field(&rpy, "Auto-layout vertical padding");
                 crate::a11y::author(&rpy, "editor.al-pady");
-                al_changed |= rpy.changed();
+                pady_changed |= rpy.changed();
             });
-            if al_changed {
-                let _ = apply_tab_ops(
+            if gap_changed || padx_changed || pady_changed {
+                let padding = (padx_changed || pady_changed).then(|| {
+                    let cur_left = orig_left.unwrap_or(12.0);
+                    let cur_top = orig_top.unwrap_or(12.0);
+                    let cur_right = orig_right.unwrap_or(cur_left);
+                    let cur_bottom = orig_bottom.unwrap_or(cur_top);
+                    let (left, right) = if padx_changed {
+                        (ph, ph)
+                    } else {
+                        (cur_left, cur_right)
+                    };
+                    let (top, bottom) = if pady_changed {
+                        (pv, pv)
+                    } else {
+                        (cur_top, cur_bottom)
+                    };
+                    [top, right, bottom, left]
+                });
+                let key = match (gap_changed, padx_changed, pady_changed) {
+                    (true, false, false) => format!("gui:inspector:al-gap:{sel}"),
+                    (false, true, false) => format!("gui:inspector:al-padx:{sel}"),
+                    (false, false, true) => format!("gui:inspector:al-pady:{sel}"),
+                    _ => format!("gui:inspector:al:{sel}"),
+                };
+                let _ = apply_tab_ops_ui(
                     tab,
                     &[EditOp::SetAutoLayout {
                         target: sel,
                         mode: cur_mode,
-                        spacing: Some(gap),
+                        spacing: gap_changed.then_some(gap),
                         counter_spacing: None,
-                        padding: Some([pv, ph, pv, ph]),
+                        padding,
                         primary_sizing: None,
                         counter_sizing: None,
                         primary_align: None,
@@ -96,7 +132,7 @@ pub(super) fn autolayout_text_and_component_controls(
                         wrap: None,
                     }],
                     Some("Adjust Auto-Layout"),
-                    Some("gui:inspector:al"),
+                    Some(&key),
                 );
             }
         }
@@ -116,14 +152,15 @@ pub(super) fn autolayout_text_and_component_controls(
         crate::a11y::name_field(&rt, "Text content");
         crate::a11y::author(&rt, "editor.text-content");
         if rt.changed() {
-            let _ = apply_tab_ops(
+            let key = format!("gui:inspector:text:{sel}");
+            let _ = apply_tab_ops_ui(
                 tab,
                 &[EditOp::SetText {
                     target: sel,
                     characters: chars,
                 }],
                 Some("Edit text"),
-                Some("gui:inspector:text"),
+                Some(&key),
             );
         }
         ui.horizontal(|ui| {
@@ -136,7 +173,8 @@ pub(super) fn autolayout_text_and_component_controls(
             crate::a11y::name_field(&rfs, "Font size");
             crate::a11y::author(&rfs, "editor.font-size");
             if rfs.changed() {
-                let _ = apply_tab_ops(
+                let key = format!("gui:inspector:fontsize:{sel}");
+                let _ = apply_tab_ops_ui(
                     tab,
                     &[EditOp::SetTypography {
                         target: sel,
@@ -147,7 +185,7 @@ pub(super) fn autolayout_text_and_component_controls(
                         auto_resize: None,
                     }],
                     Some("Set font size"),
-                    Some("gui:inspector:fontsize"),
+                    Some(&key),
                 );
             }
             for (sty, aid) in [
@@ -157,7 +195,7 @@ pub(super) fn autolayout_text_and_component_controls(
                 let rb = ui.small_button(sty);
                 crate::a11y::author(&rb, aid);
                 if rb.clicked() {
-                    let _ = apply_tab_ops(
+                    let _ = apply_tab_ops_ui(
                         tab,
                         &[EditOp::SetTypography {
                             target: sel,
@@ -181,7 +219,7 @@ pub(super) fn autolayout_text_and_component_controls(
             let rb = ui.small_button("❖ Create Component");
             crate::a11y::author(&rb, "editor.create-component");
             if rb.clicked() {
-                let _ = apply_tab_ops(
+                let _ = apply_tab_ops_ui(
                     tab,
                     &[EditOp::CreateComponent { frame: sel }],
                     Some("Create Component"),
@@ -194,7 +232,7 @@ pub(super) fn autolayout_text_and_component_controls(
             crate::a11y::author(&rb, "editor.instantiate-component");
             if rb.clicked() {
                 let (x, y, w, _) = local_xywh(&node_snapshot.data);
-                if let Ok(ids) = apply_tab_ops(
+                if let Some(ids) = apply_tab_ops_ui(
                     tab,
                     &[EditOp::InstantiateComponent {
                         symbol: sel,
@@ -214,7 +252,7 @@ pub(super) fn autolayout_text_and_component_controls(
             let r_rst = ui.small_button("Reset Overrides");
             crate::a11y::author(&r_rst, "editor.reset-overrides");
             if r_rst.clicked() {
-                let _ = apply_tab_ops(
+                let _ = apply_tab_ops_ui(
                     tab,
                     &[EditOp::ResetInstanceOverride {
                         instance: sel,
@@ -228,7 +266,7 @@ pub(super) fn autolayout_text_and_component_controls(
             let r_det = ui.small_button("Detach Instance");
             crate::a11y::author(&r_det, "editor.detach-instance");
             if r_det.clicked()
-                && let Ok(ids) = apply_tab_ops(
+                && let Some(ids) = apply_tab_ops_ui(
                     tab,
                     &[EditOp::DetachInstance { instance: sel }],
                     Some("Detach Instance"),

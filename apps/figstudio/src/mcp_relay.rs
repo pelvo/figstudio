@@ -304,7 +304,6 @@ pub(crate) fn apply_reveal(
 }
 
 /// Apply a claimed browser-relay document mutation on the UI thread.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) fn apply_mutation(
     live: Option<u32>,
     generation: u32,

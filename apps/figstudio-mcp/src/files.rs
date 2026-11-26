@@ -164,7 +164,7 @@ impl FileRegistry {
                     tokio::task::spawn_blocking(move || {
                         let doc = Document::open_auto_above(&path, lazy_above)?;
                         if let Some(fills) = figstudio_shader::Fills::for_file(&path) {
-                            images.set_shaders(doc.instance, fills);
+                            images.set_shaders(doc.lineage, fills);
                         }
                         Ok::<_, figstudio_fig::FigError>(doc)
                     })
@@ -241,7 +241,6 @@ impl FileRegistry {
         let base_doc = Self::open_entry(file, self.lazy_above).await?;
         let state = file.edit_state.clone();
         let path = file.path.clone();
-        let images = file.rendering.images.clone();
         tokio::task::spawn_blocking(move || {
             let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
             if guard.is_none() {
@@ -259,9 +258,6 @@ impl FileRegistry {
                 &mut overlay.saved_revision,
                 &path,
             )?;
-            if let Some(fills) = figstudio_shader::Fills::for_file(&path) {
-                images.set_shaders(doc_mut.instance, fills);
-            }
             Ok(res)
         })
         .await
@@ -272,10 +268,17 @@ impl FileRegistry {
     pub async fn list(&self) -> Vec<FileInfo> {
         let mut files = Vec::with_capacity(self.files.len());
         for file in self.files.iter() {
+            let pages = file
+                .edit_state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|overlay| overlay.doc.pages.len())
+                .or_else(|| file.document.get().map(|doc| doc.pages.len()));
             files.push(FileInfo {
                 key: file.key.clone(),
                 path: file.path.clone(),
-                pages: file.document.get().map(|doc| doc.pages.len()),
+                pages,
             });
         }
         files

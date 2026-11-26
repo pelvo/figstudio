@@ -16,6 +16,63 @@ pub enum Pending {
     Quit,
 }
 
+/// Document state identity captured when a Save a copy starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SaveSnapshot {
+    pub(crate) tab: u64,
+    pub(crate) state_id: u64,
+    pub(crate) revision: u64,
+}
+
+impl SaveSnapshot {
+    pub(crate) fn of(tab: &crate::tab::Tab) -> Self {
+        Self {
+            tab: tab.id,
+            state_id: tab.history.state_id(),
+            revision: tab.doc.revision,
+        }
+    }
+
+    pub(crate) fn matches(self, tab: &crate::tab::Tab) -> bool {
+        self.tab == tab.id
+            && self.state_id == tab.history.state_id()
+            && self.revision == tab.doc.revision
+    }
+}
+
+/// An asynchronous Save a copy currently running for one tab.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InFlightSave {
+    pub(crate) id: u64,
+    pub(crate) snapshot: SaveSnapshot,
+    pub(crate) close_after: bool,
+}
+
+/// How an existing in-flight async save arbitrates another Save a copy request.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InFlightAction {
+    /// The in-flight save already matches this exact tab snapshot; close intent was merged.
+    AlreadyMatching,
+    /// A different tab or an older snapshot is currently saving.
+    Busy,
+}
+
+/// Outcome of a synchronous or asynchronous Save a copy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SaveOutcome {
+    /// Saved to a chosen file path or File System Access handle.
+    Saved(String),
+    /// Triggered a browser download of the copy.
+    #[cfg(any(target_arch = "wasm32", test))]
+    Downloaded(String),
+    /// User cancelled the save dialog/picker; nothing was written.
+    Cancelled,
+    /// Save failed before committing; existing destination (if any) stays untouched.
+    Err(String),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reply {
     Cancel,
@@ -110,24 +167,37 @@ impl App {
             }
         };
         let mut reply = None;
-        let modal = egui::Modal::new(egui::Id::new("unsaved-edits")).show(ctx, |ui| {
+        let id = egui::Id::new("unsaved-edits");
+        // Strictly above every Order::Foreground overlay (Command Bar, Settings, Welcome,
+        // Space Popover, peek sidebar, tips) so nothing can render over or steal hits from it.
+        let area = egui::Modal::default_area(id).order(egui::Order::Debug);
+        let modal = egui::Modal::new(id).area(area).show(ctx, |ui| {
             ui.set_max_width(360.0);
             ui.heading(title);
             ui.label(body);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let cancel = ui.button("Cancel");
-                if !ui.ctx().memory(|m| m.focused().is_some()) {
-                    cancel.request_focus();
-                }
                 if cancel.clicked() {
                     reply = Some(Reply::Cancel);
                 }
-                if ui.button(discard).clicked() {
+                let discard_btn = ui.button(discard);
+                if discard_btn.clicked() {
                     reply = Some(Reply::Discard);
                 }
-                if matches!(pending, Pending::Tab(_)) && ui.button("Save a copy…").clicked() {
+                let save_btn =
+                    matches!(pending, Pending::Tab(_)).then(|| ui.button("Save a copy…"));
+                if save_btn.as_ref().is_some_and(egui::Response::clicked) {
                     reply = Some(Reply::SaveCopy);
+                }
+                let focused = ui.ctx().memory(|m| m.focused());
+                let inside = focused.is_some_and(|f| {
+                    f == cancel.id
+                        || f == discard_btn.id
+                        || save_btn.as_ref().is_some_and(|b| f == b.id)
+                });
+                if !inside {
+                    cancel.request_focus();
                 }
             });
         });
@@ -166,16 +236,122 @@ impl App {
             (Pending::Tab(id), Reply::SaveCopy) => {
                 if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
                     self.active = i;
-                    // A cancelled or failed save keeps the tab open.
-                    if self.save_copy(ctx)
-                        && let Some(i) = self.tabs.iter().position(|t| t.id == id)
-                    {
-                        self.close_now(i);
-                    }
+                    // Routes both synchronous and asynchronous saves through `finish_save_copy`.
+                    self.save_copy_for(ctx, true);
                 }
             }
         }
         true
+    }
+
+    /// If an async save is already running, upgrades its close intent when it matches
+    /// `snapshot` or reports `Busy` without touching the running save.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn check_in_flight_save(
+        &mut self,
+        snapshot: SaveSnapshot,
+        close_after: bool,
+    ) -> Option<InFlightAction> {
+        let in_flight = self.save_in_flight.as_mut()?;
+        if in_flight.snapshot == snapshot {
+            if close_after {
+                in_flight.close_after = true;
+            }
+            Some(InFlightAction::AlreadyMatching)
+        } else {
+            Some(InFlightAction::Busy)
+        }
+    }
+
+    /// Begins tracking an asynchronous Save a copy for `snapshot`, or reports how an existing
+    /// in-flight save handles the request.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn begin_async_save_copy(
+        &mut self,
+        snapshot: SaveSnapshot,
+        close_after: bool,
+    ) -> Result<u64, InFlightAction> {
+        if let Some(action) = self.check_in_flight_save(snapshot, close_after) {
+            return Err(action);
+        }
+        let id = self.next_save_id;
+        self.next_save_id = self.next_save_id.wrapping_add(1);
+        self.save_in_flight = Some(InFlightSave {
+            id,
+            snapshot,
+            close_after,
+        });
+        Ok(id)
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn handle_in_flight_save_action(
+        &mut self,
+        ctx: &egui::Context,
+        snapshot: SaveSnapshot,
+        close_after: bool,
+        action: InFlightAction,
+    ) {
+        match action {
+            InFlightAction::AlreadyMatching => self.toast(ctx, "Saving copy…", false),
+            InFlightAction::Busy => self.finish_save_copy(
+                ctx,
+                snapshot,
+                close_after,
+                SaveOutcome::Err("a save is already running".into()),
+            ),
+        }
+    }
+
+    /// Completes an asynchronous Save a copy identified by `save_id`, routing its outcome
+    /// through [`App::finish_save_copy`]. Stale completions are ignored.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn complete_async_save_copy(
+        &mut self,
+        ctx: &egui::Context,
+        save_id: u64,
+        outcome: SaveOutcome,
+    ) {
+        let Some(job) = self.save_in_flight.filter(|j| j.id == save_id) else {
+            return;
+        };
+        self.save_in_flight = None;
+        self.finish_save_copy(ctx, job.snapshot, job.close_after, outcome);
+    }
+
+    /// Unified completion path for synchronous and asynchronous Save a copy operations.
+    /// A normal Save a copy stays a copy (`dirty_unsaved` is unchanged and the tab stays open).
+    /// A close-triggered save closes the tab only after a matching save succeeds with no newer
+    /// concurrent edits.
+    pub(crate) fn finish_save_copy(
+        &mut self,
+        ctx: &egui::Context,
+        snapshot: SaveSnapshot,
+        close_after: bool,
+        outcome: SaveOutcome,
+    ) {
+        let succeeded = match outcome {
+            SaveOutcome::Saved(dest) => {
+                self.toast(ctx, format!("Saved copy to {dest}"), false);
+                true
+            }
+            #[cfg(any(target_arch = "wasm32", test))]
+            SaveOutcome::Downloaded(name) => {
+                self.toast(ctx, format!("Downloaded {name}"), false);
+                true
+            }
+            SaveOutcome::Cancelled => false,
+            SaveOutcome::Err(err) => {
+                self.toast(ctx, format!("Could not save copy: {err}"), true);
+                false
+            }
+        };
+        if succeeded
+            && close_after
+            && let Some(i) = self.tabs.iter().position(|t| snapshot.matches(t))
+        {
+            self.close_now(i);
+        }
     }
 }
 

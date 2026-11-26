@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use crate::clipboard::{decode_clipboard_html, paste_kiwi_into};
 use crate::edit::autolayout::append_auto_layout_patches;
+use crate::edit::geometry::sync_derived_caches_in_txn;
 use crate::edit::styles_vars::import_image_bytes;
 use crate::edit::{Dirty, GuidAlloc, History, Txn};
 use crate::{Document, FigError, Guid};
@@ -55,6 +56,7 @@ pub fn execute_edit_ops(
             &mut touched_for_layout,
         )?;
         if !step_txn.is_empty() {
+            sync_derived_caches_in_txn(&staged, &mut step_txn);
             staged.apply_txn(&step_txn)?;
             merge_step_into_batch(&mut batch_txn, step_txn);
         }
@@ -67,6 +69,7 @@ pub fn execute_edit_ops(
         let mut al_txn = Txn::new("autolayout");
         al_adjustments += append_auto_layout_patches(&staged, Some(root), &mut al_txn);
         if !al_txn.is_empty() {
+            sync_derived_caches_in_txn(&staged, &mut al_txn);
             staged.apply_txn(&al_txn)?;
             merge_step_into_batch(&mut batch_txn, al_txn);
         }
@@ -159,6 +162,7 @@ pub fn execute_paste_html(
         let mut al_txn = Txn::new("Paste Auto-Layout");
         append_auto_layout_patches(&staged, Some(al_root), &mut al_txn);
         if !al_txn.is_empty() {
+            sync_derived_caches_in_txn(&staged, &mut al_txn);
             staged.apply_txn(&al_txn)?;
             merge_step_into_batch(&mut batch_txn, al_txn);
         }
@@ -227,6 +231,7 @@ pub(super) fn merge_step_into_batch(batch: &mut Txn, step: Txn) {
 fn clone_document_shell(doc: &Document) -> Document {
     Document {
         instance: doc.instance,
+        lineage: doc.lineage,
         image_instance: doc.image_instance,
         revision: doc.revision,
         prelude: doc.prelude.clone(),

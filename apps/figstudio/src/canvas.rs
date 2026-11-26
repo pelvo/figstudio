@@ -143,7 +143,9 @@ pub fn show(
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     crate::a11y::describe_canvas(&response, tab);
-    crate::canvas_a11y::take_presses(ui, tab);
+    if !inert {
+        crate::canvas_a11y::take_presses(ui, tab);
+    }
     let origin = rect.min;
     tab.canvas_rect = Some(rect);
     if tab.fit_pending && rect.width() > 10.0 {
@@ -156,31 +158,34 @@ pub fn show(
         fit_node(tab, rect, id);
     }
 
-    // Input: pan.
-    let panning = tool == Tool::Hand || space_held || ui.input(|i| i.pointer.middle_down());
+    // Input: pan and wheel/pinch zoom.
+    let panning =
+        !inert && (tool == Tool::Hand || space_held || ui.input(|i| i.pointer.middle_down()));
     let mut direct = false;
-    if response.dragged() && (panning || response.dragged_by(egui::PointerButton::Middle)) {
-        tab.view.pan += response.drag_delta();
-        direct = true;
-    }
-    if response.hovered() {
-        let (scroll, zoom_delta, modifiers, pointer) = ui.input(|i| {
-            (
-                i.smooth_scroll_delta,
-                i.zoom_delta(),
-                i.modifiers,
-                i.pointer.hover_pos(),
-            )
-        });
-        let anchor = pointer.unwrap_or(rect.center());
-        direct |= zoom_delta != 1.0 || scroll != Vec2::ZERO;
-        if zoom_delta != 1.0 {
-            tab.view.zoom_at(origin, anchor, zoom_delta);
-        } else if scroll != Vec2::ZERO {
-            if (modifiers.command || modifiers.ctrl) != scroll_zooms {
-                tab.view.zoom_at(origin, anchor, (scroll.y / 200.0).exp());
-            } else {
-                tab.view.pan += scroll;
+    if !inert {
+        if response.dragged() && (panning || response.dragged_by(egui::PointerButton::Middle)) {
+            tab.view.pan += response.drag_delta();
+            direct = true;
+        }
+        if response.hovered() {
+            let (scroll, zoom_delta, modifiers, pointer) = ui.input(|i| {
+                (
+                    i.smooth_scroll_delta,
+                    i.zoom_delta(),
+                    i.modifiers,
+                    i.pointer.hover_pos(),
+                )
+            });
+            let anchor = pointer.unwrap_or(rect.center());
+            direct |= zoom_delta != 1.0 || scroll != Vec2::ZERO;
+            if zoom_delta != 1.0 {
+                tab.view.zoom_at(origin, anchor, zoom_delta);
+            } else if scroll != Vec2::ZERO {
+                if (modifiers.command || modifiers.ctrl) != scroll_zooms {
+                    tab.view.zoom_at(origin, anchor, (scroll.y / 200.0).exp());
+                } else {
+                    tab.view.pan += scroll;
+                }
             }
         }
     }
@@ -193,93 +198,108 @@ pub fn show(
     tab.view = shown;
     tab.shown = shown;
 
-    // Input: selection / zoom tool.
-    let cursor_page = response.hover_pos().map(|p| tab.view.to_page(origin, p));
-    let needs_chain = (response.hovered() && !response.dragged())
-        || response.clicked()
-        || response.double_clicked()
-        || response.secondary_clicked();
-    let chain = cursor_page
-        .filter(|_| needs_chain)
-        .map_or_else(Vec::new, |p| {
-            hit_chain(
-                &tab.doc,
-                tab.page,
-                Point::new(f64::from(p.x), f64::from(p.y)),
-            )
-        });
-    if response.hovered() && !response.dragged() {
-        tab.hover = crate::pick::click(
-            &tab.doc,
-            &chain,
-            tab.selection,
-            ui.input(|i| i.modifiers.command),
-        );
-    } else if !response.hovered() {
+    // Input: gizmos, selection, zoom tool, text selection, marquee and context menus.
+    let mut active_tool = tool;
+    let (cursor_page, point, deep, gizmo) = if inert {
+        crate::editor::end_edit_drag(tab);
+        tab.marquee.cancel_drag();
         tab.hover = None;
-    }
-    let point = cursor_page.map(|p| Point::new(f64::from(p.x), f64::from(p.y)));
-    let deep = ui.input(|i| i.modifiers.command);
-    let mut inner_changed = false;
-    if response.clicked() && !panning {
-        match tool {
-            Tool::Select => {
-                inner_changed =
-                    crate::canvas_pick::click(tab, &chain, point, deep, response.double_clicked());
-            }
-            Tool::Zoom => {
-                if let Some(p) = response.interact_pointer_pos() {
-                    let alt = ui.input(|i| i.modifiers.alt);
-                    let factor = if alt { 0.5 } else { 2.0 };
-                    // The point clicked (as drawn) stays under the pointer when it settles.
-                    let page = shown.to_page(origin, p);
-                    target.zoom =
-                        (target.zoom * factor).clamp(crate::tab::MIN_ZOOM, crate::tab::MAX_ZOOM);
-                    target.pan = (p - origin) - page.to_vec2() * target.zoom;
-                }
-            }
-            Tool::Hand
-            | Tool::Frame
-            | Tool::Section
-            | Tool::Rectangle
-            | Tool::Ellipse
-            | Tool::Line
-            | Tool::Text => {}
+        (None, None, false, crate::editor::GizmoFrame::default())
+    } else {
+        let cursor_page = response.hover_pos().map(|p| tab.view.to_page(origin, p));
+        let needs_chain = (response.hovered() && !response.dragged())
+            || response.clicked()
+            || response.double_clicked()
+            || response.secondary_clicked();
+        let chain = cursor_page
+            .filter(|_| needs_chain)
+            .map_or_else(Vec::new, |p| {
+                hit_chain(
+                    &tab.doc,
+                    tab.page,
+                    Point::new(f64::from(p.x), f64::from(p.y)),
+                )
+            });
+        if response.hovered() && !response.dragged() {
+            tab.hover = crate::pick::click(
+                &tab.doc,
+                &chain,
+                tab.selection,
+                ui.input(|i| i.modifiers.command),
+            );
+        } else if !response.hovered() {
+            tab.hover = None;
         }
-    }
-    // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
-    // canvas nothing is selected, so no menu opens. Any tool, as the spec says.
-    if response.secondary_clicked() && !marquee::right_click(&response, tab, origin) {
-        crate::canvas_pick::click(tab, &chain, point, deep, false);
-    }
-    let gizmo_active = tool.is_creation()
-        || matches!(
-            tab.edit_drag,
-            Some(
-                crate::editor::CanvasDrag::Resize { .. }
-                    | crate::editor::CanvasDrag::Move { moved: true, .. }
-            )
+        let point = cursor_page.map(|p| Point::new(f64::from(p.x), f64::from(p.y)));
+        let deep = ui.input(|i| i.modifiers.command);
+        let gizmo =
+            crate::editor::canvas_gizmos_input(ui, &response, rect, tab, &mut active_tool, panning);
+        if active_tool != tool && active_tool == Tool::Select {
+            tab.reset_tool_to_select = true;
+        }
+        let mut inner_changed = false;
+        if response.clicked() && !panning && !gizmo.consumed_click {
+            match tool {
+                Tool::Select => {
+                    inner_changed = crate::canvas_pick::click(
+                        tab,
+                        &chain,
+                        point,
+                        deep,
+                        response.double_clicked(),
+                    );
+                }
+                Tool::Zoom => {
+                    if let Some(p) = response.interact_pointer_pos() {
+                        let alt = ui.input(|i| i.modifiers.alt);
+                        let factor = if alt { 0.5 } else { 2.0 };
+                        // The point clicked (as drawn) stays under the pointer when it settles.
+                        let page = shown.to_page(origin, p);
+                        target.zoom = (target.zoom * factor)
+                            .clamp(crate::tab::MIN_ZOOM, crate::tab::MAX_ZOOM);
+                        target.pan = (p - origin) - page.to_vec2() * target.zoom;
+                    }
+                }
+                Tool::Hand
+                | Tool::Frame
+                | Tool::Section
+                | Tool::Rectangle
+                | Tool::Ellipse
+                | Tool::Line
+                | Tool::Text => {}
+            }
+        }
+        // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
+        // canvas nothing is selected, so no menu opens. Any tool, as the spec says.
+        if response.secondary_clicked() && !marquee::right_click(&response, tab, origin) {
+            crate::canvas_pick::click(tab, &chain, point, deep, false);
+        }
+        crate::canvas_text::input(
+            &response,
+            tab,
+            origin,
+            tool == Tool::Select && !panning && !gizmo.blocks_text,
+            !inner_changed,
         );
-    crate::canvas_text::input(
-        &response,
-        tab,
-        origin,
-        tool == Tool::Select && !panning && !gizmo_active,
-        !inner_changed,
-    );
-    marquee::update(
-        ui,
-        &response,
-        tab,
-        origin,
-        tool == Tool::Select && !panning && tab.text_select.is_none() && !gizmo_active,
-    );
-    if tab.marquee.menu {
-        marquee::context(&response, tab);
-    } else if let Some(id) = tab.selection {
-        let mut picked = None;
-        copy_menu::on_context(&response, tab, id, &mut picked);
-        tab.pending_copy = picked.or(tab.pending_copy.take());
+        marquee::update(
+            ui,
+            &response,
+            tab,
+            origin,
+            tool == Tool::Select && !panning && tab.text_select.is_none() && !gizmo.blocks_marquee,
+        );
+        (cursor_page, point, deep, gizmo)
+    };
+    // Keep the canvas's own context menu drawn while open (`Popup::is_any_open` sets `inert`
+    // so clicks outside the menu do not leak onto the canvas).
+    if !inert || egui::Popup::is_any_open(ui.ctx()) {
+        if tab.marquee.menu {
+            marquee::context(&response, tab);
+        } else if let Some(id) = tab.selection {
+            let mut picked = None;
+            copy_menu::on_context(&response, tab, id, &mut picked);
+            tab.pending_copy = picked.or(tab.pending_copy.take());
+        }
     }
 
     // Rendering: cached tiles for the view on screen; missing tiles are requested for the
@@ -349,25 +369,14 @@ pub fn show(
         }
     }
     crate::canvas_text::overlay(&painter, tab, origin);
-    let mut active_tool = tool;
-    let gizmo_cursor = if inert {
-        if tab.edit_drag.take().is_some() {
-            tab.history.seal_coalesce();
-        }
-        None
-    } else {
-        crate::editor::canvas_gizmos_and_input(ui, &painter, rect, tab, &mut active_tool, panning)
-    };
-    if active_tool != tool && active_tool == Tool::Select {
-        tab.reset_tool_to_select = true;
-    }
+    crate::editor::canvas_gizmos_paint(&painter, rect, tab, active_tool);
     marquee::paint(&painter, tab, origin);
     crate::icons::focus_ring(ui, &response, rect, radius as u8);
     crate::canvas_a11y::layers(ui, &response, tab, origin);
     crate::shader_code::markers(ui, &painter, tab, |id| corners(tab, origin, id));
     tab.view = target;
 
-    let cursor = if let Some(gc) = gizmo_cursor {
+    let cursor = if let Some(gc) = gizmo.cursor {
         gc
     } else {
         match tool {
@@ -391,7 +400,7 @@ pub fn show(
             Tool::Select => egui::CursorIcon::Default,
         }
     };
-    if response.hovered() {
+    if !inert && response.hovered() {
         ui.ctx().set_cursor_icon(if response.dragged() && panning {
             egui::CursorIcon::Grabbing
         } else {

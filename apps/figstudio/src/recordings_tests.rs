@@ -124,7 +124,7 @@ fn a_new_level_page_or_more_images_record_again() {
         recordings.walks, 4,
         "the recorded area has a ring beyond the batch"
     );
-    recordings.forget(doc.instance);
+    recordings.forget(doc.lineage);
     recordings.draw(&mut r, &job(&doc, &a, 5), &a[0]);
     assert_eq!(recordings.walks, 5, "forgotten with its document");
 }
@@ -235,4 +235,51 @@ fn a_huge_gradient_falls_back_counted() {
         let frame = recordings.draw(&mut renderer(), &job(d, &keys, 0), &key);
         assert_eq!(frame.stats.unrecorded_tiles, counted);
     }
+}
+
+#[test]
+fn obsolete_revision_recordings_are_dropped_when_a_new_revision_records() {
+    let first = structure();
+    let first_keys = tiles_of(&first, 0);
+    let mut recordings = Recordings::default();
+    let mut r = renderer();
+    recordings.draw(&mut r, &job(&first, &first_keys, 0), &first_keys[0]);
+    assert_eq!(recordings.entries.len(), 1);
+
+    // Editing the document keeps its lineage and advances its revision (`instance`).
+    let mut edited = (*first).clone();
+    let nodes = edited.nodes.clone();
+    edited.set_nodes(nodes).unwrap();
+    assert_eq!(edited.lineage, first.lineage);
+    assert_ne!(edited.instance, first.instance);
+    let edited = Arc::new(edited);
+    let edited_keys = tiles_of(&edited, 0);
+
+    recordings.draw(&mut r, &job(&edited, &edited_keys, 0), &edited_keys[0]);
+    assert_eq!(
+        recordings.entries.len(),
+        1,
+        "recording the new revision kept the obsolete revision's entry"
+    );
+    assert_eq!(recordings.entries[0].doc, edited.instance);
+
+    // A Preview layer of the same lineage uses a distinct tile key (`state_doc`) and is also
+    // dropped when the lineage is forgotten (close or shader change), while other lineages stay.
+    let preview_key = Key {
+        doc: edited.instance | (1 << 63),
+        ..edited_keys[0]
+    };
+    recordings.draw(&mut r, &job(&edited, &[preview_key], 0), &preview_key);
+    let other = structure();
+    let other_keys = tiles_of(&other, 0);
+    recordings.draw(&mut r, &job(&other, &other_keys, 0), &other_keys[0]);
+    assert_eq!(recordings.entries.len(), 3);
+
+    recordings.forget(edited.lineage);
+    assert_eq!(
+        recordings.entries.len(),
+        1,
+        "forget must drop both revision and Preview recordings of the lineage"
+    );
+    assert_eq!(recordings.entries[0].lineage, other.lineage);
 }

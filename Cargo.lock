@@ -2239,6 +2239,7 @@ dependencies = [
  "hex",
  "html-escape",
  "kiwi-schema",
+ "rustix 1.1.5",
  "ruzstd",
  "same-file",
  "serde",

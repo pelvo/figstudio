@@ -6,7 +6,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::edit::geometry::{matrix_2x3, parse_hex_solid_paint};
+use crate::edit::geometry::{matrix_2x3, sync_node_derived_caches};
+use crate::edit::styles_vars::hex_paint;
 use crate::edit::{Txn, fractional};
 use crate::{Document, FigError, Guid, Obj, Val, intern};
 
@@ -24,7 +25,10 @@ pub struct TextStyleRunPatch {
 }
 
 impl TextStyleRunPatch {
-    pub fn apply_to_override_obj(&self, obj: &mut Obj) {
+    /// Writes the set fields onto a `styleOverrideTable` entry. An invalid `fill_hex` is an
+    /// error and leaves `obj` untouched.
+    pub fn apply_to_override_obj(&self, obj: &mut Obj) -> Result<(), FigError> {
+        let fill = self.fill_hex.as_deref().map(hex_paint).transpose()?;
         if self.font_family.is_some() || self.font_style.is_some() {
             let fam = self
                 .font_family
@@ -56,9 +60,7 @@ impl TextStyleRunPatch {
         if let Some(sz) = self.font_size {
             obj.insert("fontSize", Val::Float(sz.max(1.0)));
         }
-        if let Some(ref hex) = self.fill_hex
-            && let Some(paint) = parse_hex_solid_paint(hex)
-        {
+        if let Some(paint) = fill {
             obj.insert("fillPaints", Val::Arr(vec![paint]));
         }
         if let Some(ref dec) = self.text_decoration {
@@ -85,6 +87,7 @@ impl TextStyleRunPatch {
                 ])),
             );
         }
+        Ok(())
     }
 }
 
@@ -192,20 +195,43 @@ pub fn create_text_node(
     Ok(new_id)
 }
 
-/// Sets `characters` in a `textData` object, keeping its other fields but dropping the
-/// per-character runs and glyph caches that indexed the old text.
-pub(crate) fn replace_characters(td: &mut Obj, new_text: &str) {
-    td.insert("characters", Val::Str(new_text.into()));
-    for stale in [
-        "characterStyleIDs",
-        "styleOverrideTable",
-        "glyphs",
-        "baselines",
-        "lines",
-        "derivedLines",
-    ] {
-        td.remove(stale);
+/// Sets `characters` in a `textData` object, keeping its other fields and the style runs
+/// outside the changed span (only the span between the common prefix and suffix of the old
+/// and new text is replaced, as [`splice_text_utf16`] does) and dropping the glyph caches
+/// that indexed the old text.
+pub(crate) fn replace_characters(td: &mut Obj, new_text: &str) -> Result<(), FigError> {
+    let old = td.get("characters").and_then(Val::as_str).unwrap_or("");
+    let (start, delete_len, insert) = changed_span(old, new_text);
+    let spliced = splice_text_utf16(&Val::Obj(td.clone()), start, delete_len, insert)?;
+    if let Val::Obj(mut next) = spliced {
+        next.remove("lines");
+        *td = next;
     }
+    Ok(())
+}
+
+/// `(utf16_start, utf16_delete_len, insert)` turning `old` into `new`: everything between the
+/// longest common prefix and the longest common suffix (cut on `char` boundaries).
+fn changed_span<'n>(old: &str, new: &'n str) -> (usize, usize, &'n str) {
+    let prefix = old
+        .chars()
+        .zip(new.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum::<usize>();
+    let suffix = old[prefix..]
+        .chars()
+        .rev()
+        .zip(new[prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum::<usize>();
+    let utf16 = |s: &str| s.encode_utf16().count();
+    (
+        utf16(&old[..prefix]),
+        utf16(&old[prefix..old.len() - suffix]),
+        &new[prefix..new.len() - suffix],
+    )
 }
 
 /// Replaces the full text of `node_id`, dropping stale `derivedTextData` and resizing the box
@@ -233,7 +259,7 @@ pub fn set_text_plain(
         .unwrap_or_else(|| Val::Obj(Obj::new()))
         .into_owned();
     if let Val::Obj(ref mut tdo) = td {
-        replace_characters(tdo, new_text);
+        replace_characters(tdo, new_text)?;
     }
     set.insert("textData", td);
     if node.data.flag("autoRename") == Some(true) {
@@ -249,11 +275,15 @@ pub fn set_text_plain(
         }
     }
     update_auto_resize_box(&node.data, new_text, &mut set);
-    let unset = if node.data.get("derivedTextData").is_some() {
-        vec!["derivedTextData".to_string()]
-    } else {
-        Vec::new()
-    };
+    let mut unset = Vec::new();
+    sync_node_derived_caches(
+        doc,
+        &node.kind,
+        &node.data,
+        &mut set,
+        &mut unset,
+        &mut txn.add_blobs,
+    );
     txn.modify(node_id, set, unset);
     Ok(())
 }
@@ -307,6 +337,9 @@ pub fn apply_text_range_style(
     utf16_end: usize,
     patch: &TextStyleRunPatch,
 ) -> Result<Val, FigError> {
+    if let Some(hex) = &patch.fill_hex {
+        hex_paint(hex)?;
+    }
     let chars_str = text_data.text("characters").unwrap_or("");
     let u16_len = chars_str.encode_utf16().count();
     if utf16_start > utf16_end || utf16_end > u16_len {
@@ -349,7 +382,7 @@ pub fn apply_text_range_style(
             // 0 is the unstyled sentinel, so a wrap would silently drop the style.
             next_id = next_id.checked_add(1).ok_or_else(overflow)?;
             obj.insert("styleID", Val::Int(i64::from(next_id)));
-            patch.apply_to_override_obj(&mut obj);
+            patch.apply_to_override_obj(&mut obj)?;
             table.push(Val::Obj(obj));
             next_id
         };
@@ -374,11 +407,15 @@ pub fn commit_text_data(
     let mut set = Obj::new();
     set.insert("textData", new_text_data);
     update_auto_resize_box(&node.data, &chars, &mut set);
-    let unset = if node.data.get("derivedTextData").is_some() {
-        vec!["derivedTextData".to_string()]
-    } else {
-        Vec::new()
-    };
+    let mut unset = Vec::new();
+    sync_node_derived_caches(
+        doc,
+        &node.kind,
+        &node.data,
+        &mut set,
+        &mut unset,
+        &mut txn.add_blobs,
+    );
     txn.modify(node_id, set, unset);
     Ok(())
 }

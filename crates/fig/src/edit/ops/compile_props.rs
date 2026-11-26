@@ -1,6 +1,5 @@
 //! Appearance, Auto-Layout, constraint, and typography [`EditOp`] compilation.
 
-use crate::edit::geometry::{encode_path_commands, make_path_entry, rebuild_shape_geometry};
 use crate::edit::styles_vars::{blur_effect, hex_paint, image_paint, shadow_effect};
 use crate::edit::text_runs::{
     apply_text_range_style, commit_text_data, set_text_plain, splice_text_utf16,
@@ -26,7 +25,7 @@ pub(super) fn compile_prop_op(
             radii,
             smoothing,
         } => {
-            let node = ensure_exists(doc, *target)?;
+            ensure_exists(doc, *target)?;
             let uniform = (radii[0] - radii[1]).abs() < 1e-4
                 && (radii[1] - radii[2]).abs() < 1e-4
                 && (radii[2] - radii[3]).abs() < 1e-4;
@@ -51,20 +50,6 @@ pub(super) fn compile_prop_op(
             );
             if let Some(sm) = smoothing {
                 set.insert("cornerSmoothing", Val::Float(f64::from(sm.clamp(0.0, 1.0))));
-            }
-            let mut preview = node.data.clone().into_owned();
-            for (k, v) in set.iter() {
-                preview.set(k, v.clone());
-            }
-            if node.data.get("fillGeometry").is_some()
-                && let Some(cmds) = rebuild_shape_geometry(&node.kind, &preview)
-            {
-                let blob_idx = doc.blobs.len() + txn.add_blobs.len();
-                txn.add_blobs.push(encode_path_commands(&cmds));
-                set.insert(
-                    "fillGeometry",
-                    Val::Arr(vec![make_path_entry(blob_idx, false)]),
-                );
             }
             txn.modify(*target, set, Vec::new());
         }
@@ -196,12 +181,11 @@ pub(super) fn compile_prop_op(
                 Some(h) => set.insert("fillPaints", Val::Arr(vec![hex_paint(h)?])),
                 None => set.insert("fillPaints", Val::Arr(Vec::new())),
             };
-            if node.data.get("styleIdForFill").is_some() {
-                unset.push("styleIdForFill".into());
-            }
-            if node.data.get("inheritFillStyleID").is_some() {
-                unset.push("inheritFillStyleID".into());
-            }
+            unset_present(
+                &node.data,
+                &["styleIdForFill", "inheritFillStyleID"],
+                &mut unset,
+            );
             txn.modify(*target, set, unset);
         }
         EditOp::SetImageFill {
@@ -210,9 +194,17 @@ pub(super) fn compile_prop_op(
             scale_mode,
             opacity,
         } => {
-            ensure_exists(doc, *target)?;
+            let node = ensure_exists(doc, *target)?;
             let paint = image_paint(sha1_hex, scale_mode, *opacity)?;
-            txn.set_field(*target, "fillPaints", Val::Arr(vec![paint]));
+            let mut set = Obj::with_capacity(1);
+            set.insert("fillPaints", Val::Arr(vec![paint]));
+            let mut unset = Vec::new();
+            unset_present(
+                &node.data,
+                &["styleIdForFill", "inheritFillStyleID"],
+                &mut unset,
+            );
+            txn.modify(*target, set, unset);
         }
         EditOp::SetStroke {
             target,
@@ -220,8 +212,9 @@ pub(super) fn compile_prop_op(
             weight,
             align,
         } => {
-            ensure_exists(doc, *target)?;
+            let node = ensure_exists(doc, *target)?;
             let mut set = Obj::new();
+            let mut unset = Vec::new();
             match hex {
                 Some(h) => {
                     set.insert("strokePaints", Val::Arr(vec![hex_paint(h)?]));
@@ -236,7 +229,32 @@ pub(super) fn compile_prop_op(
             if let Some(a) = align {
                 set.insert("strokeAlign", Val::Enum(intern(a)));
             }
-            txn.modify(*target, set, Vec::new());
+            unset_present(
+                &node.data,
+                &[
+                    "styleIdForStrokeFill",
+                    "inheritFillStyleIDForStroke",
+                    "inheritStrokeStyleID",
+                ],
+                &mut unset,
+            );
+            if weight.is_some() || hex.is_none() {
+                unset_present(
+                    &node.data,
+                    &[
+                        "borderStrokeWeightsIndependent",
+                        "borderTopWeight",
+                        "borderRightWeight",
+                        "borderBottomWeight",
+                        "borderLeftWeight",
+                    ],
+                    &mut unset,
+                );
+            }
+            txn.modify(*target, set, unset);
+            if node.data.flag("bordersTakeSpace") == Some(true) {
+                layout_touched.push(*target);
+            }
         }
         EditOp::SetEffects {
             target,
@@ -244,7 +262,7 @@ pub(super) fn compile_prop_op(
             blur_radius,
             background_blur,
         } => {
-            ensure_exists(doc, *target)?;
+            let node = ensure_exists(doc, *target)?;
             let mut effs = Vec::new();
             if let Some(sh) = drop_shadow {
                 effs.push(shadow_effect(
@@ -258,7 +276,15 @@ pub(super) fn compile_prop_op(
             if let Some(r) = blur_radius {
                 effs.push(blur_effect(*background_blur, *r));
             }
-            txn.set_field(*target, "effects", Val::Arr(effs));
+            let mut set = Obj::with_capacity(1);
+            set.insert("effects", Val::Arr(effs));
+            let mut unset = Vec::new();
+            unset_present(
+                &node.data,
+                &["styleIdForEffect", "inheritEffectStyleID"],
+                &mut unset,
+            );
+            txn.modify(*target, set, unset);
         }
         EditOp::SetText { target, characters } => {
             set_text_plain(doc, txn, *target, characters)?;
@@ -343,12 +369,7 @@ pub(super) fn compile_prop_op(
             if let Some(ar) = auto_resize {
                 set.insert("textAutoResize", Val::Enum(intern(ar)));
             }
-            let unset = if node.data.get("derivedTextData").is_some() {
-                vec!["derivedTextData".to_string()]
-            } else {
-                Vec::new()
-            };
-            txn.modify(*target, set, unset);
+            txn.modify(*target, set, Vec::new());
             layout_touched.push(*target);
         }
         other => {
@@ -356,4 +377,12 @@ pub(super) fn compile_prop_op(
         }
     }
     Ok(())
+}
+
+fn unset_present(data: &Val, keys: &[&str], out: &mut Vec<String>) {
+    for &key in keys {
+        if data.get(key).is_some() {
+            out.push(key.to_string());
+        }
+    }
 }

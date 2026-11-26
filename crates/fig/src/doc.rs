@@ -132,6 +132,10 @@ fn next_instance() -> u64 {
 pub struct Document {
     /// Unique per opened document/node-tree revision in this process.
     pub instance: u64,
+    /// Unique per opened document in this process and kept by every edit, undo and clone.
+    /// What a document registers in a shared cache (decoded images, its shader host) is
+    /// keyed by it, so edits do not strand it and closing the document can free all of it.
+    pub lineage: u64,
     /// Separate cache key for decoded images: bumped only when `images` change so node edits
     /// do not evict decoded bitmaps on large documents.
     pub image_instance: u64,
@@ -487,6 +491,7 @@ impl Document {
         let inst = next_instance();
         let mut doc = Document {
             instance: inst,
+            lineage: inst,
             image_instance: inst,
             revision: 0,
             prelude,

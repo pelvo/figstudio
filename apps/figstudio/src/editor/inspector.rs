@@ -8,7 +8,7 @@ use crate::tab::Tab;
 use crate::theme;
 
 use super::inspector_sections::autolayout_text_and_component_controls;
-use super::{apply_tab_ops, local_xywh, redo_tab, undo_tab};
+use super::{apply_tab_ops_ui, local_xywh, record_tab_error, redo_tab, undo_tab};
 
 /// Renders Undo / Redo buttons when the tab has edit history.
 pub fn properties_history_bar(ui: &mut Ui, tab: &mut Tab) {
@@ -22,12 +22,14 @@ pub fn properties_history_bar(ui: &mut Ui, tab: &mut Tab) {
         let u_btn = ui.add_enabled(can_u, egui::Button::new("↶ Undo"));
         crate::a11y::author(&u_btn, "editor.undo");
         if u_btn.clicked() {
-            let _ = undo_tab(tab);
+            let res = undo_tab(tab);
+            let _ = record_tab_error(tab, res);
         }
         let r_btn = ui.add_enabled(can_r, egui::Button::new("↷ Redo"));
         crate::a11y::author(&r_btn, "editor.redo");
         if r_btn.clicked() {
-            let _ = redo_tab(tab);
+            let res = redo_tab(tab);
+            let _ = record_tab_error(tab, res);
         }
         if tab.dirty_unsaved {
             ui.colored_label(p.text_dim, format!("• rev {}", tab.doc.revision));
@@ -38,19 +40,26 @@ pub fn properties_history_bar(ui: &mut Ui, tab: &mut Tab) {
 /// Renders the interactive Edit controls section inside the right Properties panel.
 pub fn properties_edit_controls(ui: &mut Ui, tab: &mut Tab) {
     // One undo step per edit session: when the focused field or the dragged control changes
-    // (to another one or to none), or the selection does, the last coalesced entry is sealed.
-    let session = ui
-        .ctx()
-        .memory(|m| m.focused())
-        .or_else(|| ui.ctx().dragged_id())
-        .map(|id| id.with(tab.selection));
-    if tab.edit_session != session {
-        tab.history.seal_coalesce();
-        tab.edit_session = session;
+    // (to another one or to none), or the selection/inner path does, the last coalesced entry is
+    // sealed. While a canvas drag is active, `canvas_gizmos` owns sealing it on release so the
+    // Properties panel (drawn before the canvas) does not split the drag on its release frame.
+    if tab.edit_drag.is_none() {
+        let inner_keys = tab
+            .inner
+            .as_ref()
+            .map(figstudio_fig::resolve::InstancePath::keys);
+        let focused = ui.ctx().memory(|m| m.focused());
+        let dragged = ui.ctx().dragged_id();
+        let session = (focused.is_some() || dragged.is_some())
+            .then(|| egui::Id::new((focused, dragged, tab.id, tab.selection, inner_keys)));
+        if tab.edit_session != session {
+            tab.history.seal_coalesce();
+            tab.edit_session = session;
+        }
     }
     properties_history_bar(ui, tab);
 
-    // Inner-instance text override quick editor when an inner node inside an INSTANCE is selected!
+    // Inner-instance text override quick editor when an inner node inside an INSTANCE is selected.
     if let (Some(inst_id), Some(inner)) = (tab.selection, tab.inner.clone())
         && let Ok(resolved) = figstudio_fig::resolve::resolve_path(&tab.doc, &inner)
         && let Some(chars) = resolved
@@ -65,12 +74,18 @@ pub fn properties_edit_controls(ui: &mut Ui, tab: &mut Tab) {
                 .strong()
                 .size(11.5),
         );
-        let resp = ui.text_edit_multiline(&mut text_buf);
+        let resp = ui.add(egui::TextEdit::multiline(&mut text_buf).id_salt((
+            "inst-text",
+            tab.id,
+            inst_id,
+            inner.keys(),
+        )));
         crate::a11y::name_field(&resp, "Instance text override");
         crate::a11y::author(&resp, "editor.instance-text");
         if resp.changed() {
             let ov_path = inner.keys().to_vec();
-            let _ = apply_tab_ops(
+            let key = format!("gui:inst:text:{inst_id}:{ov_path:?}");
+            let _ = apply_tab_ops_ui(
                 tab,
                 &[EditOp::SetInstanceOverride {
                     instance: inst_id,
@@ -81,7 +96,7 @@ pub fn properties_edit_controls(ui: &mut Ui, tab: &mut Tab) {
                     opacity: None,
                 }],
                 Some("Edit instance text"),
-                Some("gui:inst:text"),
+                Some(&key),
             );
         }
         return;
@@ -100,253 +115,286 @@ pub fn properties_edit_controls(ui: &mut Ui, tab: &mut Tab) {
     let hdr = egui::CollapsingHeader::new(egui::RichText::new("Edit Layer").strong().size(12.0))
         .default_open(false)
         .show(ui, |ui| {
-            // 1. Name, Visibility, Duplicate, Delete
-            let mut name_buf = node_snapshot.name.clone();
-            ui.horizontal(|ui| {
-                ui.label("Name");
-                let resp = ui.text_edit_singleline(&mut name_buf);
-                crate::a11y::name_field(&resp, "Layer name");
-                crate::a11y::author(&resp, "editor.layer-name");
-                if resp.changed() {
-                    let _ = apply_tab_ops(
-                        tab,
-                        &[EditOp::Rename {
-                            target: sel,
-                            name: name_buf,
-                        }],
-                        Some("Rename layer"),
-                        Some(&format!("gui:rename:{sel}")),
-                    );
-                }
-            });
+            ui.push_id((tab.id, sel), |ui| {
+                // 1. Name, Visibility, Duplicate, Delete
+                let mut name_buf = node_snapshot.name.clone();
+                ui.horizontal(|ui| {
+                    ui.label("Name");
+                    let resp = ui.text_edit_singleline(&mut name_buf);
+                    crate::a11y::name_field(&resp, "Layer name");
+                    crate::a11y::author(&resp, "editor.layer-name");
+                    if resp.changed() {
+                        let _ = apply_tab_ops_ui(
+                            tab,
+                            &[EditOp::Rename {
+                                target: sel,
+                                name: name_buf,
+                            }],
+                            Some("Rename layer"),
+                            Some(&format!("gui:rename:{sel}")),
+                        );
+                    }
+                });
 
-            let mut vis = node_snapshot.data.flag("visible") != Some(false);
-            let mut locked = node_snapshot.data.flag("locked") == Some(true);
-            ui.horizontal(|ui| {
-                let r_vis = ui.checkbox(&mut vis, "Visible");
-                crate::a11y::author(&r_vis, "editor.visible");
-                if r_vis.changed() {
-                    let _ = apply_tab_ops(
-                        tab,
-                        &[EditOp::SetLayerProps {
-                            target: sel,
-                            visible: Some(vis),
-                            locked: None,
-                            opacity: None,
-                            blend_mode: None,
-                            clip_content: None,
-                        }],
-                        Some("Toggle visibility"),
-                        None,
-                    );
-                }
-                let r_lock = ui.checkbox(&mut locked, "Lock");
-                crate::a11y::author(&r_lock, "editor.lock");
-                if r_lock.changed() {
-                    let _ = apply_tab_ops(
-                        tab,
-                        &[EditOp::SetLayerProps {
-                            target: sel,
-                            visible: None,
-                            locked: Some(locked),
-                            opacity: None,
-                            blend_mode: None,
-                            clip_content: None,
-                        }],
-                        Some("Toggle lock"),
-                        None,
-                    );
-                }
-                let r_dup = ui.small_button("Duplicate");
-                crate::a11y::author(&r_dup, "editor.duplicate");
-                if r_dup.clicked()
-                    && let Ok(ids) = apply_tab_ops(
-                        tab,
-                        &[EditOp::DuplicateNode {
-                            target: sel,
-                            dx: 24.0,
-                            dy: 24.0,
-                        }],
-                        Some("Duplicate"),
-                        None,
-                    )
-                    && let Some(&dup) = ids.first()
-                {
-                    tab.select(Some(dup));
+                let mut vis = node_snapshot.data.flag("visible") != Some(false);
+                let mut locked = node_snapshot.data.flag("locked") == Some(true);
+                ui.horizontal(|ui| {
+                    let r_vis = ui.checkbox(&mut vis, "Visible");
+                    crate::a11y::author(&r_vis, "editor.visible");
+                    if r_vis.changed() {
+                        let _ = apply_tab_ops_ui(
+                            tab,
+                            &[EditOp::SetLayerProps {
+                                target: sel,
+                                visible: Some(vis),
+                                locked: None,
+                                opacity: None,
+                                blend_mode: None,
+                                clip_content: None,
+                            }],
+                            Some("Toggle visibility"),
+                            None,
+                        );
+                    }
+                    let r_lock = ui.checkbox(&mut locked, "Lock");
+                    crate::a11y::author(&r_lock, "editor.lock");
+                    if r_lock.changed() {
+                        let _ = apply_tab_ops_ui(
+                            tab,
+                            &[EditOp::SetLayerProps {
+                                target: sel,
+                                visible: None,
+                                locked: Some(locked),
+                                opacity: None,
+                                blend_mode: None,
+                                clip_content: None,
+                            }],
+                            Some("Toggle lock"),
+                            None,
+                        );
+                    }
+                    let r_dup = ui.small_button("Duplicate");
+                    crate::a11y::author(&r_dup, "editor.duplicate");
+                    if r_dup.clicked()
+                        && let Some(ids) = apply_tab_ops_ui(
+                            tab,
+                            &[EditOp::DuplicateNode {
+                                target: sel,
+                                dx: 24.0,
+                                dy: 24.0,
+                            }],
+                            Some("Duplicate"),
+                            None,
+                        )
+                        && let Some(&dup) = ids.first()
+                    {
+                        tab.select(Some(dup));
+                        return;
+                    }
+                    let r_del = ui.small_button("Delete");
+                    crate::a11y::author(&r_del, "editor.delete");
+                    if r_del.clicked()
+                        && apply_tab_ops_ui(
+                            tab,
+                            &[EditOp::DeleteNode { target: sel }],
+                            Some("Delete"),
+                            None,
+                        )
+                        .is_some()
+                    {
+                        tab.select(None);
+                    }
+                });
+                if tab.selection != Some(sel) {
                     return;
                 }
-                let r_del = ui.small_button("Delete");
-                crate::a11y::author(&r_del, "editor.delete");
-                if r_del.clicked() {
-                    let _ = apply_tab_ops(
-                        tab,
-                        &[EditOp::DeleteNode { target: sel }],
-                        Some("Delete"),
-                        None,
+
+                // 2. X, Y, W, H, Rotation, Corner Radius
+                let (mut x, mut y, mut w, mut h) = local_xywh(&node_snapshot.data);
+                let mut x_changed = false;
+                let mut y_changed = false;
+                let mut w_changed = false;
+                let mut h_changed = false;
+                ui.horizontal(|ui| {
+                    let rx = ui.add(DragValue::new(&mut x).prefix("X ").speed(1.0));
+                    crate::a11y::name_field(&rx, "Position X");
+                    crate::a11y::author(&rx, "editor.pos-x");
+                    x_changed |= rx.changed();
+                    let ry = ui.add(DragValue::new(&mut y).prefix("Y ").speed(1.0));
+                    crate::a11y::name_field(&ry, "Position Y");
+                    crate::a11y::author(&ry, "editor.pos-y");
+                    y_changed |= ry.changed();
+                });
+                ui.horizontal(|ui| {
+                    let rw = ui.add(
+                        DragValue::new(&mut w)
+                            .prefix("W ")
+                            .speed(1.0)
+                            .range(0.0..=100_000.0),
                     );
-                    tab.select(None);
-                }
-            });
-            if tab.selection != Some(sel) {
-                return;
-            }
-
-            // 2. X, Y, W, H, Rotation, Corner Radius
-            let (mut x, mut y, mut w, mut h) = local_xywh(&node_snapshot.data);
-            let mut pos_changed = false;
-            let mut size_changed = false;
-            ui.horizontal(|ui| {
-                let rx = ui.add(DragValue::new(&mut x).prefix("X ").speed(1.0));
-                crate::a11y::name_field(&rx, "Position X");
-                crate::a11y::author(&rx, "editor.pos-x");
-                pos_changed |= rx.changed();
-                let ry = ui.add(DragValue::new(&mut y).prefix("Y ").speed(1.0));
-                crate::a11y::name_field(&ry, "Position Y");
-                crate::a11y::author(&ry, "editor.pos-y");
-                pos_changed |= ry.changed();
-            });
-            ui.horizontal(|ui| {
-                let rw = ui.add(
-                    DragValue::new(&mut w)
-                        .prefix("W ")
-                        .speed(1.0)
-                        .range(0.0..=100_000.0),
-                );
-                crate::a11y::name_field(&rw, "Width");
-                crate::a11y::author(&rw, "editor.width");
-                size_changed |= rw.changed();
-                let rh = ui.add(
-                    DragValue::new(&mut h)
-                        .prefix("H ")
-                        .speed(1.0)
-                        .range(0.0..=100_000.0),
-                );
-                crate::a11y::name_field(&rh, "Height");
-                crate::a11y::author(&rh, "editor.height");
-                size_changed |= rh.changed();
-            });
-            if pos_changed {
-                let _ = apply_tab_ops(
-                    tab,
-                    &[EditOp::Move {
-                        target: sel,
-                        x,
-                        y,
-                        relative: false,
-                    }],
-                    Some("Set position"),
-                    Some("gui:inspector:pos"),
-                );
-            }
-            if size_changed {
-                let _ = apply_tab_ops(
-                    tab,
-                    &[EditOp::Resize {
-                        target: sel,
-                        width: w,
-                        height: h,
-                    }],
-                    Some("Set size"),
-                    Some("gui:inspector:size"),
-                );
-            }
-
-            let mut radius = node_snapshot.data.num("cornerRadius").unwrap_or(0.0);
-            let mut opacity = node_snapshot.data.num("opacity").unwrap_or(1.0) * 100.0;
-            ui.horizontal(|ui| {
-                let rr = ui.add(
-                    DragValue::new(&mut radius)
-                        .prefix("R ")
-                        .speed(0.5)
-                        .range(0.0..=2000.0),
-                );
-                crate::a11y::name_field(&rr, "Corner radius");
-                crate::a11y::author(&rr, "editor.corner-radius");
-                if rr.changed() {
-                    let _ = apply_tab_ops(
+                    crate::a11y::name_field(&rw, "Width");
+                    crate::a11y::author(&rw, "editor.width");
+                    w_changed |= rw.changed();
+                    let rh = ui.add(
+                        DragValue::new(&mut h)
+                            .prefix("H ")
+                            .speed(1.0)
+                            .range(0.0..=100_000.0),
+                    );
+                    crate::a11y::name_field(&rh, "Height");
+                    crate::a11y::author(&rh, "editor.height");
+                    h_changed |= rh.changed();
+                });
+                if x_changed || y_changed {
+                    let key = match (x_changed, y_changed) {
+                        (true, false) => format!("gui:inspector:pos-x:{sel}"),
+                        (false, true) => format!("gui:inspector:pos-y:{sel}"),
+                        _ => format!("gui:inspector:pos:{sel}"),
+                    };
+                    let _ = apply_tab_ops_ui(
                         tab,
-                        &[EditOp::SetCornerRadii {
+                        &[EditOp::Move {
                             target: sel,
-                            radii: [radius; 4],
-                            smoothing: None,
+                            x,
+                            y,
+                            relative: false,
                         }],
-                        Some("Set corner radius"),
-                        Some("gui:inspector:radius"),
+                        Some("Set position"),
+                        Some(&key),
                     );
                 }
-                let ro = ui.add(
-                    DragValue::new(&mut opacity)
-                        .prefix("Opacity ")
-                        .suffix("%")
-                        .speed(1.0)
-                        .range(0.0..=100.0),
-                );
-                crate::a11y::name_field(&ro, "Layer opacity");
-                crate::a11y::author(&ro, "editor.opacity");
-                if ro.changed() {
-                    let _ = apply_tab_ops(
+                if w_changed || h_changed {
+                    let key = match (w_changed, h_changed) {
+                        (true, false) => format!("gui:inspector:size-w:{sel}"),
+                        (false, true) => format!("gui:inspector:size-h:{sel}"),
+                        _ => format!("gui:inspector:size:{sel}"),
+                    };
+                    let _ = apply_tab_ops_ui(
                         tab,
-                        &[EditOp::SetLayerProps {
+                        &[EditOp::Resize {
                             target: sel,
-                            visible: None,
-                            locked: None,
-                            opacity: Some(f64::from(opacity) / 100.0),
-                            blend_mode: None,
-                            clip_content: None,
+                            width: w,
+                            height: h,
                         }],
-                        Some("Set opacity"),
-                        Some("gui:inspector:opacity"),
+                        Some("Set size"),
+                        Some(&key),
                     );
                 }
-            });
 
-            // 3. Solid Fill Hex Input
-            let cur_rgba = first_solid_srgba(&node_snapshot.data).unwrap_or([217, 217, 217, 255]);
-            // While the field has focus its text is a draft, so a partial value (a deleted
-            // digit, a replacement being typed) is kept rather than reset to the fill.
-            let draft_id = egui::Id::new(("fill-hex-draft", sel));
-            let mut hex_buf = ui
-                .data(|d| d.get_temp::<String>(draft_id))
+                let mut radius = node_snapshot.data.num("cornerRadius").unwrap_or(0.0);
+                let mut opacity = node_snapshot.data.num("opacity").unwrap_or(1.0) * 100.0;
+                ui.horizontal(|ui| {
+                    let rr = ui.add(
+                        DragValue::new(&mut radius)
+                            .prefix("R ")
+                            .speed(0.5)
+                            .range(0.0..=2000.0),
+                    );
+                    crate::a11y::name_field(&rr, "Corner radius");
+                    crate::a11y::author(&rr, "editor.corner-radius");
+                    if rr.changed() {
+                        let key = format!("gui:inspector:radius:{sel}");
+                        let _ = apply_tab_ops_ui(
+                            tab,
+                            &[EditOp::SetCornerRadii {
+                                target: sel,
+                                radii: [radius; 4],
+                                smoothing: None,
+                            }],
+                            Some("Set corner radius"),
+                            Some(&key),
+                        );
+                    }
+                    let ro = ui.add(
+                        DragValue::new(&mut opacity)
+                            .prefix("Opacity ")
+                            .suffix("%")
+                            .speed(1.0)
+                            .range(0.0..=100.0),
+                    );
+                    crate::a11y::name_field(&ro, "Layer opacity");
+                    crate::a11y::author(&ro, "editor.opacity");
+                    if ro.changed() {
+                        let key = format!("gui:inspector:opacity:{sel}");
+                        let _ = apply_tab_ops_ui(
+                            tab,
+                            &[EditOp::SetLayerProps {
+                                target: sel,
+                                visible: None,
+                                locked: None,
+                                opacity: Some(f64::from(opacity) / 100.0),
+                                blend_mode: None,
+                                clip_content: None,
+                            }],
+                            Some("Set opacity"),
+                            Some(&key),
+                        );
+                    }
+                });
+
+                // 3. Solid Fill Hex Input
+                let cur_rgba =
+                    first_solid_srgba(&node_snapshot.data).unwrap_or([217, 217, 217, 255]);
+                // While the field has focus its text is a draft, keyed by tab, node, and document
+                // revision so partial edits do not leak across tabs or outlive external changes.
+                let field_id = ui.make_persistent_id(("fill-hex", tab.id, sel));
+                let draft_id = egui::Id::new(("fill-hex-draft", tab.id, sel));
+                let mut hex_buf = if ui.ctx().memory(|m| m.has_focus(field_id)) {
+                    ui.data(|d| d.get_temp::<(u64, String)>(draft_id))
+                        .filter(|(rev, _)| *rev == tab.doc.revision)
+                        .map(|(_, s)| s)
+                } else {
+                    None
+                }
                 .unwrap_or_else(|| {
                     format!("#{:02X}{:02X}{:02X}", cur_rgba[0], cur_rgba[1], cur_rgba[2])
                 });
-            ui.horizontal(|ui| {
-                ui.label("Fill");
-                let rf = ui.add(egui::TextEdit::singleline(&mut hex_buf).desired_width(78.0));
-                crate::a11y::name_field(&rf, "Fill colour hex");
-                crate::a11y::author(&rf, "editor.fill-hex");
-                if rf.has_focus() {
-                    ui.data_mut(|d| d.insert_temp(draft_id, hex_buf.clone()));
-                } else {
-                    ui.data_mut(|d| d.remove::<String>(draft_id));
-                }
-                if rf.changed() && hex_buf.trim().len() >= 7 {
-                    let _ = apply_tab_ops(
-                        tab,
-                        &[EditOp::SetSolidFill {
-                            target: sel,
-                            hex: Some(hex_buf),
-                        }],
-                        Some("Set fill colour"),
-                        Some("gui:inspector:fill"),
+                ui.horizontal(|ui| {
+                    ui.label("Fill");
+                    let rf = ui.add(
+                        egui::TextEdit::singleline(&mut hex_buf)
+                            .id(field_id)
+                            .desired_width(78.0),
                     );
-                }
-                let r_cf = ui.small_button("Clear Fill");
-                crate::a11y::author(&r_cf, "editor.clear-fill");
-                if r_cf.clicked() {
-                    let _ = apply_tab_ops(
-                        tab,
-                        &[EditOp::SetSolidFill {
-                            target: sel,
-                            hex: None,
-                        }],
-                        Some("Remove fill"),
-                        None,
-                    );
-                }
-            });
+                    crate::a11y::name_field(&rf, "Fill colour hex");
+                    crate::a11y::author(&rf, "editor.fill-hex");
+                    if rf.changed() && hex_buf.trim().len() >= 7 {
+                        let key = format!("gui:inspector:fill:{sel}");
+                        let _ = apply_tab_ops_ui(
+                            tab,
+                            &[EditOp::SetSolidFill {
+                                target: sel,
+                                hex: Some(hex_buf.clone()),
+                            }],
+                            Some("Set fill colour"),
+                            Some(&key),
+                        );
+                    }
+                    if rf.has_focus() {
+                        ui.data_mut(|d| {
+                            d.insert_temp(draft_id, (tab.doc.revision, hex_buf.clone()));
+                        });
+                    } else {
+                        ui.data_mut(|d| d.remove::<(u64, String)>(draft_id));
+                    }
+                    let r_cf = ui.small_button("Clear Fill");
+                    crate::a11y::author(&r_cf, "editor.clear-fill");
+                    if r_cf.clicked() {
+                        ui.data_mut(|d| d.remove::<(u64, String)>(draft_id));
+                        let _ = apply_tab_ops_ui(
+                            tab,
+                            &[EditOp::SetSolidFill {
+                                target: sel,
+                                hex: None,
+                            }],
+                            Some("Remove fill"),
+                            None,
+                        );
+                    }
+                });
 
-            autolayout_text_and_component_controls(ui, tab, sel, &node_snapshot);
+                autolayout_text_and_component_controls(ui, tab, sel, &node_snapshot);
+            });
         });
     crate::a11y::author(&hdr.header_response, "editor.toggle-section");
 }

@@ -42,6 +42,10 @@ mod copy;
 mod copy_shortcuts;
 #[path = "ui_pick_cousins.rs"]
 mod cousins;
+#[path = "ui_document_lifecycle_tests.rs"]
+mod document_lifecycle;
+#[path = "ui_editor_tests.rs"]
+mod editor;
 #[path = "ui_inner_tests.rs"]
 mod inner;
 #[path = "ui_inner_fixture.rs"]

@@ -15,21 +15,47 @@ pub struct GuidAlloc {
 impl GuidAlloc {
     /// Creates an allocator seeded above every existing `(sessionID, localID)` in `doc`.
     pub fn for_document(doc: &Document) -> Self {
-        let mut max_in_edit_session = 0u32;
-        let mut session = EDIT_SESSION_BASE;
+        let mut alloc = Self {
+            session: EDIT_SESSION_BASE,
+            next_local: 1,
+        };
         for n in &doc.nodes {
-            if n.id.0 >= EDIT_SESSION_BASE {
-                if n.id.0 > session {
-                    session = n.id.0;
-                    max_in_edit_session = n.id.1;
-                } else if n.id.0 == session {
-                    max_in_edit_session = max_in_edit_session.max(n.id.1);
-                }
+            alloc.reserve(n.id);
+        }
+        alloc
+    }
+
+    /// Advances the allocator past `id` so later calls to [`Self::next_guid`] never collide with it.
+    pub fn reserve(&mut self, id: Guid) {
+        if id.0 > self.session {
+            if id.0 == u32::MAX && id.1 == u32::MAX {
+                return;
+            }
+            self.session = id.0;
+            if id.1 == u32::MAX {
+                self.session = self.session.saturating_add(1);
+                self.next_local = 1;
+            } else {
+                self.next_local = id.1 + 1;
+            }
+        } else if id.0 == self.session && id.1 >= self.next_local {
+            if id.1 == u32::MAX {
+                self.session = self.session.saturating_add(1);
+                self.next_local = 1;
+            } else {
+                self.next_local = id.1 + 1;
             }
         }
-        Self {
-            session,
-            next_local: max_in_edit_session.saturating_add(1).max(1),
+    }
+
+    /// Uses `explicit` when provided (advancing the allocator past it), or allocates a fresh [`Guid`].
+    pub fn take_or_next(&mut self, explicit: Option<Guid>) -> Guid {
+        match explicit {
+            Some(id) => {
+                self.reserve(id);
+                id
+            }
+            None => self.next_guid(),
         }
     }
 

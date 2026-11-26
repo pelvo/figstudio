@@ -120,6 +120,8 @@ pub struct Tab {
     /// The inspector field focused or control dragged last frame; a change seals the
     /// coalesced undo entry (`editor::inspector`).
     pub edit_session: Option<egui::Id>,
+    /// An interactive edit error from the canvas or inspector; `main.rs` shows it as a toast.
+    pub pending_edit_error: Option<String>,
 }
 
 /// One picture the canvas draws (see [`Tab::draw_layers`]).
@@ -289,6 +291,7 @@ impl Tab {
             edit_drag: None,
             reset_tool_to_select: false,
             edit_session: None,
+            pending_edit_error: None,
         }
     }
 

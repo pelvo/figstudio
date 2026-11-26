@@ -96,6 +96,33 @@ pub fn encode_subset_kiwi(
     encode_subset(doc, roots, paste_id, file_key).map(|(kiwi, _)| kiwi)
 }
 
+/// `roots` without repeats and without any node that lies inside another root (it is copied
+/// with that root's subtree and must keep its parent).
+fn outermost_roots(doc: &Document, roots: &[Guid]) -> Vec<Guid> {
+    let selected: HashSet<Guid> = roots.iter().copied().collect();
+    let inside_another = |root: Guid| {
+        let mut parent = doc.node(root).and_then(|n| n.parent);
+        let mut hops = 0;
+        while let Some(p) = parent {
+            if selected.contains(&p) {
+                return true;
+            }
+            hops += 1;
+            if hops > doc.nodes.len() {
+                break;
+            }
+            parent = doc.node(p).and_then(|n| n.parent);
+        }
+        false
+    };
+    let mut seen = HashSet::new();
+    roots
+        .iter()
+        .copied()
+        .filter(|&r| seen.insert(r) && !inside_another(r))
+        .collect()
+}
+
 /// [`encode_subset_kiwi`], also returning the copied nodes.
 fn encode_subset(
     doc: &Document,
@@ -111,6 +138,8 @@ fn encode_subset(
             return Err(FigError::malformed(format!("missing root node {r}")));
         }
     }
+
+    let roots = &outermost_roots(doc, roots);
 
     // 1. Collect full subtrees of selected roots + transitive local dependencies.
     let mut selected_set = HashSet::new();
@@ -168,10 +197,26 @@ fn encode_subset(
         }
     }
 
-    // 2. Build synthetic DOCUMENT (0:0), visible CANVAS (0:1), and optional internal CANVAS (0:2).
-    let doc_guid = Guid(0, 0);
-    let canvas_guid = Guid(0, 1);
-    let internal_canvas_guid = Guid(0, 2);
+    // 2. Build synthetic DOCUMENT, visible CANVAS, and optional internal CANVAS.
+    // Prefer standard 0:0..2 when free, falling back to unused GUIDs if copied scene
+    // nodes or dependencies already occupy them in a non-default-ID source document.
+    let mut used_guids = selected_set.clone();
+    for &iroot in &internal_roots {
+        collect_subtree_set(doc, iroot, &mut used_guids);
+    }
+    let mut alloc = GuidAlloc::for_document(doc);
+    let mut container_guid = |preferred: Guid| {
+        if used_guids.insert(preferred) {
+            preferred
+        } else {
+            let fresh = alloc.next_guid();
+            used_guids.insert(fresh);
+            fresh
+        }
+    };
+    let doc_guid = container_guid(Guid(0, 0));
+    let canvas_guid = container_guid(Guid(0, 1));
+    let internal_canvas_guid = container_guid(Guid(0, 2));
 
     let mut out_nodes: Vec<Node> = Vec::new();
     let mut doc_obj = Obj::new();
@@ -295,6 +340,7 @@ fn encode_subset(
 
     let mut sub_doc = Document {
         instance: 0,
+        lineage: 0,
         image_instance: 0,
         revision: 0,
         prelude: "fig-kiwi".into(),
@@ -485,17 +531,22 @@ pub(crate) fn paste_kiwi_into_with(
     let blob_base = target_doc.blobs.len();
     txn.add_blobs.clone_from(&src_doc.blobs);
 
-    // Map existing local symbols/styles by `key` so repeated pastes reuse existing masters!
-    let mut existing_by_key: HashMap<(String, String), Guid> = HashMap::new();
+    // Map existing local symbols/styles by `(kind, key)` so repeated pastes reuse any
+    // compatible existing master even when multiple incompatible versions share a key.
+    let mut existing_by_key: HashMap<(String, String), Vec<Guid>> = HashMap::new();
     for n in &target_doc.nodes {
         if let Some(key) = n.data.text("key")
             && !key.is_empty()
         {
-            existing_by_key.insert((n.kind.clone(), key.to_string()), n.id);
+            existing_by_key
+                .entry((n.kind.clone(), key.to_string()))
+                .or_default()
+                .push(n.id);
         }
     }
 
-    let mut guid_map: HashMap<Guid, Guid> = HashMap::new();
+    let mut reused_pairs: Vec<(Guid, Guid)> = Vec::new();
+    let mut copied_pairs: Vec<(Guid, Guid)> = Vec::new();
     let mut skip_subtrees: HashSet<Guid> = HashSet::new();
 
     // First pass: map internal canvas dependencies (`SYMBOL`, styles, variables).
@@ -506,18 +557,26 @@ pub(crate) fn paste_kiwi_into_with(
                 continue;
             };
             if let Some(key) = dep_node.data.text("key")
-                && let Some(&existing_id) =
+                && let Some(candidates) =
                     existing_by_key.get(&(dep_node.kind.clone(), key.to_string()))
+                && let Some(mapping) = candidates
+                    .iter()
+                    .copied()
+                    .filter(|&id| id == dep_root)
+                    .chain(candidates.iter().copied().filter(|&id| id != dep_root))
+                    .find_map(|existing_id| {
+                        map_reused_subtree(&src_doc, dep_root, target_doc, existing_id)
+                    })
             {
-                guid_map.insert(dep_root, existing_id);
-                map_reused_subtree(&src_doc, dep_root, target_doc, existing_id, &mut guid_map);
+                reused_pairs.extend(mapping);
                 collect_subtree_set(&src_doc, dep_root, &mut skip_subtrees);
                 continue;
             }
             let mut sub = Vec::new();
             collect_subtree_preorder(&src_doc, dep_root, &mut HashSet::new(), &mut sub);
             for sid in sub {
-                guid_map.insert(sid, alloc.next_guid());
+                let new_id = alloc.next_guid();
+                copied_pairs.push((sid, new_id));
                 internal_nodes_to_copy.push((sid, sid == dep_root));
             }
         }
@@ -534,9 +593,11 @@ pub(crate) fn paste_kiwi_into_with(
             if n.kind != "DOCUMENT"
                 && n.kind != "CANVAS"
                 && n.parent.is_none_or(|p| {
-                    src_doc
-                        .node(p)
-                        .is_none_or(|pn| pn.kind == "DOCUMENT" || pn.kind == "CANVAS")
+                    // Children of an internal canvas are dependencies, copied above.
+                    !src_doc.internal_pages.contains(&p)
+                        && src_doc
+                            .node(p)
+                            .is_none_or(|pn| pn.kind == "DOCUMENT" || pn.kind == "CANVAS")
                 })
             {
                 src_scene_roots.push(n.id);
@@ -552,10 +613,13 @@ pub(crate) fn paste_kiwi_into_with(
         let mut sub = Vec::new();
         collect_subtree_preorder(&src_doc, sroot, &mut HashSet::new(), &mut sub);
         for sid in sub {
-            guid_map.insert(sid, alloc.next_guid());
+            let new_id = alloc.next_guid();
+            copied_pairs.push((sid, new_id));
             scene_nodes_to_copy.push((sid, sid == sroot));
         }
     }
+
+    let remap = build_guid_remap(&src_doc, target_doc, &reused_pairs, &copied_pairs);
 
     // Ensure target document has an internal canvas if we need to paste internal dependencies.
     let target_internal_canvas = if !internal_nodes_to_copy.is_empty() {
@@ -608,10 +672,10 @@ pub(crate) fn paste_kiwi_into_with(
             let Some(orig) = src_doc.node(old_id) else {
                 continue;
             };
-            let new_id = guid_map[&old_id];
+            let new_id = remap.nodes[&old_id];
             let mut data = orig.data.clone().into_owned();
             offset_blobs_in_val(&mut data, blob_base);
-            remap_guids_in_val(&mut data, &guid_map);
+            remap_guids_in_val(&mut data, &remap);
             data.set("guid", new_id.to_val());
             if is_root {
                 data.set(
@@ -642,10 +706,10 @@ pub(crate) fn paste_kiwi_into_with(
         let Some(orig) = src_doc.node(old_id) else {
             continue;
         };
-        let new_id = guid_map[&old_id];
+        let new_id = remap.nodes[&old_id];
         let mut data = orig.data.clone().into_owned();
         offset_blobs_in_val(&mut data, blob_base);
-        remap_guids_in_val(&mut data, &guid_map);
+        remap_guids_in_val(&mut data, &remap);
         data.set("guid", new_id.to_val());
         if is_root {
             data.set(
@@ -668,44 +732,236 @@ pub(crate) fn paste_kiwi_into_with(
     Ok((txn, pasted_roots))
 }
 
-/// Maps the descendants of a source master onto those of the existing master it is reused
-/// as, so pasted references and override `guidPath`s reach the existing nodes. An earlier
-/// paste copied the subtree node for node, so the pre-orders line up; otherwise only nodes
-/// with a matching explicit `overrideKey` are mapped.
+/// Separate remap tables for the two distinct GUID domains in Figma nodes:
+/// - `nodes`: node-ID references (`symbolID`, `overriddenSymbolID`, `parentIndex`, styles, vars, …)
+/// - `override_keys`: override path keys inside `guidPath.guids` (`symbolOverrides` / `derivedSymbolData`)
+#[derive(Debug, Default)]
+struct GuidRemap {
+    nodes: HashMap<Guid, Guid>,
+    override_keys: HashMap<Guid, Guid>,
+}
+
+fn explicit_override_key(node: &Node) -> Option<Guid> {
+    node.data.get("overrideKey").and_then(Val::as_guid)
+}
+
+/// Builds domain-separated node-reference and override-path-key maps from reused and freshly
+/// copied `(src_id, dst_id)` pairs. Explicit `overrideKey` entries are populated before unkeyed
+/// node IDs and `src_id` fallbacks so explicit override keys are never shadowed by coincidental
+/// node IDs elsewhere in the clipboard payload.
+fn build_guid_remap(
+    src_doc: &Document,
+    target_doc: &Document,
+    reused_pairs: &[(Guid, Guid)],
+    copied_pairs: &[(Guid, Guid)],
+) -> GuidRemap {
+    let mut nodes = HashMap::with_capacity(reused_pairs.len() + copied_pairs.len());
+    let mut override_keys = HashMap::with_capacity(reused_pairs.len() + copied_pairs.len());
+
+    // 1. Node references and explicit `overrideKey` mappings (highest priority).
+    for &(s_id, d_id) in reused_pairs {
+        nodes.insert(s_id, d_id);
+        if let Some(k) = src_doc.node(s_id).and_then(explicit_override_key) {
+            let d_key = target_doc.node(d_id).map_or(d_id, Node::override_key);
+            override_keys.insert(k, d_key);
+        }
+    }
+    for &(s_id, new_id) in copied_pairs {
+        nodes.insert(s_id, new_id);
+        if let Some(k) = src_doc.node(s_id).and_then(explicit_override_key) {
+            // Copied nodes retain their explicit `overrideKey`, so its key identity is unchanged.
+            override_keys.insert(k, k);
+        }
+    }
+
+    // 2. Unkeyed nodes whose effective `override_key()` is their own `src_id`.
+    for &(s_id, d_id) in reused_pairs {
+        if src_doc.node(s_id).and_then(explicit_override_key).is_none() {
+            let d_key = target_doc.node(d_id).map_or(d_id, Node::override_key);
+            override_keys.entry(s_id).or_insert(d_key);
+        }
+    }
+    for &(s_id, new_id) in copied_pairs {
+        if src_doc.node(s_id).and_then(explicit_override_key).is_none() {
+            override_keys.entry(s_id).or_insert(new_id);
+        }
+    }
+
+    // 3. Fallback when a source `guidPath` addressed a node by its raw `src_id` despite an
+    // explicit `overrideKey != src_id`: reused masters redirect to the destination's unique
+    // `override_key()` so override resolution succeeds, while fresh copies keep targeting the
+    // copied node's new ID.
+    for &(s_id, d_id) in reused_pairs {
+        let s_key = src_doc.node(s_id).map_or(s_id, Node::override_key);
+        if s_id != s_key {
+            let d_key = target_doc.node(d_id).map_or(d_id, Node::override_key);
+            override_keys.entry(s_id).or_insert(d_key);
+        }
+    }
+    for &(s_id, new_id) in copied_pairs {
+        let s_key = src_doc.node(s_id).map_or(s_id, Node::override_key);
+        if s_id != s_key {
+            override_keys.entry(s_id).or_insert(new_id);
+        }
+    }
+
+    GuidRemap {
+        nodes,
+        override_keys,
+    }
+}
+
+/// Checks that every descendant under `root` has a unique effective `override_key()` within its
+/// enclosing `SYMBOL` scope (and that the subtree is acyclic). Sibling variant `SYMBOL`s inside a
+/// `STATE_GROUP` have independent override scopes.
+fn has_unique_override_keys(doc: &Document, root: Guid) -> bool {
+    let mut seen_nodes = HashSet::from([root]);
+    let mut seen_keys: HashSet<(Guid, Guid)> = HashSet::new();
+    let mut stack: Vec<(Guid, Guid)> = doc
+        .children(root)
+        .iter()
+        .rev()
+        .map(|&cid| (cid, root))
+        .collect();
+    while let Some((id, scope)) = stack.pop() {
+        if !seen_nodes.insert(id) {
+            return false;
+        }
+        let Some(node) = doc.node(id) else {
+            return false;
+        };
+        if !seen_keys.insert((scope, node.override_key())) {
+            return false;
+        }
+        let child_scope = if node.kind == "SYMBOL" { id } else { scope };
+        for &cid in doc.children(id).iter().rev() {
+            stack.push((cid, child_scope));
+        }
+    }
+    true
+}
+
+/// Maps a source master and its descendants onto the existing master it would be reused as,
+/// matching top-down within each parent scope. Siblings pair first by unique explicit
+/// `overrideKey` (matching kind), then by unique `(kind, name)` among remaining unmatched
+/// siblings under the same parent. Returns `None` on any ambiguity, duplicate or mismatched
+/// explicit `overrideKey`, structural difference, or conflicting override-key remap, so the
+/// caller conservatively imports the source master instead of guessing.
 fn map_reused_subtree(
     src_doc: &Document,
     src_root: Guid,
     target_doc: &Document,
     target_root: Guid,
-    guid_map: &mut HashMap<Guid, Guid>,
-) {
-    let mut src = Vec::new();
-    collect_subtree_preorder(src_doc, src_root, &mut HashSet::new(), &mut src);
-    let mut dst = Vec::new();
-    collect_subtree_preorder(target_doc, target_root, &mut HashSet::new(), &mut dst);
-    let kind = |d: &Document, g: Guid| d.node(g).map(|n| n.kind.clone());
-    let same_shape = src.len() == dst.len()
-        && src
-            .iter()
-            .zip(&dst)
-            .all(|(&s, &d)| kind(src_doc, s) == kind(target_doc, d));
-    if same_shape {
-        guid_map.extend(src.into_iter().zip(dst));
-        return;
+) -> Option<Vec<(Guid, Guid)>> {
+    let s_root = src_doc.node(src_root)?;
+    let d_root = target_doc.node(target_root)?;
+    if s_root.kind != d_root.kind
+        || s_root.data.flag("isStateGroup").unwrap_or(false)
+            != d_root.data.flag("isStateGroup").unwrap_or(false)
+        || s_root.data.text("styleType") != d_root.data.text("styleType")
+    {
+        return None;
     }
-    let explicit_key = |d: &Document, g: Guid| {
-        d.node(g)
-            .and_then(|n| n.data.get("overrideKey").and_then(Val::as_guid))
-    };
-    let by_key: HashMap<Guid, Guid> = dst
-        .iter()
-        .filter_map(|&g| explicit_key(target_doc, g).map(|k| (k, g)))
-        .collect();
-    for s in src {
-        if let Some(&d) = explicit_key(src_doc, s).and_then(|k| by_key.get(&k)) {
-            guid_map.insert(s, d);
+    if !has_unique_override_keys(src_doc, src_root)
+        || !has_unique_override_keys(target_doc, target_root)
+    {
+        return None;
+    }
+
+    let mut pairs = vec![(src_root, target_root)];
+    let mut seen_src = HashSet::from([src_root]);
+    let mut seen_dst = HashSet::from([target_root]);
+    let mut key_remap: HashMap<Guid, Guid> = HashMap::new();
+    let mut stack = vec![(src_root, target_root)];
+
+    while let Some((s_parent, d_parent)) = stack.pop() {
+        let s_children = src_doc.children(s_parent);
+        let d_children = target_doc.children(d_parent);
+        if s_children.len() != d_children.len() {
+            return None;
+        }
+        if s_children.is_empty() {
+            continue;
+        }
+
+        let mut dst_by_key: HashMap<Guid, Guid> = HashMap::new();
+        for &d in d_children {
+            let d_node = target_doc.node(d)?;
+            if let Some(k) = explicit_override_key(d_node)
+                && dst_by_key.insert(k, d).is_some()
+            {
+                return None;
+            }
+        }
+
+        let mut matched_src = HashSet::new();
+        let mut matched_dst = HashSet::new();
+        let mut child_pairs = Vec::with_capacity(s_children.len());
+
+        // 1. Pair siblings that share an explicit `overrideKey` and `kind`.
+        for &s in s_children {
+            let s_node = src_doc.node(s)?;
+            if let Some(k) = explicit_override_key(s_node) {
+                if let Some(&d) = dst_by_key.get(&k) {
+                    let d_node = target_doc.node(d)?;
+                    if s_node.kind != d_node.kind || !matched_dst.insert(d) {
+                        return None;
+                    }
+                    matched_src.insert(s);
+                    child_pairs.push((s, d));
+                } else if k != s {
+                    return None;
+                }
+            }
+        }
+
+        // 2. Pair remaining siblings within this parent only when `(kind, name)` is unique.
+        let mut dst_by_kind_name: HashMap<(&str, &str), Guid> = HashMap::new();
+        for &d in d_children {
+            if matched_dst.contains(&d) {
+                continue;
+            }
+            let d_node = target_doc.node(d)?;
+            if let Some(k) = explicit_override_key(d_node)
+                && k != d
+            {
+                return None;
+            }
+            if dst_by_kind_name
+                .insert((d_node.kind.as_str(), d_node.name.as_str()), d)
+                .is_some()
+            {
+                return None;
+            }
+        }
+
+        for &s in s_children {
+            if matched_src.contains(&s) {
+                continue;
+            }
+            let s_node = src_doc.node(s)?;
+            let d = dst_by_kind_name.remove(&(s_node.kind.as_str(), s_node.name.as_str()))?;
+            child_pairs.push((s, d));
+        }
+
+        for (s, d) in child_pairs {
+            if !seen_src.insert(s) || !seen_dst.insert(d) {
+                return None;
+            }
+            let s_key = src_doc.node(s)?.override_key();
+            let d_key = target_doc.node(d)?.override_key();
+            if let Some(&prev) = key_remap.get(&s_key)
+                && prev != d_key
+            {
+                return None;
+            }
+            key_remap.insert(s_key, d_key);
+            pairs.push((s, d));
+            stack.push((s, d));
         }
     }
+
+    Some(pairs)
 }
 
 fn collect_subtree_preorder(
@@ -821,8 +1077,17 @@ fn offset_blobs_in_val(val: &mut Val, blob_base: usize) {
     }
 }
 
-fn remap_guids_in_val(val: &mut Val, map: &HashMap<Guid, Guid>) {
+fn remap_guids_in_val(val: &mut Val, remap: &GuidRemap) {
+    remap_val_in_domain(val, remap, false);
+}
+
+fn remap_val_in_domain(val: &mut Val, remap: &GuidRemap, in_guid_path: bool) {
     val.settle();
+    let map = if in_guid_path {
+        &remap.override_keys
+    } else {
+        &remap.nodes
+    };
     match val {
         Val::Guid(g) => {
             if let Some(&new_g) = map.get(g) {
@@ -842,14 +1107,17 @@ fn remap_guids_in_val(val: &mut Val, map: &HashMap<Guid, Guid>) {
             }
             let keys: Vec<&'static str> = o.keys().collect();
             for k in keys {
+                if !in_guid_path && k == "overrideKey" {
+                    continue;
+                }
                 if let Some(fv) = o.get_mut(k) {
-                    remap_guids_in_val(fv, map);
+                    remap_val_in_domain(fv, remap, in_guid_path || k == "guidPath");
                 }
             }
         }
         Val::Arr(items) => {
             for item in items {
-                remap_guids_in_val(item, map);
+                remap_val_in_domain(item, remap, in_guid_path);
             }
         }
         _ => {}

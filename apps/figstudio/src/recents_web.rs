@@ -36,6 +36,8 @@ extern "C" {
     pub(crate) fn watch_drops();
     #[wasm_bindgen(js_name = droppedHandle, catch)]
     async fn dropped_handle_js(name: &str, size: f64, modified: f64) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = isSameHandle, catch)]
+    async fn is_same_handle_js(id: u32, other: &JsValue) -> Result<JsValue, JsValue>;
 }
 
 /// Largest list read (bytes of JSON).
@@ -101,6 +103,15 @@ pub(crate) async fn dropped_handle(file: &web_sys::File) -> Option<u32> {
         .ok()
         .and_then(|v| v.as_f64())
         .map(|n| n as u32)
+}
+
+/// Whether kept handle `id` refers to the same file on disk as `other`.
+pub(crate) async fn is_same_handle(id: u32, other: &JsValue) -> bool {
+    is_same_handle_js(id, other)
+        .await
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 fn js_error(e: JsValue) -> String {

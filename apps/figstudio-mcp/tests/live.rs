@@ -394,3 +394,67 @@ fn live_render_caches_follow_the_snapshot() {
     let back = files.rendering(None, &structure, false).unwrap();
     assert_eq!(back.images.bytes(), 0, "a closed document's cache was kept");
 }
+
+#[test]
+fn live_render_caches_survive_tree_edits_and_edit_render_races() {
+    use figstudio_mcp::{files::Files, live::LiveFiles};
+    use figstudio_render::images::cache_key;
+
+    let initial = doc("structure.fig");
+    let path = fixture("structure.fig");
+    let snapshot = Arc::new(std::sync::RwLock::new(Arc::new(Snapshot {
+        tabs: vec![tab(1, path.clone(), initial.clone(), None)],
+        active: Some(1),
+    })));
+    let (commands, _inbox) = std::sync::mpsc::channel();
+    let files = Files::Live(Arc::new(LiveFiles::new(
+        snapshot.clone(),
+        commands,
+        Arc::new(|| {}),
+    )));
+
+    let first = files.rendering(None, &initial, false).unwrap();
+    let mut png = Vec::new();
+    image::RgbaImage::new(4, 4)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    assert!(
+        first
+            .images
+            .insert_encoded(&cache_key(&initial, "ab"), &png, 0)
+    );
+    assert!(first.images.bytes() > 0);
+
+    // Edit the document (same lineage and image_instance, new instance) and publish it.
+    let mut edited = (*initial).clone();
+    let nodes = edited.nodes.clone();
+    edited.set_nodes(nodes).unwrap();
+    assert_eq!(edited.lineage, initial.lineage);
+    assert_eq!(edited.image_instance, initial.image_instance);
+    assert_ne!(edited.instance, initial.instance);
+    let edited = Arc::new(edited);
+    *snapshot.write().unwrap() = Arc::new(Snapshot {
+        tabs: vec![tab(1, path.clone(), edited.clone(), None)],
+        active: Some(1),
+    });
+
+    // A render holding the pre-edit snapshot must still match the open tab by lineage.
+    let raced = files.rendering(None, &initial, false).unwrap();
+    assert_eq!(
+        raced.path.as_deref(),
+        Some(path.as_path()),
+        "edit/render race dropped the open tab's archive path"
+    );
+    assert!(
+        raced.images.bytes() > 0,
+        "edit/render race lost the warm image cache"
+    );
+
+    // Rendering the edited revision reuses the same lineage cache without wiping it.
+    let after = files.rendering(None, &edited, false).unwrap();
+    assert_eq!(after.path.as_deref(), Some(path.as_path()));
+    assert!(
+        after.images.bytes() > 0,
+        "tree edit wiped LiveFiles::rendering's warm image cache"
+    );
+}

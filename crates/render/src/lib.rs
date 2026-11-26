@@ -806,7 +806,9 @@ impl Renderer {
             }
         };
         if let Some(node) = doc.node(root) {
+            ctx.enter_ancestor_modes(node.parent);
             if node.kind == "CANVAS" || node.kind == "DOCUMENT" {
+                ctx.push_modes(&node.data);
                 ctx.draw_children(node, &node.data, transform, None);
             } else {
                 let parent = node.parent.map_or(Some(Affine::IDENTITY), |p| {
@@ -882,7 +884,7 @@ impl Renderer {
             shaders: self
                 .shaders
                 .clone()
-                .or_else(|| self.images.shaders(doc.instance)),
+                .or_else(|| self.images.shaders(doc.lineage)),
             delays: Vec::new(),
             active_modes: std::collections::HashMap::new(),
         }
@@ -1570,19 +1572,7 @@ impl Ctx<'_> {
             }
             None => data,
         };
-        let mut pushed_modes: Vec<(Guid, Option<Guid>)> = Vec::new();
-        if let Some(entries) = data.path(&["variableModeBySetMap", "entries"]) {
-            for entry in entries.items() {
-                let set_id = entry
-                    .get("variableSetID")
-                    .and_then(|v| v.as_guid().or_else(|| v.get("guid").and_then(Val::as_guid)));
-                let mode_id = entry.get("variableModeID").and_then(Val::as_guid);
-                if let (Some(set_id), Some(mode_id)) = (set_id, mode_id) {
-                    let prev = self.active_modes.insert(set_id, mode_id);
-                    pushed_modes.push((set_id, prev));
-                }
-            }
-        }
+        let pushed_modes = self.push_modes(&data);
         let (data, unresolved_variables) = self
             .variables
             .paints_with_modes(data.as_ref(), &self.active_modes);
@@ -1884,6 +1874,41 @@ impl Ctx<'_> {
         self.inherited_reach = outer_reach;
         self.pop_modes(pushed_modes);
         self.depth -= 1;
+    }
+
+    /// Makes the variable modes `data` sets explicitly the active ones; returns what to hand
+    /// to [`Ctx::pop_modes`] to undo it.
+    fn push_modes(&mut self, data: &Val) -> Vec<(Guid, Option<Guid>)> {
+        let mut pushed = Vec::new();
+        if let Some(entries) = data.path(&["variableModeBySetMap", "entries"]) {
+            for entry in entries.items() {
+                let set_id = entry
+                    .get("variableSetID")
+                    .and_then(|v| v.as_guid().or_else(|| v.get("guid").and_then(Val::as_guid)));
+                let mode_id = entry.get("variableModeID").and_then(Val::as_guid);
+                if let (Some(set_id), Some(mode_id)) = (set_id, mode_id) {
+                    let prev = self.active_modes.insert(set_id, mode_id);
+                    pushed.push((set_id, prev));
+                }
+            }
+        }
+        pushed
+    }
+
+    /// Enters the modes of the layers above a layer drawn on its own: `from` and each of its
+    /// ancestors, outermost first so the nearest explicit mode wins, as when the page is drawn.
+    fn enter_ancestor_modes(&mut self, from: Option<Guid>) {
+        let doc = self.doc;
+        let mut chain: Vec<Guid> =
+            std::iter::successors(from, |id| doc.node(*id).and_then(|n| n.parent))
+                .take(doc.nodes.len())
+                .collect();
+        chain.reverse();
+        for id in chain {
+            if let Some(node) = doc.node(id) {
+                self.push_modes(&node.data);
+            }
+        }
     }
 
     fn pop_modes(&mut self, pushed: Vec<(Guid, Option<Guid>)>) {

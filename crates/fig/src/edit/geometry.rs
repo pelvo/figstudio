@@ -1,12 +1,13 @@
 //! Parametric shapes, `commandsBlob` outline generation, squircle corner smoothing, and
 //! Figma resize constraints (`MIN`, `CENTER`, `MAX`, `STRETCH`, `SCALE`).
 
+use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use serde::{Deserialize, Serialize};
 
-use crate::edit::{Txn, fractional};
-use crate::{Document, FigError, Guid, Node, Obj, Val, intern};
+use crate::edit::{NodePatch, Txn, fractional};
+use crate::{Document, FigError, Guid, Obj, Val, intern};
 
 /// One command in a Figma `commandsBlob` path stream (`0..=4` + little-endian `f32` coords).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -101,13 +102,18 @@ pub fn decode_path_commands(bytes: &[u8]) -> Option<Vec<PathCmd>> {
 
 /// Builds a Kiwi `Path` struct entry (`{ windingRule, commandsBlob, styleID }`).
 pub fn make_path_entry(blob_index: usize, even_odd: bool) -> Val {
+    make_styled_path_entry(blob_index, even_odd, 0)
+}
+
+/// Builds a Kiwi `Path` struct entry with an explicit vector `styleID`.
+pub fn make_styled_path_entry(blob_index: usize, even_odd: bool, style_id: u32) -> Val {
     Val::Obj(Obj::from([
         (
             "windingRule",
             Val::Enum(intern(if even_odd { "ODD" } else { "NONZERO" })),
         ),
         ("commandsBlob", Val::Int(blob_index as i64)),
-        ("styleID", Val::Int(0)),
+        ("styleID", Val::Int(i64::from(style_id))),
     ]))
 }
 
@@ -590,22 +596,18 @@ fn resize_one(
         ("x", Val::Float(new_w)),
         ("y", Val::Float(new_h)),
     ]));
-    set.insert("size", new_size.clone());
+    set.insert("size", new_size);
 
-    // Rebuild fillGeometry if this is a parametric shape that stores one.
-    if node.data.get("fillGeometry").is_some() {
-        let mut preview = node.data.clone().into_owned();
-        preview.set("size", new_size);
-        if let Some(cmds) = rebuild_shape_geometry(&node.kind, &preview) {
-            let blob_idx = doc.blobs.len() + txn.add_blobs.len();
-            txn.add_blobs.push(encode_path_commands(&cmds));
-            set.insert(
-                "fillGeometry",
-                Val::Arr(vec![make_path_entry(blob_idx, false)]),
-            );
-        }
-    }
-    txn.modify(node_id, set, unset_on_resize(node));
+    let mut unset = Vec::new();
+    sync_node_derived_caches(
+        doc,
+        &node.kind,
+        &node.data,
+        &mut set,
+        &mut unset,
+        &mut txn.add_blobs,
+    );
+    txn.modify(node_id, set, unset);
 
     let is_stack = matches!(
         node.data.text("stackMode"),
@@ -703,13 +705,268 @@ fn default_layer_name(kind: &str) -> String {
     }
 }
 
-/// Fields invalidated when `node`'s box size changes: stored glyph positions (`derivedTextData`)
-/// are for the old box, so without them the renderer re-wraps the text.
-pub(crate) fn unset_on_resize(node: &Node) -> Vec<String> {
-    if node.kind == "TEXT" && node.data.get("derivedTextData").is_some() {
-        vec!["derivedTextData".to_string()]
+/// Fields whose change alters a node's fill/shape outline.
+const SHAPE_GEOMETRY_INPUTS: &[&str] = &[
+    "size",
+    "cornerRadius",
+    "cornerSmoothing",
+    "rectangleCornerRadiiIndependent",
+    "rectangleTopLeftCornerRadius",
+    "rectangleTopRightCornerRadius",
+    "rectangleBottomRightCornerRadius",
+    "rectangleBottomLeftCornerRadius",
+    "arcData",
+    "count",
+    "starInnerScale",
+    "vectorData",
+];
+
+/// Fields whose change invalidates pre-baked `strokeGeometry` (mirrors `crates/render/src/stroke.rs`).
+const STROKE_SHAPE_INPUTS: &[&str] = &[
+    "strokeWeight",
+    "strokeAlign",
+    "strokeJoin",
+    "strokeCap",
+    "dashPattern",
+    "miterLimit",
+    "strokeMiterAngle",
+    "borderStrokeWeightsIndependent",
+    "borderTopWeight",
+    "borderRightWeight",
+    "borderBottomWeight",
+    "borderLeftWeight",
+];
+
+/// Fields whose change invalidates `derivedTextData` and text `strokeGeometry` on `TEXT` nodes.
+const TEXT_LAYOUT_INPUTS: &[&str] = &[
+    "textData",
+    "size",
+    "fontName",
+    "fontSize",
+    "textAlignHorizontal",
+    "textAlignVertical",
+    "textAutoResize",
+    "lineHeight",
+    "letterSpacing",
+    "paragraphIndent",
+    "paragraphSpacing",
+    "textCase",
+    "textDecoration",
+    "textTruncation",
+    "maxLines",
+    "listSpacing",
+    "leadingTrim",
+    "hangingPunctuation",
+    "hangingList",
+    "styleIdForText",
+    "inheritTextStyleID",
+];
+
+/// Whether `paints` contains at least one visible paint with non-zero opacity/alpha.
+pub(crate) fn has_visible_paints(paints: Option<&Val>) -> bool {
+    paints.is_some_and(|list| {
+        list.items().iter().any(|paint| {
+            if paint.flag("visible") == Some(false) {
+                return false;
+            }
+            if !paint
+                .num("opacity")
+                .is_none_or(|o| o.is_finite() && o > 0.0)
+            {
+                return false;
+            }
+            if paint.text("type").unwrap_or("SOLID") == "SOLID"
+                && let Some(a) = paint.path(&["color", "a"]).and_then(Val::as_f32)
+                && (!a.is_finite() || a <= 0.0)
+            {
+                return false;
+            }
+            true
+        })
+    })
+}
+
+fn patch_touches_any(set: &Obj, unset: &[String], keys: &[&str]) -> bool {
+    keys.iter()
+        .any(|k| set.contains_key(k) || unset.iter().any(|u| u == k))
+}
+
+fn push_unset_unique(unset: &mut Vec<String>, key: &str) {
+    if !unset.iter().any(|u| u == key) {
+        unset.push(key.to_string());
+    }
+}
+
+fn apply_patch_preview(before: &Val, set: &Obj, unset: &[String]) -> Val {
+    let mut preview = before.clone().into_owned();
+    if let Val::Obj(ref mut map) = preview {
+        for key in unset {
+            map.remove(key);
+        }
+        for (k, v) in set.iter() {
+            map.insert(k, v.clone());
+        }
+    }
+    preview
+}
+
+/// Enforces the shared derived-cache contract for a single `NodePatch::Modify` against `before`:
+/// - rebuilds stored parametric `fillGeometry` (or unsets stale `INSTANCE` `fillGeometry` on
+///   shape edits and stale `VECTOR` `fillGeometry` when `vectorData` changes) unless the patch
+///   itself sets or unsets `fillGeometry`;
+/// - unsets stale `derivedTextData` on `TEXT` nodes when text or typography inputs change;
+/// - unsets stale `strokeGeometry` when shape, text, stroke-shape, `fillGeometry`, or
+///   stroke-paint visibility transitions occur, while preserving valid `strokeGeometry` on
+///   color-only edits to already visibly stroked nodes and respecting caller-supplied caches.
+pub(crate) fn sync_node_derived_caches(
+    doc: &Document,
+    kind: &str,
+    before: &Val,
+    set: &mut Obj,
+    unset: &mut Vec<String>,
+    add_blobs: &mut Vec<Vec<u8>>,
+) {
+    let shape_touched = patch_touches_any(set, unset, SHAPE_GEOMETRY_INPUTS);
+    let stroke_shape_touched = patch_touches_any(set, unset, STROKE_SHAPE_INPUTS);
+    let text_touched = kind == "TEXT" && patch_touches_any(set, unset, TEXT_LAYOUT_INPUTS);
+
+    // 1. Keep stored parametric `fillGeometry` fresh (or drop stale `INSTANCE` / `VECTOR`
+    // `fillGeometry` when shape inputs change without a replacement `fillGeometry`).
+    if shape_touched
+        && before.get("fillGeometry").is_some()
+        && !set.contains_key("fillGeometry")
+        && !unset.iter().any(|u| u == "fillGeometry")
+    {
+        let preview = apply_patch_preview(before, set, unset);
+        if let Some(cmds) = rebuild_shape_geometry(kind, &preview) {
+            let blob_idx = doc.blobs.len() + add_blobs.len();
+            add_blobs.push(encode_path_commands(&cmds));
+            set.insert(
+                "fillGeometry",
+                Val::Arr(vec![make_path_entry(blob_idx, false)]),
+            );
+        } else if kind == "INSTANCE"
+            || (kind == "VECTOR" && patch_touches_any(set, unset, &["vectorData"]))
+        {
+            push_unset_unique(unset, "fillGeometry");
+        }
+    }
+
+    // 2. Drop stale `derivedTextData` on `TEXT` layout/content/typography edits.
+    if text_touched
+        && before.get("derivedTextData").is_some()
+        && !set.contains_key("derivedTextData")
+    {
+        push_unset_unique(unset, "derivedTextData");
+    }
+
+    // 3. Drop stale `strokeGeometry` unless the patch explicitly supplies a fresh one.
+    if before.get("strokeGeometry").is_some() && !set.contains_key("strokeGeometry") {
+        let fill_geom_touched = patch_touches_any(set, unset, &["fillGeometry"]);
+        let stroke_paint_transition = if patch_touches_any(set, unset, &["strokePaints"]) {
+            let had_visible = has_visible_paints(before.get("strokePaints"));
+            let after_paints = if set.contains_key("strokePaints") {
+                set.get("strokePaints")
+            } else if unset.iter().any(|u| u == "strokePaints") {
+                None
+            } else {
+                before.get("strokePaints")
+            };
+            let has_visible = has_visible_paints(after_paints);
+            !had_visible || !has_visible
+        } else {
+            false
+        };
+        if shape_touched
+            || stroke_shape_touched
+            || text_touched
+            || fill_geom_touched
+            || stroke_paint_transition
+        {
+            push_unset_unique(unset, "strokeGeometry");
+        }
+    }
+}
+
+/// Applies [`sync_node_derived_caches`] across every `NodePatch::Modify` in `txn` against `doc`
+/// (tracking intra-transaction updates when a batch touches the same node more than once).
+pub(crate) fn sync_derived_caches_in_txn(doc: &Document, txn: &mut Txn) {
+    let multi = txn.patches.len() > 1;
+    let mut overlay: HashMap<Guid, Option<(String, Val)>> = HashMap::new();
+    let add_blobs = &mut txn.add_blobs;
+
+    for (id, patch) in &mut txn.patches {
+        match patch {
+            NodePatch::Modify { set, unset } => {
+                let state: Option<(String, Val)> = if let Some(entry) = overlay.get(id) {
+                    entry.clone()
+                } else {
+                    doc.node(*id).map(|n| (n.kind.clone(), n.data.clone()))
+                };
+                if let Some((kind, before)) = state {
+                    sync_node_derived_caches(doc, &kind, &before, set, unset, add_blobs);
+                    if multi {
+                        let after = apply_patch_preview(&before, set, unset);
+                        let after_kind = after.text("type").map(str::to_string).unwrap_or(kind);
+                        overlay.insert(*id, Some((after_kind, after)));
+                    }
+                }
+            }
+            NodePatch::Create { data, .. } if multi => {
+                let kind = data.text("type").unwrap_or("").to_string();
+                overlay.insert(*id, Some((kind, data.clone())));
+            }
+            NodePatch::Delete if multi => {
+                overlay.insert(*id, None);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Updates `[lo, hi]` with the interior extremum of a 1D quadratic Bezier `(p0, c, p2)`.
+pub(crate) fn quad_extrema(p0: f64, c: f64, p2: f64, lo: &mut f64, hi: &mut f64) {
+    let denom = p0 - 2.0 * c + p2;
+    if denom.abs() > 1e-12 {
+        let t = (p0 - c) / denom;
+        if t > 0.0 && t < 1.0 {
+            let mt = 1.0 - t;
+            let v = mt * mt * p0 + 2.0 * mt * t * c + t * t * p2;
+            if v.is_finite() {
+                *lo = lo.min(v);
+                *hi = hi.max(v);
+            }
+        }
+    }
+}
+
+/// Updates `[lo, hi]` with the interior extrema of a 1D cubic Bezier `(p0, c1, c2, p3)`.
+pub(crate) fn cubic_extrema(p0: f64, c1: f64, c2: f64, p3: f64, lo: &mut f64, hi: &mut f64) {
+    let a = -p0 + 3.0 * c1 - 3.0 * c2 + p3;
+    let b = p0 - 2.0 * c1 + c2;
+    let c = c1 - p0;
+    let mut eval = |t: f64| {
+        if t > 0.0 && t < 1.0 {
+            let mt = 1.0 - t;
+            let v =
+                mt.powi(3) * p0 + 3.0 * mt * mt * t * c1 + 3.0 * mt * t * t * c2 + t.powi(3) * p3;
+            if v.is_finite() {
+                *lo = lo.min(v);
+                *hi = hi.max(v);
+            }
+        }
+    };
+    if a.abs() < 1e-12 {
+        if b.abs() > 1e-12 {
+            eval(-c / (2.0 * b));
+        }
     } else {
-        Vec::new()
+        let disc = b * b - a * c;
+        if disc >= 0.0 {
+            let s = disc.sqrt();
+            eval((-b + s) / a);
+            eval((-b - s) / a);
+        }
     }
 }
 
@@ -774,6 +1031,251 @@ mod tests {
         assert_eq!(
             solve_1d_constraint("SCALE", 200.0, 400.0, 30.0, 50.0),
             (60.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn instance_derived_geometry_contract_across_edits_autolayout_and_explicit_patches() {
+        use crate::edit::{EditOp, History, execute_edit_ops};
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/structure.fig");
+        let mut doc = Document::open(path).unwrap();
+        let page = doc.pages[0];
+        let mut history = History::new(30);
+
+        let master = execute_edit_ops(
+            &mut doc,
+            &mut history,
+            &[EditOp::CreateShape {
+                id: None,
+                kind: "FRAME".into(),
+                parent: page,
+                name: Some("Card".into()),
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: 40.0,
+                corner_radius: 0.0,
+                fill_hex: Some("#FF0000".into()),
+                count: None,
+                star_inner_scale: None,
+            }],
+            None,
+            None,
+            false,
+        )
+        .unwrap()
+        .0
+        .created_ids[0];
+        execute_edit_ops(
+            &mut doc,
+            &mut history,
+            &[EditOp::CreateComponent { frame: master }],
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        let inst = execute_edit_ops(
+            &mut doc,
+            &mut history,
+            &[EditOp::InstantiateComponent {
+                symbol: master,
+                parent: page,
+                x: 0.0,
+                y: 0.0,
+            }],
+            None,
+            None,
+            false,
+        )
+        .unwrap()
+        .0
+        .created_ids[0];
+
+        let seed_geom = |doc: &mut Document, id: Guid| -> usize {
+            let mut t = Txn::new("seed prebaked instance fillGeometry + strokeGeometry");
+            let blob = doc.blobs.len();
+            t.add_blobs
+                .push(encode_path_commands(&rounded_rect_commands(
+                    80.0, 40.0, [0.0; 4], 0.0,
+                )));
+            t.set_field(
+                id,
+                "fillGeometry",
+                Val::Arr(vec![make_path_entry(blob, false)]),
+            );
+            t.set_field(
+                id,
+                "strokeGeometry",
+                Val::Arr(vec![make_path_entry(blob, true)]),
+            );
+            doc.apply_txn(&t).unwrap();
+            blob
+        };
+
+        // Non-shape edit preserves pre-baked fillGeometry.
+        seed_geom(&mut doc, inst);
+        execute_edit_ops(
+            &mut doc,
+            &mut history,
+            &[EditOp::SetSolidFill {
+                target: inst,
+                hex: Some("#00FF00".into()),
+            }],
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(
+            doc.node(inst).unwrap().data.get("fillGeometry").is_some(),
+            "fill-color edit needlessly dropped INSTANCE fillGeometry"
+        );
+
+        // Manual Resize drops stale fillGeometry and strokeGeometry.
+        execute_edit_ops(
+            &mut doc,
+            &mut history,
+            &[EditOp::Resize {
+                target: inst,
+                width: 140.0,
+                height: 40.0,
+            }],
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(doc.node(inst).unwrap().data.get("fillGeometry").is_none());
+        assert!(doc.node(inst).unwrap().data.get("strokeGeometry").is_none());
+
+        // SetCornerRadii drops stale fillGeometry and strokeGeometry.
+        seed_geom(&mut doc, inst);
+        execute_edit_ops(
+            &mut doc,
+            &mut history,
+            &[EditOp::SetCornerRadii {
+                target: inst,
+                radii: [12.0, 8.0, 12.0, 8.0],
+                smoothing: None,
+            }],
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(doc.node(inst).unwrap().data.get("fillGeometry").is_none());
+        assert!(doc.node(inst).unwrap().data.get("strokeGeometry").is_none());
+
+        // PatchRaw changing size + cornerRadius WITHOUT fillGeometry drops stale fillGeometry.
+        seed_geom(&mut doc, inst);
+        let drop_op: EditOp = serde_json::from_value(serde_json::json!({
+            "op": "patch_raw",
+            "target": inst.to_string(),
+            "set": {
+                "size": { "x": 160.0, "y": 50.0 },
+                "cornerRadius": 6.0
+            }
+        }))
+        .unwrap();
+        execute_edit_ops(&mut doc, &mut history, &[drop_op], None, None, false).unwrap();
+        assert!(doc.node(inst).unwrap().data.get("fillGeometry").is_none());
+
+        // PatchRaw supplying explicit authoritative fillGeometry (and strokeGeometry) preserves it.
+        let seeded_blob = seed_geom(&mut doc, inst);
+        let auth_op: EditOp = serde_json::from_value(serde_json::json!({
+            "op": "patch_raw",
+            "target": inst.to_string(),
+            "set": {
+                "size": { "x": 200.0, "y": 60.0 },
+                "cornerRadius": 20.0,
+                "fillGeometry": [{
+                    "windingRule": "NONZERO",
+                    "commandsBlob": seeded_blob,
+                    "styleID": 0
+                }],
+                "strokeGeometry": [{
+                    "windingRule": "ODD",
+                    "commandsBlob": seeded_blob,
+                    "styleID": 0
+                }]
+            }
+        }))
+        .unwrap();
+        execute_edit_ops(&mut doc, &mut history, &[auth_op], None, None, false).unwrap();
+        let data = &doc.node(inst).unwrap().data;
+        assert_eq!(
+            data.get("fillGeometry").unwrap().items()[0]
+                .get("commandsBlob")
+                .and_then(Val::as_u32),
+            Some(seeded_blob as u32),
+            "PatchRaw explicit authoritative fillGeometry was overwritten or dropped"
+        );
+        assert_eq!(
+            data.get("strokeGeometry").unwrap().items()[0]
+                .get("commandsBlob")
+                .and_then(Val::as_u32),
+            Some(seeded_blob as u32),
+            "PatchRaw explicit authoritative strokeGeometry was overwritten or dropped"
+        );
+
+        // Direct apply_auto_layout_to_doc stretch also drops stale INSTANCE fillGeometry via shared owner.
+        let stack = execute_edit_ops(
+            &mut doc,
+            &mut history,
+            &[EditOp::CreateShape {
+                id: None,
+                kind: "FRAME".into(),
+                parent: page,
+                name: Some("AL".into()),
+                x: 0.0,
+                y: 100.0,
+                width: 220.0,
+                height: 60.0,
+                corner_radius: 0.0,
+                fill_hex: None,
+                count: None,
+                star_inner_scale: None,
+            }],
+            None,
+            None,
+            false,
+        )
+        .unwrap()
+        .0
+        .created_ids[0];
+        let al_inst = execute_edit_ops(
+            &mut doc,
+            &mut history,
+            &[EditOp::InstantiateComponent {
+                symbol: master,
+                parent: stack,
+                x: 0.0,
+                y: 0.0,
+            }],
+            None,
+            None,
+            false,
+        )
+        .unwrap()
+        .0
+        .created_ids[0];
+        seed_geom(&mut doc, al_inst);
+        let mut prep = Txn::new("direct autolayout setup");
+        prep.set_field(stack, "stackMode", Val::Enum(intern("HORIZONTAL")));
+        prep.set_field(al_inst, "stackChildPrimaryGrow", Val::Float(1.0));
+        doc.apply_txn(&prep).unwrap();
+        crate::edit::autolayout::apply_auto_layout_to_doc(&mut doc, Some(stack)).unwrap();
+        let stretched = &doc.node(al_inst).unwrap().data;
+        assert_eq!(
+            stretched.path(&["size", "x"]).and_then(Val::as_f32),
+            Some(220.0)
+        );
+        assert!(
+            stretched.get("fillGeometry").is_none(),
+            "direct apply_auto_layout_to_doc left stale INSTANCE fillGeometry"
         );
     }
 }

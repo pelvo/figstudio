@@ -577,6 +577,11 @@ struct App {
     pending_paste_text: Option<String>,
     /// A close or quit waiting for the user's answer about unsaved edits (`unsaved.rs`).
     unsaved: Option<unsaved::Pending>,
+    /// An in-flight asynchronous browser Save a copy (`unsaved.rs`).
+    #[cfg(any(target_arch = "wasm32", test))]
+    save_in_flight: Option<unsaved::InFlightSave>,
+    #[cfg(any(target_arch = "wasm32", test))]
+    next_save_id: u64,
     /// The user chose to quit without saving: the next window close goes through.
     quit_confirmed: bool,
     /// An update restart waiting on the unsaved-edits question: the bundle to start once
@@ -692,6 +697,10 @@ impl App {
             find: Default::default(),
             pending_paste_text: None,
             unsaved: None,
+            #[cfg(any(target_arch = "wasm32", test))]
+            save_in_flight: None,
+            #[cfg(any(target_arch = "wasm32", test))]
+            next_save_id: 1,
             quit_confirmed: false,
             #[cfg(not(target_arch = "wasm32"))]
             restart_after_quit: None,
@@ -849,14 +858,33 @@ impl App {
             // On the Recents page (after the last space) it stays.
             let home = self.active >= self.tabs.len();
             let closed = self.tabs.remove(i);
+            if self.unsaved == Some(unsaved::Pending::Tab(closed.id)) {
+                self.unsaved = None;
+            }
             #[cfg(target_arch = "wasm32")]
             web::forget_upload(closed.id);
             self.workers.close_tab(closed.id);
-            let instance = closed.doc.instance;
+            let (lineage, instance) = (closed.doc.lineage, closed.doc.instance);
+            if !self.tabs.iter().any(|t| t.doc.lineage == lineage) {
+                self.workers.close_document(lineage);
+            }
             if !self.tabs.iter().any(|t| t.doc.instance == instance) {
-                self.workers.close_document(instance);
                 // Its picture may be what the next file fades in over (`canvas_card`).
-                self.tiles_closed.push(instance);
+                let mut forget = |doc: u64| {
+                    if !self.tiles_closed.contains(&doc) {
+                        self.tiles_closed.push(doc);
+                    }
+                };
+                forget(instance);
+                for layer in closed.draw_layers() {
+                    forget(layer.doc);
+                }
+                if let Some(preview) = &closed.preview {
+                    forget(preview.drawn.0);
+                    for &doc in preview.complete.values() {
+                        forget(doc);
+                    }
+                }
             }
             if home {
                 self.active = self.tabs.len();
@@ -958,32 +986,62 @@ impl App {
     }
 
     /// Saves a `.fig` copy of the active tab (never overwriting the original unless explicitly
-    /// picked in the save dialog). Returns whether a copy was written.
-    fn save_copy(&mut self, ctx: &egui::Context) -> bool {
+    /// picked in the save dialog).
+    fn save_copy(&mut self, ctx: &egui::Context) {
+        self.save_copy_for(ctx, false);
+    }
+
+    /// Saves a `.fig` copy of the active tab and routes its result through
+    /// [`App::finish_save_copy`], closing the tab only when `close_after` is set and the saved
+    /// snapshot still matches the tab on completion.
+    pub(crate) fn save_copy_for(&mut self, ctx: &egui::Context, close_after: bool) {
+        let Some(snapshot) = self.tabs.get(self.active).map(unsaved::SaveSnapshot::of) else {
+            return;
+        };
+        #[cfg(any(target_arch = "wasm32", test))]
+        if let Some(action) = self.check_in_flight_save(snapshot, close_after) {
+            self.handle_in_flight_save_action(ctx, snapshot, close_after, action);
+            return;
+        }
         let Some(tab) = self.tabs.get(self.active) else {
-            return false;
+            return;
         };
         let stem = tab.title().replace(['/', '\\'], "_");
         let default_name = format!("{stem}-edited.fig");
         #[cfg(target_arch = "wasm32")]
         {
-            match tab.doc.to_bytes() {
-                Ok(bytes) => match web::download(&default_name, "application/octet-stream", &bytes)
-                {
-                    Ok(()) => {
-                        self.toast(ctx, format!("Downloaded {default_name}"), false);
-                        true
+            if tab.doc.is_lazy() {
+                let doc = tab.doc.clone();
+                match self.begin_async_save_copy(snapshot, close_after) {
+                    Ok(save_id) => {
+                        match self
+                            .web
+                            .save_lazy_copy(ctx, save_id, snapshot.tab, doc, default_name)
+                        {
+                            Ok(()) => self.toast(ctx, "Saving copy…", false),
+                            Err(e) => self.complete_async_save_copy(
+                                ctx,
+                                save_id,
+                                unsaved::SaveOutcome::Err(e.into()),
+                            ),
+                        }
                     }
-                    Err(e) => {
-                        self.toast(ctx, e.to_string(), true);
-                        false
+                    Err(action) => {
+                        self.handle_in_flight_save_action(ctx, snapshot, close_after, action);
                     }
-                },
-                Err(e) => {
-                    self.toast(ctx, e.to_string(), true);
-                    false
                 }
+                return;
             }
+            let outcome = match tab.doc.to_bytes() {
+                Ok(bytes) => {
+                    match web::download(&default_name, "application/octet-stream", &bytes) {
+                        Ok(()) => unsaved::SaveOutcome::Downloaded(default_name),
+                        Err(e) => unsaved::SaveOutcome::Err(e.to_string()),
+                    }
+                }
+                Err(e) => unsaved::SaveOutcome::Err(e.to_string()),
+            };
+            self.finish_save_copy(ctx, snapshot, close_after, outcome);
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -1001,21 +1059,18 @@ impl App {
                 }
                 dialog.save_file()
             };
-            let Some(path) = chosen else {
-                return false;
+            let outcome = match chosen {
+                None => unsaved::SaveOutcome::Cancelled,
+                Some(path) => {
+                    let lazy_src = tab.real_path.exists().then_some(tab.real_path.as_path());
+                    match tab.doc.save_copy_checked(lazy_src, &path, true, false) {
+                        // A copy does not hold the tab's edits: the tab stays unsaved.
+                        Ok(saved_to) => unsaved::SaveOutcome::Saved(saved_to.display().to_string()),
+                        Err(e) => unsaved::SaveOutcome::Err(e.to_string()),
+                    }
+                }
             };
-            let lazy_src = tab.real_path.exists().then_some(tab.real_path.as_path());
-            match tab.doc.save_copy_checked(lazy_src, &path, true, false) {
-                // A copy does not hold the tab's edits: the tab stays unsaved.
-                Ok(saved_to) => {
-                    self.toast(ctx, format!("Saved copy to {}", saved_to.display()), false);
-                    true
-                }
-                Err(e) => {
-                    self.toast(ctx, format!("Could not save copy: {e}"), true);
-                    false
-                }
-            }
+            self.finish_save_copy(ctx, snapshot, close_after, outcome);
         }
     }
 
@@ -1299,9 +1354,16 @@ impl App {
                 Err(e) => self.toast(ctx, figstudio_fig::one_line(e.as_ref()), true),
             }
         }
+        while let Ok(done) = self.web.saves.try_recv() {
+            self.complete_async_save_copy(ctx, done.id, done.outcome);
+        }
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        // The unsaved-edits question is modal: its own buttons and Escape only.
+        if self.unsaved.is_some() {
+            return;
+        }
         // Recording a new shortcut in Settings: every key goes there.
         if self.settings.recording().is_some() {
             return;
@@ -1310,10 +1372,6 @@ impl App {
         // none, so a shortcut pressed right after closing it works).
         if self.onboarding.sheet_open() {
             self.welcome_keys(ctx);
-            return;
-        }
-        // The unsaved-edits question is modal: its own buttons and Escape only.
-        if self.unsaved.is_some() {
             return;
         }
         let keys = |b: keymap::Binding| self.prefs.keymap.get(b);
@@ -1449,10 +1507,16 @@ impl App {
         for action in run {
             self.apply(action, ctx);
         }
-        // Escape closes the find bar first, also when its field no longer has focus (a
-        // click on the canvas took it); the next one clears the selection.
+        // Escape cancels an active canvas drag first (keeping selection), then Preview, then
+        // the find bar, and finally clears the selection.
         if !quiet && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
             if let Some(tab) = self
+                .tabs
+                .get_mut(self.active)
+                .filter(|t| t.edit_drag.is_some())
+            {
+                crate::editor::cancel_edit_drag(tab);
+            } else if let Some(tab) = self
                 .tabs
                 .get_mut(self.active)
                 .filter(|t| t.preview.is_some())
@@ -1625,7 +1689,9 @@ impl App {
             self.toast(&ctx, error, true);
         }
         // A shortcut being recorded takes the keys before anything else sees them.
-        self.record_shortcut(&ctx);
+        if self.unsaved.is_none() {
+            self.record_shortcut(&ctx);
+        }
         // Polled first, so a listing that came back this frame is not still counted as
         // blocked for the links taken next.
         self.poll_link_searches(&ctx);
@@ -1636,6 +1702,27 @@ impl App {
         // Ahead of the shortcuts: the dialog's Escape must be consumed first.
         self.mcp.confirm(&ctx);
         let unsaved_up = self.unsaved_confirm(&ctx);
+        let unsaved_blocked = unsaved_up || self.unsaved.is_some();
+        if unsaved_blocked {
+            // One global input barrier behind the unsaved-edits modal: unsaved_confirm already
+            // handled its own buttons, Escape, and focus capture on Order::Debug; strip raw
+            // keyboard, text, clipboard, scroll, and zoom events so nothing behind it acts.
+            ctx.input_mut(|i| {
+                i.events.retain(|e| {
+                    !matches!(
+                        e,
+                        egui::Event::Key { .. }
+                            | egui::Event::Text(_)
+                            | egui::Event::Paste(_)
+                            | egui::Event::Copy
+                            | egui::Event::Cut
+                            | egui::Event::Ime(_)
+                            | egui::Event::MouseWheel { .. }
+                            | egui::Event::Zoom(_)
+                    )
+                });
+            });
+        }
         // Before anything this frame moves focus (the command field, the welcome sheet): a
         // modal that opened remembers what had focus; one that closed gives it back at the
         // end of the frame (`give_focus_back`).
@@ -1644,7 +1731,9 @@ impl App {
         crate::a11y::restore_focus(&ctx, "welcome", self.onboarding.sheet_open());
         crate::a11y::restore_focus(&ctx, "command-bar", self.command.is_open());
         crate::a11y::restore_focus(&ctx, "settings", self.settings.is_open());
-        self.shortcuts(&ctx);
+        if !unsaved_blocked {
+            self.shortcuts(&ctx);
+        }
         self.menu_windows(&ctx);
         let space_held = ctx.input(|i| i.key_down(Key::Space)) && !ctx.egui_wants_keyboard_input();
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
@@ -1750,11 +1839,26 @@ impl App {
         }
         crate::a11y::panel_handle(&ctx, "properties", "Resize properties");
 
+        let unsaved_blocked = unsaved_blocked || self.unsaved.is_some();
+        let canvas_inert = unsaved_blocked
+            || self.settings.is_up(&ctx)
+            || self.command.is_up(&ctx)
+            || self.onboarding.sheet_up(&ctx)
+            || self.update_notes_up()
+            || self.space_popover_up()
+            || egui::Popup::is_any_open(&ctx);
         let mut cursor = None;
         egui::CentralPanel::no_frame().show(ui, |ui| {
-            cursor = self.canvas_card(ui, space_held, unsaved_up || self.unsaved.is_some());
+            cursor = self.canvas_card(ui, space_held, canvas_inert);
         });
         self.cursor = cursor;
+        if let Some(error) = self
+            .tabs
+            .get_mut(self.active)
+            .and_then(|t| t.pending_edit_error.take())
+        {
+            self.toast(&ctx, error, true);
+        }
         let tab = self.tabs.get_mut(self.active);
         for (text, error) in region_png::drive(&ctx, &self.workers, &self.png, tab) {
             self.toast(&ctx, text, error);

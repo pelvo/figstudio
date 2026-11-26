@@ -52,3 +52,48 @@ fn clear_forgets_the_rectangle_and_the_menu_choice() {
     m.clear();
     assert!(m.rect.is_none() && m.page.is_none() && m.anchor.is_none() && !m.menu);
 }
+
+#[test]
+fn interrupted_marquee_drag_clears_partial_rectangle() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/structure.fig");
+    let doc = std::sync::Arc::new(figstudio_fig::Document::open(&path).unwrap());
+    let mut tab = crate::tab::Tab::new(1, path, doc, None, std::time::Duration::ZERO);
+    let page = tab.page;
+    tab.marquee = Marquee {
+        rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(20.0, 20.0))),
+        page: Some(page),
+        anchor: Some(Pos2::ZERO),
+        menu: false,
+    };
+    let ctx = egui::Context::default();
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let resp = ui.allocate_rect(
+            Rect::from_min_size(Pos2::ZERO, egui::vec2(200.0, 200.0)),
+            egui::Sense::click_and_drag(),
+        );
+        update(ui, &resp, &mut tab, Pos2::ZERO, false);
+    });
+    out.textures_delta.clear();
+    assert!(
+        tab.marquee.rect().is_none(),
+        "an in-progress marquee drag interrupted by drawing=false must clear its partial rect"
+    );
+
+    // By contrast, a finished marquee (anchor == None) survives panning (drawing == false).
+    tab.marquee = Marquee {
+        rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(20.0, 20.0))),
+        page: Some(page),
+        anchor: None,
+        menu: false,
+    };
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let resp = ui.allocate_rect(
+            Rect::from_min_size(Pos2::ZERO, egui::vec2(200.0, 200.0)),
+            egui::Sense::click_and_drag(),
+        );
+        update(ui, &resp, &mut tab, Pos2::ZERO, false);
+    });
+    out.textures_delta.clear();
+    assert!(tab.marquee.rect().is_some());
+}

@@ -190,3 +190,15 @@ export async function droppedHandle(name, size, modified) {
     return null;
   }
 }
+
+/** Whether kept handle `id` refers to the same file as `other`. */
+export async function isSameHandle(id, other) {
+  if (id == null || !other) return false;
+  const h = await run(HANDLES, "readonly", (s) => s.get(id));
+  if (!h) return false;
+  try {
+    return await h.isSameEntry(other);
+  } catch {
+    return false;
+  }
+}

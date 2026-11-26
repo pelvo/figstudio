@@ -15,7 +15,10 @@ use figstudio_fig::{Guid, Val};
 
 use crate::tab::Tab;
 
-pub use canvas_gizmos::{CanvasDrag, canvas_gizmos_and_input};
+pub use canvas_gizmos::{
+    CanvasDrag, GizmoFrame, cancel_edit_drag, canvas_gizmos_input, canvas_gizmos_paint,
+    end_edit_drag,
+};
 pub use clipboard_io::{copy_selection_for_figma, paste_from_clipboard_or_text};
 pub use inspector::{properties_edit_controls, properties_history_bar};
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
@@ -39,6 +42,28 @@ pub fn apply_tab_ops(
         tab.motion_preview = None;
     }
     Ok(report.created_ids)
+}
+
+/// Records an interactive UI edit failure on `tab.pending_edit_error` so the app shows a toast.
+pub(super) fn record_tab_error<T>(tab: &mut Tab, res: Result<T, String>) -> Option<T> {
+    match res {
+        Ok(v) => Some(v),
+        Err(err) => {
+            tab.pending_edit_error = Some(err);
+            None
+        }
+    }
+}
+
+/// Applies `ops` from an interactive canvas or inspector control, recording any error for toast display.
+pub(super) fn apply_tab_ops_ui(
+    tab: &mut Tab,
+    ops: &[EditOp],
+    label: Option<&str>,
+    coalesce_key: Option<&str>,
+) -> Option<Vec<Guid>> {
+    let res = apply_tab_ops(tab, ops, label, coalesce_key);
+    record_tab_error(tab, res)
 }
 
 /// Undoes the last edit on `tab` and updates `dirty_unsaved` against `tab.saved_revision`.

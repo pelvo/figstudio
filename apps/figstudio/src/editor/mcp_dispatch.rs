@@ -15,7 +15,7 @@ use super::{redo_tab, undo_tab};
 /// Shared document mutation command executed identically across Desktop Live and Browser Relay.
 #[cfg_attr(
     not(any(test, target_arch = "wasm32", feature = "mcp")),
-    allow(dead_code)
+    expect(dead_code, reason = "used only with feature mcp, wasm32, or tests")
 )]
 pub(crate) enum TabMutation {
     ApplyEdits {
@@ -43,7 +43,7 @@ pub(crate) enum TabMutation {
 
 #[cfg_attr(
     not(any(test, target_arch = "wasm32", feature = "mcp")),
-    allow(dead_code)
+    expect(dead_code, reason = "used only with feature mcp, wasm32, or tests")
 )]
 fn execute_tab_mutation(tab: &mut Tab, cmd: TabMutation) -> Result<Value, String> {
     match cmd {

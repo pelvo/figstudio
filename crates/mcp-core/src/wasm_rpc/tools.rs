@@ -30,15 +30,30 @@ struct Input {
     ops: Option<Vec<Value>>,
     data_base64: Option<String>,
     html: Option<String>,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "validated during JSON deserialization before forwarding raw args to mutate_tab"
+    )]
     parent_id: Option<String>,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "validated during JSON deserialization before forwarding raw args to mutate_tab"
+    )]
     dx: Option<f64>,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "validated during JSON deserialization before forwarding raw args to mutate_tab"
+    )]
     dy: Option<f64>,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "validated during JSON deserialization before forwarding raw args to mutate_tab"
+    )]
     label: Option<String>,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "validated during JSON deserialization before forwarding raw args to mutate_tab"
+    )]
     dry_run: Option<bool>,
 }
 

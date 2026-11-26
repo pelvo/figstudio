@@ -129,3 +129,56 @@ fn duplicate_stems_require_paths() {
     );
     assert!(FileRegistry::new(vec![]).resolve(None).is_err());
 }
+
+#[tokio::test]
+async fn mutate_doc_preserves_the_shader_host_registered_at_open() {
+    use figstudio_render::shader::ShaderFills;
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let fig = dir.path().join("playground.fig");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/shaders.fig"),
+        &fig,
+    )
+    .unwrap();
+    let shaders = dir.path().join("playground.fig.shaders");
+    std::fs::create_dir(&shaders).unwrap();
+    let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/shader-sources/concentric");
+    let mut z = zip::ZipWriter::new(
+        std::fs::File::create(shaders.join("Concentric-patterns-source.zip")).unwrap(),
+    );
+    for name in ["features.json", "main.ts"] {
+        z.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        z.write_all(&std::fs::read(src_dir.join(name)).unwrap())
+            .unwrap();
+    }
+    z.finish().unwrap();
+
+    let files = FileRegistry::new(vec![fig]);
+    let opened = files.open(None).await.unwrap();
+    let rendering = files.rendering(None, false).unwrap();
+    let host: Arc<dyn ShaderFills> = Arc::new(figstudio_shader::Fills::new(Vec::new()));
+    rendering.images.set_shaders(opened.lineage, host.clone());
+    assert_eq!(Arc::strong_count(&host), 2);
+
+    files
+        .mutate_doc(None, |doc, _, _, _| {
+            let nodes = doc.nodes.clone();
+            doc.set_nodes(nodes).unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let edited = files.open(None).await.unwrap();
+    assert_eq!(edited.lineage, opened.lineage);
+    assert_ne!(edited.instance, opened.instance);
+    assert_eq!(
+        Arc::strong_count(&host),
+        2,
+        "mutate_doc reloaded and replaced the shader host already registered for this lineage"
+    );
+}

@@ -38,7 +38,7 @@ pub(super) fn compile_single_op(
             count,
             star_inner_scale,
         } => {
-            let gid = id.unwrap_or_else(|| alloc.next_guid());
+            let gid = alloc.take_or_next(*id);
             create_shape_node(
                 doc,
                 txn,
@@ -71,7 +71,7 @@ pub(super) fn compile_single_op(
             font_size,
             fill_hex,
         } => {
-            let gid = id.unwrap_or_else(|| alloc.next_guid());
+            let gid = alloc.take_or_next(*id);
             create_text_node(
                 doc,
                 txn,
@@ -92,7 +92,7 @@ pub(super) fn compile_single_op(
             let root = doc
                 .root
                 .ok_or_else(|| FigError::malformed("document has no root"))?;
-            let gid = id.unwrap_or_else(|| alloc.next_guid());
+            let gid = alloc.take_or_next(*id);
             let last_pos = doc
                 .pages
                 .last()

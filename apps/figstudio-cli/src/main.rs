@@ -423,7 +423,7 @@ fn run(args: Args) -> Result<()> {
             let mut rendering = figstudio_mcp_core::rendering::Rendering::default();
             rendering.system_fonts = args.system_fonts;
             if let Some(fills) = figstudio_shader::Fills::for_file(&args.file) {
-                rendering.images.set_shaders(doc.instance, fills);
+                rendering.images.set_shaders(doc.lineage, fills);
             }
             let started = std::time::Instant::now();
             let figstudio_mcp_core::motion_export::Exported { bytes, plan, stats } =

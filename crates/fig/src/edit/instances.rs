@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::edit::geometry::matrix_2x3;
 use crate::edit::{GuidAlloc, Txn, fractional};
-use crate::resolve::{STYLED_PAINTS, resolve_instance};
+use crate::resolve::{
+    SHAPE_GEOMETRY, STYLED_PAINTS, SWAP_INHERITED, inherit_swapped, resolve_instance,
+    swap_inherited_patch, symbol_id,
+};
 use crate::{Document, FigError, Guid, Node, Obj, Val, intern};
 
 /// Typed component property value for `componentPropAssignments`.
@@ -96,7 +99,14 @@ pub fn set_instance_override(
     let mut set = Obj::new();
     set.insert("symbolData", sym_data);
 
-    // Strip stale derivedSymbolData entry for this path so layout/ink recomputes cleanly.
+    strip_stale_derived(inst, override_path, &mut set);
+    txn.modify(outermost_instance, set, Vec::new());
+    Ok(())
+}
+
+/// Drops the `derivedSymbolData` entry of `override_path` (stale once its override changes)
+/// so layout and ink recompute cleanly; entries of other paths stay.
+fn strip_stale_derived(inst: &Node, override_path: &[Guid], set: &mut Obj) {
     if let Some(derived) = inst.data.get("derivedSymbolData") {
         let kept: Vec<Val> = derived
             .items()
@@ -106,8 +116,6 @@ pub fn set_instance_override(
             .collect();
         set.insert("derivedSymbolData", Val::Arr(kept));
     }
-    txn.modify(outermost_instance, set, Vec::new());
-    Ok(())
 }
 
 /// Resets one field, one `override_path`, or all overrides on `outermost_instance`.
@@ -143,12 +151,28 @@ pub fn reset_instance_override(
         (None, _) => {
             sym_data.set("symbolOverrides", Val::Arr(Vec::new()));
             set.insert("symbolData", sym_data);
+            if let (Some(cur_sym), Some(orig_sym)) = (
+                inst.data.get("overriddenSymbolID").and_then(Val::as_guid),
+                inst.data
+                    .path(&["symbolData", "symbolID"])
+                    .and_then(Val::as_guid),
+            ) {
+                swap_inherited_patch(
+                    doc,
+                    &inst.data,
+                    cur_sym,
+                    orig_sym,
+                    &AUTO_LAYOUT_CONTAINER,
+                    &mut set,
+                    &mut unset,
+                );
+            }
             for k in [
                 "overriddenSymbolID",
                 "componentPropAssignments",
                 "derivedSymbolData",
             ] {
-                if inst.data.get(k).is_some() {
+                if inst.data.get(k).is_some() && !unset.iter().any(|u| u == k) {
                     unset.push(k.to_string());
                 }
             }
@@ -164,6 +188,7 @@ pub fn reset_instance_override(
                 .collect();
             sym_data.set("symbolOverrides", Val::Arr(kept));
             set.insert("symbolData", sym_data);
+            strip_stale_derived(inst, path, &mut set);
         }
         (Some(path), Some(f)) => {
             let mut out = Vec::new();
@@ -185,6 +210,7 @@ pub fn reset_instance_override(
             }
             sym_data.set("symbolOverrides", Val::Arr(out));
             set.insert("symbolData", sym_data);
+            strip_stale_derived(inst, path, &mut set);
         }
     }
     txn.modify(outermost_instance, set, unset);
@@ -291,6 +317,20 @@ pub fn switch_instance_variant(
     }
 
     let mut set = Obj::new();
+    let mut unset = if inst.data.get("derivedSymbolData").is_some() {
+        vec!["derivedSymbolData".to_string()]
+    } else {
+        Vec::new()
+    };
+    swap_inherited_patch(
+        doc,
+        &inst.data,
+        cur_sym_id,
+        target_id,
+        &AUTO_LAYOUT_CONTAINER,
+        &mut set,
+        &mut unset,
+    );
     set.insert("overriddenSymbolID", target_id.to_val());
     if let Some(mut sym_data) = inst.data.get("symbolData").cloned().map(Val::into_owned) {
         if let Some(Val::Arr(overrides)) = sym_data.get_mut("symbolOverrides") {
@@ -307,11 +347,6 @@ pub fn switch_instance_variant(
         }
         set.insert("symbolData", sym_data);
     }
-    let unset = if inst.data.get("derivedSymbolData").is_some() {
-        vec!["derivedSymbolData".to_string()]
-    } else {
-        Vec::new()
-    };
     txn.modify(instance_id, set, unset);
     Ok(target_id)
 }
@@ -323,25 +358,33 @@ pub fn swap_instance_symbol(
     instance_id: Guid,
     new_symbol_id: Guid,
 ) -> Result<(), FigError> {
-    if doc.node(instance_id).is_none_or(|n| n.kind != "INSTANCE") {
+    let Some(inst) = doc.node(instance_id).filter(|n| n.kind == "INSTANCE") else {
         return Err(FigError::malformed(format!(
             "node {instance_id} is not INSTANCE"
         )));
-    }
+    };
     if doc.node(new_symbol_id).is_none_or(|n| n.kind != "SYMBOL") {
         return Err(FigError::malformed(format!(
             "node {new_symbol_id} is not SYMBOL"
         )));
     }
-    let unset = if doc
-        .node(instance_id)
-        .is_some_and(|n| n.data.get("derivedSymbolData").is_some())
-    {
+    let mut unset = if inst.data.get("derivedSymbolData").is_some() {
         vec!["derivedSymbolData".to_string()]
     } else {
         Vec::new()
     };
     let mut set = Obj::new();
+    if let Some(cur_sym_id) = symbol_id(&inst.data) {
+        swap_inherited_patch(
+            doc,
+            &inst.data,
+            cur_sym_id,
+            new_symbol_id,
+            &AUTO_LAYOUT_CONTAINER,
+            &mut set,
+            &mut unset,
+        );
+    }
     set.insert("overriddenSymbolID", new_symbol_id.to_val());
     txn.modify(instance_id, set, unset);
     Ok(())
@@ -369,22 +412,18 @@ pub fn detach_instance(
     let resolved = resolve_instance(doc, instance_id).map_err(|e| {
         FigError::malformed(format!("cannot resolve instance {instance_id}: {e:?}"))
     })?;
+    if resolved.truncated {
+        // Deleting the instance after copying a partial tree would lose the rest.
+        return Err(FigError::malformed(format!(
+            "instance {instance_id} is too large to detach"
+        )));
+    }
 
     let new_root_id = alloc.next_guid();
     let mut root_data = inst.data.clone().into_owned();
+    materialize_instance_as_frame(doc, &inst.data, &mut root_data);
     if let Val::Obj(ref mut o) = root_data {
         o.insert("guid", new_root_id.to_val());
-        o.insert("type", Val::Enum(intern("FRAME")));
-        for strip in [
-            "symbolData",
-            "derivedSymbolData",
-            "derivedSymbolDataLayoutVersion",
-            "overriddenSymbolID",
-            "componentPropAssignments",
-            "overrideKey",
-        ] {
-            o.remove(strip);
-        }
     }
     txn.create_node(new_root_id, root_data);
 
@@ -404,20 +443,12 @@ pub fn detach_instance(
             .get(idx + 1)
             .is_some_and(|next| next.level > r.level);
 
+        if data.text("type") == Some("INSTANCE") && has_expanded_kids {
+            let base = doc.node(r.node).map_or(&r.data, |n| &n.data);
+            materialize_instance_as_frame(doc, base, &mut data);
+        }
         if let Val::Obj(ref mut o) = data {
             o.insert("guid", cid.to_val());
-            if o.get("type").and_then(Val::as_str) == Some("INSTANCE") && has_expanded_kids {
-                o.insert("type", Val::Enum(intern("FRAME")));
-                for strip in [
-                    "symbolData",
-                    "derivedSymbolData",
-                    "derivedSymbolDataLayoutVersion",
-                    "overriddenSymbolID",
-                    "componentPropAssignments",
-                ] {
-                    o.remove(strip);
-                }
-            }
             o.remove("overrideKey");
             let prev_entry = sibling_prev.entry(parent_guid).or_insert(None);
             let pos = fractional::between(prev_entry.as_deref(), None);
@@ -494,13 +525,20 @@ pub fn instantiate_component(
         ]))
     });
 
+    // An instance draws its own fills, strokes, corners and effects around the component's
+    // children, so it starts with the master's (as `inherit_swapped` expects). Pre-baked
+    // `SHAPE_GEOMETRY` (`fillGeometry`/`strokeGeometry`) is deliberately omitted so the
+    // renderer derives the box from `size` and corner radii through resize, stretch, and swap.
     let mut obj = Obj::new();
+    inherit_missing(&mut obj, sym, &SWAP_INHERITED);
     obj.insert("guid", inst_id.to_val());
     obj.insert("phase", Val::Enum(intern("CREATED")));
     obj.insert("type", Val::Enum(intern("INSTANCE")));
     obj.insert("name", Val::Str(sym.name.clone()));
     obj.insert("visible", Val::Bool(true));
-    obj.insert("opacity", Val::Float(1.0));
+    if obj.get("opacity").is_none() {
+        obj.insert("opacity", Val::Float(1.0));
+    }
     obj.insert("transform", matrix_2x3(x, y, 0.0));
     obj.insert("size", size);
     obj.insert(
@@ -520,6 +558,160 @@ pub fn instantiate_component(
     );
     txn.create_node(inst_id, Val::Obj(obj));
     Ok(inst_id)
+}
+
+/// Auto-Layout container fields (not the child fields): a detached frame needs them, an
+/// instance does not (its children are laid out inside the component).
+const AUTO_LAYOUT_CONTAINER: [&str; 24] = [
+    "stackMode",
+    "stackSpacing",
+    "stackCounterSpacing",
+    "stackPadding",
+    "stackHorizontalPadding",
+    "stackVerticalPadding",
+    "stackPaddingRight",
+    "stackPaddingBottom",
+    "stackPrimaryAlignItems",
+    "stackCounterAlignItems",
+    "stackJustify",
+    "stackAlign",
+    "stackPrimarySizing",
+    "stackCounterSizing",
+    "stackWidth",
+    "stackHeight",
+    "stackWrap",
+    "stackReverseZIndex",
+    "bordersTakeSpace",
+    "gridColumns",
+    "gridColumnGap",
+    "gridRowGap",
+    "minSize",
+    "maxSize",
+];
+
+/// Converts an `INSTANCE` payload (`data`, with its pre-override `base`) into a standalone
+/// `FRAME`, preserving active-master appearance and Auto-Layout container fields without
+/// snapping explicitly resized axes back to HUG.
+fn materialize_instance_as_frame(doc: &Document, base: &Val, data: &mut Val) {
+    inherit_swapped(doc, base, data);
+    let old_sym = base
+        .path(&["symbolData", "symbolID"])
+        .and_then(Val::as_guid);
+    let master = symbol_id(data).and_then(|id| doc.node(id));
+
+    if let Val::Obj(ref mut o) = *data {
+        if let Some(master) = master {
+            if let Some(old_id) = old_sym
+                && old_id != master.id
+                && let Some(old_master) = doc.node(old_id)
+            {
+                for &key in &AUTO_LAYOUT_CONTAINER {
+                    let own = base.get(key);
+                    if own == old_master.data.get(key)
+                        && o.get(key) == own
+                        && own != master.data.get(key)
+                    {
+                        match master.data.get(key) {
+                            Some(v) => {
+                                o.insert(key, v.clone());
+                            }
+                            None => {
+                                o.remove(key);
+                            }
+                        }
+                    }
+                }
+            }
+            inherit_missing(o, master, &SWAP_INHERITED);
+            inherit_missing(o, master, &AUTO_LAYOUT_CONTAINER);
+            fix_resized_hug_axes(o, master);
+        }
+        o.insert("type", Val::Enum(intern("FRAME")));
+        for strip in [
+            "symbolData",
+            "derivedSymbolData",
+            "derivedSymbolDataLayoutVersion",
+            "overriddenSymbolID",
+            "componentPropAssignments",
+            "overrideKey",
+        ] {
+            o.remove(strip);
+        }
+    }
+}
+
+/// Switches inherited HUG sizing to `FIXED` on any axis where the detached instance was
+/// resized away from its master, so the post-detach Auto-Layout pass keeps the user's size.
+fn fix_resized_hug_axes(o: &mut Obj, master: &Node) {
+    let horiz = match o.get("stackMode").and_then(Val::as_str) {
+        Some("HORIZONTAL" | "GRID") => true,
+        Some("VERTICAL") => false,
+        _ => return,
+    };
+    let Some((inst_w, inst_h)) = read_size_obj(o) else {
+        return;
+    };
+    let Some((master_w, master_h)) = read_size_val(&master.data) else {
+        return;
+    };
+    let w_resized = (inst_w - master_w).abs() > 1e-3;
+    let h_resized = (inst_h - master_h).abs() > 1e-3;
+    if !w_resized && !h_resized {
+        return;
+    }
+    let (primary_resized, counter_resized) = if horiz {
+        (w_resized, h_resized)
+    } else {
+        (h_resized, w_resized)
+    };
+    if primary_resized {
+        fix_hug_field(o, "stackPrimarySizing");
+    }
+    if counter_resized {
+        fix_hug_field(o, "stackCounterSizing");
+    }
+    if w_resized {
+        fix_hug_field(o, "stackWidth");
+    }
+    if h_resized {
+        fix_hug_field(o, "stackHeight");
+    }
+    for key in SHAPE_GEOMETRY {
+        o.remove(key);
+    }
+}
+
+fn fix_hug_field(o: &mut Obj, key: &'static str) {
+    if matches!(
+        o.get(key).and_then(Val::as_str),
+        Some("RESIZE_TO_FIT" | "RESIZE_TO_FIT_WITH_IMPLICIT_SIZE")
+    ) {
+        o.insert(key, Val::Enum(intern("FIXED")));
+    }
+}
+
+fn read_size_val(data: &Val) -> Option<(f64, f64)> {
+    let x = f64::from(data.path(&["size", "x"]).and_then(Val::as_f32)?);
+    let y = f64::from(data.path(&["size", "y"]).and_then(Val::as_f32)?);
+    Some((x, y))
+}
+
+fn read_size_obj(o: &Obj) -> Option<(f64, f64)> {
+    let size = o.get("size")?;
+    let x = f64::from(size.get("x").and_then(Val::as_f32)?);
+    let y = f64::from(size.get("y").and_then(Val::as_f32)?);
+    Some((x, y))
+}
+
+/// Copies each of `keys` that `master` has and `obj` lacks.
+fn inherit_missing(obj: &mut Obj, master: &Node, keys: &[&'static str]) {
+    for &key in keys {
+        if obj.get(key).is_none()
+            && let Some(value) = master.data.get(key)
+        {
+            obj.insert(key, value.clone());
+        }
+    }
 }
 
 /// The value of `field` in `instance`'s override entry for `override_path`, if set.

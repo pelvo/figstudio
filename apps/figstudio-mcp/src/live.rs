@@ -121,8 +121,8 @@ pub struct LiveFiles {
     wake: Arc<dyn Fn() + Send + Sync>,
     /// The app finds figma.com links itself ([`Command::OpenLink`]); the browser bridge cannot.
     opens_links: bool,
-    /// Per [`Document::instance`]: its own image cache, never the app's (shared in-flight
-    /// image requests could hang when the app closes a document).
+    /// Per [`Document::lineage`]: its own image cache and shaders, never the app's (shared
+    /// in-flight image requests could hang when the app closes a document).
     rendering: Mutex<HashMap<u64, Rendering>>,
 }
 
@@ -257,23 +257,18 @@ impl LiveFiles {
             .rendering
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        cache.retain(|instance, _| {
-            snapshot
-                .tabs
-                .iter()
-                .any(|tab| tab.doc.instance == *instance)
-        });
+        cache.retain(|lineage, _| snapshot.tabs.iter().any(|tab| tab.doc.lineage == *lineage));
         let tab = snapshot
             .tabs
             .iter()
-            .find(|tab| tab.doc.instance == doc.instance);
+            .find(|tab| tab.doc.lineage == doc.lineage);
         let mut rendering = match tab {
             Some(tab) => cache
-                .entry(doc.instance)
+                .entry(doc.lineage)
                 .or_insert_with(|| {
                     let images = Images::new(IMAGE_CACHE_BYTES);
                     if let Some(fills) = figstudio_shader::Fills::for_file(&tab.path) {
-                        images.set_shaders(doc.instance, fills);
+                        images.set_shaders(doc.lineage, fills);
                     }
                     Rendering::new(tab.path.clone(), images)
                 })

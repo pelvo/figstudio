@@ -10,6 +10,7 @@ pub mod clipboard;
 mod doc;
 pub mod edit;
 mod error;
+pub mod lazy_save;
 mod open;
 mod read;
 pub mod resolve;
