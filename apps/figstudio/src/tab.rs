@@ -64,6 +64,9 @@ pub struct Tab {
     /// Fit this node into view on the next canvas frame (`reveal_node` from an agent).
     pub fit_node: Option<Guid>,
     pub selection: Option<Guid>,
+    /// Further selected layers (Shift-click, box select), besides `selection`, the primary one
+    /// the panels show. `select` clears them. Use [`Tab::selected`] for the whole selection.
+    pub also: Vec<Guid>,
     /// Inner canvas target; panels and MCP retain the outermost instance selection.
     pub inner: Option<figstudio_fig::resolve::InstancePath>,
     pub text_select: Option<crate::text_select::Selection>,
@@ -255,6 +258,7 @@ impl Tab {
             fit_pending: true,
             fit_node: None,
             selection: None,
+            also: Vec::new(),
             inner: None,
             text_select: None,
             hover: None,

@@ -37,6 +37,7 @@ pub fn apply_tab_ops(
     if report.applied {
         tab.sync_unsaved();
         tab.motion_preview = None;
+        tab.prune_selection();
     }
     Ok(report.created_ids)
 }
@@ -48,12 +49,7 @@ pub fn undo_tab(tab: &mut Tab) -> Result<Option<String>, String> {
     if let Some((label, _)) = res {
         tab.sync_unsaved();
         tab.motion_preview = None;
-        if let Some(sel) = tab.selection
-            && tab.doc.node(sel).is_none()
-        {
-            tab.selection = None;
-            tab.inner = None;
-        }
+        tab.prune_selection();
         Ok(Some(label))
     } else {
         Ok(None)
@@ -67,54 +63,91 @@ pub fn redo_tab(tab: &mut Tab) -> Result<Option<String>, String> {
     if let Some((label, _)) = res {
         tab.sync_unsaved();
         tab.motion_preview = None;
+        tab.prune_selection();
         Ok(Some(label))
     } else {
         Ok(None)
     }
 }
 
-/// Duplicates the currently selected layer on `tab` with a `(24, 24)` offset.
-pub fn duplicate_selection(tab: &mut Tab) -> Result<String, String> {
-    let sel = tab
-        .selection
-        .ok_or_else(|| "Select a layer first to duplicate".to_string())?;
-    let ids = apply_tab_ops(
-        tab,
-        &[EditOp::DuplicateNode {
-            target: sel,
-            dx: 24.0,
-            dy: 24.0,
-        }],
-        Some("Duplicate layer"),
-        None,
-    )?;
-    if let Some(&first) = ids.first() {
-        tab.select(Some(first));
+/// The selected layers, or an error naming what needs a selection.
+fn selection_for(tab: &Tab, what: &str) -> Result<Vec<Guid>, String> {
+    let ids: Vec<Guid> = tab
+        .selected()
+        .into_iter()
+        .filter(|&id| id != tab.page)
+        .collect();
+    if ids.is_empty() {
+        return Err(format!("Select a layer first to {what}"));
     }
-    Ok("Duplicated layer".into())
+    Ok(ids)
 }
 
-/// Deletes the currently selected layer on `tab`.
-pub fn delete_selection(tab: &mut Tab) -> Result<String, String> {
-    let sel = tab
-        .selection
-        .ok_or_else(|| "Select a layer first to delete".to_string())?;
-    if sel == tab.page {
-        return Err("Cannot delete the current page root".into());
+/// `"“name”"` for one layer, `"n layers"` for several.
+fn describe(tab: &Tab, ids: &[Guid]) -> String {
+    match ids {
+        [one] => format!(
+            "“{}”",
+            tab.doc.node(*one).map(|n| n.name.as_str()).unwrap_or("")
+        ),
+        many => format!("{} layers", many.len()),
     }
-    let name = tab
-        .doc
-        .node(sel)
-        .map(|n| n.name.clone())
-        .unwrap_or_default();
-    apply_tab_ops(
-        tab,
-        &[EditOp::DeleteNode { target: sel }],
-        Some("Delete layer"),
-        None,
-    )?;
+}
+
+/// Duplicates the selected layers on `tab` with a `(24, 24)` offset and selects the copies.
+pub fn duplicate_selection(tab: &mut Tab) -> Result<String, String> {
+    let ids = selection_for(tab, "duplicate")?;
+    let ops: Vec<EditOp> = ids
+        .iter()
+        .map(|&target| EditOp::DuplicateNode {
+            target,
+            dx: 24.0,
+            dy: 24.0,
+        })
+        .collect();
+    let label = if ids.len() == 1 {
+        "Duplicate layer"
+    } else {
+        "Duplicate layers"
+    };
+    let copies = apply_tab_ops(tab, &ops, Some(label), None)?;
+    tab.select_all_of(&copies);
+    Ok(format!("Duplicated {}", describe(tab, &ids)))
+}
+
+/// Deletes the selected layers on `tab`.
+pub fn delete_selection(tab: &mut Tab) -> Result<String, String> {
+    let ids = selection_for(tab, "delete")?;
+    let what = describe(tab, &ids);
+    // A layer inside another selected one goes with it; deleting it again would fail.
+    let ops: Vec<EditOp> = ids
+        .iter()
+        .filter(|&&id| !has_selected_ancestor(tab, id, &ids))
+        .map(|&target| EditOp::DeleteNode { target })
+        .collect();
+    let label = if ids.len() == 1 {
+        "Delete layer"
+    } else {
+        "Delete layers"
+    };
+    apply_tab_ops(tab, &ops, Some(label), None)?;
     tab.select(None);
-    Ok(format!("Deleted “{name}”"))
+    Ok(format!("Deleted {what}"))
+}
+
+fn has_selected_ancestor(tab: &Tab, id: Guid, ids: &[Guid]) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let mut cur = tab.doc.node(id).and_then(|n| n.parent);
+    while let Some(p) = cur {
+        if !seen.insert(p) {
+            return false;
+        }
+        if ids.contains(&p) {
+            return true;
+        }
+        cur = tab.doc.node(p).and_then(|n| n.parent);
+    }
+    false
 }
 
 pub(super) fn local_xywh(data: &Val) -> (f64, f64, f64, f64) {

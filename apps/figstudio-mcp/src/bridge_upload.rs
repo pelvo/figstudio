@@ -122,6 +122,7 @@ impl Session {
             doc,
             page,
             selection: None,
+            also: Vec::new(),
             viewport: None,
         });
         self.snapshot.active = Some(tab);

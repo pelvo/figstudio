@@ -33,6 +33,7 @@ pub fn tab(id: u64, path: PathBuf, doc: Arc<Document>, selection: Option<Guid>) 
         page: doc.pages[0],
         doc,
         selection,
+        also: Vec::new(),
         viewport: Some([0.0, 0.0, 800.0, 600.0]),
     }
 }

@@ -56,6 +56,8 @@ impl FigstudioServer {
                     "title": tab.path.file_name().map(|name| name.to_string_lossy()),
                     "page": page(tab),
                     "selection": tab.selection.map(|id| id.to_string()),
+                    "selectionIds": tab.selection.into_iter().chain(tab.also.iter().copied())
+                        .map(|id| id.to_string()).collect::<Vec<_>>(),
                     "active": snapshot.active == Some(tab.id),
                 })
             })
@@ -64,7 +66,7 @@ impl FigstudioServer {
     }
 
     #[tool(
-        description = "Describe the node selected in an open tab of the figstudio app (default the active tab): {fileKey, tabId, page: {id, name}, node: {nodeId, name, kind, bounds: {x, y, width, height}}}; node is null when nothing is selected. Bounds are in page units."
+        description = "Describe the selection in an open tab of the figstudio app (default the active tab): {fileKey, tabId, page: {id, name}, node: {nodeId, name, kind, bounds: {x, y, width, height}}, nodes: [same, primary first]}; node is the primary selected node, null when nothing is selected; nodes lists every selected node. Bounds are in page units."
     )]
     fn get_selection(&self, Parameters(input): Parameters<SelectionInput>) -> CallToolResult {
         let Some(live) = self.live_files() else {
@@ -76,11 +78,18 @@ impl FigstudioServer {
         };
         let tab = picked.tab();
         let node = tab.selection.and_then(|id| describe(&tab.doc, id));
+        let nodes: Vec<_> = tab
+            .selection
+            .into_iter()
+            .chain(tab.also.iter().copied())
+            .filter_map(|id| describe(&tab.doc, id))
+            .collect();
         CallToolResult::structured(json!({
             "fileKey": picked.key,
             "tabId": tab.id,
             "page": page(tab),
             "node": node,
+            "nodes": nodes,
         }))
     }
 

@@ -148,7 +148,7 @@ impl Binding {
             Binding::PasteFromFigma => "Paste layer from Figma",
             Binding::DuplicateSelection => "Duplicate selected layer",
             Binding::DeleteSelection => "Delete selected layer",
-            Binding::SelectAll => "Select all text",
+            Binding::SelectAll => "Select all",
             Binding::SelectChild => "Select child",
             Binding::SelectParent => "Select parent",
             Binding::FindOnPage => "Find on page",

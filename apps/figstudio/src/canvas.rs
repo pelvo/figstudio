@@ -224,8 +224,21 @@ pub fn show(
     if response.clicked() && !panning {
         match tool {
             Tool::Select => {
-                inner_changed =
-                    crate::canvas_pick::click(tab, &chain, point, deep, response.double_clicked());
+                // Shift-click adds the layer under the pointer to the selection, or removes it.
+                if ui.input(|i| i.modifiers.shift)
+                    && !response.double_clicked()
+                    && let Some(id) = tab.hover
+                {
+                    tab.toggle_selected(id);
+                } else {
+                    inner_changed = crate::canvas_pick::click(
+                        tab,
+                        &chain,
+                        point,
+                        deep,
+                        response.double_clicked(),
+                    );
+                }
             }
             Tool::Zoom => {
                 if let Some(p) = response.interact_pointer_pos() {
@@ -323,7 +336,7 @@ pub fn show(
             Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.8)),
         );
     } else if inner_hover.is_none()
-        && let Some(h) = tab.hover.filter(|h| Some(*h) != tab.selection)
+        && let Some(h) = tab.hover.filter(|h| !tab.selected().contains(h))
     {
         let a = crate::anim::arrive(&ctx, egui::Id::new("hover-outline"), (tab.id, h), 0.12);
         outline(
@@ -346,6 +359,26 @@ pub fn show(
             crate::canvas_pick::outline(&painter, tab, origin, path, stroke);
         } else {
             outline(&painter, tab, origin, sel, stroke);
+        }
+        // The other selected layers, and the box around them all.
+        for &id in &tab.also {
+            outline(&painter, tab, origin, id, stroke);
+        }
+        if !tab.also.is_empty()
+            && let Some(b) = tab
+                .selected()
+                .into_iter()
+                .filter_map(|id| figstudio_render::node_bounds(&tab.doc, id))
+                .reduce(|a, b| a.union(b))
+        {
+            let to_screen =
+                |x: f64, y: f64| tab.view.to_screen(origin, egui::pos2(x as f32, y as f32));
+            painter.rect_stroke(
+                egui::Rect::from_two_pos(to_screen(b.x0, b.y0), to_screen(b.x1, b.y1)),
+                0.0,
+                Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.6 * a)),
+                egui::StrokeKind::Outside,
+            );
         }
     }
     crate::canvas_text::overlay(&painter, tab, origin);

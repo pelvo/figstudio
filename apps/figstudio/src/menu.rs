@@ -395,9 +395,27 @@ impl App {
                     tab.select_relative(action == Action::SelectChild);
                 }
             }
+            // Text being selected gets all its text; otherwise every layer on the page, as in
+            // Figma.
             Action::SelectAllText => {
                 if let Some(tab) = self.tabs.get_mut(self.active) {
-                    tab.select_all_text();
+                    if tab.text_select.is_some() {
+                        tab.select_all_text();
+                    } else {
+                        let layers: Vec<_> = tab
+                            .doc
+                            .children(tab.page)
+                            .iter()
+                            .copied()
+                            .filter(|&id| {
+                                tab.doc.node(id).is_some_and(|n| {
+                                    n.data.flag("visible") != Some(false)
+                                        && n.data.flag("locked") != Some(true)
+                                })
+                            })
+                            .collect();
+                        tab.select_all_of(&layers);
+                    }
                 }
             }
             Action::ExportPage(scale) => {

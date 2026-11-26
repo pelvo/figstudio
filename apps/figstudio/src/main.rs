@@ -1384,12 +1384,7 @@ impl App {
                         B::Copy | B::PasteFromFigma | B::Undo | B::Redo | B::DuplicateSelection
                     ))
                     && quiet)
-                || (binding == B::SelectAll
-                    && (quiet
-                        || !self
-                            .tabs
-                            .get(self.active)
-                            .is_some_and(|t| t.text_select.is_some())))
+                || (binding == B::SelectAll && quiet)
                 || self.native_takes(action, Some(shortcut))
                 || (matches!(binding, B::NextMatch | B::PreviousMatch) && !self.find.is_open())
             {

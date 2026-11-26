@@ -14,7 +14,7 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - [x] E2 styles (all kinds), variables (collections, modes, all types, binding)
 - [x] E3 vertex editing, convert/flatten/outline stroke, N-operand exact booleans
 - [x] E3 masks, layout grids, export settings, prototype reactions
-- [ ] U1 multi-selection model and box select
+- [x] U1 multi-selection model and box select
 - [ ] U2 canvas interaction (multi-move/resize, rotate handle, nudge, Alt-duplicate, snapping)
 - [ ] U3 right-click menus and shortcuts for every op family
 - [ ] U4 design panel sections and widget kit
@@ -121,3 +121,19 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   complete.
 - Not verified: Figma reopening reactions or grids made here; variable-driven reactions
   (set variable, conditionals) are not offered.
+
+### 2026-11-27T010000Z editing-engine-u1-selection
+- What changed and how it was checked: `Tab.also` holds the layers selected besides the
+  primary `selection` (which every existing reader keeps using); `selected()`,
+  `toggle_selected()`, `select_all_of()` and `prune_selection()` (after edits and undo).
+  Shift-click adds or removes a layer; a marquee drag also selects the top-level layers it
+  encloses (sections looked into, hidden and locked skipped) and keeps the region menu; ⌘A
+  outside text editing selects the page's layers; delete and duplicate act on the whole
+  selection in one undo step. The canvas outlines every selected layer and the box around
+  them. The Live MCP snapshot carries every selected id (`list_tabs.selectionIds`,
+  `get_selection.nodes`). kittest tests in `ui_multi_select_tests.rs` (real pointer and key
+  events) each fail when their behaviour is reverted; existing copy/pick/marquee/menu tests
+  pass. Gate: `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
+- Not verified: the multi-selection outlines in a real window. The computer-use tool drives
+  the app in the background, so Shift and ⌘ never reach it; Figma-style "touch" box select
+  (this selects only fully enclosed layers).

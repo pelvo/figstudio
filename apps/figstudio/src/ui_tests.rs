@@ -50,6 +50,8 @@ mod inner_fixture;
 mod inner_hover;
 #[path = "ui_inner_nested_tests.rs"]
 mod inner_nested;
+#[path = "ui_multi_select_tests.rs"]
+mod multi_select;
 #[path = "ui_onboarding_tests.rs"]
 mod onboarding;
 #[path = "ui_pick_tests.rs"]

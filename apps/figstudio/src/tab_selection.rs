@@ -92,12 +92,66 @@ impl Tab {
         }
     }
 
+    /// Every selected layer: the primary one first, then the others in the order they joined.
+    pub fn selected(&self) -> Vec<Guid> {
+        self.selection
+            .into_iter()
+            .chain(self.also.iter().copied())
+            .collect()
+    }
+
+    /// Adds `id` to the selection, or removes it when it is already in (Shift-click). Removing
+    /// the primary layer promotes the next one. Layers of another page start a new selection.
+    pub fn toggle_selected(&mut self, id: Guid) {
+        let Some(primary) = self.selection else {
+            self.select(Some(id));
+            return;
+        };
+        if self.doc.page_of(id) != self.doc.page_of(primary) {
+            self.select(Some(id));
+            return;
+        }
+        self.text_select = None;
+        self.inner = None;
+        if primary == id {
+            let next = (!self.also.is_empty()).then(|| self.also.remove(0));
+            self.selection = next;
+        } else if let Some(i) = self.also.iter().position(|g| *g == id) {
+            self.also.remove(i);
+        } else {
+            self.also.push(id);
+        }
+    }
+
+    /// Selects exactly `ids` (the first is the primary one); an empty list clears the selection.
+    pub fn select_all_of(&mut self, ids: &[Guid]) {
+        self.select(ids.first().copied());
+        let mut seen: std::collections::HashSet<Guid> = ids.first().copied().into_iter().collect();
+        self.also = ids[ids.len().min(1)..]
+            .iter()
+            .copied()
+            .filter(|g| seen.insert(*g))
+            .collect();
+    }
+
+    /// Drops selected layers that no longer exist (after an edit or undo), keeping a primary.
+    pub fn prune_selection(&mut self) {
+        let doc = &self.doc;
+        self.also.retain(|g| doc.node(*g).is_some());
+        if self.selection.is_some_and(|g| doc.node(g).is_none()) {
+            self.selection = (!self.also.is_empty()).then(|| self.also.remove(0));
+            self.inner = None;
+            self.text_select = None;
+        }
+    }
+
     /// Selects a node, switching page if needed and expanding its ancestors in the Layers tree.
     pub fn select(&mut self, id: Option<Guid>) {
         if self.selection != id {
             self.text_select = None;
             self.inner = None;
         }
+        self.also.clear();
         self.selection = id;
         let Some(id) = id else { return };
         if let Some(page) = self.doc.page_of(id)

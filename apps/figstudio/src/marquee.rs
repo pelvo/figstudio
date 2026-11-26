@@ -92,10 +92,56 @@ pub fn update(
     }
     if response.drag_stopped() {
         m.anchor = None;
-        if !m.rect.is_some_and(|r| big_enough(r, zoom)) {
-            m.clear();
+        match m.rect.filter(|r| big_enough(*r, zoom)) {
+            // The box selects the top-level layers it encloses; it stays for the region menu.
+            Some(r) => {
+                let add = ui.input(|i| i.modifiers.shift);
+                let inside = enclosed(tab, r);
+                if add {
+                    for id in inside {
+                        if !tab.selected().contains(&id) {
+                            tab.toggle_selected(id);
+                        }
+                    }
+                } else {
+                    tab.select_all_of(&inside);
+                }
+            }
+            None => m.clear(),
         }
     }
+}
+
+/// The visible, unlocked children of the page (or of a section) entirely inside `rect`,
+/// in z order. Sections are looked into, as Figma's box select does.
+fn enclosed(tab: &Tab, rect: Rect) -> Vec<Guid> {
+    let doc = &tab.doc;
+    let mut out = Vec::new();
+    let mut stack: Vec<Guid> = doc.children(tab.page).iter().rev().copied().collect();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.node(id).filter(|_| seen.insert(id)) else {
+            continue;
+        };
+        if node.data.flag("visible") == Some(false) || node.data.flag("locked") == Some(true) {
+            continue;
+        }
+        if node.kind == "SECTION" {
+            stack.extend(doc.children(id).iter().rev().copied());
+            continue;
+        }
+        let Some(b) = figstudio_render::node_bounds(doc, id) else {
+            continue;
+        };
+        let inside = f64::from(rect.min.x) <= b.x0
+            && f64::from(rect.min.y) <= b.y0
+            && b.x1 <= f64::from(rect.max.x)
+            && b.y1 <= f64::from(rect.max.y);
+        if inside {
+            out.push(id);
+        }
+    }
+    out
 }
 
 /// A right-click inside the marquee opens the region menu instead of the node menu. Returns
