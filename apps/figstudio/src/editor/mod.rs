@@ -9,6 +9,7 @@ pub(crate) mod commands;
 mod design;
 mod design_component;
 mod design_more;
+mod design_proto;
 mod inspector;
 mod mcp_dispatch;
 mod vector_edit;
@@ -26,6 +27,9 @@ pub(crate) use canvas_select::nudge;
 pub use clipboard_io::{copy_selection_for_figma, paste_from_clipboard_or_text};
 pub use design::design_sections;
 pub(crate) use design_component::local_components;
+#[cfg(test)]
+pub(crate) use design_proto::connections as proto_connections;
+pub(crate) use design_proto::noodles as proto_noodles;
 pub use inspector::{properties_edit_controls, properties_history_bar};
 #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
 pub use mcp_dispatch::handle_live_mutation;

@@ -39,7 +39,7 @@ pub(crate) fn local_components(doc: &Document) -> Vec<(Guid, String)> {
 }
 
 /// A drop-down of `options` (value, label) showing `current`; returns the value picked.
-fn pick<T: Clone + PartialEq>(
+pub(super) fn pick<T: Clone + PartialEq>(
     ui: &mut Ui,
     name: &str,
     current: Option<&T>,

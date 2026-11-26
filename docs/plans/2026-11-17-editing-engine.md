@@ -21,7 +21,7 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - [x] U5 layers panel editing
 - [x] U6 text editing on canvas
 - [x] U7 components and assets UI
-- [ ] U8 vector edit mode, prototype and export UI
+- [x] U8 vector edit mode, prototype and export UI
 
 ## Progress
 
@@ -288,3 +288,21 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   app). Not done: adding a point on a segment; Alt-dragging a straight point into a curve;
   the pen's new layer is sized to its points, not its curves. U8 stays open (U8b: boolean and
   mask buttons, prototype).
+
+### 2026-11-28T060000Z editing-engine-u8b-prototype
+- What changed and how it was checked: fig `reactions_of` reads stored reactions back as
+  specs, `None` when one holds several actions or an unknown kind, so the panel never
+  rewrites (and loses) what it cannot say. Design panel: Boolean & mask (union, subtract,
+  intersect, exclude; mask with the bottom layer; mask type; stop masking) and Prototype
+  (add and remove interactions; trigger, delay, action, destination or link, animation,
+  duration; flow start with its name; overflow scrolling; position when scrolling; a
+  read-only note for interactions it cannot edit). The canvas draws the selected layer's
+  connections between the sides facing each other, with an arrow. Tests: an `edit_proto.rs`
+  round trip and `ui_proto_tests.rs`; eleven reverts each fail (the add test strengthened
+  after a revert passed). Real window (bundled build): the Prototype section and a
+  connection to a frame on the left (first drawn looping across the canvas; fixed). Gate:
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed. With this the controls phase
+  (U1–U8) is done.
+- Not verified: the drop-down popups in a real window. Not done: dragging out a connection on
+  the canvas; overlay settings (position, close when clicking outside); choosing the easing
+  in the panel (a written easing is kept).

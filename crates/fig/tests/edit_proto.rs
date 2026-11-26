@@ -188,3 +188,56 @@ fn reactions_flow_starts_and_scrolling_are_written_and_checked() {
             .is_err()
     );
 }
+
+#[test]
+fn stored_reactions_read_back_as_the_specs_that_wrote_them() {
+    use figstudio_fig::edit::{Action, ReactionSpec, Trigger, reactions_of};
+    let mut f = Fx::new();
+    let (a, b) = (f.frame(0.0), f.frame(300.0));
+    let specs = vec![
+        ReactionSpec {
+            trigger: Trigger::OnClick,
+            action: Action::Navigate { to: b },
+            transition: Some("smart_animate".into()),
+            duration: Some(0.3),
+            easing: Some("ease_out".into()),
+        },
+        ReactionSpec {
+            trigger: Trigger::AfterTimeout { ms: 1500.0 },
+            action: Action::Back,
+            transition: Some("instant".into()),
+            duration: None,
+            easing: None,
+        },
+    ];
+    execute_edit_ops(
+        &mut f.doc,
+        &mut f.h,
+        &[EditOp::SetReactions {
+            target: a,
+            reactions: specs.clone(),
+        }],
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let read = reactions_of(&f.doc, a).expect("readable");
+    assert_eq!(read.len(), 2);
+    assert_eq!(read[0].action, specs[0].action);
+    assert_eq!(read[0].transition.as_deref(), Some("smart_animate"));
+    assert!((read[0].duration.unwrap() - 0.3).abs() < 1e-6);
+    assert_eq!(read[0].easing.as_deref(), Some("ease_out"));
+    assert!(matches!(read[1].trigger, Trigger::AfterTimeout { ms } if (ms - 1500.0).abs() < 1e-3));
+    assert_eq!(read[1].action, Action::Back);
+    // A reaction with two actions cannot be said as a spec: nothing is offered for rewriting.
+    let mut two = f.data(a).get("prototypeInteractions").unwrap().items()[0]
+        .clone()
+        .into_owned();
+    let act = two.get("actions").unwrap().items()[0].clone().into_owned();
+    two.set("actions", Val::Arr(vec![act.clone(), act]));
+    let mut txn = figstudio_fig::edit::Txn::new("two actions");
+    txn.set_field(a, "prototypeInteractions", Val::Arr(vec![two]));
+    f.h.execute(&mut f.doc, txn).unwrap();
+    assert!(reactions_of(&f.doc, a).is_none());
+}

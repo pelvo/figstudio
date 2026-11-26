@@ -28,5 +28,6 @@ pub use ops::{
     PaintSlot, PaintSpec, Pivot, ReactionSpec, ShadowSpec, StopSpec, StripeSpec, StyleKind,
     TextLength, Trigger, TypographyExtra, VarType, VarValue, VectorEdit, ZOrder,
     describe_edit_ops_markdown, execute_edit_ops, execute_import_image, execute_paste_html,
+    reactions_of,
 };
 pub use txn::{Dirty, History, NodePatch, Txn};

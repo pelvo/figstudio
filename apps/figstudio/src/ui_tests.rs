@@ -74,6 +74,8 @@ mod pick_drag;
 mod pick_order;
 #[path = "ui_preview_tests.rs"]
 mod preview;
+#[path = "ui_proto_tests.rs"]
+mod proto;
 #[path = "ui_recents_tests.rs"]
 mod recents;
 #[path = "ui_shader_tests.rs"]

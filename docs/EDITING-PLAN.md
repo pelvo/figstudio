@@ -1,6 +1,7 @@
 # Editing plan: a complete engine, then the controls for it
 
-Status: plan, agreed with the requester on 2026-11-17, as a follow-up PR stacked on PR #90
+Status: engine (E0–E3) and controls (U1–U8) done on 2026-11-28; plan agreed with the
+requester on 2026-11-17, as a follow-up PR stacked on PR #90
 (branch `feat/editing-engine`, base `feat/editing`). Checklists and progress live in
 `docs/plans/2026-11-17-editing-engine.md`; this file holds the
 design, the order and the "Done when" checks.

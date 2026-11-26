@@ -38,7 +38,7 @@ use crate::edit::text_runs::TextStyleRunPatch;
 use crate::edit::vector_net::{BooleanOp, VectorNetwork};
 pub use crate::edit::vector_ops::VectorEdit;
 pub use compile_proto::{
-    Action, ExportSpec, GridSpec, MaskKind, ReactionSpec, StripeSpec, Trigger,
+    Action, ExportSpec, GridSpec, MaskKind, ReactionSpec, StripeSpec, Trigger, reactions_of,
 };
 
 /// Complete, self-describing semantic edit operation across all Figma capabilities.

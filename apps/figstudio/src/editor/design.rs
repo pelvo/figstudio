@@ -122,11 +122,13 @@ pub fn design_sections(ui: &mut Ui, tab: &mut Tab) {
     position(ui, tab, &ids);
     layout(ui, tab, &ids);
     appearance(ui, tab, &ids);
+    super::design_proto::boolean_mask(ui, tab, &ids);
     super::design_more::kind_sections(ui, tab, &ids);
     paints(ui, tab, &ids, PaintSlot::Fill);
     paints(ui, tab, &ids, PaintSlot::Stroke);
     effects(ui, tab, &ids);
     super::design_more::export(ui, tab, &ids);
+    super::design_proto::prototype(ui, tab, &ids);
 }
 
 fn position(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {

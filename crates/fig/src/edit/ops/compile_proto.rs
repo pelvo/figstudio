@@ -454,3 +454,69 @@ fn reaction_val(doc: &Document, alloc: &mut GuidAlloc, r: &ReactionSpec) -> Resu
         ("isDeleted", Val::Bool(false)),
     ])))
 }
+
+/// The layer's prototype reactions as specs, for editing; `None` when one of them holds
+/// something a spec cannot say (several actions, an unknown trigger or action), so an editor
+/// shows them without rewriting (and losing) any.
+pub fn reactions_of(doc: &Document, node: Guid) -> Option<Vec<ReactionSpec>> {
+    let data = &doc.node(node)?.data;
+    let mut out = Vec::new();
+    for r in data
+        .get("prototypeInteractions")
+        .map(Val::items)
+        .unwrap_or_default()
+    {
+        if r.flag("isDeleted") == Some(true) {
+            continue;
+        }
+        let event = r.get("event")?;
+        let trigger = match event.text("interactionType")? {
+            "ON_CLICK" => Trigger::OnClick,
+            "ON_HOVER" => Trigger::OnHover,
+            "ON_PRESS" => Trigger::OnPress,
+            "DRAG" => Trigger::OnDrag,
+            "MOUSE_ENTER" => Trigger::MouseEnter,
+            "MOUSE_LEAVE" => Trigger::MouseLeave,
+            "MOUSE_DOWN" => Trigger::MouseDown,
+            "MOUSE_UP" => Trigger::MouseUp,
+            "AFTER_TIMEOUT" => Trigger::AfterTimeout {
+                ms: f64::from(event.num("transitionTimeout").unwrap_or(0.0)) * 1000.0,
+            },
+            _ => return None,
+        };
+        let [a] = r.get("actions")?.items() else {
+            return None;
+        };
+        let to = || a.get("transitionNodeID").and_then(Val::as_guid);
+        let action = match (a.text("connectionType")?, a.text("navigationType")) {
+            ("INTERNAL_NODE", Some("NAVIGATE")) => Action::Navigate { to: to()? },
+            ("INTERNAL_NODE", Some("OVERLAY")) => Action::Overlay { to: to()? },
+            ("INTERNAL_NODE", Some("SWAP")) => Action::Swap { to: to()? },
+            ("INTERNAL_NODE", Some("SCROLL_TO")) => Action::ScrollTo { to: to()? },
+            ("BACK", _) => Action::Back,
+            ("CLOSE", _) => Action::Close,
+            ("URL", _) => Action::Url {
+                url: a.text("connectionURL").unwrap_or("").to_string(),
+            },
+            _ => return None,
+        };
+        let transition = a.text("transitionType").map(|t| match t {
+            "INSTANT_TRANSITION" => "instant".to_string(),
+            other => other.to_ascii_lowercase(),
+        });
+        let easing = a.text("easingType").map(|e| match e {
+            "IN_CUBIC" => "ease_in".to_string(),
+            "OUT_CUBIC" => "ease_out".to_string(),
+            "INOUT_CUBIC" => "ease_in_and_out".to_string(),
+            other => other.to_ascii_lowercase(),
+        });
+        out.push(ReactionSpec {
+            trigger,
+            action,
+            transition,
+            duration: a.num("transitionDuration").map(f64::from),
+            easing,
+        });
+    }
+    Some(out)
+}
