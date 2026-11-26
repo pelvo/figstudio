@@ -117,12 +117,16 @@ pub fn design_sections(ui: &mut Ui, tab: &mut Tab) {
     if ids.is_empty() {
         return;
     }
+    // Figma's order, with the layer-type sections after the geometry.
+    super::design_more::name(ui, tab, &ids);
     position(ui, tab, &ids);
     layout(ui, tab, &ids);
     appearance(ui, tab, &ids);
+    super::design_more::kind_sections(ui, tab, &ids);
     paints(ui, tab, &ids, PaintSlot::Fill);
     paints(ui, tab, &ids, PaintSlot::Stroke);
     effects(ui, tab, &ids);
+    super::design_more::export(ui, tab, &ids);
 }
 
 fn position(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {

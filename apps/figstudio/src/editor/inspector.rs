@@ -7,7 +7,6 @@ use figstudio_fig::edit::EditOp;
 use crate::tab::Tab;
 use crate::theme;
 
-use super::inspector_sections::autolayout_text_and_component_controls;
 use super::{apply_tab_ops, redo_tab, undo_tab};
 
 /// Renders Undo / Redo buttons when the tab has edit history.
@@ -35,7 +34,8 @@ pub fn properties_history_bar(ui: &mut Ui, tab: &mut Tab) {
     });
 }
 
-/// Renders the interactive Edit controls section inside the right Properties panel.
+/// The history bar, the session seal for coalesced edits, and the text override of an inner
+/// instance layer. The Design sections are `editor::design`.
 pub fn properties_edit_controls(ui: &mut Ui, tab: &mut Tab) {
     // One undo step per edit session: when the focused field or the dragged control changes
     // (to another one or to none), or the selection does, the last coalesced entry is sealed.
@@ -85,45 +85,7 @@ pub fn properties_edit_controls(ui: &mut Ui, tab: &mut Tab) {
                 Some("gui:inst:text"),
             );
         }
-        return;
     }
-
-    let Some(sel) = tab.selection else {
-        return;
-    };
-    let Some(node_snapshot) = tab.doc.node(sel).cloned() else {
-        return;
-    };
-    if matches!(node_snapshot.kind.as_str(), "DOCUMENT" | "CANVAS") {
-        return;
-    }
-
-    let hdr = egui::CollapsingHeader::new(egui::RichText::new("More").strong().size(12.0))
-        .default_open(false)
-        .show(ui, |ui| {
-            // Name. Position, size, fills and the rest are the Design sections above.
-            let mut name_buf = node_snapshot.name.clone();
-            ui.horizontal(|ui| {
-                ui.label("Name");
-                let resp = ui.text_edit_singleline(&mut name_buf);
-                crate::a11y::name_field(&resp, "Layer name");
-                crate::a11y::author(&resp, "editor.layer-name");
-                if resp.changed() {
-                    let _ = apply_tab_ops(
-                        tab,
-                        &[EditOp::Rename {
-                            target: sel,
-                            name: name_buf,
-                        }],
-                        Some("Rename layer"),
-                        Some(&format!("gui:rename:{sel}")),
-                    );
-                }
-            });
-
-            autolayout_text_and_component_controls(ui, tab, sel, &node_snapshot);
-        });
-    crate::a11y::author(&hdr.header_response, "editor.toggle-section");
 }
 
 #[cfg(test)]

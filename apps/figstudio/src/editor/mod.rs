@@ -6,8 +6,8 @@ mod canvas_gizmos;
 mod clipboard_io;
 pub(crate) mod commands;
 mod design;
+mod design_more;
 mod inspector;
-mod inspector_sections;
 mod mcp_dispatch;
 mod widgets;
 

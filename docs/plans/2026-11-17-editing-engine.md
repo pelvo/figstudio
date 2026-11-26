@@ -17,7 +17,7 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - [x] U1 multi-selection model and box select
 - [ ] U2 canvas interaction (multi-move/resize, rotate handle, nudge, Alt-duplicate, snapping)
 - [x] U3 right-click menus and shortcuts for every op family
-- [ ] U4 design panel sections and widget kit
+- [x] U4 design panel sections and widget kit
 - [ ] U5 layers panel editing
 - [ ] U6 text editing on canvas
 - [ ] U7 components and assets UI
@@ -173,3 +173,21 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
 - Not verified: the colour picker popup and the blend menu opened in a real window; gradient
   stops and image settings are shown but not editable yet (U4b).
+
+### 2026-11-27T120000Z editing-engine-u4b-sections
+- What changed and how it was checked: `editor::design_more`: a name field; Auto layout ("+"
+  adds Figma's default: vertical, 10 gap and padding, hug; direction, wrap, remove, gap, four
+  paddings, alignment per axis, Fixed/Hug per axis); "In auto layout" (fill container,
+  stretch, absolute) or Constraints for a child; Text (font, style, size, line height with an
+  Auto hint, letter spacing, horizontal and vertical alignment, resizing, decoration, case,
+  characters); Instance (reset, detach); Export (settings list, scale and format, an export
+  button that runs the app's PNG/SVG export). The collapsed "More" block and
+  `inspector_sections.rs` are gone. Title-row "+" buttons now clear the floating scroll bar
+  (a click could land on the bar). kittest tests in `ui_design_tests.rs`; the export button,
+  padding kept per side, the scroll-bar gap and the Constraints section fail when reverted.
+  Screenshots of a bundled build reviewed: the gap icon follows the direction, the
+  alignment/sizing/constraint menus got axis tags, and Auto line height no longer reads
+  "Mixed". Gate: `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
+- Not verified: the colour picker popup, the blend menu and the combo popups opened in a real
+  window; the Auto line-height hint has no test (seen in a screenshot); the export button test
+  covers PNG only.

@@ -541,6 +541,8 @@ pub(crate) fn section_title(ui: &mut Ui, title: &str, add: Option<&str>) -> bool
             );
             let Some(name) = add else { return false };
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Clear of the scroll bar, which floats over the panel's right edge.
+                ui.add_space(ui.spacing().scroll.bar_width + 2.0);
                 let r = ui.add(egui::Button::new("+").frame(false));
                 crate::a11y::name_field(&r, name);
                 crate::a11y::author(&r, format!("design.{}", crate::a11y::slug(name)));

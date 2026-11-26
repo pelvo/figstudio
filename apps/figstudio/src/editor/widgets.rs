@@ -74,6 +74,19 @@ pub(crate) fn num_field(
     speed: f64,
     width: f32,
 ) -> Option<f64> {
+    num_field_or(ui, label, name, value, speed, width, "Mixed")
+}
+
+/// `num_field` whose empty value shows `hint` (such as `Auto`).
+pub(crate) fn num_field_or(
+    ui: &mut Ui,
+    label: &str,
+    name: &str,
+    value: Option<f64>,
+    speed: f64,
+    width: f32,
+    hint: &str,
+) -> Option<f64> {
     let p = crate::theme::of(ui);
     let mut out = None;
     ui.horizontal(|ui| {
@@ -94,7 +107,7 @@ pub(crate) fn num_field(
         let edit = ui.add(
             TextEdit::singleline(&mut text)
                 .desired_width(width)
-                .hint_text(if value.is_none() { "Mixed" } else { "" }),
+                .hint_text(if value.is_none() { hint } else { "" }),
         );
         crate::a11y::name_field(&edit, name);
         crate::a11y::author(&edit, format!("design.{}", crate::a11y::slug(name)));
