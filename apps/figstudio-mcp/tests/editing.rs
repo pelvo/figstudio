@@ -462,3 +462,38 @@ async fn mcp_vector_ops_run_in_one_batch() {
     client.cancel().await.unwrap();
     server_task.await.unwrap().ok();
 }
+
+/// Mask, grid, export and prototype ops in one `apply_edits` batch.
+#[tokio::test]
+async fn mcp_mask_grid_export_and_prototype_ops_run_in_one_batch() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let src_path = tmp_dir.path().join("src.fig");
+    std::fs::copy(fixture("structure.fig"), &src_path).unwrap();
+    let page = Document::open(&src_path).unwrap().pages[0].to_string();
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let server_task = tokio::spawn(FigstudioServer::new(vec![src_path], true).serve(a));
+    let client = ().serve(b).await.unwrap();
+    let (f1, f2, m) = ("3000000000:990", "3000000000:991", "3000000000:992");
+    let frame = |id: &str, x: f64| {
+        json!({ "op": "create_shape", "id": id, "kind": "FRAME", "parent": page,
+                "x": x, "y": 0.0, "width": 120.0, "height": 80.0 })
+    };
+    let ops = json!({ "ops": [
+        frame(f1, 6000.0), frame(f2, 6200.0),
+        { "op": "create_shape", "id": m, "kind": "ELLIPSE", "parent": f1,
+          "x": 0, "y": 0, "width": 40, "height": 40 },
+        { "op": "set_mask", "target": m, "mask": "alpha" },
+        { "op": "set_layout_grids", "target": f1, "grids": [{ "pattern": "columns", "count": 4 }] },
+        { "op": "set_export_settings", "target": f1, "settings": [{ "format": "png", "scale": 2 }] },
+        { "op": "set_reactions", "target": f1, "reactions": [
+            { "trigger": { "type": "on_click" }, "action": { "type": "navigate", "to": f2 } }] },
+        { "op": "set_flow_start", "frame": f1, "name": "Main" },
+        { "op": "set_scroll_behavior", "target": f1, "overflow": "vertical" }
+    ]});
+    let params = CallToolRequestParams::new("apply_edits")
+        .with_arguments(ops.as_object().cloned().unwrap_or_default());
+    let res = serde_json::to_value(client.call_tool(params).await.unwrap()).unwrap();
+    assert_ne!(res["isError"], json!(true), "{res}");
+    client.cancel().await.unwrap();
+    server_task.await.unwrap().ok();
+}

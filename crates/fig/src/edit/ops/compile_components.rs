@@ -332,6 +332,14 @@ pub(super) fn compile_component_or_vector_op(
             created_ids,
             layout_touched,
         )?,
+        EditOp::SetMask { .. }
+        | EditOp::SetLayoutGrids { .. }
+        | EditOp::SetExportSettings { .. }
+        | EditOp::SetReactions { .. }
+        | EditOp::SetFlowStart { .. }
+        | EditOp::SetScrollBehavior { .. } => {
+            super::compile_proto::compile_proto_op(doc, txn, alloc, op, layout_touched)?;
+        }
         EditOp::PatchRaw { target, set, unset } => {
             ensure_exists(doc, *target)?;
             let mut obj = Obj::new();

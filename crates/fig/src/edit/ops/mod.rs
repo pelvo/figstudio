@@ -11,6 +11,7 @@ mod compile_arrange;
 mod compile_components;
 mod compile_design;
 mod compile_props;
+mod compile_proto;
 mod compile_style;
 mod compile_tree;
 
@@ -36,6 +37,9 @@ use crate::edit::instances::ComponentPropVal;
 use crate::edit::text_runs::TextStyleRunPatch;
 use crate::edit::vector_net::{BooleanOp, VectorNetwork};
 pub use crate::edit::vector_ops::VectorEdit;
+pub use compile_proto::{
+    Action, ExportSpec, GridSpec, MaskKind, ReactionSpec, StripeSpec, Trigger,
+};
 
 /// Complete, self-describing semantic edit operation across all Figma capabilities.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -716,6 +720,48 @@ pub enum EditOp {
         field: BindField,
         #[serde(default, with = "guid_wire::opt")]
         variable: Option<Guid>,
+    },
+    /// Makes a layer a mask for the layers above it in its parent (`null` stops masking).
+    SetMask {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        #[serde(default)]
+        mask: Option<MaskKind>,
+    },
+    /// Replaces a frame's layout grids (detaching a grid style).
+    SetLayoutGrids {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        grids: Vec<GridSpec>,
+    },
+    /// Replaces a layer's export settings.
+    SetExportSettings {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        settings: Vec<ExportSpec>,
+    },
+    /// Replaces a layer's prototype reactions.
+    SetReactions {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        reactions: Vec<ReactionSpec>,
+    },
+    /// Starts a prototype flow at a top-level frame (`name: null` removes the start).
+    SetFlowStart {
+        #[serde(with = "guid_wire")]
+        frame: Guid,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Sets how a frame scrolls in a prototype (`overflow`: none, horizontal, vertical, both)
+    /// and how a child moves when its parent scrolls (`behavior`: scrolls, fixed, sticky).
+    SetScrollBehavior {
+        #[serde(with = "guid_wire")]
+        target: Guid,
+        #[serde(default)]
+        overflow: Option<String>,
+        #[serde(default)]
+        behavior: Option<String>,
     },
     /// Raw escape hatch: sets or unsets arbitrary Kiwi-validated `NodeChange` fields directly.
     PatchRaw {

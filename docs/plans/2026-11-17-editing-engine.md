@@ -13,7 +13,7 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - [x] E2 component properties, variants, generic instance overrides
 - [x] E2 styles (all kinds), variables (collections, modes, all types, binding)
 - [x] E3 vertex editing, convert/flatten/outline stroke, N-operand exact booleans
-- [ ] E3 masks, layout grids, export settings, prototype reactions
+- [x] E3 masks, layout grids, export settings, prototype reactions
 - [ ] U1 multi-selection model and box select
 - [ ] U2 canvas interaction (multi-move/resize, rotate handle, nudge, Alt-duplicate, snapping)
 - [ ] U3 right-click menus and shortcuts for every op family
@@ -107,3 +107,17 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
   `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed, plus `--test-one wasm32`.
 - Not verified: Figma reopening booleans made here; outline of text (refused: needs fonts);
   vertex corner radii in networks.
+
+### 2026-11-24T110000Z editing-engine-e3-proto
+- What changed and how it was checked: `compile_proto.rs` ops `set_mask` (alpha, outline,
+  luminance; clearing drops `maskType`), `set_layout_grids` (columns, rows, square grid; frames
+  only; detaches a grid style), `set_export_settings` (png, jpg, svg, pdf by scale, width or
+  height), `set_reactions` (triggers incl. after-timeout in seconds, navigate/overlay/swap/
+  scroll-to/back/close/URL, transition, duration, easing; destinations must exist),
+  `set_flow_start` (top-level frames only), `set_scroll_behavior`. Tests
+  `crates/fig/tests/edit_proto.rs`, `crates/render/tests/edit_proto.rs` (the prototype player
+  lists the flow and plays the link), MCP batch; four behaviours fail when reverted. Gate:
+  `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed incl. wasm32. The engine phase E0–E3 is
+  complete.
+- Not verified: Figma reopening reactions or grids made here; variable-driven reactions
+  (set variable, conditionals) are not offered.

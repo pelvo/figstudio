@@ -334,6 +334,11 @@ pub fn describe_edit_ops_markdown() -> &'static str {
         "- `create_variable_collection`: `{ name, modes?: [names] }` (`created_ids`: collection, then modes) / `add_variable_mode`: `{ collection, name }` / `rename_variable_mode`: `{ collection, mode, name }` / `remove_variable_mode`: `{ collection, mode }`\n",
         "- `create_variable`: `{ collection, name, kind: color|number|string|bool, value: { color: \"#hex\" } | { number } | { string } | { bool } | { alias: \"id\" } }` / `set_variable_value`: `{ variable, mode, value }` (bound layers update) / `rename_variable`: `{ variable, name }` / `delete_variable`: `{ variable }` (users keep their values)\n",
         "- `bind_variable`: `{ target, field: corner_radius|opacity|stroke_weight|item_spacing|padding_left|padding_top|padding_right|padding_bottom|width|height|font_size|paragraph_spacing|visible|characters, variable: \"id\" | null }` (colours bind to paints with `bind_paint_variable`)\n",
+        "- `set_mask`: `{ target, mask: alpha|outline|luminance|null }` (masks the layers above it in its parent)\n",
+        "- `set_layout_grids`: `{ target (frame), grids: [{ pattern: columns|rows, count?, align?: min|center|stretch|max, gutter?, offset?, size?, hex?, visible? } | { pattern: grid, size?, hex?, visible? }] }`\n",
+        "- `set_export_settings`: `{ target, settings: [{ format: png|jpg|svg|pdf, scale? | width? | height?, suffix? }] }`\n",
+        "- `set_reactions`: `{ target, reactions: [{ trigger: { type: on_click|on_hover|on_press|on_drag|mouse_enter|mouse_leave|mouse_down|mouse_up } | { type: after_timeout, ms }, action: { type: navigate|overlay|swap|scroll_to, to } | { type: back|close } | { type: url, url }, transition?: instant|dissolve|smart_animate|slide_from_left|push_from_right|..., duration? (s), easing?: linear|ease_in|ease_out|ease_in_and_out|... }] }`\n",
+        "- `set_flow_start`: `{ frame (top-level), name: \"Flow\" | null }` / `set_scroll_behavior`: `{ target, overflow?: none|horizontal|vertical|both, behavior?: scrolls|fixed|sticky }`\n",
         "- `patch_raw`: `{ target, set: {...}, unset: [...] }`\n"
     )
 }
