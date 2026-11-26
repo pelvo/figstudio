@@ -1487,6 +1487,7 @@ impl App {
                         radius: f32::from(corner),
                         frame_labels: self.prefs.frame_labels,
                         scroll_zooms: self.prefs.scroll_zooms,
+                        snapping: self.prefs.snapping,
                         scaling: self.preview_scaling,
                     };
                     // Another file or page fades in over the last one, painted again from the

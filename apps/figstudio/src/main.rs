@@ -421,6 +421,8 @@ struct Prefs {
     frame_labels: bool,
     /// A plain scroll wheel zooms (and pans with ⌘ / Ctrl).
     scroll_zooms: bool,
+    /// Moved layers snap to their siblings and frame, with guides.
+    snapping: bool,
     /// Shortcuts changed in Settings → Shortcuts.
     keymap: keymap::Keymap,
     /// The Recents page lists files in rows instead of cards.
@@ -449,6 +451,7 @@ impl Default for Prefs {
             renderer: settings::Renderer::Automatic,
             frame_labels: true,
             scroll_zooms: false,
+            snapping: true,
             keymap: keymap::Keymap::default(),
             recents_list: false,
             agents: settings::AgentPrefs::default(),
@@ -1459,6 +1462,34 @@ impl App {
                 self.find.hide();
             } else {
                 self.apply(menu::Action::ClearSelection, ctx);
+            }
+        }
+        // Arrow keys nudge the selection by 1, with Shift by 10 (page units).
+        if !quiet
+            && !in_preview
+            && !modal_open
+            && let Some(tab) = self.tabs.get_mut(self.active)
+            && !tab.selected().is_empty()
+            && tab.text_select.is_none()
+        {
+            let step = if ctx.input(|i| i.modifiers.shift) {
+                10.0
+            } else {
+                1.0
+            };
+            for (key, dx, dy) in [
+                (Key::ArrowLeft, -step, 0.0),
+                (Key::ArrowRight, step, 0.0),
+                (Key::ArrowUp, 0.0, -step),
+                (Key::ArrowDown, 0.0, step),
+            ] {
+                let pressed = ctx.input_mut(|i| {
+                    i.consume_key(egui::Modifiers::NONE, key)
+                        || i.consume_key(egui::Modifiers::SHIFT, key)
+                });
+                if pressed {
+                    editor::nudge(tab, dx, dy);
+                }
             }
         }
     }

@@ -3,6 +3,7 @@
 //! Relay MCP mutation dispatcher.
 
 mod canvas_gizmos;
+mod canvas_select;
 mod clipboard_io;
 pub(crate) mod commands;
 mod design;
@@ -19,6 +20,7 @@ use figstudio_fig::{Guid, Val};
 use crate::tab::Tab;
 
 pub use canvas_gizmos::{CanvasDrag, canvas_gizmos_and_input};
+pub(crate) use canvas_select::nudge;
 pub use clipboard_io::{copy_selection_for_figma, paste_from_clipboard_or_text};
 pub use design::design_sections;
 pub use inspector::{properties_edit_controls, properties_history_bar};
@@ -154,7 +156,7 @@ fn has_selected_ancestor(tab: &Tab, id: Guid, ids: &[Guid]) -> bool {
     false
 }
 
-pub(super) fn local_xywh(data: &Val) -> (f64, f64, f64, f64) {
+pub(crate) fn local_xywh(data: &Val) -> (f64, f64, f64, f64) {
     let x = data
         .path(&["transform", "m02"])
         .and_then(Val::as_f32)

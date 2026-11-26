@@ -272,7 +272,12 @@ fn layer_props(target: Guid, visible: Option<bool>, locked: Option<bool>) -> Edi
 /// The layer's rotation in degrees, in `matrix_2x3`'s convention (y points down, so positive
 /// turns clockwise on screen).
 fn current_rotation(tab: &Tab, id: Guid) -> f64 {
-    let Some(n) = tab.doc.node(id) else {
+    current_rotation_of(&tab.doc, id)
+}
+
+/// A layer's rotation in degrees (positive turns clockwise on screen).
+pub(crate) fn current_rotation_of(doc: &figstudio_fig::Document, id: Guid) -> f64 {
+    let Some(n) = doc.node(id) else {
         return 0.0;
     };
     let t = figstudio_fig::edit::space::Xform::of(&n.data);

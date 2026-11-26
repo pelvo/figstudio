@@ -34,6 +34,8 @@ impl eframe::Storage for Memory {
 
 #[path = "ui_a11y_tests.rs"]
 mod a11y;
+#[path = "ui_canvas_gesture_tests.rs"]
+mod canvas_gestures;
 #[path = "ui_chrome_tests.rs"]
 mod chrome;
 #[path = "ui_copy_tests.rs"]

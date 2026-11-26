@@ -15,7 +15,7 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - [x] E3 vertex editing, convert/flatten/outline stroke, N-operand exact booleans
 - [x] E3 masks, layout grids, export settings, prototype reactions
 - [x] U1 multi-selection model and box select
-- [ ] U2 canvas interaction (multi-move/resize, rotate handle, nudge, Alt-duplicate, snapping)
+- [x] U2 canvas interaction (multi-move/resize, rotate handle, nudge, Alt-duplicate, snapping)
 - [x] U3 right-click menus and shortcuts for every op family
 - [x] U4 design panel sections and widget kit
 - [ ] U5 layers panel editing
@@ -191,3 +191,22 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - Not verified: the colour picker popup, the blend menu and the combo popups opened in a real
   window; the Auto line-height hint has no test (seen in a screenshot); the export button test
   covers PNG only.
+
+### 2026-11-27T150000Z editing-engine-u2-canvas
+- What changed and how it was checked: `editor::canvas_select` takes over the Select tool's
+  gestures from `canvas_gizmos`: dragging moves every selected layer (an unselected one is
+  selected once its drag starts; a top-level frame or section with layers still draws a box);
+  Alt-drag moves copies (one undo step); the handles resize one layer along its own axes or
+  several inside their page box (Shift or the aspect lock keeps the ratio); just outside a
+  corner rotates about the centre (several about their shared centre; Shift: 15° steps);
+  one rotated layer gets its own turned box; moves snap edges and centres to siblings and the
+  parent frame within 5 points, with red guides and distances (⌘/Ctrl moves freely; Settings
+  → Canvas → Snapping); arrow keys nudge by 1, Shift by 10. The inspector leaves a canvas
+  gesture's undo step to the gesture (it sealed an Alt-drag midway when the copies became
+  selected). Tests: `canvas_select_tests.rs` (box resize, snap, gaps, multi resize, shared
+  rotation, the turned box) and `ui_canvas_gesture_tests.rs` (seven gestures driven frame by
+  frame on the app); twelve reverts each fail. Screenshot of a bundled build: the turned box
+  and handles on a rotated layer. Gate: `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed.
+- Not verified: drags in a real window (computer use does not deliver drags to the background
+  app; the UI tests drive them). Not done: resize does not snap; a rotated layer among several
+  scales along its own axes instead of skewing (shortcut comment); Alt-resize from the centre.

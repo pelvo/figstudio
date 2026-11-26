@@ -115,6 +115,8 @@ pub struct Options {
     pub frame_labels: bool,
     /// A plain scroll wheel zooms, and pans with ⌘ / Ctrl (Settings → Canvas).
     pub scroll_zooms: bool,
+    /// Moved layers snap to their siblings and frame (Settings → Canvas).
+    pub snapping: bool,
     /// How Preview sizes its screen.
     pub scaling: crate::preview::Scaling,
 }
@@ -135,6 +137,7 @@ pub fn show(
         radius,
         frame_labels,
         scroll_zooms,
+        snapping,
         scaling,
     } = options;
     if tab.preview.is_some() {
@@ -276,6 +279,7 @@ pub fn show(
             tab.edit_drag,
             Some(
                 crate::editor::CanvasDrag::Resize { .. }
+                    | crate::editor::CanvasDrag::Rotate { .. }
                     | crate::editor::CanvasDrag::Move { moved: true, .. }
             )
         );
@@ -395,7 +399,15 @@ pub fn show(
         }
         None
     } else {
-        crate::editor::canvas_gizmos_and_input(ui, &painter, rect, tab, &mut active_tool, panning)
+        crate::editor::canvas_gizmos_and_input(
+            ui,
+            &painter,
+            rect,
+            tab,
+            &mut active_tool,
+            panning,
+            snapping,
+        )
     };
     if active_tool != tool && active_tool == Tool::Select {
         tab.reset_tool_to_select = true;

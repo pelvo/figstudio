@@ -44,7 +44,8 @@ pub fn properties_edit_controls(ui: &mut Ui, tab: &mut Tab) {
         .memory(|m| m.focused())
         .or_else(|| ui.ctx().dragged_id())
         .map(|id| id.with(tab.selection));
-    if tab.edit_session != session {
+    // A canvas gesture seals its own step on release (an Alt-drag selects its copies midway).
+    if tab.edit_drag.is_none() && tab.edit_session != session {
         tab.history.seal_coalesce();
         tab.edit_session = session;
     }
