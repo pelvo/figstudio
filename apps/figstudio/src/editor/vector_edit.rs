@@ -337,6 +337,8 @@ pub(super) fn pen(
             if near_first {
                 tab.pen = Some(path);
                 finish_pen(tab, true);
+                // Its release would otherwise pick the layer under the pointer.
+                tab.ignore_click = p.down;
                 return Some(CursorIcon::Crosshair);
             }
             path.points.push((page, Vec2::ZERO));

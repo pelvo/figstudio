@@ -189,3 +189,67 @@ fn escape_finishes_an_open_pen_path() {
     );
     assert_eq!(h.state().tool, crate::canvas::Tool::Select);
 }
+
+#[test]
+fn closing_a_path_with_a_real_click_keeps_the_new_path_selected() {
+    let mut h = harness_fixture(FIXTURE, 1.0 / 60.0);
+    crate::editor::apply_tab_ops(
+        &mut h.state_mut().tabs[0],
+        &[figstudio_fig::edit::EditOp::CreatePage {
+            id: None,
+            name: "Paths".into(),
+        }],
+        None,
+        None,
+    )
+    .map(|ids| h.state_mut().tabs[0].set_page(ids[0]))
+    .unwrap();
+    // A frame under the path: a stray pick would select it.
+    let page = h.state().tabs[0].page;
+    crate::editor::apply_tab_ops(
+        &mut h.state_mut().tabs[0],
+        &[figstudio_fig::edit::EditOp::CreateShape {
+            id: None,
+            kind: "FRAME".into(),
+            parent: page,
+            name: None,
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 400.0,
+            corner_radius: 0.0,
+            fill_hex: None,
+            count: None,
+            star_inner_scale: None,
+        }],
+        None,
+        None,
+    )
+    .unwrap();
+    h.run_steps(3);
+    h.key_press(Key::P);
+    h.run_steps(1);
+    // Press and release in separate frames, as a person clicks; the closing click lands just
+    // outside the shape (within the first point's reach), over the frame.
+    for (x, y, off) in [
+        (100.0, 100.0, 0.0),
+        (200.0, 100.0, 0.0),
+        (150.0, 180.0, 0.0),
+        (100.0, 100.0, -4.0),
+    ] {
+        let at = screen(&h, x, y) + egui::vec2(off, off);
+        h.event(Event::PointerMoved(at));
+        h.run_steps(1);
+        button(&mut h, at, true);
+        h.run_steps(2);
+        button(&mut h, at, false);
+        h.run_steps(1);
+    }
+    let tab = &h.state().tabs[0];
+    let sel = tab.selection.expect("selected");
+    assert_eq!(
+        tab.doc.node(sel).unwrap().kind,
+        "VECTOR",
+        "the new path, not the frame"
+    );
+}

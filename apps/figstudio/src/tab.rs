@@ -124,6 +124,9 @@ pub struct Tab {
     pub vector_edit: Option<crate::editor::VectorEditing>,
     /// The Pen tool's path so far.
     pub pen: Option<crate::editor::PenPath>,
+    /// A press finished a gesture (closing a pen path): the click its release makes is not a
+    /// pick, or it would select the layer under the pointer instead of the new one.
+    pub ignore_click: bool,
     /// Set by creation tools once a new layer is placed so the toolbar returns to Select.
     pub reset_tool_to_select: bool,
     /// The inspector field focused or control dragged last frame; a change seals the
@@ -300,6 +303,7 @@ impl Tab {
             edit_drag: None,
             vector_edit: None,
             pen: None,
+            ignore_click: false,
             reset_tool_to_select: false,
             edit_session: None,
         }

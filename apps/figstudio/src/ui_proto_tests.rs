@@ -203,3 +203,62 @@ fn a_connection_to_a_frame_on_the_left_runs_between_the_facing_sides() {
     );
     assert_eq!((a.x, z.x), (to_screen(bf.x0), to_screen(bb.x1)));
 }
+
+#[test]
+fn a_layer_in_a_group_has_no_scroll_position_but_one_in_a_frame_does() {
+    let mut h = harness();
+    let (A, B, F) = layout(&mut h);
+    let child = h.state().tabs[0].doc.children(F)[0];
+    select(&mut h, &[child]);
+    assert!(
+        h.query_by_label("Position when scrolling").is_some(),
+        "in a frame"
+    );
+    let group = crate::editor::apply_tab_ops(
+        &mut h.state_mut().tabs[0],
+        &[figstudio_fig::edit::EditOp::Group {
+            targets: vec![A, B],
+            name: None,
+        }],
+        None,
+        None,
+    )
+    .unwrap()[0];
+    assert!(h.state().tabs[0].doc.node(group).is_some());
+    select(&mut h, &[A]);
+    assert!(
+        h.query_by_label("Position when scrolling").is_none(),
+        "in a group"
+    );
+}
+
+#[test]
+fn a_group_offers_no_frame_settings() {
+    let mut h = harness();
+    let (A, B, F) = layout(&mut h);
+    let group = crate::editor::apply_tab_ops(
+        &mut h.state_mut().tabs[0],
+        &[figstudio_fig::edit::EditOp::Group {
+            targets: vec![A, B],
+            name: None,
+        }],
+        None,
+        None,
+    )
+    .unwrap()[0];
+    select(&mut h, &[group]);
+    for frame_only in ["Clip content", "Add auto layout", "Overflow scrolling"] {
+        assert!(
+            h.query_by_label(frame_only).is_none(),
+            "{frame_only} on a group"
+        );
+    }
+    // A frame has them.
+    select(&mut h, &[F]);
+    for frame_only in ["Clip content", "Add auto layout", "Overflow scrolling"] {
+        assert!(
+            h.query_by_label(frame_only).is_some(),
+            "{frame_only} on a frame"
+        );
+    }
+}

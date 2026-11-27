@@ -243,10 +243,12 @@ fn layout(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
                 });
             }
         });
+        // Groups are stored as frames that fit their layers; they do not clip.
         let frames = ids.iter().all(|id| {
-            tab.doc
-                .node(*id)
-                .is_some_and(|n| matches!(n.kind.as_str(), "FRAME" | "SYMBOL" | "INSTANCE"))
+            tab.doc.node(*id).is_some_and(|n| {
+                matches!(n.kind.as_str(), "FRAME" | "SYMBOL" | "INSTANCE")
+                    && !figstudio_fig::edit::groups::is_group(n)
+            })
         });
         if frames {
             let clips = ids.iter().all(|id| {

@@ -90,6 +90,18 @@ fn rows_reorder_among_siblings_keeping_their_order() {
 }
 
 #[test]
+fn reordering_in_a_reverse_stack_matches_the_visible_order() {
+    let (mut doc, mut h, pg, [a, b, c, f, _]) = page();
+    let mut txn = figstudio_fig::edit::Txn::new("Reverse stack order");
+    txn.set_field(pg, "stackReverseZIndex", figstudio_fig::Val::Bool(true));
+    h.execute(&mut doc, txn).unwrap();
+
+    let ops = drop_ops(&doc, &[b, c], Drop::Above(a), &|_| false);
+    apply(&mut doc, &mut h, &ops);
+    assert_eq!(doc.children(pg), &[b, c, a, f]);
+}
+
+#[test]
 fn rows_reparent_into_a_frame_and_stay_put_on_the_page() {
     let (mut doc, mut h, pg, [a, _, _, f, d]) = page();
     let before = figstudio_render::node_bounds(&doc, a).unwrap();

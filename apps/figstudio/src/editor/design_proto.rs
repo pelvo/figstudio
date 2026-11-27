@@ -217,11 +217,13 @@ pub(super) fn prototype(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
         .parent
         .and_then(|p| doc.node(p))
         .is_some_and(|p| p.kind == "CANVAS");
-    let is_frame = matches!(node.kind.as_str(), "FRAME" | "SYMBOL" | "INSTANCE");
-    let in_frame = node
-        .parent
-        .and_then(|p| doc.node(p))
-        .is_some_and(|p| matches!(p.kind.as_str(), "FRAME" | "SYMBOL" | "INSTANCE"));
+    let is_frame = matches!(node.kind.as_str(), "FRAME" | "SYMBOL" | "INSTANCE")
+        && !figstudio_fig::edit::groups::is_group(node);
+    // Scrolling belongs to frames: a group (a fit-to-content frame) does not scroll.
+    let in_frame = node.parent.and_then(|p| doc.node(p)).is_some_and(|p| {
+        matches!(p.kind.as_str(), "FRAME" | "SYMBOL" | "INSTANCE")
+            && !figstudio_fig::edit::groups::is_group(p)
+    });
     let reactions = reactions_of(doc, id);
     let stored = node
         .data

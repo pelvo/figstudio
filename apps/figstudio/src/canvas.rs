@@ -226,8 +226,13 @@ pub fn show(
     let point = cursor_page.map(|p| Point::new(f64::from(p.x), f64::from(p.y)));
     let deep = ui.input(|i| i.modifiers.command);
     let mut inner_changed = false;
+    // The click a finishing press makes (it is released in a later frame) is not a pick.
+    let swallow = tab.ignore_click;
+    if !ui.input(|i| i.pointer.primary_down()) {
+        tab.ignore_click = false;
+    }
     // Editing a vector's points: clicks belong to its points, not to picking layers.
-    if response.clicked() && !panning && tab.vector_edit.is_none() {
+    if response.clicked() && !panning && tab.vector_edit.is_none() && !swallow {
         match tool {
             Tool::Select => {
                 // Shift-click adds the layer under the pointer to the selection, or removes it.

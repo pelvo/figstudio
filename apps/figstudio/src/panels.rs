@@ -178,13 +178,16 @@ pub fn layers(ui: &mut Ui, tab: &mut Tab, filter: &str) {
             ui.spacing_mut().item_spacing.y = 1.0;
             let mut pass = crate::layers_edit::Pass::default();
             if filter.is_empty() {
-                // Figma lists the topmost layer first, so children are drawn in reverse.
-                let mut stack: Vec<_> = doc
-                    .children(tab.page)
-                    .iter()
-                    .rev()
-                    .map(|id| (*id, 0usize, 1.0f32))
-                    .collect();
+                // Figma lists the topmost layer first. The stack pops from its end, so it holds
+                // the children bottom first (an auto-layout frame can reverse their order).
+                let page_data = doc
+                    .node(tab.page)
+                    .map_or_else(|| Val::Obj(figstudio_fig::Obj::new()), |n| n.data.clone());
+                let mut stack: Vec<_> =
+                    figstudio_render::children_topmost_first(doc.children(tab.page), &page_data)
+                        .rev()
+                        .map(|id| (id, 0usize, 1.0f32))
+                        .collect();
                 let ctx = ui.ctx().clone();
                 while let Some((id, depth, shown)) = stack.pop() {
                     if doc.node(id).is_none() {
@@ -202,12 +205,11 @@ pub fn layers(ui: &mut Ui, tab: &mut Tab, filter: &str) {
                     } else {
                         1.0
                     };
-                    if open {
+                    if open && let Some(n) = doc.node(id) {
                         stack.extend(
-                            doc.children(id)
-                                .iter()
+                            figstudio_render::children_topmost_first(doc.children(id), &n.data)
                                 .rev()
-                                .map(|child| (*child, depth + 1, shown.min(opening))),
+                                .map(|child| (child, depth + 1, shown.min(opening))),
                         );
                     }
                 }
@@ -237,7 +239,12 @@ fn search(
     shown: &mut usize,
     pass: &mut crate::layers_edit::Pass,
 ) {
-    let mut stack: Vec<Guid> = doc.children(parent).iter().rev().copied().collect();
+    // The filtered list follows the tree's paint order.
+    let Some(root) = doc.node(parent) else { return };
+    let mut stack: Vec<Guid> =
+        figstudio_render::children_topmost_first(doc.children(parent), &root.data)
+            .rev()
+            .collect();
     while let Some(child) = stack.pop() {
         let Some(node) = doc.node(child) else {
             continue;
@@ -246,7 +253,9 @@ fn search(
             *shown += 1;
             row(ui, tab, doc, child, 0, false, pass);
         }
-        stack.extend(doc.children(child).iter().rev().copied());
+        stack.extend(
+            figstudio_render::children_topmost_first(doc.children(child), &node.data).rev(),
+        );
     }
 }
 

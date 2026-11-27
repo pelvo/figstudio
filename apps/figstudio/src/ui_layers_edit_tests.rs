@@ -179,3 +179,24 @@ fn dragging_a_row_onto_a_frame_moves_the_layer_into_it_in_place() {
     );
     assert_eq!(tab.selection, Some(A));
 }
+
+#[test]
+fn the_tree_lists_the_frontmost_layer_first() {
+    let mut h = harness();
+    // Made in this order, so F is in front of B, which is in front of A.
+    let (A, B, F) = layout(&mut h);
+    let y = |h: &Harness<'_, App>, id: Guid| at(h, &row(id)).y;
+    assert!(y(&h, F) < y(&h, B) && y(&h, B) < y(&h, A), "front first");
+    // Dropping A just above F (in the list) brings it to the front.
+    let page = h.state().tabs[0].page;
+    let ops = crate::layers_edit::drop_ops(
+        &h.state().tabs[0].doc,
+        &[A],
+        crate::layers_edit::Drop::Above(F),
+        &|_| false,
+    );
+    crate::editor::apply_tab_ops(&mut h.state_mut().tabs[0], &ops, None, None).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().tabs[0].doc.children(page).last(), Some(&A));
+    assert!(y(&h, A) < y(&h, F), "and to the top of the list");
+}

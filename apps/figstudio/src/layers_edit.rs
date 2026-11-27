@@ -338,15 +338,23 @@ pub(crate) fn drop_ops(
         }
         d => d,
     };
-    let last_other = |p: Guid| {
-        doc.children(p)
-            .iter()
-            .rev()
-            .find(|c| !dragged.contains(c))
-            .copied()
+    // Work in visual order from back to front. A reverse stack stores that order backwards.
+    let reverse = |p| {
+        doc.node(p)
+            .is_some_and(|n| n.data.flag("stackReverseZIndex") == Some(true))
+    };
+    let siblings = |p| {
+        let mut children = doc.children(p).to_vec();
+        if reverse(p) {
+            children.reverse();
+        }
+        children
     };
     let (parent, after) = match drop {
-        Drop::Into(r) => (r, last_other(r)),
+        Drop::Into(r) => (
+            r,
+            siblings(r).into_iter().rev().find(|c| !dragged.contains(c)),
+        ),
         Drop::Above(r) => match doc.node(r).and_then(|n| n.parent) {
             Some(p) => (p, Some(r)),
             None => return Vec::new(),
@@ -355,7 +363,7 @@ pub(crate) fn drop_ops(
             let Some(p) = doc.node(r).and_then(|n| n.parent) else {
                 return Vec::new();
             };
-            let kids = doc.children(p);
+            let kids = siblings(p);
             let at = kids.iter().position(|c| *c == r).unwrap_or(0);
             (
                 p,
@@ -377,7 +385,7 @@ pub(crate) fn drop_ops(
     // Back to front: each lands just in front of the one before.
     let mut order: Vec<Guid> = dragged.to_vec();
     order.reverse();
-    let mut list: Vec<Guid> = doc.children(parent).to_vec();
+    let mut list = siblings(parent);
     let before = list.clone();
     let mut ops = Vec::new();
     for (i, d) in order.iter().enumerate() {
@@ -387,11 +395,16 @@ pub(crate) fn drop_ops(
             .map_or(0, |p| p + 1)
             + i)
             .min(list.len());
+        let index = if reverse(parent) {
+            list.len() - pos
+        } else {
+            pos
+        };
         list.insert(pos, *d);
         ops.push(EditOp::Reparent {
             target: *d,
             new_parent: parent,
-            index: Some(pos),
+            index: Some(index),
             keep_position: true,
         });
     }

@@ -81,7 +81,12 @@ fn combo(
 /// The sections that depend on what the selected layers are: auto layout, how they sit in
 /// their parent, text, instance.
 pub(super) fn kind_sections(ui: &mut Ui, tab: &mut Tab, ids: &[Guid]) {
-    if kinds_all(tab, ids, &["FRAME", "SYMBOL", "INSTANCE"]) {
+    let no_group = ids.iter().all(|id| {
+        tab.doc
+            .node(*id)
+            .is_some_and(|n| !figstudio_fig::edit::groups::is_group(n))
+    });
+    if no_group && kinds_all(tab, ids, &["FRAME", "SYMBOL", "INSTANCE"]) {
         auto_layout(ui, tab, ids);
     }
     child(ui, tab, ids);

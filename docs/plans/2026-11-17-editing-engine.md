@@ -306,3 +306,27 @@ Engine first (E0–E3), then the controls (U1–U8). Stacked on PR #90 (`feat/ed
 - Not verified: the drop-down popups in a real window. Not done: dragging out a connection on
   the canvas; overlay settings (position, close when clicking outside); choosing the easing
   in the panel (a written easing is kept).
+
+### 2026-11-28T120000Z editing-engine-real-window-qa
+- What changed and how it was checked: a real-window pass on a bundled build, with slow
+  window-scoped drags from a native automation driver (computer use sent drags too fast for
+  the app to see the button held). Launched directly with a fresh HOME and a copy of a public
+  fixture, so no saved workspace was read. Seen working: move and Alt-drag copy (each one undo
+  step), Shift-resize keeping a square, Shift-rotate snapping to 45°, a box select of two
+  layers then moving both (one undo), snapping a move to a neighbour's edge, a row dragged
+  into a frame keeping its page position and a sibling reorder (each one undo), a component
+  dragged from Assets onto the canvas, a vertex dragged in point edit mode (the box grows to
+  fit), the blend menu, the colour picker, and the text caret at high zoom.
+  Fixed from what it showed, each with a test that fails when its fix is reverted:
+  - Layers listed rows bottom first (they now follow paint order, reverse stacks included),
+    and drops into a reverse-stack frame land where the line shows.
+  - A group (a fit-to-content frame) offered Clip content, Auto layout and Overflow
+    scrolling, and its children "When scrolling".
+  - Closing a pen path with a real click (press and release in separate frames) let the
+    release pick the frame under it, so the new path lost the selection.
+  Gate: `FIGSTUDIO_TOOLCHAIN=1.99.0 scripts/check.sh` passed (a first run ran out of disk in
+  the tests; rerun after clearing build caches).
+- Not verified: Japanese IME candidate placement (the automated input arrived as Latin
+  text); snapping guides and distance labels mid-gesture; the final reverse-stack drop
+  adjustment in a real window (unit test only). Seen but left: a vertex can be dragged
+  outside a clipping parent.
