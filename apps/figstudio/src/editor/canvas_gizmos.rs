@@ -426,7 +426,18 @@ pub fn canvas_gizmos_input(
         return GizmoFrame::default();
     }
 
-    let inside_node = handles.contains_screen(rect, tab.view, pos);
+    let inside_node = if figstudio_render::is_hollow_layer(&node.kind, &node.data) {
+        let page = tab.view.to_page(rect.min, pos);
+        figstudio_render::hits_layer(
+            &tab.doc,
+            sel,
+            handles.tf,
+            Point::new(f64::from(page.x), f64::from(page.y)),
+            crate::canvas::hit_options(tab.view.zoom),
+        )
+    } else {
+        handles.contains_screen(rect, tab.view, pos)
+    };
     for (h, hp) in Handle::ALL.into_iter().zip(handles.points) {
         let hit = Rect::from_center_size(hp, vec2(10.0, 10.0));
         if hit.contains(pos) {

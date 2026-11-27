@@ -20,7 +20,9 @@ pub fn click(doc: &Document, chain: &[Guid], selected: Option<Guid>, deep: bool)
         }
     }
     let first = *chain.first()?;
-    let frame = doc.node(first).is_some_and(|n| n.kind == "FRAME");
+    let frame = doc
+        .node(first)
+        .is_some_and(|n| n.kind == "FRAME" && n.data.flag("resizeToFit") != Some(true));
     chain.get(usize::from(frame && chain.len() > 1)).copied()
 }
 
@@ -49,6 +51,7 @@ pub fn parent(doc: &Document, page: Guid, selected: Guid) -> Option<Guid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use figstudio_fig::{Document, Node, Obj, Val};
 
     #[test]
     fn deep_and_drill_are_distinct() {
@@ -56,5 +59,45 @@ mod tests {
         assert_eq!(deeper(&chain, Some(chain[0])), Some(chain[1]));
         assert_eq!(deeper(&chain, Some(chain[2])), Some(chain[2]));
         assert_eq!(deeper(&[], None), None);
+    }
+
+    #[test]
+    fn top_level_resize_to_fit_frame_is_selected_like_a_group() {
+        let mut doc = Document::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/structure.fig"),
+        )
+        .unwrap();
+        let make = |id: Guid, parent: Guid, kind: &str, rtf: Option<bool>| {
+            let mut o = Obj::new();
+            o.insert("guid", id.to_val());
+            o.insert("type", Val::Str(kind.into()));
+            let mut pi = Obj::new();
+            pi.insert("guid", parent.to_val());
+            pi.insert("position", Val::Str("001".into()));
+            o.insert("parentIndex", Val::Obj(pi));
+            if let Some(v) = rtf {
+                o.insert("resizeToFit", Val::Bool(v));
+            }
+            Node::from_data(Val::Obj(o)).unwrap()
+        };
+        let (page, artboard, figma_group, child_a, child_b) =
+            (Guid(9, 1), Guid(9, 2), Guid(9, 3), Guid(9, 4), Guid(9, 5));
+        doc.set_nodes(vec![
+            make(page, Guid(0, 0), "CANVAS", None),
+            make(artboard, page, "FRAME", None),
+            make(child_a, artboard, "RECTANGLE", None),
+            make(figma_group, page, "FRAME", Some(true)),
+            make(child_b, figma_group, "LINE", None),
+        ])
+        .unwrap();
+        assert_eq!(
+            click(&doc, &[artboard, child_a], None, false),
+            Some(child_a)
+        );
+        assert_eq!(
+            click(&doc, &[figma_group, child_b], None, false),
+            Some(figma_group)
+        );
     }
 }

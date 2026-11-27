@@ -10,6 +10,14 @@ use figstudio_fig::{
 };
 use figstudio_render::{Renderer, geom, kurbo::Point};
 
+#[derive(Debug, PartialEq, Eq)]
+struct PageHitKey {
+    page: Guid,
+    x: u64,
+    y: u64,
+    zoom: u32,
+}
+
 #[derive(Debug, PartialEq)]
 struct HoverKey {
     instance: Guid,
@@ -28,6 +36,8 @@ struct State {
     document: u64,
     renderer: Renderer,
     definitions: Arc<Definitions>,
+    page_hit: Option<(PageHitKey, Vec<Guid>)>,
+    page_walks: usize,
     hover: Option<(HoverKey, Option<InstancePath>)>,
     // The canvas draws at most two inner outlines: selected and hovered.
     outlines: [Option<(InstancePath, Option<[Point; 4]>)>; 2],
@@ -41,6 +51,8 @@ impl State {
             document: doc.instance,
             renderer,
             definitions,
+            page_hit: None,
+            page_walks: 0,
             hover: None,
             outlines: [None, None],
         }
@@ -77,6 +89,37 @@ impl PickCache {
     #[cfg(test)]
     pub fn work(&self, doc: &Document) -> figstudio_render::InspectionWork {
         self.with(doc, |renderer, _| renderer.inspection_work())
+    }
+
+    #[cfg(test)]
+    pub fn page_walks(&self, doc: &Document) -> usize {
+        self.state(doc).page_walks
+    }
+
+    /// Cached outer-page hit chain so stationary hover frames reuse the prior walk without
+    /// re-scanning connectors, vectors, or styles. Invalidated automatically on `doc.instance`.
+    pub fn page_chain(&self, tab: &crate::tab::Tab, point: Point) -> Vec<Guid> {
+        let key = PageHitKey {
+            page: tab.page,
+            x: point.x.to_bits(),
+            y: point.y.to_bits(),
+            zoom: tab.view.zoom.to_bits(),
+        };
+        let mut state = self.state(&tab.doc);
+        if let Some((old, result)) = &state.page_hit
+            && *old == key
+        {
+            return result.clone();
+        }
+        state.page_walks += 1;
+        let result = figstudio_render::hit_chain_with_options(
+            &tab.doc,
+            tab.page,
+            point,
+            crate::canvas::hit_options(tab.view.zoom),
+        );
+        state.page_hit = Some((key, result.clone()));
+        result
     }
 
     pub fn corners(&self, doc: &Document, path: &InstancePath) -> Option<[Point; 4]> {
@@ -120,7 +163,13 @@ impl PickCache {
             definitions,
             ..
         } = &mut *state;
-        let hits = crate::instance_pick::hit_chain_with(&tab.doc, renderer, instance, point);
+        let hits = crate::instance_pick::hit_chain_with_options(
+            &tab.doc,
+            renderer,
+            instance,
+            point,
+            crate::canvas::hit_options(tab.view.zoom),
+        );
         let result = crate::instance_pick::click(
             &tab.doc,
             definitions,

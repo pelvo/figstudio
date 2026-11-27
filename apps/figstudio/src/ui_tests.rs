@@ -66,6 +66,8 @@ mod pick_cache;
 mod pick_drag;
 #[path = "ui_pick_order_tests.rs"]
 mod pick_order;
+#[path = "ui_pick_overlap_tests.rs"]
+mod pick_overlap;
 #[path = "ui_preview_tests.rs"]
 mod preview;
 #[path = "ui_recents_tests.rs"]

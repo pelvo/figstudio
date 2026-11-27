@@ -251,7 +251,29 @@ fn inner_hit_chain_respects_masks_hidden_ancestors_and_clips() {
     let point = Point::new(30.0, 30.0);
     let hits = |doc: &figstudio_fig::Document| crate::instance_pick::hit_chain(doc, id(200), point);
     assert_eq!(hits(&doc).last(), Some(&path(&[103])));
+
+    // Empty groups (no visible non-mask child under the pointer) pass through rather than
+    // catching clicks in empty space.
+    let mut masked_group = doc.nodes.clone();
+    masked_group
+        .iter_mut()
+        .find(|n| n.id == id(103))
+        .unwrap()
+        .data
+        .set("mask", figstudio_fig::Val::Bool(true));
+    let mut group_doc = doc.clone();
+    group_doc.set_nodes(masked_group).unwrap();
+    assert!(hits(&group_doc).is_empty());
+
+    // Box containers (FRAME) still catch hits when their child is masked or hidden, and clip
+    // when `frameMaskDisabled` is false.
     let mut nodes = doc.nodes.clone();
+    for container in [id(101), id(102)] {
+        let node = nodes.iter_mut().find(|n| n.id == container).unwrap();
+        node.kind = "FRAME".into();
+        node.data
+            .set("type", figstudio_fig::Val::Str("FRAME".into()));
+    }
     nodes
         .iter_mut()
         .find(|n| n.id == id(103))
@@ -270,18 +292,227 @@ fn inner_hit_chain_respects_masks_hidden_ancestors_and_clips() {
     doc.set_nodes(nodes).unwrap();
     assert_eq!(hits(&doc).last(), Some(&path(&[101])));
     let mut nodes = doc.nodes.clone();
-    let group = nodes.iter_mut().find(|n| n.id == id(101)).unwrap();
-    group
+    let frame = nodes.iter_mut().find(|n| n.id == id(101)).unwrap();
+    frame
         .data
         .set("frameMaskDisabled", figstudio_fig::Val::Bool(false));
-    group.kind = "FRAME".into();
-    group
+    frame
         .data
         .get_mut("size")
         .unwrap()
         .set("x", figstudio_fig::Val::Float(10.0));
     doc.set_nodes(nodes).unwrap();
     assert!(hits(&doc).is_empty());
+}
+
+#[test]
+fn inner_pick_handles_bent_vector_styles_clips_and_locked() {
+    use super::pick::object as obj;
+    use figstudio_fig::{Node, Val};
+    use figstudio_render::HitOptions;
+
+    let mut doc = inner_fixture::document();
+    // Bent 2px stroke ribbon along top (0..220, y=0..2) and right (x=218..220, y=0..160).
+    let poly = |pts: &[(f32, f32)]| {
+        let mut b = Vec::new();
+        for (i, &(x, y)) in pts.iter().enumerate() {
+            b.push(if i == 0 { 1 } else { 2 });
+            b.extend(x.to_le_bytes());
+            b.extend(y.to_le_bytes());
+        }
+        b.push(0);
+        b
+    };
+    let top = doc.blobs.len() as i64;
+    doc.blobs
+        .push(poly(&[(0.0, 0.0), (220.0, 0.0), (220.0, 2.0), (0.0, 2.0)]));
+    let right = doc.blobs.len() as i64;
+    doc.blobs.push(poly(&[
+        (218.0, 0.0),
+        (220.0, 0.0),
+        (220.0, 160.0),
+        (218.0, 160.0),
+    ]));
+    let stroke_geom = Val::Arr(vec![
+        obj(&[("commandsBlob", Val::Int(top))]),
+        obj(&[("commandsBlob", Val::Int(right))]),
+    ]);
+    let solid = Val::Arr(vec![obj(&[
+        ("type", Val::Str("SOLID".into())),
+        (
+            "color",
+            obj(&[
+                ("r", Val::Float(0.0)),
+                ("g", Val::Float(0.0)),
+                ("b", Val::Float(0.0)),
+                ("a", Val::Float(1.0)),
+            ]),
+        ),
+    ])]);
+
+    // Attached stroke style with stale empty `strokePaints: []` on the vector itself.
+    let style_node = Node::from_data(obj(&[
+        ("guid", id(190).to_val()),
+        ("type", Val::Str("RECTANGLE".into())),
+        ("styleType", Val::Str("FILL".into())),
+        ("fillPaints", solid.clone()),
+    ]))
+    .unwrap();
+    let vec_node = Node::from_data(obj(&[
+        ("guid", id(199).to_val()),
+        ("type", Val::Str("VECTOR".into())),
+        (
+            "parentIndex",
+            obj(&[
+                ("guid", id(100).to_val()),
+                ("position", Val::Str("999".into())),
+            ]),
+        ),
+        (
+            "size",
+            obj(&[("x", Val::Float(220.0)), ("y", Val::Float(160.0))]),
+        ),
+        ("fillPaints", Val::Arr(vec![])),
+        ("strokePaints", Val::Arr(vec![])),
+        ("styleIdForStrokeFill", obj(&[("guid", id(190).to_val())])),
+        ("strokeWeight", Val::Float(2.0)),
+        ("strokeGeometry", stroke_geom),
+    ]))
+    .unwrap();
+    // Clipping frame inside SYMBOL with a clipped-out child LINE at y = -2.0.
+    let clip_frame = Node::from_data(obj(&[
+        ("guid", id(191).to_val()),
+        ("type", Val::Str("FRAME".into())),
+        (
+            "parentIndex",
+            obj(&[
+                ("guid", id(100).to_val()),
+                ("position", Val::Str("998".into())),
+            ]),
+        ),
+        (
+            "size",
+            obj(&[("x", Val::Float(60.0)), ("y", Val::Float(40.0))]),
+        ),
+        (
+            "transform",
+            obj(&[
+                ("m00", Val::Float(1.0)),
+                ("m11", Val::Float(1.0)),
+                ("m02", Val::Float(0.0)),
+                ("m12", Val::Float(200.0)),
+            ]),
+        ),
+        ("frameMaskDisabled", Val::Bool(false)),
+    ]))
+    .unwrap();
+    let clipped_line = Node::from_data(obj(&[
+        ("guid", id(192).to_val()),
+        ("type", Val::Str("LINE".into())),
+        (
+            "parentIndex",
+            obj(&[
+                ("guid", id(191).to_val()),
+                ("position", Val::Str("001".into())),
+            ]),
+        ),
+        (
+            "size",
+            obj(&[("x", Val::Float(60.0)), ("y", Val::Float(0.0))]),
+        ),
+        (
+            "transform",
+            obj(&[
+                ("m00", Val::Float(1.0)),
+                ("m11", Val::Float(1.0)),
+                ("m02", Val::Float(0.0)),
+                ("m12", Val::Float(-2.0)),
+            ]),
+        ),
+        ("strokePaints", solid),
+        ("strokeWeight", Val::Float(1.0)),
+    ]))
+    .unwrap();
+
+    let mut nodes = doc.nodes.clone();
+    nodes.extend([style_node, vec_node, clip_frame, clipped_line]);
+    doc.set_nodes(nodes).unwrap();
+
+    let interactive = HitOptions {
+        tolerance: 4.0,
+        skip_locked: true,
+    };
+    let mut r = Renderer::new();
+    // Off-stroke passes through styled bent vector to underlying TEXT 103.
+    assert_eq!(
+        crate::instance_pick::hit_chain_with_options(
+            &doc,
+            &mut r,
+            id(200),
+            Point::new(30.0, 30.0),
+            interactive,
+        )
+        .last(),
+        Some(&path(&[103]))
+    );
+    // On-stroke hits the styled bent vector even though raw strokePaints is empty.
+    assert_eq!(
+        crate::instance_pick::hit_chain_with_options(
+            &doc,
+            &mut r,
+            id(200),
+            Point::new(219.0, 80.0),
+            interactive,
+        )
+        .last(),
+        Some(&path(&[199]))
+    );
+    // Clipped-out child LINE at y = -2 inside clipping frame must not steal clicks inside frame.
+    assert_eq!(
+        crate::instance_pick::hit_chain_with_options(
+            &doc,
+            &mut r,
+            id(200),
+            Point::new(30.0, 201.0),
+            interactive,
+        )
+        .last(),
+        Some(&path(&[191]))
+    );
+    // Locking the bent vector passes direct on-stroke hits through when skip_locked is true.
+    let mut locked_nodes = doc.nodes.clone();
+    locked_nodes
+        .iter_mut()
+        .find(|n| n.id == id(199))
+        .unwrap()
+        .data
+        .set("locked", Val::Bool(true));
+    doc.set_nodes(locked_nodes).unwrap();
+    assert_eq!(
+        crate::instance_pick::hit_chain_with_options(
+            &doc,
+            &mut r,
+            id(200),
+            Point::new(30.0, 1.0),
+            HitOptions {
+                tolerance: 4.0,
+                skip_locked: false,
+            },
+        )
+        .last(),
+        Some(&path(&[199]))
+    );
+    assert_ne!(
+        crate::instance_pick::hit_chain_with_options(
+            &doc,
+            &mut r,
+            id(200),
+            Point::new(30.0, 1.0),
+            interactive,
+        )
+        .last(),
+        Some(&path(&[199]))
+    );
 }
 
 #[test]

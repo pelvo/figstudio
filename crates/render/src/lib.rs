@@ -24,6 +24,11 @@ mod emoji_zoom_tests;
 pub mod encoding;
 mod focus;
 pub mod geom;
+mod hit;
+pub use hit::{
+    HitClip, HitOptions, hit_chain, hit_chain_with_options, hit_skippable, hit_test, hits_layer,
+    hits_node, is_hollow_layer,
+};
 #[cfg(feature = "gpu")]
 mod gpu;
 #[cfg(feature = "gpu")]
@@ -56,7 +61,7 @@ use figstudio_fig::resolve::{self, InstancePath, Overrides};
 use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
-use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape, Size, Vec2};
+use vello_cpu::kurbo::{Affine, BezPath, Rect, Shape, Size, Vec2};
 use vello_cpu::peniko::{BlendMode, Compose, Mix};
 use vello_cpu::{ImageSource, PaintType, Pixmap, RenderContext, RenderSettings, Resources};
 
@@ -1269,11 +1274,6 @@ fn content_bounds_with_budget(
     )
 }
 
-/// Topmost, deepest visible node under `point` (page coordinates). Instances count as one layer.
-pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
-    hit_chain(doc, page, point).last().copied()
-}
-
 /// Whether nothing of a node's content outside its box is drawn, so a point there cannot hit
 /// its children: a frame that clips its content, or a boolean that draws its stored result
 /// (one that falls back paints its operands whole).
@@ -1306,58 +1306,6 @@ fn draws_stored_result(data: &Val, fills: usize, strokes: usize) -> bool {
     (has_fill || has_stroke)
         && (!visible("fillPaints") || has_fill)
         && (!visible("strokePaints") || has_stroke)
-}
-
-/// Topmost hit's ancestry, from the page's child to the deepest visible layer.
-/// Instances remain leaves; sections are traversed but never selected themselves.
-pub fn hit_chain(doc: &Document, page: Guid, point: Point) -> Vec<Guid> {
-    fn walk(
-        doc: &Document,
-        parent: Guid,
-        parent_tf: Affine,
-        point: Point,
-        seen: &mut std::collections::HashSet<Guid>,
-        depth: usize,
-    ) -> Option<Vec<Guid>> {
-        if depth >= 128 || !seen.insert(parent) {
-            return None;
-        }
-        let data = &doc.node(parent)?.data;
-        for id in children_topmost_first(doc.children(parent), data) {
-            let Some(node) = doc.node(id) else { continue };
-            if !visible(&node.data) || node.data.flag("mask") == Some(true) {
-                continue;
-            }
-            let tf = parent_tf * affine(node.data.get("transform"));
-            let (w, h) = size(&node.data);
-            let local = tf.inverse() * point;
-            let inside = local.x >= 0.0 && local.y >= 0.0 && local.x <= w && local.y <= h;
-            // Only asked outside the box, so inside it stored geometry is not decoded.
-            let clips = || clips_hits(&node.kind, &node.data, &doc.blobs);
-            if node.kind != "INSTANCE"
-                && (inside || !clips())
-                && let Some(mut hit) = walk(doc, id, tf, point, seen, depth + 1)
-            {
-                if node.kind != "SECTION" {
-                    hit.insert(0, id);
-                }
-                return Some(hit);
-            }
-            if inside && node.kind != "SECTION" {
-                return Some(vec![id]);
-            }
-        }
-        None
-    }
-    walk(
-        doc,
-        page,
-        Affine::IDENTITY,
-        point,
-        &mut std::collections::HashSet::new(),
-        0,
-    )
-    .unwrap_or_default()
 }
 
 /// How far (in local units) a node can draw outside its frame: strokes, effects, and text

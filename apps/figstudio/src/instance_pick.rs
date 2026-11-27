@@ -52,6 +52,8 @@ struct Hit<'a> {
     doc: &'a Document,
     renderer: &'a mut Renderer,
     left: usize,
+    options: figstudio_render::HitOptions,
+    clips: Vec<figstudio_render::HitClip>,
 }
 
 impl Hit<'_> {
@@ -73,9 +75,7 @@ impl Hit<'_> {
                 break;
             }
             self.left -= 1;
-            if resolved.data.flag("visible") == Some(false)
-                || resolved.data.flag("mask") == Some(true)
-            {
+            if figstudio_render::hit_skippable(&resolved.data, self.options.skip_locked) {
                 continue;
             }
             let Some(node) = self.doc.node(resolved.node) else {
@@ -87,13 +87,22 @@ impl Hit<'_> {
             }
             let local = tf.inverse() * point;
             let (w, h) = geom::size(&data);
-            let inside = bounds.contains(point)
+            let in_box = bounds.contains(point)
                 && local.x >= 0.0
                 && local.y >= 0.0
                 && local.x <= w
                 && local.y <= h;
-            if inside || !figstudio_render::clips_hits(&node.kind, &data, &self.doc.blobs) {
+            if in_box || !figstudio_render::clips_hits(&node.kind, &data, &self.doc.blobs) {
+                let pushed = geom::clips_content(&node.kind, &data)
+                    .then(|| figstudio_render::HitClip::new(tf, &data))
+                    .flatten();
+                if let Some(clip) = pushed {
+                    self.clips.push(clip);
+                }
                 let mut hit = self.walk(instance, Some(&resolved.path), point, depth + 1);
+                if pushed.is_some() {
+                    self.clips.pop();
+                }
                 if !hit.is_empty() {
                     if node.kind != "SECTION" {
                         hit.insert(0, resolved.path);
@@ -101,7 +110,15 @@ impl Hit<'_> {
                     return hit;
                 }
             }
-            if inside && node.kind != "SECTION" {
+            if figstudio_render::hits_node(
+                self.doc,
+                &node.kind,
+                &data,
+                tf,
+                point,
+                self.options,
+                &self.clips,
+            ) {
                 return vec![resolved.path];
             }
         }
@@ -111,19 +128,44 @@ impl Hit<'_> {
 
 #[cfg(test)]
 pub fn hit_chain(doc: &Document, instance: Guid, point: Point) -> Vec<InstancePath> {
-    hit_chain_with(doc, &mut Renderer::new(), instance, point)
+    hit_chain_with_options(
+        doc,
+        &mut Renderer::new(),
+        instance,
+        point,
+        figstudio_render::HitOptions::default(),
+    )
 }
 
+#[cfg(test)]
 pub fn hit_chain_with(
     doc: &Document,
     renderer: &mut Renderer,
     instance: Guid,
     point: Point,
 ) -> Vec<InstancePath> {
+    hit_chain_with_options(
+        doc,
+        renderer,
+        instance,
+        point,
+        figstudio_render::HitOptions::default(),
+    )
+}
+
+pub fn hit_chain_with_options(
+    doc: &Document,
+    renderer: &mut Renderer,
+    instance: Guid,
+    point: Point,
+    options: figstudio_render::HitOptions,
+) -> Vec<InstancePath> {
     Hit {
         doc,
         renderer,
         left: BUDGET,
+        options,
+        clips: Vec::new(),
     }
     .walk(instance, None, point, 0)
 }

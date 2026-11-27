@@ -19,10 +19,21 @@ thread_local! {
     pub(crate) static HIT_CHAIN_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn hit_chain(doc: &figstudio_fig::Document, page: Guid, point: Point) -> Vec<Guid> {
+/// Screen-space hit slop (points) around thin strokes so 1–2 px lines stay easy to click at
+/// any zoom level while off-stroke empty bounding-box interiors pass through.
+const HIT_SLOP_PX: f64 = 4.0;
+
+pub(crate) fn hit_options(zoom: f32) -> figstudio_render::HitOptions {
+    figstudio_render::HitOptions {
+        tolerance: HIT_SLOP_PX / f64::from(zoom).max(1e-3),
+        skip_locked: true,
+    }
+}
+
+fn hit_chain(tab: &Tab, point: Point) -> Vec<Guid> {
     #[cfg(test)]
     HIT_CHAIN_CALLS.with(|calls| calls.set(calls.get() + 1));
-    figstudio_render::hit_chain(doc, page, point)
+    tab.pick_cache.page_chain(tab, point)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,11 +225,7 @@ pub fn show(
         let chain = cursor_page
             .filter(|_| needs_chain)
             .map_or_else(Vec::new, |p| {
-                hit_chain(
-                    &tab.doc,
-                    tab.page,
-                    Point::new(f64::from(p.x), f64::from(p.y)),
-                )
+                hit_chain(tab, Point::new(f64::from(p.x), f64::from(p.y)))
             });
         if response.hovered() && !response.dragged() {
             tab.hover = crate::pick::click(
