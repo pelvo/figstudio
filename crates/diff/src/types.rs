@@ -128,6 +128,8 @@ pub struct RenderStats {
     pub text_missing: usize,
     pub text_truncation_ignored: usize,
     #[serde(default)]
+    pub approximated_text_decorations: usize,
+    #[serde(default)]
     pub emoji_approximated: usize,
     #[serde(default)]
     pub emoji_skipped: usize,
@@ -165,6 +167,7 @@ impl From<&figstudio_render::Stats> for RenderStats {
             text_system_fonts,
             text_missing,
             text_truncation_ignored,
+            approximated_text_decorations,
             emoji_approximated,
             emoji_skipped,
             missing_images,
@@ -197,6 +200,7 @@ impl From<&figstudio_render::Stats> for RenderStats {
             text_system_fonts: *text_system_fonts,
             text_missing: *text_missing,
             text_truncation_ignored: *text_truncation_ignored,
+            approximated_text_decorations: *approximated_text_decorations,
             emoji_approximated: *emoji_approximated,
             emoji_skipped: *emoji_skipped,
             missing_images: *missing_images,

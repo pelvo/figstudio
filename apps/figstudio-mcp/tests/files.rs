@@ -75,3 +75,49 @@ async fn missing_and_bad_files_become_tool_errors() {
         assert_eq!(files.list().await[0].pages, None);
     }
 }
+
+#[tokio::test]
+async fn list_reflects_live_in_memory_page_edits() {
+    use figstudio_fig::edit::{EditOp, execute_edit_ops};
+
+    let files = FileRegistry::new(vec![fixture()]);
+    let initial = files.open(None).await.unwrap().pages.len();
+    assert_eq!(files.list().await[0].pages, Some(initial));
+
+    files
+        .mutate_doc(None, |doc, history, _, _| {
+            execute_edit_ops(
+                doc,
+                history,
+                &[EditOp::CreatePage {
+                    id: None,
+                    name: "Added page".into(),
+                }],
+                Some("Add page"),
+                None,
+                false,
+            )
+            .unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        files.list().await[0].pages,
+        Some(initial + 1),
+        "list() must reflect CreatePage from the in-memory edit overlay"
+    );
+
+    files
+        .mutate_doc(None, |doc, history, _, _| {
+            history.undo(doc).unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        files.list().await[0].pages,
+        Some(initial),
+        "list() must reflect Undo on the in-memory edit overlay"
+    );
+}

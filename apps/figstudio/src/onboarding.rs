@@ -659,7 +659,9 @@ impl App {
             || self.space_popover_up()
             || self.onboarding.sheet_up(ctx)
             || self.link.window
-            || self.render_worker_lost;
+            || self.render_worker_lost
+            || self.unsaved.is_some()
+            || ctx.memory(|m| m.top_modal_layer().is_some());
         let current = due
             .filter(|_| !quiet)
             .and_then(|tip| self.onboarding.targets.get(tip).map(|r| (tip, r)));

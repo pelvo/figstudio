@@ -5,11 +5,16 @@
 //! files from any Figma version decode without generated types.
 
 pub mod archive;
+pub mod census;
+pub mod clipboard;
 mod doc;
+pub mod edit;
 mod error;
+pub mod lazy_save;
 mod open;
 mod read;
 pub mod resolve;
+pub mod sha1;
 pub mod tokens;
 mod val;
 mod val_serde;

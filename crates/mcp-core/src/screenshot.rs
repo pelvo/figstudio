@@ -354,6 +354,10 @@ pub fn approximations(stats: &Stats) -> Vec<String> {
     [
         (stats.text_missing, "text not drawn"),
         (stats.text_truncation_ignored, "text truncation ignored"),
+        (
+            stats.approximated_text_decorations,
+            "text decorations approximated",
+        ),
         (stats.emoji_approximated, "emoji approximated"),
         (stats.emoji_skipped, "emoji skipped"),
         (stats.approximated_effects, "shadow effects approximated"),

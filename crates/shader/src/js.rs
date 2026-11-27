@@ -76,23 +76,46 @@ pub(crate) struct Frame<'a> {
 
 /// Runs `js` (the shader module) on the GPU and returns the output's RGBA8 pixels.
 pub(crate) fn run(js: &str, params: &Value, frame: &Frame<'_>) -> Result<Vec<u8>, ShaderError> {
-    let (device, queue) = gpu::device().ok_or_else(ShaderError::no_gpu)?;
-    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let (device, queue, backend, naga_caps) = gpu::device().ok_or_else(ShaderError::no_gpu)?;
+    // Capture Internal and OutOfMemory alongside Validation so a root pipeline translation or
+    // OOM error is preserved instead of being masked by cascading Validation errors (for example
+    // `RenderPipeline::get_bind_group_layout` on an invalid pipeline).
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     SESSION.with(|s| {
         *s.borrow_mut() = Some(Session {
             device: device.clone(),
             queue: queue.clone(),
+            backend: *backend,
+            naga_caps: *naga_caps,
             objects: Vec::new(),
             gpu_bytes: 0,
+            gpu_error: None,
         });
     });
     let clear = Clear;
     let pixels = script(js, params, frame);
+    let session_gpu_error = SESSION.with(|s| s.borrow_mut().take().and_then(|s| s.gpu_error));
     drop(clear);
-    if let Some(error) = pollster::block_on(scope.pop()) {
+    let oom_error = pollster::block_on(oom.pop());
+    let internal_error = pollster::block_on(internal.pop());
+    let validation_error = pollster::block_on(validation.pop());
+    if let Some(error) = internal_error.or(oom_error).or(validation_error) {
         return Err(ShaderError::gpu(error.to_string()));
     }
-    pixels
+    match pixels {
+        Ok(rgba) => Ok(rgba),
+        Err(script_err) => {
+            if let Some(gpu_err) = session_gpu_error
+                && script_err.to_string().contains(&gpu_err.to_string())
+            {
+                Err(gpu_err)
+            } else {
+                Err(script_err)
+            }
+        }
+    }
 }
 
 fn script(js: &str, params: &Value, f: &Frame<'_>) -> Result<Vec<u8>, ShaderError> {
@@ -307,13 +330,7 @@ fn device_object(ctx: &mut Context) -> JsObject {
 fn create_shader_module(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let desc = arg(args, 0, ctx)?;
     let code = desc["code"].as_str().unwrap_or_default().to_owned();
-    let id = with(|s| {
-        let module = s.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(code.into()),
-        });
-        Ok(s.add(Object::Module(module)))
-    })?;
+    let id = with(|s| Ok(s.create_shader_module(&code)))?;
     Ok(handle(ctx, id, &[]).into())
 }
 
@@ -481,10 +498,7 @@ fn create_render_pipeline(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> J
 fn get_bind_group_layout(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let pipeline = id_of(this, ctx)?;
     let index = number(args, 0, ctx)? as u32;
-    let id = with(|s| {
-        let layout = s.pipeline(pipeline)?.get_bind_group_layout(index);
-        Ok(s.add(Object::Layout(layout)))
-    })?;
+    let id = with(|s| s.get_bind_group_layout(pipeline, index))?;
     Ok(handle(ctx, id, &[]).into())
 }
 

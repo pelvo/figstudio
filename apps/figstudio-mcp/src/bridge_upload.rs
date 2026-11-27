@@ -142,14 +142,14 @@ impl Session {
                 }
                 tab.page = page;
             }
-            tab.selection = state
+            let parsed_selection = state
                 .selection
                 .map(|id| parse_guid(&id))
                 .transpose()
                 .map_err(|_| "invalid selection id")?;
-            if tab.selection.is_some_and(|id| tab.doc.node(id).is_none()) {
-                return Err("unknown selection".into());
-            }
+            // Clear selections missing from the uploaded snapshot (e.g., during revision lag
+            // after a local browser edit) rather than aborting the whole State update.
+            tab.selection = parsed_selection.filter(|id| tab.doc.node(*id).is_some());
             if state.viewport.is_some_and(|rect| {
                 rect.iter().any(|v| !v.is_finite()) || rect[2] < 0. || rect[3] < 0.
             }) {

@@ -291,3 +291,208 @@ fn default_design_assets_are_inline_without_filesystem_support() {
         |b| matches!(b,figstudio_mcp_core::output::Block::Image{mime,..} if mime=="image/png")
     ));
 }
+
+#[test]
+fn copy_for_figma_reads_lazy_png_through_reader_and_propagates_failures() {
+    use figstudio_fig::{
+        Obj, Val, archive,
+        clipboard::decode_clipboard_html,
+        edit::{EditOp, History, execute_edit_ops},
+        sha1::sha1_hex,
+    };
+    use std::collections::HashMap;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let make_png = |rgba: [u8; 4]| -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(2, 2, image::Rgba(rgba));
+        let mut out = Vec::new();
+        img.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    };
+    let png_a = make_png([220, 40, 60, 255]);
+    let png_b = make_png([30, 140, 210, 255]);
+    let hash_a = sha1_hex(&png_a);
+    let hash_b = sha1_hex(&png_b);
+    let undeclared_hash = "aa".repeat(20);
+
+    // Build a synthetic .fig archive with two PNG images and three nodes:
+    // - rect_a -> hash_a (declared in images/)
+    // - rect_b -> hash_b (declared in images/)
+    // - rect_undeclared -> undeclared_hash (in neither images nor lazy_images)
+    let mut base = Document::open(fixture()).unwrap();
+    let page = base.pages[0];
+    let mut history = History::new(8);
+    let create_rect = |doc: &mut Document, hist: &mut History, x: f64| {
+        execute_edit_ops(
+            doc,
+            hist,
+            &[EditOp::CreateShape {
+                id: None,
+                kind: "RECTANGLE".into(),
+                parent: page,
+                name: None,
+                x,
+                y: 0.0,
+                width: 24.0,
+                height: 24.0,
+                corner_radius: 0.0,
+                fill_hex: None,
+                count: None,
+                star_inner_scale: None,
+            }],
+            None,
+            None,
+            false,
+        )
+        .unwrap()
+        .0
+        .created_ids[0]
+    };
+    let rect_a = create_rect(&mut base, &mut history, 0.0);
+    let rect_b = create_rect(&mut base, &mut history, 40.0);
+    let rect_undeclared = create_rect(&mut base, &mut history, 80.0);
+
+    base.images.insert(hash_a.clone(), png_a.clone());
+    base.images.insert(hash_b.clone(), png_b.clone());
+    for (target, hash_hex) in [(rect_a, &hash_a), (rect_b, &hash_b)] {
+        execute_edit_ops(
+            &mut base,
+            &mut history,
+            &[EditOp::SetImageFill {
+                target,
+                sha1_hex: hash_hex.clone(),
+                scale_mode: "FILL".into(),
+                opacity: 1.0,
+            }],
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    }
+    let mut undeclared_txn = figstudio_fig::edit::Txn::new("undeclared hash");
+    let mut img_obj = Obj::new();
+    img_obj.insert("hash", Val::Bytes(vec![0xaa; 20]));
+    let mut paint = Obj::new();
+    paint.insert("type", Val::Enum(figstudio_fig::intern("IMAGE")));
+    paint.insert("opacity", Val::Float(1.0));
+    paint.insert("visible", Val::Bool(true));
+    paint.insert("blendMode", Val::Enum(figstudio_fig::intern("NORMAL")));
+    paint.insert("image", Val::Obj(img_obj));
+    paint.insert("imageScaleMode", Val::Enum(figstudio_fig::intern("FILL")));
+    undeclared_txn.set_field(
+        rect_undeclared,
+        "fillPaints",
+        Val::Arr(vec![Val::Obj(paint)]),
+    );
+    base.apply_txn(&undeclared_txn).unwrap();
+
+    // Package canvas + PNG entries into an in-memory ZIP and open via `Document::from_lazy`.
+    let canvas = base.encode_canvas().unwrap();
+    let mut zip_buf = Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut zip_buf);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("canvas.fig", opts).unwrap();
+        zip.write_all(&canvas).unwrap();
+        zip.start_file(format!("images/{hash_a}"), opts).unwrap();
+        zip.write_all(&png_a).unwrap();
+        zip.start_file(format!("images/{hash_b}"), opts).unwrap();
+        zip.write_all(&png_b).unwrap();
+        zip.finish().unwrap();
+    }
+    let zip_bytes = Arc::new(zip_buf.into_inner());
+    let entries = archive::read_entries(
+        &mut Cursor::new(zip_bytes.as_slice()),
+        zip_bytes.len() as u64,
+    )
+    .unwrap();
+    let mut eager = HashMap::new();
+    for e in entries
+        .iter()
+        .filter(|e| archive::EAGER_ENTRIES.contains(&e.name.as_str()))
+    {
+        eager.insert(
+            e.name.clone(),
+            archive::read_entry(&mut Cursor::new(zip_bytes.as_slice()), e).unwrap(),
+        );
+    }
+    let lazy = Arc::new(Document::from_lazy(entries, eager).unwrap());
+    assert!(lazy.images.is_empty());
+    assert!(lazy.lazy_images.contains_key(&hash_a));
+    assert!(lazy.lazy_images.contains_key(&hash_b));
+    assert!(!lazy.lazy_images.contains_key(&undeclared_hash));
+
+    // 1. Existing byte-backed reader succeeds -> exact PNG bytes survive HTML round trip.
+    let reader_bytes = zip_bytes.clone();
+    let fail_b = Arc::new(AtomicBool::new(false));
+    let fail_b_flag = fail_b.clone();
+    let hash_b_match = format!("images/{hash_b}");
+    let rendering = Rendering::with_reader(
+        Arc::new(move |entry| {
+            if fail_b_flag.load(Ordering::Relaxed) && entry.name == hash_b_match {
+                return None;
+            }
+            archive::read_entry(&mut Cursor::new(reader_bytes.as_slice()), entry).ok()
+        }),
+        Images::default(),
+    );
+    let mut test_env = env();
+    test_env.tabs[0].doc = lazy.clone();
+    test_env.tabs[0].rendering = rendering;
+
+    let res = call(
+        &test_env,
+        "copy_for_figma",
+        json!({ "nodeIds": [rect_a.to_string(), rect_b.to_string()] }),
+    );
+    assert_eq!(res["isError"], false, "{res}");
+    let html = res["structuredContent"]["html"].as_str().unwrap();
+    let decoded = decode_clipboard_html(html).unwrap();
+    let map: HashMap<String, Vec<u8>> = decoded.images.into_iter().collect();
+    assert_eq!(map.get(&hash_a), Some(&png_a));
+    assert_eq!(map.get(&hash_b), Some(&png_b));
+    let decoded_a = image::load_from_memory(&map[&hash_a]).unwrap().to_rgba8();
+    assert_eq!(decoded_a.dimensions(), (2, 2));
+    assert_eq!(decoded_a.get_pixel(0, 0).0, [220, 40, 60, 255]);
+
+    // 2. Partial/failed lazy read -> error propagated, never silently dropped.
+    fail_b.store(true, Ordering::Relaxed);
+    let partial_fail = call(
+        &test_env,
+        "copy_for_figma",
+        json!({ "nodeIds": [rect_a.to_string(), rect_b.to_string()] }),
+    );
+    assert_eq!(
+        partial_fail["isError"], true,
+        "failing lazy read for rect_b must fail export: {partial_fail}"
+    );
+
+    // 3. Missing reader completely (`Rendering::default()`) on known lazy asset -> error propagated.
+    test_env.tabs[0].rendering = Rendering::default();
+    let no_reader = call(
+        &test_env,
+        "copy_for_figma",
+        json!({ "nodeIds": [rect_a.to_string()] }),
+    );
+    assert_eq!(
+        no_reader["isError"], true,
+        "missing reader for known lazy asset must fail export: {no_reader}"
+    );
+
+    // 4. Undeclared/missing image hash policy -> succeeds without fabricating bytes.
+    let undeclared_res = call(
+        &test_env,
+        "copy_for_figma",
+        json!({ "nodeIds": [rect_undeclared.to_string()] }),
+    );
+    assert_eq!(undeclared_res["isError"], false, "{undeclared_res}");
+    let undeclared_html = undeclared_res["structuredContent"]["html"]
+        .as_str()
+        .unwrap();
+    let undeclared_decoded = decode_clipboard_html(undeclared_html).unwrap();
+    assert!(undeclared_decoded.images.is_empty());
+}

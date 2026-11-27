@@ -42,6 +42,10 @@ mod copy;
 mod copy_shortcuts;
 #[path = "ui_pick_cousins.rs"]
 mod cousins;
+#[path = "ui_document_lifecycle_tests.rs"]
+mod document_lifecycle;
+#[path = "ui_editor_tests.rs"]
+mod editor;
 #[path = "ui_inner_tests.rs"]
 mod inner;
 #[path = "ui_inner_fixture.rs"]
@@ -62,6 +66,8 @@ mod pick_cache;
 mod pick_drag;
 #[path = "ui_pick_order_tests.rs"]
 mod pick_order;
+#[path = "ui_pick_overlap_tests.rs"]
+mod pick_overlap;
 #[path = "ui_preview_tests.rs"]
 mod preview;
 #[path = "ui_recents_tests.rs"]
@@ -166,6 +172,26 @@ pub fn right_click(h: &mut Harness<'_, App>, copied: &mut Vec<String>, at: Pos2)
     press(h, at, PointerButton::Secondary, true);
     press(h, at, PointerButton::Secondary, false);
     step(h, copied);
+}
+
+/// Frame-stepped primary click(s) from `at` to `at + delta` without a prior cooldown wait.
+pub fn primary_clicks(h: &mut Harness<'_, App>, at: Pos2, delta: egui::Vec2, count: usize) {
+    let end = at + delta;
+    for i in 0..count {
+        if i > 0 {
+            h.run_steps(3);
+        }
+        h.event(Event::PointerMoved(at));
+        h.step();
+        for (pos, pressed) in [(at, true), (end, false)] {
+            if !pressed && delta != egui::Vec2::ZERO {
+                h.event(Event::PointerMoved(pos));
+                h.step();
+            }
+            press(h, pos, PointerButton::Primary, pressed);
+            h.step();
+        }
+    }
 }
 
 /// Clicks the menu entry `label` and lets the frame that copies it run.

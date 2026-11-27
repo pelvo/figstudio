@@ -24,6 +24,11 @@ mod emoji_zoom_tests;
 pub mod encoding;
 mod focus;
 pub mod geom;
+mod hit;
+pub use hit::{
+    HitClip, HitOptions, hit_chain, hit_chain_with_options, hit_skippable, hit_test, hits_layer,
+    hits_node, is_hollow_layer,
+};
 #[cfg(feature = "gpu")]
 mod gpu;
 #[cfg(feature = "gpu")]
@@ -56,7 +61,7 @@ use figstudio_fig::resolve::{self, InstancePath, Overrides};
 use figstudio_fig::{Document, Guid, Node, Val};
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::filter_effects::{EdgeMode, Filter, FilterPrimitive};
-use vello_cpu::kurbo::{Affine, BezPath, Point, Rect, Shape, Size, Vec2};
+use vello_cpu::kurbo::{Affine, BezPath, Rect, Shape, Size, Vec2};
 use vello_cpu::peniko::{BlendMode, Compose, Mix};
 use vello_cpu::{ImageSource, PaintType, Pixmap, RenderContext, RenderSettings, Resources};
 
@@ -91,6 +96,9 @@ pub struct Stats {
     /// Truncated text (`textTruncation`) without usable stored glyphs: the fallback layout
     /// draws every line instead of ending with an ellipsis.
     pub text_truncation_ignored: usize,
+    /// Text nodes whose requested decoration was missing from stored `derivedTextData.decorations`,
+    /// used an unsupported style (`DOTTED`/`WAVY`), or carried an unknown `textDecoration` value.
+    pub approximated_text_decorations: usize,
     /// Stored emoji drawn monochromatically or as the first base of a sequence.
     pub emoji_approximated: usize,
     /// Stored emoji not drawn because no usable font glyph was available.
@@ -144,6 +152,7 @@ impl Stats {
             text_system_fonts,
             text_missing,
             text_truncation_ignored,
+            approximated_text_decorations,
             emoji_approximated,
             emoji_skipped,
             missing_images,
@@ -175,6 +184,9 @@ impl Stats {
         self.text_system_fonts = self.text_system_fonts.max(*text_system_fonts);
         self.text_missing = self.text_missing.max(*text_missing);
         self.text_truncation_ignored = self.text_truncation_ignored.max(*text_truncation_ignored);
+        self.approximated_text_decorations = self
+            .approximated_text_decorations
+            .max(*approximated_text_decorations);
         self.emoji_approximated = self.emoji_approximated.max(*emoji_approximated);
         self.emoji_skipped = self.emoji_skipped.max(*emoji_skipped);
         self.missing_images = self.missing_images.max(*missing_images);
@@ -218,6 +230,10 @@ impl fmt::Display for Stats {
         note(self.text_system_fonts, "text (system fonts)")?;
         note(self.text_missing, "text not drawn")?;
         note(self.text_truncation_ignored, "text truncation ignored")?;
+        note(
+            self.approximated_text_decorations,
+            "text decorations approximated",
+        )?;
         note(self.emoji_approximated, "emoji approximated")?;
         note(self.emoji_skipped, "emoji skipped")?;
         note(self.masks, "masks")?;
@@ -401,6 +417,8 @@ struct Ctx<'a> {
     variants: std::collections::HashMap<Vec<Guid>, Guid>,
     /// The clipping frames around the node an [`Inspect::Links`] walk is at.
     clips: Vec<prototype::Area>,
+    /// Active variable mode per `VARIABLE_SET` inherited from enclosing containers.
+    active_modes: std::collections::HashMap<Guid, Guid>,
 }
 
 /// What a metadata walk collects.
@@ -804,7 +822,9 @@ impl Renderer {
             }
         };
         if let Some(node) = doc.node(root) {
+            ctx.enter_ancestor_modes(node.parent);
             if node.kind == "CANVAS" || node.kind == "DOCUMENT" {
+                ctx.push_modes(&node.data);
                 ctx.draw_children(node, &node.data, transform, None);
             } else {
                 let parent = node.parent.map_or(Some(Affine::IDENTITY), |p| {
@@ -880,8 +900,9 @@ impl Renderer {
             shaders: self
                 .shaders
                 .clone()
-                .or_else(|| self.images.shaders(doc.instance)),
+                .or_else(|| self.images.shaders(doc.lineage)),
             delays: Vec::new(),
+            active_modes: std::collections::HashMap::new(),
         }
     }
     /// Counts visible stored emoji on every page using the draw walk's overrides, truncation
@@ -1264,11 +1285,6 @@ fn content_bounds_with_budget(
     )
 }
 
-/// Topmost, deepest visible node under `point` (page coordinates). Instances count as one layer.
-pub fn hit_test(doc: &Document, page: Guid, point: Point) -> Option<Guid> {
-    hit_chain(doc, page, point).last().copied()
-}
-
 /// Whether nothing of a node's content outside its box is drawn, so a point there cannot hit
 /// its children: a frame that clips its content, or a boolean that draws its stored result
 /// (one that falls back paints its operands whole).
@@ -1301,58 +1317,6 @@ fn draws_stored_result(data: &Val, fills: usize, strokes: usize) -> bool {
     (has_fill || has_stroke)
         && (!visible("fillPaints") || has_fill)
         && (!visible("strokePaints") || has_stroke)
-}
-
-/// Topmost hit's ancestry, from the page's child to the deepest visible layer.
-/// Instances remain leaves; sections are traversed but never selected themselves.
-pub fn hit_chain(doc: &Document, page: Guid, point: Point) -> Vec<Guid> {
-    fn walk(
-        doc: &Document,
-        parent: Guid,
-        parent_tf: Affine,
-        point: Point,
-        seen: &mut std::collections::HashSet<Guid>,
-        depth: usize,
-    ) -> Option<Vec<Guid>> {
-        if depth >= 128 || !seen.insert(parent) {
-            return None;
-        }
-        let data = &doc.node(parent)?.data;
-        for id in children_topmost_first(doc.children(parent), data) {
-            let Some(node) = doc.node(id) else { continue };
-            if !visible(&node.data) || node.data.flag("mask") == Some(true) {
-                continue;
-            }
-            let tf = parent_tf * affine(node.data.get("transform"));
-            let (w, h) = size(&node.data);
-            let local = tf.inverse() * point;
-            let inside = local.x >= 0.0 && local.y >= 0.0 && local.x <= w && local.y <= h;
-            // Only asked outside the box, so inside it stored geometry is not decoded.
-            let clips = || clips_hits(&node.kind, &node.data, &doc.blobs);
-            if node.kind != "INSTANCE"
-                && (inside || !clips())
-                && let Some(mut hit) = walk(doc, id, tf, point, seen, depth + 1)
-            {
-                if node.kind != "SECTION" {
-                    hit.insert(0, id);
-                }
-                return Some(hit);
-            }
-            if inside && node.kind != "SECTION" {
-                return Some(vec![id]);
-            }
-        }
-        None
-    }
-    walk(
-        doc,
-        page,
-        Affine::IDENTITY,
-        point,
-        &mut std::collections::HashSet::new(),
-        0,
-    )
-    .unwrap_or_default()
 }
 
 /// How far (in local units) a node can draw outside its frame: strokes, effects, and text
@@ -1499,7 +1463,17 @@ impl Ctx<'_> {
             .get("textData")
             .is_some_and(|t| node.data.get("textData") != Some(t));
         let mut glyphs_fresh = false;
+        let mut stale_decorations = false;
         let mut stroke_stale = false;
+        const DECORATION_OVERRIDE_KEYS: [&str; 7] = [
+            "textDecoration",
+            "textDecorationThickness",
+            "textUnderlineOffset",
+            "textDecorationStyle",
+            "textDecorationSkipInk",
+            "styleIdForText",
+            "inheritTextStyleID",
+        ];
         let mut data = resolve::merge(&node.data, &property_patch, &matches, |data, p| {
             // Stored stroke outlines no longer match an overridden stroke unless a derived
             // patch stores new ones.
@@ -1517,8 +1491,25 @@ impl Ctx<'_> {
                 text_changed = true;
                 glyphs_fresh = false;
             }
+            let detaches_text_style = !p.derived
+                && p.data.get("styleIdForText").is_none()
+                && p.data.get("inheritTextStyleID").is_none()
+                && (data.get("styleIdForText").is_some()
+                    || data.get("inheritTextStyleID").is_some())
+                && DECORATION_OVERRIDE_KEYS[..5]
+                    .iter()
+                    .any(|k| p.data.get(k).is_some());
+            if !p.derived
+                && (detaches_text_style
+                    || DECORATION_OVERRIDE_KEYS
+                        .iter()
+                        .any(|k| p.data.get(k).is_some_and(|v| data.get(k) != Some(v))))
+            {
+                stale_decorations = true;
+            }
             if p.data.get("derivedTextData").is_some() && p.derived {
                 glyphs_fresh = true;
+                stale_decorations = false;
             }
         });
         // shortcut: vector-like nodes have no base shape to redraw from, so they keep the old
@@ -1528,6 +1519,12 @@ impl Ctx<'_> {
             && let Val::Obj(o) = &mut data
         {
             o.remove("strokeGeometry");
+        }
+        // Stored decoration rectangles no longer match an overridden decoration property unless a
+        // derived patch supplied fresh derivedTextData. Remove only `decorations` so exact
+        // stored glyphs stay intact; `text::stored` counts unbacked non-NONE decorations.
+        if stale_decorations && let Some(Val::Obj(derived)) = data.get_mut("derivedTextData") {
+            derived.remove("decorations");
         }
         if !transform_stated && let Some((old, new)) = parent {
             layout::constrain(&node.data, &mut data, old, new, (move_by, grow_by));
@@ -1567,10 +1564,14 @@ impl Ctx<'_> {
             }
             None => data,
         };
-        let (data, unresolved_variables) = self.variables.paints(data.as_ref());
+        let pushed_modes = self.push_modes(&data);
+        let (data, unresolved_variables) = self
+            .variables
+            .paints_with_modes(data.as_ref(), &self.active_modes);
         let data = data.as_ref();
         self.stats.approximated_paints += unresolved_variables;
         if !visible(data) || data.flag("mask") == Some(true) {
+            self.pop_modes(pushed_modes);
             self.depth -= 1;
             return;
         }
@@ -1593,6 +1594,7 @@ impl Ctx<'_> {
                 }
                 self.child_filter = None;
                 self.inspect = Some(Inspect::Layer);
+                self.pop_modes(pushed_modes);
                 self.depth -= 1;
                 return;
             }
@@ -1641,16 +1643,19 @@ impl Ctx<'_> {
                 self.clips.pop();
             }
             self.scroll_depth -= usize::from(scroller);
+            self.pop_modes(pushed_modes);
             self.depth -= 1;
             return;
         }
         let (w, h) = size(data);
         if self.off_screen(node, kind, data, world, w, h) {
             self.stats.culled += 1;
+            self.pop_modes(pushed_modes);
             self.depth -= 1;
             return;
         }
         if self.draw_shader_effects(node, data, world, path, (stale_glyphs, approximate_ink)) {
+            self.pop_modes(pushed_modes);
             self.depth -= 1;
             return;
         }
@@ -1670,12 +1675,12 @@ impl Ctx<'_> {
             // owns the count of any visible fill it cannot fully draw.
             fill_paths = network::fills(data, &self.doc.blobs, &mut self.stats.unsupported_paints);
         }
+        let mut text_decorations = Vec::new();
         if kind == "TEXT" {
-            fill_paths = self
-                .text_paths(data, stale_glyphs)
-                .into_iter()
-                .map(GeomPath::plain)
-                .collect();
+            let paths = self.text_paths(data, stale_glyphs);
+            fill_paths = paths.glyphs;
+            text_decorations = paths.decorations;
+            self.stats.approximated_text_decorations += usize::from(paths.decoration_approximated);
         } else if fill_paths.is_empty()
             && let Some(shape) = base_shape(kind, data)
         {
@@ -1717,8 +1722,9 @@ impl Ctx<'_> {
         } else {
             Vec::new()
         };
-        // Emoji rectangles cast shadows, but must not be painted as ordinary text fills.
+        // Decorations and emoji rectangles cast shadows, but paint on their own passes.
         let fill_count = fill_paths.len();
+        fill_paths.extend(text_decorations.iter().cloned());
         fill_paths.extend(emojis.iter().map(|g| GeomPath::plain(g.rect.to_path(0.1))));
         let shadow_paths = fill_paths;
         let fill_paths = &shadow_paths[..fill_count];
@@ -1735,6 +1741,8 @@ impl Ctx<'_> {
         let outer_reach = self.inherited_reach;
         let silhouette = casts
             && (!emojis.is_empty()
+                || (!text_decorations.is_empty()
+                    && effects::has_decorated_text_paint_overrides(data))
                 || effects::approximate_silhouette(
                     data,
                     (!boolean_result && !self.doc.children(node.id).is_empty())
@@ -1808,7 +1816,11 @@ impl Ctx<'_> {
         for effect in behind {
             self.draw_drop_shadow(effect, &shadow_paths, world);
         }
-        self.paint_paths(data, "fillPaints", fill_paths, world, w, h);
+        if !text_decorations.is_empty() {
+            self.paint_text_paths(data, fill_paths, &text_decorations, world, w, h);
+        } else {
+            self.paint_paths(data, "fillPaints", fill_paths, world, w, h);
+        }
         self.draw_placed_emojis(data, world, w, h, emojis);
         for effect in above {
             self.draw_inner_shadow(effect, &shadow_paths, world);
@@ -1859,7 +1871,56 @@ impl Ctx<'_> {
             self.rc.pop_layer();
         }
         self.inherited_reach = outer_reach;
+        self.pop_modes(pushed_modes);
         self.depth -= 1;
+    }
+
+    /// Makes the variable modes `data` sets explicitly the active ones; returns what to hand
+    /// to [`Ctx::pop_modes`] to undo it.
+    fn push_modes(&mut self, data: &Val) -> Vec<(Guid, Option<Guid>)> {
+        let mut pushed = Vec::new();
+        if let Some(entries) = data.path(&["variableModeBySetMap", "entries"]) {
+            for entry in entries.items() {
+                let set_id = entry
+                    .get("variableSetID")
+                    .and_then(|v| v.as_guid().or_else(|| v.get("guid").and_then(Val::as_guid)));
+                let mode_id = entry.get("variableModeID").and_then(Val::as_guid);
+                if let (Some(set_id), Some(mode_id)) = (set_id, mode_id) {
+                    let prev = self.active_modes.insert(set_id, mode_id);
+                    pushed.push((set_id, prev));
+                }
+            }
+        }
+        pushed
+    }
+
+    /// Enters the modes of the layers above a layer drawn on its own: `from` and each of its
+    /// ancestors, outermost first so the nearest explicit mode wins, as when the page is drawn.
+    fn enter_ancestor_modes(&mut self, from: Option<Guid>) {
+        let doc = self.doc;
+        let mut chain: Vec<Guid> =
+            std::iter::successors(from, |id| doc.node(*id).and_then(|n| n.parent))
+                .take(doc.nodes.len())
+                .collect();
+        chain.reverse();
+        for id in chain {
+            if let Some(node) = doc.node(id) {
+                self.push_modes(&node.data);
+            }
+        }
+    }
+
+    fn pop_modes(&mut self, pushed: Vec<(Guid, Option<Guid>)>) {
+        for (set_id, prev) in pushed.into_iter().rev() {
+            match prev {
+                Some(old) => {
+                    self.active_modes.insert(set_id, old);
+                }
+                None => {
+                    self.active_modes.remove(&set_id);
+                }
+            }
+        }
     }
 
     /// Pushes a filter layer and returns how many layers to pop. Vello's clip paths do not
@@ -1937,7 +1998,7 @@ impl Ctx<'_> {
             } else if let Some(ring) = ring {
                 self.paint_paths(data, "strokePaints", &[ring], world, w, h);
             } else if let (Some(weight), Some(shape)) =
-                (data.num("strokeWeight"), base_shape(kind, data))
+                (data.num("strokeWeight"), geom::stroke_shape(kind, data))
                 && weight > 0.0
             {
                 let width = f64::from(weight) * if aligned.is_some() { 2.0 } else { 1.0 };
@@ -1972,28 +2033,31 @@ impl Ctx<'_> {
         }
     }
 
-    fn text_paths(&mut self, data: &Val, stale_glyphs: bool) -> Vec<BezPath> {
+    fn text_paths(&mut self, data: &Val, stale_glyphs: bool) -> text::TextPaths {
         if !stale_glyphs {
-            let stored = text::stored_glyphs(data, &self.doc.blobs);
-            if !stored.is_empty() || text::visible_glyphs(data).iter().any(text::is_emoji) {
+            let stored = text::stored(data, &self.doc.blobs, self.variables.tokens());
+            if !stored.glyphs.is_empty() || text::visible_glyphs(data).iter().any(text::is_emoji) {
                 self.stats.text_stored_glyphs += 1;
                 return stored;
             }
         }
         if text::characters(data).trim().is_empty() {
-            return Vec::new();
+            return text::TextPaths::default();
         }
         if data.text("textTruncation") == Some("ENDING") {
             self.stats.text_truncation_ignored += 1;
         }
-        if let Some(paths) = self.fonts.as_mut().and_then(|f| f.layout(data))
-            && !paths.is_empty()
+        if let Some(paths) = self
+            .fonts
+            .as_mut()
+            .and_then(|f| f.layout(data, self.variables.tokens()))
+            && !paths.glyphs.is_empty()
         {
             self.stats.text_system_fonts += 1;
             return paths;
         }
         self.stats.text_missing += 1;
-        Vec::new()
+        text::TextPaths::default()
     }
 
     /// Paints `paths` with the node's `key` paints. Paths with a vector style id use the paints
@@ -2044,50 +2108,157 @@ impl Ctx<'_> {
             while end < paths.len() && std::ptr::eq(paints_for(paths[end].style), paints) {
                 end += 1;
             }
-            for p in paints.items() {
-                let mut img = paint::ImageCtx {
-                    images: self.images,
-                    wanted: &mut self.wanted,
-                    screen: paint::linear_scale(world),
-                    full: self.rc.full_images(),
-                    shaders: self.shaders.as_deref(),
-                    time_ms: self.playhead.as_ref().map_or(0.0, |p| p.time_us / 1e3),
-                };
-                let Some(resolved) = paint::resolve(p, w, h, self.doc, &mut img, &mut self.stats)
-                else {
-                    continue;
-                };
-                let mode = paint::blend_mode(p.text("blendMode"));
-                self.stats.approximated_blends += usize::from(mode.is_none());
-                let blend = mode.filter(|m| *m != BlendMode::default());
-                if let Some(hash) = &resolved.source
-                    && let PaintType::Image(image) = &resolved.paint
-                    && let ImageSource::Pixmap(pixmap) = &image.image
-                {
-                    self.rc.image_source(pixmap, hash);
-                }
-                self.rc.set_transform(world);
-                if let Some(mode) = blend {
-                    self.rc.set_blend_mode(mode);
-                }
-                if let Some(clip) = resolved.clip {
-                    self.rc.push_clip_path(&clip.to_path(0.1));
-                }
-                self.rc.set_paint(resolved.paint);
-                self.rc.set_paint_transform(resolved.transform);
-                for g in &paths[start..end] {
-                    self.rc.set_fill_rule(g.rule);
-                    self.rc.fill_path(&g.path);
-                }
-                if blend.is_some() {
-                    self.rc.set_blend_mode(BlendMode::default());
-                }
-                self.rc.set_paint_transform(Affine::IDENTITY);
-                if resolved.clip.is_some() {
-                    self.rc.pop_clip();
+            self.paint_group(paints, &paths[start..end], false, world, w, h);
+            start = end;
+        }
+    }
+
+    /// Paints decorated text glyphs and decoration bars, resolving non-empty
+    /// `textDecorationFillPaints` (where an explicit empty run `[]` inherits the run/node fill
+    /// rather than node-level `textDecorationFillPaints`) and per-run `textData.styleOverrideTable`
+    /// fills. Glyphs and decorations that share one paint list are grouped so translucent solid
+    /// fills composite once across glyph/bar overlaps instead of darkening at crossings.
+    fn paint_text_paths(
+        &mut self,
+        data: &Val,
+        glyphs: &[GeomPath],
+        decorations: &[GeomPath],
+        world: Affine,
+        w: f64,
+        h: f64,
+    ) {
+        if glyphs.is_empty() && decorations.is_empty() {
+            return;
+        }
+        let styles = data
+            .path(&["textData", "styleOverrideTable"])
+            .map(Val::items)
+            .unwrap_or_default();
+        static NONE: Val = Val::Arr(Vec::new());
+        let paints_for = |style: u32, decoration: bool| -> &Val {
+            let entry = (style != 0)
+                .then(|| {
+                    styles
+                        .iter()
+                        .find(|e| e.get("styleID").and_then(Val::as_u32) == Some(style))
+                })
+                .flatten();
+            if decoration {
+                match entry.and_then(|e| e.get("textDecorationFillPaints")) {
+                    Some(p) if !p.items().is_empty() => return p,
+                    // Explicit `[]` resets the run to inherit its fill paint, not node decoration paint.
+                    Some(_) => {}
+                    None => {
+                        if let Some(p) = data
+                            .get("textDecorationFillPaints")
+                            .filter(|p| !p.items().is_empty())
+                        {
+                            return p;
+                        }
+                    }
                 }
             }
-            start = end;
+            if let Some(p) = entry.and_then(|e| e.get("fillPaints")) {
+                return p;
+            }
+            data.get("fillPaints").unwrap_or(&NONE)
+        };
+        // Group paths by shared paint list in first-seen order (glyphs before decorations within
+        // each group, and distinct decoration paints after glyphs).
+        let mut groups: Vec<(&Val, Vec<&GeomPath>, bool, bool)> = Vec::new();
+        for (paths, is_dec) in [(glyphs, false), (decorations, true)] {
+            for g in paths {
+                let paints = paints_for(g.style, is_dec);
+                if let Some(group) = groups
+                    .iter_mut()
+                    .find(|(p, _, _, _)| std::ptr::eq(*p, paints))
+                {
+                    group.1.push(g);
+                    group.2 |= !is_dec;
+                    group.3 |= is_dec;
+                } else {
+                    groups.push((paints, vec![g], !is_dec, is_dec));
+                }
+            }
+        }
+        for (paints, group, has_glyph, has_dec) in groups {
+            self.paint_group(paints, &group, has_glyph && has_dec, world, w, h);
+        }
+    }
+
+    fn paint_group<P: std::borrow::Borrow<GeomPath>>(
+        &mut self,
+        paints: &Val,
+        paths: &[P],
+        isolate_translucent_solid: bool,
+        world: Affine,
+        w: f64,
+        h: f64,
+    ) {
+        for p in paints.items() {
+            let mut img = paint::ImageCtx {
+                images: self.images,
+                wanted: &mut self.wanted,
+                screen: paint::linear_scale(world),
+                full: self.rc.full_images(),
+                shaders: self.shaders.as_deref(),
+                time_ms: self.playhead.as_ref().map_or(0.0, |p| p.time_us / 1e3),
+            };
+            let Some(resolved) = paint::resolve(p, w, h, self.doc, &mut img, &mut self.stats)
+            else {
+                continue;
+            };
+            if let PaintType::Solid(c) = resolved.paint
+                && c.components[3] <= 0.0
+            {
+                continue;
+            }
+            let mode = paint::blend_mode(p.text("blendMode"));
+            self.stats.approximated_blends += usize::from(mode.is_none());
+            let blend = mode.filter(|m| *m != BlendMode::default());
+            if let Some(hash) = &resolved.source
+                && let PaintType::Image(image) = &resolved.paint
+                && let ImageSource::Pixmap(pixmap) = &image.image
+            {
+                self.rc.image_source(pixmap, hash);
+            }
+            self.rc.set_transform(world);
+            if let Some(mode) = blend {
+                self.rc.set_blend_mode(mode);
+            }
+            if let Some(clip) = resolved.clip {
+                self.rc.push_clip_path(&clip.to_path(0.1));
+            }
+            let isolated = if isolate_translucent_solid
+                && blend.is_none()
+                && let PaintType::Solid(c) = resolved.paint
+                && c.components[3] < 1.0
+            {
+                let [r, g, b, a] = c.components;
+                self.rc.push_opacity_layer(a);
+                self.rc
+                    .set_paint(PaintType::Solid(AlphaColor::new([r, g, b, 1.0])));
+                true
+            } else {
+                self.rc.set_paint(resolved.paint);
+                false
+            };
+            self.rc.set_paint_transform(resolved.transform);
+            for g in paths {
+                let g = g.borrow();
+                self.rc.set_fill_rule(g.rule);
+                self.rc.fill_path(&g.path);
+            }
+            if isolated {
+                self.rc.pop_layer();
+            }
+            if blend.is_some() {
+                self.rc.set_blend_mode(BlendMode::default());
+            }
+            self.rc.set_paint_transform(Affine::IDENTITY);
+            if resolved.clip.is_some() {
+                self.rc.pop_clip();
+            }
         }
     }
 
@@ -2206,6 +2377,7 @@ impl Ctx<'_> {
             scroll_depth: self.scroll_depth,
             variants: std::collections::HashMap::new(),
             clips: Vec::new(),
+            active_modes: self.active_modes.clone(),
         };
         draw(&mut sub);
         self.overrides = sub.overrides;

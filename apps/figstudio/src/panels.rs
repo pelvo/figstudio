@@ -384,12 +384,20 @@ pub fn properties(ui: &mut Ui, tab: &mut Tab) -> Option<Item> {
 /// The Copy item picked, a layer to select, and a Motion button clicked with its timeline root.
 fn properties_view(
     ui: &mut Ui,
-    tab: &Tab,
+    tab: &mut Tab,
 ) -> (Option<Item>, Option<Guid>, Option<(Guid, MotionClick)>) {
-    let doc = &tab.doc;
-    let Some(node) = tab.selection.and_then(|id| doc.node(id)) else {
-        return (None, document_info(ui, tab), None);
-    };
+    if tab.selection.and_then(|id| tab.doc.node(id)).is_none() {
+        let sel = document_info(ui, tab);
+        crate::editor::properties_history_bar(ui, tab);
+        return (None, sel, None);
+    }
+    let node_snapshot = tab
+        .selection
+        .and_then(|id| tab.doc.node(id))
+        .cloned()
+        .expect("checked above");
+    let node = &node_snapshot;
+    let doc = tab.doc.clone();
     let d = &node.data;
     let mut picked: Option<Item> = None;
     let mut motion_click: Option<(Guid, MotionClick)> = None;
@@ -420,7 +428,7 @@ fn properties_view(
 
             section(ui, "Layout", |ui| {
                 let (w, h) = geom::size(d);
-                let b = figstudio_render::node_bounds(doc, node.id);
+                let b = figstudio_render::node_bounds(&doc, node.id);
                 let (x, y) = b.map_or((0.0, 0.0), |b| (b.x0, b.y0));
                 grid(
                     ui,
@@ -476,7 +484,7 @@ fn properties_view(
                 );
             }
             effects(ui, d.get("effects"));
-            let details = tab.inspect.get(doc, node);
+            let details = tab.inspect.get(&doc, node);
             if let Some(motion) = &details.motion
                 && let Some(click) = motion_section(ui, motion, &mut picked)
             {
@@ -488,7 +496,7 @@ fn properties_view(
             for shader in &details.shaders {
                 shader_section(ui, shader, &tab.shaders);
             }
-            if let Some(component) = crate::code_connect::component_of(doc, node) {
+            if let Some(component) = crate::code_connect::component_of(&doc, node) {
                 crate::code_connect::component_section(ui, tab, node, component);
             }
 
@@ -529,6 +537,8 @@ fn properties_view(
                         .small(),
                 );
             }
+            ui.add_space(6.0);
+            crate::editor::properties_edit_controls(ui, tab);
         });
     (picked, None, motion_click)
 }

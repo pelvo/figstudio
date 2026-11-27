@@ -1,15 +1,29 @@
 //! The GPU side of the WebGPU calls a shader makes: a headless wgpu device, the objects the
 //! script created (by index), and render passes recorded until `queue.submit` replays them.
 
+use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 
 use crate::ShaderError;
+use crate::wgsl_gl::{self, TextureAlias};
 
 /// The shared headless device, `None` when this machine has no GPU adapter.
-pub(crate) fn device() -> Option<&'static (wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
+pub(crate) fn device() -> Option<&'static (
+    wgpu::Device,
+    wgpu::Queue,
+    wgpu::Backend,
+    wgpu::naga::valid::Capabilities,
+)> {
+    static DEVICE: OnceLock<
+        Option<(
+            wgpu::Device,
+            wgpu::Queue,
+            wgpu::Backend,
+            wgpu::naga::valid::Capabilities,
+        )>,
+    > = OnceLock::new();
     DEVICE
         .get_or_init(|| {
             let instance = wgpu::Instance::new(
@@ -18,26 +32,29 @@ pub(crate) fn device() -> Option<&'static (wgpu::Device, wgpu::Queue)> {
             let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
                 .map_err(|e| tracing::warn!("shader fills: no GPU adapter ({e})"))
                 .ok()?;
+            let backend = adapter.get_info().backend;
+            let naga_caps = wgsl_gl::naga_capabilities(adapter.get_downlevel_capabilities().flags);
             let (device, queue) =
                 pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                     .map_err(|e| tracing::warn!("shader fills: no GPU device ({e})"))
                     .ok()?;
             // Errors outside a run's error scope are logged, never a panic.
             device.on_uncaptured_error(Arc::new(|e| tracing::warn!("shader GPU error: {e}")));
-            Some((device, queue))
+            Some((device, queue, backend, naga_caps))
         })
         .as_ref()
 }
 
 /// Something the script created.
 pub(crate) enum Object {
-    Module(wgpu::ShaderModule),
+    /// Compiled `ShaderSource::Wgsl` module, plus WGSL source kept only on `Backend::Gl`.
+    Module(wgpu::ShaderModule, Option<String>),
     Buffer(wgpu::Buffer),
     Texture(wgpu::Texture),
     View(wgpu::TextureView),
     Sampler(wgpu::Sampler),
-    Pipeline(wgpu::RenderPipeline),
-    Layout(wgpu::BindGroupLayout),
+    Pipeline(wgpu::RenderPipeline, Vec<TextureAlias>),
+    Layout(wgpu::BindGroupLayout, Vec<TextureAlias>),
     BindGroup(wgpu::BindGroup),
     /// A command encoder: its render passes, replayed on submit.
     Encoder(Vec<Pass>),
@@ -76,9 +93,14 @@ pub(crate) const MAX_GPU_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) struct Session {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    pub backend: wgpu::Backend,
+    pub naga_caps: wgpu::naga::valid::Capabilities,
     pub objects: Vec<Object>,
     /// GPU memory asked for so far (see [`MAX_GPU_BYTES`]).
     pub gpu_bytes: u64,
+    /// Last GPU-kind error raised directly by this session (e.g. a GL resource-limit or
+    /// multi-sampler lowering rejection before `wgpu` runs), used only if uncaught in JS.
+    pub gpu_error: Option<ShaderError>,
 }
 
 fn bad(message: impl Into<String>) -> ShaderError {
@@ -113,9 +135,9 @@ impl Session {
         }
     }
 
-    fn module(&self, id: usize) -> Result<&wgpu::ShaderModule, ShaderError> {
+    fn module(&self, id: usize) -> Result<(&wgpu::ShaderModule, Option<&str>), ShaderError> {
         match self.get(id)? {
-            Object::Module(m) => Ok(m),
+            Object::Module(m, code) => Ok((m, code.as_deref())),
             _ => Err(bad("not a GPUShaderModule")),
         }
     }
@@ -129,9 +151,39 @@ impl Session {
 
     pub fn pipeline(&self, id: usize) -> Result<&wgpu::RenderPipeline, ShaderError> {
         match self.get(id)? {
-            Object::Pipeline(p) => Ok(p),
+            Object::Pipeline(p, _) => Ok(p),
             _ => Err(bad("not a GPURenderPipeline")),
         }
+    }
+
+    pub fn create_shader_module(&mut self, code: &str) -> usize {
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(code)),
+            });
+        let source = (self.backend == wgpu::Backend::Gl).then(|| code.to_owned());
+        self.add(Object::Module(module, source))
+    }
+
+    pub fn get_bind_group_layout(
+        &mut self,
+        pipeline: usize,
+        index: u32,
+    ) -> Result<usize, ShaderError> {
+        let (layout, aliases) = match self.get(pipeline)? {
+            Object::Pipeline(p, aliases) => {
+                let group_aliases = aliases
+                    .iter()
+                    .filter(|a| a.group == index)
+                    .cloned()
+                    .collect();
+                (p.get_bind_group_layout(index), group_aliases)
+            }
+            _ => return Err(bad("not a GPURenderPipeline")),
+        };
+        Ok(self.add(Object::Layout(layout, aliases)))
     }
 
     pub fn create_texture(&mut self, desc: &Value) -> Result<usize, ShaderError> {
@@ -263,12 +315,67 @@ impl Session {
             Some("point-list") => wgpu::PrimitiveTopology::PointList,
             _ => wgpu::PrimitiveTopology::TriangleList,
         };
-        let vertex_module = self.module(handle(&vertex["module"])?)?;
-        let fragment_module = if fragment.is_object() {
-            Some(self.module(handle(&fragment["module"])?)?)
+        let vertex_id = handle(&vertex["module"])?;
+        let fragment_id = if fragment.is_object() {
+            Some(handle(&fragment["module"])?)
         } else {
             None
         };
+        let vertex_entry = vertex["entryPoint"].as_str();
+        let fragment_entry = fragment["entryPoint"].as_str();
+        let same_module = fragment_id == Some(vertex_id);
+
+        let (stock_vs, vs_code) = self.module(vertex_id)?;
+        let stock_fs = match fragment_id {
+            Some(id) => Some(self.module(id)?),
+            None => None,
+        };
+
+        let lowered = if self.backend == wgpu::Backend::Gl
+            && let Some(vs_code) = vs_code
+        {
+            let fs_arg = stock_fs.and_then(|(_, code)| code.map(|c| (c, fragment_entry)));
+            let limits = self.device.limits();
+            match wgsl_gl::lower_pipeline(
+                vs_code,
+                vertex_entry,
+                fs_arg,
+                same_module,
+                &limits,
+                self.naga_caps,
+            ) {
+                Ok(l) => l,
+                Err(e) => {
+                    self.gpu_error = Some(ShaderError::gpu(e.to_string()));
+                    return Err(e);
+                }
+            }
+        } else {
+            wgsl_gl::LoweredPipeline::default()
+        };
+
+        let local_vs = lowered.vertex.map(|m| {
+            self.device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: None,
+                    source: wgpu::ShaderSource::Naga(Cow::Owned(m)),
+                })
+        });
+        let local_fs = lowered.fragment.map(|m| {
+            self.device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: None,
+                    source: wgpu::ShaderSource::Naga(Cow::Owned(m)),
+                })
+        });
+
+        let vertex_module = local_vs.as_ref().unwrap_or(stock_vs);
+        let fragment_module = match stock_fs {
+            None => None,
+            Some(_) if same_module => Some(vertex_module),
+            Some((fs_mod, _)) => Some(local_fs.as_ref().unwrap_or(fs_mod)),
+        };
+
         let pipeline = self
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -276,7 +383,7 @@ impl Session {
                 layout: None,
                 vertex: wgpu::VertexState {
                     module: vertex_module,
-                    entry_point: vertex["entryPoint"].as_str(),
+                    entry_point: vertex_entry,
                     compilation_options: Default::default(),
                     buffers: &layouts,
                 },
@@ -288,19 +395,19 @@ impl Session {
                 multisample,
                 fragment: fragment_module.map(|module| wgpu::FragmentState {
                     module,
-                    entry_point: fragment["entryPoint"].as_str(),
+                    entry_point: fragment_entry,
                     compilation_options: Default::default(),
                     targets: &targets,
                 }),
                 multiview_mask: None,
                 cache: None,
             });
-        Ok(self.add(Object::Pipeline(pipeline)))
+        Ok(self.add(Object::Pipeline(pipeline, lowered.aliases)))
     }
 
     pub fn create_bind_group(&mut self, desc: &Value) -> Result<usize, ShaderError> {
-        let layout = match self.get(handle(&desc["layout"])?)? {
-            Object::Layout(l) => l,
+        let (layout, aliases) = match self.get(handle(&desc["layout"])?)? {
+            Object::Layout(l, aliases) => (l, aliases),
             _ => return Err(bad("not a GPUBindGroupLayout")),
         };
         let mut entries = Vec::new();
@@ -325,6 +432,25 @@ impl Session {
                 }
             };
             entries.push(wgpu::BindGroupEntry { binding, resource });
+        }
+        if !aliases.is_empty() {
+            let mut extra = Vec::with_capacity(aliases.len());
+            for alias in aliases {
+                if entries.iter().any(|e| e.binding == alias.alias) {
+                    continue;
+                }
+                if let Some(wgpu::BindingResource::TextureView(view)) = entries
+                    .iter()
+                    .find(|e| e.binding == alias.original)
+                    .map(|e| &e.resource)
+                {
+                    extra.push(wgpu::BindGroupEntry {
+                        binding: alias.alias,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    });
+                }
+            }
+            entries.extend(extra);
         }
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,

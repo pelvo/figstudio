@@ -90,6 +90,7 @@ mod tests {
         let entry = Entry {
             name: "images/ab".into(),
             method: 0,
+            crc32: 0,
             compressed_size: 1,
             size: 1,
             header_offset: 0,

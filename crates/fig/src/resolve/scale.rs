@@ -61,17 +61,30 @@ pub fn scale_inherited(data: &mut Val, outer_scale: impl Fn(&str) -> f64) {
     }
     let glyph_scale = outer_scale("derivedTextData");
     if glyph_scale != 1.0
-        && let Some(Val::Arr(glyphs)) = data
-            .get_mut("derivedTextData")
-            .and_then(|d| d.get_mut("glyphs"))
+        && let Some(derived) = data.get_mut("derivedTextData")
     {
-        for glyph in glyphs {
-            let font_size = f64::from(glyph.num("fontSize").unwrap_or(12.0));
-            glyph.set("fontSize", Val::Float(font_size * glyph_scale));
-            if let Some(position) = glyph.get_mut("position") {
-                for key in ["x", "y"] {
-                    let value = f64::from(position.num(key).unwrap_or(0.0));
-                    position.set(key, Val::Float(value * glyph_scale));
+        if let Some(Val::Arr(glyphs)) = derived.get_mut("glyphs") {
+            for glyph in glyphs {
+                let font_size = f64::from(glyph.num("fontSize").unwrap_or(12.0));
+                glyph.set("fontSize", Val::Float(font_size * glyph_scale));
+                if let Some(position) = glyph.get_mut("position") {
+                    for key in ["x", "y"] {
+                        let value = f64::from(position.num(key).unwrap_or(0.0));
+                        position.set(key, Val::Float(value * glyph_scale));
+                    }
+                }
+            }
+        }
+        if let Some(Val::Arr(decorations)) = derived.get_mut("decorations") {
+            for decoration in decorations {
+                if let Some(Val::Arr(rects)) = decoration.get_mut("rects") {
+                    for rect in rects {
+                        for key in ["x", "y", "w", "h"] {
+                            if let Some(value) = rect.num(key) {
+                                rect.set(key, Val::Float(f64::from(value) * glyph_scale));
+                            }
+                        }
+                    }
                 }
             }
         }

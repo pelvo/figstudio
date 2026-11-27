@@ -4,7 +4,7 @@
 //! back with its original Kiwi type. Values are encoded straight from `Val` without building
 //! a second tree, which matters for large files.
 
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Write};
 
 use kiwi_schema::{
     ByteBufferMut, DefKind, Field, Schema, TYPE_BOOL, TYPE_BYTE, TYPE_FLOAT, TYPE_INT, TYPE_INT64,
@@ -292,9 +292,13 @@ impl Document {
             ));
         }
         let canvas = self.encode_canvas()?;
-        let Some(entries) = &self.source.archive_entries else {
+        if self.source.archive_entries.is_none()
+            && self.images.is_empty()
+            && self.thumbnail.is_none()
+        {
             return Ok(canvas);
-        };
+        }
+        let entries = self.source.archive_entries.as_deref().unwrap_or(&[]);
         let zip_err = |e: zip::result::ZipError| FigError::archive("cannot write archive", e);
         let io = |e: std::io::Error| FigError::io("cannot write archive", e);
         // Figma stores entries uncompressed; the canvas chunks are compressed already.
@@ -323,6 +327,233 @@ impl Document {
         Ok(zip.finish().map_err(zip_err)?.into_inner())
     }
 
+    /// Writes a `.fig` copy to `raw_dst` with path-safety checks:
+    /// - rejects any `..` (`ParentDir`) traversal component,
+    /// - requires a `.fig` extension,
+    /// - resolves relative paths against `source_path`'s parent directory when available,
+    /// - optionally confines the canonical destination directory inside `source_path`'s directory
+    ///   (and fails when there is no source file on disk to confine to),
+    /// - unconditionally refuses to overwrite `source_path` (even when `overwrite` is `true`),
+    ///   comparing file identity so a differently cased name on a case-insensitive disk is caught,
+    /// - refuses to replace an existing file unless `overwrite` is `true`. The final no-overwrite
+    ///   commit is atomic (`RENAME_NOREPLACE` / `RENAME_EXCL` on Linux/macOS, or `hard_link` +
+    ///   `remove_file`) and fails closed without touching `dst` when atomic publication is
+    ///   unavailable; the earlier source and symlink checks are not atomic.
+    pub fn save_copy_checked(
+        &self,
+        source_path: Option<&std::path::Path>,
+        raw_dst: &std::path::Path,
+        overwrite: bool,
+        confine_to_source_dir: bool,
+    ) -> Result<std::path::PathBuf, FigError> {
+        use std::path::Component;
+
+        if raw_dst
+            .components()
+            .any(|c| matches!(c, Component::ParentDir))
+        {
+            return Err(FigError::malformed(
+                "save_copy outPath must not contain '..' path traversal",
+            ));
+        }
+        let has_fig_ext = raw_dst
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("fig"));
+        if !has_fig_ext {
+            return Err(FigError::malformed(
+                "save_copy outPath must end with a .fig extension",
+            ));
+        }
+        let file_name = raw_dst
+            .file_name()
+            .ok_or_else(|| FigError::malformed("save_copy outPath has no file name"))?;
+
+        let src_dir = source_path
+            .and_then(|p| p.parent())
+            .filter(|d| !d.as_os_str().is_empty());
+        let resolved = if raw_dst.is_relative() {
+            match src_dir {
+                Some(base) => base.join(raw_dst),
+                None => raw_dst.to_path_buf(),
+            }
+        } else {
+            raw_dst.to_path_buf()
+        };
+
+        let dst_parent = match resolved.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => std::path::Path::new("."),
+        };
+        let canon_dst_parent = std::fs::canonicalize(dst_parent).map_err(|e| {
+            FigError::io(format!("destination directory {}", dst_parent.display()), e)
+        })?;
+
+        let existing_source = source_path.filter(|p| p.exists());
+        if confine_to_source_dir && existing_source.is_none() {
+            return Err(FigError::malformed(
+                "save_copy needs the source .fig on disk to keep outPath inside its folder",
+            ));
+        }
+        if let Some(sp) = existing_source {
+            let canon_src = std::fs::canonicalize(sp)
+                .map_err(|e| FigError::io(format!("source file {}", sp.display()), e))?;
+            if confine_to_source_dir
+                && let Some(canon_src_dir) = canon_src.parent()
+                && !canon_dst_parent.starts_with(canon_src_dir)
+            {
+                return Err(FigError::malformed(format!(
+                    "save_copy outPath must stay inside {}",
+                    canon_src_dir.display()
+                )));
+            }
+            let target_in_canon_dir = canon_dst_parent.join(file_name);
+            if target_in_canon_dir == canon_src
+                || same_file::is_same_file(sp, &resolved).unwrap_or(false)
+            {
+                return Err(FigError::malformed(
+                    "save_copy refuses to overwrite the original source file",
+                ));
+            }
+            if let Ok(canon_existing) = std::fs::canonicalize(&resolved)
+                && canon_existing == canon_src
+            {
+                return Err(FigError::malformed(
+                    "save_copy refuses to overwrite the original source file",
+                ));
+            }
+        }
+
+        if let Ok(meta) = std::fs::symlink_metadata(&resolved) {
+            if meta.file_type().is_symlink() {
+                return Err(FigError::malformed(
+                    "save_copy refuses to write through a symlink destination",
+                ));
+            }
+            if !overwrite {
+                return Err(FigError::malformed(format!(
+                    "{} already exists; pass overwrite: true to replace it",
+                    resolved.display()
+                )));
+            }
+        }
+
+        let final_dst = canon_dst_parent.join(file_name);
+        self.write_archive_to_temp_and_commit(source_path, &final_dst, overwrite)?;
+        Ok(final_dst)
+    }
+
+    /// Writes a `.fig` file to `dst`, streaming untouched archive entries directly from
+    /// `lazy_source` when `self` was opened with [`Document::open_lazy`].
+    pub fn save_with_lazy_source(
+        &self,
+        lazy_source: Option<&std::path::Path>,
+        dst: impl AsRef<std::path::Path>,
+    ) -> Result<(), FigError> {
+        let dst = dst.as_ref();
+        if let Some(src) = lazy_source
+            && src.exists()
+            && let Ok(canon_src) = std::fs::canonicalize(src)
+        {
+            let dst_parent = match dst.parent() {
+                Some(p) if !p.as_os_str().is_empty() => p,
+                _ => std::path::Path::new("."),
+            };
+            if let (Ok(cp), Some(fname)) = (std::fs::canonicalize(dst_parent), dst.file_name())
+                && cp.join(fname) == canon_src
+            {
+                return Err(FigError::malformed(
+                    "refusing to overwrite source file in save_with_lazy_source",
+                ));
+            }
+        }
+        self.write_archive_to_temp_and_commit(lazy_source, dst, true)
+    }
+
+    fn write_archive_to_temp_and_commit(
+        &self,
+        lazy_source: Option<&std::path::Path>,
+        dst: &std::path::Path,
+        overwrite: bool,
+    ) -> Result<(), FigError> {
+        let commit_temp = |tmp: &std::path::Path| commit_temp_file(tmp, dst, overwrite);
+
+        if !self.source.lazy {
+            let bytes = self.to_bytes()?;
+            let (tmp, mut file) = create_temp(dst)?;
+            let written = std::io::Write::write_all(&mut file, &bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|e| FigError::io(tmp.display().to_string(), e));
+            #[cfg_attr(
+                target_arch = "wasm32",
+                expect(clippy::drop_non_drop, reason = "wasm File has no Drop")
+            )]
+            drop(file);
+            let verified = written.and_then(|()| {
+                if bytes.starts_with(b"PK") {
+                    verify_staged_zip(&tmp)
+                } else {
+                    Ok(())
+                }
+            });
+            let res = verified.and_then(|()| commit_temp(&tmp));
+            if res.is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+            return res;
+        }
+        let Some(src_path) = lazy_source else {
+            return Err(FigError::malformed(
+                "lazy document requires source path to stream unread archive entries",
+            ));
+        };
+        let mut src_file = std::fs::File::open(src_path)
+            .map_err(|e| FigError::io("cannot read lazy source file", e))?;
+        let src_handle = src_file
+            .try_clone()
+            .ok()
+            .and_then(|f| same_file::Handle::from_file(f).ok());
+        let is_same_as_src = |handle: &Option<same_file::Handle>| -> bool {
+            let Some(src_h) = handle else {
+                return false;
+            };
+            same_file::Handle::from_path(dst)
+                .ok()
+                .is_some_and(|dst_h| &dst_h == src_h)
+        };
+        if is_same_as_src(&src_handle) {
+            return Err(FigError::malformed(
+                "refusing to overwrite the source file while streaming lazy archive",
+            ));
+        }
+        // Fail before creating any temp file in the destination directory if the source changed.
+        self.verify_lazy_source(&mut src_file)?;
+
+        let (tmp, file) = create_temp(dst)?;
+        let write_res = (|| -> Result<(), FigError> {
+            let io = |e: std::io::Error| FigError::io("cannot write archive", e);
+            {
+                let mut buf = self.write_lazy_archive(src_file, std::io::BufWriter::new(file))?;
+                buf.flush().map_err(io)?;
+                let inner = buf.into_inner().map_err(|e| io(e.into_error()))?;
+                inner.sync_all().map_err(io)?;
+            }
+            verify_staged_zip(&tmp)?;
+            if overwrite && is_same_as_src(&src_handle) {
+                return Err(FigError::malformed(
+                    "refusing to overwrite the source file while streaming lazy archive",
+                ));
+            }
+            Ok(())
+        })();
+
+        let res = write_res.and_then(|()| commit_temp(&tmp));
+        if res.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        res
+    }
+
     /// Writes the file next to `path` first and then renames it over `path`, so a failed save
     /// never leaves a half-written file. The temp name is unique and created with `create_new`,
     /// so an existing file or symlink is never written through. It is removed on every failure;
@@ -348,6 +579,122 @@ impl Document {
             let _ = std::fs::remove_file(&tmp);
         }
         result
+    }
+}
+
+/// Streams every entry of a staged ZIP `.fig` file through a fixed buffer before publication so
+/// corrupt payloads, CRC mismatches, duplicate entry names, or missing `canvas.fig` never reach
+/// the destination path.
+fn verify_staged_zip(path: &std::path::Path) -> Result<(), FigError> {
+    let io = |e: std::io::Error| FigError::io("cannot verify staged archive", e);
+    let zip_err =
+        |e: zip::result::ZipError| FigError::archive("staged archive failed verification", e);
+    let file = std::fs::File::open(path).map_err(io)?;
+    let mut archive = zip::ZipArchive::new(std::io::BufReader::new(file)).map_err(zip_err)?;
+    if archive.has_duplicate_names() {
+        return Err(FigError::malformed(
+            "staged archive contains duplicate entry names",
+        ));
+    }
+    let mut saw_canvas = false;
+    let mut buf = [0u8; 64 * 1024];
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(zip_err)?;
+        let name = entry.name().map_err(zip_err)?.into_owned();
+        if name == "canvas.fig" {
+            saw_canvas = true;
+        }
+        let mut entry_bytes = 0usize;
+        let mut canvas_head = [0u8; 4];
+        let mut canvas_head_len = 0usize;
+        loop {
+            let n = entry.read(&mut buf).map_err(io)?;
+            if n == 0 {
+                break;
+            }
+            if name == "canvas.fig" && canvas_head_len < 4 {
+                let take = (4 - canvas_head_len).min(n);
+                canvas_head[canvas_head_len..canvas_head_len + take].copy_from_slice(&buf[..take]);
+                canvas_head_len += take;
+            }
+            entry_bytes = entry_bytes
+                .checked_add(n)
+                .filter(|&total| total <= crate::doc::MAX_CHUNK_BYTES)
+                .ok_or_else(|| {
+                    FigError::limit(format!(
+                        "{name} inflates past the {}-byte limit",
+                        crate::doc::MAX_CHUNK_BYTES
+                    ))
+                })?;
+        }
+        if name == "canvas.fig" && (entry_bytes < 12 || &canvas_head != b"fig-") {
+            return Err(FigError::malformed("staged canvas.fig is not readable"));
+        }
+    }
+    if !saw_canvas {
+        return Err(FigError::malformed("staged archive has no canvas.fig"));
+    }
+    Ok(())
+}
+
+/// Atomically publishes `tmp` to `dst`. When `overwrite` is `false`, never replaces an
+/// existing destination and fails closed without creating or modifying `dst` if atomic
+/// publication (`RENAME_NOREPLACE` / `RENAME_EXCL` or `hard_link`) is unavailable.
+fn commit_temp_file(
+    tmp: &std::path::Path,
+    dst: &std::path::Path,
+    overwrite: bool,
+) -> Result<(), FigError> {
+    let exists_err = || {
+        FigError::malformed(format!(
+            "{} already exists; pass overwrite: true to replace it",
+            dst.display()
+        ))
+    };
+    if overwrite {
+        // Keep the replaced file's permissions without following a raced symlink.
+        // shortcut: xattrs/ACLs are not carried over.
+        if let Ok(meta) = std::fs::symlink_metadata(dst)
+            && !meta.file_type().is_symlink()
+        {
+            let _ = std::fs::set_permissions(tmp, meta.permissions());
+        }
+        return std::fs::rename(tmp, dst).map_err(|e| FigError::io(dst.display().to_string(), e));
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        use rustix::io::Errno;
+        match renameat_with(CWD, tmp, CWD, dst, RenameFlags::NOREPLACE) {
+            Ok(()) => return Ok(()),
+            Err(Errno::EXIST) => return Err(exists_err()),
+            // Kernel or filesystem lacks atomic no-replace rename: try hard_link next.
+            Err(e)
+                if [Errno::NOSYS, Errno::INVAL, Errno::NOTSUP, Errno::OPNOTSUPP].contains(&e) => {}
+            Err(e) => {
+                return Err(FigError::io(
+                    format!("atomic no-overwrite save to {}", dst.display()),
+                    e.into(),
+                ));
+            }
+        }
+    }
+    // Fallback where RENAME_NOREPLACE / RENAME_EXCL is unavailable (and on other OSes):
+    // hard_link atomically publishes the synced temp inode without clobbering `dst`.
+    // If hard_link is also unavailable, fail closed rather than creating `dst` and copying.
+    match std::fs::hard_link(tmp, dst) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(tmp);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(exists_err()),
+        Err(e) => Err(FigError::io(
+            format!(
+                "atomic no-overwrite save to {} is unavailable on this filesystem",
+                dst.display()
+            ),
+            e,
+        )),
     }
 }
 
@@ -380,4 +727,118 @@ fn create_temp(path: &std::path::Path) -> Result<(std::path::PathBuf, std::fs::F
         Some(e) => FigError::io(what, e),
         None => FigError::malformed(format!("{what}: name clash")),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_clobber_commit_publishes_new_file_and_preserves_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp1 = dir.path().join("a.saving");
+        std::fs::write(&tmp1, b"first-payload").unwrap();
+        let dst = dir.path().join("out.fig");
+
+        commit_temp_file(&tmp1, &dst, false).expect("atomic no-clobber publish to new path");
+        assert!(!tmp1.exists(), "temp file must be gone after commit");
+        assert_eq!(std::fs::read(&dst).unwrap(), b"first-payload");
+
+        let tmp2 = dir.path().join("b.saving");
+        std::fs::write(&tmp2, b"second-payload").unwrap();
+        let err = commit_temp_file(&tmp2, &dst, false)
+            .expect_err("no-clobber commit must refuse to overwrite existing destination");
+        assert!(
+            err.to_string().contains("already exists"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            std::fs::read(&dst).unwrap(),
+            b"first-payload",
+            "existing destination must be untouched"
+        );
+        assert!(tmp2.exists(), "caller cleans up temp on failure");
+
+        let occupied_dir = dir.path().join("occupied.fig");
+        std::fs::create_dir(&occupied_dir).unwrap();
+        assert!(
+            commit_temp_file(&tmp2, &occupied_dir, false).is_err(),
+            "no-clobber commit must refuse an existing directory"
+        );
+        assert!(occupied_dir.is_dir());
+
+        #[cfg(unix)]
+        {
+            let target = dir.path().join("dangling-target.fig");
+            let link = dir.path().join("link.fig");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(
+                commit_temp_file(&tmp2, &link, false).is_err(),
+                "no-clobber commit must refuse an existing dangling symlink"
+            );
+            assert!(!target.exists(), "must not follow dangling symlink");
+            assert!(
+                std::fs::symlink_metadata(&link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_clobber_commit_fails_closed_when_atomic_publish_is_unavailable() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        // Pick two temp roots on different filesystems so neither renameat2(RENAME_NOREPLACE)
+        // nor hard_link can publish atomically (EXDEV). A non-atomic copy fallback would succeed
+        // and create `dst`; failing closed must return Err and never create `dst`.
+        let candidates = [
+            std::env::temp_dir(),
+            std::path::PathBuf::from("/tmp"),
+            std::path::PathBuf::from("/dev/shm"),
+            std::path::PathBuf::from("/var/tmp"),
+        ];
+        let mut pair = None;
+        'outer: for (i, a) in candidates.iter().enumerate() {
+            let Ok(ma) = std::fs::metadata(a) else {
+                continue;
+            };
+            for b in &candidates[i + 1..] {
+                let Ok(mb) = std::fs::metadata(b) else {
+                    continue;
+                };
+                if ma.dev() != mb.dev()
+                    && let (Ok(da), Ok(db)) = (tempfile::tempdir_in(a), tempfile::tempdir_in(b))
+                {
+                    pair = Some((da, db));
+                    break 'outer;
+                }
+            }
+        }
+        let Some((src_dir, dst_dir)) = pair else {
+            eprintln!("SKIPPED: no two writable temp directories on distinct filesystems");
+            return;
+        };
+
+        let tmp = src_dir.path().join("part.saving");
+        std::fs::write(&tmp, b"staged-fig-bytes").unwrap();
+        let dst = dst_dir.path().join("copy.fig");
+
+        let res = commit_temp_file(&tmp, &dst, false);
+        assert!(
+            res.is_err(),
+            "no-clobber commit must fail closed when atomic publication fails (not copy into dst)"
+        );
+        assert!(
+            !dst.exists(),
+            "failed atomic publication must not create a partial or copied destination"
+        );
+        assert_eq!(
+            std::fs::read(&tmp).unwrap(),
+            b"staged-fig-bytes",
+            "staged temp file must remain intact for caller cleanup"
+        );
+    }
 }

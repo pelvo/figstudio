@@ -299,9 +299,6 @@ impl crate::App {
         let mut ui = ui.new_child(UiBuilder::new().max_rect(ui.max_rect()));
         let ui = &mut ui;
         ui.multiply_opacity(t.clamp(0.0, 1.0));
-        if !open {
-            crate::anim::inert(ui);
-        }
         let p = theme::of(ui);
         let bar = &mut self.find;
         let rect = Rect::from_min_size(
@@ -310,8 +307,13 @@ impl crate::App {
         )
         .intersect(card.shrink(8.0))
         .translate(vec2(0.0, -(1.0 - t) * 10.0));
-        if open {
-            crate::a11y::hide(&ui.interact(rect, egui::Id::new("find-bar"), Sense::CLICK));
+        crate::a11y::hide(&ui.interact(
+            rect,
+            egui::Id::new("find-bar"),
+            Sense::CLICK | Sense::DRAG,
+        ));
+        if !open {
+            crate::anim::inert(ui);
         }
         let radius = CornerRadius::same(18);
         let painter = ui.painter();

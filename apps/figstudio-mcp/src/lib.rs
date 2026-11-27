@@ -38,6 +38,7 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct FigstudioServer {
     files: Files,
+    readonly: bool,
     no_system_fonts: bool,
     max_output_bytes: usize,
     assets: tools::design::Assets,
@@ -49,39 +50,57 @@ pub struct FigstudioServer {
 impl FigstudioServer {
     /// Create a handler without decoding registered files.
     pub fn new(paths: Vec<PathBuf>, no_system_fonts: bool) -> Self {
-        Self::with_files(Files::Registry(FileRegistry::new(paths)), no_system_fonts)
+        Self::with_files(
+            Files::Registry(FileRegistry::new(paths)),
+            no_system_fonts,
+            false,
+        )
     }
 
     /// Serve the app's open tabs: a missing `fileKey` is the active tab, a missing `nodeId`
     /// its selection, and `list_open_tabs`, `get_selection` and `reveal_node` are added.
     pub fn live(files: Arc<live::LiveFiles>, no_system_fonts: bool) -> Self {
-        let mut server = Self::with_files(Files::Live(files), no_system_fonts);
+        let mut server = Self::with_files(Files::Live(files), no_system_fonts, false);
         server.tool_router += Self::live_router();
         server
     }
 
-    fn with_files(files: Files, no_system_fonts: bool) -> Self {
+    /// Read-only live mode for the native `--bridge`: omits mutation, history and
+    /// `save_copy` tools that the upload bridge does not execute.
+    pub fn bridge_live(files: Arc<live::LiveFiles>, no_system_fonts: bool) -> Self {
+        let mut server = Self::with_files(Files::Live(files), no_system_fonts, true);
+        server.tool_router += Self::live_router();
+        server
+    }
+
+    fn with_files(files: Files, no_system_fonts: bool, readonly: bool) -> Self {
+        let mut tool_router = Self::tool_router()
+            + Self::metadata_router()
+            + Self::screenshot_router()
+            + Self::region_router()
+            + Self::prototype_router()
+            + Self::variables_router()
+            + Self::design_router()
+            + Self::assets_router()
+            + Self::figjam_router()
+            + Self::codeconnect_router()
+            + Self::design_system_router()
+            + Self::shaders_router()
+            + Self::motion_router()
+            + Self::compare_router()
+            + Self::editing_read_router();
+        if !readonly {
+            tool_router += Self::editing_write_router();
+        }
         Self {
             files,
+            readonly,
             no_system_fonts,
             max_output_bytes: tools::metadata::DEFAULT_OUTPUT_BYTES,
             assets: tools::design::Assets::default(),
             codeconnect_lock: Default::default(),
             prompt_router: Self::prompt_router(),
-            tool_router: Self::tool_router()
-                + Self::metadata_router()
-                + Self::screenshot_router()
-                + Self::region_router()
-                + Self::prototype_router()
-                + Self::variables_router()
-                + Self::design_router()
-                + Self::assets_router()
-                + Self::figjam_router()
-                + Self::codeconnect_router()
-                + Self::design_system_router()
-                + Self::shaders_router()
-                + Self::motion_router()
-                + Self::compare_router(),
+            tool_router,
         }
     }
 
@@ -119,7 +138,11 @@ impl FigstudioServer {
     }
 }
 
-const INSTRUCTIONS: &str = "Offline access to local .fig files only. fileKey is optional for one file; otherwise use its stem or listed full path. nodeId accepts 1:2, 1-2, Figma URLs with node-id, figstudio://<fileKey>?node-id=1-2 links, and instance paths I1:2;3:4 (nodes inside an instance, with overrides applied). A figstudio://<fileKey>?page=0-1&rect=x,y,w,h region link (from the app's Copy region) works in get_screenshot, which draws that part of the page, and in get_nodes_in_region, which lists the nodes in it. Writes go only to Code Connect sidecars, get_design_context asset files and compare_files report artifacts; the .fig is never changed. Cloud tools are unavailable.";
+const INSTRUCTIONS_BASE: &str = "Offline access to local .fig files only. fileKey is optional for one file; otherwise use its stem or listed full path. nodeId accepts 1:2, 1-2, Figma URLs with node-id, figstudio://<fileKey>?node-id=1-2 links, and instance paths I1:2;3:4 (nodes inside an instance, with overrides applied). A figstudio://<fileKey>?page=0-1&rect=x,y,w,h region link (from the app's Copy region) works in get_screenshot, which draws that part of the page, and in get_nodes_in_region, which lists the nodes in it.";
+
+const EDIT_WRITE_INSTRUCTIONS: &str = " Editing tools mutate an in-memory copy without modifying the opened source .fig; save_copy atomically writes a sibling .fig copy inside the source directory (never overwriting the source file, rejecting .., symlinks and non-.fig paths, and requiring overwrite: true to replace an existing copy). Other writes go to Code Connect sidecars, get_design_context asset files and compare_files report artifacts. Cloud tools are unavailable.";
+
+const BRIDGE_WRITE_INSTRUCTIONS: &str = " Browser bridge mode is read-only for document state (apply_edits, undo, redo, get_history, import_image, paste_from_figma and save_copy are unavailable; use the desktop app, standalone figstudio-mcp, or --browser-proxy/cloud relay for edits). Writes go only to Code Connect sidecars, get_design_context asset files and compare_files report artifacts. Cloud tools are unavailable.";
 
 const LIVE_INSTRUCTIONS: &str = " Live mode: the files are the figstudio app's open tabs. A missing fileKey means the active tab; a missing nodeId means its selection. list_open_tabs lists the tabs, get_selection describes the selected node, reveal_node selects a node in the app and shows it.";
 
@@ -154,7 +177,12 @@ pub async fn bind_first(
 #[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for FigstudioServer {
     fn get_info(&self) -> ServerConfig {
-        let mut instructions = INSTRUCTIONS.to_owned();
+        let mut instructions = INSTRUCTIONS_BASE.to_owned();
+        instructions.push_str(if self.readonly {
+            BRIDGE_WRITE_INSTRUCTIONS
+        } else {
+            EDIT_WRITE_INSTRUCTIONS
+        });
         if let Files::Live(_) = self.files {
             instructions.push_str(LIVE_INSTRUCTIONS);
         }

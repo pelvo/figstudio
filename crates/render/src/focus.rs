@@ -30,7 +30,7 @@ impl<'a> Ctx<'a> {
         draw: bool,
         capture: impl FnOnce(Affine, &Val, bool) -> T,
     ) -> Option<T> {
-        let focused = self.focus_node(path.instance(), Some(path), transform)?;
+        let focused = self.focus_node_with_modes(path.instance(), Some(path), transform, draw)?;
         let captured = capture(
             focused.parent * affine(focused.data.get("transform")),
             &focused.data,
@@ -53,6 +53,16 @@ impl<'a> Ctx<'a> {
         path: Option<&InstancePath>,
         transform: Affine,
     ) -> Option<Focus<'a>> {
+        self.focus_node_with_modes(instance, path, transform, false)
+    }
+
+    fn focus_node_with_modes(
+        &mut self,
+        instance: Guid,
+        path: Option<&InstancePath>,
+        transform: Affine,
+        track_modes: bool,
+    ) -> Option<Focus<'a>> {
         self.inspection_work.focus_walks += 1;
         let doc = self.doc;
         let chain = match path {
@@ -61,6 +71,9 @@ impl<'a> Ctx<'a> {
         };
         let (top, rest) = chain.split_first()?;
         let mut parent = doc.node(*top)?;
+        if track_modes {
+            self.enter_ancestor_modes(parent.parent);
+        }
         let mut parent_data: Cow<'_, Val> = Cow::Borrowed(&parent.data);
         let mut world = match parent.parent {
             Some(p) => transform * absolute_transform_with_budget(doc, p, &mut self.work_left)?,
@@ -81,6 +94,9 @@ impl<'a> Ctx<'a> {
         for (index, id) in rest.iter().enumerate() {
             if !visible(&parent_data) {
                 return None;
+            }
+            if track_modes {
+                self.push_modes(&parent_data);
             }
             world *= affine(parent_data.get("transform"));
             let node = doc.node(*id)?;

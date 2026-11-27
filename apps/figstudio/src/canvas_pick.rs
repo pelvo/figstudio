@@ -59,8 +59,10 @@ pub fn click(tab: &mut Tab, chain: &[Guid], point: Option<Point>, deep: bool, dr
         && (deep || (previous == picked && (drill || tab.inner.is_some())))
         && let Some(point) = point
     {
+        let options = crate::canvas::hit_options(tab.view.zoom);
         let path = tab.pick_cache.with(&tab.doc, |renderer, definitions| {
-            let hits = instance_pick::hit_chain_with(&tab.doc, renderer, instance, point);
+            let hits =
+                instance_pick::hit_chain_with_options(&tab.doc, renderer, instance, point, options);
             instance_pick::click(
                 &tab.doc,
                 definitions,

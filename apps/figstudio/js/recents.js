@@ -120,13 +120,18 @@ export async function pickFiles(startAt) {
   }
   const out = [];
   for (const h of handles) {
-    out.push({ file: await h.getFile(), handle: await keepHandle(h) });
+    const file = await h.getFile();
+    let handle = null;
+    try {
+      handle = await keepHandle(h);
+    } catch { /* Recents persistence is optional; keep the live source handle */ }
+    out.push({ file, handle, fsHandle: h });
   }
   return out;
 }
 
 /** The file of handle `id`, asking for read permission if needed (needs the click that
- *  led here). `{ file }`, or `{ error }`: "gone" (no such handle), "denied", "missing". */
+ *  led here). `{ file, fsHandle }`, or `{ error }`: "gone" (no such handle), "denied", "missing". */
 export async function openHandle(id) {
   const h = await run(HANDLES, "readonly", (s) => s.get(id));
   if (!h) return { error: "gone" };
@@ -136,7 +141,7 @@ export async function openHandle(id) {
   }
   if (state !== "granted") return { error: "denied" };
   try {
-    return { file: await h.getFile() };
+    return { file: await h.getFile(), fsHandle: h };
   } catch (e) {
     return { error: e && e.name === "NotAllowedError" ? "denied" : "missing" };
   }
@@ -178,15 +183,27 @@ export function watchDrops() {
   }, true);
 }
 
-/** The handle number of a dropped file, matched by name, size and date; null if none. */
-export async function droppedHandle(name, size, modified) {
+/** The dropped file's Recents handle id and live `FileSystemFileHandle`, matched by
+ *  name, size and date; `{ handle: null, fsHandle: null }` if none. */
+export async function droppedFileHandle(name, size, modified) {
   const i = drops.findIndex((d) => d.name === name && d.size === size && d.modified === modified);
-  if (i < 0) return null;
+  if (i < 0) return { handle: null, fsHandle: null };
   const [drop] = drops.splice(i, 1);
   try {
     const h = await drop.handle;
-    return h && h.kind === "file" ? await keepHandle(h) : null;
+    if (!h || h.kind !== "file") return { handle: null, fsHandle: null };
+    let handle = null;
+    try {
+      handle = await keepHandle(h);
+    } catch { /* Recents persistence is optional; keep the live source handle */ }
+    return { handle, fsHandle: h };
   } catch {
-    return null;
+    return { handle: null, fsHandle: null };
   }
+}
+
+/** The handle number of a dropped file, matched by name, size and date; null if none. */
+export async function droppedHandle(name, size, modified) {
+  const res = await droppedFileHandle(name, size, modified);
+  return res.handle;
 }

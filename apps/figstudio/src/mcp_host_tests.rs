@@ -91,6 +91,7 @@ fn reveal_selects_and_fits_or_answers_tab_closed() {
         last_key: None,
         token: None,
         links: Vec::new(),
+        pending_mutations: Vec::new(),
     };
     let mut tabs = vec![tab(1, "structure.fig"), tab(2, "structure.fig")];
     let mut active = 0;
@@ -126,6 +127,70 @@ fn reveal_selects_and_fits_or_answers_tab_closed() {
 }
 
 #[test]
+fn a_mutation_whose_caller_stopped_waiting_is_not_applied() {
+    use figstudio_mcp::live::LiveMutation;
+    let mut host = host(vec![]);
+    let (commands, inbox) = mpsc::channel();
+    let (_events, news) = mpsc::channel();
+    let mut running = Running {
+        addr: None,
+        cancel: CancellationToken::new(),
+        snapshot: Default::default(),
+        commands: inbox,
+        events: news,
+        last_key: None,
+        token: None,
+        links: Vec::new(),
+        pending_mutations: Vec::new(),
+    };
+    let mut tabs = vec![tab(1, "structure.fig")];
+    let mut active = 0;
+    let rename = || LiveMutation::ApplyEdits {
+        ops: vec![figstudio_fig::edit::EditOp::Rename {
+            target: Guid(1, 25),
+            name: "renamed".into(),
+        }],
+        label: None,
+        dry_run: false,
+    };
+    // Timed out: the receiver is gone before the app gets to the command.
+    let (reply, gone) = tokio::sync::oneshot::channel();
+    drop(gone);
+    commands
+        .send(Command::Mutate {
+            tab: 1,
+            mutation: rename(),
+            reply,
+        })
+        .unwrap();
+    running.drain(&mut tabs, &mut active);
+    assert_eq!(
+        tabs[0].history.undo_len(),
+        0,
+        "an abandoned edit must not apply"
+    );
+
+    let (reply, mut waiting) = tokio::sync::oneshot::channel();
+    commands
+        .send(Command::Mutate {
+            tab: 1,
+            mutation: rename(),
+            reply,
+        })
+        .unwrap();
+    running.drain(&mut tabs, &mut active);
+    assert!(matches!(
+        waiting.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    running.sync(&tabs, active);
+    waiting.try_recv().unwrap().unwrap();
+    assert_eq!(tabs[0].history.undo_len(), 1);
+    host.running = Some(running);
+    host.stop();
+}
+
+#[test]
 fn open_link_requests_wait_for_the_app_and_carry_its_answer() {
     let mut host = host(vec![]);
     let (commands, inbox) = mpsc::channel();
@@ -139,6 +204,7 @@ fn open_link_requests_wait_for_the_app_and_carry_its_answer() {
         last_key: None,
         token: None,
         links: Vec::new(),
+        pending_mutations: Vec::new(),
     });
     let (reply, mut answer) = tokio::sync::oneshot::channel();
     let link = "https://www.figma.com/design/K/Name?node-id=1-2".to_owned();
@@ -186,6 +252,7 @@ fn link_answers_go_out_after_the_snapshot_has_the_new_tab() {
         last_key: None,
         token: None,
         links: Vec::new(),
+        pending_mutations: Vec::new(),
     });
     // The answer records how many tabs the server could see when it went out.
     let seen = Arc::new(std::sync::Mutex::new(None));
@@ -201,6 +268,108 @@ fn link_answers_go_out_after_the_snapshot_has_the_new_tab() {
         vec![(done, Ok("revealed".to_owned()))],
     );
     assert_eq!(*seen.lock().unwrap(), Some(2));
+    host.stop();
+}
+
+#[test]
+fn mutation_replies_wait_until_snapshot_has_the_new_revision() {
+    use figstudio_mcp::live::LiveMutation;
+
+    let mut host = host(vec![]);
+    let (commands, inbox) = mpsc::channel();
+    let (_events, news) = mpsc::channel();
+    let snapshot: Arc<RwLock<Arc<Snapshot>>> = Default::default();
+    host.on = true;
+    host.running = Some(Running {
+        addr: None,
+        cancel: CancellationToken::new(),
+        snapshot: snapshot.clone(),
+        commands: inbox,
+        events: news,
+        last_key: None,
+        token: None,
+        links: Vec::new(),
+        pending_mutations: Vec::new(),
+    });
+    let ctx = egui::Context::default();
+    let mut tabs = vec![tab(1, "structure.fig")];
+    let mut active = 0;
+    host.sync(&ctx, &tabs, active);
+    let rev_before = snapshot.read().unwrap().tabs[0].doc.revision;
+
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    commands
+        .send(Command::Mutate {
+            tab: 1,
+            mutation: LiveMutation::ApplyEdits {
+                ops: vec![figstudio_fig::edit::EditOp::Rename {
+                    target: Guid(1, 25),
+                    name: "SyncedName".into(),
+                }],
+                label: Some("Rename".into()),
+                dry_run: false,
+            },
+            reply,
+        })
+        .unwrap();
+
+    // Frame drains and applies the edit, but must NOT wake the caller before the snapshot syncs.
+    assert_eq!(host.frame(&mut tabs, &mut active), None);
+    assert_eq!(
+        tabs[0].doc.node(Guid(1, 25)).unwrap().name,
+        "SyncedName",
+        "the tab itself applied the edit"
+    );
+    assert!(
+        matches!(
+            answer.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ),
+        "mutation reply must wait until sync publishes the updated snapshot"
+    );
+    assert_eq!(
+        snapshot.read().unwrap().tabs[0].doc.revision,
+        rev_before,
+        "snapshot is still pre-sync until sync_then_answer runs"
+    );
+
+    host.sync_then_answer(&ctx, &tabs, active, Vec::new());
+    let published = snapshot.read().unwrap().clone();
+    assert!(
+        published.tabs[0].doc.revision > rev_before,
+        "snapshot must hold the new revision before the caller wakes"
+    );
+    assert_eq!(
+        published.tabs[0].doc.node(Guid(1, 25)).unwrap().name,
+        "SyncedName"
+    );
+    let result = answer
+        .try_recv()
+        .expect("mutation reply delivered after sync")
+        .expect("mutation succeeded");
+    assert_eq!(result["revision"], published.tabs[0].doc.revision);
+
+    // Read-only mutations (e.g. GetHistory) whose key does not change must still reply on sync.
+    let (reply, mut hist_answer) = tokio::sync::oneshot::channel();
+    commands
+        .send(Command::Mutate {
+            tab: 1,
+            mutation: LiveMutation::GetHistory,
+            reply,
+        })
+        .unwrap();
+    assert_eq!(host.frame(&mut tabs, &mut active), None);
+    assert!(matches!(
+        hist_answer.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    host.sync_then_answer(&ctx, &tabs, active, Vec::new());
+    let hist = hist_answer
+        .try_recv()
+        .expect("read-only mutation reply delivered after sync")
+        .expect("get_history succeeded");
+    assert_eq!(hist["revision"], published.tabs[0].doc.revision);
+
     host.stop();
 }
 

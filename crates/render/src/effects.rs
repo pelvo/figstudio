@@ -28,6 +28,23 @@ pub(crate) fn paint_has_alpha(p: &Val) -> bool {
             || p.get("color").and_then(|c| c.num("a")).unwrap_or(1.0) > 0.0)
 }
 
+/// Whether a decorated `TEXT` node paints runs or decorations with paint overrides beyond
+/// the node's own `fillPaints` (making a single-alpha fill silhouette approximate).
+pub(crate) fn has_decorated_text_paint_overrides(data: &Val) -> bool {
+    data.get("textDecorationFillPaints")
+        .is_some_and(|p| p.items().iter().any(paint_has_alpha))
+        || data
+            .path(&["textData", "styleOverrideTable"])
+            .is_some_and(|table| {
+                table.items().iter().any(|entry| {
+                    entry.get("fillPaints").is_some()
+                        || entry
+                            .get("textDecorationFillPaints")
+                            .is_some_and(|p| p.items().iter().any(paint_has_alpha))
+                })
+            })
+}
+
 /// Opaque geometry does not model paint alpha, style overrides, strokes or children.
 pub(crate) fn approximate_silhouette(data: &Val, has_children: bool) -> bool {
     has_children

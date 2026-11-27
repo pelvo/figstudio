@@ -29,6 +29,7 @@ fn image_document(lazy: bool) -> Document {
         let entry = Entry {
             name: format!("images/{HASH}"),
             method: 0,
+            crc32: 0,
             compressed_size: 0,
             size: 0,
             header_offset: 0,

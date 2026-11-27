@@ -5,7 +5,14 @@ use crate::{App, Tool};
 pub(crate) enum Action {
     Open,
     OpenLink,
+    SaveCopy,
+    Undo,
+    Redo,
     CopyText,
+    CopyForFigma,
+    PasteFromFigma,
+    DuplicateSelection,
+    DeleteSelection,
     SelectAllText,
     SelectChild,
     SelectParent,
@@ -132,6 +139,11 @@ impl Item {
 }
 
 pub(crate) fn tree(app: &App) -> Vec<Item> {
+    tree_for(app, cfg!(target_arch = "wasm32"))
+}
+
+/// Menu items for desktop (`browser == false`) or browser (`browser == true`).
+pub(crate) fn tree_for(app: &App, browser: bool) -> Vec<Item> {
     let has_tab = app.tabs.get(app.active).is_some();
     let selection = app
         .tabs
@@ -224,13 +236,35 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
     if cfg!(any(feature = "mcp", target_arch = "wasm32")) {
         view.push(Item::action("Agent access…", Action::AgentAccess, true));
     }
-    let edit = vec![Item::action(
-        "Copy text",
-        Action::CopyText,
-        app.tabs
-            .get(app.active)
-            .is_some_and(|t| t.selected_text().is_some()),
-    )];
+    let can_undo = app
+        .tabs
+        .get(app.active)
+        .is_some_and(|t| t.history.can_undo());
+    let can_redo = app
+        .tabs
+        .get(app.active)
+        .is_some_and(|t| t.history.can_redo());
+    let edit = vec![
+        Item::action("Undo", Action::Undo, can_undo),
+        Item::action("Redo", Action::Redo, can_redo),
+        Item::separator(),
+        Item::action(
+            "Copy text",
+            Action::CopyText,
+            app.tabs
+                .get(app.active)
+                .is_some_and(|t| t.selected_text().is_some()),
+        ),
+        // Off in the browser build, which cannot write Figma's clipboard format.
+        Item::action(
+            "Copy for Figma",
+            Action::CopyForFigma,
+            selection && !browser,
+        ),
+        Item::action("Paste from Figma", Action::PasteFromFigma, has_tab),
+        Item::action("Duplicate layer", Action::DuplicateSelection, selection),
+        Item::action("Delete layer", Action::DeleteSelection, selection),
+    ];
     vec![
         Item::group(
             "File",
@@ -245,10 +279,11 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
                     Action::ExportSelectionSvg,
                     selection,
                 ),
+                Item::action("Save copy…", Action::SaveCopy, has_tab),
                 Item::separator(),
                 Item::action("Close file", Action::CloseTab, has_tab),
                 Item::action("Settings…", Action::Settings, true),
-                Item::action("Quit", Action::Quit, true),
+                Item::action("Quit", Action::Quit, !browser),
             ],
         ),
         Item::group("Edit", edit),
@@ -278,6 +313,11 @@ pub(crate) fn tree(app: &App) -> Vec<Item> {
 
 impl App {
     pub(crate) fn apply(&mut self, action: Action, ctx: &egui::Context) {
+        // The native menu still works while the unsaved-edits question is up: nothing acts
+        // behind it (a close would swap the question, an edit would change what it is about).
+        if self.unsaved.is_some() {
+            return;
+        }
         // A menu used while the welcome sheet is up (the native menu still works): the
         // person has moved on, so the sheet makes way.
         if !matches!(action, Action::Welcome | Action::Quit) {
@@ -288,6 +328,60 @@ impl App {
             Action::OpenLink => {
                 self.link.window = true;
                 self.link.focus = true;
+            }
+            Action::SaveCopy => {
+                self.save_copy(ctx);
+            }
+            Action::Undo => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    match crate::editor::undo_tab(tab) {
+                        Ok(Some(label)) => self.toast(ctx, format!("Undid: {label}"), false),
+                        Ok(None) => {}
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
+            }
+            Action::Redo => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    match crate::editor::redo_tab(tab) {
+                        Ok(Some(label)) => self.toast(ctx, format!("Redid: {label}"), false),
+                        Ok(None) => {}
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
+            }
+            Action::CopyForFigma => {
+                if let Some(tab) = self.tabs.get(self.active) {
+                    match crate::editor::copy_selection_for_figma(ctx, tab) {
+                        Ok(msg) => self.toast(ctx, msg, false),
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
+            }
+            Action::PasteFromFigma => {
+                let fallback = self.pending_paste_text.take();
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    match crate::editor::paste_from_clipboard_or_text(tab, fallback.as_deref()) {
+                        Ok(msg) => self.toast(ctx, msg, false),
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
+            }
+            Action::DuplicateSelection => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    match crate::editor::duplicate_selection(tab) {
+                        Ok(msg) => self.toast(ctx, msg, false),
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
+            }
+            Action::DeleteSelection => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    match crate::editor::delete_selection(tab) {
+                        Ok(msg) => self.toast(ctx, msg, false),
+                        Err(e) => self.toast(ctx, e, true),
+                    }
+                }
             }
             Action::CopyText => {
                 if let Some(tab) = self.tabs.get_mut(self.active)
@@ -315,7 +409,7 @@ impl App {
             Action::ExportPageSvg => self.export(ctx, false, crate::worker::ExportFormat::Svg),
             Action::ExportSelectionSvg => self.export(ctx, true, crate::worker::ExportFormat::Svg),
             Action::CloseTab => self.close(self.active),
-            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::Quit => self.quit(ctx),
             Action::ToggleLayers => self.show_left = !self.show_left,
             Action::ToggleProperties => self.show_right = !self.show_right,
             Action::CommandBar => self.command.toggle(ctx),

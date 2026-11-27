@@ -164,16 +164,34 @@ impl crate::App {
         // A count already under way is replaced; a toast it was waiting for is kept.
         let added = tab.shaders.counting.take().and_then(|c| c.added);
         tab.shaders.counting = Some(Counting { result, added });
-        let instance = tab.doc.instance;
+        let (lineage, instance) = (tab.doc.lineage, tab.doc.instance);
+        let mut tile_docs = vec![instance];
+        for layer in tab.draw_layers() {
+            if !tile_docs.contains(&layer.doc) {
+                tile_docs.push(layer.doc);
+            }
+        }
+        if let Some(preview) = tab.preview.as_mut() {
+            if !tile_docs.contains(&preview.drawn.0) {
+                tile_docs.push(preview.drawn.0);
+            }
+            for (_, doc) in preview.complete.drain() {
+                if !tile_docs.contains(&doc) {
+                    tile_docs.push(doc);
+                }
+            }
+        }
         // Through the render worker: the browser's UI thread must not wait on a lock.
         self.workers
-            .set_shaders(instance, host(&self.shader_code, sources));
+            .set_shaders(lineage, host(&self.shader_code, sources));
         // Tiles already being drawn come back with the old code: dropped, asked for again.
         // The stamp is shared, so every file's tiles in flight are dropped, not only this
         // one's: a request left standing for them would never be sent again.
         self.workers.fonts_changed();
         self.tiles.fonts_changed(self.workers.images_arrived());
-        self.tiles.forget(instance);
+        for doc in tile_docs {
+            self.tiles.forget(doc);
+        }
         for tab in &mut self.tabs {
             tab.tile_requests.clear();
         }
@@ -719,7 +737,7 @@ pub fn markers(
             let response = ui.interact(
                 pill,
                 egui::Id::new(("shader-marker", tab.id, layer, &missing.id)),
-                Sense::click(),
+                Sense::click_and_drag(),
             );
             response
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));

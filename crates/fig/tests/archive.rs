@@ -149,6 +149,7 @@ fn hostile_offsets_and_sizes_are_refused() {
     let entry = archive::Entry {
         name: "x".into(),
         method: 0,
+        crc32: 0,
         compressed_size: 1,
         size: 1,
         header_offset: u64::MAX - 10,

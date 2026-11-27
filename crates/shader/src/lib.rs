@@ -19,6 +19,8 @@ mod gpu;
 #[cfg(feature = "native")]
 mod js;
 mod ts;
+#[cfg(feature = "native")]
+mod wgsl_gl;
 
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};

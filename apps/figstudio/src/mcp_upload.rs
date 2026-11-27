@@ -35,8 +35,14 @@ pub(crate) enum Event {
     Uploaded {
         generation: u32,
         tab: u64,
+        revision: u64,
         result: Result<(), String>,
     },
+}
+
+pub(crate) enum Payload {
+    File(web_sys::File),
+    Bytes(Vec<u8>),
 }
 
 /// State shared by callbacks, upload tasks and the host (single-threaded, so `Rc`).
@@ -65,22 +71,25 @@ async fn nap(ms: i32) {
     let _ = JsFuture::from(promise).await;
 }
 
-/// Uploads `file` as tab `tab`, then reports `Event::Uploaded` for connection `generation`
-/// (the host ignores reports from a connection it has since dropped).
+/// Uploads `payload` as tab `tab` at `revision`, then reports `Event::Uploaded` for
+/// connection `generation` (the host ignores reports from a connection it has since dropped).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn upload(
     ws: WebSocket,
     shared: Rc<Shared>,
     ctx: egui::Context,
     generation: u32,
     tab: u64,
+    revision: u64,
     name: String,
-    file: web_sys::File,
+    payload: Payload,
 ) {
-    let result = run(&ws, &shared, &ctx, tab, name, &file).await;
+    let result = run(&ws, &shared, &ctx, tab, name, &payload).await;
     shared.progress.set(None);
     let event = Event::Uploaded {
         generation,
         tab,
+        revision,
         result,
     };
     shared.events.borrow_mut().push_back(event);
@@ -93,9 +102,12 @@ async fn run(
     ctx: &egui::Context,
     tab: u64,
     name: String,
-    file: &web_sys::File,
+    payload: &Payload,
 ) -> Result<(), String> {
-    let size = file.size() as u64;
+    let size = match payload {
+        Payload::File(file) => file.size() as u64,
+        Payload::Bytes(bytes) => bytes.len() as u64,
+    };
     send(ws, &ClientMessage::Open { tab, name, size })?;
     let mut sent = 0;
     for (at, len) in chunk_ranges(size) {
@@ -108,15 +120,29 @@ async fn run(
             }
             nap(20).await;
         }
-        let bytes = crate::web::read_slice(file, at, len, CHUNK as usize).await?;
-        // Checked after the read: the tab may have closed while it ran.
-        if shared.cancelled.borrow().contains(&tab) {
-            return Err("upload cancelled".into());
-        }
         // A view of Wasm memory is shared, and `WebSocket.send` rejects shared views: copy
-        // the slice into a fresh buffer first.
-        let buffer = js_sys::Uint8Array::new_with_length(bytes.len() as u32);
-        buffer.copy_from(&bytes);
+        // each slice into a fresh buffer first.
+        let buffer = match payload {
+            Payload::File(file) => {
+                let bytes = crate::web::read_slice(file, at, len, CHUNK as usize).await?;
+                if shared.cancelled.borrow().contains(&tab) {
+                    return Err("upload cancelled".into());
+                }
+                let buffer = js_sys::Uint8Array::new_with_length(bytes.len() as u32);
+                buffer.copy_from(&bytes);
+                buffer
+            }
+            Payload::Bytes(bytes) => {
+                if shared.cancelled.borrow().contains(&tab) {
+                    return Err("upload cancelled".into());
+                }
+                let start = at as usize;
+                let end = start + len as usize;
+                let buffer = js_sys::Uint8Array::new_with_length(len as u32);
+                buffer.copy_from(&bytes[start..end]);
+                buffer
+            }
+        };
         ws.send_with_array_buffer(&buffer.buffer())
             .map_err(|e| crate::mcp_wire::js_error_text(&e))?;
         sent += len;

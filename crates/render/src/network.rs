@@ -201,7 +201,7 @@ pub(crate) fn fills(data: &Val, blobs: &[Vec<u8>], unsupported: &mut usize) -> V
     if !has_visible_fill(data) {
         return Vec::new();
     }
-    let Some((net, scale)) = decode(data, blobs) else {
+    let Some((net, scale)) = decode(data, blobs, true) else {
         *unsupported += 1;
         return Vec::new();
     };
@@ -251,9 +251,81 @@ pub(crate) fn fills(data: &Val, blobs: &[Vec<u8>], unsupported: &mut usize) -> V
     paths
 }
 
+/// Rebuilds a vector's region fill paths without the render-only `opacity > 0` visibility gate,
+/// so 0%-opacity enabled fills and aligned stroke clips share the same geometry as [`fills`].
+pub(crate) fn region_fills(data: &Val, blobs: &[Vec<u8>]) -> Vec<GeomPath> {
+    let Some((net, scale)) = decode(data, blobs, true) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for region in net.regions {
+        let Some(path) = region.path.filter(|p| !p.elements().is_empty()) else {
+            continue;
+        };
+        let path = scale * path;
+        if path.is_finite() {
+            paths.push(GeomPath {
+                path,
+                rule: if region.packed & 1 == 0 {
+                    Fill::EvenOdd
+                } else {
+                    Fill::NonZero
+                },
+                style: region.packed >> 1,
+            });
+        }
+    }
+    paths
+}
+
+/// Visits each centerline segment of a vector network scaled into local node space without
+/// building region loops or allocating per-segment `BezPath`s. Stops on the first `true`.
+pub(crate) fn any_stroke_segment(
+    data: &Val,
+    blobs: &[Vec<u8>],
+    mut f: impl FnMut(vello_cpu::kurbo::PathSeg, u32) -> bool,
+) -> bool {
+    let Some((net, scale)) = decode(data, blobs, false) else {
+        return false;
+    };
+    for s in &net.segments {
+        let (Some(&(p, _)), Some(&(q, _))) = (net.vertices.get(s.start), net.vertices.get(s.end))
+        else {
+            continue;
+        };
+        let seg = if s.a == Vec2::ZERO && s.b == Vec2::ZERO {
+            vello_cpu::kurbo::PathSeg::Line(vello_cpu::kurbo::Line::new(scale * p, scale * q))
+        } else {
+            vello_cpu::kurbo::PathSeg::Cubic(vello_cpu::kurbo::CubicBez::new(
+                scale * p,
+                scale * (p + s.a),
+                scale * (q + s.b),
+                scale * q,
+            ))
+        };
+        let finite = match seg {
+            vello_cpu::kurbo::PathSeg::Line(l) => l.p0.is_finite() && l.p1.is_finite(),
+            vello_cpu::kurbo::PathSeg::Cubic(c) => {
+                c.p0.is_finite() && c.p1.is_finite() && c.p2.is_finite() && c.p3.is_finite()
+            }
+            vello_cpu::kurbo::PathSeg::Quad(q) => {
+                q.p0.is_finite() && q.p1.is_finite() && q.p2.is_finite()
+            }
+        };
+        if finite && f(seg, s.style) {
+            return true;
+        }
+    }
+    false
+}
+
 /// The decoded network with its path-building transform, or `None` when it cannot be used.
-fn decode(data: &Val, blobs: &[Vec<u8>]) -> Option<(Network, vello_cpu::kurbo::Affine)> {
-    let net = parse(blob(data, blobs)?, true)?;
+fn decode(
+    data: &Val,
+    blobs: &[Vec<u8>],
+    build: bool,
+) -> Option<(Network, vello_cpu::kurbo::Affine)> {
+    let net = parse(blob(data, blobs)?, build)?;
     let normalized = data
         .path(&["vectorData", "normalizedSize"])
         .unwrap_or(data.get("size")?);

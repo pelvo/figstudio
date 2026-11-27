@@ -183,3 +183,56 @@ fn shaders_changing_in_one_file_do_not_strand_another_files_tiles() {
         "a dropped tile still counted as requested is never asked for again"
     );
 }
+
+#[test]
+fn applying_shaders_while_previewing_invalidates_preview_tiles() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    let app = h.state_mut();
+    assert!(app.tabs[0].start_preview(false));
+    let own = app.tabs[0].doc.instance;
+    let preview_doc = own | (1 << 63);
+    {
+        let preview = app.tabs[0].preview.as_mut().unwrap();
+        preview.drawn.0 = preview_doc;
+        preview
+            .complete
+            .insert(crate::tab::LayerId::Screen, preview_doc);
+    }
+    let key = crate::tiles::Key {
+        doc: preview_doc,
+        page: app.tabs[0].root(),
+        level: 0,
+        x: 0,
+        y: 0,
+    };
+    let done = crate::worker::RenderDone {
+        tab: app.tabs[0].id,
+        key,
+        images: app.workers.images_arrived(),
+        pixels: crate::recordings::Pixels::Cpu {
+            size: [1, 1],
+            rgba: vec![0, 0, 0, 255],
+        },
+        stats: Default::default(),
+        elapsed: std::time::Duration::ZERO,
+    };
+    app.tiles.accept(&ctx, &mut app.tabs[0], done);
+    assert_eq!(
+        app.tiles.count(preview_doc).0,
+        1,
+        "precondition: preview tile cached"
+    );
+
+    app.apply_shaders(0);
+
+    assert_eq!(
+        app.tiles.count(preview_doc).0,
+        0,
+        "preview tiles stayed cached after shader change"
+    );
+    assert!(
+        app.tabs[0].preview.as_ref().unwrap().complete.is_empty(),
+        "stale preview fallback record stayed after shader change"
+    );
+}

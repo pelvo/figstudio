@@ -128,18 +128,25 @@ fn next_instance() -> u64 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+#[derive(Clone)]
 pub struct Document {
-    /// Unique per opened document in this process. Caches shared between documents (decoded
-    /// images) key on it, so two files using the same image hash for different bytes never
-    /// share an entry. [`Document::set_nodes`] assigns a new one, so per-document indexes
-    /// (the renderer's style and property tables) are rebuilt after an edit.
+    /// Unique per opened document/node-tree revision in this process.
     pub instance: u64,
+    /// Unique per opened document in this process and kept by every edit, undo and clone.
+    /// What a document registers in a shared cache (decoded images, its shader host) is
+    /// keyed by it, so edits do not strand it and closing the document can free all of it.
+    pub lineage: u64,
+    /// Separate cache key for decoded images: bumped only when `images` change so node edits
+    /// do not evict decoded bitmaps on large documents.
+    pub image_instance: u64,
+    /// Monotonic edit counter incremented on every [`Document::apply_txn`] or [`Document::set_nodes`].
+    pub revision: u64,
     pub prelude: String,
     pub format_version: u32,
     pub file_name: Option<String>,
     pub nodes: Vec<Node>,
-    index: HashMap<Guid, usize>,
-    children: HashMap<Guid, Vec<Guid>>,
+    pub(crate) index: HashMap<Guid, usize>,
+    pub(crate) children: HashMap<Guid, Vec<Guid>>,
     pub root: Option<Guid>,
     /// Visible pages in document order.
     pub pages: Vec<Guid>,
@@ -165,6 +172,15 @@ pub enum Codec {
     Zstd,
 }
 
+/// Identity of the source ZIP archive a lazy [`Document`] was decoded from, used to refuse
+/// mixing an old canvas with a replaced or mutated archive on save.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LazyArchiveIdentity {
+    pub entry_count: usize,
+    pub entries_sha1: [u8; 20],
+    pub container: Option<archive::ContainerFingerprint>,
+}
+
 /// Parts of the original file that are not part of the node tree.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Source {
@@ -182,9 +198,14 @@ pub(crate) struct Source {
     pub archive_entries: Option<Vec<(String, Vec<u8>)>>,
     /// Opened lazily: images and other entries were not read, so the file cannot be written.
     pub lazy: bool,
+    /// Source archive identity captured at `open_lazy` / `from_lazy` time.
+    pub lazy_identity: Option<LazyArchiveIdentity>,
     /// The decoder the nodes were read with: their still-encoded fields ([`crate::Lazy`]) made
     /// by it are written back as their original bytes.
     pub decoder: Option<std::sync::Arc<crate::read::Decoder>>,
+    /// Decoded Kiwi schema cached on first edit/census check so interactive drags do not
+    /// re-decode the schema bytes every frame.
+    pub cached_schema: std::sync::OnceLock<std::sync::Arc<Schema>>,
 }
 
 /// What an archive holds besides the canvas.
@@ -196,6 +217,7 @@ struct Parts {
     thumbnail: Option<Vec<u8>>,
     archive_entries: Option<Vec<(String, Vec<u8>)>>,
     lazy: bool,
+    lazy_identity: Option<LazyArchiveIdentity>,
 }
 
 /// Counts only: names, text, image hashes and paths stay private (see `doctor`).
@@ -226,6 +248,8 @@ impl Document {
     /// A bare canvas file (not an archive) is read whole.
     #[tracing::instrument(level = "debug", skip_all, fields(len = tracing::field::Empty))]
     pub fn open_lazy(path: impl AsRef<Path>) -> Result<Document, FigError> {
+        use std::io::{Seek, SeekFrom};
+
         let path = path.as_ref();
         let io = |e: std::io::Error| FigError::io("cannot read file", e);
         let mut file = std::fs::File::open(path).map_err(io)?;
@@ -234,9 +258,13 @@ impl Document {
         let mut magic = [0u8; 2];
         file.read_exact(&mut magic).map_err(io)?;
         if &magic != b"PK" {
-            return Document::open(path);
+            // Read bare canvas from the same open file descriptor rather than reopening `path`.
+            file.seek(SeekFrom::Start(0)).map_err(io)?;
+            let mut bytes = Vec::new();
+            read_limited(file, MAX_FILE_BYTES, &mut bytes, "file")?;
+            return Document::from_bytes(&bytes);
         }
-        let entries = archive::read_entries(&mut file, len)?;
+        let (entries, fp) = archive::read_entries_with_fingerprint(&mut file, len)?;
         let mut eager = HashMap::new();
         for e in entries
             .iter()
@@ -244,7 +272,18 @@ impl Document {
         {
             eager.insert(e.name.clone(), archive::read_entry(&mut file, e)?);
         }
-        let doc = Document::from_lazy(entries, eager)?;
+        // Verify the same open file kept its size and central directory across the eager reads so
+        // an in-place overwrite during open cannot pair old entries with new canvas bytes.
+        let len_after = file.metadata().map_err(io)?.len();
+        if len_after != len {
+            return err("source .fig archive changed while opening");
+        }
+        let (entries_after, fp_after) =
+            archive::read_entries_with_fingerprint(&mut file, len_after)?;
+        if fp_after != fp || entries_after != entries {
+            return err("source .fig archive changed while opening");
+        }
+        let doc = Document::from_lazy_inner(entries, eager, Some(fp))?;
         tracing::debug!(
             nodes = doc.nodes.len(),
             pages = doc.pages.len(),
@@ -256,18 +295,44 @@ impl Document {
 
     /// Builds a document from an archive's entry list ([`archive::entries`]) and the contents
     /// of its [`archive::EAGER_ENTRIES`] (`canvas.fig` is required). Images stay unread, in
-    /// [`Document::lazy_images`]; other entries are dropped, so the result cannot be saved.
+    /// [`Document::lazy_images`]; other entries are dropped, so the result cannot be saved
+    /// without the original archive.
     pub fn from_lazy(
         entries: Vec<Entry>,
+        eager: HashMap<String, Vec<u8>>,
+    ) -> Result<Document, FigError> {
+        Document::from_lazy_inner(entries, eager, None)
+    }
+
+    /// Like [`Document::from_lazy`], while also binding the opened document to the source
+    /// container's central-directory and tail fingerprint from [`crate::lazy_save::LazyArchiveMeta`].
+    pub fn from_lazy_with_meta(
+        entries: Vec<Entry>,
+        eager: HashMap<String, Vec<u8>>,
+        meta: &crate::lazy_save::LazyArchiveMeta,
+    ) -> Result<Document, FigError> {
+        meta.verify_entries(&entries)?;
+        Document::from_lazy_inner(entries, eager, Some(meta.fingerprint()))
+    }
+
+    fn from_lazy_inner(
+        entries: Vec<Entry>,
         mut eager: HashMap<String, Vec<u8>>,
+        container: Option<archive::ContainerFingerprint>,
     ) -> Result<Document, FigError> {
         let Some(canvas) = eager.remove("canvas.fig") else {
             return err("archive has no canvas.fig");
+        };
+        let identity = LazyArchiveIdentity {
+            entry_count: entries.len(),
+            entries_sha1: archive::entries_sha1(&entries),
+            container,
         };
         let mut parts = Parts {
             file_name: eager.get("meta.json").and_then(|m| meta_file_name(m)),
             thumbnail: eager.remove("thumbnail.png"),
             lazy: true,
+            lazy_identity: Some(identity),
             ..Parts::default()
         };
         for e in entries {
@@ -478,8 +543,12 @@ impl Document {
         nodes.shrink_to_fit();
         check_parent_links(&nodes, &index)?;
 
+        let inst = next_instance();
         let mut doc = Document {
-            instance: next_instance(),
+            instance: inst,
+            lineage: inst,
+            image_instance: inst,
+            revision: 0,
             prelude,
             format_version,
             file_name: parts.file_name,
@@ -501,7 +570,9 @@ impl Document {
                 had_blobs,
                 archive_entries: parts.archive_entries,
                 lazy: parts.lazy,
+                lazy_identity: parts.lazy_identity,
                 decoder: Some(reader.dec.clone()),
+                cached_schema: std::sync::OnceLock::new(),
             },
         };
         doc.reindex();
@@ -525,9 +596,40 @@ impl Document {
         check_parent_links(&out, &index)?;
         self.nodes = out;
         self.index = index;
-        self.instance = next_instance();
-        self.reindex();
+        self.bump_after_edit(false);
         Ok(())
+    }
+
+    pub(crate) fn bump_after_edit(&mut self, images_changed: bool) {
+        self.instance = next_instance();
+        if images_changed {
+            self.image_instance = next_instance();
+        }
+        self.revision = self.revision.saturating_add(1);
+        self.reindex();
+    }
+
+    /// Returns the decoded Kiwi [`Schema`] for this document, caching it across edits.
+    pub fn decoded_schema(&self) -> Result<std::sync::Arc<Schema>, FigError> {
+        if let Some(s) = self.source.cached_schema.get() {
+            return Ok(s.clone());
+        }
+        let s = std::sync::Arc::new(
+            Schema::decode(&self.source.schema)
+                .map_err(|()| FigError::malformed("cannot decode the file schema"))?,
+        );
+        let _ = self.source.cached_schema.set(s.clone());
+        Ok(s)
+    }
+
+    /// Whether this document was opened lazily via [`Document::open_lazy`] / [`Document::from_lazy`].
+    pub fn is_lazy(&self) -> bool {
+        self.source.lazy
+    }
+
+    /// Raw uncompressed Kiwi schema bytes of this document.
+    pub fn schema_bytes(&self) -> &[u8] {
+        &self.source.schema
     }
 
     /// Rebuilds children lists, root and pages from `nodes` and `index`.
@@ -646,7 +748,10 @@ fn blob_bytes(blob: Val) -> Result<Vec<u8>, String> {
 
 /// Rejects parent links that form a cycle, including cycles no page reaches. Iterative, so a
 /// long chain cannot overflow the stack. Each node is walked at most once per start point.
-fn check_parent_links(nodes: &[Node], index: &HashMap<Guid, usize>) -> Result<(), FigError> {
+pub(crate) fn check_parent_links(
+    nodes: &[Node],
+    index: &HashMap<Guid, usize>,
+) -> Result<(), FigError> {
     // 0 = unvisited, 1 = on the current path, 2 = known to reach no cycle.
     let mut state = vec![0u8; nodes.len()];
     let mut path: Vec<usize> = Vec::new();

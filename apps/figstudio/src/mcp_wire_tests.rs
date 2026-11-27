@@ -393,8 +393,20 @@ fn state_lists_only_received_tabs_with_wire_ids() {
         egui::Pos2::ZERO,
         egui::vec2(800., 600.),
     ));
-    let ready = HashSet::from([7]);
-    let ClientMessage::State { tabs: out, active } = state_message(&tabs, 0, &ready) else {
+    let mut bridge = BridgeSync::default();
+    bridge.begin_upload(7, tabs[0].doc.revision);
+    assert!(
+        !bridge
+            .finish_upload(
+                7,
+                tabs[0].doc.revision,
+                Some(tabs[0].doc.revision),
+                Ok(()),
+                true
+            )
+            .send_close
+    );
+    let ClientMessage::State { tabs: out, active } = state_message(&tabs, 0, &bridge) else {
         panic!("not a state frame");
     };
     assert_eq!(out.len(), 1);
@@ -402,7 +414,7 @@ fn state_lists_only_received_tabs_with_wire_ids() {
     assert!(out[0].page.is_some() && out[0].viewport.is_some());
     assert_eq!(active, Some(7));
     // The active tab is not uploaded yet: no active id the bridge would reject.
-    let ClientMessage::State { active, .. } = state_message(&tabs, 1, &ready) else {
+    let ClientMessage::State { active, .. } = state_message(&tabs, 1, &bridge) else {
         panic!()
     };
     assert_eq!(active, None);
@@ -445,8 +457,16 @@ fn internal_pages_are_included_in_browser_state_frames() {
         Some(tabs[0].doc.pages.len()),
         "the browser probe uses the same index"
     );
-    let ClientMessage::State { tabs: out, active } = state_message(&tabs, 0, &HashSet::from([7]))
-    else {
+    let mut bridge = BridgeSync::default();
+    bridge.begin_upload(7, tabs[0].doc.revision);
+    bridge.finish_upload(
+        7,
+        tabs[0].doc.revision,
+        Some(tabs[0].doc.revision),
+        Ok(()),
+        true,
+    );
+    let ClientMessage::State { tabs: out, active } = state_message(&tabs, 0, &bridge) else {
         panic!("not a state frame");
     };
     assert_eq!(out[0].page, Some(guid_string(internal)));
@@ -667,4 +687,240 @@ fn a_file_of_the_same_name_picked_while_one_loads_leaves_the_tab_the_loading_one
     uploads.discard(second);
     uploads.bind(&name, 1);
     assert_eq!(uploads.get(1), Some("first"));
+}
+
+#[test]
+fn eager_edit_invalidates_stale_snapshot_gates_state_and_reuploads_new_revision() {
+    use figstudio_fig::edit::{EditOp, execute_edit_ops};
+
+    let mut tabs = tabs();
+    let mut bridge = BridgeSync::default();
+    let mut notices = Vec::new();
+    let first = bridge.next_upload(&tabs, &mut notices).unwrap();
+    assert!(matches!(
+        first,
+        UploadSource::OriginalFile {
+            tab: 7,
+            revision: 0,
+            ..
+        }
+    ));
+    bridge.begin_upload(7, 0);
+    let done0 = bridge.finish_upload(7, 0, Some(0), Ok(()), true);
+    assert!(done0.clear_last_key);
+    assert!(notices.is_empty());
+
+    // Edit tab 7 to create and select a brand-new node (`doc.revision` advances to 1).
+    let created = {
+        let tab = &mut tabs[0];
+        let page = tab.page;
+        let doc_mut = Arc::make_mut(&mut tab.doc);
+        let (report, _) = execute_edit_ops(
+            doc_mut,
+            &mut tab.history,
+            &[EditOp::CreateShape {
+                id: None,
+                kind: "RECTANGLE".into(),
+                parent: page,
+                name: Some("Fresh Box".into()),
+                x: 10.0,
+                y: 10.0,
+                width: 50.0,
+                height: 50.0,
+                corner_radius: 0.0,
+                fill_hex: Some("#224466".into()),
+                count: None,
+                star_inner_scale: None,
+            }],
+            Some("Create Fresh Box"),
+            None,
+            false,
+        )
+        .unwrap();
+        let created = report.created_ids[0];
+        tab.select(Some(created));
+        assert!(tab.doc.revision > 0);
+        created
+    };
+
+    // Reconcile immediately closes the stale tab on the bridge and gates State until re-upload.
+    let out = bridge.reconcile(&tabs);
+    assert_eq!(out.close_tabs, vec![7]);
+    assert!(out.invalidated);
+    let ClientMessage::State {
+        tabs: gated,
+        active,
+    } = state_message(&tabs, 0, &bridge)
+    else {
+        panic!("not a state frame");
+    };
+    assert!(
+        gated.is_empty(),
+        "stale tab must not send new selection yet"
+    );
+    assert_eq!(active, None);
+
+    // Next upload serializes the edited eager document containing the new node.
+    let Some(UploadSource::Serialized {
+        tab: 7,
+        revision,
+        bytes,
+        ..
+    }) = bridge.next_upload(&tabs, &mut notices)
+    else {
+        panic!("expected serialized re-upload for edited eager tab");
+    };
+    assert_eq!(revision, tabs[0].doc.revision);
+    let reopened = Document::from_bytes(&bytes).unwrap();
+    assert!(reopened.node(created).is_some());
+
+    // Simulate a second edit while revision 1 is still in flight: rev 1 must be cancelled
+    // without poisoning `failed` or emitting an upload error toast, then rev 2 uploads.
+    {
+        let tab = &mut tabs[0];
+        let doc_mut = Arc::make_mut(&mut tab.doc);
+        let (report2, _) = execute_edit_ops(
+            doc_mut,
+            &mut tab.history,
+            &[EditOp::Rename {
+                target: created,
+                name: "Renamed Box".into(),
+            }],
+            Some("Rename"),
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(report2.revision, tab.doc.revision);
+    }
+    let rec2 = bridge.reconcile(&tabs);
+    assert_eq!(rec2.cancel_tabs, vec![7]);
+    let aborted = bridge.finish_upload(
+        7,
+        revision,
+        Some(tabs[0].doc.revision),
+        Err("upload cancelled".into()),
+        true,
+    );
+    assert!(aborted.send_close);
+    assert!(aborted.repaint);
+    assert_eq!(aborted.toast, None);
+
+    let Some(UploadSource::Serialized {
+        tab: 7,
+        revision: rev2,
+        bytes: bytes2,
+        ..
+    }) = bridge.next_upload(&tabs, &mut notices)
+    else {
+        panic!("expected rev 2 re-upload after superseded rev 1");
+    };
+    assert_eq!(rev2, tabs[0].doc.revision);
+    let reopened2 = Document::from_bytes(&bytes2).unwrap();
+    assert_eq!(reopened2.node(created).unwrap().name, "Renamed Box");
+
+    let done2 = bridge.finish_upload(7, rev2, Some(rev2), Ok(()), true);
+    assert!(done2.clear_last_key);
+    let ClientMessage::State {
+        tabs: synced,
+        active,
+    } = state_message(&tabs, 0, &bridge)
+    else {
+        panic!("not a state frame");
+    };
+    assert_eq!(synced.len(), 1);
+    assert_eq!(synced[0].selection, Some(guid_string(created)));
+    assert_eq!(active, Some(7));
+}
+
+#[test]
+fn lazy_edit_closes_bridge_tab_with_notice_and_never_reuploads_stale_file() {
+    use figstudio_fig::edit::{EditOp, execute_edit_ops};
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/structure.fig");
+    let lazy_doc = Arc::new(Document::open_lazy(&path).unwrap());
+    let mut tabs = vec![Tab::new(7, path, lazy_doc, None, Duration::ZERO)];
+    let mut bridge = BridgeSync::default();
+    let mut notices = Vec::new();
+
+    // Unedited lazy tab uploads its original File cleanly.
+    assert!(matches!(
+        bridge.next_upload(&tabs, &mut notices),
+        Some(UploadSource::OriginalFile {
+            tab: 7,
+            revision: 0,
+            ..
+        })
+    ));
+    bridge.begin_upload(7, 0);
+    bridge.finish_upload(7, 0, Some(0), Ok(()), true);
+
+    // Editing the lazy tab invalidates the bridge snapshot and emits one notice instead of
+    // re-uploading the stale File.
+    {
+        let tab = &mut tabs[0];
+        let page_id = tab.page;
+        let doc_mut = Arc::make_mut(&mut tab.doc);
+        execute_edit_ops(
+            doc_mut,
+            &mut tab.history,
+            &[EditOp::Rename {
+                target: page_id,
+                name: "Edited Lazy Page".into(),
+            }],
+            Some("Rename page"),
+            None,
+            false,
+        )
+        .unwrap();
+    }
+
+    let out = bridge.reconcile(&tabs);
+    assert_eq!(out.close_tabs, vec![7]);
+    assert_eq!(out.notices, vec![LAZY_EDIT_NOTICE]);
+    assert!(!bridge.is_ready(&tabs[0]));
+    assert!(bridge.next_upload(&tabs, &mut notices).is_none());
+
+    // Even a fresh connection after editing a lazy tab never uploads the stale rev-0 File.
+    let mut fresh = BridgeSync::default();
+    let mut fresh_notices = Vec::new();
+    assert!(fresh.next_upload(&tabs, &mut fresh_notices).is_none());
+    assert_eq!(fresh_notices, vec![LAZY_EDIT_NOTICE]);
+    assert!(fresh.next_upload(&tabs, &mut fresh_notices).is_none());
+    assert_eq!(fresh_notices.len(), 1);
+}
+
+#[test]
+fn bridge_sync_handles_close_server_error_missing_file_and_reset() {
+    let tabs = tabs();
+    let mut bridge = BridgeSync::default();
+    let mut notices = Vec::new();
+
+    // Missing browser File marks tab failed without looping; reset clears it on reconnect.
+    bridge.mark_failed(7);
+    assert!(matches!(
+        bridge.next_upload(&tabs, &mut notices),
+        Some(UploadSource::OriginalFile { tab: 9, .. })
+    ));
+    bridge.begin_upload(9, 0);
+    // Closing an in-flight tab marks it superseded so finish_upload neither sends Close twice
+    // nor reports a failure toast.
+    assert!(bridge.close_tab(9));
+    let closed = bridge.finish_upload(9, 0, None, Err("upload cancelled".into()), false);
+    assert!(!closed.send_close);
+    assert_eq!(closed.toast, None);
+
+    // Server error during upload marks tab failed so a subsequent Ok completion is ignored.
+    bridge.reset();
+    bridge.begin_upload(7, 0);
+    bridge.server_error(Some(7));
+    let late = bridge.finish_upload(7, 0, Some(0), Ok(()), true);
+    assert!(late.clear_cancelled);
+    assert!(!bridge.is_ready(&tabs[0]));
+
+    bridge.reset();
+    assert!(matches!(
+        bridge.next_upload(&tabs, &mut notices),
+        Some(UploadSource::OriginalFile { tab: 7, .. })
+    ));
 }

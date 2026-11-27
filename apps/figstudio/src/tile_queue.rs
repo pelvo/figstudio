@@ -11,15 +11,16 @@ pub enum Msg {
     Close {
         tab: u64,
     },
-    /// A document closed: drop its page recordings (handled by the render loop).
+    /// A document closed: drop all of its page recordings across revisions and Preview states
+    /// (handled by the render loop).
     Forget {
-        doc: u64,
+        lineage: u64,
     },
-    /// A document's shader code changed: draw its shaders with `host` from now on and drop
-    /// its page recordings (handled by the render loop, so the browser's UI thread never
-    /// waits on the image cache's lock).
+    /// A document's shader code changed: draw the shaders of the document with `lineage`
+    /// with `host` from now on and drop all of its page recordings (handled by the render
+    /// loop, so the browser's UI thread never waits on the image cache's lock).
     Shaders {
-        doc: u64,
+        lineage: u64,
         host: std::sync::Arc<dyn figstudio_render::shader::ShaderFills>,
     },
 }

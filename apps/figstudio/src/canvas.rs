@@ -19,17 +19,54 @@ thread_local! {
     pub(crate) static HIT_CHAIN_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn hit_chain(doc: &figstudio_fig::Document, page: Guid, point: Point) -> Vec<Guid> {
+/// Screen-space hit slop (points) around thin strokes so 1–2 px lines stay easy to click at
+/// any zoom level while off-stroke empty bounding-box interiors pass through.
+const HIT_SLOP_PX: f64 = 4.0;
+
+pub(crate) fn hit_options(zoom: f32) -> figstudio_render::HitOptions {
+    figstudio_render::HitOptions {
+        tolerance: HIT_SLOP_PX / f64::from(zoom).max(1e-3),
+        skip_locked: true,
+    }
+}
+
+fn hit_chain(tab: &Tab, point: Point) -> Vec<Guid> {
     #[cfg(test)]
     HIT_CHAIN_CALLS.with(|calls| calls.set(calls.get() + 1));
-    figstudio_render::hit_chain(doc, page, point)
+    tab.pick_cache.page_chain(tab, point)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Select,
+    Frame,
+    Section,
+    Rectangle,
+    Ellipse,
+    Line,
+    Text,
     Hand,
     Zoom,
+}
+
+impl Tool {
+    pub fn is_creation(self) -> bool {
+        matches!(
+            self,
+            Self::Frame | Self::Section | Self::Rectangle | Self::Ellipse | Self::Line | Self::Text
+        )
+    }
+
+    pub fn shape_kind(self) -> Option<&'static str> {
+        match self {
+            Self::Frame => Some("FRAME"),
+            Self::Section => Some("SECTION"),
+            Self::Rectangle => Some("ROUNDED_RECTANGLE"),
+            Self::Ellipse => Some("ELLIPSE"),
+            Self::Line => Some("LINE"),
+            _ => None,
+        }
+    }
 }
 
 pub fn fit(tab: &mut Tab, rect: Rect) {
@@ -81,6 +118,8 @@ pub struct Options {
     pub tool: Tool,
     /// Space is held: dragging pans.
     pub space_held: bool,
+    /// A modal covers the app: ignore canvas gizmo pointer input.
+    pub inert: bool,
     /// The card's corner radius.
     pub radius: f32,
     /// Names above top-level frames (Settings → Canvas).
@@ -103,18 +142,20 @@ pub fn show(
     let Options {
         tool,
         space_held,
+        inert,
         radius,
         frame_labels,
         scroll_zooms,
         scaling,
     } = options;
     if tab.preview.is_some() {
+        CanvasClick::clear(ui.ctx());
         return crate::preview::show(ui, tab, workers, tiles, radius, scaling);
     }
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     crate::a11y::describe_canvas(&response, tab);
-    crate::canvas_a11y::take_presses(ui, tab);
+    let a11y_pressed = !inert && crate::canvas_a11y::take_presses(ui, tab);
     let origin = rect.min;
     tab.canvas_rect = Some(rect);
     if tab.fit_pending && rect.width() > 10.0 {
@@ -127,31 +168,34 @@ pub fn show(
         fit_node(tab, rect, id);
     }
 
-    // Input: pan.
-    let panning = tool == Tool::Hand || space_held || ui.input(|i| i.pointer.middle_down());
+    // Input: pan and wheel/pinch zoom.
+    let panning =
+        !inert && (tool == Tool::Hand || space_held || ui.input(|i| i.pointer.middle_down()));
     let mut direct = false;
-    if response.dragged() && (panning || response.dragged_by(egui::PointerButton::Middle)) {
-        tab.view.pan += response.drag_delta();
-        direct = true;
-    }
-    if response.hovered() {
-        let (scroll, zoom_delta, modifiers, pointer) = ui.input(|i| {
-            (
-                i.smooth_scroll_delta,
-                i.zoom_delta(),
-                i.modifiers,
-                i.pointer.hover_pos(),
-            )
-        });
-        let anchor = pointer.unwrap_or(rect.center());
-        direct |= zoom_delta != 1.0 || scroll != Vec2::ZERO;
-        if zoom_delta != 1.0 {
-            tab.view.zoom_at(origin, anchor, zoom_delta);
-        } else if scroll != Vec2::ZERO {
-            if (modifiers.command || modifiers.ctrl) != scroll_zooms {
-                tab.view.zoom_at(origin, anchor, (scroll.y / 200.0).exp());
-            } else {
-                tab.view.pan += scroll;
+    if !inert {
+        if response.dragged() && (panning || response.dragged_by(egui::PointerButton::Middle)) {
+            tab.view.pan += response.drag_delta();
+            direct = true;
+        }
+        if response.hovered() {
+            let (scroll, zoom_delta, modifiers, pointer) = ui.input(|i| {
+                (
+                    i.smooth_scroll_delta,
+                    i.zoom_delta(),
+                    i.modifiers,
+                    i.pointer.hover_pos(),
+                )
+            });
+            let anchor = pointer.unwrap_or(rect.center());
+            direct |= zoom_delta != 1.0 || scroll != Vec2::ZERO;
+            if zoom_delta != 1.0 {
+                tab.view.zoom_at(origin, anchor, zoom_delta);
+            } else if scroll != Vec2::ZERO {
+                if (modifiers.command || modifiers.ctrl) != scroll_zooms {
+                    tab.view.zoom_at(origin, anchor, (scroll.y / 200.0).exp());
+                } else {
+                    tab.view.pan += scroll;
+                }
             }
         }
     }
@@ -164,79 +208,114 @@ pub fn show(
     tab.view = shown;
     tab.shown = shown;
 
-    // Input: selection / zoom tool.
-    let cursor_page = response.hover_pos().map(|p| tab.view.to_page(origin, p));
-    let needs_chain = (response.hovered() && !response.dragged())
-        || response.clicked()
-        || response.double_clicked()
-        || response.secondary_clicked();
-    let chain = cursor_page
-        .filter(|_| needs_chain)
-        .map_or_else(Vec::new, |p| {
-            hit_chain(
-                &tab.doc,
-                tab.page,
-                Point::new(f64::from(p.x), f64::from(p.y)),
-            )
-        });
-    if response.hovered() && !response.dragged() {
-        tab.hover = crate::pick::click(
-            &tab.doc,
-            &chain,
-            tab.selection,
-            ui.input(|i| i.modifiers.command),
-        );
-    } else if !response.hovered() {
+    // Input: gizmos, selection, zoom tool, text selection, marquee and context menus.
+    let mut active_tool = tool;
+    let (cursor_page, point, deep, gizmo) = if inert {
+        CanvasClick::clear(ui.ctx());
+        crate::editor::end_edit_drag(tab);
+        tab.marquee.cancel_drag();
         tab.hover = None;
-    }
-    let point = cursor_page.map(|p| Point::new(f64::from(p.x), f64::from(p.y)));
-    let deep = ui.input(|i| i.modifiers.command);
-    let mut inner_changed = false;
-    if response.clicked() && !panning {
-        match tool {
-            Tool::Select => {
-                inner_changed =
-                    crate::canvas_pick::click(tab, &chain, point, deep, response.double_clicked());
-            }
-            Tool::Zoom => {
-                if let Some(p) = response.interact_pointer_pos() {
-                    let alt = ui.input(|i| i.modifiers.alt);
-                    let factor = if alt { 0.5 } else { 2.0 };
-                    // The point clicked (as drawn) stays under the pointer when it settles.
-                    let page = shown.to_page(origin, p);
-                    target.zoom =
-                        (target.zoom * factor).clamp(crate::tab::MIN_ZOOM, crate::tab::MAX_ZOOM);
-                    target.pan = (p - origin) - page.to_vec2() * target.zoom;
-                }
-            }
-            Tool::Hand => {}
+        (None, None, false, crate::editor::GizmoFrame::default())
+    } else {
+        let cursor_page = response.hover_pos().map(|p| tab.view.to_page(origin, p));
+        let needs_chain = (response.hovered() && !response.dragged())
+            || response.clicked()
+            || response.double_clicked()
+            || response.secondary_clicked();
+        let chain = cursor_page
+            .filter(|_| needs_chain)
+            .map_or_else(Vec::new, |p| {
+                hit_chain(tab, Point::new(f64::from(p.x), f64::from(p.y)))
+            });
+        if response.hovered() && !response.dragged() {
+            tab.hover = crate::pick::click(
+                &tab.doc,
+                &chain,
+                tab.selection,
+                ui.input(|i| i.modifiers.command),
+            );
+        } else if !response.hovered() {
+            tab.hover = None;
         }
-    }
-    // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
-    // canvas nothing is selected, so no menu opens. Any tool, as the spec says.
-    if response.secondary_clicked() && !marquee::right_click(&response, tab, origin) {
-        crate::canvas_pick::click(tab, &chain, point, deep, false);
-    }
-    crate::canvas_text::input(
-        &response,
-        tab,
-        origin,
-        tool == Tool::Select && !panning,
-        !inner_changed,
-    );
-    marquee::update(
-        ui,
-        &response,
-        tab,
-        origin,
-        tool == Tool::Select && !panning && tab.text_select.is_none(),
-    );
-    if tab.marquee.menu {
-        marquee::context(&response, tab);
-    } else if let Some(id) = tab.selection {
-        let mut picked = None;
-        copy_menu::on_context(&response, tab, id, &mut picked);
-        tab.pending_copy = picked.or(tab.pending_copy.take());
+        let point = cursor_page.map(|p| Point::new(f64::from(p.x), f64::from(p.y)));
+        let deep = ui.input(|i| i.modifiers.command);
+        let gizmo =
+            crate::editor::canvas_gizmos_input(ui, &response, rect, tab, &mut active_tool, panning);
+        if active_tool != tool && active_tool == Tool::Select {
+            tab.reset_tool_to_select = true;
+        }
+        CanvasClick::keep_or_clear(
+            ui.ctx(),
+            &response,
+            tab.id,
+            !a11y_pressed && !direct && !panning && !gizmo.consumed_click && tool == Tool::Select,
+        );
+        let mut inner_changed = false;
+        let mut double_clicked = false;
+        if response.clicked() && !panning && !gizmo.consumed_click {
+            match tool {
+                Tool::Select => {
+                    let (paired, click_pos) = CanvasClick::pair(ui.ctx(), &response, tab, deep);
+                    double_clicked = paired;
+                    inner_changed =
+                        crate::canvas_pick::click(tab, &chain, point, deep, double_clicked);
+                    CanvasClick::record(ui.ctx(), tab, click_pos, double_clicked || deep);
+                }
+                Tool::Zoom => {
+                    if let Some(p) = response.interact_pointer_pos() {
+                        let alt = ui.input(|i| i.modifiers.alt);
+                        let factor = if alt { 0.5 } else { 2.0 };
+                        // The point clicked (as drawn) stays under the pointer when it settles.
+                        let page = shown.to_page(origin, p);
+                        target.zoom = (target.zoom * factor)
+                            .clamp(crate::tab::MIN_ZOOM, crate::tab::MAX_ZOOM);
+                        target.pan = (p - origin) - page.to_vec2() * target.zoom;
+                    }
+                }
+                Tool::Hand
+                | Tool::Frame
+                | Tool::Section
+                | Tool::Rectangle
+                | Tool::Ellipse
+                | Tool::Line
+                | Tool::Text => {}
+            }
+        }
+        // Right-click selects the node under the pointer, then opens its Copy menu. Over empty
+        // canvas nothing is selected, so no menu opens. Any tool, as the spec says.
+        if response.secondary_clicked() {
+            CanvasClick::clear(ui.ctx());
+            if !marquee::right_click(&response, tab, origin) {
+                crate::canvas_pick::click(tab, &chain, point, deep, false);
+            }
+        }
+        crate::canvas_text::input(
+            &response,
+            tab,
+            origin,
+            tool == Tool::Select && !panning && !gizmo.blocks_text,
+            double_clicked,
+            !inner_changed,
+        );
+        marquee::update(
+            ui,
+            &response,
+            tab,
+            origin,
+            tool == Tool::Select && !panning && tab.text_select.is_none() && !gizmo.blocks_marquee,
+        );
+        (cursor_page, point, deep, gizmo)
+    };
+    // Keep the canvas's own context menu drawn while open (`Popup::is_any_open` sets `inert`
+    // so clicks outside the menu do not leak onto the canvas).
+    if !inert || egui::Popup::is_any_open(ui.ctx()) {
+        if tab.marquee.menu {
+            marquee::context(&response, tab);
+        } else if let Some(id) = tab.selection {
+            let mut picked = None;
+            copy_menu::on_context(&response, tab, id, &mut picked);
+            tab.pending_copy = picked.or(tab.pending_copy.take());
+        }
     }
 
     // Rendering: cached tiles for the view on screen; missing tiles are requested for the
@@ -306,26 +385,38 @@ pub fn show(
         }
     }
     crate::canvas_text::overlay(&painter, tab, origin);
+    crate::editor::canvas_gizmos_paint(&painter, rect, tab, active_tool);
     marquee::paint(&painter, tab, origin);
     crate::icons::focus_ring(ui, &response, rect, radius as u8);
     crate::canvas_a11y::layers(ui, &response, tab, origin);
     crate::shader_code::markers(ui, &painter, tab, |id| corners(tab, origin, id));
     tab.view = target;
 
-    let cursor = match tool {
-        _ if panning => egui::CursorIcon::Grab,
-        Tool::Zoom => egui::CursorIcon::ZoomIn,
-        Tool::Hand => egui::CursorIcon::Grab,
-        Tool::Select
-            if tab.text_select.is_some()
-                && tab.selection == tab.hover
-                && (tab.inner.is_none() || inner_hover == tab.inner) =>
-        {
-            egui::CursorIcon::Text
+    let cursor = if let Some(gc) = gizmo.cursor {
+        gc
+    } else {
+        match tool {
+            _ if inert => egui::CursorIcon::Default,
+            _ if panning => egui::CursorIcon::Grab,
+            Tool::Zoom => egui::CursorIcon::ZoomIn,
+            Tool::Hand => egui::CursorIcon::Grab,
+            Tool::Frame
+            | Tool::Section
+            | Tool::Rectangle
+            | Tool::Ellipse
+            | Tool::Line
+            | Tool::Text => egui::CursorIcon::Crosshair,
+            Tool::Select
+                if tab.text_select.is_some()
+                    && tab.selection == tab.hover
+                    && (tab.inner.is_none() || inner_hover == tab.inner) =>
+            {
+                egui::CursorIcon::Text
+            }
+            Tool::Select => egui::CursorIcon::Default,
         }
-        Tool::Select => egui::CursorIcon::Default,
     };
-    if response.hovered() {
+    if !inert && response.hovered() {
         ui.ctx().set_cursor_icon(if response.dragged() && panning {
             egui::CursorIcon::Grabbing
         } else {
@@ -437,6 +528,100 @@ fn outline(painter: &egui::Painter, tab: &Tab, origin: Pos2, id: Guid, stroke: S
 /// How long a jump of the view (fit, zoom buttons and keys, the Zoom tool) eases; pans and
 /// zooms the pointer drives follow it exactly.
 const VIEW_EASE: f64 = 0.28;
+
+/// Prior unpaired primary pointer click on the canvas, used to pair double-clicks without egui's
+/// triple-click window dropping repeated nested-layer descents.
+#[derive(Clone, Debug)]
+struct CanvasClick {
+    tab_id: u64,
+    doc_rev: u64,
+    time: f64,
+    pos: Pos2,
+    page: Guid,
+    selection: Option<Guid>,
+    inner: Option<figstudio_fig::resolve::InstancePath>,
+}
+
+impl CanvasClick {
+    const ID: &'static str = "canvas-last-click";
+
+    fn clear(ctx: &egui::Context) {
+        ctx.data_mut(|d| d.insert_temp::<Option<Self>>(egui::Id::new(Self::ID), None));
+    }
+
+    fn keep_or_clear(ctx: &egui::Context, response: &egui::Response, tab_id: u64, keep: bool) {
+        let pointer_click = response.clicked_by(egui::PointerButton::Primary);
+        let foreign_pointer = ctx.input(|i| {
+            let foreign_press = i.pointer.any_pressed()
+                && !(i.pointer.button_pressed(egui::PointerButton::Primary)
+                    && (response.is_pointer_button_down_on() || pointer_click));
+            let non_click_release = i.pointer.any_released() && !pointer_click;
+            foreign_press || non_click_release
+        });
+        let other_tab = ctx
+            .data(|d| d.get_temp::<Option<Self>>(egui::Id::new(Self::ID)))
+            .flatten()
+            .is_some_and(|last| last.tab_id != tab_id);
+        if !keep || foreign_pointer || other_tab || response.dragged() || response.drag_stopped() {
+            Self::clear(ctx);
+        }
+    }
+
+    fn pair(
+        ctx: &egui::Context,
+        response: &egui::Response,
+        tab: &Tab,
+        deep: bool,
+    ) -> (bool, Option<Pos2>) {
+        if !response.clicked_by(egui::PointerButton::Primary) {
+            Self::clear(ctx);
+            return (false, None);
+        }
+        let Some(pos) = response.interact_pointer_pos() else {
+            Self::clear(ctx);
+            return (false, None);
+        };
+        let now = ctx.input(|i| i.time);
+        let (delay, max_dist) = ctx.options(|o| {
+            (
+                o.input_options.max_double_click_delay,
+                o.input_options.max_click_dist,
+            )
+        });
+        let paired = !deep
+            && ctx
+                .data(|d| d.get_temp::<Option<Self>>(egui::Id::new(Self::ID)))
+                .flatten()
+                .is_some_and(|last| {
+                    last.tab_id == tab.id
+                        && last.doc_rev == tab.doc.revision
+                        && last.page == tab.page
+                        && last.selection == tab.selection
+                        && last.inner == tab.inner
+                        && now >= last.time
+                        && (now - last.time) < delay
+                        && last.pos.distance(pos) <= max_dist
+                });
+        (paired, Some(pos))
+    }
+
+    fn record(ctx: &egui::Context, tab: &Tab, pos: Option<Pos2>, paired_or_deep: bool) {
+        let next = if paired_or_deep {
+            None
+        } else {
+            pos.map(|pos| Self {
+                tab_id: tab.id,
+                doc_rev: tab.doc.revision,
+                time: ctx.input(|i| i.time),
+                pos,
+                page: tab.page,
+                selection: tab.selection,
+                inner: tab.inner.clone(),
+            })
+        };
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(Self::ID), next));
+    }
+}
 
 /// A view on its way from `from` to `to`, started at `start` (egui time) on `page`.
 #[derive(Clone, Copy, Debug)]

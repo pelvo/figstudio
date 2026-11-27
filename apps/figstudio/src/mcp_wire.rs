@@ -1,6 +1,6 @@
 //! Pure helpers for the browser bridge client (`mcp_web.rs`): what the tab tells the local
 //! MCP process, and how it reads what comes back. No browser types, so native tests cover it.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use figstudio_mcp_core::bridge::{ClientMessage, TabState, guid_string, parse_guid};
 
@@ -10,12 +10,245 @@ use crate::tab::Tab;
 /// Upload slice size: well under the bridge's 1 MiB frame limit.
 pub(crate) const CHUNK: u64 = 256 * 1024;
 
-/// The `state` frame: only tabs the bridge has fully received (`ready`), since it rejects
-/// unknown tab ids.
-pub(crate) fn state_message(tabs: &[Tab], active: usize, ready: &HashSet<u64>) -> ClientMessage {
+/// Notice shown when an edited lazy (>256 MiB) tab can no longer stay synced on `--bridge`.
+pub(crate) const LAZY_EDIT_NOTICE: &str =
+    "MCP bridge: edited large file cannot be re-uploaded; bridge tab closed";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InFlightUpload {
+    tab: u64,
+    revision: u64,
+    superseded: bool,
+}
+
+/// Tracks which document revision each browser tab has synced to the local `--bridge`.
+///
+/// Edited eager tabs immediately invalidate their stale snapshot on the bridge (`Close`)
+/// and re-upload serialized bytes; edited lazy tabs are closed on the bridge and marked
+/// stale rather than serving an outdated document or re-uploading the original `File`.
+#[derive(Debug, Default)]
+pub(crate) struct BridgeSync {
+    ready: HashMap<u64, u64>,
+    failed: HashSet<u64>,
+    uploading: Option<InFlightUpload>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReconcileOut {
+    pub close_tabs: Vec<u64>,
+    pub cancel_tabs: Vec<u64>,
+    pub notices: Vec<&'static str>,
+    pub invalidated: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UploadSource {
+    OriginalFile {
+        tab: u64,
+        revision: u64,
+        name: String,
+    },
+    Serialized {
+        tab: u64,
+        revision: u64,
+        name: String,
+        bytes: Vec<u8>,
+    },
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct FinishAction {
+    pub clear_cancelled: bool,
+    pub send_close: bool,
+    pub clear_last_key: bool,
+    pub repaint: bool,
+    pub toast: Option<String>,
+}
+
+impl BridgeSync {
+    pub fn reset(&mut self) {
+        self.ready.clear();
+        self.failed.clear();
+        self.uploading = None;
+    }
+
+    pub fn is_ready(&self, tab: &Tab) -> bool {
+        self.ready.get(&tab.id) == Some(&tab.doc.revision)
+    }
+
+    /// True if `tab` was synced or had an active upload when closed on the browser.
+    pub fn close_tab(&mut self, tab: u64) -> bool {
+        let was_ready = self.ready.remove(&tab).is_some();
+        self.failed.remove(&tab);
+        let was_uploading = if let Some(up) = self.uploading.as_mut()
+            && up.tab == tab
+        {
+            up.superseded = true;
+            true
+        } else {
+            false
+        };
+        was_ready || was_uploading
+    }
+
+    pub fn server_error(&mut self, tab: Option<u64>) {
+        let Some(tab) = tab else { return };
+        self.ready.remove(&tab);
+        self.failed.insert(tab);
+        if let Some(up) = self.uploading.as_mut()
+            && up.tab == tab
+        {
+            up.superseded = false;
+        }
+    }
+
+    /// Invalidate synced or in-flight uploads whose tab document revision has advanced.
+    pub fn reconcile(&mut self, tabs: &[Tab]) -> ReconcileOut {
+        let mut out = ReconcileOut::default();
+        for tab in tabs {
+            if let Some(rev) = self.ready.get(&tab.id).copied()
+                && rev != tab.doc.revision
+            {
+                self.ready.remove(&tab.id);
+                out.close_tabs.push(tab.id);
+                out.invalidated = true;
+                if tab.doc.is_lazy() && self.failed.insert(tab.id) {
+                    out.notices.push(LAZY_EDIT_NOTICE);
+                }
+            }
+            if let Some(up) = self.uploading.as_mut()
+                && up.tab == tab.id
+                && up.revision != tab.doc.revision
+            {
+                if !up.superseded {
+                    up.superseded = true;
+                    out.cancel_tabs.push(tab.id);
+                }
+                if tab.doc.is_lazy() && self.failed.insert(tab.id) {
+                    out.notices.push(LAZY_EDIT_NOTICE);
+                }
+            }
+        }
+        out
+    }
+
+    /// Pick the next unsynced tab to upload, serializing edited eager documents.
+    pub fn next_upload(&mut self, tabs: &[Tab], notices: &mut Vec<String>) -> Option<UploadSource> {
+        if self.uploading.is_some() {
+            return None;
+        }
+        for tab in tabs {
+            if self.is_ready(tab) || self.failed.contains(&tab.id) {
+                continue;
+            }
+            if tab.doc.revision == 0 {
+                return Some(UploadSource::OriginalFile {
+                    tab: tab.id,
+                    revision: 0,
+                    name: upload_name(&tab.title()),
+                });
+            }
+            if tab.doc.is_lazy() {
+                if self.failed.insert(tab.id) {
+                    notices.push(LAZY_EDIT_NOTICE.to_owned());
+                }
+                continue;
+            }
+            match tab.doc.to_bytes() {
+                Ok(bytes) => {
+                    self.uploading = Some(InFlightUpload {
+                        tab: tab.id,
+                        revision: tab.doc.revision,
+                        superseded: false,
+                    });
+                    return Some(UploadSource::Serialized {
+                        tab: tab.id,
+                        revision: tab.doc.revision,
+                        name: upload_name(&tab.title()),
+                        bytes,
+                    });
+                }
+                Err(err) => {
+                    if self.failed.insert(tab.id) {
+                        notices.push(format!(
+                            "MCP bridge: could not serialize edited document: {}",
+                            figstudio_fig::one_line(&err)
+                        ));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn begin_upload(&mut self, tab: u64, revision: u64) {
+        self.uploading = Some(InFlightUpload {
+            tab,
+            revision,
+            superseded: false,
+        });
+    }
+
+    pub fn mark_failed(&mut self, tab: u64) {
+        self.failed.insert(tab);
+    }
+
+    pub fn finish_upload(
+        &mut self,
+        tab: u64,
+        revision: u64,
+        current_rev: Option<u64>,
+        result: Result<(), String>,
+        tab_open: bool,
+    ) -> FinishAction {
+        let superseded = self
+            .uploading
+            .take()
+            .is_some_and(|u| u.tab == tab && u.superseded);
+        if superseded || (result.is_ok() && current_rev != Some(revision)) {
+            return FinishAction {
+                clear_cancelled: true,
+                send_close: tab_open,
+                clear_last_key: false,
+                repaint: tab_open,
+                toast: None,
+            };
+        }
+        match result {
+            Ok(()) if self.failed.contains(&tab) => FinishAction {
+                clear_cancelled: true,
+                ..FinishAction::default()
+            },
+            Ok(()) => {
+                self.ready.insert(tab, revision);
+                FinishAction {
+                    clear_cancelled: true,
+                    send_close: false,
+                    clear_last_key: true,
+                    repaint: true,
+                    toast: None,
+                }
+            }
+            Err(error) => {
+                let reported = !self.failed.insert(tab);
+                FinishAction {
+                    clear_cancelled: true,
+                    send_close: tab_open,
+                    clear_last_key: false,
+                    repaint: false,
+                    toast: (tab_open && !reported).then(|| format!("MCP upload failed: {error}")),
+                }
+            }
+        }
+    }
+}
+
+/// The `state` frame: only tabs whose current document revision is synced on the bridge,
+/// avoiding `"unknown selection"` races after local edits.
+pub(crate) fn state_message(tabs: &[Tab], active: usize, bridge: &BridgeSync) -> ClientMessage {
     let tabs_out = tabs
         .iter()
-        .filter(|t| ready.contains(&t.id))
+        .filter(|t| bridge.is_ready(t))
         .map(|t| TabState {
             tab: t.id,
             page: t.page_index().map(|_| guid_string(t.page)),
@@ -28,8 +261,8 @@ pub(crate) fn state_message(tabs: &[Tab], active: usize, ready: &HashSet<u64>) -
         tabs: tabs_out,
         active: tabs
             .get(active)
-            .map(|t| t.id)
-            .filter(|id| ready.contains(id)),
+            .filter(|t| bridge.is_ready(t))
+            .map(|t| t.id),
     }
 }
 

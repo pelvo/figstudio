@@ -33,10 +33,12 @@ const MAX_LEVEL: u8 = 12;
 /// Default cache size.
 pub const DEFAULT_BUDGET: usize = 1 << 30;
 
-/// The cache key of image `hash` in `doc`: images are cached per document (see
-/// `Document::instance`).
+/// The cache key of image `hash` in `doc`: `lineage/image_instance/hash`. Images are cached
+/// per `Document::image_instance` so node/text/layout edits do not evict decoded bitmaps; the
+/// leading `Document::lineage` ties every generation to the document, so closing it
+/// ([`Images::close_document`]) frees them all.
 pub fn cache_key(doc: &figstudio_fig::Document, hash: &str) -> String {
-    format!("{:x}/{hash}", doc.instance)
+    format!("{:x}/{:x}/{hash}", doc.lineage, doc.image_instance)
 }
 
 /// An image the render needs from a lazily opened document.
@@ -90,7 +92,7 @@ struct Inner {
     slots: HashMap<String, BTreeMap<u8, Slot>>,
     failed: HashSet<String>,
     in_flight: HashSet<(String, u8)>,
-    /// Closed documents (`Document::instance`, see [`cache_key`]): nothing is stored, marked
+    /// Closed documents (`Document::lineage`, see [`cache_key`]): nothing is stored, marked
     /// failed or requested for them, checked under the lock so a late reader cannot race.
     closed: HashSet<u64>,
     /// What draws each open document's shader fills ([`Images::set_shaders`]).
@@ -132,7 +134,7 @@ impl Inner {
             && key
                 .split_once('/')
                 .and_then(|(hex, _)| u64::from_str_radix(hex, 16).ok())
-                .is_some_and(|instance| self.closed.contains(&instance))
+                .is_some_and(|lineage| self.closed.contains(&lineage))
     }
 }
 
@@ -242,42 +244,38 @@ impl Images {
         }
     }
 
-    /// Drops every image of document `instance` (see [`cache_key`]), e.g. when its last tab
-    /// closes. A read still in flight may store one image afterwards; LRU evicts it.
-    pub fn forget_document(&self, instance: u64) {
-        let prefix = format!("{instance:x}/");
+    /// Drops every image and the shader host of the document with `lineage` (see
+    /// [`cache_key`]), e.g. when its last tab closes. A read still in flight may store one
+    /// image afterwards; LRU evicts it.
+    pub fn forget_document(&self, lineage: u64) {
         let mut inner = self.lock();
-        let mut freed = 0;
-        inner.slots.retain(|key, levels| {
-            let keep = !key.starts_with(&prefix);
-            if !keep {
-                freed += levels.values().map(|s| s.image.bytes()).sum::<usize>();
-            }
-            keep
-        });
-        inner.failed.retain(|key| !key.starts_with(&prefix));
-        inner.shaders.remove(&instance);
-        inner.bytes -= freed;
+        inner.forget_document(lineage);
         self.0.bytes.store(inner.bytes, Ordering::Relaxed);
     }
 
-    /// Draws document `instance`'s shader fills with `host` in every renderer sharing this
-    /// cache (a renderer's own [`Renderer::shaders`](crate::Renderer::shaders) comes first),
-    /// until the document is forgotten.
-    pub fn set_shaders(&self, instance: u64, host: Arc<dyn crate::shader::ShaderFills>) {
-        self.lock().shaders.insert(instance, host);
+    /// Draws the shader fills of the document with `lineage` (`Document::lineage`, so edits
+    /// keep them) with `host` in every renderer sharing this cache (a renderer's own
+    /// [`Renderer::shaders`](crate::Renderer::shaders) comes first), until the document is
+    /// forgotten. A document already closed via [`Images::close_document`] stores nothing.
+    pub fn set_shaders(&self, lineage: u64, host: Arc<dyn crate::shader::ShaderFills>) {
+        let mut inner = self.lock();
+        if !inner.closed.contains(&lineage) {
+            inner.shaders.insert(lineage, host);
+        }
     }
 
-    pub(crate) fn shaders(&self, instance: u64) -> Option<Arc<dyn crate::shader::ShaderFills>> {
-        self.lock().shaders.get(&instance).cloned()
+    pub(crate) fn shaders(&self, lineage: u64) -> Option<Arc<dyn crate::shader::ShaderFills>> {
+        self.lock().shaders.get(&lineage).cloned()
     }
 
-    /// Closes document `instance` for good: drops its images like
-    /// [`Images::forget_document`], and from then on stores nothing for it, even from a read
-    /// or decode that started before (the check and the insert share the lock).
-    pub fn close_document(&self, instance: u64) {
-        self.lock().closed.insert(instance);
-        self.forget_document(instance);
+    /// Closes the document with `lineage` for good: drops its images and shaders like
+    /// [`Images::forget_document`], and from then on stores nothing for it, even from a read,
+    /// decode or shader update that started before (the check and the insert share the lock).
+    pub fn close_document(&self, lineage: u64) {
+        let mut inner = self.lock();
+        inner.closed.insert(lineage);
+        inner.forget_document(lineage);
+        self.0.bytes.store(inner.bytes, Ordering::Relaxed);
     }
 
     /// Bytes of pixels held. Takes no lock.
@@ -292,6 +290,21 @@ impl Images {
 }
 
 impl Inner {
+    fn forget_document(&mut self, lineage: u64) {
+        let prefix = format!("{lineage:x}/");
+        let mut freed = 0;
+        self.slots.retain(|key, levels| {
+            let keep = !key.starts_with(&prefix);
+            if !keep {
+                freed += levels.values().map(|s| s.image.bytes()).sum::<usize>();
+            }
+            keep
+        });
+        self.failed.retain(|key| !key.starts_with(&prefix));
+        self.shaders.remove(&lineage);
+        self.bytes -= freed;
+    }
+
     fn insert(&mut self, hash: &str, level: u8, image: Decoded) {
         let frame = self.frame;
         let bytes = image.bytes();

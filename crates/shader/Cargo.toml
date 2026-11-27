@@ -20,7 +20,9 @@ figstudio-mcp-core = { workspace = true }
 vello_cpu = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-wgpu = { workspace = true, optional = true }
+# `naga-ir` exposes `wgpu::naga` and `ShaderSource::Naga` for the narrowly gated OpenGL
+# multi-sampler lowering path (ordinary pipelines stay on stock `ShaderSource::Wgsl`).
+wgpu = { workspace = true, optional = true, features = ["naga-ir"] }
 pollster = { workspace = true, optional = true }
 # A pure-Rust JavaScript engine for the shader's setup/render code. `fuzz` only turns on
 # Boa's instruction budget (`ContextBuilder::instructions_remaining`), the CPU cap on a run.

@@ -103,7 +103,7 @@ pub async fn serve_bridge(
     let router = axum::Router::new()
         .route("/bridge", axum::routing::get(crate::bridge_ws::upgrade))
         .with_state(bridge);
-    let server = FigstudioServer::live(files, no_system_fonts)
+    let server = FigstudioServer::bridge_live(files, no_system_fonts)
         .with_assets(crate::tools::design::Assets::Inline)
         .with_max_output_bytes(max_output_bytes);
     let mut servers = vec![crate::serve_http_router(

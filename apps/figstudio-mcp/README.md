@@ -5,8 +5,10 @@ answers the read tools of Figma's official MCP server from a file on disk, so a 
 agent (Claude Code, Cursor, VS Code, Codex) can work from a local copy without the Figma
 app, a Figma account or a network connection.
 
-- It **never writes the `.fig`**. The only files it writes are the Code Connect sidecar
-  and the `get_design_context` PNG/WebP assets (see [Writes](#writes)).
+- It **never modifies the opened source `.fig` in place**. Standalone and desktop live modes
+  mutate an in-memory copy and `save_copy` writes a sibling `.fig` copy inside the source
+  directory; other writes are Code Connect sidecars, `get_design_context` PNG/WebP assets and
+  `compare_files` report artifacts (see [Writes](#writes)).
 - The tool names and inputs follow the official server as researched on **2026-10-11**
   (37 tools at that date). The official surface changes often. Tool names here are pinned
   to that date.
@@ -109,7 +111,13 @@ The browser app (`scripts/web-build.sh --serve`, or the deployed one) cannot hos
 so a small local process does: `figstudio-mcp --bridge` serves `/mcp` for your client and
 `/bridge`, a WebSocket the browser tab pairs with. The tab uploads each file it has open
 (into a temporary directory that is deleted when the tab disconnects), reports its page,
-selection and viewport, and applies `reveal_node`. All tools and the three live tools work.
+selection and viewport, and applies `reveal_node`. All read-only tools (including
+`describe_edit_ops`, `get_editable`, and `copy_for_figma`) and the three live tools work.
+Mutation, history, and save tools (`apply_edits`, `undo`, `redo`, `get_history`, `import_image`,
+`paste_from_figma`, `save_copy`) are not registered on `--bridge` (use the desktop app,
+`--browser-proxy`, or the cloud relay for live edits). When you edit an eager document in the
+browser, the tab invalidates the stale snapshot and re-uploads the updated bytes; edited lazy
+files (> 256 MiB) are closed on the bridge instead of serving an outdated snapshot.
 
 ```sh
 figstudio-mcp --bridge          # prints the MCP URL, a pairing token and the web URL
@@ -467,7 +475,8 @@ pages.
 
 ## Tools
 
-23 tools and 1 prompt, plus 3 live tools in the app. "Official" means Figma's server;
+33 tools and 1 prompt in standalone mode, plus 3 live tools in the desktop app (`--bridge`
+omits the 7 mutation/history/save tools for 29 total). "Official" means Figma's server;
 "differs offline" lists what a client should expect to be different. The two
 `compare_*` tools are native only (the diff crate renders through the native
 renderer), so the browser MCP build does not register them.
@@ -497,6 +506,15 @@ renderer), so the browser MCP build does not register them.
 | `get_shader` | `id` (ID, key or node ID), `fileKey?` | JSON: the `list_file_shaders` entry plus `parameters` (name, label, type, control, default, min/max/step, select options, in panel order) and `usages` (nodeId, name, nodeType, field such as `fillPaints[1]`, visible, values by parameter name) | With a matched source (see `list_file_shaders`), `files` include each file's `content` (1 MB in all, Figma's cap). Usages capped at 200 (`usagesTruncated`). Not Figma's `get_shader`, which reads your account library; this one reads the file, like `list_file_shaders`. |
 | `compare_files` | `oldFile?`, `newFile?`, `includeRender?` (default false), `format?` (`webp` default\|`png`) | JSON `{old, new, summary, complete, truncated, pages, pagesTotal, pagesTruncated, reportJson, reportHtml}` | Writes `report.json`/`report.html` (plus `render/<guid>-{before,after,diff}.webp` with `includeRender`, or `.png` with `format: "png"`) under `<assets-dir>/compare/compare-<random>/` (`$TMPDIR/figstudio-compare/compare-<random>/` in inline mode). At most 100 page entries inline; rendering is capped by the diff crate. Not an official tool; native server only. |
 | `compare_page` | `oldFile?`, `newFile?`, `pageId` | One page's `PageDiff` JSON capped at 64 KiB; whole entries omitted as needed, with per-list `Total`/`Omitted` counts and a `truncated` flag | Re-runs the comparison (documents are cached); the report is not cached. MCP schema Guids are `session:local` strings; disk `report.json` keeps native Guid arrays and full entries. When the inline page JSON is over 64 KiB, an `old_name` or `new_name` longer than 128 bytes is shortened to at most 128 bytes, ending in `~`, before any row is dropped; that cut sets `nameTruncated: true`. An unchanged or unknown page is a tool error. Not an official tool; native server only. |
+| `describe_edit_ops` | none | JSON specification of every `EditOp` variant accepted by `apply_edits` | Read-only schema guide. |
+| `get_editable` | `nodeId?`, `fileKey?` | JSON snapshot of editable layout, paint, text, component, style and variable fields | Read-only; defaults to selection in live mode. |
+| `copy_for_figma` | `nodeIds?`, `fileKey?` | Figma clipboard HTML with transitive local `SYMBOL` masters | Read-only; defaults to selection in live mode. |
+| `apply_edits` | `ops`, `fileKey?`, `label?`, `dryRun?` | Edit batch report (`revision`, `unsaved`, `created_ids`, warnings) | Mutates the in-memory document with Auto-Layout solving and Undo history. Not registered on `--bridge`. |
+| `undo` / `redo` | `fileKey?` | `{undone|redone, revision, unsaved, undoDepth, redoDepth}` | Steps the in-memory Undo/Redo history. Not registered on `--bridge`. |
+| `get_history` | `fileKey?` | `{revision, unsaved, undo, redo}` | Reports current edit revision and stack labels. Not registered on `--bridge`. |
+| `import_image` | `dataBase64`, `fileKey?` | `{sha1Hex, revision, unsaved}` | Imports PNG, JPEG, WebP or GIF bytes into the in-memory image store. Not registered on `--bridge`. |
+| `paste_from_figma` | `html`, `parentId?`, `dx?`, `dy?`, `fileKey?` | `{pastedRootIds, revision, unsaved}` | Pastes Figma clipboard HTML into a page or container. Not registered on `--bridge`. |
+| `save_copy` | `outPath`, `overwrite?`, `fileKey?` | `{savedPath, revision, unsaved, nodes}` | Atomically writes a `.fig` copy inside the opened file's directory (rejects `..`, symlinks and non-`.fig`; never overwrites source; requires `overwrite: true` to replace existing copies). Standalone and desktop live only. |
 | `list_open_tabs` *(app only)* | none | `{tabs: [{tabId, fileKey, path, title, page: {id, name}, selection, active}]}` | Lists the app's open tabs. `fileKey` is what the other tools take. |
 | `get_selection` *(app only)* | `fileKey?` | `{fileKey, tabId, page, node: {nodeId, name, kind, bounds: {x, y, width, height}}}`, or `node: null` | The selected node of a tab (default the active tab). Bounds are in page units. |
 | `reveal_node` *(app only)* | `nodeId` (or a link), `fileKey?` | One line: the node is revealed in tab N | Selects the node in the app; the tab becomes active and the view fits the node. A page ID switches to that page. An instance path reveals its outer instance and says so. Waits 5 s for the app; then the error "the app did not respond" (a minimised window may not run frames, so the reveal can time out). A figma.com link (without `fileKey`) is shown only in the file it names, never in some other active tab. The desktop app resolves it: the matching open tab, or else the local copy named after the link (`<file name>.fig`) in its link folders (`FIGSTUDIO_LINK_DIRS`, a path list, else `~/Downloads`; or the folder chosen in File → Open Figma link…), which it opens first (`revealed 1:2 in tab 3 (opened the local copy)`); it waits up to 60 s for that. When several files match equally (two documents can share a name), the call fails and asks for a pick in the app. The node ID is checked first, so a link without a valid `node-id` never opens a file. Replies about links carry no paths or file names. In the browser bridge, which cannot open local copies, the link must name exactly one open tab. |
@@ -531,7 +549,7 @@ client's tool budget.
 
 | Tool | Why not |
 |---|---|
-| `use_figma`, `create_new_file`, `generate_figma_design` | They write to Figma's canvas or cloud. This server is read-only. |
+| `use_figma`, `create_new_file`, `generate_figma_design` | They write to Figma's canvas or cloud. Local edits stay offline via `apply_edits` and `save_copy`. |
 | `generate_image` | Needs a hosted image model. |
 | `upload_assets`, `html_to_figma`, `generate_diagram`, `send_code_to_figma` | They create layers, files or code in Figma's cloud. |
 | `list_shaders`, `create_shader`, `update_shader`, generative-plugin tools | Need your Figma account library or cloud. Shader source is not in the `.fig`; `list_file_shaders`/`get_shader` return what is. |
@@ -562,7 +580,11 @@ MCP output from a private file into a public place.
   and, with `includeRender`, `render/<guid>-{before,after,diff}.webp` (or `.png`) under
   `<assets-dir>/compare/compare-<random>/` (or
   `$TMPDIR/figstudio-compare/compare-<random>/` in inline mode).
-- The `.fig` itself is never opened for writing.
+- **`.fig` copies (`save_copy`):** Standalone and desktop live modes edit an in-memory copy of
+  the document and never modify the opened source `.fig` file in place. `save_copy` atomically
+  writes a `.fig` copy inside the opened file's directory (rejecting `..`, symlinks and
+  non-`.fig` paths, never overwriting the opened source file, and requiring `overwrite: true` to
+  replace an existing copy). Not registered on `--bridge`, `--browser-proxy` or the cloud relay.
 - **Cache:** a file is decoded once and kept. Changing it on disk is not noticed;
   restart the server to read the new version.
 

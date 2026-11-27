@@ -961,8 +961,9 @@ impl App {
         if self.show_left {
             self.peek = false;
         } else if let Some(pointer) = ctx.pointer_hover_pos() {
+            let modal_up = ctx.memory(|m| m.top_modal_layer().is_some()) || self.unsaved.is_some();
             let busy = ctx.any_popup_open() || ctx.input(|i| i.pointer.any_down());
-            if pointer.x <= screen.left() + 6.0 && pointer.y > screen.top() + 40.0 {
+            if !modal_up && pointer.x <= screen.left() + 6.0 && pointer.y > screen.top() + 40.0 {
                 self.peek = true;
             } else if self.peek && !busy && !card.expand(24.0).contains(pointer) {
                 self.peek = false;
@@ -1438,7 +1439,12 @@ impl App {
     }
 
     /// The canvas card and everything floating on it. Returns the page-space cursor.
-    pub(crate) fn canvas_card(&mut self, ui: &mut Ui, space_held: bool) -> Option<Pos2> {
+    pub(crate) fn canvas_card(
+        &mut self,
+        ui: &mut Ui,
+        space_held: bool,
+        inert: bool,
+    ) -> Option<Pos2> {
         let ctx = ui.ctx().clone();
         let p = theme::of(ui);
         // Present fills the window edge to edge; otherwise the canvas is a rounded card.
@@ -1478,6 +1484,7 @@ impl App {
                     let options = canvas::Options {
                         tool: self.tool,
                         space_held,
+                        inert,
                         radius: f32::from(corner),
                         frame_labels: self.prefs.frame_labels,
                         scroll_zooms: self.prefs.scroll_zooms,
@@ -1494,6 +1501,10 @@ impl App {
                     let before = ui.opacity();
                     ui.multiply_opacity(shown);
                     cursor = canvas::show(ui, tab, &mut self.workers, &mut self.tiles, options);
+                    if tab.reset_tool_to_select {
+                        tab.reset_tool_to_select = false;
+                        self.tool = Tool::Select;
+                    }
                     ui.set_opacity(before);
                     // Now that the new page has planned its tiles, so the underlay's count as
                     // on screen and are not the first to go.
@@ -1588,8 +1599,8 @@ impl App {
         let y = (layer.bottom() + 10.0).clamp(card.top() + 8.0, tools.top() - 8.0 - size.y);
         let rect = Rect::from_min_size(pos2(x - size.x / 2.0, y), size);
         let radius = CornerRadius::same(19);
-        // Catches clicks between the controls so they do not reach the canvas.
-        crate::a11y::hide(&ui.interact(rect, Id::new("motion-bar"), Sense::CLICK));
+        // Catches clicks and drags on the bar so they do not reach the canvas.
+        crate::a11y::hide(&ui.interact(rect, Id::new("motion-bar"), WINDOW_DRAG));
         let painter = ui.painter();
         painter.add(card_shadow(&p, 14).as_shape(rect, radius));
         painter.rect_filled(rect, radius, p.glass);
@@ -1677,7 +1688,27 @@ impl App {
         let ctx = ui.ctx().clone();
         let p = theme::of(ui);
         let accent = self.tint_now(&ctx).accent;
-        let tools = [
+        let full_tools: &[(Tool, Icon, &str, &str)] = &[
+            (Tool::Select, Icon::Select, "Select tool", "Select (V)"),
+            (Tool::Frame, Icon::Frame, "Frame tool", "Frame (F)"),
+            (
+                Tool::Rectangle,
+                Icon::Rect,
+                "Rectangle tool",
+                "Rectangle (R)",
+            ),
+            (Tool::Ellipse, Icon::Ellipse, "Ellipse tool", "Ellipse (O)"),
+            (Tool::Line, Icon::Line, "Line tool", "Line (L)"),
+            (Tool::Text, Icon::Text, "Text tool", "Text (T)"),
+            (Tool::Hand, Icon::Hand, "Hand tool", "Hand (H)"),
+            (
+                Tool::Zoom,
+                Icon::Zoom,
+                "Zoom tool",
+                "Zoom (Z), Alt to zoom out",
+            ),
+        ];
+        let compact_tools: &[(Tool, Icon, &str, &str)] = &[
             (Tool::Select, Icon::Select, "Select tool", "Select (V)"),
             (Tool::Hand, Icon::Hand, "Hand tool", "Hand (H)"),
             (
@@ -1688,7 +1719,14 @@ impl App {
             ),
         ];
         let (b, pad, zoom_w, sep) = (30.0, 4.0, 52.0, 9.0);
-        let tools_only = pad * 2.0 + b * 3.0;
+        let full_bar_w = pad * 2.0 + b * full_tools.len() as f32 + sep + zoom_w + b * 2.0;
+        let tools = if card.width() >= full_bar_w + 32.0 {
+            full_tools
+        } else {
+            compact_tools
+        };
+        let n_tools = tools.len() as f32;
+        let tools_only = pad * 2.0 + b * n_tools;
         let with_zoom = tools_only + sep + zoom_w;
         let full = with_zoom + b * 2.0;
         // A narrow card drops the − and + first (the keys and menus still zoom), then the
@@ -1707,8 +1745,8 @@ impl App {
             vec2(width, 38.0),
         );
         let radius = CornerRadius::same(19);
-        // Catches clicks between the buttons so they do not reach the canvas.
-        crate::a11y::hide(&ui.interact(rect, Id::new("tool-pill"), Sense::CLICK));
+        // Catches clicks and drags on the pill so they do not reach the canvas.
+        crate::a11y::hide(&ui.interact(rect, Id::new("tool-pill"), WINDOW_DRAG));
         let painter = ui.painter();
         painter.add(card_shadow(&p, 14).as_shape(rect, radius));
         painter.rect_filled(rect, radius, p.glass);
@@ -1732,7 +1770,7 @@ impl App {
             CornerRadius::same(13),
             accent.gamma_multiply(0.16),
         );
-        for (i, (tool, icon, label, tip)) in tools.into_iter().enumerate() {
+        for (i, &(tool, icon, label, tip)) in tools.iter().enumerate() {
             let id = Id::new(("tool", label));
             let active = self.tool == tool;
             if pill_button(
@@ -1751,7 +1789,7 @@ impl App {
         if !zoom_shown {
             return rect;
         }
-        let sep_x = rect.left() + pad + 3.0 * b + sep / 2.0;
+        let sep_x = rect.left() + pad + n_tools * b + sep / 2.0;
         ui.painter().vline(
             sep_x,
             (rect.top() + 10.0)..=(rect.bottom() - 10.0),
@@ -1830,8 +1868,8 @@ impl App {
             vec2(pad * 2.0 + b + chevron, 38.0),
         );
         let radius = CornerRadius::same(19);
-        // Catches clicks between the buttons so they do not reach the canvas.
-        crate::a11y::hide(&ui.interact(rect, Id::new("present-pill"), Sense::CLICK));
+        // Catches clicks and drags on the pill so they do not reach the canvas.
+        crate::a11y::hide(&ui.interact(rect, Id::new("present-pill"), WINDOW_DRAG));
         let painter = ui.painter();
         painter.add(card_shadow(&p, 14).as_shape(rect, radius));
         painter.rect_filled(rect, radius, p.glass);
@@ -1934,21 +1972,24 @@ impl App {
                 .max_rect(max)
                 .layout(Layout::left_to_right(Align::Center)),
             |ui| {
-                egui::Frame::new()
-                    .fill(p.glass)
-                    .corner_radius(CornerRadius::same(15))
-                    .stroke(Stroke::new(1.0, p.card_stroke))
-                    .shadow(card_shadow(&p, 10))
-                    .inner_margin(Margin::symmetric(11, 5))
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        self.mcp.status(ui);
-                        ui.add(
-                            egui::Label::new(RichText::new(text).size(11.5).color(p.text_dim))
-                                .truncate(),
-                        )
-                        .on_hover_text("What draws the canvas (FIGSTUDIO_RENDERER=cpu|gpu). Tiles on the CPU use something the GPU path cannot draw yet.");
-                    });
+                let catcher = ui.scope_builder(UiBuilder::new().sense(WINDOW_DRAG), |ui| {
+                    egui::Frame::new()
+                        .fill(p.glass)
+                        .corner_radius(CornerRadius::same(15))
+                        .stroke(Stroke::new(1.0, p.card_stroke))
+                        .shadow(card_shadow(&p, 10))
+                        .inner_margin(Margin::symmetric(11, 5))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            self.mcp.status(ui);
+                            ui.add(
+                                egui::Label::new(RichText::new(text).size(11.5).color(p.text_dim))
+                                    .truncate(),
+                            )
+                            .on_hover_text("What draws the canvas (FIGSTUDIO_RENDERER=cpu|gpu). Tiles on the CPU use something the GPU path cannot draw yet.");
+                        });
+                });
+                crate::a11y::hide(&catcher.response);
             },
         );
     }
@@ -2019,7 +2060,7 @@ impl App {
             anim::inert(ui);
         }
         let radius = CornerRadius::same(19);
-        crate::a11y::hide(&ui.interact(rect, Id::new("preview-bar"), Sense::CLICK));
+        crate::a11y::hide(&ui.interact(rect, Id::new("preview-bar"), WINDOW_DRAG));
         let painter = ui.painter();
         painter.add(card_shadow(&p, 14).as_shape(rect, radius));
         painter.rect_filled(rect, radius, p.glass);
@@ -2214,9 +2255,9 @@ impl App {
             },
         );
         let sense = if shaders > 0 {
-            Sense::click()
+            Sense::click_and_drag()
         } else {
-            Sense::hover()
+            WINDOW_DRAG
         };
         let response = ui.interact(chip.inner.rect, Id::new("gaps-chip"), sense);
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Page warnings"));

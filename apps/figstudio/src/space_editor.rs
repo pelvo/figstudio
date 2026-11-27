@@ -345,7 +345,9 @@ impl App {
             return;
         }
         let fresh = ctx.cumulative_frame_nr() <= editor.opened + 1;
-        let pressed_outside = ctx.input(|i| i.pointer.any_pressed())
+        let interactive = ctx.memory(|m| m.allows_interaction(layer)) && self.unsaved.is_none();
+        let pressed_outside = interactive
+            && ctx.input(|i| i.pointer.any_pressed())
             && ctx
                 .pointer_interact_pos()
                 .is_some_and(|pos| !area.response.rect.contains(pos));

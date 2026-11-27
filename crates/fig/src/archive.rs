@@ -29,12 +29,53 @@ pub const EAGER_ENTRIES: [&str; 3] = ["canvas.fig", "meta.json", "thumbnail.png"
 /// Size of the fixed part of an entry's local header; see [`Entry::data_start`].
 pub const LOCAL_HEADER_LEN: u64 = 30;
 
+/// Compact identity of a ZIP container's central directory and tail, computed without reading
+/// or decompressing untouched entry payloads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ContainerFingerprint {
+    pub file_len: u64,
+    pub cd_offset: u64,
+    pub cd_len: u64,
+    pub cd_sha1: [u8; 20],
+    pub tail_sha1: [u8; 20],
+}
+
+impl ContainerFingerprint {
+    pub(crate) fn from_parts(file_len: u64, tail: &[u8], cd_offset: u64, cd: &[u8]) -> Self {
+        Self {
+            file_len,
+            cd_offset,
+            cd_len: cd.len() as u64,
+            cd_sha1: crate::sha1::sha1_bytes(cd),
+            tail_sha1: crate::sha1::sha1_bytes(tail),
+        }
+    }
+}
+
+/// Deterministic SHA-1 over parsed central-directory entry metadata in archive order.
+pub(crate) fn entries_sha1(entries: &[Entry]) -> [u8; 20] {
+    use sha1::{Digest, Sha1};
+    let mut h = Sha1::new();
+    h.update((entries.len() as u64).to_le_bytes());
+    for e in entries {
+        h.update((e.name.len() as u64).to_le_bytes());
+        h.update(e.name.as_bytes());
+        h.update(e.method.to_le_bytes());
+        h.update(e.crc32.to_le_bytes());
+        h.update(e.compressed_size.to_le_bytes());
+        h.update(e.size.to_le_bytes());
+        h.update(e.header_offset.to_le_bytes());
+    }
+    h.finalize().into()
+}
+
 /// One file inside the archive, as listed by the central directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub name: String,
     /// 0 stored, 8 deflate.
     pub method: u16,
+    pub crc32: u32,
     pub compressed_size: u64,
     pub size: u64,
     /// Where the entry's local header starts.
@@ -114,6 +155,7 @@ pub fn entries(cd: &[u8]) -> Result<Vec<Entry>, FigError> {
         }
         let flags = u16_at(cd, at + 8).ok_or_else(|| bad("flags"))?;
         let method = u16_at(cd, at + 10).ok_or_else(|| bad("method"))?;
+        let crc32 = u32_at(cd, at + 16).ok_or_else(|| bad("crc32"))?;
         let mut compressed_size = u64::from(u32_at(cd, at + 20).ok_or_else(|| bad("size"))?);
         let mut size = u64::from(u32_at(cd, at + 24).ok_or_else(|| bad("size"))?);
         let name_len = usize::from(u16_at(cd, at + 28).ok_or_else(|| bad("name"))?);
@@ -153,6 +195,7 @@ pub fn entries(cd: &[u8]) -> Result<Vec<Entry>, FigError> {
             // Figma writes ASCII names; anything else is decoded leniently.
             name: String::from_utf8_lossy(name).into_owned(),
             method,
+            crc32,
             compressed_size,
             size,
             header_offset,
@@ -226,12 +269,23 @@ fn read_range(r: &mut (impl Read + Seek), at: u64, len: u64) -> Result<Vec<u8>, 
     Ok(buf)
 }
 
-/// Reads the central directory of a seekable archive of `len` bytes.
-pub fn read_entries(r: &mut (impl Read + Seek), len: u64) -> Result<Vec<Entry>, FigError> {
+/// Reads the central directory and container fingerprint of a seekable archive of `len` bytes.
+pub(crate) fn read_entries_with_fingerprint(
+    r: &mut (impl Read + Seek),
+    len: u64,
+) -> Result<(Vec<Entry>, ContainerFingerprint), FigError> {
     let tail_len = TAIL_LEN.min(len);
     let tail = read_range(r, len - tail_len, tail_len)?;
     let (offset, size) = central_directory(&tail, len)?;
-    entries(&read_range(r, offset, size)?)
+    let cd = read_range(r, offset, size)?;
+    let fp = ContainerFingerprint::from_parts(len, &tail, offset, &cd);
+    let parsed = entries(&cd)?;
+    Ok((parsed, fp))
+}
+
+/// Reads the central directory of a seekable archive of `len` bytes.
+pub fn read_entries(r: &mut (impl Read + Seek), len: u64) -> Result<Vec<Entry>, FigError> {
+    Ok(read_entries_with_fingerprint(r, len)?.0)
 }
 
 /// Reads one entry of a seekable archive as stored (still compressed).

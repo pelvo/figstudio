@@ -43,3 +43,29 @@ fn a_failed_rename_leaves_no_temp_file_behind() {
     assert!(target.is_dir(), "destination must be untouched");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[cfg(unix)]
+#[test]
+fn save_copy_checked_refuses_dangling_symlink_and_leaves_no_temp_file() {
+    let dir = scratch("symlink");
+    let src = dir.join("src.fig");
+    std::fs::copy(fixture(), &src).unwrap();
+    let doc = Document::open(&src).unwrap();
+
+    let missing_target = dir.join("never-created.fig");
+    let link = dir.join("copy.fig");
+    std::os::unix::fs::symlink(&missing_target, &link).unwrap();
+
+    assert!(
+        doc.save_copy_checked(Some(&src), &link, false, true)
+            .is_err()
+    );
+    assert!(!missing_target.exists(), "must not create symlink target");
+    let mut entries: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    entries.sort();
+    assert_eq!(entries, ["copy.fig", "src.fig"], "temp file left behind");
+    let _ = std::fs::remove_dir_all(&dir);
+}

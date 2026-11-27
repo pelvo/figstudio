@@ -73,6 +73,8 @@ fn bytes(e: &Entry) -> usize {
 }
 
 struct Entry {
+    lineage: u64,
+    instance: u64,
     doc: u64,
     page: Guid,
     level: i32,
@@ -158,9 +160,9 @@ fn direct(renderer: &mut Renderer, job: &RenderJob, viewport: &Viewport) -> Fram
 }
 
 impl Recordings {
-    /// Drops the recordings of a closed document.
-    pub fn forget(&mut self, doc: u64) {
-        self.entries.retain(|e| e.doc != doc);
+    /// Drops every recording of the document with `lineage` (all revisions and Preview states).
+    pub fn forget(&mut self, lineage: u64) {
+        self.entries.retain(|e| e.lineage != lineage);
     }
 
     /// Renders tile `key` of `job`: replayed from a recording of its level, recorded first
@@ -242,9 +244,12 @@ impl Recordings {
         let (rec, wanted) = renderer.record(&job.doc, job.root, transform, area, self.limit);
         // A truncated walk: tiles rendered directly show today's per-tile truncation.
         let rec = rec.filter(|r| r.stats().budget_exhausted == 0);
-        // Replaces this level's old recording and drops other pages of the document.
-        self.entries
-            .retain(|e| e.doc != key.doc || (e.page == key.page && e.level != key.level));
+        // Replaces this level's old recording, drops other pages of this layer, and drops
+        // recordings of obsolete revisions of the same document.
+        self.entries.retain(|e| {
+            (e.lineage != job.doc.lineage || e.instance == job.doc.instance)
+                && (e.doc != key.doc || (e.page == key.page && e.level != key.level))
+        });
         let new = rec.as_ref().map_or(0, Recording::bytes);
         while !self.entries.is_empty()
             && (self.entries.len() >= ENTRIES
@@ -254,6 +259,8 @@ impl Recordings {
             self.entries.swap_remove(oldest);
         }
         self.entries.push(Entry {
+            lineage: job.doc.lineage,
+            instance: job.doc.instance,
             doc: key.doc,
             page: key.page,
             level: key.level,

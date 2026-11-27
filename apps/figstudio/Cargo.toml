@@ -17,6 +17,7 @@ mcp = ["dep:figstudio-mcp", "dep:tokio", "dep:tokio-util"]
 anyhow.workspace = true
 tracing.workspace = true
 figstudio-fig = { workspace = true }
+base64 = { workspace = true }
 # Node IDs and figstudio:// links for the Copy menus (copy.rs), shared with the MCP server.
 figstudio-mcp-core = { workspace = true }
 # Motion exports (Properties → Motion → Export): GIF and PNG frames everywhere, video natively.
@@ -129,7 +130,7 @@ js-sys = "0.3"
 # Shader modules for the page's WebGPU (types stripped); the runtime itself is desktop only.
 figstudio-shader = { path = "../../crates/shader", default-features = false }
 vello_cpu = { workspace = true }
-web-sys = { version = "0.3", features = ["AbortController", "AbortSignal", "Blob", "BroadcastChannel", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "File", "Headers", "History", "HtmlAnchorElement", "HtmlCanvasElement", "OffscreenCanvas", "OffscreenCanvasRenderingContext2d", "ImageData", "TextMetrics", "HtmlElement", "Location", "MediaQueryList", "EventTarget", "Navigator", "RequestInit", "Response", "Storage", "Url", "Window", "WebSocket", "MessageEvent", "CloseEvent", "Event"] }
+web-sys = { version = "0.3", features = ["AbortController", "AbortSignal", "BeforeUnloadEvent", "Blob", "BroadcastChannel", "BlobPropertyBag", "CssStyleDeclaration", "Document", "Element", "File", "Headers", "History", "HtmlAnchorElement", "HtmlCanvasElement", "OffscreenCanvas", "OffscreenCanvasRenderingContext2d", "ImageData", "TextMetrics", "HtmlElement", "Location", "MediaQueryList", "EventTarget", "Navigator", "RequestInit", "Response", "Storage", "Url", "Window", "WebSocket", "MessageEvent", "CloseEvent", "Event"] }
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 muda = { version = "0.21.2", default-features = false }

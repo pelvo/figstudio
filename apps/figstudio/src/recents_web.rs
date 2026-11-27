@@ -34,8 +34,12 @@ extern "C" {
     /// Starts keeping the handles of dropped files (once, on the main thread).
     #[wasm_bindgen(js_name = watchDrops)]
     pub(crate) fn watch_drops();
-    #[wasm_bindgen(js_name = droppedHandle, catch)]
-    async fn dropped_handle_js(name: &str, size: f64, modified: f64) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = droppedFileHandle, catch)]
+    async fn dropped_file_handle_js(
+        name: &str,
+        size: f64,
+        modified: f64,
+    ) -> Result<JsValue, JsValue>;
 }
 
 /// Largest list read (bytes of JSON).
@@ -43,12 +47,23 @@ const MAX_BYTES: usize = 1 << 20;
 /// Longest file name kept.
 const MAX_NAME: usize = 1024;
 
-/// Files picked with the browser's File System Access picker, each with its handle's
-/// number; `Ok(None)` when the person cancelled. `start_at`: a handle whose folder the
-/// picker starts in.
-pub(crate) async fn pick_files(
-    start_at: Option<u32>,
-) -> Result<Option<Vec<(web_sys::File, u32)>>, String> {
+/// A file picked with the File System Access picker, separating its optional Recents id
+/// (persisted in IndexedDB) from its live `FileSystemFileHandle` (retained per open tab).
+#[derive(Clone, Debug)]
+pub(crate) struct PickedFile {
+    pub(crate) file: web_sys::File,
+    pub(crate) recent_handle: Option<u32>,
+    pub(crate) source_handle: Option<JsValue>,
+}
+
+fn non_null_js(value: JsValue) -> Option<JsValue> {
+    (!value.is_null() && !value.is_undefined()).then_some(value)
+}
+
+/// Files picked with the browser's File System Access picker, each with its optional Recents
+/// handle id and live `FileSystemFileHandle`; `Ok(None)` when the person cancelled. `start_at`:
+/// a handle whose folder the picker starts in.
+pub(crate) async fn pick_files(start_at: Option<u32>) -> Result<Option<Vec<PickedFile>>, String> {
     let picked = pick_files_js(start_at).await.map_err(js_error)?;
     if picked.is_null() || picked.is_undefined() {
         return Ok(None);
@@ -56,11 +71,21 @@ pub(crate) async fn pick_files(
     let mut out = Vec::new();
     for item in js_sys::Array::from(&picked).iter() {
         let file = js_sys::Reflect::get(&item, &"file".into()).map_err(js_error)?;
-        let handle = js_sys::Reflect::get(&item, &"handle".into()).map_err(js_error)?;
-        let (Ok(file), Some(handle)) = (file.dyn_into::<web_sys::File>(), handle.as_f64()) else {
+        let Ok(file) = file.dyn_into::<web_sys::File>() else {
             continue;
         };
-        out.push((file, handle as u32));
+        let recent_handle = js_sys::Reflect::get(&item, &"handle".into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .map(|n| n as u32);
+        let source_handle = js_sys::Reflect::get(&item, &"fsHandle".into())
+            .ok()
+            .and_then(non_null_js);
+        out.push(PickedFile {
+            file,
+            recent_handle,
+            source_handle,
+        });
     }
     Ok(Some(out))
 }
@@ -74,16 +99,19 @@ pub(crate) enum Unavailable {
     Denied,
 }
 
-/// The file behind handle `id`, asking for permission to read it if needed (call it from a
-/// click: the browser wants one).
-pub(crate) async fn open_handle(id: u32) -> Result<web_sys::File, Unavailable> {
+/// The file and live `FileSystemFileHandle` behind handle `id`, asking for permission to read
+/// it if needed (call it from a click: the browser wants one).
+pub(crate) async fn open_handle(id: u32) -> Result<(web_sys::File, Option<JsValue>), Unavailable> {
     let Ok(answer) = open_handle_js(id).await else {
         return Err(Unavailable::Missing);
     };
     if let Ok(file) = js_sys::Reflect::get(&answer, &"file".into())
         && let Ok(file) = file.dyn_into::<web_sys::File>()
     {
-        return Ok(file);
+        let source_handle = js_sys::Reflect::get(&answer, &"fsHandle".into())
+            .ok()
+            .and_then(non_null_js);
+        return Ok((file, source_handle));
     }
     let error = js_sys::Reflect::get(&answer, &"error".into())
         .ok()
@@ -94,13 +122,21 @@ pub(crate) async fn open_handle(id: u32) -> Result<web_sys::File, Unavailable> {
     })
 }
 
-/// The handle number of a dropped file, where the browser gave one.
-pub(crate) async fn dropped_handle(file: &web_sys::File) -> Option<u32> {
-    dropped_handle_js(&file.name(), file.size(), file.last_modified())
-        .await
+/// The optional Recents handle id and live `FileSystemFileHandle` of a dropped file, where the
+/// browser gave one.
+pub(crate) async fn dropped_handle(file: &web_sys::File) -> (Option<u32>, Option<JsValue>) {
+    let Ok(answer) = dropped_file_handle_js(&file.name(), file.size(), file.last_modified()).await
+    else {
+        return (None, None);
+    };
+    let recent_handle = js_sys::Reflect::get(&answer, &"handle".into())
         .ok()
         .and_then(|v| v.as_f64())
-        .map(|n| n as u32)
+        .map(|n| n as u32);
+    let source_handle = js_sys::Reflect::get(&answer, &"fsHandle".into())
+        .ok()
+        .and_then(non_null_js);
+    (recent_handle, source_handle)
 }
 
 fn js_error(e: JsValue) -> String {

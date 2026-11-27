@@ -356,3 +356,162 @@ fn missing_file_names_its_cause_once() {
     );
     assert_eq!(stderr.matches("(os error").count(), 1, "{stderr}");
 }
+
+#[test]
+fn clip_decode_preserves_images_in_archive_and_keeps_raw_canvas_without_images() {
+    use figstudio_fig::edit::{EditOp, History, execute_edit_ops, execute_import_image};
+    use figstudio_fig::sha1::sha1_hex;
+    use std::io::Cursor;
+
+    let dir = TempDir::new();
+    let src_path = dir.file("clip_src.fig");
+
+    let mut doc = Document::open(FIXTURE).unwrap();
+    let page = doc.pages[0];
+    let mut history = History::new(8);
+
+    // Build real PNG bytes and import them into a rectangle node.
+    let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([24, 180, 90, 255]));
+    let mut png_bytes = Vec::new();
+    img.write_to(&mut Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .unwrap();
+    let (png_hash, _) = execute_import_image(&mut doc, &mut history, png_bytes.clone()).unwrap();
+    assert_eq!(png_hash, sha1_hex(&png_bytes));
+
+    let img_rect = execute_edit_ops(
+        &mut doc,
+        &mut history,
+        &[EditOp::CreateShape {
+            id: None,
+            kind: "RECTANGLE".into(),
+            parent: page,
+            name: Some("PNG Rect".into()),
+            x: 10.0,
+            y: 10.0,
+            width: 32.0,
+            height: 32.0,
+            corner_radius: 0.0,
+            fill_hex: None,
+            count: None,
+            star_inner_scale: None,
+        }],
+        None,
+        None,
+        false,
+    )
+    .unwrap()
+    .0
+    .created_ids[0];
+    execute_edit_ops(
+        &mut doc,
+        &mut history,
+        &[EditOp::SetImageFill {
+            target: img_rect,
+            sha1_hex: png_hash.clone(),
+            scale_mode: "FILL".into(),
+            opacity: 1.0,
+        }],
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+
+    let plain_rect = execute_edit_ops(
+        &mut doc,
+        &mut history,
+        &[EditOp::CreateShape {
+            id: None,
+            kind: "RECTANGLE".into(),
+            parent: page,
+            name: Some("Plain Rect".into()),
+            x: 60.0,
+            y: 10.0,
+            width: 32.0,
+            height: 32.0,
+            corner_radius: 0.0,
+            fill_hex: Some("#336699".into()),
+            count: None,
+            star_inner_scale: None,
+        }],
+        None,
+        None,
+        false,
+    )
+    .unwrap()
+    .0
+    .created_ids[0];
+    doc.save(&src_path).unwrap();
+
+    // 1. Image-carrying HTML -> clip decode writes an importable .fig ZIP archive with exact PNG bytes.
+    let img_html = dir.file("img.html");
+    let img_fig = dir.file("img_decoded.fig");
+    assert_success(cli(&[
+        "clip",
+        src_path.to_str().unwrap(),
+        "--node",
+        &img_rect.to_string(),
+        "-o",
+        img_html.to_str().unwrap(),
+    ]));
+    assert_success(cli(&[
+        "clip",
+        img_html.to_str().unwrap(),
+        "-o",
+        img_fig.to_str().unwrap(),
+    ]));
+    let raw_img_fig = fs::read(&img_fig).unwrap();
+    assert!(
+        raw_img_fig.starts_with(b"PK"),
+        "image-carrying clip decode must emit a .fig ZIP archive"
+    );
+    let reopened = Document::open(&img_fig).unwrap();
+    assert_eq!(reopened.images.get(&png_hash), Some(&png_bytes));
+    let decoded_png = image::load_from_memory(&reopened.images[&png_hash])
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(decoded_png.dimensions(), (4, 4));
+    assert_eq!(decoded_png.get_pixel(0, 0).0, [24, 180, 90, 255]);
+
+    // Decoded archive must also work through CLI info/render and lazy open.
+    assert_success(cli(&["info", img_fig.to_str().unwrap()]));
+    let rendered = dir.file("img_decoded.png");
+    assert_success(cli(&[
+        "render",
+        img_fig.to_str().unwrap(),
+        "-o",
+        rendered.to_str().unwrap(),
+    ]));
+    assert_png(&rendered, None);
+    let lazy_reopened = Document::open_lazy(&img_fig).unwrap();
+    assert!(lazy_reopened.lazy_images.contains_key(&png_hash));
+
+    // 2. Image-free HTML -> clip decode retains exact raw fig-kiwi canvas bytes.
+    let plain_html = dir.file("plain.html");
+    let plain_fig = dir.file("plain_decoded.fig");
+    assert_success(cli(&[
+        "clip",
+        src_path.to_str().unwrap(),
+        "--node",
+        &plain_rect.to_string(),
+        "-o",
+        plain_html.to_str().unwrap(),
+    ]));
+    let plain_payload =
+        figstudio_fig::clipboard::decode_clipboard_html(&fs::read_to_string(&plain_html).unwrap())
+            .unwrap();
+    assert!(plain_payload.images.is_empty());
+    assert_success(cli(&[
+        "clip",
+        plain_html.to_str().unwrap(),
+        "-o",
+        plain_fig.to_str().unwrap(),
+    ]));
+    let raw_plain_fig = fs::read(&plain_fig).unwrap();
+    assert_eq!(
+        raw_plain_fig, plain_payload.kiwi_bytes,
+        "image-free clip decode must retain exact raw fig-kiwi bytes"
+    );
+    assert!(!raw_plain_fig.starts_with(b"PK"));
+    assert!(Document::open(&plain_fig).unwrap().images.is_empty());
+}

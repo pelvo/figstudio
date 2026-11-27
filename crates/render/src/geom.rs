@@ -92,7 +92,9 @@ pub fn closed_network(data: &Val, blobs: &[Vec<u8>]) -> bool {
     crate::network::closed(data, blobs)
 }
 
-/// One precomputed path. `style` points into `vectorData.styleOverrideTable` (0 = node paints).
+/// One precomputed path. `style` points into `vectorData.styleOverrideTable` (0 = node paints),
+/// or `textData.styleOverrideTable` for `TEXT` nodes.
+#[derive(Clone, Debug)]
 pub struct GeomPath {
     pub path: BezPath,
     pub rule: Fill,
@@ -177,6 +179,21 @@ pub fn base_shape(kind: &str, data: &Val) -> Option<BezPath> {
         }
         _ => Some(RoundedRect::from_rect(rect, corner_radii(data, w, h)).to_path(0.1)),
     }
+}
+
+/// Path a stroke follows when the node stores no stroke geometry: the base shape, or for a
+/// `LINE` (which has none) its segment from the origin along its width.
+pub fn stroke_shape(kind: &str, data: &Val) -> Option<BezPath> {
+    if kind != "LINE" {
+        return base_shape(kind, data);
+    }
+    let (w, _) = size(data);
+    (w > 0.0).then(|| {
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.line_to((w, 0.0));
+        p
+    })
 }
 
 /// Whether a frame-like node clips its children ("Clip content").

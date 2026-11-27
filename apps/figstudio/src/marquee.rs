@@ -32,6 +32,18 @@ impl Marquee {
         *self = Marquee::default();
     }
 
+    /// True while the user is actively dragging out a marquee rectangle.
+    pub fn is_dragging(&self) -> bool {
+        self.anchor.is_some()
+    }
+
+    /// Aborts an in-progress marquee drag without clearing an already finished marquee.
+    pub fn cancel_drag(&mut self) {
+        if self.anchor.take().is_some() {
+            self.clear();
+        }
+    }
+
     /// The rectangle in page coordinates, for the UI tests.
     #[cfg(test)]
     pub fn rect(&self) -> Option<Rect> {
@@ -73,7 +85,7 @@ pub fn update(
         m.clear();
     }
     if !drawing {
-        m.anchor = None;
+        m.cancel_drag();
         return;
     }
     if response.drag_started_by(egui::PointerButton::Primary) {

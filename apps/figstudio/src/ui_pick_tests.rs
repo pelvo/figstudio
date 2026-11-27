@@ -1,5 +1,6 @@
 use super::*;
 use egui::{Key, Modifiers};
+use egui_kittest::kittest::NodeT;
 use figstudio_fig::{Document, Node, Obj, Val};
 use std::sync::Arc;
 
@@ -238,4 +239,179 @@ fn pure_picker_keeps_context_and_skips_only_the_top_frame() {
     );
     assert_eq!(crate::pick::click(&doc, &chain, None, true), Some(TEXT));
     assert_eq!(crate::pick::click(&doc, &[], None, false), None);
+}
+
+fn assert_jitter_double_click_drills_cleanly(
+    h: &mut Harness<'_, App>,
+    at: Pos2,
+    outer: Guid,
+    inner: Guid,
+    jitter: f32,
+) {
+    primary_clicks(h, at, egui::Vec2::ZERO, 1);
+    assert_eq!(h.state().tabs[0].selection, Some(outer));
+    let before = figstudio_render::absolute_transform(&h.state().tabs[0].doc, outer)
+        * figstudio_render::kurbo::Point::ZERO;
+
+    h.run_steps(60);
+    primary_clicks(h, at, egui::vec2(jitter, 0.0), 2);
+
+    assert_eq!(
+        h.state().tabs[0].selection,
+        Some(inner),
+        "double-click with {jitter} pt jitter must drill from {outer} to {inner}"
+    );
+    let after = figstudio_render::absolute_transform(&h.state().tabs[0].doc, outer)
+        * figstudio_render::kurbo::Point::ZERO;
+    assert!(
+        (after - before).hypot() < 1e-3,
+        "{jitter} pt double-click jitter must not move {outer}: {before:?} -> {after:?}"
+    );
+    assert!(
+        !h.state().tabs[0].dirty_unsaved,
+        "{jitter} pt double-click jitter must not dirty the document"
+    );
+}
+
+#[test]
+fn single_click_then_repeated_double_click_drills_within_triple_click_window() {
+    let mut h = nested_harness();
+    let at = centre_of(&h, TEXT);
+
+    // Single click selects outer group.
+    primary_clicks(&mut h, at, egui::Vec2::ZERO, 1);
+    assert_eq!(h.state().tabs[0].selection, Some(GROUP));
+
+    // Pause 400 ms (> 300 ms double-click delay, < 600 ms egui triple-click window), then double-click.
+    h.run_steps(24);
+    primary_clicks(&mut h, at, egui::Vec2::ZERO, 2);
+    assert_eq!(
+        h.state().tabs[0].selection,
+        Some(NEST),
+        "double-click 400 ms after single-click must drill one level deeper"
+    );
+    assert!(h.state().tabs[0].text_select.is_none());
+
+    // A plain single-click 400 ms after a double-click must NOT accidentally drill further.
+    h.run_steps(24);
+    primary_clicks(&mut h, at, egui::Vec2::ZERO, 1);
+    assert_eq!(
+        h.state().tabs[0].selection,
+        Some(NEST),
+        "single-click 400 ms after double-click must stay on current level"
+    );
+    assert!(h.state().tabs[0].text_select.is_none());
+
+    // Another double-click 400 ms later must drill a second level deeper into TEXT and enter text mode.
+    h.run_steps(24);
+    primary_clicks(&mut h, at, egui::Vec2::ZERO, 2);
+    assert_eq!(
+        h.state().tabs[0].selection,
+        Some(TEXT),
+        "second double-click within 600 ms window must drill to TEXT"
+    );
+    assert!(
+        h.state().tabs[0].text_select.is_some(),
+        "drilling onto TEXT via double-click must enter text selection"
+    );
+}
+
+#[test]
+fn double_click_drills_on_zoomed_out_layer_covered_by_resize_handles() {
+    let mut h = nested_harness();
+    // Zoom out so GROUP (80x80 page units) is 10x10 screen pt and its 10x10 resize handles cover its center.
+    h.state_mut().tabs[0].zoom_centre(0.125);
+    h.run_steps(4);
+
+    let at = centre_of(&h, TEXT);
+    primary_clicks(&mut h, at, egui::Vec2::ZERO, 1);
+    assert_eq!(h.state().tabs[0].selection, Some(GROUP));
+
+    // Wait > 1 s (cleanly outside triple-click window) and double-click with 0 px movement.
+    for (expected, expect_text) in [(NEST, false), (TEXT, true)] {
+        h.run_steps(60);
+        primary_clicks(&mut h, at, egui::Vec2::ZERO, 2);
+        assert_eq!(h.state().tabs[0].selection, Some(expected));
+        assert_eq!(h.state().tabs[0].text_select.is_some(), expect_text);
+        assert!(!h.state().tabs[0].dirty_unsaved);
+    }
+}
+
+#[test]
+fn double_click_with_sub_click_jitter_drills_without_moving_or_dirtying() {
+    let mut h = harness_fixture(FIXTURE, 1.0 / 60.0);
+    h.state_mut().reduce_motion = true;
+    h.run_steps(4);
+    let at = centre_of(&h, Guid(1, 50));
+    assert_jitter_double_click_drills_cleanly(&mut h, at, Guid(1, 53), Guid(1, 52), 4.0);
+}
+
+#[test]
+fn double_click_at_exact_max_click_dist_drills_without_moving() {
+    // Test both the layer body (Move threshold) and the inner half of the NW resize handle
+    // (Resize threshold when inside_node) at exact `max_click_dist` (egui rejects `>`, not `>=`).
+    for offset in [egui::vec2(40.0, 40.0), egui::vec2(1.0, 1.0)] {
+        let mut h = nested_harness();
+        let max_dist = h.ctx.options(|o| o.input_options.max_click_dist);
+        h.state_mut().tabs[0].zoom_centre(1.0);
+        h.run_steps(4);
+        let tab = &h.state().tabs[0];
+        let at = tab
+            .view
+            .to_screen(tab.canvas_rect.unwrap().min, Pos2::new(offset.x, offset.y));
+        assert_jitter_double_click_drills_cleanly(&mut h, at, GROUP, NEST, max_dist);
+    }
+}
+
+#[test]
+fn synthetic_clicks_and_non_canvas_clicks_do_not_form_double_click_pairs() {
+    let mut h = nested_harness();
+    let at = centre_of(&h, TEXT);
+    let (canvas_node, canvas_tree) = h
+        .get_by_label_contains("Canvas, page")
+        .accesskit_node()
+        .locate();
+
+    // Pointer click followed within max_double_click_delay by a synthetic AccessKit click on the
+    // canvas (while the pointer still hovers `at`) must not pair, nor let a later pointer click pair.
+    primary_clicks(&mut h, at, egui::Vec2::ZERO, 1);
+    assert_eq!(h.state().tabs[0].selection, Some(GROUP));
+    h.run_steps(4);
+    h.event(Event::AccessKitActionRequest(
+        egui::accesskit::ActionRequest {
+            target_node: canvas_node,
+            target_tree: canvas_tree,
+            action: egui::accesskit::Action::Click,
+            data: None,
+        },
+    ));
+    h.step();
+    assert_eq!(
+        h.state().tabs[0].selection,
+        Some(GROUP),
+        "synthetic AccessKit click must not pair with prior pointer click"
+    );
+    h.run_steps(4);
+    primary_clicks(&mut h, at, egui::Vec2::ZERO, 1);
+    assert_eq!(
+        h.state().tabs[0].selection,
+        Some(GROUP),
+        "pointer click must not pair across an intervening synthetic click"
+    );
+
+    // An intervening click outside the canvas (e.g., on the Properties panel) within the double-click
+    // delay must break the pair.
+    h.run_steps(60);
+    primary_clicks(&mut h, at, egui::Vec2::ZERO, 1);
+    assert_eq!(h.state().tabs[0].selection, Some(GROUP));
+    let outside = h.state().tabs[0].canvas_rect.unwrap().right_bottom() + egui::vec2(20.0, -20.0);
+    h.run_steps(2);
+    primary_clicks(&mut h, outside, egui::Vec2::ZERO, 1);
+    h.run_steps(2);
+    primary_clicks(&mut h, at, egui::Vec2::ZERO, 1);
+    assert_eq!(
+        h.state().tabs[0].selection,
+        Some(GROUP),
+        "canvas clicks must not pair across a non-canvas pointer click"
+    );
 }

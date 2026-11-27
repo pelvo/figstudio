@@ -21,6 +21,7 @@ pub fn input(
     tab: &mut Tab,
     origin: Pos2,
     enabled: bool,
+    double_clicked: bool,
     enter_text: bool,
 ) {
     if !enabled {
@@ -38,7 +39,7 @@ pub fn input(
             ..selection
         });
     }
-    if response.double_clicked()
+    if double_clicked
         && enter_text
         && let Some((id, _, data)) = tab.text_layout()
     {
