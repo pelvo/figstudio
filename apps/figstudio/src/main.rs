@@ -1301,6 +1301,7 @@ impl App {
                     file,
                     entries,
                     eager,
+                    meta,
                     pick,
                     doc_key,
                 } => {
@@ -1310,7 +1311,7 @@ impl App {
                         web::start_upload(&name, pick);
                         self.workers.decode(name, false, move || {
                             Ok((
-                                web::decode_lazy(entries, eager)?,
+                                web::decode_lazy(entries, eager, meta)?,
                                 Some(source),
                                 Some(doc_key),
                             ))

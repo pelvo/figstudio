@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::edit::schema_check::{validate_node_data, validate_node_field};
+use crate::edit::schema_check::{FloatPolicy, validate_node_data_with, validate_node_field_with};
 use crate::{Document, FigError, Guid, Node, Obj, Val};
 
 /// Low-level mutation applied to a single [`Node`] inside a [`Txn`].
@@ -260,16 +260,17 @@ impl History {
         let Some(entry) = self.undo_stack.pop() else {
             return Ok(None);
         };
-        let (redo_txn, dirty) = match doc.apply_txn(&entry.inv) {
-            Ok(res) => res,
-            Err(e) => {
-                self.undo_stack.push(UndoEntry {
-                    coalesce: None,
-                    ..entry
-                });
-                return Err(e);
-            }
-        };
+        let (redo_txn, dirty) =
+            match doc.apply_txn_with_policy(&entry.inv, FloatPolicy::PreserveExisting) {
+                Ok(res) => res,
+                Err(e) => {
+                    self.undo_stack.push(UndoEntry {
+                        coalesce: None,
+                        ..entry
+                    });
+                    return Err(e);
+                }
+            };
         self.state_id = entry.before_state;
         let label = entry.label;
         self.redo_stack.push(RedoEntry {
@@ -286,13 +287,14 @@ impl History {
         let Some(entry) = self.redo_stack.pop() else {
             return Ok(None);
         };
-        let (inv, dirty) = match doc.apply_txn(&entry.txn) {
-            Ok(res) => res,
-            Err(e) => {
-                self.redo_stack.push(entry);
-                return Err(e);
-            }
-        };
+        let (inv, dirty) =
+            match doc.apply_txn_with_policy(&entry.txn, FloatPolicy::PreserveExisting) {
+                Ok(res) => res,
+                Err(e) => {
+                    self.redo_stack.push(entry);
+                    return Err(e);
+                }
+            };
         self.state_id = entry.after_state;
         let label = entry.label;
         self.undo_stack.push(UndoEntry {
@@ -317,6 +319,14 @@ impl Document {
     ///
     /// If validation or cycle checking fails, `self` is left completely untouched.
     pub fn apply_txn(&mut self, txn: &Txn) -> Result<(Txn, Dirty), FigError> {
+        self.apply_txn_with_policy(txn, FloatPolicy::FiniteF32)
+    }
+
+    fn apply_txn_with_policy(
+        &mut self,
+        txn: &Txn,
+        floats: FloatPolicy,
+    ) -> Result<(Txn, Dirty), FigError> {
         if txn.is_empty() {
             return Ok((Txn::new(format!("Undo {}", txn.label)), Dirty::default()));
         }
@@ -345,7 +355,7 @@ impl Document {
                         )));
                     }
                     for (k, v) in set.iter() {
-                        validate_node_field(&schema, k, v, &at)?;
+                        validate_node_field_with(&schema, k, v, &at, floats)?;
                     }
                 }
                 NodePatch::Create { data, .. } => {
@@ -360,7 +370,7 @@ impl Document {
                             "{at}: created data guid {data_guid:?} does not match {id}"
                         )));
                     }
-                    validate_node_data(&schema, data, &at)?;
+                    validate_node_data_with(&schema, data, &at, floats)?;
                     simulated_exists.insert(*id);
                 }
                 NodePatch::Delete => {

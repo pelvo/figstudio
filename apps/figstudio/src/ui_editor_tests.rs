@@ -1060,3 +1060,217 @@ fn stationary_resize_and_move_drags_do_not_commit_or_grow_blobs() {
     let kept_after = node_page_point(&h, rot_id, Point::new(0.0, 20.0));
     assert!((kept_after - kept_before).hypot() <= 2.0);
 }
+
+#[test]
+fn multi_tick_boolean_operand_move_and_resize_follow_pointer_in_page_space() {
+    use figstudio_fig::edit::vector_net::BooleanOp;
+
+    fn make_rect(
+        h: &mut Harness<'_, App>,
+        parent: Guid,
+        x: f64,
+        y: f64,
+        w: f64,
+        h_dim: f64,
+    ) -> Guid {
+        crate::editor::apply_tab_ops(
+            &mut h.state_mut().tabs[0],
+            &[EditOp::CreateShape {
+                id: None,
+                kind: "RECTANGLE".into(),
+                parent,
+                name: None,
+                x,
+                y,
+                width: w,
+                height: h_dim,
+                corner_radius: 0.0,
+                fill_hex: None,
+                count: None,
+                star_inner_scale: None,
+            }],
+            Some("Create rect"),
+            None,
+        )
+        .unwrap()[0]
+    }
+
+    for parent_deg in [None, Some(90.0_f64)] {
+        let mut h = harness_fixture(FIXTURE, 1.0 / 60.0);
+        let page = h.state().tabs[0].page;
+        let container = if let Some(deg) = parent_deg {
+            let frame = crate::editor::apply_tab_ops(
+                &mut h.state_mut().tabs[0],
+                &[EditOp::CreateShape {
+                    id: None,
+                    kind: "FRAME".into(),
+                    parent: page,
+                    name: None,
+                    x: 400.0,
+                    y: 400.0,
+                    width: 240.0,
+                    height: 240.0,
+                    corner_radius: 0.0,
+                    fill_hex: None,
+                    count: None,
+                    star_inner_scale: None,
+                }],
+                Some("Create frame"),
+                None,
+            )
+            .unwrap()[0];
+            crate::editor::apply_tab_ops(
+                &mut h.state_mut().tabs[0],
+                &[EditOp::Rotate {
+                    target: frame,
+                    degrees: deg,
+                }],
+                Some("Rotate frame"),
+                None,
+            )
+            .unwrap();
+            frame
+        } else {
+            page
+        };
+
+        let rect_a = make_rect(&mut h, container, 100.0, 100.0, 40.0, 40.0);
+        let rect_b = make_rect(&mut h, container, 120.0, 100.0, 40.0, 40.0);
+        let bool_id = crate::editor::apply_tab_ops(
+            &mut h.state_mut().tabs[0],
+            &[EditOp::BooleanCombine {
+                operation: BooleanOp::Union,
+                a: rect_a,
+                b: rect_b,
+                name: None,
+            }],
+            Some("Boolean union"),
+            None,
+        )
+        .unwrap()[0];
+
+        let center_page = node_page_point(&h, bool_id, Point::new(30.0, 20.0));
+        let canvas_rect = h.state().tabs[0].canvas_rect.unwrap();
+        h.state_mut().tabs[0].view.zoom = 1.0;
+        h.state_mut().tabs[0].view.pan =
+            canvas_rect.size() * 0.5 - vec2(center_page.x as f32, center_page.y as f32);
+        h.state_mut().tabs[0].select(Some(rect_a));
+        h.run_steps(2);
+
+        // Unit direction along rect_a's local -X axis in page/screen space (zoom == 1.0).
+        let west_unit = node_page_point(&h, rect_a, Point::ZERO)
+            - node_page_point(&h, rect_a, Point::new(1.0, 0.0));
+        let step_vec = vec2((west_unit.x * 10.0) as f32, (west_unit.y * 10.0) as f32);
+
+        // 1. Multi-tick Move of the leftmost boolean operand: no overshoot, stationary no-op, 1 undo step.
+        let undo_before_move = h.state().tabs[0].history.undo_len();
+        let origin_before = node_page_point(&h, rect_a, Point::ZERO);
+        let start_move = node_local_screen(&h, rect_a, Point::new(20.0, 20.0));
+        h.event(Event::PointerMoved(start_move));
+        h.step();
+        press(&h, start_move, PointerButton::Primary, true);
+        h.step();
+
+        let move_t1 = start_move + step_vec;
+        h.event(Event::PointerMoved(move_t1));
+        h.step();
+        let origin_t1 = node_page_point(&h, rect_a, Point::ZERO);
+        let want_t1 = origin_before + west_unit * 10.0;
+        assert!(
+            (origin_t1 - want_t1).hypot() < 1e-2,
+            "rot={parent_deg:?} move tick1: expected {want_t1:?}, got {origin_t1:?}"
+        );
+
+        let move_t2 = start_move + step_vec * 2.0;
+        h.event(Event::PointerMoved(move_t2));
+        h.step();
+        let origin_t2 = node_page_point(&h, rect_a, Point::ZERO);
+        let want_t2 = origin_before + west_unit * 20.0;
+        assert!(
+            (origin_t2 - want_t2).hypot() < 1e-2,
+            "rot={parent_deg:?} move tick2: expected {want_t2:?}, got {origin_t2:?}"
+        );
+
+        let rev_move_t2 = h.state().tabs[0].doc.revision;
+        let blobs_move_t2 = h.state().tabs[0].doc.blobs.len();
+        for _ in 0..3 {
+            h.event(Event::PointerMoved(move_t2));
+            h.step();
+        }
+        h.event(Event::PointerMoved(move_t2 + vec2(0.05, -0.05)));
+        h.step();
+        h.event(Event::PointerMoved(move_t2));
+        h.step();
+        press(&h, move_t2, PointerButton::Primary, false);
+        h.run_steps(2);
+        assert_eq!(h.state().tabs[0].doc.revision, rev_move_t2);
+        assert_eq!(h.state().tabs[0].doc.blobs.len(), blobs_move_t2);
+        assert_eq!(h.state().tabs[0].history.undo_len(), undo_before_move + 1);
+
+        crate::editor::undo_tab(&mut h.state_mut().tabs[0]).unwrap();
+        assert!(
+            (node_page_point(&h, rect_a, Point::ZERO) - origin_before).hypot() < 1e-2,
+            "rot={parent_deg:?} move undo must restore pre-drag page origin"
+        );
+
+        // 2. Multi-tick West-edge Resize: West tracks pointer, East stays fixed, stationary no-op, 1 undo step.
+        let undo_before_resize = h.state().tabs[0].history.undo_len();
+        let west_before = node_page_point(&h, rect_a, Point::new(0.0, 20.0));
+        let east_before = node_page_point(&h, rect_a, Point::new(40.0, 20.0));
+        let start_w = node_local_screen(&h, rect_a, Point::new(0.0, 20.0));
+        h.event(Event::PointerMoved(start_w));
+        h.step();
+        press(&h, start_w, PointerButton::Primary, true);
+        h.step();
+
+        let resize_t1 = start_w + step_vec;
+        h.event(Event::PointerMoved(resize_t1));
+        h.step();
+        let (w1, _) = geom::size(&h.state().tabs[0].doc.node(rect_a).unwrap().data);
+        let west_t1 = node_page_point(&h, rect_a, Point::new(0.0, 20.0));
+        let east_t1 = node_page_point(&h, rect_a, Point::new(w1, 20.0));
+        assert!(
+            (w1 - 50.0).abs() < 1e-2
+                && (west_t1 - (west_before + west_unit * 10.0)).hypot() < 1e-2
+                && (east_t1 - east_before).hypot() < 1e-2,
+            "rot={parent_deg:?} resize tick1: w={w1}, west={west_t1:?}, east={east_t1:?} (want east={east_before:?})"
+        );
+
+        let resize_t2 = start_w + step_vec * 2.0;
+        h.event(Event::PointerMoved(resize_t2));
+        h.step();
+        let (w2, _) = geom::size(&h.state().tabs[0].doc.node(rect_a).unwrap().data);
+        let west_t2 = node_page_point(&h, rect_a, Point::new(0.0, 20.0));
+        let east_t2 = node_page_point(&h, rect_a, Point::new(w2, 20.0));
+        assert!(
+            (w2 - 60.0).abs() < 1e-2
+                && (west_t2 - (west_before + west_unit * 20.0)).hypot() < 1e-2
+                && (east_t2 - east_before).hypot() < 1e-2,
+            "rot={parent_deg:?} resize tick2: w={w2}, west={west_t2:?}, east={east_t2:?} (want east={east_before:?})"
+        );
+
+        let rev_resize_t2 = h.state().tabs[0].doc.revision;
+        let blobs_resize_t2 = h.state().tabs[0].doc.blobs.len();
+        for _ in 0..3 {
+            h.event(Event::PointerMoved(resize_t2));
+            h.step();
+        }
+        h.event(Event::PointerMoved(resize_t2 + vec2(0.05, -0.05)));
+        h.step();
+        h.event(Event::PointerMoved(resize_t2));
+        h.step();
+        press(&h, resize_t2, PointerButton::Primary, false);
+        h.run_steps(2);
+        assert_eq!(h.state().tabs[0].doc.revision, rev_resize_t2);
+        assert_eq!(h.state().tabs[0].doc.blobs.len(), blobs_resize_t2);
+        assert_eq!(h.state().tabs[0].history.undo_len(), undo_before_resize + 1);
+
+        crate::editor::undo_tab(&mut h.state_mut().tabs[0]).unwrap();
+        let (w_undone, _) = geom::size(&h.state().tabs[0].doc.node(rect_a).unwrap().data);
+        assert!((w_undone - 40.0).abs() < 1e-2);
+        assert!((node_page_point(&h, rect_a, Point::new(0.0, 20.0)) - west_before).hypot() < 1e-2);
+        assert!(
+            (node_page_point(&h, rect_a, Point::new(w_undone, 20.0)) - east_before).hypot() < 1e-2
+        );
+    }
+}

@@ -143,6 +143,7 @@ pub enum Picked {
         file: u32,
         entries: Vec<Entry>,
         eager: HashMap<String, Vec<u8>>,
+        meta: figstudio_fig::lazy_save::LazyArchiveMeta,
         pick: u32,
         doc_key: String,
     },
@@ -438,6 +439,24 @@ pub(crate) async fn fetch_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
     Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
+/// Reads only the archive tail and central directory from `file` into a validated
+/// [`LazyArchiveMeta`].
+async fn read_lazy_meta(
+    file: &web_sys::File,
+) -> anyhow::Result<(u64, figstudio_fig::lazy_save::LazyArchiveMeta)> {
+    let raw_size = file.size();
+    if !raw_size.is_finite() || raw_size < 0.0 || raw_size > MAX_JS_SAFE_INT as f64 {
+        anyhow::bail!("source file size is out of supported range");
+    }
+    let len = raw_size as u64;
+    let tail_len = archive::TAIL_LEN.min(len);
+    let tail = read_range(file, len - tail_len, tail_len).await?;
+    let (cd_offset, cd_size) = archive::central_directory(&tail, len)?;
+    let cd = read_range(file, cd_offset, cd_size).await?;
+    let meta = figstudio_fig::lazy_save::LazyArchiveMeta::from_directory(len, tail, cd_offset, cd)?;
+    Ok((len, meta))
+}
+
 /// Opens a big archive without reading its images.
 async fn open_lazy(file: web_sys::File, origin: Origin, source_handle: Option<JsValue>) -> Picked {
     let name = PathBuf::from(file.name());
@@ -448,20 +467,11 @@ async fn open_lazy(file: web_sys::File, origin: Origin, source_handle: Option<Js
             figstudio_fig::one_line(e.as_ref())
         ))
     };
-    let len = file.size() as u64;
-    let tail_len = archive::TAIL_LEN.min(len);
-    let tail = match read_range(&file, len - tail_len, tail_len).await {
-        Ok(t) => t,
+    let (len, meta) = match read_lazy_meta(&file).await {
+        Ok(ok) => ok,
         Err(e) => return fail(e),
     };
-    let entries = match archive::central_directory(&tail, len) {
-        Ok((at, size)) => match read_range(&file, at, size).await {
-            Ok(cd) => archive::entries(&cd),
-            Err(e) => return fail(e),
-        },
-        Err(e) => Err(e),
-    };
-    let entries = match entries {
+    let entries = match meta.entries() {
         Ok(e) => e,
         Err(e) => return fail(e.into()),
     };
@@ -477,6 +487,15 @@ async fn open_lazy(file: web_sys::File, origin: Origin, source_handle: Option<Js
             Err(err) => return fail(err),
         }
     }
+    // Re-verify container identity after reading eager entries so a file swapped mid-open
+    // cannot pair old directory metadata with new canvas bytes.
+    let (len_after, meta_after) = match read_lazy_meta(&file).await {
+        Ok(ok) => ok,
+        Err(e) => return fail(e),
+    };
+    if len_after != len || !meta_after.same_container(&meta) {
+        return fail(anyhow::anyhow!("source .fig archive changed while opening"));
+    }
     let head_len = len.min(crate::source::DOC_KEY_PREFIX_BYTES as u64);
     let head = match read_range_max(&file, 0, head_len, crate::source::DOC_KEY_PREFIX_BYTES).await {
         Ok(bytes) => bytes,
@@ -489,6 +508,7 @@ async fn open_lazy(file: web_sys::File, origin: Origin, source_handle: Option<Js
         file: keep_file(file),
         entries,
         eager,
+        meta,
         doc_key,
     }
 }
@@ -995,7 +1015,6 @@ async fn run_lazy_save_inner(
     default_name: String,
 ) -> anyhow::Result<crate::unsaved::SaveOutcome> {
     use crate::unsaved::SaveOutcome;
-    use figstudio_fig::lazy_save::LazyArchiveMeta;
 
     // Prompt first while the user's click activation is still fresh.
     let target = pick_save_target(&default_name, source_handle).await?;
@@ -1003,19 +1022,8 @@ async fn run_lazy_save_inner(
         return Ok(SaveOutcome::Cancelled);
     }
 
-    let raw_size = source_file.size();
-    if !raw_size.is_finite() || raw_size < 0.0 || raw_size > MAX_JS_SAFE_INT as f64 {
-        anyhow::bail!("source file size is out of supported range");
-    }
-    let file_len = raw_size as u64;
-
     // Read only archive metadata (tail, central directory, and 30-byte local headers).
-    let tail_len = archive::TAIL_LEN.min(file_len);
-    let tail = read_range(&source_file, file_len - tail_len, tail_len).await?;
-    let (cd_offset, cd_size) = archive::central_directory(&tail, file_len)?;
-    let cd = read_range(&source_file, cd_offset, cd_size).await?;
-
-    let meta = LazyArchiveMeta::from_directory(file_len, tail, cd_offset, cd)?;
+    let (file_len, meta) = read_lazy_meta(&source_file).await?;
     let offsets = meta.needed_local_headers(&doc)?;
     let mut local_headers = Vec::with_capacity(offsets.len());
     for offset in offsets {
@@ -1036,6 +1044,12 @@ async fn run_lazy_save_inner(
     let parts = await_worker(plan_rx).await??;
 
     let js_parts = build_js_parts(&source_file, file_len, parts)?;
+    if !source_file.size().is_finite()
+        || source_file.size() < 0.0
+        || source_file.size() as u64 != file_len
+    {
+        anyhow::bail!("source file changed while preparing lazy save");
+    }
     let js = |e: JsValue| anyhow::anyhow!("{}", crate::mcp_wire::js_error_text(&e));
     match target {
         SaveTarget::Handle { handle, name } => {
@@ -1087,9 +1101,10 @@ pub fn page_hidden() -> bool {
 pub fn decode_lazy(
     entries: Vec<Entry>,
     raw: HashMap<String, Vec<u8>>,
+    meta: figstudio_fig::lazy_save::LazyArchiveMeta,
 ) -> Result<Document, FigError> {
     let eager = archive::decode_raw(&entries, raw)?;
-    Document::from_lazy(entries, eager)
+    Document::from_lazy_with_meta(entries, eager, &meta)
 }
 
 /// `figstudioFatal()` from JavaScript: a panic happened on some thread. The app is stopped

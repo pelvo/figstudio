@@ -141,9 +141,9 @@ and decorations share a paint). After edits clear `derivedTextData`, fallback sh
 face's OpenType `OS/2` and `post` metrics (and is already counted under `text_system_fonts`).
 
 `approximated_text_decorations` counts once per drawn `TEXT` node when:
-- stored glyph outlines are drawn without stored `derivedTextData.decorations`, yet the node
-  or a character run requests a non-`NONE` `textDecoration` (no heuristic bar synthesis on
-  stored glyphs);
+- stored glyph outlines are drawn without usable stored `derivedTextData.decorations`, yet
+  the node or a character run requests a non-`NONE` `textDecoration` (no heuristic bar
+  synthesis on stored glyphs);
 - a decorated node or run specifies `textDecorationStyle` other than `SOLID` (such as
   `DOTTED` or `WAVY`), which draws solid rectangles or bars instead; or
 - an unknown non-`NONE` `textDecoration` enum value is encountered.

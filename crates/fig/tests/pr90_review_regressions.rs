@@ -59,17 +59,6 @@ fn t4_autolayout_inverted_or_nan_min_max_bounds_do_not_panic() {
         );
         t.set_field(
             frame,
-            "minSize",
-            Val::Obj(Obj::from([(
-                "value",
-                Val::Obj(Obj::from([
-                    ("x", Val::Float(300.0)),
-                    ("y", Val::Float(f64::NAN)),
-                ])),
-            )])),
-        );
-        t.set_field(
-            frame,
             "maxSize",
             Val::Obj(Obj::from([(
                 "value",
@@ -80,6 +69,18 @@ fn t4_autolayout_inverted_or_nan_min_max_bounds_do_not_panic() {
             )])),
         );
         doc.apply_txn(&t).unwrap();
+        // Simulate a malformed imported file carrying a pre-existing NaN in `minSize.value.y`.
+        let node = doc.nodes.iter_mut().find(|n| n.id == frame).unwrap();
+        node.data.set(
+            "minSize",
+            Val::Obj(Obj::from([(
+                "value",
+                Val::Obj(Obj::from([
+                    ("x", Val::Float(300.0)),
+                    ("y", Val::Float(f64::NAN)),
+                ])),
+            )])),
+        );
     }
     let patches = compute_auto_layout(&doc, Some(frame));
     let u = patches

@@ -296,8 +296,8 @@ fn decoration_rect(
 
 /// Stored glyph outlines (`derivedTextData.glyphs`) and authoritative stored decorations
 /// (`derivedTextData.decorations`) in node space. Does not synthesize heuristic bars when
-/// stored decorations are absent; instead flags `decoration_approximated` if a non-`NONE`
-/// decoration was requested without stored rectangles.
+/// usable stored decorations are absent; instead flags `decoration_approximated` if a non-`NONE`
+/// decoration was requested without usable stored rectangles.
 pub(crate) fn stored(data: &Val, blobs: &[Vec<u8>], tokens: &Tokens) -> TextPaths {
     let glyphs = visible_glyphs(data);
     if glyphs.is_empty() {
@@ -398,10 +398,8 @@ pub(crate) fn stored(data: &Val, blobs: &[Vec<u8>], tokens: &Tokens) -> TextPath
                 }
             }
         }
-        return out;
     }
-
-    if wants_decoration(data, tokens) {
+    if out.decorations.is_empty() && wants_decoration(data, tokens) {
         out.decoration_approximated = true;
     }
     out

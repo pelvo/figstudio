@@ -31,6 +31,7 @@ fn request(instance: u64) -> ImageRequest {
         entry: figstudio_fig::archive::Entry {
             name: "images/ab".into(),
             method: 0,
+            crc32: 0,
             compressed_size: 0,
             size: 0,
             header_offset: 0,

@@ -283,10 +283,7 @@ impl Document {
         if fp_after != fp || entries_after != entries {
             return err("source .fig archive changed while opening");
         }
-        let mut doc = Document::from_lazy(entries, eager)?;
-        if let Some(id) = doc.source.lazy_identity.as_mut() {
-            id.container = Some(fp);
-        }
+        let doc = Document::from_lazy_inner(entries, eager, Some(fp))?;
         tracing::debug!(
             nodes = doc.nodes.len(),
             pages = doc.pages.len(),
@@ -298,10 +295,30 @@ impl Document {
 
     /// Builds a document from an archive's entry list ([`archive::entries`]) and the contents
     /// of its [`archive::EAGER_ENTRIES`] (`canvas.fig` is required). Images stay unread, in
-    /// [`Document::lazy_images`]; other entries are dropped, so the result cannot be saved.
+    /// [`Document::lazy_images`]; other entries are dropped, so the result cannot be saved
+    /// without the original archive.
     pub fn from_lazy(
         entries: Vec<Entry>,
+        eager: HashMap<String, Vec<u8>>,
+    ) -> Result<Document, FigError> {
+        Document::from_lazy_inner(entries, eager, None)
+    }
+
+    /// Like [`Document::from_lazy`], while also binding the opened document to the source
+    /// container's central-directory and tail fingerprint from [`crate::lazy_save::LazyArchiveMeta`].
+    pub fn from_lazy_with_meta(
+        entries: Vec<Entry>,
+        eager: HashMap<String, Vec<u8>>,
+        meta: &crate::lazy_save::LazyArchiveMeta,
+    ) -> Result<Document, FigError> {
+        meta.verify_entries(&entries)?;
+        Document::from_lazy_inner(entries, eager, Some(meta.fingerprint()))
+    }
+
+    fn from_lazy_inner(
+        entries: Vec<Entry>,
         mut eager: HashMap<String, Vec<u8>>,
+        container: Option<archive::ContainerFingerprint>,
     ) -> Result<Document, FigError> {
         let Some(canvas) = eager.remove("canvas.fig") else {
             return err("archive has no canvas.fig");
@@ -309,7 +326,7 @@ impl Document {
         let identity = LazyArchiveIdentity {
             entry_count: entries.len(),
             entries_sha1: archive::entries_sha1(&entries),
-            container: None,
+            container,
         };
         let mut parts = Parts {
             file_name: eager.get("meta.json").and_then(|m| meta_file_name(m)),

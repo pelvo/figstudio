@@ -96,8 +96,8 @@ pub enum CanvasDrag {
     Move {
         target: Guid,
         start_pointer_page: Pos2,
-        orig_x: f64,
-        orig_y: f64,
+        orig_origin_page: Point,
+        orig_local: (f64, f64),
         moved: bool,
         last_applied: Option<(f64, f64)>,
         drag_state_id: Option<u64>,
@@ -106,8 +106,8 @@ pub enum CanvasDrag {
         target: Guid,
         handle: Handle,
         start_pointer_page: Pos2,
-        orig_x: f64,
-        orig_y: f64,
+        orig_abs: Affine,
+        orig_local: Affine,
         orig_w: f64,
         orig_h: f64,
         mutated: bool,
@@ -120,6 +120,46 @@ pub enum CanvasDrag {
         start_page: Pos2,
         cur_page: Pos2,
     },
+}
+
+impl CanvasDrag {
+    fn start_move(doc: &Document, target: Guid, start_pointer_page: Pos2) -> Option<Self> {
+        let node = doc.node(target)?;
+        let (ox, oy, _, _) = local_xywh(&node.data);
+        Some(Self::Move {
+            target,
+            start_pointer_page,
+            orig_origin_page: absolute_transform(doc, target) * Point::ZERO,
+            orig_local: (ox, oy),
+            moved: false,
+            last_applied: None,
+            drag_state_id: None,
+        })
+    }
+
+    fn start_resize(
+        doc: &Document,
+        target: Guid,
+        handle: Handle,
+        start_pointer_page: Pos2,
+        inside_node: bool,
+    ) -> Option<Self> {
+        let node = doc.node(target)?;
+        let (_, _, orig_w, orig_h) = local_xywh(&node.data);
+        Some(Self::Resize {
+            target,
+            handle,
+            start_pointer_page,
+            orig_abs: absolute_transform(doc, target),
+            orig_local: geom::affine(node.data.get("transform")),
+            orig_w,
+            orig_h,
+            mutated: false,
+            inside_node,
+            last_applied: None,
+            drag_state_id: None,
+        })
+    }
 }
 
 /// Per-frame gizmo arbitration outcome returned to `canvas::show` before click, text, and marquee handling.
@@ -461,20 +501,13 @@ pub fn canvas_gizmos_input(
                     tab.marquee.clear();
                 }
                 if !primary_released {
-                    let (ox, oy, ow, oh) = local_xywh(&node.data);
-                    tab.edit_drag = Some(CanvasDrag::Resize {
-                        target: sel,
-                        handle: h,
-                        start_pointer_page: tab.view.to_page(rect.min, pos),
-                        orig_x: ox,
-                        orig_y: oy,
-                        orig_w: ow,
-                        orig_h: oh,
-                        mutated: false,
+                    tab.edit_drag = CanvasDrag::start_resize(
+                        &tab.doc,
+                        sel,
+                        h,
+                        tab.view.to_page(rect.min, pos),
                         inside_node,
-                        last_applied: None,
-                        drag_state_id: None,
-                    });
+                    );
                 }
                 return GizmoFrame {
                     cursor,
@@ -491,16 +524,7 @@ pub fn canvas_gizmos_input(
     }
 
     if primary_pressed && canvas_owns_press && inside_node && !primary_released {
-        let (ox, oy, _, _) = local_xywh(&node.data);
-        tab.edit_drag = Some(CanvasDrag::Move {
-            target: sel,
-            start_pointer_page: tab.view.to_page(rect.min, pos),
-            orig_x: ox,
-            orig_y: oy,
-            moved: false,
-            last_applied: None,
-            drag_state_id: None,
-        });
+        tab.edit_drag = CanvasDrag::start_move(&tab.doc, sel, tab.view.to_page(rect.min, pos));
         return GizmoFrame {
             cursor: None,
             consumed_click: false,
@@ -537,8 +561,8 @@ fn step_edit_drag(
     match drag {
         CanvasDrag::Move {
             target,
-            orig_x,
-            orig_y,
+            orig_origin_page,
+            orig_local,
             moved,
             last_applied,
             drag_state_id,
@@ -548,23 +572,24 @@ fn step_edit_drag(
                 return true;
             }
             tab.marquee.clear();
-            let (x, y) = moved_to(&tab.doc, *target, *orig_x, *orig_y, dx, dy);
-            let rx = x.round();
-            let ry = y.round();
-            let prev = last_applied.unwrap_or((*orig_x, *orig_y));
-            if (rx - prev.0).abs() <= 1e-6 && (ry - prev.1).abs() <= 1e-6 {
+            let sdx = dx.round();
+            let sdy = dy.round();
+            let prev = last_applied.unwrap_or((0.0, 0.0));
+            if (sdx - prev.0).abs() <= 1e-6 && (sdy - prev.1).abs() <= 1e-6 {
                 if *moved {
                     *cursor = Some(CursorIcon::Grabbing);
                 }
                 return true;
             }
+            let (x, y) =
+                moved_to_from_page(&tab.doc, *target, *orig_origin_page, *orig_local, sdx, sdy);
             let key = format!("gui:move:{target}");
             let ok = apply_tab_ops_ui(
                 tab,
                 &[EditOp::Move {
                     target: *target,
-                    x: rx,
-                    y: ry,
+                    x,
+                    y,
                     relative: false,
                 }],
                 Some("Move layer"),
@@ -573,7 +598,7 @@ fn step_edit_drag(
             .is_some();
             if ok {
                 *moved = true;
-                *last_applied = Some((rx, ry));
+                *last_applied = Some((sdx, sdy));
                 *drag_state_id = Some(tab.history.state_id());
                 *cursor = Some(CursorIcon::Grabbing);
             }
@@ -582,8 +607,8 @@ fn step_edit_drag(
         CanvasDrag::Resize {
             target,
             handle,
-            orig_x,
-            orig_y,
+            orig_abs,
+            orig_local,
             orig_w,
             orig_h,
             mutated,
@@ -598,23 +623,22 @@ fn step_edit_drag(
                 return true;
             }
             tab.marquee.clear();
-            let (nx, ny, nw, nh) = resized_with(
-                &tab.doc,
-                *target,
-                *handle,
-                (*orig_x, *orig_y, *orig_w, *orig_h),
-                dx,
-                dy,
-                true,
-            );
-            let prev = last_applied.unwrap_or((*orig_x, *orig_y, *orig_w, *orig_h));
-            let changed = (nx - prev.0).abs() > 1e-6
-                || (ny - prev.1).abs() > 1e-6
+            let (sx, sy, nw, nh) =
+                resized_local_box(*orig_abs, *handle, (*orig_w, *orig_h), dx, dy, true);
+            let prev = last_applied.unwrap_or((0.0, 0.0, *orig_w, *orig_h));
+            let changed = (sx - prev.0).abs() > 1e-6
+                || (sy - prev.1).abs() > 1e-6
                 || (nw - prev.2).abs() > 1e-6
                 || (nh - prev.3).abs() > 1e-6;
             if !changed {
                 return true;
             }
+            let (nx, ny) = page_point_to_parent_local(
+                &tab.doc,
+                *target,
+                *orig_abs * Point::new(sx, sy),
+                *orig_local * Point::new(sx, sy),
+            );
             let key = format!("gui:resize:{target}");
             let ok = apply_tab_ops_ui(
                 tab,
@@ -637,7 +661,7 @@ fn step_edit_drag(
             .is_some();
             if ok {
                 *mutated = true;
-                *last_applied = Some((nx, ny, nw, nh));
+                *last_applied = Some((sx, sy, nw, nh));
                 *drag_state_id = Some(tab.history.state_id());
             }
             ok
@@ -697,14 +721,28 @@ pub fn canvas_gizmos_paint(painter: &egui::Painter, rect: Rect, tab: &Tab, tool:
     }
 }
 
-/// The vector `(dx, dy)` in page units, in `node`'s own coordinates (`None`: inverse of the
-/// parent, so the node's own transform is left out). A degenerate (zero-scale) transform
-/// leaves it as is.
-fn page_vector_in(doc: &Document, node: Option<Guid>, dx: f64, dy: f64) -> (f64, f64) {
-    let Some(node) = node else {
-        return (dx, dy);
-    };
-    let abs = absolute_transform(doc, node);
+fn parent_abs_transform(doc: &Document, target: Guid) -> Affine {
+    doc.node(target)
+        .and_then(|n| n.parent)
+        .map_or(Affine::IDENTITY, |parent| absolute_transform(doc, parent))
+}
+
+fn page_point_to_parent_local(
+    doc: &Document,
+    target: Guid,
+    page_point: Point,
+    fallback: Point,
+) -> (f64, f64) {
+    let parent_abs = parent_abs_transform(doc, target);
+    if parent_abs.determinant().abs() < 1e-12 {
+        (fallback.x, fallback.y)
+    } else {
+        let local = parent_abs.inverse() * page_point;
+        (local.x, local.y)
+    }
+}
+
+fn vector_in_affine(abs: Affine, dx: f64, dy: f64) -> (f64, f64) {
     if abs.determinant().abs() < 1e-12 {
         return (dx, dy);
     }
@@ -714,8 +752,25 @@ fn page_vector_in(doc: &Document, node: Option<Guid>, dx: f64, dy: f64) -> (f64,
 }
 
 /// Where a Move drag by page vector `(dx, dy)` puts `target`'s parent-local translation,
-/// starting at `(orig_x, orig_y)`: the pointer delta goes through the parent's transform, so
-/// the layer follows the pointer under rotated or scaled ancestors.
+/// projecting the anchored page-space origin through the target's current parent transform so
+/// parent rebasing (booleans, Auto-Layout) never compounds across ticks.
+fn moved_to_from_page(
+    doc: &Document,
+    target: Guid,
+    orig_origin_page: Point,
+    orig_local: (f64, f64),
+    dx: f64,
+    dy: f64,
+) -> (f64, f64) {
+    page_point_to_parent_local(
+        doc,
+        target,
+        Point::new(orig_origin_page.x + dx, orig_origin_page.y + dy),
+        Point::new(orig_local.0 + dx, orig_local.1 + dy),
+    )
+}
+
+#[cfg(test)]
 pub(super) fn moved_to(
     doc: &Document,
     target: Guid,
@@ -724,37 +779,19 @@ pub(super) fn moved_to(
     dx: f64,
     dy: f64,
 ) -> (f64, f64) {
-    let parent = doc.node(target).and_then(|n| n.parent);
-    let (px, py) = page_vector_in(doc, parent, dx, dy);
-    (orig_x + px, orig_y + py)
+    let orig_origin_page = absolute_transform(doc, target) * Point::ZERO;
+    moved_to_from_page(doc, target, orig_origin_page, (orig_x, orig_y), dx, dy)
 }
 
-/// The translation and size after dragging `handle` by page vector `(dx, dy)`, from `orig`
-/// `(x, y, w, h)`. The delta is measured along the layer's own axes, and a left or top handle
-/// moves the translation along those axes so the opposite edge stays put.
-#[cfg(test)]
-pub(super) fn resized_to(
-    doc: &Document,
-    target: Guid,
+fn resized_local_box(
+    orig_abs: Affine,
     handle: Handle,
-    orig: (f64, f64, f64, f64),
-    dx: f64,
-    dy: f64,
-) -> (f64, f64, f64, f64) {
-    resized_with(doc, target, handle, orig, dx, dy, false)
-}
-
-fn resized_with(
-    doc: &Document,
-    target: Guid,
-    handle: Handle,
-    orig: (f64, f64, f64, f64),
+    (orig_w, orig_h): (f64, f64),
     dx: f64,
     dy: f64,
     snap_size: bool,
 ) -> (f64, f64, f64, f64) {
-    let (orig_x, orig_y, orig_w, orig_h) = orig;
-    let (lx, ly) = page_vector_in(doc, Some(target), dx, dy);
+    let (lx, ly) = vector_in_affine(orig_abs, dx, dy);
     let snap = |v: f64| if snap_size { v.round() } else { v };
     let (mut nw, mut nh) = (orig_w, orig_h);
     let (mut sx, mut sy) = (0.0, 0.0);
@@ -774,13 +811,47 @@ fn resized_with(
         }
         _ => {}
     }
-    // The shift along the layer's axes, in its parent's coordinates (the layer's own
-    // rotation, skew, and scale, without its translation).
-    let local = doc
+    (sx, sy, nw, nh)
+}
+
+/// The translation and size after dragging `handle` by page vector `(dx, dy)`, from `orig`
+/// `(x, y, w, h)`. The delta is measured along the layer's own axes, and a left or top handle
+/// moves the translation along those axes so the opposite edge stays put.
+#[cfg(test)]
+pub(super) fn resized_to(
+    doc: &Document,
+    target: Guid,
+    handle: Handle,
+    orig: (f64, f64, f64, f64),
+    dx: f64,
+    dy: f64,
+) -> (f64, f64, f64, f64) {
+    resized_with(doc, target, handle, orig, dx, dy, false)
+}
+
+#[cfg(test)]
+fn resized_with(
+    doc: &Document,
+    target: Guid,
+    handle: Handle,
+    orig: (f64, f64, f64, f64),
+    dx: f64,
+    dy: f64,
+    snap_size: bool,
+) -> (f64, f64, f64, f64) {
+    let (_, _, orig_w, orig_h) = orig;
+    let orig_abs = absolute_transform(doc, target);
+    let orig_local = doc
         .node(target)
         .map_or(Affine::IDENTITY, |n| geom::affine(n.data.get("transform")));
-    let shift = local * Point::new(sx, sy) - local * Point::ZERO;
-    (orig_x + shift.x, orig_y + shift.y, nw, nh)
+    let (sx, sy, nw, nh) = resized_local_box(orig_abs, handle, (orig_w, orig_h), dx, dy, snap_size);
+    let (nx, ny) = page_point_to_parent_local(
+        doc,
+        target,
+        orig_abs * Point::new(sx, sy),
+        orig_local * Point::new(sx, sy),
+    );
+    (nx, ny, nw, nh)
 }
 
 #[cfg(test)]

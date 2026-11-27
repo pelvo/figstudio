@@ -1,8 +1,12 @@
 //! Appearance, Auto-Layout, constraint, and typography [`EditOp`] compilation.
 
-use crate::edit::styles_vars::{blur_effect, hex_paint, image_paint, shadow_effect};
+use crate::edit::schema_check::{intern_node_enum, intern_node_enum_path, require_finite_f32};
+use crate::edit::styles_vars::{
+    blur_effect, hex_paint, image_paint_with_scale_mode, shadow_effect,
+};
 use crate::edit::text_runs::{
-    apply_text_range_style, commit_text_data, set_text_plain, splice_text_utf16,
+    apply_text_range_style_with_schema, commit_text_data, set_text_plain, splice_text_utf16,
+    update_auto_resize_box,
 };
 use crate::edit::{GuidAlloc, Txn};
 use crate::{Document, FigError, Guid, Obj, Val, intern};
@@ -26,6 +30,12 @@ pub(super) fn compile_prop_op(
             smoothing,
         } => {
             ensure_exists(doc, *target)?;
+            for r in radii {
+                require_finite_f32(f64::from(*r), "set_corner_radii radii")?;
+            }
+            if let Some(sm) = smoothing {
+                require_finite_f32(f64::from(*sm), "set_corner_radii smoothing")?;
+            }
             let uniform = (radii[0] - radii[1]).abs() < 1e-4
                 && (radii[1] - radii[2]).abs() < 1e-4
                 && (radii[2] - radii[3]).abs() < 1e-4;
@@ -59,12 +69,20 @@ pub(super) fn compile_prop_op(
             vertical,
         } => {
             ensure_exists(doc, *target)?;
+            let schema = doc.decoded_schema()?;
+            let at = format!("node {target}");
             let mut set = Obj::new();
             if let Some(h) = horizontal {
-                set.insert("horizontalConstraint", Val::Enum(intern(h)));
+                set.insert(
+                    "horizontalConstraint",
+                    intern_node_enum(&schema, "horizontalConstraint", h, &at)?,
+                );
             }
             if let Some(v) = vertical {
-                set.insert("verticalConstraint", Val::Enum(intern(v)));
+                set.insert(
+                    "verticalConstraint",
+                    intern_node_enum(&schema, "verticalConstraint", v, &at)?,
+                );
             }
             txn.modify(*target, set, Vec::new());
         }
@@ -81,19 +99,42 @@ pub(super) fn compile_prop_op(
             wrap,
         } => {
             ensure_exists(doc, *target)?;
+            let schema = doc.decoded_schema()?;
+            let at = format!("node {target}");
             let mut set = Obj::new();
-            set.insert("stackMode", Val::Enum(intern(mode)));
+            set.insert(
+                "stackMode",
+                intern_node_enum(&schema, "stackMode", mode, &at)?,
+            );
             if let Some(sp) = spacing {
-                set.insert("stackSpacing", Val::Float(*sp));
+                set.insert(
+                    "stackSpacing",
+                    Val::Float(require_finite_f32(*sp, "set_auto_layout spacing")?),
+                );
             }
             if let Some(csp) = counter_spacing {
-                set.insert("stackCounterSpacing", Val::Float(*csp));
+                set.insert(
+                    "stackCounterSpacing",
+                    Val::Float(require_finite_f32(*csp, "set_auto_layout counter_spacing")?),
+                );
             }
             if let Some([top, right, bottom, left]) = padding {
-                set.insert("stackVerticalPadding", Val::Float(*top));
-                set.insert("stackPaddingRight", Val::Float(*right));
-                set.insert("stackPaddingBottom", Val::Float(*bottom));
-                set.insert("stackHorizontalPadding", Val::Float(*left));
+                set.insert(
+                    "stackVerticalPadding",
+                    Val::Float(require_finite_f32(*top, "set_auto_layout padding[0]")?),
+                );
+                set.insert(
+                    "stackPaddingRight",
+                    Val::Float(require_finite_f32(*right, "set_auto_layout padding[1]")?),
+                );
+                set.insert(
+                    "stackPaddingBottom",
+                    Val::Float(require_finite_f32(*bottom, "set_auto_layout padding[2]")?),
+                );
+                set.insert(
+                    "stackHorizontalPadding",
+                    Val::Float(require_finite_f32(*left, "set_auto_layout padding[3]")?),
+                );
             }
             fn map_sizing(s: &str) -> &str {
                 match s {
@@ -102,16 +143,28 @@ pub(super) fn compile_prop_op(
                 }
             }
             if let Some(ps) = primary_sizing {
-                set.insert("stackPrimarySizing", Val::Enum(intern(map_sizing(ps))));
+                set.insert(
+                    "stackPrimarySizing",
+                    intern_node_enum(&schema, "stackPrimarySizing", map_sizing(ps), &at)?,
+                );
             }
             if let Some(cs) = counter_sizing {
-                set.insert("stackCounterSizing", Val::Enum(intern(map_sizing(cs))));
+                set.insert(
+                    "stackCounterSizing",
+                    intern_node_enum(&schema, "stackCounterSizing", map_sizing(cs), &at)?,
+                );
             }
             if let Some(pa) = primary_align {
-                set.insert("stackPrimaryAlignItems", Val::Enum(intern(pa)));
+                set.insert(
+                    "stackPrimaryAlignItems",
+                    intern_node_enum(&schema, "stackPrimaryAlignItems", pa, &at)?,
+                );
             }
             if let Some(ca) = counter_align {
-                set.insert("stackCounterAlignItems", Val::Enum(intern(ca)));
+                set.insert(
+                    "stackCounterAlignItems",
+                    intern_node_enum(&schema, "stackCounterAlignItems", ca, &at)?,
+                );
             }
             if let Some(w) = wrap {
                 set.insert(
@@ -153,9 +206,16 @@ pub(super) fn compile_prop_op(
                 );
             }
             if let Some(pos) = positioning {
-                set.insert("stackPositioning", Val::Enum(intern(pos)));
+                let schema = doc.decoded_schema()?;
+                let at = format!("node {target}");
+                set.insert(
+                    "stackPositioning",
+                    intern_node_enum(&schema, "stackPositioning", pos, &at)?,
+                );
             }
             if let Some([mw, mh]) = min_size {
+                require_finite_f32(*mw, "set_auto_layout_child min_size[0]")?;
+                require_finite_f32(*mh, "set_auto_layout_child min_size[1]")?;
                 set.insert(
                     "minSize",
                     Val::Obj(Obj::from([(
@@ -165,6 +225,8 @@ pub(super) fn compile_prop_op(
                 );
             }
             if let Some([xw, xh]) = max_size {
+                require_finite_f32(*xw, "set_auto_layout_child max_size[0]")?;
+                require_finite_f32(*xh, "set_auto_layout_child max_size[1]")?;
                 set.insert(
                     "maxSize",
                     Val::Obj(Obj::from([(
@@ -202,7 +264,11 @@ pub(super) fn compile_prop_op(
             opacity,
         } => {
             let node = ensure_exists(doc, *target)?;
-            let paint = image_paint(sha1_hex, scale_mode, *opacity)?;
+            let schema = doc.decoded_schema()?;
+            let at = format!("node {target}");
+            let scale_enum =
+                intern_node_enum_path(&schema, &["fillPaints", "imageScaleMode"], scale_mode, &at)?;
+            let paint = image_paint_with_scale_mode(sha1_hex, scale_enum, *opacity)?;
             let mut set = Obj::with_capacity(1);
             set.insert("fillPaints", Val::Arr(vec![paint]));
             let mut unset = Vec::new();
@@ -231,10 +297,16 @@ pub(super) fn compile_prop_op(
                 }
             }
             if let Some(w) = weight {
+                let w = require_finite_f32(*w, "set_stroke weight")?;
                 set.insert("strokeWeight", Val::Float(w.max(0.0)));
             }
             if let Some(a) = align {
-                set.insert("strokeAlign", Val::Enum(intern(a)));
+                let schema = doc.decoded_schema()?;
+                let at = format!("node {target}");
+                set.insert(
+                    "strokeAlign",
+                    intern_node_enum(&schema, "strokeAlign", a, &at)?,
+                );
             }
             unset_present(
                 &node.data,
@@ -272,6 +344,13 @@ pub(super) fn compile_prop_op(
             let node = ensure_exists(doc, *target)?;
             let mut effs = Vec::new();
             if let Some(sh) = drop_shadow {
+                for c in sh.rgba {
+                    require_finite_f32(c, "set_effects drop_shadow rgba")?;
+                }
+                require_finite_f32(sh.offset[0], "set_effects drop_shadow offset[0]")?;
+                require_finite_f32(sh.offset[1], "set_effects drop_shadow offset[1]")?;
+                require_finite_f32(sh.radius, "set_effects drop_shadow radius")?;
+                require_finite_f32(sh.spread, "set_effects drop_shadow spread")?;
                 effs.push(shadow_effect(
                     sh.inner,
                     sh.rgba,
@@ -281,7 +360,8 @@ pub(super) fn compile_prop_op(
                 ));
             }
             if let Some(r) = blur_radius {
-                effs.push(blur_effect(*background_blur, *r));
+                let r = require_finite_f32(*r, "set_effects blur_radius")?;
+                effs.push(blur_effect(*background_blur, r));
             }
             let mut set = Obj::with_capacity(1);
             set.insert("effects", Val::Arr(effs));
@@ -320,12 +400,19 @@ pub(super) fn compile_prop_op(
             style,
         } => {
             let node = ensure_exists(doc, *target)?;
+            let schema = doc.decoded_schema()?;
             let base = node
                 .data
                 .get("textData")
                 .cloned()
                 .unwrap_or_else(|| Val::Obj(Obj::new()));
-            let next = apply_text_range_style(&base, *utf16_start, *utf16_end, style)?;
+            let next = apply_text_range_style_with_schema(
+                Some(&schema),
+                &base,
+                *utf16_start,
+                *utf16_end,
+                style,
+            )?;
             commit_text_data(doc, txn, *target, next)?;
             layout_touched.push(*target);
         }
@@ -368,13 +455,42 @@ pub(super) fn compile_prop_op(
                 );
             }
             if let Some(sz) = font_size {
+                let sz = require_finite_f32(*sz, "set_typography font_size")?;
                 set.insert("fontSize", Val::Float(sz.max(1.0)));
             }
-            if let Some(ah) = align_horizontal {
-                set.insert("textAlignHorizontal", Val::Enum(intern(ah)));
+            if align_horizontal.is_some() || auto_resize.is_some() {
+                let schema = doc.decoded_schema()?;
+                let at = format!("node {target}");
+                if let Some(ah) = align_horizontal {
+                    set.insert(
+                        "textAlignHorizontal",
+                        intern_node_enum(&schema, "textAlignHorizontal", ah, &at)?,
+                    );
+                }
+                if let Some(ar) = auto_resize {
+                    set.insert(
+                        "textAutoResize",
+                        intern_node_enum(&schema, "textAutoResize", ar, &at)?,
+                    );
+                }
             }
-            if let Some(ar) = auto_resize {
-                set.insert("textAutoResize", Val::Enum(intern(ar)));
+            if node.kind == "TEXT"
+                && (font_family.is_some()
+                    || font_style.is_some()
+                    || font_size.is_some()
+                    || auto_resize.is_some())
+            {
+                let mut preview = node.data.clone().into_owned();
+                if let Val::Obj(ref mut map) = preview {
+                    for (k, v) in set.iter() {
+                        map.insert(k, v.clone());
+                    }
+                }
+                let chars = preview
+                    .path(&["textData", "characters"])
+                    .and_then(Val::as_str)
+                    .unwrap_or("");
+                update_auto_resize_box(&preview, chars, &mut set);
             }
             txn.modify(*target, set, Vec::new());
             layout_touched.push(*target);

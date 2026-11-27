@@ -6,7 +6,9 @@ use std::collections::HashSet;
 use crate::clipboard::paste_kiwi_into_with;
 use crate::edit::geometry::{
     CreateShapeParams, create_shape_node, matrix_2x3, resize_node_with_constraints,
+    rotate_transform,
 };
+use crate::edit::schema_check::{intern_node_enum, require_finite_f32};
 use crate::edit::text_runs::create_text_node;
 use crate::edit::{GuidAlloc, Txn, fractional};
 use crate::{Document, FigError, Guid, Obj, Val, intern};
@@ -131,6 +133,8 @@ pub(super) fn compile_single_op(
             }
         }
         EditOp::DuplicateNode { target, dx, dy } => {
+            require_finite_f32(*dx, "duplicate dx")?;
+            require_finite_f32(*dy, "duplicate dy")?;
             let Some(orig) = doc.node(*target) else {
                 return Err(FigError::malformed(format!("missing node {target}")));
             };
@@ -167,10 +171,16 @@ pub(super) fn compile_single_op(
                 set.insert("locked", Val::Bool(*l));
             }
             if let Some(op) = opacity {
+                let op = require_finite_f32(*op, "set_layer_props opacity")?;
                 set.insert("opacity", Val::Float(op.clamp(0.0, 1.0)));
             }
             if let Some(bm) = blend_mode {
-                set.insert("blendMode", Val::Enum(intern(bm)));
+                let schema = doc.decoded_schema()?;
+                let at = format!("node {target}");
+                set.insert(
+                    "blendMode",
+                    intern_node_enum(&schema, "blendMode", bm, &at)?,
+                );
             }
             if let Some(clip) = clip_content {
                 set.insert("frameMaskDisabled", Val::Bool(!*clip));
@@ -183,6 +193,8 @@ pub(super) fn compile_single_op(
             y,
             relative,
         } => {
+            require_finite_f32(*x, "move x")?;
+            require_finite_f32(*y, "move y")?;
             let node = ensure_exists(doc, *target)?;
             let mut tf = node
                 .data
@@ -193,7 +205,10 @@ pub(super) fn compile_single_op(
             let (nx, ny) = if *relative {
                 let cx = tf.num("m02").map_or(0.0, f64::from);
                 let cy = tf.num("m12").map_or(0.0, f64::from);
-                (cx + *x, cy + *y)
+                (
+                    require_finite_f32(cx + *x, "move x")?,
+                    require_finite_f32(cy + *y, "move y")?,
+                )
             } else {
                 (*x, *y)
             };
@@ -213,17 +228,8 @@ pub(super) fn compile_single_op(
         }
         EditOp::Rotate { target, degrees } => {
             let node = ensure_exists(doc, *target)?;
-            let cx = node
-                .data
-                .path(&["transform", "m02"])
-                .and_then(Val::as_f32)
-                .map_or(0.0, f64::from);
-            let cy = node
-                .data
-                .path(&["transform", "m12"])
-                .and_then(Val::as_f32)
-                .map_or(0.0, f64::from);
-            txn.set_field(*target, "transform", matrix_2x3(cx, cy, *degrees));
+            let next_tf = rotate_transform(node.data.get("transform"), *degrees)?;
+            txn.set_field(*target, "transform", next_tf);
             layout_touched.push(*target);
         }
         EditOp::Reparent {

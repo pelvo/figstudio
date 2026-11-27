@@ -4,8 +4,10 @@ use std::cmp::Reverse;
 use std::collections::HashSet;
 
 use crate::clipboard::{decode_clipboard_html, paste_kiwi_into};
-use crate::edit::autolayout::append_auto_layout_patches;
-use crate::edit::geometry::{SHAPE_GEOMETRY_INPUTS, patch_touches_any, sync_derived_caches_in_txn};
+use crate::edit::autolayout::try_append_auto_layout_patches;
+use crate::edit::geometry::{
+    SHAPE_GEOMETRY_INPUTS, TEXT_LAYOUT_INPUTS, patch_touches_any, sync_derived_caches_in_txn,
+};
 use crate::edit::styles_vars::import_image_bytes;
 use crate::edit::{Dirty, GuidAlloc, History, NodePatch, Txn};
 use crate::{Document, FigError, Guid, Obj};
@@ -223,6 +225,18 @@ fn collect_step_booleans(
                 collect_visible_boolean_ancestors(doc, *id, false, out);
             }
             NodePatch::Modify { set, unset } => {
+                if doc.node(*id).is_some_and(|n| n.kind == "TEXT")
+                    && patch_touches_any(set, unset, TEXT_LAYOUT_INPUTS)
+                    && !set.contains_key("fillGeometry")
+                {
+                    let mut text_ancestors = HashSet::new();
+                    collect_visible_boolean_ancestors(doc, *id, false, &mut text_ancestors);
+                    if !text_ancestors.is_empty() {
+                        return Err(FigError::malformed(format!(
+                            "cannot edit TEXT operand {id} inside BOOLEAN_OPERATION without authoritative replacement fillGeometry"
+                        )));
+                    }
+                }
                 let mut ancestors = HashSet::new();
                 if patch_affects_boolean_operand(set, unset) {
                     collect_visible_boolean_ancestors(doc, *id, false, &mut ancestors);
@@ -348,7 +362,7 @@ fn run_autolayout_pass(
         let mut next_pending = Vec::new();
         for root in topmost_autolayout_ancestors(staged, &pending) {
             let mut al_txn = Txn::new("autolayout");
-            al_adjustments += append_auto_layout_patches(staged, Some(root), &mut al_txn);
+            al_adjustments += try_append_auto_layout_patches(staged, Some(root), &mut al_txn)?;
             if !al_txn.is_empty() {
                 apply_step_and_repair_booleans(staged, batch_txn, al_txn, &mut next_pending)?;
             }

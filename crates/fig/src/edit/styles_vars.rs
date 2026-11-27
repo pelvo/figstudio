@@ -2,7 +2,8 @@
 //! `EFFECT`, `GRID`), and Variables & Modes (`VARIABLE_SET`, `VARIABLE`, `colorVar`,
 //! `variableConsumptionMap`, `variableModeBySetMap`).
 
-use crate::edit::geometry::{parse_hex_solid_paint, sync_node_derived_caches};
+use crate::edit::geometry::{parse_hex_rgba, parse_hex_solid_paint, sync_node_derived_caches};
+use crate::edit::schema_check::{intern_node_enum, intern_node_enum_path, require_finite_f32};
 use crate::edit::{GuidAlloc, Txn, fractional};
 use crate::tokens::Tokens;
 use crate::{Document, FigError, Guid, Obj, Val, intern, sha1};
@@ -30,6 +31,19 @@ pub fn solid_paint(r: f64, g: f64, b: f64, a: f64) -> Val {
 pub fn hex_paint(hex: &str) -> Result<Val, FigError> {
     parse_hex_solid_paint(hex)
         .ok_or_else(|| FigError::malformed(format!("invalid hex colour {hex:?}")))
+}
+
+/// Parses `#RRGGBB` or `#RRGGBBAA` into a `Color` struct `Val` (`{ r, g, b, a }`) preserving
+/// alpha directly in `a` (used by `COLOR` variables).
+pub(crate) fn hex_color(hex: &str) -> Result<Val, FigError> {
+    let [r, g, b, a] = parse_hex_rgba(hex)
+        .ok_or_else(|| FigError::malformed(format!("invalid hex colour {hex:?}")))?;
+    Ok(Val::Obj(Obj::from([
+        ("r", Val::Float(r)),
+        ("g", Val::Float(g)),
+        ("b", Val::Float(b)),
+        ("a", Val::Float(a)),
+    ])))
 }
 
 /// Builds a linear/radial/angular/diamond gradient paint `Val`.
@@ -98,6 +112,23 @@ pub fn import_image_bytes(txn: &mut Txn, bytes: Vec<u8>) -> Result<String, FigEr
 
 /// Builds an `IMAGE` paint referencing a 40-character lowercase hex SHA-1 hash.
 pub fn image_paint(sha1_hex: &str, scale_mode: &str, opacity: f64) -> Result<Val, FigError> {
+    let mode = match scale_mode {
+        "STRETCH" | "FIT" | "FILL" | "TILE" | "CROP" => Val::Enum(intern(scale_mode)),
+        other => {
+            return Err(FigError::malformed(format!(
+                "unsupported imageScaleMode {other:?}"
+            )));
+        }
+    };
+    image_paint_with_scale_mode(sha1_hex, mode, opacity)
+}
+
+pub(crate) fn image_paint_with_scale_mode(
+    sha1_hex: &str,
+    scale_mode: Val,
+    opacity: f64,
+) -> Result<Val, FigError> {
+    require_finite_f32(opacity, "image_paint opacity")?;
     let raw = parse_hex_bytes(sha1_hex)
         .ok_or_else(|| FigError::malformed(format!("invalid 40-hex image SHA-1 {sha1_hex:?}")))?;
     Ok(Val::Obj(Obj::from([
@@ -105,7 +136,7 @@ pub fn image_paint(sha1_hex: &str, scale_mode: &str, opacity: f64) -> Result<Val
         ("visible", Val::Bool(true)),
         ("opacity", Val::Float(opacity.clamp(0.0, 1.0))),
         ("blendMode", Val::Enum(intern("NORMAL"))),
-        ("imageScaleMode", Val::Enum(intern(scale_mode))),
+        ("imageScaleMode", scale_mode),
         (
             "image",
             Val::Obj(Obj::from([
@@ -214,6 +245,8 @@ pub fn create_local_style(
     name: &str,
     mut payload: Obj,
 ) -> Result<Guid, FigError> {
+    let schema = doc.decoded_schema()?;
+    let style_type_enum = intern_node_enum(&schema, "styleType", style_type, "create_local_style")?;
     let ic = ensure_internal_canvas(doc, txn, alloc)?;
     let sid = alloc.next_guid();
     let last_pos = doc
@@ -232,7 +265,7 @@ pub fn create_local_style(
     payload.insert("type", Val::Enum(intern(node_type)));
     payload.insert("name", Val::Str(name.into()));
     payload.insert("visible", Val::Bool(true));
-    payload.insert("styleType", Val::Enum(intern(style_type)));
+    payload.insert("styleType", style_type_enum);
     payload.insert(
         "parentIndex",
         Val::Obj(Obj::from([
@@ -401,6 +434,11 @@ pub fn bind_paint_color_variable(
     paint_index: usize,
     var_id: Option<Guid>,
 ) -> Result<(), FigError> {
+    if !matches!(paint_list_field, "fillPaints" | "strokePaints") {
+        return Err(FigError::malformed(format!(
+            "unsupported paint field {paint_list_field:?} (expected fillPaints or strokePaints)"
+        )));
+    }
     let Some(node) = doc.node(node_id) else {
         return Err(FigError::malformed(format!("missing node {node_id}")));
     };
@@ -463,6 +501,24 @@ pub fn set_variable_mode_value(
             var_node.kind
         )));
     }
+    let schema = doc.decoded_schema()?;
+    let data_type_enum = intern_node_enum_path(
+        &schema,
+        &["variableDataValues", "entries", "variableData", "dataType"],
+        data_type,
+        "set_variable_mode_value",
+    )?;
+    let resolved_type_enum = intern_node_enum_path(
+        &schema,
+        &[
+            "variableDataValues",
+            "entries",
+            "variableData",
+            "resolvedDataType",
+        ],
+        resolved_type,
+        "set_variable_mode_value",
+    )?;
     let mut entries: Vec<Val> = var_node
         .data
         .path(&["variableDataValues", "entries"])
@@ -470,8 +526,8 @@ pub fn set_variable_mode_value(
         .unwrap_or_default();
 
     let var_data = Val::Obj(Obj::from([
-        ("dataType", Val::Enum(intern(data_type))),
-        ("resolvedDataType", Val::Enum(intern(resolved_type))),
+        ("dataType", data_type_enum),
+        ("resolvedDataType", resolved_type_enum),
         ("value", value_val),
     ]));
 

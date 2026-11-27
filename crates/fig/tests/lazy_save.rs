@@ -573,6 +573,27 @@ fn native_lazy_save_rejects_in_place_modification_during_streaming() {
         res.is_err(),
         "in-place archive mutation during streaming must fail rather than returning mixed archive"
     );
+
+    // Mid-stream payload-only mutation (leaving central directory and tail untouched) must also fail.
+    let mut payload_flipped = named_synthetic_archive("DocA", 0x11, "custom/a.txt", b"only-in-a");
+    let tail_start =
+        payload_flipped.len() - usize::try_from(figstudio_fig::archive::TAIL_LEN).unwrap();
+    let flip_at = payload_end + 4096;
+    assert!(flip_at < tail_start);
+    payload_flipped[flip_at] ^= 0xFF;
+    let payload_only_reader = MutateMidStream {
+        buf: named_synthetic_archive("DocA", 0x11, "custom/a.txt", b"only-in-a"),
+        replacement: payload_flipped,
+        pos: 0,
+        mutated: false,
+        payload_start,
+        payload_end,
+    };
+    assert!(
+        doc.write_lazy_archive(payload_only_reader, Cursor::new(Vec::new()))
+            .is_err(),
+        "mid-stream payload-only mutation with unchanged directory must fail"
+    );
 }
 
 #[test]
@@ -593,4 +614,145 @@ fn browser_lazy_plan_rejects_mismatched_archive_metadata() {
 
     assert!(meta_b.needed_local_headers(&doc_a).is_err());
     assert!(meta_b.plan(&doc_a, &[]).is_err());
+}
+
+fn entry_data_offset(bytes: &[u8], entry_name: &str) -> usize {
+    let mut cursor = Cursor::new(bytes);
+    let entries = figstudio_fig::archive::read_entries(&mut cursor, bytes.len() as u64).unwrap();
+    let entry = entries.iter().find(|e| e.name == entry_name).unwrap();
+    let h_start = usize::try_from(entry.header_offset).unwrap();
+    let hdr: [u8; 30] = bytes[h_start..h_start + 30].try_into().unwrap();
+    usize::try_from(entry.data_start(&hdr).unwrap()).unwrap()
+}
+
+#[test]
+fn native_lazy_save_rejects_corrupt_payload_outside_tail_and_protects_destination() {
+    let (bytes, deflated_hash, _deflated_data, stored_hash, _stored_data, _empty_hash) =
+        synthetic_archive_bytes();
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("source.fig");
+    let sentinel = dir.path().join("sentinel.fig");
+    std::fs::write(&src, &bytes).unwrap();
+    std::fs::write(&sentinel, b"sentinel-bytes").unwrap();
+
+    let mut doc = Document::open_lazy(&src).expect("open_lazy");
+    let target = doc.children(doc.pages[0])[0];
+    let mut txn = Txn::new("rename");
+    txn.set_field(target, "name", Val::Str("EditedWithCorruptSrc".into()));
+    doc.apply_txn(&txn).unwrap();
+
+    let tail_start = bytes.len() - usize::try_from(figstudio_fig::archive::TAIL_LEN).unwrap();
+
+    // Flip one byte in the stored image payload strictly before the tail (CD & tail unchanged).
+    let stored_flip = entry_data_offset(&bytes, &format!("images/{stored_hash}")) + 64;
+    assert!(stored_flip < tail_start);
+
+    let mut corrupt_stored = bytes.clone();
+    corrupt_stored[stored_flip] ^= 0xFF;
+    std::fs::write(&src, &corrupt_stored).unwrap();
+
+    assert!(
+        doc.save_copy_checked(Some(&src), &sentinel, true, true)
+            .is_err(),
+        "save_copy_checked must reject stored image payload corruption outside tail"
+    );
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel-bytes");
+    assert!(
+        doc.save_with_lazy_source(Some(&src), &sentinel).is_err(),
+        "save_with_lazy_source must reject stored image payload corruption outside tail"
+    );
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel-bytes");
+    assert!(
+        doc.write_lazy_archive(Cursor::new(&corrupt_stored), Cursor::new(Vec::new()))
+            .is_err(),
+        "write_lazy_archive must reject stored image payload corruption"
+    );
+
+    // Flip one byte in the deflated image payload strictly before the tail (CD & tail unchanged).
+    let deflated_flip = entry_data_offset(&bytes, &format!("images/{deflated_hash}")) + 16;
+    assert!(deflated_flip < tail_start);
+
+    let mut corrupt_deflated = bytes.clone();
+    corrupt_deflated[deflated_flip] ^= 0xFF;
+    std::fs::write(&src, &corrupt_deflated).unwrap();
+
+    assert!(
+        doc.save_copy_checked(Some(&src), &sentinel, true, true)
+            .is_err(),
+        "save_copy_checked must reject deflated image payload corruption outside tail"
+    );
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel-bytes");
+    assert!(
+        doc.write_lazy_archive(Cursor::new(&corrupt_deflated), Cursor::new(Vec::new()))
+            .is_err(),
+        "write_lazy_archive must reject deflated image payload corruption"
+    );
+
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["sentinel.fig", "source.fig"]);
+}
+
+#[test]
+fn browser_from_lazy_rejects_same_layout_crc_changes() {
+    use figstudio_fig::archive;
+    use figstudio_fig::lazy_save::LazyArchiveMeta;
+
+    let bytes_a = named_synthetic_archive("DocA", 0x11, "custom/a.txt", b"only-in-a");
+    // Identical length, entry names, methods, compressed sizes, sizes, offsets, and meta.json,
+    // differing only in `custom/a.txt` payload and its central-directory CRC32.
+    let bytes_y = named_synthetic_archive("DocA", 0x11, "custom/a.txt", b"changed-a");
+    assert_eq!(bytes_a.len(), bytes_y.len());
+
+    let doc_a = open_browser_lazy(&bytes_a);
+    assert!(
+        plan_browser_lazy(&bytes_y, &doc_a).is_err(),
+        "LazyArchiveMeta::plan must reject same-layout archive with different entry CRC"
+    );
+    assert!(
+        doc_a
+            .write_lazy_archive(Cursor::new(&bytes_y), Cursor::new(Vec::new()))
+            .is_err(),
+        "write_lazy_archive must reject same-layout archive with different entry CRC"
+    );
+
+    // When opened through `from_lazy_with_meta` (as the browser `open_lazy` path does), even a
+    // tail/comment mutation with identical entry CRCs and layout is rejected.
+    let file_len = bytes_a.len() as u64;
+    let tail_len = archive::TAIL_LEN.min(file_len) as usize;
+    let tail_a = bytes_a[bytes_a.len() - tail_len..].to_vec();
+    let (cd_off_a, cd_size_a) = archive::central_directory(&tail_a, file_len).unwrap();
+    let cd_a = bytes_a[cd_off_a as usize..(cd_off_a + cd_size_a) as usize].to_vec();
+    let entries_a = archive::entries(&cd_a).unwrap();
+    let mut cursor = Cursor::new(&bytes_a);
+    let mut raw = std::collections::HashMap::new();
+    for e in entries_a
+        .iter()
+        .filter(|e| archive::EAGER_ENTRIES.contains(&e.name.as_str()))
+    {
+        raw.insert(e.name.clone(), archive::read_raw(&mut cursor, e).unwrap());
+    }
+    let eager_a = archive::decode_raw(&entries_a, raw).unwrap();
+    let meta_a = LazyArchiveMeta::from_directory(file_len, tail_a, cd_off_a, cd_a).unwrap();
+    let doc_with_meta =
+        Document::from_lazy_with_meta(entries_a, eager_a, &meta_a).expect("from_lazy_with_meta");
+
+    // Same entries and layout, differing only in trailing archive comment bytes.
+    let mut bytes_commented = bytes_a.clone();
+    let comment = b"extra";
+    let eocd_comment_len_at = bytes_commented.len() - 2;
+    assert_eq!(&bytes_commented[eocd_comment_len_at..], &[0, 0]);
+    bytes_commented[eocd_comment_len_at..].copy_from_slice(&(comment.len() as u16).to_le_bytes());
+    bytes_commented.extend_from_slice(comment);
+
+    assert!(
+        plan_browser_lazy(&bytes_commented, &doc_with_meta).is_err(),
+        "from_lazy_with_meta must reject container tail/comment changes"
+    );
+    let parts = plan_browser_lazy(&bytes_a, &doc_with_meta).expect("unchanged archive plans");
+    let rebuilt = assemble_parts(&bytes_a, &parts);
+    assert!(Document::from_bytes(&rebuilt).is_ok());
 }

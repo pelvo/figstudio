@@ -61,6 +61,7 @@ pub(crate) fn entries_sha1(entries: &[Entry]) -> [u8; 20] {
         h.update((e.name.len() as u64).to_le_bytes());
         h.update(e.name.as_bytes());
         h.update(e.method.to_le_bytes());
+        h.update(e.crc32.to_le_bytes());
         h.update(e.compressed_size.to_le_bytes());
         h.update(e.size.to_le_bytes());
         h.update(e.header_offset.to_le_bytes());
@@ -74,6 +75,7 @@ pub struct Entry {
     pub name: String,
     /// 0 stored, 8 deflate.
     pub method: u16,
+    pub crc32: u32,
     pub compressed_size: u64,
     pub size: u64,
     /// Where the entry's local header starts.
@@ -153,6 +155,7 @@ pub fn entries(cd: &[u8]) -> Result<Vec<Entry>, FigError> {
         }
         let flags = u16_at(cd, at + 8).ok_or_else(|| bad("flags"))?;
         let method = u16_at(cd, at + 10).ok_or_else(|| bad("method"))?;
+        let crc32 = u32_at(cd, at + 16).ok_or_else(|| bad("crc32"))?;
         let mut compressed_size = u64::from(u32_at(cd, at + 20).ok_or_else(|| bad("size"))?);
         let mut size = u64::from(u32_at(cd, at + 24).ok_or_else(|| bad("size"))?);
         let name_len = usize::from(u16_at(cd, at + 28).ok_or_else(|| bad("name"))?);
@@ -192,6 +195,7 @@ pub fn entries(cd: &[u8]) -> Result<Vec<Entry>, FigError> {
             // Figma writes ASCII names; anything else is decoded leniently.
             name: String::from_utf8_lossy(name).into_owned(),
             method,
+            crc32,
             compressed_size,
             size,
             header_offset,

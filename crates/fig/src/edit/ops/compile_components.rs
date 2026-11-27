@@ -12,9 +12,9 @@ use crate::edit::instances::{
     reset_instance_override, set_component_prop_assignment, set_instance_override,
     swap_instance_symbol, switch_instance_variant,
 };
-use crate::edit::schema_check::coerce_node_field;
+use crate::edit::schema_check::{coerce_json_node_field, require_finite_f32};
 use crate::edit::styles_vars::{
-    bind_paint_color_variable, bind_style, create_local_style, hex_paint,
+    bind_paint_color_variable, bind_style, create_local_style, hex_color, hex_paint,
     set_explicit_variable_mode, set_variable_mode_value,
 };
 use crate::edit::text_runs::replace_characters;
@@ -68,6 +68,7 @@ pub(super) fn compile_component_or_vector_op(
                 fields.insert("fillPaints", Val::Arr(vec![hex_paint(h)?]));
             }
             if let Some(op) = opacity {
+                let op = require_finite_f32(*op, "set_instance_override opacity")?;
                 fields.insert("opacity", Val::Float(op.clamp(0.0, 1.0)));
             }
             set_instance_override(doc, txn, *instance, override_path, fields, &unset)?;
@@ -117,6 +118,8 @@ pub(super) fn compile_component_or_vector_op(
             x,
             y,
         } => {
+            require_finite_f32(*x, "instantiate_component x")?;
+            require_finite_f32(*y, "instantiate_component y")?;
             let inst_id = instantiate_component(doc, txn, alloc, *symbol, *parent, *x, *y)?;
             created_ids.push(inst_id);
             layout_touched.push(*parent);
@@ -166,11 +169,7 @@ pub(super) fn compile_component_or_vector_op(
             mode,
             hex,
         } => {
-            let paint = hex_paint(hex)?;
-            let color = paint
-                .get("color")
-                .cloned()
-                .ok_or_else(|| FigError::malformed("hex paint missing color"))?;
+            let color = hex_color(hex)?;
             set_variable_mode_value(
                 doc,
                 txn,
@@ -255,10 +254,8 @@ pub(super) fn compile_component_or_vector_op(
             let at = format!("node {target}");
             let mut obj = Obj::new();
             for (k, jv) in set {
-                let v: Val = serde_json::from_value(jv.clone())
-                    .map_err(|e| FigError::malformed(format!("invalid Val for {k}: {e}")))?;
-                let coerced = coerce_node_field(&schema, k, v, &at)?;
-                obj.insert(k, coerced);
+                let (field_name, coerced) = coerce_json_node_field(&schema, k, jv, &at)?;
+                obj.insert(field_name, coerced);
             }
             txn.modify(*target, obj, unset.clone());
             layout_touched.push(*target);
@@ -347,9 +344,10 @@ fn compile_boolean_combine(
         rel
     };
 
-    let paths_a = transform_boolean_paths(&extract_operand_paths(doc, na, 0, false)?, tf_a);
-    let paths_b = transform_boolean_paths(&extract_operand_paths(doc, nb, 0, false)?, tf_b);
-    let combined = boolean_combine_paths(operation, &paths_a, &paths_b);
+    let CombinedOperands {
+        cmds: combined,
+        fallback_origin,
+    } = combine_visible_operands(doc, operation, &[(na, tf_a), (nb, tf_b)])?;
 
     let (origin, width, height, fill_geometry) =
         if let Some((min_x, min_y, max_x, max_y)) = cmds_bounds(&combined) {
@@ -361,8 +359,12 @@ fn compile_boolean_combine(
                 encode_boolean_fill_geometry(doc, txn, &local_combined),
             )
         } else {
-            let origin = boolean_paths_bounds(&paths_a).map_or((0.0, 0.0), |(x, y, _, _)| (x, y));
-            (origin, 0.0, 0.0, Val::Arr(Vec::new()))
+            (
+                fallback_origin.unwrap_or((0.0, 0.0)),
+                0.0,
+                0.0,
+                Val::Arr(Vec::new()),
+            )
         };
 
     let bool_id = alloc.next_guid();
@@ -465,37 +467,12 @@ pub(super) fn recompute_boolean_node(
 
     let tf_bool = Affine2D::from_val(node.data.get("transform"))?;
     let children = doc.children(bool_id);
-    let mut combined_paths: Option<Vec<BooleanPath>> = None;
-    for child in children
-        .iter()
-        .filter_map(|&cid| doc.node(cid))
-        .filter(|c| c.data.flag("visible") != Some(false))
-    {
+    let mut operands = Vec::with_capacity(children.len());
+    for child in children.iter().filter_map(|&cid| doc.node(cid)) {
         let tf_child = Affine2D::from_val(child.data.get("transform"))?;
-        let transformed =
-            transform_boolean_paths(&extract_operand_paths(doc, child, 0, true)?, tf_child);
-        combined_paths = Some(match combined_paths {
-            None => transformed,
-            Some(acc) => {
-                let next = boolean_combine_paths(operation, &acc, &transformed);
-                if next.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![BooleanPath {
-                        cmds: next,
-                        even_odd: false,
-                    }]
-                }
-            }
-        });
+        operands.push((child, tf_child));
     }
-
-    let combined: Vec<PathCmd> = match combined_paths {
-        None => Vec::new(),
-        Some(paths) if paths.is_empty() => Vec::new(),
-        Some(mut paths) if paths.len() == 1 && !paths[0].even_odd => paths.swap_remove(0).cmds,
-        Some(paths) => boolean_combine_paths(BooleanOp::Union, &paths, &[]),
-    };
+    let combined = combine_visible_operands(doc, operation, &operands)?.cmds;
 
     let mut set = Obj::new();
     let mut unset = Vec::new();
@@ -691,21 +668,65 @@ fn node_page_transform(doc: &Document, id: Guid) -> Result<Affine2D, FigError> {
         .fold(Affine2D::IDENTITY, Affine2D::mul))
 }
 
+struct CombinedOperands {
+    cmds: Vec<PathCmd>,
+    fallback_origin: Option<(f64, f64)>,
+}
+
+/// Shared visible-operand fold and strict operand admissibility used by both
+/// `EditOp::BooleanCombine` and `recompute_boolean_node`.
+fn combine_visible_operands(
+    doc: &Document,
+    operation: BooleanOp,
+    operands: &[(&crate::Node, Affine2D)],
+) -> Result<CombinedOperands, FigError> {
+    let mut combined_paths: Option<Vec<BooleanPath>> = None;
+    let mut first_origin: Option<(f64, f64)> = None;
+    for &(node, tf) in operands {
+        if node.data.flag("visible") == Some(false) {
+            continue;
+        }
+        let transformed = transform_boolean_paths(&extract_operand_paths(doc, node, 0)?, tf);
+        if first_origin.is_none() {
+            first_origin = boolean_paths_bounds(&transformed).map(|(x, y, _, _)| (x, y));
+        }
+        combined_paths = Some(match combined_paths {
+            None => transformed,
+            Some(acc) => {
+                let next = boolean_combine_paths(operation, &acc, &transformed);
+                if next.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![BooleanPath {
+                        cmds: next,
+                        even_odd: false,
+                    }]
+                }
+            }
+        });
+    }
+    let cmds = match combined_paths {
+        None => Vec::new(),
+        Some(paths) if paths.is_empty() => Vec::new(),
+        Some(mut paths) if paths.len() == 1 && !paths[0].even_odd => paths.swap_remove(0).cmds,
+        Some(paths) => boolean_combine_paths(BooleanOp::Union, &paths, &[]),
+    };
+    Ok(CombinedOperands {
+        cmds,
+        fallback_origin: first_origin,
+    })
+}
+
 fn extract_operand_paths(
     doc: &Document,
     node: &crate::Node,
     depth: usize,
-    strict: bool,
 ) -> Result<Vec<BooleanPath>, FigError> {
     if depth > 64 {
-        return if strict {
-            Err(FigError::malformed(format!(
-                "boolean operand {} exceeds maximum GROUP nesting depth",
-                node.id
-            )))
-        } else {
-            Ok(Vec::new())
-        };
+        return Err(FigError::malformed(format!(
+            "boolean operand {} exceeds maximum GROUP nesting depth",
+            node.id
+        )));
     }
     if node.kind == "GROUP" {
         let mut all = Vec::new();
@@ -717,14 +738,13 @@ fn extract_operand_paths(
         {
             let tf_c = Affine2D::from_val(child.data.get("transform"))?;
             all.extend(transform_boolean_paths(
-                &extract_operand_paths(doc, child, depth + 1, strict)?,
+                &extract_operand_paths(doc, child, depth + 1)?,
                 tf_c,
             ));
         }
         return Ok(all);
     }
-    if strict
-        && matches!(node.kind.as_str(), "FRAME" | "SECTION" | "SYMBOL")
+    if matches!(node.kind.as_str(), "FRAME" | "SECTION" | "SYMBOL")
         && !doc.children(node.id).is_empty()
     {
         return Err(FigError::malformed(format!(
@@ -735,13 +755,11 @@ fn extract_operand_paths(
     let mut fg_err = None;
     if let Some(fg) = node.data.get("fillGeometry") {
         let Val::Arr(items) = fg else {
-            if strict {
-                fg_err = Some(FigError::malformed(format!(
-                    "boolean operand {} has malformed fillGeometry",
-                    node.id
-                )));
-            }
-            return finish_operand_fallback(doc, node, strict, fg_err);
+            fg_err = Some(FigError::malformed(format!(
+                "boolean operand {} has malformed fillGeometry",
+                node.id
+            )));
+            return finish_operand_fallback(doc, node, fg_err);
         };
         let mut all = Vec::with_capacity(items.len());
         for p in items {
@@ -751,15 +769,12 @@ fn extract_operand_paths(
                 .and_then(|idx| doc.blobs.get(idx as usize))
                 .and_then(|blob| decode_path_commands(blob));
             let Some(cmds) = decoded else {
-                if strict {
-                    fg_err = Some(FigError::malformed(format!(
-                        "boolean operand {} has missing or undecodable fillGeometry commandsBlob",
-                        node.id
-                    )));
-                    all.clear();
-                    break;
-                }
-                continue;
+                fg_err = Some(FigError::malformed(format!(
+                    "boolean operand {} has missing or undecodable fillGeometry commandsBlob",
+                    node.id
+                )));
+                all.clear();
+                break;
             };
             if !cmds.is_empty() {
                 all.push(BooleanPath {
@@ -772,25 +787,23 @@ fn extract_operand_paths(
             if !all.is_empty() {
                 return Ok(all);
             }
-            if strict
-                && (node.kind == "BOOLEAN_OPERATION"
-                    || (node.kind == "VECTOR"
-                        && node
-                            .data
-                            .path(&["vectorData", "vectorNetworkBlob"])
-                            .is_none()))
+            if node.kind == "BOOLEAN_OPERATION"
+                || (node.kind == "VECTOR"
+                    && node
+                        .data
+                        .path(&["vectorData", "vectorNetworkBlob"])
+                        .is_none())
             {
                 return Ok(Vec::new());
             }
         }
     }
-    finish_operand_fallback(doc, node, strict, fg_err)
+    finish_operand_fallback(doc, node, fg_err)
 }
 
 fn finish_operand_fallback(
     doc: &Document,
     node: &crate::Node,
-    strict: bool,
     fg_err: Option<FigError>,
 ) -> Result<Vec<BooleanPath>, FigError> {
     if let Some(blob_val) = node.data.path(&["vectorData", "vectorNetworkBlob"]) {
@@ -836,10 +849,10 @@ fn finish_operand_fallback(
                 }
                 return Ok(all);
             }
-            if strict && node.kind == "VECTOR" {
+            if node.kind == "VECTOR" {
                 return Ok(Vec::new());
             }
-        } else if strict {
+        } else {
             return Err(FigError::malformed(format!(
                 "boolean operand {} has missing or undecodable vectorNetworkBlob",
                 node.id
@@ -859,13 +872,10 @@ fn finish_operand_fallback(
             }]
         });
     }
-    if strict {
-        return Err(FigError::malformed(format!(
-            "boolean operand {} ({}) has no safely recomputable fill geometry",
-            node.id, node.kind
-        )));
-    }
-    Ok(Vec::new())
+    Err(FigError::malformed(format!(
+        "boolean operand {} ({}) has no safely recomputable fill geometry",
+        node.id, node.kind
+    )))
 }
 
 fn transform_boolean_paths(paths: &[BooleanPath], tf: Affine2D) -> Vec<BooleanPath> {

@@ -99,19 +99,44 @@ fn should_copy_source_entry(doc: &Document, name: &str) -> bool {
     true
 }
 
+fn check_chunk_limit(name: &str, size: u64) -> Result<(), FigError> {
+    if !usize::try_from(size).is_ok_and(|s| s <= crate::doc::MAX_CHUNK_BYTES) {
+        return Err(FigError::limit(format!(
+            "{name} inflates past the {}-byte limit",
+            crate::doc::MAX_CHUNK_BYTES
+        )));
+    }
+    Ok(())
+}
+
+fn record_entry_name(seen: &mut HashSet<String>, name: String) -> Result<(), FigError> {
+    if !seen.insert(name) {
+        return Err(FigError::malformed(
+            "archive contains duplicate entry names",
+        ));
+    }
+    Ok(())
+}
+
 fn write_canvas_thumb_and_images_dir<W: Write + Seek>(
     doc: &Document,
     dst: &mut zip::ZipWriter<W>,
+    seen: &mut HashSet<String>,
 ) -> Result<(), FigError> {
     let canvas = doc.encode_canvas()?;
+    check_chunk_limit("canvas.fig", canvas.len() as u64)?;
+    record_entry_name(seen, "canvas.fig".into())?;
     dst.start_file("canvas.fig", stored_opts(canvas.len()))
         .map_err(zip_err)?;
     dst.write_all(&canvas).map_err(io_err)?;
     if let Some(thumb) = &doc.thumbnail {
+        check_chunk_limit("thumbnail.png", thumb.len() as u64)?;
+        record_entry_name(seen, "thumbnail.png".into())?;
         dst.start_file("thumbnail.png", stored_opts(thumb.len()))
             .map_err(zip_err)?;
         dst.write_all(thumb).map_err(io_err)?;
     }
+    record_entry_name(seen, "images/".into())?;
     dst.add_directory("images/", stored_opts(0))
         .map_err(zip_err)?;
     Ok(())
@@ -120,16 +145,209 @@ fn write_canvas_thumb_and_images_dir<W: Write + Seek>(
 fn write_new_images<W: Write + Seek>(
     doc: &Document,
     dst: &mut zip::ZipWriter<W>,
+    seen: &mut HashSet<String>,
 ) -> Result<(), FigError> {
     let mut new_hashes: Vec<&String> = doc.images.keys().collect();
     new_hashes.sort();
     for hash in new_hashes {
         let data = &doc.images[hash];
-        dst.start_file(format!("images/{hash}"), stored_opts(data.len()))
+        let name = format!("images/{hash}");
+        check_chunk_limit(&name, data.len() as u64)?;
+        record_entry_name(seen, name.clone())?;
+        dst.start_file(name, stored_opts(data.len()))
             .map_err(zip_err)?;
         dst.write_all(data).map_err(io_err)?;
     }
     Ok(())
+}
+
+/// Bounded CRC32 sink verifying that an entry does not inflate beyond its limit.
+struct BoundedCrcWriter {
+    crc: flate2::Crc,
+    written: u64,
+    limit: u64,
+}
+
+impl BoundedCrcWriter {
+    fn new(limit: u64) -> Self {
+        Self {
+            crc: flate2::Crc::new(),
+            written: 0,
+            limit,
+        }
+    }
+}
+
+impl Write for BoundedCrcWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let next = self
+            .written
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| io::Error::other("archive entry size overflow"))?;
+        if next > self.limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "archive entry inflates past its declared size",
+            ));
+        }
+        self.crc.update(buf);
+        self.written = next;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+enum EntryCodecCheck {
+    Stored(BoundedCrcWriter),
+    Deflated {
+        decoder: flate2::write::DeflateDecoder<BoundedCrcWriter>,
+        ended: bool,
+    },
+}
+
+struct EntryCheck {
+    name: String,
+    codec: EntryCodecCheck,
+    expected_crc: u32,
+    expected_size: u64,
+    expected_compressed: u64,
+    compressed_read: u64,
+}
+
+impl EntryCheck {
+    fn new(
+        name: String,
+        method: zip::CompressionMethod,
+        expected_crc: u32,
+        expected_size: u64,
+        expected_compressed: u64,
+    ) -> Result<Self, FigError> {
+        check_chunk_limit(&name, expected_size)?;
+        let codec = match method {
+            zip::CompressionMethod::Stored => {
+                EntryCodecCheck::Stored(BoundedCrcWriter::new(expected_size))
+            }
+            zip::CompressionMethod::Deflated => EntryCodecCheck::Deflated {
+                decoder: flate2::write::DeflateDecoder::new(BoundedCrcWriter::new(expected_size)),
+                ended: false,
+            },
+            m => {
+                return Err(FigError::malformed(format!(
+                    "{name} uses unsupported compression {m:?}"
+                )));
+            }
+        };
+        Ok(Self {
+            name,
+            codec,
+            expected_crc,
+            expected_size,
+            expected_compressed,
+            compressed_read: 0,
+        })
+    }
+
+    fn update(&mut self, buf: &[u8]) -> io::Result<()> {
+        self.compressed_read = self
+            .compressed_read
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| io::Error::other("archive compressed size overflow"))?;
+        if self.compressed_read > self.expected_compressed {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "archive entry read exceeded declared compressed size",
+            ));
+        }
+        match &mut self.codec {
+            EntryCodecCheck::Stored(crc) => crc.write_all(buf),
+            EntryCodecCheck::Deflated { decoder, ended } => {
+                if *ended {
+                    return Ok(());
+                }
+                let mut off = 0;
+                while off < buf.len() {
+                    let n = decoder.write(&buf[off..])?;
+                    if n == 0 {
+                        *ended = true;
+                        break;
+                    }
+                    off += n;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn finish(self) -> Result<(), FigError> {
+        if self.compressed_read != self.expected_compressed {
+            return Err(FigError::malformed(format!(
+                "corrupt archive entry {}: read {} of {} compressed bytes",
+                self.name, self.compressed_read, self.expected_compressed
+            )));
+        }
+        let writer = match self.codec {
+            EntryCodecCheck::Stored(w) => w,
+            EntryCodecCheck::Deflated { decoder, .. } => decoder.finish().map_err(|e| {
+                FigError::io(format!("corrupt deflated archive entry {}", self.name), e)
+            })?,
+        };
+        if writer.written != self.expected_size {
+            return Err(FigError::malformed(format!(
+                "corrupt archive entry {}: decoded {} of {} bytes",
+                self.name, writer.written, self.expected_size
+            )));
+        }
+        if writer.crc.sum() != self.expected_crc {
+            return Err(FigError::malformed(format!(
+                "corrupt archive entry {}: CRC mismatch",
+                self.name
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Wraps the lazy source reader and verifies the exact raw payload bytes streamed during each
+/// `raw_copy_file` pass in constant memory without a second read of the payload.
+struct PayloadVerifyReader<R> {
+    inner: R,
+    active: Rc<RefCell<Option<EntryCheck>>>,
+}
+
+impl<R> PayloadVerifyReader<R> {
+    fn new(inner: R, active: Rc<RefCell<Option<EntryCheck>>>) -> Self {
+        Self { inner, active }
+    }
+
+    fn into_inner(self) -> R {
+        self.inner
+    }
+}
+
+impl<R: Read> Read for PayloadVerifyReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0
+            && let Some(check) = self.active.borrow_mut().as_mut()
+        {
+            check.update(&buf[..n])?;
+        }
+        Ok(n)
+    }
+}
+
+impl<R: Seek> Seek for PayloadVerifyReader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        if self.active.borrow().is_some() {
+            return Err(io::Error::other(
+                "unexpected seek while verifying raw archive entry payload",
+            ));
+        }
+        self.inner.seek(pos)
+    }
 }
 
 impl Document {
@@ -182,17 +400,25 @@ impl Document {
         dst: W,
     ) -> Result<W, FigError> {
         let expected_count = self.verify_lazy_source(&mut src)?;
-        let mut src_zip = zip::ZipArchive::new(src).map_err(zip_read_err)?;
+        let active_check: Rc<RefCell<Option<EntryCheck>>> = Rc::new(RefCell::new(None));
+        let reader = PayloadVerifyReader::new(src, Rc::clone(&active_check));
+        let mut src_zip = zip::ZipArchive::new(reader).map_err(zip_read_err)?;
         if src_zip.offset() != 0 || src_zip.len() != expected_count {
             return Err(FigError::malformed(
                 "source .fig archive layout does not match the opened document",
             ));
         }
+        if src_zip.has_duplicate_names() {
+            return Err(FigError::malformed(
+                "source .fig archive contains duplicate entry names",
+            ));
+        }
         let mut dst_zip = zip::ZipWriter::new(dst);
-        write_canvas_thumb_and_images_dir(self, &mut dst_zip)?;
+        let mut seen_names = HashSet::new();
+        write_canvas_thumb_and_images_dir(self, &mut dst_zip, &mut seen_names)?;
 
         for i in 0..src_zip.len() {
-            {
+            let entry_name = {
                 let meta = src_zip.by_index_data(i).map_err(zip_read_err)?;
                 if meta.encrypted() {
                     return Err(FigError::malformed(
@@ -203,20 +429,67 @@ impl Document {
                 if !should_copy_source_entry(self, &name) {
                     continue;
                 }
-            }
+                name.into_owned()
+            };
+            record_entry_name(&mut seen_names, entry_name.clone())?;
             let entry = src_zip.by_index_raw(i).map_err(zip_read_err)?;
-            dst_zip.raw_copy_file(entry).map_err(zip_err)?;
+            let check = EntryCheck::new(
+                entry_name,
+                entry.compression(),
+                entry.crc32(),
+                entry.size(),
+                entry.compressed_size(),
+            )?;
+            *active_check.borrow_mut() = Some(check);
+            let copy_res = dst_zip.raw_copy_file(entry).map_err(zip_err);
+            let finished = active_check.borrow_mut().take();
+            copy_res?;
+            if let Some(check) = finished {
+                check.finish()?;
+            }
         }
 
-        write_new_images(self, &mut dst_zip)?;
+        write_new_images(self, &mut dst_zip, &mut seen_names)?;
         let dst = dst_zip.finish().map_err(zip_err)?;
-        let mut src = src_zip.into_inner();
+        let mut src = src_zip.into_inner().into_inner();
         self.verify_lazy_source(&mut src)?;
         Ok(dst)
     }
 }
 
 impl LazyArchiveMeta {
+    pub(crate) fn fingerprint(&self) -> crate::archive::ContainerFingerprint {
+        crate::archive::ContainerFingerprint::from_parts(
+            self.file_len,
+            &self.tail,
+            self.cd_offset,
+            &self.cd,
+        )
+    }
+
+    /// Returns whether `self` and `other` describe the exact same container file length,
+    /// central directory, and archive tail.
+    pub fn same_container(&self, other: &Self) -> bool {
+        self.fingerprint() == other.fingerprint()
+    }
+
+    /// Parses the central-directory entries stored in `self`.
+    pub fn entries(&self) -> Result<Vec<crate::archive::Entry>, FigError> {
+        crate::archive::entries(&self.cd)
+    }
+
+    pub(crate) fn verify_entries(&self, entries: &[crate::archive::Entry]) -> Result<(), FigError> {
+        let parsed = crate::archive::entries(&self.cd)?;
+        if parsed.len() != entries.len()
+            || crate::archive::entries_sha1(&parsed) != crate::archive::entries_sha1(entries)
+        {
+            return Err(FigError::malformed(
+                "source .fig archive entries do not match container metadata",
+            ));
+        }
+        Ok(())
+    }
+
     fn verify_doc(&self, doc: &Document) -> Result<(), FigError> {
         if !doc.source.lazy {
             return Err(FigError::malformed(
@@ -236,18 +509,12 @@ impl LazyArchiveMeta {
                 "source .fig archive entries do not match the opened document",
             ));
         }
-        if let Some(expected_fp) = expected.container {
-            let fp = crate::archive::ContainerFingerprint::from_parts(
-                self.file_len,
-                &self.tail,
-                self.cd_offset,
-                &self.cd,
-            );
-            if fp != expected_fp {
-                return Err(FigError::malformed(
-                    "source .fig archive changed since it was opened",
-                ));
-            }
+        if let Some(expected_fp) = expected.container
+            && self.fingerprint() != expected_fp
+        {
+            return Err(FigError::malformed(
+                "source .fig archive changed since it was opened",
+            ));
         }
         Ok(())
     }
@@ -335,13 +602,19 @@ impl LazyArchiveMeta {
         }
         let bridge = Rc::new(RefCell::new(PayloadBridge::default()));
         let mut src_zip = self.open_archive(headers, Rc::clone(&bridge))?;
+        if src_zip.has_duplicate_names() {
+            return Err(FigError::malformed(
+                "source .fig archive contains duplicate entry names",
+            ));
+        }
         bridge.borrow_mut().cd_parsed = true;
         let mut dst_zip = zip::ZipWriter::new(PartWriter::new(Rc::clone(&bridge)));
+        let mut seen_names = HashSet::new();
 
-        write_canvas_thumb_and_images_dir(doc, &mut dst_zip)?;
+        write_canvas_thumb_and_images_dir(doc, &mut dst_zip, &mut seen_names)?;
 
         for i in 0..src_zip.len() {
-            {
+            let entry_name = {
                 let meta = src_zip.by_index_data(i).map_err(zip_read_err)?;
                 if meta.encrypted() {
                     return Err(FigError::malformed(
@@ -352,8 +625,20 @@ impl LazyArchiveMeta {
                 if !should_copy_source_entry(doc, &name) {
                     continue;
                 }
-            }
+                name.into_owned()
+            };
+            record_entry_name(&mut seen_names, entry_name.clone())?;
             let entry = src_zip.by_index_raw(i).map_err(zip_read_err)?;
+            check_chunk_limit(&entry_name, entry.size())?;
+            if !matches!(
+                entry.compression(),
+                zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated
+            ) {
+                return Err(FigError::malformed(format!(
+                    "{entry_name} uses unsupported compression {:?}",
+                    entry.compression()
+                )));
+            }
             let data_start = entry.data_start().ok_or_else(|| {
                 FigError::malformed("could not determine archive entry data offset")
             })?;
@@ -373,7 +658,7 @@ impl LazyArchiveMeta {
             verified?;
         }
 
-        write_new_images(doc, &mut dst_zip)?;
+        write_new_images(doc, &mut dst_zip, &mut seen_names)?;
         let writer = dst_zip.finish().map_err(zip_err)?;
         Ok(writer.into_parts())
     }

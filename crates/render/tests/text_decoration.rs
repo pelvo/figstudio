@@ -659,20 +659,16 @@ fn instance_overrides_and_uniform_scaling_on_stored_decorations() {
         "old component decoration position must not remain after fresh derived override"
     );
 
-    // Now verify non-NONE override (NONE -> STRIKETHROUGH) without fresh derivedTextData falls back
-    // to system fonts (`text_system_fonts == 1`) and draws the requested strikethrough.
+    // Now verify non-NONE override (NONE -> STRIKETHROUGH) on an instance without stored glyphs
+    // renders via fallback shaping (`text_system_fonts == 1`) and draws the strikethrough bar.
     let mut sym_plain = sym1;
     let mut text_plain = text1;
     text_plain.data.set("size", size(120.0, 36.0));
     text_plain.data.set("fontSize", Val::Float(24.0));
     text_plain.data.set("textDecoration", Val::Enum("NONE"));
-    text_plain.data.set(
-        "derivedTextData",
-        obj(&[(
-            "glyphs",
-            Val::Arr(vec![pillar_glyph(blob, 0.0, 20.0, 20.0, 0, 1.0)]),
-        )]),
-    );
+    if let Val::Obj(o) = &mut text_plain.data {
+        o.remove("derivedTextData");
+    }
     sym_plain.data.set("size", size(120.0, 36.0));
     let inst_add = instance(
         10,
@@ -704,7 +700,7 @@ fn instance_overrides_and_uniform_scaling_on_stored_decorations() {
             21,
             |p| p[3] > 80
         ) > 20,
-        "non-NONE override without fresh derivedTextData must render via fallback shaping"
+        "non-NONE override without stored glyphs must render via fallback shaping"
     );
 }
 
@@ -982,5 +978,217 @@ fn edited_text_and_fallback_shaping_decorations_and_precedence() {
     {
         let par = r.render_parallel(&doc, id(1), &vp);
         assert_eq!(px, par.pixmap.data_as_u8_slice());
+    }
+}
+
+#[test]
+fn decoration_only_override_preserves_stored_glyphs_without_fonts() {
+    let mut doc = document(vec![node(1, 0, "CANVAS")]);
+    let blob = push_pillar_blob(&mut doc);
+
+    // Component 1: plain undecorated TEXT with stored pillar glyphs.
+    let mut sym_plain = node(2, 1, "SYMBOL");
+    sym_plain.data.set("size", size(80.0, 24.0));
+    sym_plain.data.set("visible", Val::Bool(false));
+    let mut text_plain = node(3, 2, "TEXT");
+    text_plain.data.set("size", size(80.0, 24.0));
+    text_plain.data.set("fontSize", Val::Float(20.0));
+    text_plain.data.set("textDecoration", Val::Enum("NONE"));
+    text_plain.data.set("fillPaints", paint(0.0, 0.6, 0.0));
+    text_plain.data.set("fontName", hack_font_name());
+    text_plain
+        .data
+        .set("textData", obj(&[("characters", Val::Str("1   1".into()))]));
+    text_plain.data.set(
+        "derivedTextData",
+        obj(&[(
+            "glyphs",
+            Val::Arr(vec![
+                pillar_glyph(blob, 0.0, 20.0, 20.0, 0, 1.0),
+                pillar_glyph(blob, 20.0, 20.0, 20.0, 1, 1.0),
+            ]),
+        )]),
+    );
+
+    // Instance 1 (y=0): NONE -> UNDERLINE override without fresh derivedTextData.
+    let inst_add = instance(
+        4,
+        1,
+        2,
+        vec![patch(&[3], &[("textDecoration", Val::Enum("UNDERLINE"))])],
+    );
+
+    // Component 2: UNDERLINE TEXT with stored glyphs AND a stored underline rect in the gap.
+    let mut sym_ul = node(5, 1, "SYMBOL");
+    sym_ul.data.set("size", size(80.0, 24.0));
+    sym_ul.data.set("visible", Val::Bool(false));
+    let mut text_ul = text_plain.clone();
+    text_ul.id = id(6);
+    text_ul.parent = Some(id(5));
+    text_ul.data.set("guid", id(6).to_val());
+    text_ul.data.set("textDecoration", Val::Enum("UNDERLINE"));
+    text_ul.data.set(
+        "derivedTextData",
+        obj(&[
+            (
+                "glyphs",
+                Val::Arr(vec![
+                    pillar_glyph(blob, 0.0, 20.0, 20.0, 0, 1.0),
+                    pillar_glyph(blob, 20.0, 20.0, 20.0, 1, 1.0),
+                ]),
+            ),
+            (
+                "decorations",
+                Val::Arr(vec![obj(&[
+                    ("rects", Val::Arr(vec![dec_rect(0.0, 21.0, 30.0, 2.0)])),
+                    ("styleID", Val::Int(0)),
+                ])]),
+            ),
+        ]),
+    );
+
+    // Instance 2 (y=30): UNDERLINE -> STRIKETHROUGH override without fresh derivedTextData
+    // must keep stored glyphs and drop the stale underline rect.
+    let mut inst_change = instance(
+        7,
+        1,
+        5,
+        vec![patch(
+            &[6],
+            &[("textDecoration", Val::Enum("STRIKETHROUGH"))],
+        )],
+    );
+    inst_change
+        .data
+        .set("transform", obj(&[("m12", Val::Float(30.0))]));
+
+    doc.set_nodes(vec![
+        node(1, 0, "CANVAS"),
+        sym_plain,
+        text_plain,
+        inst_add,
+        sym_ul,
+        text_ul,
+        inst_change,
+    ])
+    .unwrap();
+
+    let vp = Viewport {
+        width: 80,
+        height: 60,
+        transform: Affine::IDENTITY,
+        background: None,
+    };
+
+    for mut r in [Renderer::new(), fallback_renderer()] {
+        r.system_fonts = false;
+        let frame = r.render(&doc, id(1), &vp);
+        assert_eq!(frame.stats.text_missing, 0);
+        assert_eq!(frame.stats.text_system_fonts, 0);
+        assert_eq!(frame.stats.text_stored_glyphs, 2);
+        assert_eq!(frame.stats.approximated_text_decorations, 2);
+        let px = frame.pixmap.data_as_u8_slice();
+
+        // Both instances keep their stored custom-font pillar glyphs (x=0..4, y=4..20 and y=34..50).
+        assert!(
+            count_in_rect(px, 80, 0, 4, 4, 20, |p| p[1] > 100 && p[3] > 200) >= 40,
+            "NONE -> UNDERLINE override must preserve stored glyphs"
+        );
+        assert!(
+            count_in_rect(px, 80, 0, 34, 4, 50, |p| p[1] > 100 && p[3] > 200) >= 40,
+            "UNDERLINE -> STRIKETHROUGH override must preserve stored glyphs"
+        );
+        // Stale underline rect at y=51..53 in the inter-pillar gap (x=6..18) must be removed.
+        assert_eq!(
+            count_in_rect(px, 80, 6, 51, 18, 53, |p| p[3] > 0),
+            0,
+            "stale stored underline must not remain after STRIKETHROUGH override"
+        );
+
+        #[cfg(feature = "parallel")]
+        {
+            let area = figstudio_render::kurbo::Rect::new(0.0, 0.0, 80.0, 60.0);
+            let (rec, _) = r.record(&doc, id(1), vp.transform, area, usize::MAX);
+            let (replayed, _) = rec.unwrap().render(&vp).unwrap();
+            assert_eq!(replayed.stats.text_missing, 0);
+            assert_eq!(replayed.stats.text_stored_glyphs, 2);
+            assert_eq!(replayed.stats.approximated_text_decorations, 2);
+            assert_eq!(px, replayed.pixmap.data_as_u8_slice());
+        }
+    }
+}
+
+#[test]
+fn unusable_stored_decoration_rects_are_counted_in_stats() {
+    let mut doc = document(vec![node(1, 0, "CANVAS")]);
+    let blob = push_pillar_blob(&mut doc);
+
+    let make_text = |n: u32, y: f64, dec: &'static str, rects: Val| {
+        let mut t = node(n, 1, "TEXT");
+        t.data.set("size", size(80.0, 24.0));
+        t.data.set("transform", obj(&[("m12", Val::Float(y))]));
+        t.data.set("fontSize", Val::Float(20.0));
+        t.data.set("textDecoration", Val::Enum(dec));
+        t.data.set("fillPaints", paint(0.1, 0.1, 0.1));
+        t.data
+            .set("textData", obj(&[("characters", Val::Str("AB".into()))]));
+        t.data.set(
+            "derivedTextData",
+            obj(&[
+                (
+                    "glyphs",
+                    Val::Arr(vec![pillar_glyph(blob, 0.0, 20.0, 20.0, 0, 0.5)]),
+                ),
+                (
+                    "decorations",
+                    Val::Arr(vec![obj(&[("rects", rects), ("styleID", Val::Int(0))])]),
+                ),
+            ]),
+        );
+        t
+    };
+
+    // Zero-width stored rect with UNDERLINE -> unusable, must count in approximated_text_decorations.
+    let zero_w = make_text(
+        2,
+        0.0,
+        "UNDERLINE",
+        Val::Arr(vec![dec_rect(10.0, 21.0, 0.0, 2.0)]),
+    );
+    // Empty `rects: []` with STRIKETHROUGH -> unusable, must count in approximated_text_decorations.
+    let empty_rects = make_text(3, 30.0, "STRIKETHROUGH", Val::Arr(vec![]));
+    // Negative control: `textDecoration = NONE` with zero-width rect -> must NOT count.
+    let none_dec = make_text(
+        4,
+        60.0,
+        "NONE",
+        Val::Arr(vec![dec_rect(10.0, 21.0, 0.0, 2.0)]),
+    );
+
+    doc.set_nodes(vec![node(1, 0, "CANVAS"), zero_w, empty_rects, none_dec])
+        .unwrap();
+
+    let mut r = Renderer::new();
+    r.system_fonts = false;
+    let vp = Viewport {
+        width: 80,
+        height: 90,
+        transform: Affine::IDENTITY,
+        background: None,
+    };
+    let frame = r.render(&doc, id(1), &vp);
+    assert_eq!(frame.stats.text_stored_glyphs, 3);
+    assert_eq!(frame.stats.approximated_text_decorations, 2);
+
+    #[cfg(feature = "parallel")]
+    {
+        let area = figstudio_render::kurbo::Rect::new(0.0, 0.0, 80.0, 90.0);
+        let (rec, _) = r.record(&doc, id(1), vp.transform, area, usize::MAX);
+        let (replayed, _) = rec.unwrap().render(&vp).unwrap();
+        assert_eq!(replayed.stats.approximated_text_decorations, 2);
+        assert_eq!(
+            frame.pixmap.data_as_u8_slice(),
+            replayed.pixmap.data_as_u8_slice()
+        );
     }
 }

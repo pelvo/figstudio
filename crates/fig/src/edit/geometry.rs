@@ -6,6 +6,7 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use serde::{Deserialize, Serialize};
 
+use crate::edit::schema_check::{intern_node_enum, require_finite_f32};
 use crate::edit::{NodePatch, Txn, fractional};
 use crate::{Document, FigError, Guid, Obj, Val, intern};
 
@@ -129,6 +130,42 @@ pub fn matrix_2x3(x: f64, y: f64, rotation_deg: f64) -> Val {
         ("m11", Val::Float(c)),
         ("m12", Val::Float(y)),
     ]))
+}
+
+/// Rotates `existing`'s 2x2 linear part to target angle `degrees` (`R(target - current) * L`),
+/// preserving translation, scale, reflection, and shear. Rejects non-finite inputs or a
+/// degenerate zero X-basis vector where the current angle is undefined.
+pub(crate) fn rotate_transform(existing: Option<&Val>, degrees: f64) -> Result<Val, FigError> {
+    require_finite_f32(degrees, "rotate degrees")?;
+    let get = |k: &str, default: f64| existing.and_then(|t| t.num(k)).map_or(default, f64::from);
+    let (m00, m01, m02) = (get("m00", 1.0), get("m01", 0.0), get("m02", 0.0));
+    let (m10, m11, m12) = (get("m10", 0.0), get("m11", 1.0), get("m12", 0.0));
+    for v in [m00, m01, m02, m10, m11, m12] {
+        require_finite_f32(v, "rotate transform")?;
+    }
+    let x_len = m00.hypot(m10);
+    if !x_len.is_finite() || x_len <= 1e-12 {
+        return Err(FigError::malformed(
+            "cannot rotate node with degenerate zero X-basis transform",
+        ));
+    }
+    let delta = degrees.to_radians() - m10.atan2(m00);
+    let (s, c) = delta.sin_cos();
+    let n00 = c * m00 - s * m10;
+    let n01 = c * m01 - s * m11;
+    let n10 = s * m00 + c * m10;
+    let n11 = s * m01 + c * m11;
+    for v in [n00, n01, n10, n11] {
+        require_finite_f32(v, "rotated transform")?;
+    }
+    Ok(Val::Obj(Obj::from([
+        ("m00", Val::Float(n00)),
+        ("m01", Val::Float(n01)),
+        ("m02", Val::Float(m02)),
+        ("m10", Val::Float(n10)),
+        ("m11", Val::Float(n11)),
+        ("m12", Val::Float(m12)),
+    ])))
 }
 
 /// Generates rounded-rectangle outline commands with per-corner radii `[tl, tr, br, bl]`
@@ -446,10 +483,23 @@ pub fn create_shape_node(
             params.parent
         )));
     }
+    require_finite_f32(params.x, "create_shape x")?;
+    require_finite_f32(params.y, "create_shape y")?;
+    require_finite_f32(params.width, "create_shape width")?;
+    require_finite_f32(params.height, "create_shape height")?;
+    require_finite_f32(
+        f64::from(params.corner_radius),
+        "create_shape corner_radius",
+    )?;
+    if let Some(ir) = params.star_inner_scale {
+        require_finite_f32(f64::from(ir), "create_shape star_inner_scale")?;
+    }
     let normalized_kind = match params.kind.as_str() {
         "RECTANGLE" => "ROUNDED_RECTANGLE",
         other => other,
     };
+    let schema = doc.decoded_schema()?;
+    let type_enum = intern_node_enum(&schema, "type", normalized_kind, "create_shape")?;
     let last_pos = doc
         .children(params.parent)
         .last()
@@ -460,7 +510,7 @@ pub fn create_shape_node(
     let mut obj = Obj::new();
     obj.insert("guid", new_id.to_val());
     obj.insert("phase", Val::Enum(intern("CREATED")));
-    obj.insert("type", Val::Enum(intern(normalized_kind)));
+    obj.insert("type", type_enum);
     obj.insert(
         "name",
         Val::Str(
@@ -558,14 +608,21 @@ pub fn resize_node_with_constraints(
     if doc.node(node_id).is_none() {
         return Err(FigError::malformed(format!("missing node {node_id}")));
     }
+    require_finite_f32(new_w, "resize width")?;
+    require_finite_f32(new_h, "resize height")?;
     // A worklist instead of recursion: a deep imported tree must not overflow the call stack.
+    // Stage into a local Txn so an atomic failure leaves the caller's `txn` untouched.
+    let mut local = Txn::new("resize");
+    let blob_base = doc.blobs.len() + txn.add_blobs.len();
     let mut work = vec![(node_id, new_w, new_h)];
     let mut seen = std::collections::HashSet::new();
     while let Some((id, w, h)) = work.pop() {
         if seen.insert(id) {
-            resize_one(doc, txn, id, w, h, &mut work);
+            resize_one(doc, &mut local, blob_base, id, w, h, &mut work)?;
         }
     }
+    txn.patches.extend(local.patches);
+    txn.add_blobs.extend(local.add_blobs);
     Ok(())
 }
 
@@ -573,13 +630,14 @@ pub fn resize_node_with_constraints(
 fn resize_one(
     doc: &Document,
     txn: &mut Txn,
+    blob_base: usize,
     node_id: Guid,
     new_w: f64,
     new_h: f64,
     work: &mut Vec<(Guid, f64, f64)>,
-) {
+) -> Result<(), FigError> {
     let Some(node) = doc.node(node_id) else {
-        return;
+        return Ok(());
     };
     let old_w = node
         .data
@@ -602,8 +660,8 @@ fn resize_one(
     set.insert("size", new_size);
 
     let mut unset = Vec::new();
-    sync_node_derived_caches(
-        doc,
+    sync_node_derived_caches_at(
+        blob_base,
         &node.kind,
         &node.data,
         &mut set,
@@ -651,6 +709,11 @@ fn resize_one(
 
         let pos_changed = (nx - cx).abs() > 1e-4 || (ny - cy).abs() > 1e-4;
         let size_changed = (nw - cw).abs() > 1e-4 || (nh - ch).abs() > 1e-4;
+        if size_changed && child.kind == "BOOLEAN_OPERATION" {
+            return Err(FigError::malformed(format!(
+                "cannot resize parent {node_id}: constraint on BOOLEAN_OPERATION child {child_id} would change its size"
+            )));
+        }
         if pos_changed {
             let mut tf = child
                 .data
@@ -662,10 +725,11 @@ fn resize_one(
             tf.set("m12", Val::Float(ny));
             txn.set_field(child_id, "transform", tf);
         }
-        if size_changed && child.kind != "BOOLEAN_OPERATION" {
+        if size_changed {
             work.push((child_id, nw, nh));
         }
     }
+    Ok(())
 }
 
 fn solve_1d_constraint(
@@ -740,8 +804,9 @@ const STROKE_SHAPE_INPUTS: &[&str] = &[
     "borderLeftWeight",
 ];
 
-/// Fields whose change invalidates `derivedTextData` and text `strokeGeometry` on `TEXT` nodes.
-const TEXT_LAYOUT_INPUTS: &[&str] = &[
+/// Fields whose change invalidates `derivedTextData` and text `fillGeometry` / `strokeGeometry`
+/// on `TEXT` nodes.
+pub(crate) const TEXT_LAYOUT_INPUTS: &[&str] = &[
     "textData",
     "size",
     "fontName",
@@ -845,6 +910,17 @@ pub(crate) fn sync_node_derived_caches(
     unset: &mut Vec<String>,
     add_blobs: &mut Vec<Vec<u8>>,
 ) {
+    sync_node_derived_caches_at(doc.blobs.len(), kind, before, set, unset, add_blobs);
+}
+
+fn sync_node_derived_caches_at(
+    blob_base: usize,
+    kind: &str,
+    before: &Val,
+    set: &mut Obj,
+    unset: &mut Vec<String>,
+    add_blobs: &mut Vec<Vec<u8>>,
+) {
     let shape_touched = patch_touches_any(set, unset, SHAPE_GEOMETRY_INPUTS);
     let stroke_shape_touched = patch_touches_any(set, unset, STROKE_SHAPE_INPUTS);
     let text_touched = kind == "TEXT" && patch_touches_any(set, unset, TEXT_LAYOUT_INPUTS);
@@ -859,7 +935,7 @@ pub(crate) fn sync_node_derived_caches(
         let preview = apply_patch_preview(before, set, unset);
         let eff_kind = preview.text("type").unwrap_or(kind);
         if let Some(cmds) = rebuild_shape_geometry(eff_kind, &preview) {
-            let blob_idx = doc.blobs.len() + add_blobs.len();
+            let blob_idx = blob_base + add_blobs.len();
             add_blobs.push(encode_path_commands(&cmds));
             set.insert(
                 "fillGeometry",
@@ -875,12 +951,17 @@ pub(crate) fn sync_node_derived_caches(
         }
     }
 
-    // 2. Drop stale `derivedTextData` on `TEXT` layout/content/typography edits.
-    if text_touched
-        && before.get("derivedTextData").is_some()
-        && !set.contains_key("derivedTextData")
-    {
-        push_unset_unique(unset, "derivedTextData");
+    // 2. Drop stale `derivedTextData` and pre-baked `fillGeometry` on `TEXT` layout/typography edits.
+    if text_touched {
+        if before.get("derivedTextData").is_some() && !set.contains_key("derivedTextData") {
+            push_unset_unique(unset, "derivedTextData");
+        }
+        if before.get("fillGeometry").is_some()
+            && !set.contains_key("fillGeometry")
+            && !unset.iter().any(|u| u == "fillGeometry")
+        {
+            push_unset_unique(unset, "fillGeometry");
+        }
     }
 
     // 3. Drop stale `strokeGeometry` unless the patch explicitly supplies a fresh one.
@@ -993,7 +1074,7 @@ pub(crate) fn cubic_extrema(p0: f64, c1: f64, c2: f64, p3: f64, lo: &mut f64, hi
     }
 }
 
-pub(crate) fn parse_hex_solid_paint(hex_str: &str) -> Option<Val> {
+pub(crate) fn parse_hex_rgba(hex_str: &str) -> Option<[f64; 4]> {
     let s = hex_str.trim().strip_prefix('#').unwrap_or(hex_str.trim());
     if !s.is_ascii() {
         return None;
@@ -1004,17 +1085,27 @@ pub(crate) fn parse_hex_solid_paint(hex_str: &str) -> Option<Val> {
         [r, g, b, a] => (*r, *g, *b, *a),
         _ => return None,
     };
+    Some([
+        f64::from(r) / 255.0,
+        f64::from(g) / 255.0,
+        f64::from(b) / 255.0,
+        f64::from(a) / 255.0,
+    ])
+}
+
+pub(crate) fn parse_hex_solid_paint(hex_str: &str) -> Option<Val> {
+    let [r, g, b, a] = parse_hex_rgba(hex_str)?;
     Some(Val::Obj(Obj::from([
         ("type", Val::Enum(intern("SOLID"))),
         ("visible", Val::Bool(true)),
-        ("opacity", Val::Float(f64::from(a) / 255.0)),
+        ("opacity", Val::Float(a)),
         ("blendMode", Val::Enum(intern("NORMAL"))),
         (
             "color",
             Val::Obj(Obj::from([
-                ("r", Val::Float(f64::from(r) / 255.0)),
-                ("g", Val::Float(f64::from(g) / 255.0)),
-                ("b", Val::Float(f64::from(b) / 255.0)),
+                ("r", Val::Float(r)),
+                ("g", Val::Float(g)),
+                ("b", Val::Float(b)),
                 ("a", Val::Float(1.0)),
             ])),
         ),

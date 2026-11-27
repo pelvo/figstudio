@@ -4,7 +4,7 @@
 //! back with its original Kiwi type. Values are encoded straight from `Val` without building
 //! a second tree, which matters for large files.
 
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Write};
 
 use kiwi_schema::{
     ByteBufferMut, DefKind, Field, Schema, TYPE_BOOL, TYPE_BYTE, TYPE_FLOAT, TYPE_INT, TYPE_INT64,
@@ -489,7 +489,14 @@ impl Document {
                 expect(clippy::drop_non_drop, reason = "wasm File has no Drop")
             )]
             drop(file);
-            let res = written.and_then(|()| commit_temp(&tmp));
+            let verified = written.and_then(|()| {
+                if bytes.starts_with(b"PK") {
+                    verify_staged_zip(&tmp)
+                } else {
+                    Ok(())
+                }
+            });
+            let res = verified.and_then(|()| commit_temp(&tmp));
             if res.is_err() {
                 let _ = std::fs::remove_file(&tmp);
             }
@@ -525,10 +532,13 @@ impl Document {
         let (tmp, file) = create_temp(dst)?;
         let write_res = (|| -> Result<(), FigError> {
             let io = |e: std::io::Error| FigError::io("cannot write archive", e);
-            let mut buf = self.write_lazy_archive(src_file, std::io::BufWriter::new(file))?;
-            buf.flush().map_err(io)?;
-            let inner = buf.into_inner().map_err(|e| io(e.into_error()))?;
-            inner.sync_all().map_err(io)?;
+            {
+                let mut buf = self.write_lazy_archive(src_file, std::io::BufWriter::new(file))?;
+                buf.flush().map_err(io)?;
+                let inner = buf.into_inner().map_err(|e| io(e.into_error()))?;
+                inner.sync_all().map_err(io)?;
+            }
+            verify_staged_zip(&tmp)?;
             if overwrite && is_same_as_src(&src_handle) {
                 return Err(FigError::malformed(
                     "refusing to overwrite the source file while streaming lazy archive",
@@ -570,6 +580,61 @@ impl Document {
         }
         result
     }
+}
+
+/// Streams every entry of a staged ZIP `.fig` file through a fixed buffer before publication so
+/// corrupt payloads, CRC mismatches, duplicate entry names, or missing `canvas.fig` never reach
+/// the destination path.
+fn verify_staged_zip(path: &std::path::Path) -> Result<(), FigError> {
+    let io = |e: std::io::Error| FigError::io("cannot verify staged archive", e);
+    let zip_err =
+        |e: zip::result::ZipError| FigError::archive("staged archive failed verification", e);
+    let file = std::fs::File::open(path).map_err(io)?;
+    let mut archive = zip::ZipArchive::new(std::io::BufReader::new(file)).map_err(zip_err)?;
+    if archive.has_duplicate_names() {
+        return Err(FigError::malformed(
+            "staged archive contains duplicate entry names",
+        ));
+    }
+    let mut saw_canvas = false;
+    let mut buf = [0u8; 64 * 1024];
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(zip_err)?;
+        let name = entry.name().map_err(zip_err)?.into_owned();
+        if name == "canvas.fig" {
+            saw_canvas = true;
+        }
+        let mut entry_bytes = 0usize;
+        let mut canvas_head = [0u8; 4];
+        let mut canvas_head_len = 0usize;
+        loop {
+            let n = entry.read(&mut buf).map_err(io)?;
+            if n == 0 {
+                break;
+            }
+            if name == "canvas.fig" && canvas_head_len < 4 {
+                let take = (4 - canvas_head_len).min(n);
+                canvas_head[canvas_head_len..canvas_head_len + take].copy_from_slice(&buf[..take]);
+                canvas_head_len += take;
+            }
+            entry_bytes = entry_bytes
+                .checked_add(n)
+                .filter(|&total| total <= crate::doc::MAX_CHUNK_BYTES)
+                .ok_or_else(|| {
+                    FigError::limit(format!(
+                        "{name} inflates past the {}-byte limit",
+                        crate::doc::MAX_CHUNK_BYTES
+                    ))
+                })?;
+        }
+        if name == "canvas.fig" && (entry_bytes < 12 || &canvas_head != b"fig-") {
+            return Err(FigError::malformed("staged canvas.fig is not readable"));
+        }
+    }
+    if !saw_canvas {
+        return Err(FigError::malformed("staged archive has no canvas.fig"));
+    }
+    Ok(())
 }
 
 /// Atomically publishes `tmp` to `dst`. When `overwrite` is `false`, never replaces an

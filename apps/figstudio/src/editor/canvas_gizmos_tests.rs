@@ -311,16 +311,7 @@ fn non_drag_tab_edits_end_drag_and_cancel_checks_history_ownership() {
 
     // 1. Direct history-ownership guard: if another mutation advances history without clearing
     // edit_drag, cancel_edit_drag must not undo that unrelated transaction.
-    let (ox, oy, _, _) = crate::editor::local_xywh(&tab.doc.node(node_a).unwrap().data);
-    let mut drag = CanvasDrag::Move {
-        target: node_a,
-        start_pointer_page: pos2(0.0, 0.0),
-        orig_x: ox,
-        orig_y: oy,
-        moved: false,
-        last_applied: None,
-        drag_state_id: None,
-    };
+    let mut drag = CanvasDrag::start_move(&tab.doc, node_a, pos2(0.0, 0.0)).unwrap();
     let mut cursor = None;
     assert!(step_edit_drag(
         &mut tab,
@@ -346,16 +337,7 @@ fn non_drag_tab_edits_end_drag_and_cancel_checks_history_ownership() {
 
     // 2. Non-drag UI helpers (duplicate, delete, paste, undo, redo) end an active drag on commit.
     let arm_move_drag = |tab: &mut Tab, target: Guid| {
-        let (x, y, _, _) = crate::editor::local_xywh(&tab.doc.node(target).unwrap().data);
-        let mut d = CanvasDrag::Move {
-            target,
-            start_pointer_page: pos2(0.0, 0.0),
-            orig_x: x,
-            orig_y: y,
-            moved: false,
-            last_applied: None,
-            drag_state_id: None,
-        };
+        let mut d = CanvasDrag::start_move(&tab.doc, target, pos2(0.0, 0.0)).unwrap();
         let mut c = None;
         assert!(step_edit_drag(tab, &mut d, pos2(12.0, 0.0), 6.0, &mut c));
         tab.edit_drag = Some(d);
@@ -391,16 +373,150 @@ fn non_drag_tab_edits_end_drag_and_cancel_checks_history_ownership() {
     arm_move_drag(&mut tab, node_a);
     // Re-seed redo stack by undoing once before testing redo_tab ends an active drag.
     assert!(crate::editor::undo_tab(&mut tab).unwrap().is_some());
-    let (x, y, _, _) = crate::editor::local_xywh(&tab.doc.node(node_a).unwrap().data);
-    tab.edit_drag = Some(CanvasDrag::Move {
-        target: node_a,
-        start_pointer_page: pos2(0.0, 0.0),
-        orig_x: x,
-        orig_y: y,
-        moved: false,
-        last_applied: None,
-        drag_state_id: None,
-    });
+    tab.edit_drag = CanvasDrag::start_move(&tab.doc, node_a, pos2(0.0, 0.0));
     assert!(crate::editor::redo_tab(&mut tab).unwrap().is_some());
     assert!(tab.edit_drag.is_none(), "redo_tab ends active drag");
+}
+
+#[test]
+fn multi_tick_boolean_operand_step_drag_under_45deg_rotated_parent_tracks_page_space() {
+    use figstudio_fig::edit::vector_net::BooleanOp;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/structure.fig");
+    let mut doc = Document::open(&path).unwrap();
+    let mut history = History::new(20);
+    let page = doc.pages[0];
+    let frame = execute_edit_ops(
+        &mut doc,
+        &mut history,
+        &[shape("FRAME", page, 300.0, 300.0, 240.0, 240.0)],
+        None,
+        None,
+        false,
+    )
+    .unwrap()
+    .0
+    .created_ids[0];
+    apply(
+        &mut doc,
+        &mut history,
+        &[EditOp::Rotate {
+            target: frame,
+            degrees: 45.0,
+        }],
+    );
+    let rect_a = execute_edit_ops(
+        &mut doc,
+        &mut history,
+        &[shape("RECTANGLE", frame, 20.0, 20.0, 40.0, 40.0)],
+        None,
+        None,
+        false,
+    )
+    .unwrap()
+    .0
+    .created_ids[0];
+    let rect_b = execute_edit_ops(
+        &mut doc,
+        &mut history,
+        &[shape("RECTANGLE", frame, 40.0, 20.0, 40.0, 40.0)],
+        None,
+        None,
+        false,
+    )
+    .unwrap()
+    .0
+    .created_ids[0];
+    apply(
+        &mut doc,
+        &mut history,
+        &[EditOp::BooleanCombine {
+            operation: BooleanOp::Union,
+            a: rect_a,
+            b: rect_b,
+            name: None,
+        }],
+    );
+
+    let mut tab = Tab::new(1, path, Arc::new(doc), None, Duration::ZERO);
+    let start_origin = page_point(&tab.doc, rect_a, Point::ZERO);
+    let mut move_drag = CanvasDrag::start_move(&tab.doc, rect_a, pos2(0.0, 0.0)).unwrap();
+    let mut cursor = None;
+    assert!(step_edit_drag(
+        &mut tab,
+        &mut move_drag,
+        pos2(-10.0, 0.0),
+        6.0,
+        &mut cursor
+    ));
+    assert_near(
+        page_point(&tab.doc, rect_a, Point::ZERO),
+        start_origin + figstudio_render::kurbo::Vec2::new(-10.0, 0.0),
+    );
+    assert!(step_edit_drag(
+        &mut tab,
+        &mut move_drag,
+        pos2(-20.0, 0.0),
+        6.0,
+        &mut cursor
+    ));
+    assert_near(
+        page_point(&tab.doc, rect_a, Point::ZERO),
+        start_origin + figstudio_render::kurbo::Vec2::new(-20.0, 0.0),
+    );
+    let rev_after_move = tab.doc.revision;
+    assert!(step_edit_drag(
+        &mut tab,
+        &mut move_drag,
+        pos2(-20.04, 0.03),
+        6.0,
+        &mut cursor
+    ));
+    assert_eq!(tab.doc.revision, rev_after_move);
+    tab.edit_drag = Some(move_drag);
+    end_edit_drag(&mut tab);
+
+    // West resize along rect_a's rotated -X axis in page space across two ticks + stationary tick.
+    let west_axis = page_point(&tab.doc, rect_a, Point::ZERO)
+        - page_point(&tab.doc, rect_a, Point::new(1.0, 0.0));
+    let west_before = page_point(&tab.doc, rect_a, Point::new(0.0, 20.0));
+    let east_before = page_point(&tab.doc, rect_a, Point::new(40.0, 20.0));
+    let mut resize_drag =
+        CanvasDrag::start_resize(&tab.doc, rect_a, Handle::W, pos2(0.0, 0.0), false).unwrap();
+    assert!(step_edit_drag(
+        &mut tab,
+        &mut resize_drag,
+        pos2((west_axis.x * 10.0) as f32, (west_axis.y * 10.0) as f32),
+        6.0,
+        &mut cursor
+    ));
+    assert!(step_edit_drag(
+        &mut tab,
+        &mut resize_drag,
+        pos2((west_axis.x * 20.0) as f32, (west_axis.y * 20.0) as f32),
+        6.0,
+        &mut cursor
+    ));
+    let (w2, _) = geom::size(&tab.doc.node(rect_a).unwrap().data);
+    assert!((w2 - 60.0).abs() < 1e-6, "expected width 60, got {w2}");
+    assert_near(
+        page_point(&tab.doc, rect_a, Point::new(0.0, 20.0)),
+        west_before + west_axis * 20.0,
+    );
+    assert_near(
+        page_point(&tab.doc, rect_a, Point::new(w2, 20.0)),
+        east_before,
+    );
+    let rev_after_resize = tab.doc.revision;
+    assert!(step_edit_drag(
+        &mut tab,
+        &mut resize_drag,
+        pos2((west_axis.x * 20.0) as f32, (west_axis.y * 20.0) as f32),
+        6.0,
+        &mut cursor
+    ));
+    assert_eq!(tab.doc.revision, rev_after_resize);
 }

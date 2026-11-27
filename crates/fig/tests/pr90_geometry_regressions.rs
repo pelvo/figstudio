@@ -2756,12 +2756,14 @@ fn boolean_autolayout_vector_resize_and_creation_compatibility() {
     );
     c.d.apply_txn(&t).unwrap();
     let bsz = c.sz(bid);
-    c.run(&[rsz(after, 40.0, 20.0)]);
+    c.atomic_err(&[rsz(after, 40.0, 20.0)], "BOOLEAN_OPERATION");
     assert_eq!(c.sz(bid), bsz);
-    figstudio_fig::edit::autolayout::apply_auto_layout_to_doc(&mut c.d, Some(outer)).unwrap();
+    assert!(
+        figstudio_fig::edit::autolayout::apply_auto_layout_to_doc(&mut c.d, Some(outer)).is_err()
+    );
     assert_eq!(c.sz(bid), bsz);
 
-    // 3. Parent Resize with STRETCH/SCALE boolean child preserves boolean size.
+    // 3. Parent Resize with STRETCH/SCALE boolean child fails closed atomically; MIN succeeds.
     let frame = c.run(&[shape_op("FRAME", c.p, 0.0, 200.0, 100.0, 100.0)])[0];
     let (fb, _, _) = c.union_pair(frame);
     let fbsz = c.sz(fb);
@@ -2770,8 +2772,10 @@ fn boolean_autolayout_vector_resize_and_creation_compatibility() {
         horizontal: Some("STRETCH".into()),
         vertical: Some("SCALE".into()),
     };
-    c.run(&[cs, rsz(frame, 200.0, 200.0)]);
+    c.run(&[cs]);
+    c.atomic_err(&[rsz(frame, 200.0, 200.0)], "BOOLEAN_OPERATION");
     assert_eq!(c.sz(fb), fbsz);
+    assert_eq!(c.sz(frame), (100.0, 100.0));
 
     // 4. VECTOR resize: rescalable updates scaled boolean; prebaked-only rejects atomically.
     let mut vc = BoolCtx {
@@ -2802,7 +2806,9 @@ fn boolean_autolayout_vector_resize_and_creation_compatibility() {
     vc.seed(vid, "fillGeometry", 180.0, 50.0);
     vc.atomic_err(&[rsz(vid, 300.0, 50.0)], "VECTOR");
 
-    // 5. BooleanCombine creation compatibility (INSTANCE, non-empty FRAME, SECTION, LINE, SYMBOL).
+    // 5. BooleanCombine uses the same strict operand rules as recompute: non-empty FRAME fails
+    //    closed atomically, while accepted operands (INSTANCE with fillGeometry, empty SECTION,
+    //    LINE, empty SYMBOL) succeed on both creation and follow-up Move.
     let mut cc = BoolCtx::new();
     let master = cc.run(&[shape_op("FRAME", cc.p, 0.0, 0.0, 40.0, 40.0)])[0];
     cc.run(&[EditOp::CreateComponent { frame: master }]);
@@ -2816,13 +2822,16 @@ fn boolean_autolayout_vector_resize_and_creation_compatibility() {
     cc.seed(inst, "fillGeometry", 40.0, 40.0);
     let nef = cc.run(&[shape_op("FRAME", cc.p, 0.0, 0.0, 40.0, 40.0)])[0];
     cc.run(&[rect_op(None, nef, 5.0, 5.0, 10.0, 10.0)]);
+    let nef_peer = cc.run(&[rect_op(None, cc.p, 10.0, 0.0, 40.0, 40.0)])[0];
+    cc.atomic_err(&[comb(BooleanOp::Union, nef, nef_peer)], "children");
     let sec = cc.run(&[shape_op("SECTION", cc.p, 0.0, 0.0, 40.0, 40.0)])[0];
     let line = cc.run(&[shape_op("LINE", cc.p, 0.0, 0.0, 40.0, 0.0)])[0];
     let sym = cc.run(&[shape_op("FRAME", cc.p, 0.0, 0.0, 40.0, 40.0)])[0];
     cc.run(&[EditOp::CreateComponent { frame: sym }]);
-    for op_node in [inst, nef, sec, line, sym] {
+    for op_node in [inst, sec, line, sym] {
         let p = cc.run(&[rect_op(None, cc.p, 10.0, 0.0, 40.0, 40.0)])[0];
         cc.run(&[comb(BooleanOp::Union, op_node, p)]);
+        cc.run(&[mv(p, 15.0, 0.0)]);
     }
 }
 

@@ -1521,17 +1521,10 @@ impl Ctx<'_> {
             o.remove("strokeGeometry");
         }
         // Stored decoration rectangles no longer match an overridden decoration property unless a
-        // derived patch supplied fresh derivedTextData. Explicit NONE only removes bars, keeping
-        // exact custom-font stored glyphs; non-NONE overrides without fresh derived data fall back
-        // to system-font layout (counted in text_system_fonts).
-        if stale_decorations {
-            if let Some(Val::Obj(derived)) = data.get_mut("derivedTextData") {
-                derived.remove("decorations");
-            }
-            if text::wants_decoration(&data, self.variables.tokens()) {
-                text_changed = true;
-                glyphs_fresh = false;
-            }
+        // derived patch supplied fresh derivedTextData. Remove only `decorations` so exact
+        // stored glyphs stay intact; `text::stored` counts unbacked non-NONE decorations.
+        if stale_decorations && let Some(Val::Obj(derived)) = data.get_mut("derivedTextData") {
+            derived.remove("decorations");
         }
         if !transform_stated && let Some((old, new)) = parent {
             layout::constrain(&node.data, &mut data, old, new, (move_by, grow_by));

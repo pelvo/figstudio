@@ -92,9 +92,46 @@ pub fn append_auto_layout_patches(
     txn: &mut Txn,
 ) -> usize {
     let updates = compute_auto_layout(doc, scope_root);
-    let count = updates.len();
+    apply_layout_updates(doc, &updates, txn, false)
+}
+
+/// Fallible Auto-Layout patch builder: fails closed atomically (leaving `txn` untouched) if
+/// Auto-Layout computes a size change on a `BOOLEAN_OPERATION` child whose derived geometry
+/// cannot yet be rescaled.
+pub fn try_append_auto_layout_patches(
+    doc: &Document,
+    scope_root: Option<Guid>,
+    txn: &mut Txn,
+) -> Result<usize, FigError> {
+    let updates = compute_auto_layout(doc, scope_root);
+    for u in &updates {
+        if u.size_changed
+            && doc
+                .node(u.id)
+                .is_some_and(|n| n.kind == "BOOLEAN_OPERATION")
+        {
+            return Err(FigError::malformed(format!(
+                "cannot resize BOOLEAN_OPERATION {} during Auto-Layout: derived boolean geometry cannot be resized without operand scaling",
+                u.id
+            )));
+        }
+    }
+    Ok(apply_layout_updates(doc, &updates, txn, true))
+}
+
+fn apply_layout_updates(
+    doc: &Document,
+    updates: &[LayoutUpdate],
+    txn: &mut Txn,
+    allow_boolean_size: bool,
+) -> usize {
+    let mut count = 0usize;
     for u in updates {
         let Some(node) = doc.node(u.id) else { continue };
+        let apply_size = u.size_changed && (allow_boolean_size || node.kind != "BOOLEAN_OPERATION");
+        if !u.pos_changed && !apply_size {
+            continue;
+        }
         let mut set = Obj::new();
         if u.pos_changed {
             let mut tf = node
@@ -108,7 +145,7 @@ pub fn append_auto_layout_patches(
             set.insert("transform", tf);
         }
         let mut unset = Vec::new();
-        if u.size_changed {
+        if apply_size {
             set.insert(
                 "size",
                 Val::Obj(Obj::from([
@@ -126,6 +163,7 @@ pub fn append_auto_layout_patches(
             );
         }
         txn.modify(u.id, set, unset);
+        count += 1;
     }
     count
 }
@@ -136,7 +174,7 @@ pub fn apply_auto_layout_to_doc(
     scope_root: Option<Guid>,
 ) -> Result<Txn, FigError> {
     let mut txn = Txn::new("Solve Auto-Layout");
-    append_auto_layout_patches(doc, scope_root, &mut txn);
+    try_append_auto_layout_patches(doc, scope_root, &mut txn)?;
     let (inv, _) = doc.apply_txn(&txn)?;
     Ok(inv)
 }
@@ -514,7 +552,6 @@ fn layout_node(
                     // Stretch children with `stackChildAlignSelf == "STRETCH"`.
                     for &cid in line {
                         if let Some(cn) = doc.node(cid)
-                            && cn.kind != "BOOLEAN_OPERATION"
                             && cn.data.text("stackChildAlignSelf") == Some("STRETCH")
                         {
                             let (cw, ch) = sizes[&cid];
@@ -641,6 +678,23 @@ fn split_wrap_lines(
     lines
 }
 
+fn primary_bounds(data: &Val, horiz: bool) -> (f64, f64) {
+    let axis = if horiz { "x" } else { "y" };
+    let lo = data
+        .path(&["minSize", "value", axis])
+        .and_then(Val::as_f32)
+        .map(f64::from)
+        .filter(|x| x.is_finite() && *x >= 0.0)
+        .unwrap_or(0.0);
+    let hi = data
+        .path(&["maxSize", "value", axis])
+        .and_then(Val::as_f32)
+        .map(f64::from)
+        .filter(|x| x.is_finite() && *x >= 0.0 && *x >= lo)
+        .unwrap_or(f64::INFINITY);
+    (lo, hi)
+}
+
 fn distribute_primary_fill(
     doc: &Document,
     line: &[Guid],
@@ -649,62 +703,107 @@ fn distribute_primary_fill(
     inner_p: f64,
     gap: f64,
 ) {
-    let mut grow_ids: Vec<(Guid, f64)> = Vec::new();
+    struct FillItem {
+        id: Guid,
+        g: f64,
+        lo: f64,
+        hi: f64,
+        t_lo: f64,
+        t_hi: f64,
+    }
+
+    let mut items: Vec<FillItem> = Vec::new();
     let mut fixed_sum = gap * line.len().saturating_sub(1) as f64;
     for &cid in line {
-        let grow = doc
-            .node(cid)
-            .filter(|n| n.kind != "BOOLEAN_OPERATION")
+        let node = doc.node(cid);
+        let grow = node
             .and_then(|n| n.data.num("stackChildPrimaryGrow"))
             .map_or(0.0, f64::from);
-        if grow > 0.0 {
-            grow_ids.push((cid, grow));
+        if grow.is_finite() && grow > 0.0 {
+            let (lo, hi) = node.map_or((0.0, f64::INFINITY), |n| primary_bounds(&n.data, horiz));
+            items.push(FillItem {
+                id: cid,
+                g: grow,
+                lo,
+                hi,
+                t_lo: lo / grow,
+                t_hi: hi / grow,
+            });
         } else {
             let (cw, ch) = sizes[&cid];
             fixed_sum += if horiz { cw } else { ch };
         }
     }
-    if grow_ids.is_empty() {
+    if items.is_empty() {
         return;
     }
 
-    // Iterative water-filling distribution respecting minSize / maxSize bounds!
-    let mut remaining = (inner_p - fixed_sum).max(0.0);
-    let mut active: Vec<(Guid, f64)> = grow_ids;
-    loop {
-        let total_grow: f64 = active.iter().map(|(_, g)| *g).sum();
-        if total_grow <= 0.0 || active.is_empty() {
-            break;
+    // Order-independent exact solver for sum_i clamp(g_i * t, lo_i, hi_i) = available.
+    items.sort_by(|a, b| {
+        a.t_lo
+            .total_cmp(&b.t_lo)
+            .then_with(|| a.t_hi.total_cmp(&b.t_hi))
+            .then_with(|| a.g.total_cmp(&b.g))
+    });
+
+    let available = (inner_p - fixed_sum).max(0.0);
+    let set_primary = |sizes: &mut HashMap<Guid, (f64, f64)>, id: Guid, p: f64| {
+        let (cw, ch) = sizes[&id];
+        sizes.insert(id, if horiz { (p, ch) } else { (cw, p) });
+    };
+
+    let sum_lo: f64 = items.iter().map(|it| it.lo).sum();
+    if sum_lo >= available {
+        for it in &items {
+            set_primary(sizes, it.id, it.lo);
         }
-        let mut clamped_any = false;
-        let mut next_active = Vec::with_capacity(active.len());
-        for &(cid, g) in &active {
-            let share = remaining * (g / total_grow);
-            let (cw, ch) = sizes[&cid];
-            let Some(cn) = doc.node(cid) else { continue };
-            let (clamped_w, clamped_h) = if horiz {
-                clamp_min_max(&cn.data, share, ch)
-            } else {
-                clamp_min_max(&cn.data, cw, share)
-            };
-            let clamped_p = if horiz { clamped_w } else { clamped_h };
-            if (clamped_p - share).abs() > 1e-4 {
-                sizes.insert(cid, (clamped_w, clamped_h));
-                remaining = (remaining - clamped_p).max(0.0);
-                clamped_any = true;
-            } else {
-                next_active.push((cid, g));
+        return;
+    }
+    if items.iter().all(|it| it.hi.is_finite()) {
+        let sum_hi: f64 = items.iter().map(|it| it.hi).sum();
+        if sum_hi <= available {
+            for it in &items {
+                set_primary(sizes, it.id, it.hi);
             }
+            return;
         }
-        if !clamped_any {
-            for (cid, g) in next_active {
-                let share = remaining * (g / total_grow);
-                let (cw, ch) = sizes[&cid];
-                sizes.insert(cid, if horiz { (share, ch) } else { (cw, share) });
-            }
-            break;
+    }
+
+    let mut ts = Vec::with_capacity(items.len() * 2 + 1);
+    ts.push(0.0);
+    for it in &items {
+        ts.push(it.t_lo);
+        if it.t_hi.is_finite() {
+            ts.push(it.t_hi);
         }
-        active = next_active;
+    }
+    ts.sort_by(f64::total_cmp);
+    ts.dedup();
+
+    let eval = |t: f64| -> f64 { items.iter().map(|it| (it.g * t).clamp(it.lo, it.hi)).sum() };
+    let idx = ts.partition_point(|&t| eval(t) <= available);
+    let k = idx.saturating_sub(1);
+    let t_a = ts[k];
+    let t_b = ts.get(k + 1).copied().unwrap_or(f64::INFINITY);
+
+    let mut clamped_sum = 0.0_f64;
+    let mut free_grow = 0.0_f64;
+    for it in &items {
+        if it.t_hi <= t_a {
+            clamped_sum += it.hi;
+        } else if it.t_lo >= t_b {
+            clamped_sum += it.lo;
+        } else {
+            free_grow += it.g;
+        }
+    }
+    let t_star = if free_grow > 0.0 {
+        ((available - clamped_sum) / free_grow).clamp(t_a, t_b)
+    } else {
+        t_a
+    };
+    for it in &items {
+        set_primary(sizes, it.id, (it.g * t_star).clamp(it.lo, it.hi));
     }
 }
 

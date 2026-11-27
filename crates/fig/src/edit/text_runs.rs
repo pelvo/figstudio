@@ -7,9 +7,11 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::edit::geometry::{matrix_2x3, sync_node_derived_caches};
+use crate::edit::schema_check::{intern_node_enum, require_finite_f32};
 use crate::edit::styles_vars::hex_paint;
 use crate::edit::{Txn, fractional};
 use crate::{Document, FigError, Guid, Obj, Val, intern};
+use kiwi_schema::Schema;
 
 /// Style patch applied to a UTF-16 character range in a `TEXT` layer.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -25,10 +27,56 @@ pub struct TextStyleRunPatch {
 }
 
 impl TextStyleRunPatch {
-    /// Writes the set fields onto a `styleOverrideTable` entry. An invalid `fill_hex` is an
-    /// error and leaves `obj` untouched.
+    /// Writes the set fields onto a `styleOverrideTable` entry. An invalid `fill_hex`,
+    /// non-finite float, or unknown enum variant is an error and leaves `obj` untouched.
     pub fn apply_to_override_obj(&self, obj: &mut Obj) -> Result<(), FigError> {
+        self.apply_to_override_obj_with_schema(None, obj)
+    }
+
+    pub(crate) fn apply_to_override_obj_with_schema(
+        &self,
+        schema: Option<&Schema>,
+        obj: &mut Obj,
+    ) -> Result<(), FigError> {
         let fill = self.fill_hex.as_deref().map(hex_paint).transpose()?;
+        if let Some(sz) = self.font_size {
+            require_finite_f32(sz, "style_text_range font_size")?;
+        }
+        if let Some(ls) = self.letter_spacing_px {
+            require_finite_f32(ls, "style_text_range letter_spacing_px")?;
+        }
+        if let Some(lh) = self.line_height_px {
+            require_finite_f32(lh, "style_text_range line_height_px")?;
+        }
+        let dec_val = match self.text_decoration.as_deref() {
+            Some(dec) => Some(match schema {
+                Some(s) => intern_node_enum(s, "textDecoration", dec, "style_text_range")?,
+                None => match dec {
+                    "NONE" | "UNDERLINE" | "STRIKETHROUGH" => Val::Enum(intern(dec)),
+                    other => {
+                        return Err(FigError::malformed(format!(
+                            "unsupported textDecoration {other:?}"
+                        )));
+                    }
+                },
+            }),
+            None => None,
+        };
+        let case_val = match self.text_case.as_deref() {
+            Some(tc) => Some(match schema {
+                Some(s) => intern_node_enum(s, "textCase", tc, "style_text_range")?,
+                None => match tc {
+                    "ORIGINAL" | "UPPER" | "LOWER" | "TITLE" | "SMALL_CAPS"
+                    | "SMALL_CAPS_FORCED" => Val::Enum(intern(tc)),
+                    other => {
+                        return Err(FigError::malformed(format!(
+                            "unsupported textCase {other:?}"
+                        )));
+                    }
+                },
+            }),
+            None => None,
+        };
         if self.font_family.is_some() || self.font_style.is_some() {
             let fam = self
                 .font_family
@@ -63,11 +111,11 @@ impl TextStyleRunPatch {
         if let Some(paint) = fill {
             obj.insert("fillPaints", Val::Arr(vec![paint]));
         }
-        if let Some(ref dec) = self.text_decoration {
-            obj.insert("textDecoration", Val::Enum(intern(dec)));
+        if let Some(dec) = dec_val {
+            obj.insert("textDecoration", dec);
         }
-        if let Some(ref tc) = self.text_case {
-            obj.insert("textCase", Val::Enum(intern(tc)));
+        if let Some(tc) = case_val {
+            obj.insert("textCase", tc);
         }
         if let Some(ls) = self.letter_spacing_px {
             obj.insert(
@@ -111,6 +159,9 @@ pub fn create_text_node(
             "parent {parent} does not exist"
         )));
     }
+    require_finite_f32(x, "create_text x")?;
+    require_finite_f32(y, "create_text y")?;
+    require_finite_f32(font_size, "create_text font_size")?;
     let last_pos = doc
         .children(parent)
         .last()
@@ -357,19 +408,33 @@ pub fn apply_text_range_style(
     utf16_end: usize,
     patch: &TextStyleRunPatch,
 ) -> Result<Val, FigError> {
-    if let Some(hex) = &patch.fill_hex {
-        hex_paint(hex)?;
-    }
+    apply_text_range_style_with_schema(None, text_data, utf16_start, utf16_end, patch)
+}
+
+pub(crate) fn apply_text_range_style_with_schema(
+    schema: Option<&Schema>,
+    text_data: &Val,
+    utf16_start: usize,
+    utf16_end: usize,
+    patch: &TextStyleRunPatch,
+) -> Result<Val, FigError> {
+    let mut probe = Obj::new();
+    patch.apply_to_override_obj_with_schema(schema, &mut probe)?;
     let chars_str = text_data.text("characters").unwrap_or("");
-    let u16_len = chars_str.encode_utf16().count();
-    if utf16_start > utf16_end || utf16_end > u16_len {
+    let code_units: Vec<u16> = chars_str.encode_utf16().collect();
+    if utf16_start > utf16_end || utf16_end > code_units.len() {
         return Err(FigError::malformed("UTF-16 style range out of bounds"));
+    }
+    if !is_utf16_boundary(&code_units, utf16_start) || !is_utf16_boundary(&code_units, utf16_end) {
+        return Err(FigError::malformed(
+            "style range split a UTF-16 surrogate pair",
+        ));
     }
     if utf16_start == utf16_end {
         return Ok(text_data.clone().into_owned());
     }
 
-    let mut style_ids = expanded_style_ids(text_data, u16_len);
+    let mut style_ids = expanded_style_ids(text_data, code_units.len());
     let mut table: Vec<Val> = text_data
         .get("styleOverrideTable")
         .map(|v| v.items().to_vec())
@@ -402,7 +467,7 @@ pub fn apply_text_range_style(
             // 0 is the unstyled sentinel, so a wrap would silently drop the style.
             next_id = next_id.checked_add(1).ok_or_else(overflow)?;
             obj.insert("styleID", Val::Int(i64::from(next_id)));
-            patch.apply_to_override_obj(&mut obj)?;
+            patch.apply_to_override_obj_with_schema(schema, &mut obj)?;
             table.push(Val::Obj(obj));
             next_id
         };
@@ -542,7 +607,7 @@ fn pack_text_data(
     Val::Obj(out)
 }
 
-fn update_auto_resize_box(node_data: &Val, text: &str, set: &mut Obj) {
+pub(crate) fn update_auto_resize_box(node_data: &Val, text: &str, set: &mut Obj) {
     let mode = node_data.text("textAutoResize").unwrap_or("NONE");
     if mode == "NONE" {
         return;
