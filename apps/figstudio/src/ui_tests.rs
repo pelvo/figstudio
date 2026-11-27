@@ -172,6 +172,26 @@ pub fn right_click(h: &mut Harness<'_, App>, copied: &mut Vec<String>, at: Pos2)
     step(h, copied);
 }
 
+/// Frame-stepped primary click(s) from `at` to `at + delta` without a prior cooldown wait.
+pub fn primary_clicks(h: &mut Harness<'_, App>, at: Pos2, delta: egui::Vec2, count: usize) {
+    let end = at + delta;
+    for i in 0..count {
+        if i > 0 {
+            h.run_steps(3);
+        }
+        h.event(Event::PointerMoved(at));
+        h.step();
+        for (pos, pressed) in [(at, true), (end, false)] {
+            if !pressed && delta != egui::Vec2::ZERO {
+                h.event(Event::PointerMoved(pos));
+                h.step();
+            }
+            press(h, pos, PointerButton::Primary, pressed);
+            h.step();
+        }
+    }
+}
+
 /// Clicks the menu entry `label` and lets the frame that copies it run.
 pub fn click_label(h: &mut Harness<'_, App>, copied: &mut Vec<String>, label: &str) {
     h.get_by_label(label).click();

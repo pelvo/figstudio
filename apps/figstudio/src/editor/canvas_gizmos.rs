@@ -109,6 +109,7 @@ pub enum CanvasDrag {
         orig_w: f64,
         orig_h: f64,
         mutated: bool,
+        inside_node: bool,
     },
     Create {
         tool: Tool,
@@ -238,7 +239,8 @@ pub fn canvas_gizmos_input(
     let primary_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
     let primary_released = ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
     let canvas_hovered = response.hovered();
-    let canvas_owns_press = response.is_pointer_button_down_on() || response.clicked();
+    let canvas_owns_press =
+        response.is_pointer_button_down_on() || response.clicked_by(egui::PointerButton::Primary);
     let canvas_owns_drag =
         response.is_pointer_button_down_on() || response.dragged_by(egui::PointerButton::Primary);
 
@@ -331,10 +333,12 @@ pub fn canvas_gizmos_input(
         end_edit_drag(tab);
     }
 
-    if *tool != Tool::Select || tab.text_select.is_some() {
+    if *tool != Tool::Select || tab.text_select.is_some() || tab.inner.is_some() {
         end_edit_drag(tab);
         return GizmoFrame::default();
     }
+
+    let click_dist = f64::from(ui.ctx().options(|o| o.input_options.max_click_dist));
 
     // 2. Continue an in-progress Resize or Move drag without walking hit_chain.
     if let Some(mut drag) = tab.edit_drag.clone() {
@@ -352,124 +356,34 @@ pub fn canvas_gizmos_input(
 
         let mut cursor = None;
         let active_or_releasing = (primary_down && canvas_owns_drag) || primary_released;
-        if active_or_releasing && let Some(pos) = pointer_pos {
-            let cur_page = tab.view.to_page(rect.min, pos);
-            let start = match &drag {
-                CanvasDrag::Move {
-                    start_pointer_page, ..
-                }
-                | CanvasDrag::Resize {
-                    start_pointer_page, ..
-                } => *start_pointer_page,
-                CanvasDrag::Create { start_page, .. } => *start_page,
+        if active_or_releasing
+            && let Some(pos) = pointer_pos
+            && !step_edit_drag(
+                tab,
+                &mut drag,
+                tab.view.to_page(rect.min, pos),
+                click_dist,
+                &mut cursor,
+            )
+        {
+            end_edit_drag(tab);
+            return GizmoFrame {
+                cursor: None,
+                consumed_click: true,
+                blocks_marquee: true,
+                blocks_text: true,
             };
-            let dx = f64::from(cur_page.x - start.x);
-            let dy = f64::from(cur_page.y - start.y);
-
-            match &mut drag {
-                CanvasDrag::Move {
-                    target,
-                    orig_x,
-                    orig_y,
-                    moved,
-                    ..
-                } => {
-                    if *moved || dx.hypot(dy) * f64::from(tab.view.zoom) >= 3.0 {
-                        tab.marquee.clear();
-                        let key = format!("gui:move:{target}");
-                        let (x, y) = moved_to(&tab.doc, *target, *orig_x, *orig_y, dx, dy);
-                        if apply_tab_ops_ui(
-                            tab,
-                            &[EditOp::Move {
-                                target: *target,
-                                x: x.round(),
-                                y: y.round(),
-                                relative: false,
-                            }],
-                            Some("Move layer"),
-                            Some(&key),
-                        )
-                        .is_none()
-                        {
-                            end_edit_drag(tab);
-                            return GizmoFrame {
-                                cursor: None,
-                                consumed_click: true,
-                                blocks_marquee: true,
-                                blocks_text: true,
-                            };
-                        }
-                        *moved = true;
-                        cursor = Some(CursorIcon::Grabbing);
-                    }
-                }
-                CanvasDrag::Resize {
-                    target,
-                    handle,
-                    orig_x,
-                    orig_y,
-                    orig_w,
-                    orig_h,
-                    mutated,
-                    ..
-                } => {
-                    tab.marquee.clear();
-                    let (nx, ny, nw, nh) = resized_with(
-                        &tab.doc,
-                        *target,
-                        *handle,
-                        (*orig_x, *orig_y, *orig_w, *orig_h),
-                        dx,
-                        dy,
-                        true,
-                    );
-                    let changed = *mutated
-                        || (nx - *orig_x).abs() > 1e-6
-                        || (ny - *orig_y).abs() > 1e-6
-                        || (nw - *orig_w).abs() > 1e-6
-                        || (nh - *orig_h).abs() > 1e-6;
-                    if changed {
-                        let key = format!("gui:resize:{target}");
-                        if apply_tab_ops_ui(
-                            tab,
-                            &[
-                                EditOp::Move {
-                                    target: *target,
-                                    x: nx,
-                                    y: ny,
-                                    relative: false,
-                                },
-                                EditOp::Resize {
-                                    target: *target,
-                                    width: nw,
-                                    height: nh,
-                                },
-                            ],
-                            Some("Resize layer"),
-                            Some(&key),
-                        )
-                        .is_none()
-                        {
-                            end_edit_drag(tab);
-                            return GizmoFrame {
-                                cursor: None,
-                                consumed_click: true,
-                                blocks_marquee: true,
-                                blocks_text: true,
-                            };
-                        }
-                        *mutated = true;
-                    }
-                    cursor = Some(handle.cursor_for(absolute_transform(&tab.doc, *target)));
-                }
-                CanvasDrag::Create { .. } => {}
-            }
         }
 
-        let consumed = matches!(
-            drag,
-            CanvasDrag::Resize { .. } | CanvasDrag::Move { moved: true, .. }
-        );
+        let consumed = match drag {
+            CanvasDrag::Resize {
+                mutated,
+                inside_node,
+                ..
+            } => mutated || !inside_node,
+            CanvasDrag::Move { moved, .. } => moved,
+            CanvasDrag::Create { .. } => true,
+        };
         if primary_released || !primary_down || !canvas_owns_drag {
             end_edit_drag(tab);
             return GizmoFrame {
@@ -512,12 +426,15 @@ pub fn canvas_gizmos_input(
         return GizmoFrame::default();
     }
 
+    let inside_node = handles.contains_screen(rect, tab.view, pos);
     for (h, hp) in Handle::ALL.into_iter().zip(handles.points) {
         let hit = Rect::from_center_size(hp, vec2(10.0, 10.0));
         if hit.contains(pos) {
             let cursor = Some(h.cursor_for(handles.tf));
             if primary_pressed && canvas_owns_press {
-                tab.marquee.clear();
+                if !inside_node {
+                    tab.marquee.clear();
+                }
                 if !primary_released {
                     let (ox, oy, ow, oh) = local_xywh(&node.data);
                     tab.edit_drag = Some(CanvasDrag::Resize {
@@ -529,13 +446,14 @@ pub fn canvas_gizmos_input(
                         orig_w: ow,
                         orig_h: oh,
                         mutated: false,
+                        inside_node,
                     });
                 }
                 return GizmoFrame {
                     cursor,
-                    consumed_click: true,
+                    consumed_click: !inside_node,
                     blocks_marquee: true,
-                    blocks_text: true,
+                    blocks_text: !inside_node,
                 };
             }
             return GizmoFrame {
@@ -545,11 +463,7 @@ pub fn canvas_gizmos_input(
         }
     }
 
-    if primary_pressed
-        && canvas_owns_press
-        && handles.contains_screen(rect, tab.view, pos)
-        && !primary_released
-    {
+    if primary_pressed && canvas_owns_press && inside_node && !primary_released {
         let (ox, oy, _, _) = local_xywh(&node.data);
         tab.edit_drag = Some(CanvasDrag::Move {
             target: sel,
@@ -567,6 +481,123 @@ pub fn canvas_gizmos_input(
     }
 
     GizmoFrame::default()
+}
+
+/// Applies one pointer update to an active Move or Resize drag. Returns `false` when an edit
+/// operation fails and the caller must abort the drag.
+fn step_edit_drag(
+    tab: &mut Tab,
+    drag: &mut CanvasDrag,
+    cur_page: Pos2,
+    click_dist: f64,
+    cursor: &mut Option<CursorIcon>,
+) -> bool {
+    let start = match drag {
+        CanvasDrag::Move {
+            start_pointer_page, ..
+        }
+        | CanvasDrag::Resize {
+            start_pointer_page, ..
+        } => *start_pointer_page,
+        CanvasDrag::Create { .. } => return true,
+    };
+    let dx = f64::from(cur_page.x - start.x);
+    let dy = f64::from(cur_page.y - start.y);
+    let screen_dist = dx.hypot(dy) * f64::from(tab.view.zoom);
+
+    match drag {
+        CanvasDrag::Move {
+            target,
+            orig_x,
+            orig_y,
+            moved,
+            ..
+        } => {
+            if !*moved && screen_dist <= click_dist {
+                return true;
+            }
+            tab.marquee.clear();
+            let key = format!("gui:move:{target}");
+            let (x, y) = moved_to(&tab.doc, *target, *orig_x, *orig_y, dx, dy);
+            let ok = apply_tab_ops_ui(
+                tab,
+                &[EditOp::Move {
+                    target: *target,
+                    x: x.round(),
+                    y: y.round(),
+                    relative: false,
+                }],
+                Some("Move layer"),
+                Some(&key),
+            )
+            .is_some();
+            if ok {
+                *moved = true;
+                *cursor = Some(CursorIcon::Grabbing);
+            }
+            ok
+        }
+        CanvasDrag::Resize {
+            target,
+            handle,
+            orig_x,
+            orig_y,
+            orig_w,
+            orig_h,
+            mutated,
+            inside_node,
+            ..
+        } => {
+            *cursor = Some(handle.cursor_for(absolute_transform(&tab.doc, *target)));
+            let threshold = if *inside_node { click_dist } else { 2.0 };
+            if !*mutated && screen_dist <= threshold {
+                return true;
+            }
+            tab.marquee.clear();
+            let (nx, ny, nw, nh) = resized_with(
+                &tab.doc,
+                *target,
+                *handle,
+                (*orig_x, *orig_y, *orig_w, *orig_h),
+                dx,
+                dy,
+                true,
+            );
+            let changed = *mutated
+                || (nx - *orig_x).abs() > 1e-6
+                || (ny - *orig_y).abs() > 1e-6
+                || (nw - *orig_w).abs() > 1e-6
+                || (nh - *orig_h).abs() > 1e-6;
+            if !changed {
+                return true;
+            }
+            let key = format!("gui:resize:{target}");
+            let ok = apply_tab_ops_ui(
+                tab,
+                &[
+                    EditOp::Move {
+                        target: *target,
+                        x: nx,
+                        y: ny,
+                        relative: false,
+                    },
+                    EditOp::Resize {
+                        target: *target,
+                        width: nw,
+                        height: nh,
+                    },
+                ],
+                Some("Resize layer"),
+                Some(&key),
+            )
+            .is_some();
+            if ok {
+                *mutated = true;
+            }
+            ok
+        }
+        CanvasDrag::Create { .. } => true,
+    }
 }
 
 /// Paints the creation preview rectangle and oriented 8-handle selection gizmo on top of outlines.
@@ -592,7 +623,7 @@ pub fn canvas_gizmos_paint(painter: &egui::Painter, rect: Rect, tab: &Tab, tool:
         );
         return;
     }
-    if tool != Tool::Select || tab.text_select.is_some() {
+    if tool != Tool::Select || tab.text_select.is_some() || tab.inner.is_some() {
         return;
     }
     let Some(sel) = tab.selection else {

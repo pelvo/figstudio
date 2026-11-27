@@ -283,3 +283,49 @@ fn inner_hit_chain_respects_masks_hidden_ancestors_and_clips() {
     doc.set_nodes(nodes).unwrap();
     assert!(hits(&doc).is_empty());
 }
+
+#[test]
+fn nested_instance_drills_within_triple_click_window_and_when_zoomed_out() {
+    let mut h = inner_fixture::harness();
+    let p = at(&h, &[106, 112]);
+
+    primary_clicks(&mut h, p, egui::Vec2::ZERO, 1);
+    assert_eq!(h.state().tabs[0].selection, Some(id(200)));
+    assert!(h.state().tabs[0].inner.is_none());
+
+    // Natural 400 ms pauses between double-clicks through nested instance levels and into text.
+    for keys in [&[101][..], &[106], &[106, 111], &[106, 112]] {
+        h.run_steps(24);
+        primary_clicks(&mut h, p, egui::Vec2::ZERO, 2);
+        assert_eq!(
+            h.state().tabs[0].inner,
+            Some(path(keys)),
+            "double-click 400 ms after prior gesture must drill inside nested instance to {keys:?}"
+        );
+        assert!(h.state().tabs[0].text_select.is_none());
+    }
+    h.run_steps(24);
+    primary_clicks(&mut h, p, egui::Vec2::ZERO, 2);
+    assert!(
+        h.state().tabs[0].text_select.is_some(),
+        "final double-click on inner TEXT must enter text selection"
+    );
+
+    // Zoom out so outer instance id(200) (240x240) is 12x12 screen pt and handles cover it.
+    let mut h = inner_fixture::harness();
+    h.state_mut().tabs[0].zoom_centre(0.05);
+    h.run_steps(4);
+    let p = at(&h, &[106, 112]);
+    primary_clicks(&mut h, p, egui::Vec2::ZERO, 1);
+    assert_eq!(h.state().tabs[0].selection, Some(id(200)));
+    for keys in [&[101][..], &[106]] {
+        h.run_steps(60);
+        primary_clicks(&mut h, p, egui::Vec2::ZERO, 2);
+        assert_eq!(
+            h.state().tabs[0].inner,
+            Some(path(keys)),
+            "double-clicking a zoomed-out instance covered by handles must drill into {keys:?}"
+        );
+    }
+    assert!(!h.state().tabs[0].dirty_unsaved);
+}

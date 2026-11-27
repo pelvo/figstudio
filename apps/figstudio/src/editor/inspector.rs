@@ -61,7 +61,9 @@ pub fn properties_edit_controls(ui: &mut Ui, tab: &mut Tab) {
 
     // Inner-instance text override quick editor when an inner node inside an INSTANCE is selected.
     if let (Some(inst_id), Some(inner)) = (tab.selection, tab.inner.clone())
-        && let Ok(resolved) = figstudio_fig::resolve::resolve_path(&tab.doc, &inner)
+        && let Ok(resolved) = tab.pick_cache.with(&tab.doc, |_, defs| {
+            figstudio_fig::resolve::resolve_path_with(&tab.doc, defs, &inner)
+        })
         && let Some(chars) = resolved
             .data
             .path(&["textData", "characters"])
