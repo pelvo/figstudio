@@ -360,6 +360,22 @@ pub fn polygon_or_star_commands(
     cmds
 }
 
+/// Resolves the effective `[tl, tr, br, bl]` corner radii of `data`, ignoring residual
+/// per-corner fields when `rectangleCornerRadiiIndependent` is not `true`.
+pub(crate) fn corner_radii_of(data: &Val) -> [f32; 4] {
+    let base = data.num("cornerRadius").unwrap_or(0.0);
+    if data.flag("rectangleCornerRadiiIndependent") == Some(true) {
+        [
+            data.num("rectangleTopLeftCornerRadius").unwrap_or(base),
+            data.num("rectangleTopRightCornerRadius").unwrap_or(base),
+            data.num("rectangleBottomRightCornerRadius").unwrap_or(base),
+            data.num("rectangleBottomLeftCornerRadius").unwrap_or(base),
+        ]
+    } else {
+        [base; 4]
+    }
+}
+
 /// Recomputes parametric `fillGeometry` commands for `kind` + `data`, or returns `None` for
 /// non-parametric kinds (`VECTOR`, `TEXT`, `INSTANCE`, etc.).
 pub fn rebuild_shape_geometry(kind: &str, data: &Val) -> Option<Vec<PathCmd>> {
@@ -371,23 +387,10 @@ pub fn rebuild_shape_geometry(kind: &str, data: &Val) -> Option<Vec<PathCmd>> {
         .path(&["size", "y"])
         .and_then(Val::as_f32)
         .unwrap_or(0.0);
-    let radii_of = |d: &Val| -> [f32; 4] {
-        let base = d.num("cornerRadius").unwrap_or(0.0);
-        if d.flag("rectangleCornerRadiiIndependent") == Some(true) {
-            [
-                d.num("rectangleTopLeftCornerRadius").unwrap_or(base),
-                d.num("rectangleTopRightCornerRadius").unwrap_or(base),
-                d.num("rectangleBottomRightCornerRadius").unwrap_or(base),
-                d.num("rectangleBottomLeftCornerRadius").unwrap_or(base),
-            ]
-        } else {
-            [base; 4]
-        }
-    };
     let smooth = data.num("cornerSmoothing").unwrap_or(0.0);
     match kind {
         "ROUNDED_RECTANGLE" | "RECTANGLE" | "FRAME" | "SECTION" | "SYMBOL" => {
-            Some(rounded_rect_commands(w, h, radii_of(data), smooth))
+            Some(rounded_rect_commands(w, h, corner_radii_of(data), smooth))
         }
         "ELLIPSE" => {
             let arc = data.get("arcData");
@@ -659,7 +662,7 @@ fn resize_one(
             tf.set("m12", Val::Float(ny));
             txn.set_field(child_id, "transform", tf);
         }
-        if size_changed {
+        if size_changed && child.kind != "BOOLEAN_OPERATION" {
             work.push((child_id, nw, nh));
         }
     }
@@ -706,7 +709,7 @@ fn default_layer_name(kind: &str) -> String {
 }
 
 /// Fields whose change alters a node's fill/shape outline.
-const SHAPE_GEOMETRY_INPUTS: &[&str] = &[
+pub(crate) const SHAPE_GEOMETRY_INPUTS: &[&str] = &[
     "size",
     "cornerRadius",
     "cornerSmoothing",
@@ -786,9 +789,25 @@ pub(crate) fn has_visible_paints(paints: Option<&Val>) -> bool {
     })
 }
 
-fn patch_touches_any(set: &Obj, unset: &[String], keys: &[&str]) -> bool {
+pub(crate) fn patch_touches_any(set: &Obj, unset: &[String], keys: &[&str]) -> bool {
     keys.iter()
         .any(|k| set.contains_key(k) || unset.iter().any(|u| u == k))
+}
+
+/// Whether a `VECTOR` node carries both a `vectorNetworkBlob` index and positive finite
+/// `normalizedSize`, allowing `fillGeometry` to be rescaled from its vector network on `size` edits.
+fn vector_is_rescalable(data: &Val) -> bool {
+    data.path(&["vectorData", "vectorNetworkBlob"])
+        .and_then(Val::as_u32)
+        .is_some()
+        && data
+            .path(&["vectorData", "normalizedSize", "x"])
+            .and_then(Val::as_f32)
+            .is_some_and(|v| v.is_finite() && v > 0.0)
+        && data
+            .path(&["vectorData", "normalizedSize", "y"])
+            .and_then(Val::as_f32)
+            .is_some_and(|v| v.is_finite() && v > 0.0)
 }
 
 fn push_unset_unique(unset: &mut Vec<String>, key: &str) {
@@ -838,15 +857,19 @@ pub(crate) fn sync_node_derived_caches(
         && !unset.iter().any(|u| u == "fillGeometry")
     {
         let preview = apply_patch_preview(before, set, unset);
-        if let Some(cmds) = rebuild_shape_geometry(kind, &preview) {
+        let eff_kind = preview.text("type").unwrap_or(kind);
+        if let Some(cmds) = rebuild_shape_geometry(eff_kind, &preview) {
             let blob_idx = doc.blobs.len() + add_blobs.len();
             add_blobs.push(encode_path_commands(&cmds));
             set.insert(
                 "fillGeometry",
                 Val::Arr(vec![make_path_entry(blob_idx, false)]),
             );
-        } else if kind == "INSTANCE"
-            || (kind == "VECTOR" && patch_touches_any(set, unset, &["vectorData"]))
+        } else if eff_kind == "INSTANCE"
+            || (eff_kind == "VECTOR"
+                && (patch_touches_any(set, unset, &["vectorData"])
+                    || (patch_touches_any(set, unset, &["size"])
+                        && vector_is_rescalable(&preview))))
         {
             push_unset_unique(unset, "fillGeometry");
         }

@@ -169,6 +169,8 @@ pub struct SaveDone {
 extern "C" {
     #[wasm_bindgen(js_name = pickSaveFile, catch)]
     async fn pick_save_file_js(suggested_name: &str) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = compareHandles, catch)]
+    async fn compare_handles_js(source: &JsValue, target: &JsValue) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(js_name = writeHandleParts, catch)]
     async fn write_handle_parts_js(
         handle: &JsValue,
@@ -290,12 +292,13 @@ fn drop_file(id: u32) {
     FILES.with(|f| f.borrow_mut().1.remove(&id));
 }
 
-/// A file picked or dropped here, with the number its handle is kept under where the
-/// browser gave one (Recents opens it again from that).
+/// A file picked or dropped here, with its optional Recents id and its tab-owned live
+/// `FileSystemFileHandle` (retained independently of Recents eviction or removal).
 #[derive(Clone)]
 struct Upload {
     file: web_sys::File,
     origin: Origin,
+    source_handle: Option<JsValue>,
 }
 
 /// Where a file picked or dropped here came from.
@@ -326,11 +329,19 @@ pub fn upload_origin(tab: u64) -> Option<Origin> {
     UPLOADS.with(|u| u.borrow().get(tab)).map(|u| u.origin)
 }
 
-fn pick_upload(file: &web_sys::File, origin: Origin) -> u32 {
+/// The live `FileSystemFileHandle` behind tab `tab`, independent of Recents retention.
+fn upload_source_handle(tab: u64) -> Option<JsValue> {
+    UPLOADS
+        .with(|u| u.borrow().get(tab))
+        .and_then(|u| u.source_handle)
+}
+
+fn pick_upload(file: &web_sys::File, origin: Origin, source_handle: Option<JsValue>) -> u32 {
     UPLOADS.with(|u| {
         u.borrow_mut().pick(Upload {
             file: file.clone(),
             origin,
+            source_handle,
         })
     })
 }
@@ -428,7 +439,7 @@ pub(crate) async fn fetch_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Opens a big archive without reading its images.
-async fn open_lazy(file: web_sys::File, origin: Origin) -> Picked {
+async fn open_lazy(file: web_sys::File, origin: Origin, source_handle: Option<JsValue>) -> Picked {
     let name = PathBuf::from(file.name());
     let fail = |e: anyhow::Error| {
         Picked::Failed(format!(
@@ -474,7 +485,7 @@ async fn open_lazy(file: web_sys::File, origin: Origin) -> Picked {
     let doc_key = crate::source::doc_key_from_prefix(len, &head);
     Picked::Lazy {
         name,
-        pick: pick_upload(&file, origin),
+        pick: pick_upload(&file, origin, source_handle),
         file: keep_file(file),
         entries,
         eager,
@@ -483,18 +494,18 @@ async fn open_lazy(file: web_sys::File, origin: Origin) -> Picked {
 }
 
 /// Opens a file the user chose: big archives lazily, the rest by reading them.
-async fn open_file(file: web_sys::File, origin: Origin) -> Picked {
+async fn open_file(file: web_sys::File, origin: Origin, source_handle: Option<JsValue>) -> Picked {
     let name = PathBuf::from(file.name());
     if file.size() as u64 > LAZY_ABOVE {
         let mut magic = read_range(&file, 0, 2).await.unwrap_or_default();
         magic.truncate(2);
         if magic == b"PK" {
-            return open_lazy(file, origin).await;
+            return open_lazy(file, origin, source_handle).await;
         }
     }
     // Same limit as `Document::open` on the desktop.
     match read_range_max(&file, 0, file.size() as u64, figstudio_fig::MAX_FILE_BYTES).await {
-        Ok(bytes) => Picked::Bytes(name, bytes, pick_upload(&file, origin)),
+        Ok(bytes) => Picked::Bytes(name, bytes, pick_upload(&file, origin, source_handle)),
         Err(e) => Picked::Failed(format!(
             "Could not read {}: {}",
             name.display(),
@@ -512,12 +523,12 @@ async fn pick(tx: Sender<Picked>, ctx: egui::Context, moved: Option<u32>) {
     if crate::recents_web::keeps_handles() {
         match crate::recents_web::pick_files(moved).await {
             Ok(Some(files)) => {
-                for (file, handle) in files {
+                for picked in files {
                     let origin = Origin {
-                        handle: Some(handle),
-                        replaces: moved,
+                        handle: picked.recent_handle,
+                        replaces: moved.filter(|_| picked.recent_handle.is_some()),
                     };
-                    let _ = tx.send(open_file(file, origin).await);
+                    let _ = tx.send(open_file(picked.file, origin, picked.source_handle).await);
                     ctx.request_repaint();
                 }
                 return;
@@ -540,7 +551,7 @@ async fn pick(tx: Sender<Picked>, ctx: egui::Context, moved: Option<u32>) {
             handle: None,
             replaces: None,
         };
-        let _ = tx.send(open_file(f.inner().clone(), origin).await);
+        let _ = tx.send(open_file(f.inner().clone(), origin, None).await);
         ctx.request_repaint();
     }
 }
@@ -749,12 +760,12 @@ impl Inbox {
         let (tx, ctx) = (self.files_tx.clone(), ctx.clone());
         wasm_bindgen_futures::spawn_local(async move {
             match crate::recents_web::open_handle(handle).await {
-                Ok(file) => {
+                Ok((file, source_handle)) => {
                     let origin = Origin {
                         handle: Some(handle),
                         replaces: None,
                     };
-                    let _ = tx.send(open_file(file, origin).await);
+                    let _ = tx.send(open_file(file, origin, source_handle).await);
                     ctx.request_repaint();
                 }
                 Err(why) => {
@@ -777,12 +788,12 @@ impl Inbox {
             return;
         };
         wasm_bindgen_futures::spawn_local(async move {
-            let handle = crate::recents_web::dropped_handle(&file).await;
+            let (handle, source_handle) = crate::recents_web::dropped_handle(&file).await;
             let origin = Origin {
                 handle,
                 replaces: None,
             };
-            let _ = tx.send(open_file(file, origin).await);
+            let _ = tx.send(open_file(file, origin, source_handle).await);
             ctx.request_repaint();
         });
     }
@@ -821,7 +832,7 @@ impl Inbox {
         let Some(source_file) = upload_file(tab) else {
             return Err("the original archive is no longer available");
         };
-        let source_handle = upload_origin(tab).and_then(|o| o.handle);
+        let source_handle = upload_source_handle(tab);
         self.saving.set(true);
         let saving = std::rc::Rc::clone(&self.saving);
         let tx = self.saves_tx.clone();
@@ -860,8 +871,13 @@ enum SaveTarget {
 
 async fn pick_save_target(
     default_name: &str,
-    source_handle: Option<u32>,
+    source_handle: Option<JsValue>,
 ) -> anyhow::Result<SaveTarget> {
+    // Without a live source handle we can never prove a picked handle is distinct from the open
+    // source file, so skip the save picker and fall back directly to an unconfirmed download.
+    let Some(source_handle) = source_handle else {
+        return Ok(SaveTarget::Download);
+    };
     let js = |e: JsValue| anyhow::anyhow!("{}", crate::mcp_wire::js_error_text(&e));
     let picked = pick_save_file_js(default_name).await.map_err(js)?;
     let status = js_sys::Reflect::get(&picked, &"status".into())
@@ -871,17 +887,24 @@ async fn pick_save_target(
         Some("cancelled") => Ok(SaveTarget::Cancelled),
         Some("handle") => {
             let handle = js_sys::Reflect::get(&picked, &"handle".into()).map_err(js)?;
-            if let Some(src_id) = source_handle
-                && crate::recents_web::is_same_handle(src_id, &handle).await
-            {
-                anyhow::bail!("cannot overwrite the open source file; choose a different name");
-            }
-            let name = js_sys::Reflect::get(&picked, &"name".into())
+            let tag = compare_handles_js(&source_handle, &handle)
+                .await
                 .ok()
-                .and_then(|v| v.as_string())
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| default_name.to_owned());
-            Ok(SaveTarget::Handle { handle, name })
+                .and_then(|v| v.as_string());
+            match crate::unsaved::DestinationIdentity::from_js_tag(tag.as_deref()).decide() {
+                crate::unsaved::HandleSaveDecision::RejectSameSource => {
+                    anyhow::bail!("cannot overwrite the open source file; choose a different name");
+                }
+                crate::unsaved::HandleSaveDecision::FallbackDownload => Ok(SaveTarget::Download),
+                crate::unsaved::HandleSaveDecision::WriteHandle => {
+                    let name = js_sys::Reflect::get(&picked, &"name".into())
+                        .ok()
+                        .and_then(|v| v.as_string())
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| default_name.to_owned());
+                    Ok(SaveTarget::Handle { handle, name })
+                }
+            }
         }
         _ => Ok(SaveTarget::Download),
     }
@@ -956,7 +979,7 @@ fn build_js_parts(
 async fn run_lazy_save(
     doc: std::sync::Arc<Document>,
     source_file: web_sys::File,
-    source_handle: Option<u32>,
+    source_handle: Option<JsValue>,
     default_name: String,
 ) -> crate::unsaved::SaveOutcome {
     match run_lazy_save_inner(doc, source_file, source_handle, default_name).await {
@@ -968,7 +991,7 @@ async fn run_lazy_save(
 async fn run_lazy_save_inner(
     doc: std::sync::Arc<Document>,
     source_file: web_sys::File,
-    source_handle: Option<u32>,
+    source_handle: Option<JsValue>,
     default_name: String,
 ) -> anyhow::Result<crate::unsaved::SaveOutcome> {
     use crate::unsaved::SaveOutcome;
@@ -1109,33 +1132,14 @@ pub fn publish_status(json: &str) {
     let _ = js_sys::Reflect::set(&window, &"figstudioStatus".into(), &json.into());
 }
 
-/// Saves `bytes` as a download named `name`.
+/// Saves `bytes` as a download named `name` with deferred object URL revocation (`save.js`).
 pub fn download(name: &str, mime: &str, bytes: &[u8]) -> anyhow::Result<()> {
-    let js = |e: JsValue| anyhow::anyhow!("{e:?}");
+    let js = |e: JsValue| anyhow::anyhow!("{}", crate::mcp_wire::js_error_text(&e));
     // Copy out of the shared Wasm memory: a Blob cannot be made from a SharedArrayBuffer view.
     let len = u32::try_from(bytes.len()).map_err(|_| anyhow::anyhow!("file too large"))?;
     let array = js_sys::Uint8Array::new_with_length(len);
     array.copy_from(bytes);
-    let options = web_sys::BlobPropertyBag::new();
-    options.set_type(mime);
-    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(
-        &js_sys::Array::of1(&array),
-        &options,
-    )
-    .map_err(js)?;
-    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js)?;
-    let document = web_sys::window()
-        .and_then(|w| w.document())
-        .ok_or_else(|| anyhow::anyhow!("no document"))?;
-    let a: web_sys::HtmlAnchorElement = document
-        .create_element("a")
-        .map_err(js)?
-        .dyn_into()
-        .map_err(|_| anyhow::anyhow!("not an anchor"))?;
-    a.set_href(&url);
-    a.set_download(name);
-    a.click();
-    web_sys::Url::revoke_object_url(&url).map_err(js)
+    download_blob_parts_js(name, mime, &js_sys::Array::of1(&array)).map_err(js)
 }
 
 /// Lets the user pick shader zips for tab `tab` (for `shader` when one is picked); they arrive

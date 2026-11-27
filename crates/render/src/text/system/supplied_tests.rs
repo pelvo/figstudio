@@ -115,10 +115,11 @@ fn line_pitch(supplied: &[&'static [u8]]) -> f64 {
             object(&[("family", Val::Str("Unavailable family".into()))]),
         ),
     ]);
-    let paths = fonts.layout(&data).unwrap();
+    let paths = fonts.layout(&data, &Tokens::default()).unwrap();
     let tops: Vec<f64> = paths
+        .glyphs
         .iter()
-        .map(|path| vello_cpu::kurbo::Shape::bounding_box(path).y0)
+        .map(|g| vello_cpu::kurbo::Shape::bounding_box(&g.path).y0)
         .collect();
     assert_eq!(tops.len(), 2);
     tops[1] - tops[0]

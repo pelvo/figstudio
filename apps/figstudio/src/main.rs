@@ -1598,14 +1598,21 @@ impl eframe::App for App {
             self.poll_update(ctx);
         }
         // A hidden browser tab runs only this, on a throttled timer: keep agent access
-        // alive there (keepalive, reconnect, reveals, image reads). `ui` does it otherwise.
+        // alive there (keepalive, reconnect, reveals, edits, image reads) and keep unload
+        // protection synchronized without waiting for a painted frame.
         #[cfg(target_arch = "wasm32")]
-        if web::page_hidden() {
-            self.web.serve_ranges(ctx);
-            if let Some(error) = self.mcp.frame(&mut self.tabs, &mut self.active) {
-                self.toast(ctx, error, true);
+        {
+            if web::page_hidden() {
+                self.web.serve_ranges(ctx);
+                while let Ok(done) = self.web.saves.try_recv() {
+                    self.complete_async_save_copy(ctx, done.id, done.outcome);
+                }
+                if let Some(error) = self.mcp.frame(&mut self.tabs, &mut self.active) {
+                    self.toast(ctx, error, true);
+                }
+                self.mcp.sync(ctx, &self.tabs, self.active);
             }
-            self.mcp.sync(ctx, &self.tabs, self.active);
+            web::set_unsaved(self.any_unsaved());
         }
     }
 

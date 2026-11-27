@@ -149,7 +149,9 @@ fn highest_stack_ancestor(doc: &Document, start: Guid) -> Guid {
         if n.kind == "CANVAS" || n.kind == "DOCUMENT" {
             break;
         }
-        if n.kind != "INSTANCE" && stack_mode(&n.data).is_some() {
+        if !matches!(n.kind.as_str(), "INSTANCE" | "BOOLEAN_OPERATION")
+            && stack_mode(&n.data).is_some()
+        {
             best = id;
         }
         cur = n.parent;
@@ -322,7 +324,7 @@ fn measure_node(doc: &Document, id: Guid, sizes: &mut HashMap<Guid, (f64, f64)>)
     let Some(node) = doc.node(id) else { return };
     // An INSTANCE's children live under its SYMBOL master rather than `doc.children(id)`,
     // so treating it as an empty stack container would collapse HUG instances to padding.
-    if node.kind == "INSTANCE" {
+    if matches!(node.kind.as_str(), "INSTANCE" | "BOOLEAN_OPERATION") {
         return;
     }
     let Some(mode) = stack_mode(&node.data) else {
@@ -444,7 +446,7 @@ fn layout_node(
     let Some(node) = doc.node(id) else { return };
     touched.push(id);
 
-    if node.kind != "INSTANCE"
+    if !matches!(node.kind.as_str(), "INSTANCE" | "BOOLEAN_OPERATION")
         && let Some(mode) = stack_mode(&node.data)
     {
         let (cont_w, cont_h) = sizes[&id];
@@ -512,6 +514,7 @@ fn layout_node(
                     // Stretch children with `stackChildAlignSelf == "STRETCH"`.
                     for &cid in line {
                         if let Some(cn) = doc.node(cid)
+                            && cn.kind != "BOOLEAN_OPERATION"
                             && cn.data.text("stackChildAlignSelf") == Some("STRETCH")
                         {
                             let (cw, ch) = sizes[&cid];
@@ -651,6 +654,7 @@ fn distribute_primary_fill(
     for &cid in line {
         let grow = doc
             .node(cid)
+            .filter(|n| n.kind != "BOOLEAN_OPERATION")
             .and_then(|n| n.data.num("stackChildPrimaryGrow"))
             .map_or(0.0, f64::from);
         if grow > 0.0 {

@@ -2414,3 +2414,506 @@ fn set_vector_network_enforces_vector_kind_empty_region_styles_and_bounds() {
         "curved open polyline size ({cw}, {ch}) missed cubic Bezier extremum (expected 100x60)"
     );
 }
+
+struct BoolCtx {
+    d: Document,
+    h: History,
+    p: Guid,
+}
+
+impl BoolCtx {
+    fn new() -> Self {
+        let mut d = Document::open(fixture("structure.fig")).unwrap();
+        let mut h = History::new(50);
+        let p = execute_edit_ops(
+            &mut d,
+            &mut h,
+            &[EditOp::CreatePage {
+                id: None,
+                name: "BoolV2".into(),
+            }],
+            None,
+            None,
+            false,
+        )
+        .unwrap()
+        .0
+        .created_ids[0];
+        Self { d, h, p }
+    }
+    fn run(&mut self, ops: &[EditOp]) -> Vec<Guid> {
+        execute_edit_ops(&mut self.d, &mut self.h, ops, None, None, false)
+            .unwrap()
+            .0
+            .created_ids
+    }
+    fn err(&mut self, ops: &[EditOp]) -> String {
+        execute_edit_ops(&mut self.d, &mut self.h, ops, None, None, false)
+            .unwrap_err()
+            .to_string()
+    }
+    fn atomic_err(&mut self, ops: &[EditOp], needle: &str) {
+        let snap = self.d.to_bytes().unwrap();
+        let meta = (self.d.blobs.len(), self.d.revision, self.h.undo_len());
+        let err = self.err(ops);
+        assert!(err.contains(needle), "expected {needle:?} in {err:?}");
+        assert_eq!(
+            (self.d.blobs.len(), self.d.revision, self.h.undo_len()),
+            meta
+        );
+        assert_eq!(self.d.to_bytes().unwrap(), snap);
+    }
+    fn sz(&self, id: Guid) -> (f32, f32) {
+        let v = &self.d.node(id).unwrap().data;
+        (
+            v.path(&["size", "x"]).and_then(Val::as_f32).unwrap_or(-1.0),
+            v.path(&["size", "y"]).and_then(Val::as_f32).unwrap_or(-1.0),
+        )
+    }
+    fn pos(&self, id: Guid) -> (f32, f32) {
+        let v = &self.d.node(id).unwrap().data;
+        (
+            v.path(&["transform", "m02"])
+                .and_then(Val::as_f32)
+                .unwrap_or(0.0),
+            v.path(&["transform", "m12"])
+                .and_then(Val::as_f32)
+                .unwrap_or(0.0),
+        )
+    }
+    fn blob(&self, id: Guid) -> usize {
+        self.d
+            .node(id)
+            .unwrap()
+            .data
+            .get("fillGeometry")
+            .unwrap()
+            .items()[0]
+            .get("commandsBlob")
+            .and_then(Val::as_u32)
+            .unwrap() as usize
+    }
+    fn union_pair(&mut self, parent: Guid) -> (Guid, Guid, Guid) {
+        let ids = self.run(&[
+            rect_op(None, parent, 0.0, 0.0, 50.0, 50.0),
+            rect_op(None, parent, 20.0, 0.0, 50.0, 50.0),
+        ]);
+        let bid = self.run(&[comb(BooleanOp::Union, ids[0], ids[1])])[0];
+        (bid, ids[0], ids[1])
+    }
+    fn seed(&mut self, id: Guid, field: &str, w: f32, h: f32) {
+        let mut t = Txn::new("seed");
+        let b = self.d.blobs.len();
+        t.add_blobs
+            .push(encode_path_commands(&rounded_rect_commands(
+                w, h, [0.0; 4], 0.0,
+            )));
+        t.set_field(id, field, Val::Arr(vec![make_path_entry(b, false)]));
+        self.d.apply_txn(&t).unwrap();
+    }
+}
+
+fn mv(target: Guid, x: f64, y: f64) -> EditOp {
+    EditOp::Move {
+        target,
+        x,
+        y,
+        relative: false,
+    }
+}
+fn rsz(target: Guid, width: f64, height: f64) -> EditOp {
+    EditOp::Resize {
+        target,
+        width,
+        height,
+    }
+}
+fn comb(operation: BooleanOp, a: Guid, b: Guid) -> EditOp {
+    EditOp::BooleanCombine {
+        operation,
+        a,
+        b,
+        name: None,
+    }
+}
+fn shape_op(kind: &str, parent: Guid, x: f64, y: f64, w: f64, h: f64) -> EditOp {
+    EditOp::CreateShape {
+        id: None,
+        kind: kind.into(),
+        parent,
+        name: None,
+        x,
+        y,
+        width: w,
+        height: h,
+        corner_radius: 0.0,
+        fill_hex: Some("#FF0000".into()),
+        count: None,
+        star_inner_scale: None,
+    }
+}
+fn raw_op(target: Guid, set: serde_json::Value) -> EditOp {
+    let j = serde_json::json!({ "op": "patch_raw", "target": target.to_string(), "set": set });
+    serde_json::from_value(j).unwrap()
+}
+fn al_hug(target: Guid, pad: f64, spacing: Option<f64>) -> EditOp {
+    EditOp::SetAutoLayout {
+        target,
+        mode: "HORIZONTAL".into(),
+        spacing,
+        counter_spacing: None,
+        padding: Some([pad; 4]),
+        primary_sizing: Some("HUG".into()),
+        counter_sizing: Some("HUG".into()),
+        primary_align: None,
+        counter_align: None,
+        wrap: None,
+    }
+}
+fn set_vis(target: Guid, visible: bool) -> EditOp {
+    EditOp::SetLayerProps {
+        target,
+        visible: Some(visible),
+        locked: None,
+        opacity: None,
+        blend_mode: None,
+        clip_content: None,
+    }
+}
+
+#[test]
+fn boolean_operand_edits_recompute_geometry_bounds_rebasing_nested_and_undo() {
+    let mut c = BoolCtx::new();
+    let (bid, a, b) = c.union_pair(c.p);
+    c.seed(bid, "strokeGeometry", 70.0, 50.0);
+    let (bytes0, blob0) = (c.d.to_bytes().unwrap(), c.blob(bid));
+
+    // 1. Move operand -> fresh blob, updated size, cleared stale strokeGeometry, exact undo/redo.
+    c.run(&[mv(b, 400.0, 400.0)]);
+    assert_ne!(blob0, c.blob(bid), "fillGeometry commandsBlob stayed stale");
+    assert!((c.sz(bid).0 - 450.0).abs() < 1.0 && (c.sz(bid).1 - 450.0).abs() < 1.0);
+    assert!(c.d.node(bid).unwrap().data.get("strokeGeometry").is_none());
+    let bytes1 = c.d.to_bytes().unwrap();
+    c.h.undo(&mut c.d).unwrap();
+    assert_eq!(c.d.to_bytes().unwrap(), bytes0);
+    c.h.redo(&mut c.d).unwrap();
+    assert_eq!(c.d.to_bytes().unwrap(), bytes1);
+
+    // 2. Rotated rebase into negative local coords keeps untouched & hidden siblings fixed.
+    let hid = c.run(&[rect_op(None, bid, 10.0, 15.0, 20.0, 20.0)])[0];
+    c.run(&[
+        set_vis(hid, false),
+        mv(b, 20.0, 0.0),
+        EditOp::Rotate {
+            target: bid,
+            degrees: 90.0,
+        },
+    ]);
+    let world = |d: &Document, id: Guid| -> (f64, f64) {
+        let m = |n: &Val| -> [f64; 6] {
+            let t = n.get("transform").unwrap();
+            ["m00", "m01", "m02", "m10", "m11", "m12"].map(|k| f64::from(t.num(k).unwrap_or(0.0)))
+        };
+        let (pb, pc) = (m(&d.node(bid).unwrap().data), m(&d.node(id).unwrap().data));
+        (
+            pb[0] * pc[2] + pb[1] * pc[5] + pb[2],
+            pb[3] * pc[2] + pb[4] * pc[5] + pb[5],
+        )
+    };
+    let (aw0, hw0) = (world(&c.d, a), world(&c.d, hid));
+    c.run(&[mv(b, -30.0, -10.0)]);
+    let (aw1, hw1) = (world(&c.d, a), world(&c.d, hid));
+    assert!((aw0.0 - aw1.0).abs() < 1e-3 && (aw0.1 - aw1.1).abs() < 1e-3);
+    assert!((hw0.0 - hw1.0).abs() < 1e-3 && (hw0.1 - hw1.1).abs() < 1e-3);
+
+    // 3. Nested ancestry, Resize, PatchRaw(booleanOperation), empty INTERSECT, GROUP, Delete, paste.
+    let mut c2 = BoolCtx::new();
+    let (inner, ia, ib) = c2.union_pair(c2.p);
+    let sib = c2.run(&[rect_op(None, c2.p, 0.0, 80.0, 40.0, 40.0)])[0];
+    let outer = c2.run(&[comb(BooleanOp::Union, inner, sib)])[0];
+    c2.run(&[rsz(ib, 120.0, 50.0)]);
+    assert!((c2.sz(inner).0 - 140.0).abs() < 1.0 && (c2.sz(outer).0 - 140.0).abs() < 1.0);
+
+    let to_inter = raw_op(
+        inner,
+        serde_json::json!({ "booleanOperation": "INTERSECT" }),
+    );
+    c2.run(&[to_inter, mv(ib, 300.0, 0.0)]);
+    assert_eq!(c2.sz(inner), (0.0, 0.0));
+    assert!(
+        c2.d.node(inner)
+            .unwrap()
+            .data
+            .get("fillGeometry")
+            .unwrap()
+            .items()
+            .is_empty()
+    );
+
+    let grp = c2.run(&[shape_op("GROUP", inner, 0.0, 0.0, 10.0, 10.0)])[0];
+    let gc = c2.run(&[rect_op(None, grp, 0.0, 0.0, 60.0, 30.0)])[0];
+    let to_u = raw_op(inner, serde_json::json!({ "booleanOperation": "UNION" }));
+    c2.run(&[
+        to_u,
+        EditOp::DeleteNode { target: ia },
+        EditOp::DeleteNode { target: ib },
+    ]);
+    assert!((c2.sz(inner).0 - 60.0).abs() < 1.0);
+    c2.run(&[rsz(gc, 90.0, 30.0)]);
+    assert!((c2.sz(inner).0 - 90.0).abs() < 1.0);
+
+    let src = c2.run(&[rect_op(None, c2.p, 0.0, 0.0, 20.0, 20.0)])[0];
+    let html =
+        figstudio_fig::clipboard::encode_clipboard_html(&c2.d, &[src], 0, Some("p"), None).unwrap();
+    figstudio_fig::edit::execute_paste_html(&mut c2.d, &mut c2.h, &html, inner, (200.0, 0.0))
+        .unwrap();
+    assert!((c2.sz(inner).0 - 220.0).abs() < 1.0);
+}
+
+#[test]
+fn boolean_sequential_batch_ops_observe_recomputed_state() {
+    // 1. [Move(b, 400, 400), DuplicateNode(bool_id)] clones fresh fillGeometry and size.
+    let mut c = BoolCtx::new();
+    let (bid, _, b) = c.union_pair(c.p);
+    let dup = EditOp::DuplicateNode {
+        target: bid,
+        dx: 20.0,
+        dy: 20.0,
+    };
+    let copy = c.run(&[mv(b, 400.0, 400.0), dup])[0];
+    assert!((c.sz(copy).0 - 450.0).abs() < 1.0 && (c.sz(copy).1 - 450.0).abs() < 1.0);
+    let (_, _, mx, my) = cmds_bbox(&decode_path_commands(&c.d.blobs[c.blob(copy)]).unwrap());
+    assert!((mx - 450.0).abs() < 1.0 && (my - 450.0).abs() < 1.0);
+
+    // 2. [Move(b, -50, 0), Rotate(bool_id, 90)] matches separate calls (origin at (-50, 0)).
+    let (mut c1, mut c2) = (BoolCtx::new(), BoolCtx::new());
+    let ((b1, _, x1), (b2, _, x2)) = (c1.union_pair(c1.p), c2.union_pair(c2.p));
+    c1.run(&[
+        mv(x1, -50.0, 0.0),
+        EditOp::Rotate {
+            target: b1,
+            degrees: 90.0,
+        },
+    ]);
+    c2.run(&[mv(x2, -50.0, 0.0)]);
+    c2.run(&[EditOp::Rotate {
+        target: b2,
+        degrees: 90.0,
+    }]);
+    let (p1, p2) = (c1.pos(b1), c2.pos(b2));
+    assert!((p1.0 - p2.0).abs() < 1e-3 && (p1.1 - p2.1).abs() < 1e-3);
+    assert!((p1.0 + 50.0).abs() < 1e-3 && p1.1.abs() < 1e-3);
+
+    // 3. [Move(b, -50, 0), Move(bool_id, 100, 0)] & [Move(b, -50, 0), BooleanCombine].
+    let mut c3 = BoolCtx::new();
+    let (b3, _, x3) = c3.union_pair(c3.p);
+    c3.run(&[mv(x3, -50.0, 0.0), mv(b3, 100.0, 0.0)]);
+    assert!((c3.pos(b3).0 - 100.0).abs() < 1e-3);
+
+    let mut c4 = BoolCtx::new();
+    let (b4, _, x4) = c4.union_pair(c4.p);
+    let sib = c4.run(&[rect_op(None, c4.p, 60.0, 0.0, 40.0, 50.0)])[0];
+    let outer = c4.run(&[mv(x4, -50.0, 0.0), comb(BooleanOp::Union, b4, sib)])[0];
+    assert!((c4.sz(outer).0 - 150.0).abs() < 1.0);
+}
+
+#[test]
+fn boolean_autolayout_vector_resize_and_creation_compatibility() {
+    // 1. Enclosing HUG Auto-Layout + inner Auto-Layout operand feedback loop.
+    let mut c = BoolCtx::new();
+    let outer = c.run(&[shape_op("FRAME", c.p, 0.0, 0.0, 100.0, 100.0)])[0];
+    c.run(&[al_hug(outer, 10.0, Some(10.0))]);
+    let inner_f = c.run(&[shape_op("FRAME", outer, 0.0, 0.0, 20.0, 20.0)])[0];
+    let sib_r = c.run(&[rect_op(None, outer, 0.0, 0.0, 20.0, 20.0)])[0];
+    let bid = c.run(&[comb(BooleanOp::Union, inner_f, sib_r)])[0];
+    let after = c.run(&[rect_op(None, outer, 0.0, 0.0, 30.0, 20.0)])[0];
+    c.run(&[al_hug(inner_f, 30.0, None)]);
+    assert!((c.sz(bid).0 - 60.0).abs() < 1.0 && (c.sz(outer).0 - 120.0).abs() < 1.0);
+    assert!((c.pos(bid).0 - 10.0).abs() < 1.0 && (c.pos(after).0 - 80.0).abs() < 1.0);
+
+    // 2. Imported FILL/STRETCH flags keep sibling edits & apply_auto_layout_to_doc safe;
+    // explicit SetAutoLayoutChild fill/stretch on boolean rejects atomically.
+    let fill_op = EditOp::SetAutoLayoutChild {
+        target: bid,
+        primary_fill: Some(true),
+        counter_stretch: None,
+        positioning: None,
+        min_size: None,
+        max_size: None,
+    };
+    c.atomic_err(&[fill_op], "BOOLEAN_OPERATION");
+    let mut t = Txn::new("imported FILL/STRETCH");
+    t.set_field(bid, "stackChildPrimaryGrow", Val::Float(1.0));
+    t.set_field(bid, "stackChildAlignSelf", Val::Enum(intern("STRETCH")));
+    t.set_field(outer, "stackPrimarySizing", Val::Enum(intern("FIXED")));
+    t.set_field(
+        outer,
+        "size",
+        Val::Obj(Obj::from([
+            ("x", Val::Float(300.0)),
+            ("y", Val::Float(100.0)),
+        ])),
+    );
+    c.d.apply_txn(&t).unwrap();
+    let bsz = c.sz(bid);
+    c.run(&[rsz(after, 40.0, 20.0)]);
+    assert_eq!(c.sz(bid), bsz);
+    figstudio_fig::edit::autolayout::apply_auto_layout_to_doc(&mut c.d, Some(outer)).unwrap();
+    assert_eq!(c.sz(bid), bsz);
+
+    // 3. Parent Resize with STRETCH/SCALE boolean child preserves boolean size.
+    let frame = c.run(&[shape_op("FRAME", c.p, 0.0, 200.0, 100.0, 100.0)])[0];
+    let (fb, _, _) = c.union_pair(frame);
+    let fbsz = c.sz(fb);
+    let cs = EditOp::SetConstraints {
+        target: fb,
+        horizontal: Some("STRETCH".into()),
+        vertical: Some("SCALE".into()),
+    };
+    c.run(&[cs, rsz(frame, 200.0, 200.0)]);
+    assert_eq!(c.sz(fb), fbsz);
+
+    // 4. VECTOR resize: rescalable updates scaled boolean; prebaked-only rejects atomically.
+    let mut vc = BoolCtx {
+        d: Document::open(fixture("vector.fig")).unwrap(),
+        h: History::new(20),
+        p: Guid(0, 0),
+    };
+    vc.p = vc.d.pages[0];
+    let vid = vc.d.nodes.iter().find(|n| n.kind == "VECTOR").unwrap().id;
+    let rep = EditOp::Reparent {
+        target: vid,
+        new_parent: vc.p,
+        index: None,
+    };
+    let net = EditOp::SetVectorNetwork {
+        target: vid,
+        network: valid_triangle_network(),
+    };
+    vc.run(&[rep, mv(vid, 0.0, 0.0), net]);
+    let vr = vc.run(&[rect_op(None, vc.p, 0.0, 0.0, 20.0, 20.0)])[0];
+    let vbool = vc.run(&[comb(BooleanOp::Union, vid, vr)])[0];
+    assert!((vc.sz(vbool).0 - 60.0).abs() < 1.0);
+    vc.run(&[rsz(vid, 180.0, 50.0)]);
+    assert!((vc.sz(vbool).0 - 180.0).abs() < 1.0);
+    let mut vt = Txn::new("prebaked-only");
+    vt.unset_field(vid, "vectorData");
+    vc.d.apply_txn(&vt).unwrap();
+    vc.seed(vid, "fillGeometry", 180.0, 50.0);
+    vc.atomic_err(&[rsz(vid, 300.0, 50.0)], "VECTOR");
+
+    // 5. BooleanCombine creation compatibility (INSTANCE, non-empty FRAME, SECTION, LINE, SYMBOL).
+    let mut cc = BoolCtx::new();
+    let master = cc.run(&[shape_op("FRAME", cc.p, 0.0, 0.0, 40.0, 40.0)])[0];
+    cc.run(&[EditOp::CreateComponent { frame: master }]);
+    let inst_op = EditOp::InstantiateComponent {
+        symbol: master,
+        parent: cc.p,
+        x: 0.0,
+        y: 0.0,
+    };
+    let inst = cc.run(&[inst_op])[0];
+    cc.seed(inst, "fillGeometry", 40.0, 40.0);
+    let nef = cc.run(&[shape_op("FRAME", cc.p, 0.0, 0.0, 40.0, 40.0)])[0];
+    cc.run(&[rect_op(None, nef, 5.0, 5.0, 10.0, 10.0)]);
+    let sec = cc.run(&[shape_op("SECTION", cc.p, 0.0, 0.0, 40.0, 40.0)])[0];
+    let line = cc.run(&[shape_op("LINE", cc.p, 0.0, 0.0, 40.0, 0.0)])[0];
+    let sym = cc.run(&[shape_op("FRAME", cc.p, 0.0, 0.0, 40.0, 40.0)])[0];
+    cc.run(&[EditOp::CreateComponent { frame: sym }]);
+    for op_node in [inst, nef, sec, line, sym] {
+        let p = cc.run(&[rect_op(None, cc.p, 10.0, 0.0, 40.0, 40.0)])[0];
+        cc.run(&[comb(BooleanOp::Union, op_node, p)]);
+    }
+}
+
+#[test]
+fn boolean_unsupported_edits_fail_closed_atomically_and_preserve_noops() {
+    let mut c = BoolCtx::new();
+    let (bid, a, b) = c.union_pair(c.p);
+
+    // 1. Direct Resize & PatchRaw(type=BOOLEAN_OPERATION, size) fail closed atomically.
+    c.atomic_err(&[rsz(bid, 200.0, 200.0)], "resize BOOLEAN_OPERATION");
+    let raw_sz = raw_op(
+        a,
+        serde_json::json!({ "type": "BOOLEAN_OPERATION", "size": { "x": 99.0, "y": 99.0 } }),
+    );
+    c.atomic_err(&[raw_sz], "resize BOOLEAN_OPERATION");
+
+    // 2. Residual corner radius with independent=false succeeds; real non-zero radius fails closed.
+    let mut t = Txn::new("residual corner radius");
+    t.set_field(bid, "cornerRadius", Val::Float(0.0));
+    t.set_field(bid, "rectangleCornerRadiiIndependent", Val::Bool(false));
+    t.set_field(bid, "rectangleTopLeftCornerRadius", Val::Float(8.0));
+    c.d.apply_txn(&t).unwrap();
+    c.run(&[mv(b, 30.0, 0.0)]);
+    let cr = EditOp::SetCornerRadii {
+        target: bid,
+        radii: [8.0, 0.0, 0.0, 0.0],
+        smoothing: None,
+    };
+    c.atomic_err(&[cr], "corner radius");
+
+    // 3. Stroked boolean: visible operand edit (even into empty INTERSECT) fails closed;
+    // metadata/paint, hidden operand, and DeleteNode(bool) succeed without allocating blobs.
+    let mut sc = BoolCtx::new();
+    let (sbool, sa, sb) = sc.union_pair(sc.p);
+    let shid = sc.run(&[rect_op(None, sbool, 0.0, 0.0, 10.0, 10.0)])[0];
+    sc.run(&[set_vis(shid, false)]);
+    let mut st = Txn::new("stroke boolean");
+    st.set_field(
+        sbool,
+        "strokePaints",
+        Val::Arr(vec![hex_paint("#0000FF").unwrap()]),
+    );
+    st.set_field(sbool, "booleanOperation", Val::Enum(intern("INTERSECT")));
+    sc.d.apply_txn(&st).unwrap();
+    sc.atomic_err(&[mv(sb, 500.0, 0.0)], "stroked BOOLEAN_OPERATION");
+    let blobs0 = sc.d.blobs.len();
+    sc.run(&[
+        EditOp::Rename {
+            target: sa,
+            name: "R".into(),
+        },
+        EditOp::SetSolidFill {
+            target: sa,
+            hex: Some("#00FF00".into()),
+        },
+        mv(shid, 200.0, 200.0),
+    ]);
+    assert_eq!(sc.d.blobs.len(), blobs0);
+    sc.run(&[EditOp::DeleteNode { target: sbool }]);
+    assert!(sc.d.node(sbool).is_none());
+
+    // 4. Unsupported TEXT operand fails closed; empty ops & dry_run preserve exact state.
+    let txt_op = EditOp::CreateText {
+        id: None,
+        parent: c.p,
+        x: 0.0,
+        y: 0.0,
+        characters: "Hi".into(),
+        font_family: "Inter".into(),
+        font_style: "Regular".into(),
+        font_size: 16.0,
+        fill_hex: "#000000".into(),
+    };
+    let txt = c.run(&[txt_op])[0];
+    c.atomic_err(
+        &[EditOp::Reparent {
+            target: txt,
+            new_parent: bid,
+            index: None,
+        }],
+        "TEXT",
+    );
+
+    let (snap, rev) = (c.d.to_bytes().unwrap(), c.d.revision);
+    let empty_rep = execute_edit_ops(&mut c.d, &mut c.h, &[], None, None, false)
+        .unwrap()
+        .0;
+    assert_eq!(empty_rep.revision, rev);
+    let dry = execute_edit_ops(&mut c.d, &mut c.h, &[mv(b, 120.0, 0.0)], None, None, true)
+        .unwrap()
+        .0;
+    assert!(!dry.applied && dry.touched_nodes.contains(&bid));
+    assert_eq!(c.d.to_bytes().unwrap(), snap);
+}

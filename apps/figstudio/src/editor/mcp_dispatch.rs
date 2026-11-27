@@ -46,7 +46,8 @@ pub(crate) enum TabMutation {
     expect(dead_code, reason = "used only with feature mcp, wasm32, or tests")
 )]
 fn execute_tab_mutation(tab: &mut Tab, cmd: TabMutation) -> Result<Value, String> {
-    match cmd {
+    let before_state = tab.history.state_id();
+    let result = match cmd {
         TabMutation::ApplyEdits {
             ops,
             label,
@@ -149,7 +150,11 @@ fn execute_tab_mutation(tab: &mut Tab, cmd: TabMutation) -> Result<Value, String
                 "nodes": tab.doc.nodes.len(),
             }))
         }
+    };
+    if result.is_ok() && tab.history.state_id() != before_state {
+        super::end_edit_drag(tab);
     }
+    result
 }
 
 /// Browser Wasm relay entry point: parses JSON tool arguments into [`TabMutation`] and runs

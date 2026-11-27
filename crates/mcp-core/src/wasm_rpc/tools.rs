@@ -217,7 +217,7 @@ pub(super) fn call(params: &Value, env: &dyn McpTabEnv) -> Result<Output, String
                 if ids.is_empty() {
                     ids.push(target()?);
                 }
-                crate::editing::copy_for_figma(doc, &ids, &tab.file_key, None)
+                crate::editing::copy_for_figma_with_reader(doc, &ids, &tab.file_key, &tab.rendering)
             }
             "apply_edits" | "undo" | "redo" | "get_history" | "import_image"
             | "paste_from_figma" => match env.mutate_tab(tab.id, name, &args) {

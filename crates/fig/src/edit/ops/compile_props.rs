@@ -131,6 +131,13 @@ pub(super) fn compile_prop_op(
             max_size,
         } => {
             let node = ensure_exists(doc, *target)?;
+            if node.kind == "BOOLEAN_OPERATION"
+                && (*primary_fill == Some(true) || *counter_stretch == Some(true))
+            {
+                return Err(FigError::malformed(format!(
+                    "cannot set Auto-Layout fill or stretch on BOOLEAN_OPERATION {target}: derived boolean geometry cannot be resized"
+                )));
+            }
             let mut set = Obj::new();
             let mut unset = Vec::new();
             if let Some(pf) = primary_fill {

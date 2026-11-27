@@ -128,6 +128,40 @@ Code: the text path in `Ctx::draw_node` (`crates/render/src/lib.rs`). Text with
 
 **Exact fix:** in the system-font layout fallback, cut the last visible line and add "…".
 
+### Text decorations approximated
+
+Code: `text::stored`, `SystemFonts::layout` (`crates/render/src/text.rs`), and
+`Ctx::draw_with_data` (`crates/render/src/lib.rs`), `Stats::approximated_text_decorations`.
+
+Stored `derivedTextData.decorations` rectangles from Figma exports render as stored (with
+uniform instance scaling in `resolve::scale_inherited`, per-run paint inheritance including
+`textDecorationFillPaints`, and single opacity-layer isolation when translucent solid glyphs
+and decorations share a paint). After edits clear `derivedTextData`, fallback shaping in
+`SystemFonts::layout` draws horizontal strikethrough and underline bars from the requested
+face's OpenType `OS/2` and `post` metrics (and is already counted under `text_system_fonts`).
+
+`approximated_text_decorations` counts once per drawn `TEXT` node when:
+- stored glyph outlines are drawn without stored `derivedTextData.decorations`, yet the node
+  or a character run requests a non-`NONE` `textDecoration` (no heuristic bar synthesis on
+  stored glyphs);
+- a decorated node or run specifies `textDecorationStyle` other than `SOLID` (such as
+  `DOTTED` or `WAVY`), which draws solid rectangles or bars instead; or
+- an unknown non-`NONE` `textDecoration` enum value is encountered.
+
+Additional limits documented without separate counters:
+- Fallback shaping does not compute descender skip-ink cutouts (`textDecorationSkipInk`);
+  stored `derivedTextData.decorations` already carry Figma's skip-ink cutouts.
+- Translucent gradient or image text fills with decorations draw per path without an extra
+  opacity layer; only translucent solid fills with normal blend mode isolate glyph/bar
+  crossings.
+- Variable or fill-style resolution inside `textData.styleOverrideTable` and node
+  `textDecorationFillPaints` is not performed; direct paint arrays on the node and override
+  entries are used.
+- Shadows on decorated text with per-run fill or decoration paint overrides are counted in
+  `approximated_effects` (`effects::has_decorated_text_paint_overrides`).
+- Inherited `textDecorationThickness` and `textUnderlineOffset` under `uniformScaleFactor`
+  on fallback text are counted in `approximated_instance_ink` (`layout::approximate_ink`).
+
 ### C7. emoji approximated / emoji skipped
 
 Code: `text::stored_glyphs`, `Ctx::emojis`, `Ctx::draw_placed_emojis`, and

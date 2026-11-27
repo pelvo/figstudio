@@ -292,9 +292,13 @@ impl Document {
             ));
         }
         let canvas = self.encode_canvas()?;
-        let Some(entries) = &self.source.archive_entries else {
+        if self.source.archive_entries.is_none()
+            && self.images.is_empty()
+            && self.thumbnail.is_none()
+        {
             return Ok(canvas);
-        };
+        }
+        let entries = self.source.archive_entries.as_deref().unwrap_or(&[]);
         let zip_err = |e: zip::result::ZipError| FigError::archive("cannot write archive", e);
         let io = |e: std::io::Error| FigError::io("cannot write archive", e);
         // Figma stores entries uncompressed; the canvas chunks are compressed already.
@@ -496,8 +500,27 @@ impl Document {
                 "lazy document requires source path to stream unread archive entries",
             ));
         };
-        let src_file = std::fs::File::open(src_path)
+        let mut src_file = std::fs::File::open(src_path)
             .map_err(|e| FigError::io("cannot read lazy source file", e))?;
+        let src_handle = src_file
+            .try_clone()
+            .ok()
+            .and_then(|f| same_file::Handle::from_file(f).ok());
+        let is_same_as_src = |handle: &Option<same_file::Handle>| -> bool {
+            let Some(src_h) = handle else {
+                return false;
+            };
+            same_file::Handle::from_path(dst)
+                .ok()
+                .is_some_and(|dst_h| &dst_h == src_h)
+        };
+        if is_same_as_src(&src_handle) {
+            return Err(FigError::malformed(
+                "refusing to overwrite the source file while streaming lazy archive",
+            ));
+        }
+        // Fail before creating any temp file in the destination directory if the source changed.
+        self.verify_lazy_source(&mut src_file)?;
 
         let (tmp, file) = create_temp(dst)?;
         let write_res = (|| -> Result<(), FigError> {
@@ -506,6 +529,11 @@ impl Document {
             buf.flush().map_err(io)?;
             let inner = buf.into_inner().map_err(|e| io(e.into_error()))?;
             inner.sync_all().map_err(io)?;
+            if overwrite && is_same_as_src(&src_handle) {
+                return Err(FigError::malformed(
+                    "refusing to overwrite the source file while streaming lazy archive",
+                ));
+            }
             Ok(())
         })();
 

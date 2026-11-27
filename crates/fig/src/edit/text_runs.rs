@@ -288,6 +288,10 @@ pub fn set_text_plain(
     Ok(())
 }
 
+fn is_utf16_boundary(code_units: &[u16], idx: usize) -> bool {
+    idx == 0 || idx == code_units.len() || !(0xDC00..=0xDFFF).contains(&code_units[idx])
+}
+
 /// Splices `[utf16_start .. utf16_start + utf16_delete_len]` in `textData` and inserts `insert`,
 /// shifting `characterStyleIDs` and compacting unused entries in `styleOverrideTable`.
 pub fn splice_text_utf16(
@@ -303,6 +307,10 @@ pub fn splice_text_utf16(
     {
         return Err(FigError::malformed("UTF-16 splice range out of bounds"));
     }
+    let end = utf16_start + utf16_delete_len;
+    if !is_utf16_boundary(&code_units, utf16_start) || !is_utf16_boundary(&code_units, end) {
+        return Err(FigError::malformed("splice split a UTF-16 surrogate pair"));
+    }
 
     let mut style_ids = expanded_style_ids(text_data, code_units.len());
     let inherited_style = if utf16_start > 0 {
@@ -312,12 +320,24 @@ pub fn splice_text_utf16(
     };
 
     let ins_units: Vec<u16> = insert.encode_utf16().collect();
-    let end = utf16_start + utf16_delete_len;
     code_units.splice(utf16_start..end, ins_units.iter().copied());
-    style_ids.splice(
-        utf16_start..end,
-        std::iter::repeat_n(inherited_style, ins_units.len()),
-    );
+    if utf16_delete_len > 0 && ins_units.len() == utf16_delete_len {
+        // Equal-length UTF-16 replacements keep each slot's style ID by position while
+        // keeping every 2-unit surrogate pair on its leading unit's style ID.
+        let mut pos = utf16_start;
+        for ch in insert.chars() {
+            let len = ch.len_utf16();
+            if len == 2 {
+                style_ids[pos + 1] = style_ids[pos];
+            }
+            pos += len;
+        }
+    } else {
+        style_ids.splice(
+            utf16_start..end,
+            std::iter::repeat_n(inherited_style, ins_units.len()),
+        );
+    }
 
     let new_str = String::from_utf16(&code_units)
         .map_err(|_| FigError::malformed("splice split a UTF-16 surrogate pair"))?;

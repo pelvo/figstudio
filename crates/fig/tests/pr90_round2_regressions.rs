@@ -629,3 +629,61 @@ fn auto_layout_resizing_text_drops_its_stored_glyph_layout() {
         "Auto-Layout resized TEXT from {text_w} to {after_w} but kept stale derivedTextData"
     );
 }
+
+#[test]
+fn lazy_clipboard_export_rejects_missing_source_and_preserves_undeclared_policy() {
+    use figstudio_fig::archive;
+    use figstudio_fig::clipboard::encode_clipboard_html_with_reader;
+    use std::io::Cursor;
+
+    let src_path = fixture("structure.fig");
+    let lazy = Document::open_lazy(&src_path).unwrap();
+    let (img_node, hash) = image_node(&lazy);
+    let eager = Document::open(&src_path).unwrap();
+    let raw_archive = std::fs::read(&src_path).unwrap();
+
+    assert!(
+        encode_clipboard_html(&lazy, &[img_node], 1, None, None).is_err(),
+        "copying a known lazy asset without a lazy source must fail rather than drop it"
+    );
+    let missing_path = std::env::temp_dir().join("figstudio-nonexistent-lazy-source.fig");
+    assert!(
+        encode_clipboard_html(&lazy, &[img_node], 1, None, Some(&missing_path)).is_err(),
+        "copying a known lazy asset with an unreadable source path must fail"
+    );
+    assert!(
+        encode_clipboard_html_with_reader(&lazy, &[img_node], 1, None, None).is_err(),
+        "copying a known lazy asset with None reader must fail"
+    );
+    let fail_reader = |_entry: &archive::Entry| None;
+    assert!(
+        encode_clipboard_html_with_reader(&lazy, &[img_node], 1, None, Some(&fail_reader)).is_err(),
+        "copying a known lazy asset when reader returns None must fail"
+    );
+    let ok_reader = |entry: &archive::Entry| {
+        archive::read_entry(&mut Cursor::new(raw_archive.as_slice()), entry).ok()
+    };
+    let html_with_reader =
+        encode_clipboard_html_with_reader(&lazy, &[img_node], 1, None, Some(&ok_reader)).unwrap();
+    let decoded = figstudio_fig::clipboard::decode_clipboard_html(&html_with_reader).unwrap();
+    assert_eq!(
+        decoded
+            .images
+            .iter()
+            .find(|(h, _)| h == &hash)
+            .map(|(_, b)| b.as_slice()),
+        Some(eager.images[&hash].as_slice())
+    );
+
+    // Undeclared/missing hash policy: a node whose fill hash is in neither `images` nor
+    // `lazy_images` (like broken_images.fig 1:3) exports cleanly with no fabricated bytes.
+    let broken = Document::open(fixture("broken_images.fig")).unwrap();
+    let missing_node = Guid(1, 3);
+    let html = encode_clipboard_html(&broken, &[missing_node], 1, None, None)
+        .expect("undeclared/missing image hash should still export Figma clipboard markup");
+    let payload = figstudio_fig::clipboard::decode_clipboard_html(&html).unwrap();
+    assert!(
+        payload.images.is_empty(),
+        "undeclared/missing hash must not fabricate image bytes"
+    );
+}

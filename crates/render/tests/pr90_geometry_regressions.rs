@@ -1752,3 +1752,135 @@ fn set_vector_network_updates_cull_bounds_and_renders_region_style_overrides() {
         "lower-left region at (80, 80) was culled or miscolored"
     );
 }
+
+#[test]
+fn boolean_operand_edits_update_rendered_pixels_bounds_and_nested_ancestry() {
+    let (mut doc, page, mut hist) = empty_page_doc();
+    let exec = |d: &mut Document, h: &mut History, ops: &[EditOp]| -> Vec<Guid> {
+        execute_edit_ops(d, h, ops, None, None, false)
+            .unwrap()
+            .0
+            .created_ids
+    };
+    let rect = |parent, x, y, width, height, hex: &str| EditOp::CreateShape {
+        id: None,
+        kind: "ROUNDED_RECTANGLE".into(),
+        parent,
+        name: None,
+        x,
+        y,
+        width,
+        height,
+        corner_radius: 0.0,
+        fill_hex: Some(hex.into()),
+        count: None,
+        star_inner_scale: None,
+    };
+    let render_page = |d: &Document| {
+        let vp = Viewport {
+            width: 240,
+            height: 140,
+            transform: Affine::IDENTITY,
+            background: None,
+        };
+        Renderer::new().render(d, page, &vp)
+    };
+
+    // 1. SUBTRACT: red 100x100 at (0,0) minus 40x40 cutout at (30,30); move cutout to (80,30).
+    let ids = exec(
+        &mut doc,
+        &mut hist,
+        &[
+            rect(page, 0.0, 0.0, 100.0, 100.0, "#FF0000"),
+            rect(page, 30.0, 30.0, 40.0, 40.0, "#00FF00"),
+        ],
+    );
+    let sub = exec(
+        &mut doc,
+        &mut hist,
+        &[EditOp::BooleanCombine {
+            operation: BooleanOp::Subtract,
+            a: ids[0],
+            b: ids[1],
+            name: None,
+        }],
+    )[0];
+    let f0 = render_page(&doc);
+    assert_eq!(f0.stats.approximated_booleans, 0);
+    assert_eq!(
+        pixel(f0.pixmap.data_as_u8_slice(), 240, 50, 50),
+        [0, 0, 0, 0]
+    );
+    assert_eq!(
+        pixel(f0.pixmap.data_as_u8_slice(), 240, 90, 50),
+        [255, 0, 0, 255]
+    );
+
+    exec(
+        &mut doc,
+        &mut hist,
+        &[EditOp::Move {
+            target: ids[1],
+            x: 80.0,
+            y: 30.0,
+            relative: false,
+        }],
+    );
+    let f1 = render_page(&doc);
+    assert_eq!(f1.stats.approximated_booleans, 0);
+    assert_eq!(
+        pixel(f1.pixmap.data_as_u8_slice(), 240, 50, 50),
+        [255, 0, 0, 255],
+        "old hole center (50, 50) stayed transparent"
+    );
+    assert_eq!(
+        pixel(f1.pixmap.data_as_u8_slice(), 240, 90, 50),
+        [0, 0, 0, 0],
+        "new hole center (90, 50) not cut out"
+    );
+
+    // 2. Save/reopen round-trip and undo restore exact rendered pixels.
+    let reopened = Document::from_bytes(&doc.to_bytes().unwrap()).unwrap();
+    assert_eq!(
+        render_page(&reopened).pixmap.data_as_u8_slice(),
+        f1.pixmap.data_as_u8_slice()
+    );
+    hist.undo(&mut doc).unwrap();
+    assert_eq!(
+        render_page(&doc).pixmap.data_as_u8_slice(),
+        f0.pixmap.data_as_u8_slice()
+    );
+
+    // 3. Nested boolean + resized operand updates rendered pixels and node_bounds.
+    let sib = exec(
+        &mut doc,
+        &mut hist,
+        &[rect(page, 0.0, 110.0, 40.0, 20.0, "#0000FF")],
+    )[0];
+    let outer = exec(
+        &mut doc,
+        &mut hist,
+        &[EditOp::BooleanCombine {
+            operation: BooleanOp::Union,
+            a: sub,
+            b: sib,
+            name: None,
+        }],
+    )[0];
+    exec(
+        &mut doc,
+        &mut hist,
+        &[EditOp::Resize {
+            target: ids[0],
+            width: 180.0,
+            height: 100.0,
+        }],
+    );
+    let f2 = render_page(&doc);
+    assert_eq!(f2.stats.approximated_booleans, 0);
+    assert_eq!(
+        pixel(f2.pixmap.data_as_u8_slice(), 240, 150, 50),
+        [255, 0, 0, 255]
+    );
+    assert!((node_bounds(&doc, outer).unwrap().width() - 180.0).abs() < 1.0);
+}

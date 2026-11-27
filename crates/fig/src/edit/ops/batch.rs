@@ -1,14 +1,16 @@
 //! Batch execution, paste transaction merging, and ancestor-scoped Auto-Layout derive pass.
 
+use std::cmp::Reverse;
 use std::collections::HashSet;
 
 use crate::clipboard::{decode_clipboard_html, paste_kiwi_into};
 use crate::edit::autolayout::append_auto_layout_patches;
-use crate::edit::geometry::sync_derived_caches_in_txn;
+use crate::edit::geometry::{SHAPE_GEOMETRY_INPUTS, patch_touches_any, sync_derived_caches_in_txn};
 use crate::edit::styles_vars::import_image_bytes;
-use crate::edit::{Dirty, GuidAlloc, History, Txn};
-use crate::{Document, FigError, Guid};
+use crate::edit::{Dirty, GuidAlloc, History, NodePatch, Txn};
+use crate::{Document, FigError, Guid, Obj};
 
+use super::compile_components::recompute_boolean_node;
 use super::compile_tree::compile_single_op;
 use super::{EditBatchReport, EditOp};
 
@@ -56,24 +58,18 @@ pub fn execute_edit_ops(
             &mut touched_for_layout,
         )?;
         if !step_txn.is_empty() {
-            sync_derived_caches_in_txn(&staged, &mut step_txn);
-            staged.apply_txn(&step_txn)?;
-            merge_step_into_batch(&mut batch_txn, step_txn);
+            apply_step_and_repair_booleans(
+                &mut staged,
+                &mut batch_txn,
+                step_txn,
+                &mut touched_for_layout,
+            )?;
         }
     }
 
     // Derive Pass: solve Auto-Layout strictly on the topmost Auto-Layout ancestors of touched
-    // nodes — never across unrelated frames or pages in the document!
-    let mut al_adjustments = 0usize;
-    for root in topmost_autolayout_ancestors(&staged, &touched_for_layout) {
-        let mut al_txn = Txn::new("autolayout");
-        al_adjustments += append_auto_layout_patches(&staged, Some(root), &mut al_txn);
-        if !al_txn.is_empty() {
-            sync_derived_caches_in_txn(&staged, &mut al_txn);
-            staged.apply_txn(&al_txn)?;
-            merge_step_into_batch(&mut batch_txn, al_txn);
-        }
-    }
+    // nodes, repairing any booleans affected by layout updates and re-solving if needed.
+    let al_adjustments = run_autolayout_pass(&mut staged, &mut batch_txn, &touched_for_layout)?;
 
     if dry_run {
         let mut dirty_pages: Vec<Guid> = batch_txn
@@ -158,17 +154,213 @@ pub fn execute_paste_html(
     }
     let mut staged = clone_document_shell(doc);
     staged.apply_txn(&batch_txn)?;
-    for al_root in topmost_autolayout_ancestors(&staged, &[target_parent]) {
-        let mut al_txn = Txn::new("Paste Auto-Layout");
-        append_auto_layout_patches(&staged, Some(al_root), &mut al_txn);
-        if !al_txn.is_empty() {
-            sync_derived_caches_in_txn(&staged, &mut al_txn);
-            staged.apply_txn(&al_txn)?;
-            merge_step_into_batch(&mut batch_txn, al_txn);
-        }
+    let mut layout_touched = vec![target_parent];
+    let mut paste_dirty = HashSet::new();
+    for &root in &roots {
+        collect_visible_boolean_ancestors(&staged, root, false, &mut paste_dirty);
     }
+    recompute_dirty_booleans(
+        &mut staged,
+        &mut batch_txn,
+        &paste_dirty,
+        &mut layout_touched,
+    )?;
+    run_autolayout_pass(&mut staged, &mut batch_txn, &layout_touched)?;
     let dirty = history.execute(doc, batch_txn)?;
     Ok((roots, dirty))
+}
+
+const BOOLEAN_OPERAND_EXTRA_KEYS: &[&str] = &[
+    "parentIndex",
+    "transform",
+    "visible",
+    "fillGeometry",
+    "booleanOperation",
+    "type",
+];
+
+fn patch_affects_boolean_operand(set: &Obj, unset: &[String]) -> bool {
+    patch_touches_any(set, unset, BOOLEAN_OPERAND_EXTRA_KEYS)
+        || patch_touches_any(set, unset, SHAPE_GEOMETRY_INPUTS)
+}
+
+/// Collects `BOOLEAN_OPERATION` ancestors reachable from `start` without crossing a hidden node.
+fn collect_visible_boolean_ancestors(
+    doc: &Document,
+    start: Guid,
+    include_self: bool,
+    out: &mut HashSet<Guid>,
+) {
+    let mut cur = Some(start);
+    let mut seen = HashSet::new();
+    let mut first = true;
+    while let Some(id) = cur {
+        if !seen.insert(id) {
+            break;
+        }
+        let Some(node) = doc.node(id) else { break };
+        if (!first || include_self) && node.kind == "BOOLEAN_OPERATION" {
+            out.insert(id);
+        }
+        if node.data.flag("visible") == Some(false) {
+            break;
+        }
+        first = false;
+        cur = node.parent;
+    }
+}
+
+fn collect_step_booleans(
+    doc: &Document,
+    step_txn: &Txn,
+    after: bool,
+    out: &mut HashSet<Guid>,
+) -> Result<(), FigError> {
+    for (id, patch) in &step_txn.patches {
+        match patch {
+            NodePatch::Delete if !after => collect_visible_boolean_ancestors(doc, *id, false, out),
+            NodePatch::Create { .. } if after => {
+                collect_visible_boolean_ancestors(doc, *id, false, out);
+            }
+            NodePatch::Modify { set, unset } => {
+                let mut ancestors = HashSet::new();
+                if patch_affects_boolean_operand(set, unset) {
+                    collect_visible_boolean_ancestors(doc, *id, false, &mut ancestors);
+                }
+                if !after
+                    && !ancestors.is_empty()
+                    && patch_touches_any(set, unset, &["size"])
+                    && !set.contains_key("fillGeometry")
+                    && !unset.iter().any(|u| u == "fillGeometry")
+                    && doc
+                        .node(*id)
+                        .is_some_and(|n| n.kind == "VECTOR" && n.data.get("fillGeometry").is_some())
+                {
+                    return Err(FigError::malformed(format!(
+                        "cannot resize VECTOR operand {id} inside BOOLEAN_OPERATION without vectorData.vectorNetworkBlob and normalizedSize"
+                    )));
+                }
+                out.extend(ancestors);
+                if doc.node(*id).is_some_and(|n| n.kind == "BOOLEAN_OPERATION")
+                    && !set.contains_key("fillGeometry")
+                {
+                    if patch_touches_any(set, unset, &["size"]) {
+                        return Err(FigError::malformed(format!(
+                            "cannot resize BOOLEAN_OPERATION {id}: derived boolean geometry cannot be resized without operand scaling"
+                        )));
+                    }
+                    if (after && set.contains_key("type"))
+                        || patch_touches_any(set, unset, &["booleanOperation"])
+                        || patch_touches_any(set, unset, SHAPE_GEOMETRY_INPUTS)
+                    {
+                        out.insert(*id);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn apply_step_and_repair_booleans(
+    staged: &mut Document,
+    batch_txn: &mut Txn,
+    mut step_txn: Txn,
+    touched_for_layout: &mut Vec<Guid>,
+) -> Result<(), FigError> {
+    sync_derived_caches_in_txn(staged, &mut step_txn);
+    let mut dirty = HashSet::new();
+    collect_step_booleans(staged, &step_txn, false, &mut dirty)?;
+    staged.apply_txn(&step_txn)?;
+
+    let mut after = HashSet::new();
+    collect_step_booleans(staged, &step_txn, true, &mut after)?;
+    let created: HashSet<Guid> = step_txn
+        .patches
+        .iter()
+        .filter_map(|(id, p)| matches!(p, NodePatch::Create { .. }).then_some(*id))
+        .collect();
+    dirty.extend(after.into_iter().filter(|id| !created.contains(id)));
+
+    merge_step_into_batch(batch_txn, step_txn);
+    recompute_dirty_booleans(staged, batch_txn, &dirty, touched_for_layout)
+}
+
+fn recompute_dirty_booleans(
+    staged: &mut Document,
+    batch_txn: &mut Txn,
+    dirty_booleans: &HashSet<Guid>,
+    touched_for_layout: &mut Vec<Guid>,
+) -> Result<(), FigError> {
+    if dirty_booleans.is_empty() {
+        return Ok(());
+    }
+    let mut closed = HashSet::new();
+    for &id in dirty_booleans {
+        collect_visible_boolean_ancestors(staged, id, true, &mut closed);
+    }
+    let depth_of = |mut cur: Option<Guid>| -> usize {
+        let (mut d, mut seen) = (0usize, HashSet::new());
+        while let Some(pid) = cur.and_then(|id| staged.node(id)).and_then(|n| n.parent) {
+            if !seen.insert(pid) {
+                break;
+            }
+            d += 1;
+            cur = Some(pid);
+        }
+        d
+    };
+    let mut ordered: Vec<(usize, Guid)> = closed
+        .into_iter()
+        .filter(|&id| {
+            staged
+                .node(id)
+                .is_some_and(|n| n.kind == "BOOLEAN_OPERATION")
+        })
+        .map(|id| (depth_of(Some(id)), id))
+        .collect();
+    ordered.sort_by_key(|&(depth, id)| (Reverse(depth), id));
+
+    for (_, bool_id) in ordered {
+        let mut bool_txn = Txn::new("recompute boolean");
+        recompute_boolean_node(staged, bool_id, &mut bool_txn)?;
+        if !bool_txn.is_empty() {
+            staged.apply_txn(&bool_txn)?;
+            merge_step_into_batch(batch_txn, bool_txn);
+            touched_for_layout.push(bool_id);
+        }
+    }
+    Ok(())
+}
+
+fn run_autolayout_pass(
+    staged: &mut Document,
+    batch_txn: &mut Txn,
+    initial_touched: &[Guid],
+) -> Result<usize, FigError> {
+    let mut al_adjustments = 0usize;
+    let mut pending = initial_touched.to_vec();
+    for _ in 0..4 {
+        if pending.is_empty() {
+            break;
+        }
+        let mut next_pending = Vec::new();
+        for root in topmost_autolayout_ancestors(staged, &pending) {
+            let mut al_txn = Txn::new("autolayout");
+            al_adjustments += append_auto_layout_patches(staged, Some(root), &mut al_txn);
+            if !al_txn.is_empty() {
+                apply_step_and_repair_booleans(staged, batch_txn, al_txn, &mut next_pending)?;
+            }
+        }
+        pending = next_pending;
+    }
+    if !pending.is_empty() {
+        return Err(FigError::malformed(
+            "auto-layout and boolean recomputation did not converge",
+        ));
+    }
+    Ok(al_adjustments)
 }
 
 /// Finds the deduplicated topmost Auto-Layout container ancestors covering `touched`.

@@ -156,6 +156,11 @@ async fn stdio_discovers_and_calls_tools() {
         assert!(instructions.starts_with("Offline access to local .fig files only."));
         assert!(instructions.contains("figstudio://<fileKey>?page=0-1&rect=x,y,w,h region link"));
         assert!(instructions.contains("get_nodes_in_region"));
+        assert!(instructions.contains("save_copy"));
+        assert!(
+            !instructions.contains("the .fig is never changed"),
+            "stale write claim remained in standalone instructions: {instructions}"
+        );
         assert!(
             !instructions.contains("Live mode"),
             "standalone names live mode"

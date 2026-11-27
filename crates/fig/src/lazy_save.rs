@@ -70,6 +70,10 @@ fn io_err(e: io::Error) -> FigError {
     FigError::io("cannot write archive", e)
 }
 
+fn io_read_err(e: io::Error) -> FigError {
+    FigError::io("cannot read source archive", e)
+}
+
 fn stored_opts(len: usize) -> zip::write::SimpleFileOptions {
     zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Stored)
@@ -129,15 +133,61 @@ fn write_new_images<W: Write + Seek>(
 }
 
 impl Document {
+    /// Verifies that `src` still matches the archive identity captured when `self` was lazily
+    /// opened, reading only tail/central-directory metadata (never entry payloads).
+    pub(crate) fn verify_lazy_source<R: Read + Seek>(
+        &self,
+        src: &mut R,
+    ) -> Result<usize, FigError> {
+        if !self.source.lazy {
+            return Err(FigError::malformed(
+                "write_lazy_archive requires a document opened lazily",
+            ));
+        }
+        let Some(expected) = self.source.lazy_identity else {
+            return Err(FigError::malformed(
+                "lazy document has no source archive identity",
+            ));
+        };
+        let len = src.seek(SeekFrom::End(0)).map_err(io_read_err)?;
+        let (entries, fp) = crate::archive::read_entries_with_fingerprint(src, len)?;
+        if entries.len() != expected.entry_count
+            || crate::archive::entries_sha1(&entries) != expected.entries_sha1
+        {
+            return Err(FigError::malformed(
+                "source .fig archive entries do not match the opened document",
+            ));
+        }
+        if let Some(expected_fp) = expected.container
+            && fp != expected_fp
+        {
+            return Err(FigError::malformed(
+                "source .fig archive changed since it was opened",
+            ));
+        }
+        src.seek(SeekFrom::Start(0)).map_err(io_read_err)?;
+        Ok(expected.entry_count)
+    }
+
     /// Writes a `.fig` archive to `dst`, replacing `canvas.fig` (and `thumbnail.png` when
     /// present), raw-copying untouched entries from `src` without decompressing or buffering
     /// them in full, and writing newly added or overridden `self.images`.
+    ///
+    /// Verifies `src` against the opened document's archive identity both before and after
+    /// streaming so path replacement or in-place modification around streaming cannot mix an old
+    /// canvas with a changed archive.
     pub fn write_lazy_archive<R: Read + Seek, W: Write + Seek>(
         &self,
-        src: R,
+        mut src: R,
         dst: W,
     ) -> Result<W, FigError> {
+        let expected_count = self.verify_lazy_source(&mut src)?;
         let mut src_zip = zip::ZipArchive::new(src).map_err(zip_read_err)?;
+        if src_zip.offset() != 0 || src_zip.len() != expected_count {
+            return Err(FigError::malformed(
+                "source .fig archive layout does not match the opened document",
+            ));
+        }
         let mut dst_zip = zip::ZipWriter::new(dst);
         write_canvas_thumb_and_images_dir(self, &mut dst_zip)?;
 
@@ -159,11 +209,49 @@ impl Document {
         }
 
         write_new_images(self, &mut dst_zip)?;
-        dst_zip.finish().map_err(zip_err)
+        let dst = dst_zip.finish().map_err(zip_err)?;
+        let mut src = src_zip.into_inner();
+        self.verify_lazy_source(&mut src)?;
+        Ok(dst)
     }
 }
 
 impl LazyArchiveMeta {
+    fn verify_doc(&self, doc: &Document) -> Result<(), FigError> {
+        if !doc.source.lazy {
+            return Err(FigError::malformed(
+                "lazy archive plan requires a document opened lazily",
+            ));
+        }
+        let Some(expected) = doc.source.lazy_identity else {
+            return Err(FigError::malformed(
+                "lazy document has no source archive identity",
+            ));
+        };
+        let entries = crate::archive::entries(&self.cd)?;
+        if entries.len() != expected.entry_count
+            || crate::archive::entries_sha1(&entries) != expected.entries_sha1
+        {
+            return Err(FigError::malformed(
+                "source .fig archive entries do not match the opened document",
+            ));
+        }
+        if let Some(expected_fp) = expected.container {
+            let fp = crate::archive::ContainerFingerprint::from_parts(
+                self.file_len,
+                &self.tail,
+                self.cd_offset,
+                &self.cd,
+            );
+            if fp != expected_fp {
+                return Err(FigError::malformed(
+                    "source .fig archive changed since it was opened",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Validates and stores the central-directory metadata of a source `.fig` archive from
     /// its `tail` (ending at `file_len`) and central directory `cd` (starting at `cd_offset`).
     pub fn from_directory(
@@ -198,6 +286,7 @@ impl LazyArchiveMeta {
     /// Unique local-header byte offsets (each [`LOCAL_HEADER_LEN`] bytes) needed from the
     /// source file to plan a lazy save of `doc`.
     pub fn needed_local_headers(&self, doc: &Document) -> Result<Vec<u64>, FigError> {
+        self.verify_doc(doc)?;
         let archive = self.open_archive(
             HashMap::new(),
             Rc::new(RefCell::new(PayloadBridge::default())),
@@ -239,6 +328,7 @@ impl LazyArchiveMeta {
         doc: &Document,
         local_headers: &[(u64, [u8; 30])],
     ) -> Result<Vec<ArchivePart>, FigError> {
+        self.verify_doc(doc)?;
         let mut headers = HashMap::with_capacity(local_headers.len());
         for &(offset, bytes) in local_headers {
             headers.insert(offset, bytes);

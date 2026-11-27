@@ -71,6 +71,7 @@ pub fn undo_tab(tab: &mut Tab) -> Result<Option<String>, String> {
     let doc_mut = Arc::make_mut(&mut tab.doc);
     let res = tab.history.undo(doc_mut).map_err(|e| e.to_string())?;
     if let Some((label, _)) = res {
+        end_edit_drag(tab);
         tab.sync_unsaved();
         tab.motion_preview = None;
         if let Some(sel) = tab.selection
@@ -90,6 +91,7 @@ pub fn redo_tab(tab: &mut Tab) -> Result<Option<String>, String> {
     let doc_mut = Arc::make_mut(&mut tab.doc);
     let res = tab.history.redo(doc_mut).map_err(|e| e.to_string())?;
     if let Some((label, _)) = res {
+        end_edit_drag(tab);
         tab.sync_unsaved();
         tab.motion_preview = None;
         Ok(Some(label))
@@ -113,6 +115,7 @@ pub fn duplicate_selection(tab: &mut Tab) -> Result<String, String> {
         Some("Duplicate layer"),
         None,
     )?;
+    end_edit_drag(tab);
     if let Some(&first) = ids.first() {
         tab.select(Some(first));
     }
@@ -138,6 +141,7 @@ pub fn delete_selection(tab: &mut Tab) -> Result<String, String> {
         Some("Delete layer"),
         None,
     )?;
+    end_edit_drag(tab);
     tab.select(None);
     Ok(format!("Deleted “{name}”"))
 }

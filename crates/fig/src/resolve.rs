@@ -234,6 +234,24 @@ pub fn merge(
                 o.remove(style);
             }
         }
+        const TEXT_DECORATION_FIELDS: [&str; 5] = [
+            "textDecoration",
+            "textDecorationThickness",
+            "textUnderlineOffset",
+            "textDecorationStyle",
+            "textDecorationSkipInk",
+        ];
+        if !p.derived
+            && p.data.get("styleIdForText").is_none()
+            && p.data.get("inheritTextStyleID").is_none()
+            && TEXT_DECORATION_FIELDS
+                .iter()
+                .any(|k| p.data.get(k).is_some())
+            && let Val::Obj(o) = &mut data
+        {
+            o.remove("styleIdForText");
+            o.remove("inheritTextStyleID");
+        }
     }
     data
 }

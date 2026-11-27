@@ -27,9 +27,8 @@ impl Host {
             }
             Event::Server(ServerMessage::Error { message, tab }) => {
                 // Only upload failures name a tab; other errors leave the tabs alone.
+                self.bridge.server_error(tab);
                 if let Some(tab) = tab {
-                    self.ready.remove(&tab);
-                    self.failed.insert(tab);
                     // Stop a running upload: the bridge drops its remaining frames anyway.
                     self.shared.cancelled.borrow_mut().insert(tab);
                     self.last_key = None;
@@ -49,29 +48,34 @@ impl Host {
                 None
             }
             Event::Uploaded { generation, .. } if generation != self.generation => None,
-            Event::Uploaded { tab, result, .. } => {
-                self.uploading = None;
-                match result {
-                    Ok(()) if self.failed.contains(&tab) => None,
-                    Ok(()) => {
-                        self.ready.insert(tab);
-                        self.last_key = None;
-                        None
-                    }
-                    Err(error) => {
-                        // Already failed: the bridge's error was shown and cancelled this upload.
-                        let reported = !self.failed.insert(tab);
-                        // The bridge may hold a partial file for this tab: tell it to drop it.
-                        // A tab that was closed already got `close` from `drop_closed`.
-                        if self.names.contains_key(&tab)
-                            && let Some(conn) = &self.conn
-                        {
-                            let _ = send(&conn.ws, &ClientMessage::Close { tab });
-                        }
-                        (self.names.contains_key(&tab) && !reported)
-                            .then(|| format!("MCP upload failed: {error}"))
-                    }
+            Event::Uploaded {
+                tab,
+                revision,
+                result,
+                ..
+            } => {
+                let current_rev = tabs.iter().find(|t| t.id == tab).map(|t| t.doc.revision);
+                let tab_open = self.names.contains_key(&tab);
+                let action =
+                    self.bridge
+                        .finish_upload(tab, revision, current_rev, result, tab_open);
+                if action.clear_cancelled {
+                    self.shared.cancelled.borrow_mut().remove(&tab);
                 }
+                if action.send_close
+                    && let Some(conn) = &self.conn
+                {
+                    let _ = send(&conn.ws, &ClientMessage::Close { tab });
+                }
+                if action.clear_last_key {
+                    self.last_key = None;
+                }
+                if action.repaint
+                    && let Some(ctx) = &self.ctx
+                {
+                    ctx.request_repaint();
+                }
+                action.toast
             }
             // Handled by `link_event`.
             Event::Pong { .. }

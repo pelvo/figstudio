@@ -3,8 +3,9 @@
 use std::collections::HashSet;
 
 use crate::edit::geometry::{
-    PathCmd, cubic_extrema, decode_path_commands, encode_path_commands, make_path_entry,
-    make_styled_path_entry, matrix_2x3, quad_extrema, rebuild_shape_geometry,
+    PathCmd, corner_radii_of, cubic_extrema, decode_path_commands, encode_path_commands,
+    has_visible_paints, make_path_entry, make_styled_path_entry, matrix_2x3, quad_extrema,
+    rebuild_shape_geometry,
 };
 use crate::edit::instances::{
     convert_frame_to_component, detach_instance, existing_override_field, instantiate_component,
@@ -346,20 +347,18 @@ fn compile_boolean_combine(
         rel
     };
 
-    let paths_a = transform_boolean_paths(&extract_local_paths(doc, na), tf_a);
-    let paths_b = transform_boolean_paths(&extract_local_paths(doc, nb), tf_b);
+    let paths_a = transform_boolean_paths(&extract_operand_paths(doc, na, 0, false)?, tf_a);
+    let paths_b = transform_boolean_paths(&extract_operand_paths(doc, nb, 0, false)?, tf_b);
     let combined = boolean_combine_paths(operation, &paths_a, &paths_b);
 
     let (origin, width, height, fill_geometry) =
         if let Some((min_x, min_y, max_x, max_y)) = cmds_bounds(&combined) {
             let local_combined = transform_cmds(&combined, Affine2D::translation(-min_x, -min_y));
-            let blob_idx = doc.blobs.len() + txn.add_blobs.len();
-            txn.add_blobs.push(encode_path_commands(&local_combined));
             (
                 (min_x, min_y),
                 (max_x - min_x).max(0.0),
                 (max_y - min_y).max(0.0),
-                Val::Arr(vec![make_path_entry(blob_idx, false)]),
+                encode_boolean_fill_geometry(doc, txn, &local_combined),
             )
         } else {
             let origin = boolean_paths_bounds(&paths_a).map_or((0.0, 0.0), |(x, y, _, _)| (x, y));
@@ -422,6 +421,129 @@ fn compile_boolean_combine(
         layout_touched.push(old_b_parent);
     }
     Ok(())
+}
+
+fn encode_boolean_fill_geometry(doc: &Document, txn: &mut Txn, cmds: &[PathCmd]) -> Val {
+    let blob_idx = doc.blobs.len() + txn.add_blobs.len();
+    txn.add_blobs.push(encode_path_commands(cmds));
+    Val::Arr(vec![make_path_entry(blob_idx, false)])
+}
+
+/// Recomputes a `BOOLEAN_OPERATION` node's derived `fillGeometry`, `size`, and (when its local
+/// origin shifts) affine-safe `transform` + direct-child transform rebasing from its current
+/// visible children in sibling order. Fails closed if the operation, any visible operand, or
+/// required derived stroke/corner geometry cannot be safely recomputed.
+pub(super) fn recompute_boolean_node(
+    doc: &Document,
+    bool_id: Guid,
+    txn: &mut Txn,
+) -> Result<(), FigError> {
+    let node = ensure_exists(doc, bool_id)?;
+    if node.kind != "BOOLEAN_OPERATION" {
+        return Ok(());
+    }
+    let op_name = node.data.text("booleanOperation").ok_or_else(|| {
+        FigError::malformed(format!(
+            "BOOLEAN_OPERATION {bool_id} is missing booleanOperation"
+        ))
+    })?;
+    let operation = BooleanOp::from_figma_name(op_name).ok_or_else(|| {
+        FigError::malformed(format!(
+            "BOOLEAN_OPERATION {bool_id} has unsupported booleanOperation {op_name:?}"
+        ))
+    })?;
+    if corner_radii_of(&node.data).iter().any(|&r| r > 1e-4) {
+        return Err(FigError::malformed(format!(
+            "cannot recompute BOOLEAN_OPERATION {bool_id} with non-zero corner radius"
+        )));
+    }
+    if has_visible_paints(node.data.get("strokePaints")) {
+        return Err(FigError::malformed(format!(
+            "cannot recompute stroked BOOLEAN_OPERATION {bool_id}: derived strokeGeometry regeneration is not supported"
+        )));
+    }
+
+    let tf_bool = Affine2D::from_val(node.data.get("transform"))?;
+    let children = doc.children(bool_id);
+    let mut combined_paths: Option<Vec<BooleanPath>> = None;
+    for child in children
+        .iter()
+        .filter_map(|&cid| doc.node(cid))
+        .filter(|c| c.data.flag("visible") != Some(false))
+    {
+        let tf_child = Affine2D::from_val(child.data.get("transform"))?;
+        let transformed =
+            transform_boolean_paths(&extract_operand_paths(doc, child, 0, true)?, tf_child);
+        combined_paths = Some(match combined_paths {
+            None => transformed,
+            Some(acc) => {
+                let next = boolean_combine_paths(operation, &acc, &transformed);
+                if next.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![BooleanPath {
+                        cmds: next,
+                        even_odd: false,
+                    }]
+                }
+            }
+        });
+    }
+
+    let combined: Vec<PathCmd> = match combined_paths {
+        None => Vec::new(),
+        Some(paths) if paths.is_empty() => Vec::new(),
+        Some(mut paths) if paths.len() == 1 && !paths[0].even_odd => paths.swap_remove(0).cmds,
+        Some(paths) => boolean_combine_paths(BooleanOp::Union, &paths, &[]),
+    };
+
+    let mut set = Obj::new();
+    let mut unset = Vec::new();
+    if let Some((min_x, min_y, max_x, max_y)) = cmds_bounds(&combined) {
+        let local_combined = if min_x.abs() > 1e-6 || min_y.abs() > 1e-6 {
+            let rebase = Affine2D::translation(-min_x, -min_y);
+            let new_tf_bool = tf_bool.mul(Affine2D::translation(min_x, min_y));
+            if !new_tf_bool.is_finite() {
+                return Err(FigError::malformed(format!(
+                    "rebased transform for BOOLEAN_OPERATION {bool_id} is non-finite"
+                )));
+            }
+            set.insert("transform", new_tf_bool.to_val());
+            for child in children.iter().filter_map(|&cid| doc.node(cid)) {
+                let new_tf_c = rebase.mul(Affine2D::from_val(child.data.get("transform"))?);
+                if !new_tf_c.is_finite() {
+                    return Err(FigError::malformed(format!(
+                        "rebased transform for boolean child {} is non-finite",
+                        child.id
+                    )));
+                }
+                txn.set_field(child.id, "transform", new_tf_c.to_val());
+            }
+            transform_cmds(&combined, rebase)
+        } else {
+            combined
+        };
+        set.insert(
+            "fillGeometry",
+            encode_boolean_fill_geometry(doc, txn, &local_combined),
+        );
+        set.insert(
+            "size",
+            size_val((max_x - min_x).max(0.0), (max_y - min_y).max(0.0)),
+        );
+    } else {
+        set.insert("fillGeometry", Val::Arr(Vec::new()));
+        set.insert("size", size_val(0.0, 0.0));
+    }
+    if node.data.get("strokeGeometry").is_some() {
+        unset.push("strokeGeometry".into());
+    }
+    txn.modify(bool_id, set, unset);
+    Ok(())
+}
+
+fn size_val(w: f64, h: f64) -> Val {
+    Val::Obj(Obj::from([("x", Val::Float(w)), ("y", Val::Float(h))]))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -569,79 +691,181 @@ fn node_page_transform(doc: &Document, id: Guid) -> Result<Affine2D, FigError> {
         .fold(Affine2D::IDENTITY, Affine2D::mul))
 }
 
-fn extract_local_paths(doc: &Document, node: &crate::Node) -> Vec<BooleanPath> {
-    if let Some(fg) = node.data.get("fillGeometry") {
+fn extract_operand_paths(
+    doc: &Document,
+    node: &crate::Node,
+    depth: usize,
+    strict: bool,
+) -> Result<Vec<BooleanPath>, FigError> {
+    if depth > 64 {
+        return if strict {
+            Err(FigError::malformed(format!(
+                "boolean operand {} exceeds maximum GROUP nesting depth",
+                node.id
+            )))
+        } else {
+            Ok(Vec::new())
+        };
+    }
+    if node.kind == "GROUP" {
         let mut all = Vec::new();
-        for p in fg.items() {
-            if let Some(idx) = p.get("commandsBlob").and_then(Val::as_u32)
-                && let Some(blob) = doc.blobs.get(idx as usize)
-                && let Some(decoded) = decode_path_commands(blob)
-                && !decoded.is_empty()
-            {
+        for child in doc
+            .children(node.id)
+            .iter()
+            .filter_map(|&cid| doc.node(cid))
+            .filter(|c| c.data.flag("visible") != Some(false))
+        {
+            let tf_c = Affine2D::from_val(child.data.get("transform"))?;
+            all.extend(transform_boolean_paths(
+                &extract_operand_paths(doc, child, depth + 1, strict)?,
+                tf_c,
+            ));
+        }
+        return Ok(all);
+    }
+    if strict
+        && matches!(node.kind.as_str(), "FRAME" | "SECTION" | "SYMBOL")
+        && !doc.children(node.id).is_empty()
+    {
+        return Err(FigError::malformed(format!(
+            "boolean operand {} ({}) has children and cannot be safely recomputed",
+            node.id, node.kind
+        )));
+    }
+    let mut fg_err = None;
+    if let Some(fg) = node.data.get("fillGeometry") {
+        let Val::Arr(items) = fg else {
+            if strict {
+                fg_err = Some(FigError::malformed(format!(
+                    "boolean operand {} has malformed fillGeometry",
+                    node.id
+                )));
+            }
+            return finish_operand_fallback(doc, node, strict, fg_err);
+        };
+        let mut all = Vec::with_capacity(items.len());
+        for p in items {
+            let decoded = p
+                .get("commandsBlob")
+                .and_then(Val::as_u32)
+                .and_then(|idx| doc.blobs.get(idx as usize))
+                .and_then(|blob| decode_path_commands(blob));
+            let Some(cmds) = decoded else {
+                if strict {
+                    fg_err = Some(FigError::malformed(format!(
+                        "boolean operand {} has missing or undecodable fillGeometry commandsBlob",
+                        node.id
+                    )));
+                    all.clear();
+                    break;
+                }
+                continue;
+            };
+            if !cmds.is_empty() {
                 all.push(BooleanPath {
-                    cmds: decoded,
+                    cmds,
                     even_odd: p.text("windingRule") == Some("ODD"),
                 });
             }
         }
-        if !all.is_empty() {
-            return all;
-        }
-    }
-    if let Some(idx) = node
-        .data
-        .path(&["vectorData", "vectorNetworkBlob"])
-        .and_then(Val::as_u32)
-        && let Some(blob) = doc.blobs.get(idx as usize)
-        && let Some(net) = decode_vector_network(blob)
-    {
-        let mut all: Vec<BooleanPath> = network_to_styled_fill_paths(&net)
-            .into_iter()
-            .map(|fp| BooleanPath {
-                cmds: fp.cmds,
-                even_odd: fp.even_odd,
-            })
-            .collect();
-        if !all.is_empty() {
-            if let Some(norm) = node.data.path(&["vectorData", "normalizedSize"])
-                && let (Some(nw), Some(nh), Some(w), Some(h)) = (
-                    norm.num("x").map(f64::from),
-                    norm.num("y").map(f64::from),
-                    node.data
-                        .path(&["size", "x"])
-                        .and_then(Val::as_f32)
-                        .map(f64::from),
-                    node.data
-                        .path(&["size", "y"])
-                        .and_then(Val::as_f32)
-                        .map(f64::from),
-                )
-                && nw > 0.0
-                && nh > 0.0
-                && w.is_finite()
-                && h.is_finite()
-            {
-                let scale = Affine2D {
-                    m00: w / nw,
-                    m11: h / nh,
-                    ..Affine2D::IDENTITY
-                };
-                for p in &mut all {
-                    p.cmds = transform_cmds(&p.cmds, scale);
-                }
+        if fg_err.is_none() {
+            if !all.is_empty() {
+                return Ok(all);
             }
-            return all;
+            if strict
+                && (node.kind == "BOOLEAN_OPERATION"
+                    || (node.kind == "VECTOR"
+                        && node
+                            .data
+                            .path(&["vectorData", "vectorNetworkBlob"])
+                            .is_none()))
+            {
+                return Ok(Vec::new());
+            }
         }
     }
-    rebuild_shape_geometry(&node.kind, &node.data)
-        .filter(|c| !c.is_empty())
-        .map(|cmds| {
+    finish_operand_fallback(doc, node, strict, fg_err)
+}
+
+fn finish_operand_fallback(
+    doc: &Document,
+    node: &crate::Node,
+    strict: bool,
+    fg_err: Option<FigError>,
+) -> Result<Vec<BooleanPath>, FigError> {
+    if let Some(blob_val) = node.data.path(&["vectorData", "vectorNetworkBlob"]) {
+        if let Some(net) = blob_val
+            .as_u32()
+            .and_then(|idx| doc.blobs.get(idx as usize))
+            .and_then(|blob| decode_vector_network(blob))
+        {
+            let mut all: Vec<BooleanPath> = network_to_styled_fill_paths(&net)
+                .into_iter()
+                .map(|fp| BooleanPath {
+                    cmds: fp.cmds,
+                    even_odd: fp.even_odd,
+                })
+                .collect();
+            if !all.is_empty() {
+                if let Some(norm) = node.data.path(&["vectorData", "normalizedSize"])
+                    && let (Some(nw), Some(nh), Some(w), Some(h)) = (
+                        norm.num("x").map(f64::from),
+                        norm.num("y").map(f64::from),
+                        node.data
+                            .path(&["size", "x"])
+                            .and_then(Val::as_f32)
+                            .map(f64::from),
+                        node.data
+                            .path(&["size", "y"])
+                            .and_then(Val::as_f32)
+                            .map(f64::from),
+                    )
+                    && nw > 0.0
+                    && nh > 0.0
+                    && w.is_finite()
+                    && h.is_finite()
+                {
+                    let scale = Affine2D {
+                        m00: w / nw,
+                        m11: h / nh,
+                        ..Affine2D::IDENTITY
+                    };
+                    for p in &mut all {
+                        p.cmds = transform_cmds(&p.cmds, scale);
+                    }
+                }
+                return Ok(all);
+            }
+            if strict && node.kind == "VECTOR" {
+                return Ok(Vec::new());
+            }
+        } else if strict {
+            return Err(FigError::malformed(format!(
+                "boolean operand {} has missing or undecodable vectorNetworkBlob",
+                node.id
+            )));
+        }
+    }
+    if let Some(err) = fg_err {
+        return Err(err);
+    }
+    if let Some(cmds) = rebuild_shape_geometry(&node.kind, &node.data) {
+        return Ok(if cmds.is_empty() {
+            Vec::new()
+        } else {
             vec![BooleanPath {
                 cmds,
                 even_odd: false,
             }]
-        })
-        .unwrap_or_default()
+        });
+    }
+    if strict {
+        return Err(FigError::malformed(format!(
+            "boolean operand {} ({}) has no safely recomputable fill geometry",
+            node.id, node.kind
+        )));
+    }
+    Ok(Vec::new())
 }
 
 fn transform_boolean_paths(paths: &[BooleanPath], tf: Affine2D) -> Vec<BooleanPath> {

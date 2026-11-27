@@ -391,3 +391,206 @@ fn browser_lazy_plan_rejects_bad_local_headers_and_truncated_source() {
     // Tail longer than file_len must fail in from_directory.
     assert!(LazyArchiveMeta::from_directory(10, tail, 0, cd).is_err());
 }
+
+fn named_synthetic_archive(
+    meta_name: &str,
+    img_byte: u8,
+    extra_name: &str,
+    extra_body: &[u8],
+) -> Vec<u8> {
+    let base = Document::open(fixture("structure.fig")).expect("open structure.fig");
+    let canvas = base.encode_canvas().expect("encode canvas");
+    let thumb = base.thumbnail.clone().expect("structure.fig has thumbnail");
+    let img_data = vec![img_byte; 96 * 1024];
+    let img_hash = figstudio_fig::sha1::sha1_hex(&img_data);
+
+    let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    z.start_file("canvas.fig", stored).unwrap();
+    z.write_all(&canvas).unwrap();
+    z.start_file("meta.json", stored).unwrap();
+    z.write_all(format!(r#"{{"file_name":"{meta_name}"}}"#).as_bytes())
+        .unwrap();
+    z.start_file("thumbnail.png", stored).unwrap();
+    z.write_all(&thumb).unwrap();
+    z.start_file(extra_name, stored).unwrap();
+    z.write_all(extra_body).unwrap();
+    z.add_directory("images/", stored).unwrap();
+    z.start_file(format!("images/{img_hash}"), stored).unwrap();
+    z.write_all(&img_data).unwrap();
+    z.finish().unwrap().into_inner()
+}
+
+#[test]
+fn native_lazy_save_rejects_replaced_or_same_len_changed_source_and_protects_target() {
+    let bytes_a = named_synthetic_archive("DocA", 0x11, "custom/a.txt", b"only-in-a");
+    let bytes_b = named_synthetic_archive("DocB", 0x22, "custom/b.txt", b"only-in-b-longer");
+    // Same length and identical entry layout as A, but different meta.json / custom bytes (different CRCs).
+    let bytes_a_mutated = named_synthetic_archive("DocX", 0x11, "custom/a.txt", b"changed-a");
+    assert_eq!(bytes_a.len(), bytes_a_mutated.len());
+
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("source.fig");
+    std::fs::write(&src, &bytes_a).unwrap();
+
+    let mut doc = Document::open_lazy(&src).expect("open_lazy A");
+    let target = doc.children(doc.pages[0])[0];
+    let mut txn = Txn::new("rename A");
+    txn.set_field(target, "name", Val::Str("EditedFromA".into()));
+    doc.apply_txn(&txn).unwrap();
+
+    let new_dst = dir.path().join("new_copy.fig");
+    let existing_dst = dir.path().join("existing_copy.fig");
+    std::fs::write(&existing_dst, b"untouched-destination").unwrap();
+
+    // 1. Replace source path with B before saving.
+    std::fs::write(&src, &bytes_b).unwrap();
+    assert!(
+        doc.save_copy_checked(Some(&src), &new_dst, false, true)
+            .is_err(),
+        "save_copy_checked must reject replaced source archive"
+    );
+    assert!(!new_dst.exists(), "failed lazy save must not create target");
+
+    assert!(
+        doc.save_copy_checked(Some(&src), &existing_dst, true, true)
+            .is_err(),
+        "overwrite save_copy_checked must reject replaced source archive"
+    );
+    assert_eq!(
+        std::fs::read(&existing_dst).unwrap(),
+        b"untouched-destination",
+        "existing destination must stay untouched on failure"
+    );
+
+    assert!(
+        doc.save_with_lazy_source(Some(&src), &existing_dst)
+            .is_err(),
+        "save_with_lazy_source must reject replaced source archive"
+    );
+    assert_eq!(
+        std::fs::read(&existing_dst).unwrap(),
+        b"untouched-destination"
+    );
+
+    // 2. Replace source in-place with same-length archive whose central-directory CRCs differ.
+    std::fs::write(&src, &bytes_a_mutated).unwrap();
+    assert!(
+        doc.save_copy_checked(Some(&src), &new_dst, false, true)
+            .is_err(),
+        "same-length modified archive must be rejected"
+    );
+    assert!(!new_dst.exists());
+
+    // Ensure no `.saving` temp files were left behind on failures.
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["existing_copy.fig", "source.fig"]);
+}
+
+#[test]
+fn native_lazy_save_rejects_in_place_modification_during_streaming() {
+    use std::io::{Seek, SeekFrom};
+
+    struct MutateMidStream {
+        buf: Vec<u8>,
+        replacement: Vec<u8>,
+        pos: usize,
+        mutated: bool,
+        payload_start: usize,
+        payload_end: usize,
+    }
+
+    impl Read for MutateMidStream {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let avail = self.buf.len().saturating_sub(self.pos);
+            let n = out.len().min(avail);
+            out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+            let read_at = self.pos;
+            self.pos += n;
+            // Mutate only once `raw_copy_file` is actively streaming the image payload
+            // (after pre-stream metadata checks and `ZipArchive::new` already passed).
+            if !self.mutated && read_at >= self.payload_start && read_at < self.payload_end {
+                self.mutated = true;
+                self.buf = self.replacement.clone();
+            }
+            Ok(n)
+        }
+    }
+
+    impl Seek for MutateMidStream {
+        fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+            let next = match from {
+                SeekFrom::Start(x) => x as i128,
+                SeekFrom::End(d) => self.buf.len() as i128 + i128::from(d),
+                SeekFrom::Current(d) => self.pos as i128 + i128::from(d),
+            };
+            if next < 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "negative seek",
+                ));
+            }
+            self.pos = usize::try_from(next).unwrap_or(usize::MAX);
+            Ok(self.pos as u64)
+        }
+    }
+
+    let bytes_a = named_synthetic_archive("DocA", 0x11, "custom/a.txt", b"only-in-a");
+    let bytes_b = named_synthetic_archive("DocB", 0x22, "custom/b.txt", b"only-in-b");
+
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("source.fig");
+    std::fs::write(&src, &bytes_a).unwrap();
+
+    let mut doc = Document::open_lazy(&src).expect("open_lazy A");
+    let img_entry = doc.lazy_images.values().next().unwrap().clone();
+    let payload_start = usize::try_from(img_entry.header_offset + 30).unwrap();
+    let payload_end = payload_start + 8192;
+    assert!(
+        (payload_end as u64) < bytes_a.len() as u64 - figstudio_fig::archive::TAIL_LEN,
+        "trigger range must sit strictly before archive tail"
+    );
+    let target = doc.children(doc.pages[0])[0];
+    let mut txn = Txn::new("rename A");
+    txn.set_field(target, "name", Val::Str("MidStreamEdited".into()));
+    doc.apply_txn(&txn).unwrap();
+
+    let reader = MutateMidStream {
+        buf: bytes_a,
+        replacement: bytes_b,
+        pos: 0,
+        mutated: false,
+        payload_start,
+        payload_end,
+    };
+    let res = doc.write_lazy_archive(reader, Cursor::new(Vec::new()));
+    assert!(
+        res.is_err(),
+        "in-place archive mutation during streaming must fail rather than returning mixed archive"
+    );
+}
+
+#[test]
+fn browser_lazy_plan_rejects_mismatched_archive_metadata() {
+    use figstudio_fig::archive;
+    use figstudio_fig::lazy_save::LazyArchiveMeta;
+
+    let bytes_a = named_synthetic_archive("DocA", 0x11, "custom/a.txt", b"only-in-a");
+    let bytes_b = named_synthetic_archive("DocB", 0x22, "custom/b.txt", b"only-in-b");
+    let doc_a = open_browser_lazy(&bytes_a);
+
+    let file_len_b = bytes_b.len() as u64;
+    let tail_len_b = archive::TAIL_LEN.min(file_len_b) as usize;
+    let tail_b = bytes_b[bytes_b.len() - tail_len_b..].to_vec();
+    let (cd_off_b, cd_size_b) = archive::central_directory(&tail_b, file_len_b).unwrap();
+    let cd_b = bytes_b[cd_off_b as usize..(cd_off_b + cd_size_b) as usize].to_vec();
+    let meta_b = LazyArchiveMeta::from_directory(file_len_b, tail_b, cd_off_b, cd_b).unwrap();
+
+    assert!(meta_b.needed_local_headers(&doc_a).is_err());
+    assert!(meta_b.plan(&doc_a, &[]).is_err());
+}

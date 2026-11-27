@@ -300,3 +300,187 @@ async fn close_during_an_upload_drops_it() {
     assert_eq!(tab, Some(7), "the error names the tab that was closed");
     bridge.finish().await;
 }
+
+#[tokio::test]
+async fn bridge_omits_unsupported_mutation_and_history_tools() {
+    let bridge = BridgeTest::start(2 * 1024 * 1024).await;
+    let client = ()
+        .serve(StreamableHttpClientTransport::from_uri(Arc::<str>::from(
+            format!("http://{}/mcp", bridge.addr),
+        )))
+        .await
+        .unwrap();
+    let mut socket = bridge.socket("test-pairing-secret").await;
+    assert!(matches!(
+        receive(&mut socket).await,
+        ServerMessage::Welcome { .. }
+    ));
+    upload(&mut socket).await;
+
+    let info = client.peer_info().unwrap();
+    let instructions = info.instructions.as_deref().unwrap_or_default();
+    assert!(instructions.contains("Live mode"), "{instructions}");
+    assert!(
+        !instructions.contains("the .fig is never changed"),
+        "stale write claim remained in instructions: {instructions}"
+    );
+
+    let tools = client.list_all_tools().await.unwrap();
+    let names: std::collections::BTreeSet<&str> =
+        tools.iter().map(|tool| tool.name.as_ref()).collect();
+    for unsupported in [
+        "apply_edits",
+        "undo",
+        "redo",
+        "get_history",
+        "import_image",
+        "paste_from_figma",
+        "save_copy",
+    ] {
+        assert!(
+            !names.contains(unsupported),
+            "read-only --bridge advertised unsupported tool {unsupported}"
+        );
+    }
+    for supported in [
+        "list_open_tabs",
+        "get_selection",
+        "reveal_node",
+        "describe_edit_ops",
+        "get_editable",
+        "copy_for_figma",
+        "get_metadata",
+        "get_screenshot",
+    ] {
+        assert!(
+            names.contains(supported),
+            "--bridge omitted supported tool {supported}"
+        );
+    }
+    assert!(
+        client
+            .call_tool(
+                CallToolRequestParams::new("get_history")
+                    .with_arguments(json!({}).as_object().unwrap().clone()),
+            )
+            .await
+            .is_err(),
+        "unregistered get_history must fail at protocol level"
+    );
+    let ops = call(&client, "describe_edit_ops", json!({})).await;
+    assert_ne!(ops.is_error, Some(true));
+    let editable = call(&client, "get_editable", json!({"nodeId": "1:25"})).await;
+    assert_ne!(editable.is_error, Some(true));
+    let copied = call(&client, "copy_for_figma", json!({"nodeIds": ["1:25"]})).await;
+    assert_ne!(copied.is_error, Some(true));
+
+    client.cancel().await.unwrap();
+    bridge.finish().await;
+}
+
+#[tokio::test]
+async fn unknown_selection_clears_selection_without_poisoning_other_tabs() {
+    let bridge = BridgeTest::start(8 * 1024 * 1024).await;
+    let client = ()
+        .serve(StreamableHttpClientTransport::from_uri(Arc::<str>::from(
+            format!("http://{}/mcp", bridge.addr),
+        )))
+        .await
+        .unwrap();
+    let mut socket = bridge.socket("test-pairing-secret").await;
+    assert!(matches!(
+        receive(&mut socket).await,
+        ServerMessage::Welcome { .. }
+    ));
+
+    upload(&mut socket).await;
+    let sections = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/sections.fig"
+    ))
+    .unwrap();
+    send(
+        &mut socket,
+        ClientMessage::Open {
+            tab: 9,
+            name: "sections.fig".into(),
+            size: sections.len() as u64,
+        },
+    )
+    .await;
+    for chunk in sections.chunks(64 * 1024) {
+        socket
+            .send(Message::Binary(chunk.to_vec().into()))
+            .await
+            .unwrap();
+    }
+    send(&mut socket, ClientMessage::End { tab: 9 }).await;
+
+    // Seed tab 7 with a valid selection first so we prove stale selection is cleared, not retained.
+    send(
+        &mut socket,
+        ClientMessage::State {
+            tabs: vec![TabState {
+                tab: 7,
+                page: Some("0:1".into()),
+                selection: Some("1:25".into()),
+                viewport: Some([0., 0., 500., 500.]),
+            }],
+            active: Some(7),
+        },
+    )
+    .await;
+
+    // Revision lag: tab 7 reports a newly created layer ID absent from the bridge's snapshot,
+    // while tab 9 updates its page/selection and becomes active.
+    send(
+        &mut socket,
+        ClientMessage::State {
+            tabs: vec![
+                TabState {
+                    tab: 7,
+                    page: Some("0:1".into()),
+                    selection: Some("999:1".into()),
+                    viewport: Some([10., 20., 500., 500.]),
+                },
+                TabState {
+                    tab: 9,
+                    page: Some("0:1".into()),
+                    selection: Some("1:5".into()),
+                    viewport: Some([0., 0., 400., 400.]),
+                },
+            ],
+            active: Some(9),
+        },
+    )
+    .await;
+    send(&mut socket, ClientMessage::End { tab: 99 }).await;
+    assert!(
+        matches!(
+            receive(&mut socket).await,
+            ServerMessage::Error { tab: Some(99), .. }
+        ),
+        "unknown selection must not wedge or fail the State frame"
+    );
+
+    let tabs = call(&client, "list_open_tabs", json!({}))
+        .await
+        .structured_content
+        .unwrap();
+    assert!(
+        tabs["tabs"][0]["selection"].is_null(),
+        "stale selection on tab 7 must be cleared instead of staying 1:25: {tabs}"
+    );
+    assert_eq!(tabs["tabs"][1]["selection"], "1:5");
+    assert_eq!(tabs["tabs"][1]["active"], true);
+
+    let selected = call(&client, "get_selection", json!({}))
+        .await
+        .structured_content
+        .unwrap();
+    assert_eq!(selected["tabId"], 9);
+    assert_eq!(selected["node"]["nodeId"], "1:5");
+
+    client.cancel().await.unwrap();
+    bridge.finish().await;
+}

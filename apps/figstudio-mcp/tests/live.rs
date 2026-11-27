@@ -34,6 +34,27 @@ async fn lists_tabs_and_selection() {
     let app = start(two_tabs(), Answer::Reply).await;
     let info = app.client.peer_info().unwrap();
     assert!(info.instructions.as_ref().unwrap().contains("Live mode"));
+    let tools = app.client.list_all_tools().await.unwrap();
+    for expected in [
+        "list_open_tabs",
+        "get_selection",
+        "reveal_node",
+        "describe_edit_ops",
+        "get_editable",
+        "copy_for_figma",
+        "apply_edits",
+        "undo",
+        "redo",
+        "get_history",
+        "import_image",
+        "paste_from_figma",
+        "save_copy",
+    ] {
+        assert!(
+            tools.iter().any(|t| t.name == expected),
+            "desktop live mode omitted tool {expected}"
+        );
+    }
     let tabs = data(&app.call("list_open_tabs", json!({})).await);
     assert_eq!(tabs["tabs"][0]["tabId"], 7);
     assert_eq!(tabs["tabs"][0]["fileKey"], "structure");

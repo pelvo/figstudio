@@ -172,6 +172,15 @@ pub enum Codec {
     Zstd,
 }
 
+/// Identity of the source ZIP archive a lazy [`Document`] was decoded from, used to refuse
+/// mixing an old canvas with a replaced or mutated archive on save.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LazyArchiveIdentity {
+    pub entry_count: usize,
+    pub entries_sha1: [u8; 20],
+    pub container: Option<archive::ContainerFingerprint>,
+}
+
 /// Parts of the original file that are not part of the node tree.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Source {
@@ -189,6 +198,8 @@ pub(crate) struct Source {
     pub archive_entries: Option<Vec<(String, Vec<u8>)>>,
     /// Opened lazily: images and other entries were not read, so the file cannot be written.
     pub lazy: bool,
+    /// Source archive identity captured at `open_lazy` / `from_lazy` time.
+    pub lazy_identity: Option<LazyArchiveIdentity>,
     /// The decoder the nodes were read with: their still-encoded fields ([`crate::Lazy`]) made
     /// by it are written back as their original bytes.
     pub decoder: Option<std::sync::Arc<crate::read::Decoder>>,
@@ -206,6 +217,7 @@ struct Parts {
     thumbnail: Option<Vec<u8>>,
     archive_entries: Option<Vec<(String, Vec<u8>)>>,
     lazy: bool,
+    lazy_identity: Option<LazyArchiveIdentity>,
 }
 
 /// Counts only: names, text, image hashes and paths stay private (see `doctor`).
@@ -236,6 +248,8 @@ impl Document {
     /// A bare canvas file (not an archive) is read whole.
     #[tracing::instrument(level = "debug", skip_all, fields(len = tracing::field::Empty))]
     pub fn open_lazy(path: impl AsRef<Path>) -> Result<Document, FigError> {
+        use std::io::{Seek, SeekFrom};
+
         let path = path.as_ref();
         let io = |e: std::io::Error| FigError::io("cannot read file", e);
         let mut file = std::fs::File::open(path).map_err(io)?;
@@ -244,9 +258,13 @@ impl Document {
         let mut magic = [0u8; 2];
         file.read_exact(&mut magic).map_err(io)?;
         if &magic != b"PK" {
-            return Document::open(path);
+            // Read bare canvas from the same open file descriptor rather than reopening `path`.
+            file.seek(SeekFrom::Start(0)).map_err(io)?;
+            let mut bytes = Vec::new();
+            read_limited(file, MAX_FILE_BYTES, &mut bytes, "file")?;
+            return Document::from_bytes(&bytes);
         }
-        let entries = archive::read_entries(&mut file, len)?;
+        let (entries, fp) = archive::read_entries_with_fingerprint(&mut file, len)?;
         let mut eager = HashMap::new();
         for e in entries
             .iter()
@@ -254,7 +272,21 @@ impl Document {
         {
             eager.insert(e.name.clone(), archive::read_entry(&mut file, e)?);
         }
-        let doc = Document::from_lazy(entries, eager)?;
+        // Verify the same open file kept its size and central directory across the eager reads so
+        // an in-place overwrite during open cannot pair old entries with new canvas bytes.
+        let len_after = file.metadata().map_err(io)?.len();
+        if len_after != len {
+            return err("source .fig archive changed while opening");
+        }
+        let (entries_after, fp_after) =
+            archive::read_entries_with_fingerprint(&mut file, len_after)?;
+        if fp_after != fp || entries_after != entries {
+            return err("source .fig archive changed while opening");
+        }
+        let mut doc = Document::from_lazy(entries, eager)?;
+        if let Some(id) = doc.source.lazy_identity.as_mut() {
+            id.container = Some(fp);
+        }
         tracing::debug!(
             nodes = doc.nodes.len(),
             pages = doc.pages.len(),
@@ -274,10 +306,16 @@ impl Document {
         let Some(canvas) = eager.remove("canvas.fig") else {
             return err("archive has no canvas.fig");
         };
+        let identity = LazyArchiveIdentity {
+            entry_count: entries.len(),
+            entries_sha1: archive::entries_sha1(&entries),
+            container: None,
+        };
         let mut parts = Parts {
             file_name: eager.get("meta.json").and_then(|m| meta_file_name(m)),
             thumbnail: eager.remove("thumbnail.png"),
             lazy: true,
+            lazy_identity: Some(identity),
             ..Parts::default()
         };
         for e in entries {
@@ -515,6 +553,7 @@ impl Document {
                 had_blobs,
                 archive_entries: parts.archive_entries,
                 lazy: parts.lazy,
+                lazy_identity: parts.lazy_identity,
                 decoder: Some(reader.dec.clone()),
                 cached_schema: std::sync::OnceLock::new(),
             },

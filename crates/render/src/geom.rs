@@ -92,7 +92,9 @@ pub fn closed_network(data: &Val, blobs: &[Vec<u8>]) -> bool {
     crate::network::closed(data, blobs)
 }
 
-/// One precomputed path. `style` points into `vectorData.styleOverrideTable` (0 = node paints).
+/// One precomputed path. `style` points into `vectorData.styleOverrideTable` (0 = node paints),
+/// or `textData.styleOverrideTable` for `TEXT` nodes.
+#[derive(Clone, Debug)]
 pub struct GeomPath {
     pub path: BezPath,
     pub rule: Fill,

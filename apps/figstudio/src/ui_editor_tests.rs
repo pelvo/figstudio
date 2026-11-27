@@ -631,3 +631,432 @@ fn interrupting_move_drag_with_space_or_tool_switch_seals_history_and_stops_drag
         "a move after a tool-switch interrupt must start a fresh undo step"
     );
 }
+
+#[test]
+fn escape_after_interleaved_mcp_mutation_does_not_undo_mcp_edit() {
+    const OTHER: Guid = Guid(1, 25);
+
+    let mut h = harness_fixture(FIXTURE, 1.0 / 60.0);
+    let tab_id = h.state().tabs[0].id;
+    let orig_other_name = h.state().tabs[0].doc.node(OTHER).unwrap().name.clone();
+    h.state_mut().tabs[0].select(Some(NODE));
+    h.run_steps(3);
+
+    // 1. Wasm relay ApplyEdits arrives mid-Move; Escape must not undo it and drag must end.
+    let orig_pos = node_page_point(&h, NODE, Point::ZERO);
+    let start = centre_of(&h, NODE);
+    let moved_pt = start + vec2(30.0, 15.0);
+    h.event(Event::PointerMoved(start));
+    h.step();
+    press(&h, start, PointerButton::Primary, true);
+    h.step();
+    h.event(Event::PointerMoved(moved_pt));
+    h.step();
+    let pos_after_drag_step = node_page_point(&h, NODE, Point::ZERO);
+    assert!((pos_after_drag_step - orig_pos).hypot() > 5.0);
+    assert!(h.state().tabs[0].edit_drag.is_some());
+
+    crate::editor::handle_wasm_mutation(
+        &mut h.state_mut().tabs,
+        tab_id,
+        "apply_edits",
+        &serde_json::json!({
+            "ops": [{"op": "rename", "target": "1:25", "name": "mcp-renamed-wasm"}]
+        }),
+    )
+    .expect("wasm apply_edits succeeds");
+    assert_eq!(
+        h.state().tabs[0].doc.node(OTHER).unwrap().name,
+        "mcp-renamed-wasm"
+    );
+    assert!(
+        h.state().tabs[0].edit_drag.is_none(),
+        "committed MCP mutation must end active Move drag"
+    );
+
+    h.key_press(egui::Key::Escape);
+    h.step();
+    assert_eq!(
+        h.state().tabs[0].doc.node(OTHER).unwrap().name,
+        "mcp-renamed-wasm",
+        "Escape must not undo an acknowledged MCP mutation"
+    );
+    h.event(Event::PointerMoved(start + vec2(80.0, 40.0)));
+    h.step();
+    press(&h, start + vec2(80.0, 40.0), PointerButton::Primary, false);
+    h.run_steps(2);
+    assert!(
+        (node_page_point(&h, NODE, Point::ZERO) - pos_after_drag_step).hypot() < 1e-3,
+        "drag must not continue mutating NODE after external MCP commit ended it"
+    );
+    assert_ne!(orig_other_name, "mcp-renamed-wasm");
+
+    // 2. Desktop LiveMutation::ApplyEdits arrives mid-Resize; Escape must not undo it.
+    #[cfg(feature = "mcp")]
+    {
+        use figstudio_mcp::live::LiveMutation;
+
+        h.state_mut().tabs[0].select(Some(NODE));
+        h.run_steps(2);
+        let (orig_w, orig_h) = geom::size(&h.state().tabs[0].doc.node(NODE).unwrap().data);
+        let se = node_local_screen(&h, NODE, Point::new(orig_w, orig_h));
+        h.event(Event::PointerMoved(se));
+        h.step();
+        press(&h, se, PointerButton::Primary, true);
+        h.step();
+        h.event(Event::PointerMoved(se + vec2(24.0, 16.0)));
+        h.step();
+        let size_after_step = geom::size(&h.state().tabs[0].doc.node(NODE).unwrap().data);
+        assert!((size_after_step.0 - orig_w).abs() > 5.0);
+        assert!(h.state().tabs[0].edit_drag.is_some());
+
+        crate::editor::handle_live_mutation(
+            &mut h.state_mut().tabs,
+            tab_id,
+            LiveMutation::ApplyEdits {
+                ops: vec![EditOp::Rename {
+                    target: OTHER,
+                    name: "mcp-renamed-live".into(),
+                }],
+                label: None,
+                dry_run: false,
+            },
+        )
+        .expect("live apply_edits succeeds");
+        assert!(
+            h.state().tabs[0].edit_drag.is_none(),
+            "committed LiveMutation must end active Resize drag"
+        );
+
+        h.key_press(egui::Key::Escape);
+        h.step();
+        assert_eq!(
+            h.state().tabs[0].doc.node(OTHER).unwrap().name,
+            "mcp-renamed-live",
+            "Escape must not undo an acknowledged LiveMutation"
+        );
+        h.event(Event::PointerMoved(se + vec2(60.0, 40.0)));
+        h.step();
+        press(&h, se + vec2(60.0, 40.0), PointerButton::Primary, false);
+        h.run_steps(2);
+        let size_after_release = geom::size(&h.state().tabs[0].doc.node(NODE).unwrap().data);
+        assert!(
+            (size_after_release.0 - size_after_step.0).abs() < 1e-3
+                && (size_after_release.1 - size_after_step.1).abs() < 1e-3,
+            "resize must not continue after external LiveMutation ended it"
+        );
+    }
+}
+
+#[test]
+fn remote_read_only_and_rejected_calls_preserve_drag_while_undo_redo_end_it() {
+    let mut h = harness_fixture(FIXTURE, 1.0 / 60.0);
+    let tab_id = h.state().tabs[0].id;
+    h.state_mut().tabs[0].select(Some(NODE));
+    h.run_steps(3);
+
+    // Start Move drag past threshold.
+    let orig_pos = node_page_point(&h, NODE, Point::ZERO);
+    let start = centre_of(&h, NODE);
+    h.event(Event::PointerMoved(start));
+    h.step();
+    press(&h, start, PointerButton::Primary, true);
+    h.step();
+    h.event(Event::PointerMoved(start + vec2(25.0, 15.0)));
+    h.step();
+    assert!(h.state().tabs[0].edit_drag.is_some());
+    assert_eq!(h.state().tabs[0].history.undo_len(), 1);
+
+    // Read-only and rejected remote calls must preserve the active drag.
+    crate::editor::handle_wasm_mutation(
+        &mut h.state_mut().tabs,
+        tab_id,
+        "get_history",
+        &serde_json::json!({}),
+    )
+    .expect("get_history ok");
+    crate::editor::handle_wasm_mutation(
+        &mut h.state_mut().tabs,
+        tab_id,
+        "apply_edits",
+        &serde_json::json!({
+            "ops": [{"op": "rename", "target": "1:25", "name": "dry-run"}],
+            "dryRun": true
+        }),
+    )
+    .expect("dryRun ok");
+    crate::editor::handle_wasm_mutation(
+        &mut h.state_mut().tabs,
+        tab_id,
+        "apply_edits",
+        &serde_json::json!({"ops": []}),
+    )
+    .expect("empty ops ok");
+    assert!(
+        crate::editor::handle_wasm_mutation(
+            &mut h.state_mut().tabs,
+            tab_id,
+            "apply_edits",
+            &serde_json::json!({"ops": [{"op": "rename", "target": "999:999", "name": "bad"}]}),
+        )
+        .is_err()
+    );
+    assert!(
+        crate::editor::handle_wasm_mutation(
+            &mut h.state_mut().tabs,
+            tab_id,
+            "import_image",
+            &serde_json::json!({"dataBase64": "not-valid-image"}),
+        )
+        .is_err()
+    );
+    assert!(
+        crate::editor::handle_wasm_mutation(
+            &mut h.state_mut().tabs,
+            tab_id,
+            "paste_from_figma",
+            &serde_json::json!({"html": "not-figma-html"}),
+        )
+        .is_err()
+    );
+    #[cfg(feature = "mcp")]
+    {
+        use figstudio_mcp::live::LiveMutation;
+        let tmp = tempfile::tempdir().unwrap();
+        let src_copy = tmp.path().join("src.fig");
+        std::fs::copy(fixture(FIXTURE), &src_copy).unwrap();
+        h.state_mut().tabs[0].real_path = src_copy;
+        crate::editor::handle_live_mutation(
+            &mut h.state_mut().tabs,
+            tab_id,
+            LiveMutation::SaveCopy {
+                out_path: tmp.path().join("copy.fig"),
+                overwrite: false,
+            },
+        )
+        .expect("save_copy ok");
+    }
+    assert!(
+        h.state().tabs[0].edit_drag.is_some(),
+        "read-only and rejected calls must not clear active edit_drag"
+    );
+
+    // Escape still cancels the preserved drag cleanly.
+    h.key_press(egui::Key::Escape);
+    h.step();
+    press(&h, start + vec2(25.0, 15.0), PointerButton::Primary, false);
+    h.run_steps(2);
+    assert!((node_page_point(&h, NODE, Point::ZERO) - orig_pos).hypot() < 1e-3);
+    assert_eq!(h.state().tabs[0].history.undo_len(), 0);
+
+    // Remote Undo mid-drag ends the drag so subsequent pointer moves do not re-apply it.
+    let start2 = centre_of(&h, NODE);
+    h.event(Event::PointerMoved(start2));
+    h.step();
+    press(&h, start2, PointerButton::Primary, true);
+    h.step();
+    h.event(Event::PointerMoved(start2 + vec2(30.0, 0.0)));
+    h.step();
+    assert_eq!(h.state().tabs[0].history.undo_len(), 1);
+    crate::editor::handle_wasm_mutation(
+        &mut h.state_mut().tabs,
+        tab_id,
+        "undo",
+        &serde_json::json!({}),
+    )
+    .expect("undo mid-drag ok");
+    assert!(h.state().tabs[0].edit_drag.is_none());
+    assert_eq!(h.state().tabs[0].history.undo_len(), 0);
+    assert_eq!(h.state().tabs[0].history.redo_len(), 1);
+    h.event(Event::PointerMoved(start2 + vec2(60.0, 0.0)));
+    h.step();
+    press(&h, start2 + vec2(60.0, 0.0), PointerButton::Primary, false);
+    h.run_steps(2);
+    assert!((node_page_point(&h, NODE, Point::ZERO) - orig_pos).hypot() < 1e-3);
+
+    // Start a press (moved == false) while redo is available: empty Undo keeps drag, Redo ends it.
+    let start3 = centre_of(&h, NODE);
+    h.event(Event::PointerMoved(start3));
+    h.step();
+    press(&h, start3, PointerButton::Primary, true);
+    h.step();
+    assert!(h.state().tabs[0].edit_drag.is_some());
+    crate::editor::handle_wasm_mutation(
+        &mut h.state_mut().tabs,
+        tab_id,
+        "undo",
+        &serde_json::json!({}),
+    )
+    .expect("no-op undo ok");
+    assert!(
+        h.state().tabs[0].edit_drag.is_some(),
+        "empty undo stack is a no-op and must not clear drag"
+    );
+    crate::editor::handle_wasm_mutation(
+        &mut h.state_mut().tabs,
+        tab_id,
+        "redo",
+        &serde_json::json!({}),
+    )
+    .expect("redo mid-drag ok");
+    assert!(
+        h.state().tabs[0].edit_drag.is_none(),
+        "committed redo must end active drag"
+    );
+    h.event(Event::PointerMoved(start3 + vec2(50.0, 20.0)));
+    h.step();
+    press(&h, start3 + vec2(50.0, 20.0), PointerButton::Primary, false);
+    h.run_steps(2);
+    assert_eq!(h.state().tabs[0].history.undo_len(), 1);
+    assert_eq!(h.state().tabs[0].history.redo_len(), 0);
+}
+
+#[test]
+fn stationary_resize_and_move_drags_do_not_commit_or_grow_blobs() {
+    let mut h = harness_fixture(FIXTURE, 1.0 / 60.0);
+    h.state_mut().tabs[0].select(Some(NODE));
+    h.run_steps(3);
+
+    // 1. Stationary Resize ticks + stationary release must not commit or append blobs.
+    let blobs_before = h.state().tabs[0].doc.blobs.len();
+    let (orig_w, orig_h) = geom::size(&h.state().tabs[0].doc.node(NODE).unwrap().data);
+    let se = node_local_screen(&h, NODE, Point::new(orig_w, orig_h));
+    let se_drag = se + vec2(24.0, 16.0);
+    h.event(Event::PointerMoved(se));
+    h.step();
+    press(&h, se, PointerButton::Primary, true);
+    h.step();
+    h.event(Event::PointerMoved(se_drag));
+    h.step();
+
+    let blobs_1 = h.state().tabs[0].doc.blobs.len();
+    let rev_1 = h.state().tabs[0].doc.revision;
+    let undo_1 = h.state().tabs[0].history.undo_len();
+    let (w_1, h_1) = geom::size(&h.state().tabs[0].doc.node(NODE).unwrap().data);
+    assert!(blobs_1 > blobs_before, "real resize rebuilds fillGeometry");
+    assert!((w_1 - orig_w).abs() > 5.0 && (h_1 - orig_h).abs() > 5.0);
+
+    for _ in 0..10 {
+        h.event(Event::PointerMoved(se_drag));
+        h.step();
+    }
+    h.event(Event::PointerMoved(se_drag + vec2(0.05, -0.05)));
+    h.step();
+    h.event(Event::PointerMoved(se_drag));
+    h.step();
+    press(&h, se_drag, PointerButton::Primary, false);
+    h.run_steps(2);
+
+    assert_eq!(
+        h.state().tabs[0].doc.blobs.len(),
+        blobs_1,
+        "stationary resize frames and release must not append fillGeometry blobs"
+    );
+    assert_eq!(
+        h.state().tabs[0].doc.revision,
+        rev_1,
+        "stationary resize frames and release must not bump revision"
+    );
+    assert_eq!(h.state().tabs[0].history.undo_len(), undo_1);
+
+    // Dragging out and then back to the pre-drag size within one gesture still restores it.
+    let se2 = node_local_screen(&h, NODE, Point::new(w_1, h_1));
+    h.event(Event::PointerMoved(se2));
+    h.step();
+    press(&h, se2, PointerButton::Primary, true);
+    h.step();
+    h.event(Event::PointerMoved(se2 + vec2(20.0, 10.0)));
+    h.step();
+    h.event(Event::PointerMoved(se2));
+    h.step();
+    press(&h, se2, PointerButton::Primary, false);
+    h.run_steps(2);
+    let (w_back, h_back) = geom::size(&h.state().tabs[0].doc.node(NODE).unwrap().data);
+    assert!(
+        (w_back - w_1).abs() <= 1.0 && (h_back - h_1).abs() <= 1.0,
+        "returning to start size mid-resize must still commit: {w_1}x{h_1} vs {w_back}x{h_back}"
+    );
+
+    // 2. Stationary Move ticks + release must not bump document revision.
+    let before_move = node_page_point(&h, NODE, Point::ZERO);
+    let m_start = centre_of(&h, NODE);
+    let m_drag = m_start + vec2(20.0, 10.0);
+    h.event(Event::PointerMoved(m_start));
+    h.step();
+    press(&h, m_start, PointerButton::Primary, true);
+    h.step();
+    h.event(Event::PointerMoved(m_drag));
+    h.step();
+    let rev_move = h.state().tabs[0].doc.revision;
+    assert!((node_page_point(&h, NODE, Point::ZERO) - before_move).hypot() > 5.0);
+    for _ in 0..6 {
+        h.event(Event::PointerMoved(m_drag));
+        h.step();
+    }
+    press(&h, m_drag, PointerButton::Primary, false);
+    h.run_steps(2);
+    assert_eq!(
+        h.state().tabs[0].doc.revision,
+        rev_move,
+        "stationary move frames and release must not bump revision"
+    );
+
+    // 3. Rotated (45 deg) resize: stationary ticks after real resize do not grow blobs,
+    // and opposite edge stays anchored.
+    let page = h.state().tabs[0].page;
+    let rot_id = crate::editor::apply_tab_ops(
+        &mut h.state_mut().tabs[0],
+        &[EditOp::CreateShape {
+            id: None,
+            kind: "RECTANGLE".into(),
+            parent: page,
+            name: None,
+            x: 200.0,
+            y: 200.0,
+            width: 100.0,
+            height: 40.0,
+            corner_radius: 0.0,
+            fill_hex: None,
+            count: None,
+            star_inner_scale: None,
+        }],
+        Some("Create rect"),
+        None,
+    )
+    .unwrap()[0];
+    crate::editor::apply_tab_ops(
+        &mut h.state_mut().tabs[0],
+        &[EditOp::Rotate {
+            target: rot_id,
+            degrees: 45.0,
+        }],
+        Some("Rotate 45"),
+        None,
+    )
+    .unwrap();
+    h.state_mut().tabs[0].select(Some(rot_id));
+    h.state_mut().tabs[0].fit_node = Some(rot_id);
+    h.run_steps(4);
+
+    let kept_before = node_page_point(&h, rot_id, Point::new(0.0, 20.0));
+    let e_handle = node_local_screen(&h, rot_id, Point::new(100.0, 20.0));
+    let e_target = node_local_screen(&h, rot_id, Point::new(124.0, 20.0));
+    h.event(Event::PointerMoved(e_handle));
+    h.step();
+    press(&h, e_handle, PointerButton::Primary, true);
+    h.step();
+    h.event(Event::PointerMoved(e_target));
+    h.step();
+    let rot_blobs = h.state().tabs[0].doc.blobs.len();
+    let rot_rev = h.state().tabs[0].doc.revision;
+    for _ in 0..6 {
+        h.event(Event::PointerMoved(e_target));
+        h.step();
+    }
+    press(&h, e_target, PointerButton::Primary, false);
+    h.run_steps(2);
+    assert_eq!(h.state().tabs[0].doc.blobs.len(), rot_blobs);
+    assert_eq!(h.state().tabs[0].doc.revision, rot_rev);
+    let kept_after = node_page_point(&h, rot_id, Point::new(0.0, 20.0));
+    assert!((kept_after - kept_before).hypot() <= 2.0);
+}

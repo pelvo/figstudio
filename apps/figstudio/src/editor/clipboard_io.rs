@@ -70,6 +70,7 @@ fn paste_figma_markup(tab: &mut Tab, html: &str) -> Result<String, String> {
     let (roots, _) =
         execute_paste_html(doc_mut, &mut tab.history, html, target_parent, (24.0, 24.0))
             .map_err(|e| e.to_string())?;
+    super::end_edit_drag(tab);
     tab.sync_unsaved();
     tab.motion_preview = None;
     if let Some(&first) = roots.first() {
@@ -91,6 +92,7 @@ fn paste_plain_text_layer(tab: &mut Tab, text: &str) -> Result<String, String> {
             Some("Paste text"),
             None,
         )?;
+        super::end_edit_drag(tab);
         return Ok("Pasted text into selected layer".into());
     }
     let (cx, cy) = tab
@@ -116,6 +118,7 @@ fn paste_plain_text_layer(tab: &mut Tab, text: &str) -> Result<String, String> {
         Some("Paste text layer"),
         None,
     )?;
+    super::end_edit_drag(tab);
     if let Some(&first) = ids.first() {
         tab.select(Some(first));
     }

@@ -34,6 +34,23 @@ export async function pickSaveFile(suggestedName) {
   }
 }
 
+/** Compares an open tab's source `FileSystemFileHandle` with a chosen save target.
+ *  Returns `"same"`, `"different"`, or `"unknown"` when either handle is missing or
+ *  `isSameEntry` cannot prove whether they refer to the same file. */
+export async function compareHandles(sourceHandle, targetHandle) {
+  if (!sourceHandle || !targetHandle || typeof sourceHandle.isSameEntry !== "function") {
+    return "unknown";
+  }
+  try {
+    const same = await sourceHandle.isSameEntry(targetHandle);
+    if (same === true) return "same";
+    if (same === false) return "different";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 /** Streams `parts` (`Uint8Array` and `Blob` slices) into `handle` via its swap file.
  *  Existing destination bytes stay untouched until `close()` succeeds; any error aborts. */
 export async function writeHandleParts(handle, parts) {

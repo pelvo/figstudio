@@ -255,3 +255,127 @@ fn unknown_fields_and_wrong_types_are_errors_not_panics() {
     let e = doc.to_bytes().unwrap_err();
     assert!(e.to_string().contains("expected a number"), "{e}");
 }
+
+#[test]
+fn bare_document_preserves_bare_format_when_asset_free_and_upgrades_to_zip_when_given_assets() {
+    use figstudio_fig::clipboard::encode_clipboard_html;
+    use figstudio_fig::edit::{
+        EditOp, History, Txn, execute_edit_ops, execute_import_image, execute_paste_html,
+    };
+
+    let base = Document::open(fixture("structure")).unwrap();
+    let bare_bytes = base.encode_canvas().unwrap();
+    assert!(!bare_bytes.starts_with(b"PK"));
+
+    // 1. Asset-free edit on a bare document stays bare fig-kiwi.
+    let mut bare = Document::from_bytes(&bare_bytes).unwrap();
+    let page = bare.pages[0];
+    let target = bare.children(page)[0];
+    let mut txn = Txn::new("rename bare");
+    txn.set_field(target, "name", Val::Str("Bare Renamed".into()));
+    bare.apply_txn(&txn).unwrap();
+    let bare_out = bare.to_bytes().unwrap();
+    assert!(
+        bare_out.starts_with(b"fig-"),
+        "asset-free bare document must stay bare fig-kiwi"
+    );
+    assert_eq!(
+        Document::from_bytes(&bare_out)
+            .unwrap()
+            .node(target)
+            .unwrap()
+            .name,
+        "Bare Renamed"
+    );
+
+    // 2. Importing an image and assigning a fill promotes bare output to a ZIP containing the image.
+    let mut imported = Document::from_bytes(&bare_bytes).unwrap();
+    let import_page = imported.pages[0];
+    let mut history = History::new(8);
+    let png = b"\x89PNG\r\n\x1a\nimported-bare-image".to_vec();
+    let (img_hash, _) = execute_import_image(&mut imported, &mut history, png.clone()).unwrap();
+    let created = execute_edit_ops(
+        &mut imported,
+        &mut history,
+        &[EditOp::CreateShape {
+            id: None,
+            kind: "RECTANGLE".into(),
+            parent: import_page,
+            name: None,
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 40.0,
+            corner_radius: 0.0,
+            fill_hex: None,
+            count: None,
+            star_inner_scale: None,
+        }],
+        None,
+        None,
+        false,
+    )
+    .unwrap()
+    .0
+    .created_ids[0];
+    execute_edit_ops(
+        &mut imported,
+        &mut history,
+        &[EditOp::SetImageFill {
+            target: created,
+            sha1_hex: img_hash.clone(),
+            scale_mode: "FILL".into(),
+            opacity: 1.0,
+        }],
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let imported_out = imported.to_bytes().unwrap();
+    assert!(
+        imported_out.starts_with(b"PK"),
+        "bare document with imported image must serialize as a ZIP archive"
+    );
+    let reopened_import = Document::from_bytes(&imported_out).unwrap();
+    assert_eq!(reopened_import.images.get(&img_hash), Some(&png));
+
+    // 3. Pasting clipboard HTML carrying an image into a bare document preserves the pasted image.
+    let img_node = base
+        .nodes
+        .iter()
+        .find(|n| {
+            n.data
+                .get("fillPaints")
+                .map(Val::items)
+                .is_some_and(|ps| ps.iter().any(|p| p.path(&["image", "hash"]).is_some()))
+        })
+        .unwrap()
+        .id;
+    let html = encode_clipboard_html(&base, &[img_node], 1, None, None).unwrap();
+    let mut pasted = Document::from_bytes(&bare_bytes).unwrap();
+    let paste_page = pasted.pages[0];
+    let mut paste_history = History::new(4);
+    execute_paste_html(
+        &mut pasted,
+        &mut paste_history,
+        &html,
+        paste_page,
+        (0.0, 0.0),
+    )
+    .unwrap();
+    assert!(!pasted.images.is_empty());
+    let pasted_out = pasted.to_bytes().unwrap();
+    assert!(pasted_out.starts_with(b"PK"));
+    let reopened_paste = Document::from_bytes(&pasted_out).unwrap();
+    assert_eq!(reopened_paste.images, pasted.images);
+
+    // 4. Setting only a thumbnail on a bare document also preserves the thumbnail in a ZIP archive.
+    let mut with_thumb = Document::from_bytes(&bare_bytes).unwrap();
+    let thumb = b"\x89PNG\r\n\x1a\nbare-thumb".to_vec();
+    with_thumb.thumbnail = Some(thumb.clone());
+    let thumb_out = with_thumb.to_bytes().unwrap();
+    assert!(thumb_out.starts_with(b"PK"));
+    let reopened_thumb = Document::from_bytes(&thumb_out).unwrap();
+    assert_eq!(reopened_thumb.thumbnail.as_deref(), Some(thumb.as_slice()));
+}

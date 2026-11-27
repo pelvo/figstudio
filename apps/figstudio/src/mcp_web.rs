@@ -14,10 +14,10 @@ use crate::mcp_heartbeat::{Beat, Heartbeat, PONG_DEADLINE};
 use crate::mcp_join::{Link, RoomProposal, parse_link, proposed_pair};
 use crate::mcp_pair::ExecutorPair;
 use crate::mcp_state::{Key, key};
-use crate::mcp_upload::{Event, Shared, send, upload};
+use crate::mcp_upload::{Event, Payload, Shared, send, upload};
 use crate::mcp_wire::{
-    CloudGate, CloudRelay, CloudStep, closed_message, connect_failed_message, reveal_wire,
-    state_message, upload_name,
+    BridgeSync, CloudGate, CloudRelay, CloudStep, UploadSource, closed_message,
+    connect_failed_message, reveal_wire, state_message,
 };
 use crate::tab::Tab;
 use crate::theme;
@@ -135,11 +135,8 @@ struct Host {
     shared: Rc<Shared>,
     /// Open tabs by id, and the browser file name each was opened under.
     names: HashMap<u64, PathBuf>,
-    /// Tabs the bridge has fully received.
-    ready: HashSet<u64>,
-    /// Tabs that could not be uploaded; not retried until reconnect.
-    failed: HashSet<u64>,
-    uploading: Option<u64>,
+    /// Sync state per tab for the local `--bridge`.
+    bridge: BridgeSync,
     /// Bumped per connection so a stale upload task's report is ignored.
     generation: u32,
     last_key: Option<Key>,
@@ -235,9 +232,7 @@ impl Default for Host {
             conn: None,
             shared: Rc::default(),
             names: HashMap::new(),
-            ready: HashSet::new(),
-            failed: HashSet::new(),
-            uploading: None,
+            bridge: BridgeSync::default(),
             generation: 0,
             last_key: None,
             later: Vec::new(),
@@ -358,9 +353,7 @@ impl Host {
 
     /// Forget everything the bridge knew; a new connection uploads again.
     fn reset_link(&mut self) {
-        self.ready.clear();
-        self.failed.clear();
-        self.uploading = None;
+        self.bridge.reset();
         self.last_key = None;
         self.last_focused = None;
         self.heartbeat = Heartbeat::fresh(self.generation);
@@ -452,12 +445,24 @@ impl Host {
             self.beat(ctx, &ws);
             return;
         }
-        if self.uploading.is_none() {
-            self.start_upload(&ws, ctx, tabs);
+        let out = self.bridge.reconcile(tabs);
+        if out.invalidated {
+            self.last_key = None;
         }
+        for tab in out.close_tabs {
+            let _ = send(&ws, &ClientMessage::Close { tab });
+        }
+        if !out.cancel_tabs.is_empty() {
+            self.shared.cancelled.borrow_mut().extend(out.cancel_tabs);
+        }
+        for notice in out.notices {
+            self.notices.push(notice.to_owned());
+            ctx.request_repaint();
+        }
+        self.start_upload(&ws, ctx, tabs);
         let key = key(tabs, active);
         if self.last_key.as_ref() != Some(&key) {
-            let _ = send(&ws, &state_message(tabs, active, &self.ready));
+            let _ = send(&ws, &state_message(tabs, active, &self.bridge));
             self.last_key = Some(key);
         }
     }
@@ -474,10 +479,9 @@ impl Host {
             self.names.remove(&id);
             crate::web::forget_upload(id);
             self.shared.cancelled.borrow_mut().insert(id);
-            if self.ready.remove(&id) || self.uploading == Some(id) {
+            if self.bridge.close_tab(id) {
                 let _ = send(ws, &ClientMessage::Close { tab: id });
             }
-            self.failed.remove(&id);
             self.last_key = None;
         }
     }
@@ -486,24 +490,43 @@ impl Host {
         for tab in tabs {
             self.names.entry(tab.id).or_insert_with(|| tab.path.clone());
         }
-        let next = tabs
-            .iter()
-            .find(|t| !self.ready.contains(&t.id) && !self.failed.contains(&t.id));
-        let Some(tab) = next else { return };
-        let Some(file) = crate::web::upload_file(tab.id) else {
-            self.failed.insert(tab.id);
-            return;
+        let mut notices = Vec::new();
+        let next = self.bridge.next_upload(tabs, &mut notices);
+        for notice in notices {
+            self.notices.push(notice);
+            ctx.request_repaint();
+        }
+        let Some(source) = next else { return };
+        let (tab, revision, name, payload) = match source {
+            UploadSource::OriginalFile {
+                tab,
+                revision,
+                name,
+            } => {
+                let Some(file) = crate::web::upload_file(tab) else {
+                    self.bridge.mark_failed(tab);
+                    return;
+                };
+                self.bridge.begin_upload(tab, revision);
+                (tab, revision, name, Payload::File(file))
+            }
+            UploadSource::Serialized {
+                tab,
+                revision,
+                name,
+                bytes,
+            } => (tab, revision, name, Payload::Bytes(bytes)),
         };
-        self.uploading = Some(tab.id);
-        let name = upload_name(&tab.title());
+        self.shared.cancelled.borrow_mut().remove(&tab);
         wasm_bindgen_futures::spawn_local(upload(
             ws.clone(),
             self.shared.clone(),
             ctx.clone(),
             self.generation,
-            tab.id,
+            tab,
+            revision,
             name,
-            file,
+            payload,
         ));
     }
 

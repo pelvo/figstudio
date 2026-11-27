@@ -63,6 +63,10 @@ impl Variables {
         }
     }
 
+    pub(crate) fn tokens(&self) -> &Tokens {
+        &self.tokens
+    }
+
     pub fn color_in_modes(
         &self,
         data: &Val,

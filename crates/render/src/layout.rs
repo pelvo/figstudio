@@ -26,9 +26,14 @@ pub(crate) fn approximate_ink(
             .any(|key| outer_scale(key) != 1.0 && data.num(key).is_some_and(|v| v != 0.0))
         || (kind == "TEXT"
             && (outer_scale("fontSize") != 1.0
-                || ["lineHeight", "letterSpacing"]
-                    .iter()
-                    .any(|key| outer_scale(key) != 1.0 && data.get(key).is_some()))
+                || [
+                    "lineHeight",
+                    "letterSpacing",
+                    "textDecorationThickness",
+                    "textUnderlineOffset",
+                ]
+                .iter()
+                .any(|key| outer_scale(key) != 1.0 && data.get(key).is_some()))
             && (stale_glyphs
                 || data
                     .path(&["derivedTextData", "glyphs"])

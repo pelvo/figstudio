@@ -1783,3 +1783,184 @@ fn swapping_a_top_level_instance_updates_inherited_appearance_and_detaches_clean
     );
     assert_eq!(after_var.num("cornerRadius"), Some(14.0));
 }
+
+#[test]
+fn equal_length_utf16_text_replacement_preserves_style_slots_and_unicode_boundaries() {
+    let (mut doc, mut history) = open();
+    let page = doc.pages[0];
+
+    // 1. Instance override: "Hi a" styled [1, 1, 0, 1] -> equal-length "Hi b" keeps [1, 1, 0, 1],
+    // while pure insertion "Hi  b" inherits preceding unstyled slot 0 -> [1, 1, 0, 0, 1].
+    let master = run(&mut doc, &mut history, &[frame(page, 160.0, 40.0)])[0];
+    let label = run(&mut doc, &mut history, &[text(master, 4.0, 4.0, "Hi a")])[0];
+    run(
+        &mut doc,
+        &mut history,
+        &[bold(0, 2, label), bold(3, 4, label)],
+    );
+    run(
+        &mut doc,
+        &mut history,
+        &[EditOp::CreateComponent { frame: master }],
+    );
+    let instance = run(
+        &mut doc,
+        &mut history,
+        &[EditOp::InstantiateComponent {
+            symbol: master,
+            parent: page,
+            x: 300.0,
+            y: 0.0,
+        }],
+    )[0];
+    let path = vec![doc.node(label).unwrap().override_key()];
+
+    set_chars(&mut doc, &mut history, instance, &path, "Hi b");
+    let td = override_entries(&doc, instance)[0]
+        .get("textData")
+        .unwrap()
+        .clone();
+    assert_eq!(td.text("characters"), Some("Hi b"));
+    assert_eq!(
+        style_ids(&td),
+        vec![1, 1, 0, 1],
+        "equal-length instance override dropped bold style after unstyled space"
+    );
+
+    set_chars(&mut doc, &mut history, instance, &path, "Hi  b");
+    let td_ins = override_entries(&doc, instance)[0]
+        .get("textData")
+        .unwrap()
+        .clone();
+    assert_eq!(td_ins.text("characters"), Some("Hi  b"));
+    assert_eq!(
+        style_ids(&td_ins),
+        vec![1, 1, 0, 0, 1],
+        "pure insertion changed preceding-slot inheritance"
+    );
+    history.undo(&mut doc).unwrap();
+    let td_undone = override_entries(&doc, instance)[0]
+        .get("textData")
+        .unwrap()
+        .clone();
+    assert_eq!(td_undone.text("characters"), Some("Hi b"));
+    assert_eq!(style_ids(&td_undone), vec![1, 1, 0, 1]);
+
+    // 2. Plain TEXT SetText + multi-style positional preservation + SpliceText.
+    let plain = run(&mut doc, &mut history, &[text(page, 0.0, 80.0, "Hi a")])[0];
+    run(
+        &mut doc,
+        &mut history,
+        &[bold(0, 2, plain), bold(3, 4, plain)],
+    );
+    run(
+        &mut doc,
+        &mut history,
+        &[EditOp::SetText {
+            target: plain,
+            characters: "Hi b".into(),
+        }],
+    );
+    assert_eq!(
+        style_ids(doc.node(plain).unwrap().data.get("textData").unwrap()),
+        vec![1, 1, 0, 1],
+        "SetText dropped bold on equal-length replacement"
+    );
+
+    let multi = run(&mut doc, &mut history, &[text(page, 0.0, 120.0, "a b")])[0];
+    run(
+        &mut doc,
+        &mut history,
+        &[
+            bold(0, 1, multi),
+            EditOp::StyleTextRange {
+                target: multi,
+                utf16_start: 2,
+                utf16_end: 3,
+                style: TextStyleRunPatch {
+                    font_size: Some(20.0),
+                    ..Default::default()
+                },
+            },
+        ],
+    );
+    assert_eq!(
+        style_ids(doc.node(multi).unwrap().data.get("textData").unwrap()),
+        vec![1, 0, 2]
+    );
+    run(
+        &mut doc,
+        &mut history,
+        &[EditOp::SetText {
+            target: multi,
+            characters: "x y".into(),
+        }],
+    );
+    assert_eq!(
+        style_ids(doc.node(multi).unwrap().data.get("textData").unwrap()),
+        vec![1, 0, 2],
+        "equal-length multi-style replacement lost positional style IDs"
+    );
+
+    // 3. Unicode / UTF-16 surrogate pair boundaries:
+    // - Equal-length emoji swap keeps style;
+    // - Replacing 2 differently-styled BMP chars with one 2-unit emoji keeps one style across
+    //   both surrogate code units;
+    // - Splicing across two surrogate pairs ("🦀🚀", start=1, delete_len=2, insert="") fails
+    //   closed instead of fusing a high surrogate with another emoji's low surrogate.
+    let emoji = run(&mut doc, &mut history, &[text(page, 0.0, 160.0, "AxyB")])[0];
+    run(
+        &mut doc,
+        &mut history,
+        &[
+            bold(1, 2, emoji),
+            EditOp::StyleTextRange {
+                target: emoji,
+                utf16_start: 2,
+                utf16_end: 3,
+                style: TextStyleRunPatch {
+                    font_size: Some(22.0),
+                    ..Default::default()
+                },
+            },
+        ],
+    );
+    run(
+        &mut doc,
+        &mut history,
+        &[EditOp::SetText {
+            target: emoji,
+            characters: "A🦀B".into(),
+        }],
+    );
+    let emoji_td = doc.node(emoji).unwrap().data.get("textData").unwrap();
+    assert_eq!(emoji_td.text("characters"), Some("A🦀B"));
+    assert_eq!(
+        style_ids(emoji_td),
+        vec![0, 1, 1],
+        "2-unit surrogate pair must share a single consistent style ID"
+    );
+    assert_eq!(
+        emoji_td.get("styleOverrideTable").unwrap().items().len(),
+        1,
+        "unused style 2 must be compacted once surrogate pair uses style 1"
+    );
+
+    let pair = run(&mut doc, &mut history, &[text(page, 0.0, 200.0, "🦀🚀")])[0];
+    let pair_before = doc.encode_message().unwrap();
+    let split_two = try_run(
+        &mut doc,
+        &mut history,
+        &[EditOp::SpliceText {
+            target: pair,
+            utf16_start: 1,
+            utf16_delete_len: 2,
+            insert: String::new(),
+        }],
+    );
+    assert!(
+        split_two.is_err(),
+        "splicing across two surrogate pairs fused lone surrogates instead of erroring"
+    );
+    assert_eq!(doc.encode_message().unwrap(), pair_before);
+}

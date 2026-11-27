@@ -99,6 +99,8 @@ pub enum CanvasDrag {
         orig_x: f64,
         orig_y: f64,
         moved: bool,
+        last_applied: Option<(f64, f64)>,
+        drag_state_id: Option<u64>,
     },
     Resize {
         target: Guid,
@@ -110,6 +112,8 @@ pub enum CanvasDrag {
         orig_h: f64,
         mutated: bool,
         inside_node: bool,
+        last_applied: Option<(f64, f64, f64, f64)>,
+        drag_state_id: Option<u64>,
     },
     Create {
         tool: Tool,
@@ -193,20 +197,30 @@ pub fn end_edit_drag(tab: &mut Tab) {
 }
 
 /// Cancels an active canvas drag on Escape, reverting any in-progress Move or Resize
-/// mutation while preserving the current selection. Returns whether a drag was active.
+/// mutation owned by this drag while preserving the current selection. Returns whether a drag
+/// was active.
 pub fn cancel_edit_drag(tab: &mut Tab) -> bool {
     let Some(drag) = tab.edit_drag.take() else {
         return false;
     };
-    let mutated = matches!(
-        drag,
-        CanvasDrag::Move { moved: true, .. } | CanvasDrag::Resize { mutated: true, .. }
-    );
-    if mutated {
+    let drag_state = match drag {
+        CanvasDrag::Move {
+            moved: true,
+            drag_state_id: Some(id),
+            ..
+        }
+        | CanvasDrag::Resize {
+            mutated: true,
+            drag_state_id: Some(id),
+            ..
+        } => Some(id),
+        _ => None,
+    };
+    if drag_state.is_some_and(|id| id == tab.history.state_id()) {
         let res = super::undo_tab(tab);
         let _ = super::record_tab_error(tab, res);
-        tab.history.seal_coalesce();
     }
+    tab.history.seal_coalesce();
     true
 }
 
@@ -458,6 +472,8 @@ pub fn canvas_gizmos_input(
                         orig_h: oh,
                         mutated: false,
                         inside_node,
+                        last_applied: None,
+                        drag_state_id: None,
                     });
                 }
                 return GizmoFrame {
@@ -482,6 +498,8 @@ pub fn canvas_gizmos_input(
             orig_x: ox,
             orig_y: oy,
             moved: false,
+            last_applied: None,
+            drag_state_id: None,
         });
         return GizmoFrame {
             cursor: None,
@@ -522,20 +540,31 @@ fn step_edit_drag(
             orig_x,
             orig_y,
             moved,
+            last_applied,
+            drag_state_id,
             ..
         } => {
             if !*moved && screen_dist <= click_dist {
                 return true;
             }
             tab.marquee.clear();
-            let key = format!("gui:move:{target}");
             let (x, y) = moved_to(&tab.doc, *target, *orig_x, *orig_y, dx, dy);
+            let rx = x.round();
+            let ry = y.round();
+            let prev = last_applied.unwrap_or((*orig_x, *orig_y));
+            if (rx - prev.0).abs() <= 1e-6 && (ry - prev.1).abs() <= 1e-6 {
+                if *moved {
+                    *cursor = Some(CursorIcon::Grabbing);
+                }
+                return true;
+            }
+            let key = format!("gui:move:{target}");
             let ok = apply_tab_ops_ui(
                 tab,
                 &[EditOp::Move {
                     target: *target,
-                    x: x.round(),
-                    y: y.round(),
+                    x: rx,
+                    y: ry,
                     relative: false,
                 }],
                 Some("Move layer"),
@@ -544,6 +573,8 @@ fn step_edit_drag(
             .is_some();
             if ok {
                 *moved = true;
+                *last_applied = Some((rx, ry));
+                *drag_state_id = Some(tab.history.state_id());
                 *cursor = Some(CursorIcon::Grabbing);
             }
             ok
@@ -557,6 +588,8 @@ fn step_edit_drag(
             orig_h,
             mutated,
             inside_node,
+            last_applied,
+            drag_state_id,
             ..
         } => {
             *cursor = Some(handle.cursor_for(absolute_transform(&tab.doc, *target)));
@@ -574,11 +607,11 @@ fn step_edit_drag(
                 dy,
                 true,
             );
-            let changed = *mutated
-                || (nx - *orig_x).abs() > 1e-6
-                || (ny - *orig_y).abs() > 1e-6
-                || (nw - *orig_w).abs() > 1e-6
-                || (nh - *orig_h).abs() > 1e-6;
+            let prev = last_applied.unwrap_or((*orig_x, *orig_y, *orig_w, *orig_h));
+            let changed = (nx - prev.0).abs() > 1e-6
+                || (ny - prev.1).abs() > 1e-6
+                || (nw - prev.2).abs() > 1e-6
+                || (nh - prev.3).abs() > 1e-6;
             if !changed {
                 return true;
             }
@@ -604,6 +637,8 @@ fn step_edit_drag(
             .is_some();
             if ok {
                 *mutated = true;
+                *last_applied = Some((nx, ny, nw, nh));
+                *drag_state_id = Some(tab.history.state_id());
             }
             ok
         }

@@ -1,6 +1,6 @@
 //! Wasm-safe MCP editing helpers (`get_editable`, `describe_edit_ops`, `copy_for_figma`).
 
-use figstudio_fig::clipboard::encode_clipboard_html;
+use figstudio_fig::clipboard::{encode_clipboard_html, encode_clipboard_html_with_reader};
 use figstudio_fig::edit::describe_edit_ops_markdown;
 use figstudio_fig::{Document, Guid, Val};
 use serde_json::{Value, json};
@@ -180,6 +180,29 @@ pub fn copy_for_figma(
     file_key: &str,
     lazy_source: Option<&std::path::Path>,
 ) -> Output {
+    copy_for_figma_with(raw_ids, file_key, |roots| {
+        encode_clipboard_html(doc, roots, 1, Some(file_key), lazy_source)
+    })
+}
+
+/// [`copy_for_figma`] reading any lazily opened image entries through `rendering`.
+pub fn copy_for_figma_with_reader(
+    doc: &Document,
+    raw_ids: &[String],
+    file_key: &str,
+    rendering: &crate::rendering::Rendering,
+) -> Output {
+    let read = |entry: &figstudio_fig::archive::Entry| rendering.read(entry);
+    copy_for_figma_with(raw_ids, file_key, |roots| {
+        encode_clipboard_html_with_reader(doc, roots, 1, Some(file_key), Some(&read))
+    })
+}
+
+fn copy_for_figma_with(
+    raw_ids: &[String],
+    file_key: &str,
+    encode: impl FnOnce(&[Guid]) -> Result<String, figstudio_fig::FigError>,
+) -> Output {
     let mut roots: Vec<Guid> = Vec::with_capacity(raw_ids.len());
     for raw in raw_ids {
         match parse_node_id(raw) {
@@ -188,7 +211,7 @@ pub fn copy_for_figma(
             Err(e) => return Output::fault(e.to_string()),
         }
     }
-    match encode_clipboard_html(doc, &roots, 1, Some(file_key), lazy_source) {
+    match encode(&roots) {
         Ok(html) => Output::structured(json!({
             "fileKey": file_key,
             "rootIds": roots.iter().map(Guid::to_string).collect::<Vec<_>>(),

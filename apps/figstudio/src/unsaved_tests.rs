@@ -457,11 +457,8 @@ fn async_save_copy_completion_handles_success_cancel_failure_and_keeps_normal_sa
         "failed save must surface an error toast"
     );
 
-    // Matching successful close-triggered save closes the tab for both Saved and Downloaded.
-    for outcome in [
-        SaveOutcome::Saved("close-copy.fig".into()),
-        SaveOutcome::Downloaded("close-copy.fig".into()),
-    ] {
+    // Matching confirmed close-triggered save (`Saved`) closes the tab.
+    {
         let mut h = edited();
         let ctx = h.ctx.clone();
         let snap = SaveSnapshot::of(&h.state().tabs[0]);
@@ -469,13 +466,50 @@ fn async_save_copy_completion_handles_success_cancel_failure_and_keeps_normal_sa
             .state_mut()
             .begin_async_save_copy(snap, true)
             .expect("starts close-triggered save");
-        h.state_mut()
-            .complete_async_save_copy(&ctx, save_id, outcome);
+        h.state_mut().complete_async_save_copy(
+            &ctx,
+            save_id,
+            SaveOutcome::Saved("close-copy.fig".into()),
+        );
         assert!(
             h.state().tabs.is_empty(),
-            "matching successful close-save must close the tab"
+            "confirmed close-save must close the tab"
         );
         assert!(!h.state().any_unsaved());
+    }
+
+    // An unconfirmed browser download (`Downloaded`) must keep the dirty tab open and retain its
+    // edited document content instead of discarding it on close.
+    {
+        let mut h = edited();
+        let ctx = h.ctx.clone();
+        let snap = SaveSnapshot::of(&h.state().tabs[0]);
+        let edited_nodes = h.state().tabs[0].doc.nodes.len();
+        let edited_rev = h.state().tabs[0].doc.revision;
+        let save_id = h
+            .state_mut()
+            .begin_async_save_copy(snap, true)
+            .expect("starts close-triggered download");
+        h.state_mut().complete_async_save_copy(
+            &ctx,
+            save_id,
+            SaveOutcome::Downloaded("close-copy.fig".into()),
+        );
+        assert_eq!(
+            h.state().tabs.len(),
+            1,
+            "unconfirmed download must not auto-close a dirty tab"
+        );
+        assert!(h.state().tabs[0].dirty_unsaved);
+        assert!(h.state().any_unsaved());
+        assert_eq!(h.state().tabs[0].doc.nodes.len(), edited_nodes);
+        assert_eq!(h.state().tabs[0].doc.revision, edited_rev);
+        assert!(
+            h.state().toasts.iter().any(|t| !t.error
+                && t.text.contains("Started download")
+                && t.text.contains("stays open")),
+            "toast must report an unconfirmed download and that the tab stays open"
+        );
     }
 }
 
@@ -548,7 +582,7 @@ fn save_in_flight_close_merges_matching_intent_and_rejects_stale_or_discarded_ta
     }
 
     // 2. Close-triggered save in flight -> normal SaveCopy must NOT suppress close intent;
-    //    a duplicate Close modal left open is cleared when the matching save closes the tab.
+    //    a duplicate Close modal left open is cleared when the confirmed save closes the tab.
     {
         let mut h = edited();
         let ctx = h.ctx.clone();
@@ -565,7 +599,7 @@ fn save_in_flight_close_merges_matching_intent_and_rejects_stale_or_discarded_ta
         h.state_mut().complete_async_save_copy(
             &ctx,
             save_id,
-            SaveOutcome::Downloaded("close-copy.fig".into()),
+            SaveOutcome::Saved("close-copy.fig".into()),
         );
         assert!(
             h.state().tabs.is_empty(),
@@ -574,8 +608,39 @@ fn save_in_flight_close_merges_matching_intent_and_rejects_stale_or_discarded_ta
         assert_eq!(
             h.state().unsaved,
             None,
-            "closing the tab on save completion must clear its pending close modal"
+            "closing the tab on confirmed save completion must clear its pending close modal"
         );
+    }
+
+    // 2b. Normal save in flight upgraded by Close -> "Save a copy…" that falls back to an
+    //     unconfirmed download keeps the dirty tab open and preserves edits.
+    {
+        let mut h = edited();
+        let ctx = h.ctx.clone();
+        let snap = SaveSnapshot::of(&h.state().tabs[0]);
+        let edited_nodes = h.state().tabs[0].doc.nodes.len();
+        let save_id = h
+            .state_mut()
+            .begin_async_save_copy(snap, false)
+            .expect("normal save in flight");
+
+        h.state_mut().apply(Action::CloseTab, &ctx);
+        h.run_steps(2);
+        h.get_by_label("Save a copy…").click();
+        h.run_steps(2);
+
+        h.state_mut().complete_async_save_copy(
+            &ctx,
+            save_id,
+            SaveOutcome::Downloaded("merged-download.fig".into()),
+        );
+        assert_eq!(
+            h.state().tabs.len(),
+            1,
+            "merged close intent must not close tab on unconfirmed download"
+        );
+        assert!(h.state().tabs[0].dirty_unsaved);
+        assert_eq!(h.state().tabs[0].doc.nodes.len(), edited_nodes);
     }
 
     // 3. Normal save in flight for S1 -> user edits to S2 -> Close -> "Save a copy…" rejects
@@ -652,5 +717,47 @@ fn save_in_flight_close_merges_matching_intent_and_rejects_stale_or_discarded_ta
         );
         assert_eq!(h.state().tabs.len(), 1, "other open tab must stay open");
         assert_eq!(h.state().tabs[0].id, tab2_id);
+    }
+}
+
+#[test]
+fn browser_destination_identity_fails_closed_for_same_and_unknown() {
+    use crate::unsaved::{DestinationIdentity, HandleSaveDecision};
+
+    for (tag, expected_id, expected_decision) in [
+        (
+            Some("same"),
+            DestinationIdentity::Same,
+            HandleSaveDecision::RejectSameSource,
+        ),
+        (
+            Some("different"),
+            DestinationIdentity::Different,
+            HandleSaveDecision::WriteHandle,
+        ),
+        (
+            Some("unknown"),
+            DestinationIdentity::Unknown,
+            HandleSaveDecision::FallbackDownload,
+        ),
+        (
+            None,
+            DestinationIdentity::Unknown,
+            HandleSaveDecision::FallbackDownload,
+        ),
+        (
+            Some(""),
+            DestinationIdentity::Unknown,
+            HandleSaveDecision::FallbackDownload,
+        ),
+        (
+            Some("false"),
+            DestinationIdentity::Unknown,
+            HandleSaveDecision::FallbackDownload,
+        ),
+    ] {
+        let id = DestinationIdentity::from_js_tag(tag);
+        assert_eq!(id, expected_id, "tag={tag:?}");
+        assert_eq!(id.decide(), expected_decision, "tag={tag:?}");
     }
 }

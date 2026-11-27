@@ -92,7 +92,7 @@ pub(crate) struct SaveCopyInput {
     file_key: Option<String>,
 }
 
-#[tool_router(router = editing_router, vis = "pub(crate)")]
+#[tool_router(router = editing_read_router, vis = "pub(crate)")]
 impl FigstudioServer {
     #[tool(
         description = "List every semantic EditOp variant accepted by apply_edits and its JSON shape."
@@ -120,6 +120,39 @@ impl FigstudioServer {
         to_call(editing::editable(&doc, &target))
     }
 
+    #[tool(
+        description = "Export one or more nodes (defaults to selection) with transitive local SYMBOL masters as Figma clipboard HTML."
+    )]
+    async fn copy_for_figma(
+        &self,
+        Parameters(input): Parameters<CopyForFigmaInput>,
+    ) -> CallToolResult {
+        let first_hint = input
+            .node_ids
+            .as_ref()
+            .and_then(|v| v.first())
+            .map(String::as_str);
+        let key = match self.file_for(input.file_key.as_deref(), first_hint) {
+            Ok(k) => k,
+            Err(e) => return tool_error(e),
+        };
+        let ids = match input.node_ids {
+            Some(v) if !v.is_empty() => v,
+            _ => match self.target(key.clone(), None) {
+                Ok((_, sel)) => vec![sel],
+                Err(e) => return tool_error(e),
+            },
+        };
+        let (doc, fkey, path) = match self.files().open_picked(key.as_deref()).await {
+            Ok(t) => t,
+            Err(e) => return tool_error(e),
+        };
+        to_call(editing::copy_for_figma(&doc, &ids, &fkey, Some(&path)))
+    }
+}
+
+#[tool_router(router = editing_write_router, vis = "pub(crate)")]
+impl FigstudioServer {
     #[tool(
         description = "Execute an atomic, Kiwi-schema-validated batch of EditOp mutations with automatic Auto-Layout solving and Undo support."
     )]
@@ -325,36 +358,6 @@ impl FigstudioServer {
                 }
             }
         }
-    }
-
-    #[tool(
-        description = "Export one or more nodes (defaults to selection) with transitive local SYMBOL masters as Figma clipboard HTML."
-    )]
-    async fn copy_for_figma(
-        &self,
-        Parameters(input): Parameters<CopyForFigmaInput>,
-    ) -> CallToolResult {
-        let first_hint = input
-            .node_ids
-            .as_ref()
-            .and_then(|v| v.first())
-            .map(String::as_str);
-        let key = match self.file_for(input.file_key.as_deref(), first_hint) {
-            Ok(k) => k,
-            Err(e) => return tool_error(e),
-        };
-        let ids = match input.node_ids {
-            Some(v) if !v.is_empty() => v,
-            _ => match self.target(key.clone(), None) {
-                Ok((_, sel)) => vec![sel],
-                Err(e) => return tool_error(e),
-            },
-        };
-        let (doc, fkey, path) = match self.files().open_picked(key.as_deref()).await {
-            Ok(t) => t,
-            Err(e) => return tool_error(e),
-        };
-        to_call(editing::copy_for_figma(&doc, &ids, &fkey, Some(&path)))
     }
 
     #[tool(

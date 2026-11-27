@@ -341,11 +341,18 @@ fn run(args: Args) -> Result<()> {
         let html = std::fs::read_to_string(&args.file)?;
         let decoded = figstudio_fig::clipboard::decode_clipboard_html(&html)?;
         let out = args.out.context("clip decode needs -o <out.fig>")?;
-        std::fs::write(&out, &decoded.kiwi_bytes)?;
+        let out_bytes = if decoded.images.is_empty() {
+            decoded.kiwi_bytes
+        } else {
+            let mut doc = Document::from_bytes(&decoded.kiwi_bytes)?;
+            doc.images.extend(decoded.images);
+            doc.to_bytes()?
+        };
+        std::fs::write(&out, &out_bytes)?;
         println!(
             "{} ({} bytes, pasteID={})",
             out.display(),
-            decoded.kiwi_bytes.len(),
+            out_bytes.len(),
             decoded.meta.paste_id
         );
         return Ok(());

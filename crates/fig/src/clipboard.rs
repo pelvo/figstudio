@@ -40,13 +40,23 @@ pub struct ClipboardPayload {
     pub images: Vec<(String, Vec<u8>)>,
 }
 
-/// Image bytes referenced by `nodes`, by lowercase SHA-1 hex, read from `doc.images` or (for a
-/// lazily opened document) from `lazy_source`.
+/// Reads a lazily opened archive image entry (`images/<sha1>`), returning `None` if unavailable.
+pub type LazyImageReader<'a> = &'a dyn Fn(&crate::archive::Entry) -> Option<Vec<u8>>;
+
+type LazyResultReader<'a> = &'a mut dyn FnMut(&crate::archive::Entry) -> Result<Vec<u8>, FigError>;
+
+/// Image bytes referenced by `nodes`, by lowercase SHA-1 hex, read from `doc.images` or (for
+/// a lazily opened document) via `lazy_reader`.
+///
+/// Known lazy assets (`doc.lazy_images`) propagate an error when `lazy_reader` is missing or
+/// cannot read them, rather than silently dropping assets. Hashes present in neither `doc.images`
+/// nor `doc.lazy_images` (undeclared/unembedded Figma assets) are omitted without fabricating
+/// bytes.
 fn referenced_images(
     doc: &Document,
     nodes: &[Node],
-    lazy_source: Option<&std::path::Path>,
-) -> Vec<(String, Vec<u8>)> {
+    mut lazy_reader: Option<LazyResultReader<'_>>,
+) -> Result<Vec<(String, Vec<u8>)>, FigError> {
     let mut hashes: Vec<String> = Vec::new();
     let mut stack: Vec<&Val> = nodes.iter().map(|n| &n.data).collect();
     while let Some(v) = stack.pop() {
@@ -66,23 +76,24 @@ fn referenced_images(
             _ => {}
         }
     }
-    let mut lazy_file = None;
-    hashes
-        .into_iter()
-        .filter_map(|h| {
-            if let Some(b) = doc.images.get(&h) {
-                return Some((h, b.clone()));
-            }
-            let entry = doc.lazy_images.get(&h)?;
-            // shortcut: without a source path (the browser build) lazy images are left out;
-            // pass a reader if browser copy must carry them.
-            if lazy_file.is_none() {
-                lazy_file = Some(std::fs::File::open(lazy_source?).ok()?);
-            }
-            let bytes = crate::archive::read_entry(lazy_file.as_mut()?, entry).ok()?;
-            Some((h, bytes))
-        })
-        .collect()
+    let mut out = Vec::new();
+    for h in hashes {
+        if let Some(b) = doc.images.get(&h) {
+            out.push((h, b.clone()));
+            continue;
+        }
+        let Some(entry) = doc.lazy_images.get(&h) else {
+            continue;
+        };
+        let Some(reader) = lazy_reader.as_deref_mut() else {
+            return Err(FigError::malformed(format!(
+                "cannot copy lazy image {h} without an image source"
+            )));
+        };
+        let bytes = reader(entry)?;
+        out.push((h, bytes));
+    }
+    Ok(out)
 }
 
 /// Encodes `roots` and all of their transitive local dependencies (`SYMBOL` masters, styles,
@@ -364,6 +375,7 @@ fn encode_subset(
             had_blobs: true,
             archive_entries: None,
             lazy: false,
+            lazy_identity: None,
             decoder: None,
             cached_schema: std::sync::OnceLock::new(),
         },
@@ -384,6 +396,51 @@ pub fn encode_clipboard_html(
     file_key: Option<&str>,
     lazy_source: Option<&std::path::Path>,
 ) -> Result<String, FigError> {
+    let mut lazy_file: Option<std::fs::File> = None;
+    let mut read_from_disk = |entry: &crate::archive::Entry| -> Result<Vec<u8>, FigError> {
+        let path = lazy_source
+            .ok_or_else(|| FigError::malformed("cannot copy lazy image without a source file"))?;
+        let file = match lazy_file.as_mut() {
+            Some(file) => file,
+            None => lazy_file.insert(
+                std::fs::File::open(path)
+                    .map_err(|e| FigError::io("cannot read lazy image source", e))?,
+            ),
+        };
+        crate::archive::read_entry(file, entry)
+    };
+    let reader: Option<LazyResultReader<'_>> = lazy_source.map(|_| &mut read_from_disk as _);
+    encode_clipboard_html_inner(doc, roots, paste_id, file_key, reader)
+}
+
+/// [`encode_clipboard_html`] reading any lazily opened image entries through `lazy_reader`.
+///
+/// When `lazy_reader` is `None` or returns `None` for a referenced entry in
+/// [`Document::lazy_images`], encoding fails rather than silently dropping the image.
+pub fn encode_clipboard_html_with_reader(
+    doc: &Document,
+    roots: &[Guid],
+    paste_id: i32,
+    file_key: Option<&str>,
+    lazy_reader: Option<LazyImageReader<'_>>,
+) -> Result<String, FigError> {
+    let mut read_with_cb = |entry: &crate::archive::Entry| -> Result<Vec<u8>, FigError> {
+        let reader = lazy_reader
+            .ok_or_else(|| FigError::malformed(format!("cannot read lazy image {}", entry.name)))?;
+        reader(entry)
+            .ok_or_else(|| FigError::malformed(format!("cannot read lazy image {}", entry.name)))
+    };
+    let reader: Option<LazyResultReader<'_>> = lazy_reader.map(|_| &mut read_with_cb as _);
+    encode_clipboard_html_inner(doc, roots, paste_id, file_key, reader)
+}
+
+fn encode_clipboard_html_inner(
+    doc: &Document,
+    roots: &[Guid],
+    paste_id: i32,
+    file_key: Option<&str>,
+    lazy_reader: Option<LazyResultReader<'_>>,
+) -> Result<String, FigError> {
     let key = file_key
         .map(str::to_owned)
         .or_else(|| {
@@ -396,7 +453,7 @@ pub fn encode_clipboard_html(
         .unwrap_or_else(|| "figstudio".into());
 
     let (kiwi, nodes) = encode_subset(doc, roots, paste_id, &key)?;
-    let images = referenced_images(doc, &nodes, lazy_source);
+    let images = referenced_images(doc, &nodes, lazy_reader)?;
     let images_span = if images.is_empty() {
         String::new()
     } else {

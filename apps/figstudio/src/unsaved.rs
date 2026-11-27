@@ -64,13 +64,59 @@ pub(crate) enum InFlightAction {
 pub(crate) enum SaveOutcome {
     /// Saved to a chosen file path or File System Access handle.
     Saved(String),
-    /// Triggered a browser download of the copy.
+    /// Requested a browser download of the copy (unconfirmed completion).
     #[cfg(any(target_arch = "wasm32", test))]
     Downloaded(String),
     /// User cancelled the save dialog/picker; nothing was written.
     Cancelled,
     /// Save failed before committing; existing destination (if any) stays untouched.
     Err(String),
+}
+
+/// Comparison result between an open tab's source handle and a chosen browser save target.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DestinationIdentity {
+    /// Destination is proven to be the open source file.
+    Same,
+    /// Destination is proven to be a different file from the open source.
+    Different,
+    /// Source identity is unavailable or comparison failed; cannot prove destination is distinct.
+    Unknown,
+}
+
+/// Save-target policy for a browser File System Access handle returned by `showSaveFilePicker`.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HandleSaveDecision {
+    /// Destination is proven distinct from the open source: safe to call `createWritable()`.
+    WriteHandle,
+    /// Destination matches the open source: refuse without opening a writable stream.
+    RejectSameSource,
+    /// Destination identity cannot be proven distinct: fall back to unconfirmed download without
+    /// opening a writable stream.
+    FallbackDownload,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl DestinationIdentity {
+    /// Parses the 3-state tag returned by `js/save.js:compareHandles`. Any missing, failed, or
+    /// unrecognized result fails closed to [`Self::Unknown`].
+    pub(crate) fn from_js_tag(tag: Option<&str>) -> Self {
+        match tag {
+            Some("same") => Self::Same,
+            Some("different") => Self::Different,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub(crate) fn decide(self) -> HandleSaveDecision {
+        match self {
+            Self::Same => HandleSaveDecision::RejectSameSource,
+            Self::Different => HandleSaveDecision::WriteHandle,
+            Self::Unknown => HandleSaveDecision::FallbackDownload,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -321,8 +367,9 @@ impl App {
 
     /// Unified completion path for synchronous and asynchronous Save a copy operations.
     /// A normal Save a copy stays a copy (`dirty_unsaved` is unchanged and the tab stays open).
-    /// A close-triggered save closes the tab only after a matching save succeeds with no newer
-    /// concurrent edits.
+    /// A close-triggered save closes the tab only after a confirmed file write
+    /// ([`SaveOutcome::Saved`]) with no newer concurrent edits; a browser download
+    /// (`SaveOutcome::Downloaded`) is unconfirmed and keeps the tab open and dirty.
     pub(crate) fn finish_save_copy(
         &mut self,
         ctx: &egui::Context,
@@ -330,15 +377,22 @@ impl App {
         close_after: bool,
         outcome: SaveOutcome,
     ) {
-        let succeeded = match outcome {
+        let close_confirmed = match outcome {
             SaveOutcome::Saved(dest) => {
                 self.toast(ctx, format!("Saved copy to {dest}"), false);
                 true
             }
             #[cfg(any(target_arch = "wasm32", test))]
             SaveOutcome::Downloaded(name) => {
-                self.toast(ctx, format!("Downloaded {name}"), false);
-                true
+                let text = if close_after {
+                    format!(
+                        "Started download of {name}; tab stays open until you confirm the file and close or discard"
+                    )
+                } else {
+                    format!("Started download of {name}")
+                };
+                self.toast(ctx, text, false);
+                false
             }
             SaveOutcome::Cancelled => false,
             SaveOutcome::Err(err) => {
@@ -346,7 +400,7 @@ impl App {
                 false
             }
         };
-        if succeeded
+        if close_confirmed
             && close_after
             && let Some(i) = self.tabs.iter().position(|t| snapshot.matches(t))
         {
